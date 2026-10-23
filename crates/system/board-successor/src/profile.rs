@@ -549,7 +549,6 @@ fn validate_firmware(data: &Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
-/// `validate_internal_keyboards`.
 fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
     let keyboards = optional_list(
         data,

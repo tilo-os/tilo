@@ -293,9 +293,11 @@ impl Error for OnboardingError {}
 ///
 /// Returns an error if minting the collaboration identity fails, or if one
 /// already exists but its fingerprint can't be read back.
-pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
-    let identity_paths = crate::firstboot::collaboration_identity_paths();
-    mint_into_with_paths(identity_dir, &identity_paths, false)
+pub fn mint_into(
+    identity_dir: &Path,
+    identity_paths: &tilo_user_identity::IdentityPaths,
+) -> Result<MintedIdentity, OnboardingError> {
+    mint_into_with_paths(identity_dir, identity_paths, false)
 }
 
 /// Mint for Tilo Desktop running on a pre-existing Linux distribution.
@@ -309,9 +311,9 @@ pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError>
 /// read back the collaboration identity.
 pub fn mint_into_for_legacy_linux_host(
     identity_dir: &Path,
+    identity_paths: &tilo_user_identity::IdentityPaths,
 ) -> Result<MintedIdentity, OnboardingError> {
-    let identity_paths = crate::firstboot::collaboration_identity_paths();
-    mint_into_with_paths(identity_dir, &identity_paths, true)
+    mint_into_with_paths(identity_dir, identity_paths, true)
 }
 
 fn mint_into_with_paths(
@@ -546,7 +548,11 @@ mod tests {
             return;
         }
         let directory = runtime_identity::identity_dir_from_env().unwrap();
-        let minted = mint_into(&directory).unwrap();
+        let minted = mint_into(
+            &directory,
+            &crate::firstboot::collaboration_identity_paths(),
+        )
+        .unwrap();
         let mut flow = Onboarding::new();
         assert!(!flow.is_done());
         flow.resume_created(minted.clone());

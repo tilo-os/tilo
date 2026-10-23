@@ -40,11 +40,6 @@ use tilo_doc::semantic_read::{
 };
 /// Read only the selected channel's canonical message list. A page retains at most the requested
 /// messages plus one lookahead; text is streamed element by element.
-///
-/// # Errors
-///
-/// Returns a [`ReadError`] when the document has pending operations, the cursor
-/// is stale or invalid for this channel, or the page exceeds its limits.
 pub fn read_messages(
     doc: &AutoCommit,
     owner_heads: &[automerge::ChangeHash],

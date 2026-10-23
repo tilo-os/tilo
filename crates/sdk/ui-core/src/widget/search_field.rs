@@ -338,6 +338,13 @@ impl SearchField {
         self.input.value()
     }
 
+    /// Where the caret stands in the text, in bytes, as the input reports it
+    /// for review.
+    #[must_use]
+    pub fn caret_byte(&self) -> Option<usize> {
+        self.input.text_review().map(|(caret, _)| caret)
+    }
+
     /// Goes through the shared text core, so caret/selection stay consistent.
     pub fn set_query(&mut self, text: &str) {
         self.input.set_text(text);
@@ -1260,7 +1267,6 @@ mod tests {
             "one request per Enter"
         );
 
-        // With nothing matching, the count slot offers the same escalation.
         sf.set_count(Some(FilterCount::new(0, 12)));
         sf.input.set_focus(false);
         draw(&mut sf);

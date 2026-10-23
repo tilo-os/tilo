@@ -557,7 +557,27 @@ fn frame(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) {
     let presence = PresenceCtx::empty();
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    draw_settled(app, &mut scene, &mut tr, &theme, &presence);
+}
+
+/// Draw frames until the reader shows its chapter fully laid out, as a
+/// window does while the layout worker's results wake it.
+fn draw_settled(
+    app: &mut BooksApp,
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+) {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        scene.reset();
+        app.draw(scene, Affine::IDENTITY, tr, theme, presence);
+        if app.view != View::Reader || !app.layout_pending() || ui::time::now() > deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// Centre of the topmost recorded hit whose action matches `pred`.
@@ -661,7 +681,7 @@ fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Sce
     );
     let mut tr = TextRenderer::with_font_catalog(&catalog).expect("checked-in font catalog");
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    draw_settled(app, &mut scene, &mut tr, &theme, &presence);
     scene
 }
 
@@ -776,7 +796,6 @@ fn the_progress_slider_says_how_far_in_the_book_is() {
     assert_eq!(super::progress_label(1.0), "100%");
 }
 
-/// Wheel and horizontal scroll turn reader pages and the wheel scrolls the library shelf.
 #[test]
 fn wheel_turns_pages_and_scrolls_the_shelf() {
     // --- phase: wheel_turns_pages_in_the_reader ---
@@ -786,7 +805,6 @@ fn wheel_turns_pages_and_scrolls_the_shelf() {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert_eq!(app.view, View::Reader);
         let start = (app.chapter, app.page);
-        // A downward flick turns forward.
         assert!(
             wheel(&mut app, &mut doc, -4.0),
             "downward wheel turned a page"
@@ -797,7 +815,6 @@ fn wheel_turns_pages_and_scrolls_the_shelf() {
             start.0,
             start.1
         );
-        // An upward flick turns back.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let mid = (app.chapter, app.page);
         wheel(&mut app, &mut doc, 4.0);
@@ -1042,7 +1059,6 @@ fn font_choice_applies_persists_and_falls_back() {
             "an absent named face degrades to a real serif, not the default sans",
         );
 
-        // A genuinely installed family is used as-is.
         let real = TextRenderer::new()
             .system_families()
             .into_iter()
@@ -1079,7 +1095,6 @@ fn schemes_are_listed_created_and_applied() {
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Colours;
         frame(&mut app, &mut doc, 1200.0, 820.0);
-        // Toggle the Light scheme off through its manager row.
         let toggle = find_hit(
             &app,
             |a| matches!(a, Action::ToggleSchemeEnabled(id) if id.as_str() == "light"),
@@ -1216,7 +1231,6 @@ fn schemes_are_listed_created_and_applied() {
             "dark page tracks the OS raised surface"
         );
 
-        // A custom scheme's page colour drives the reading view directly.
         let mut schemes = default_schemes();
         schemes.push(ColorScheme::from_bg(
             "scheme_z",
@@ -1243,7 +1257,6 @@ fn schemes_are_listed_created_and_applied() {
 fn colour_picker_edits_or_leaves_a_scheme() {
     // --- phase: color_picker_returns_a_colour_applied_to_a_scheme ---
     {
-        // A custom scheme's page colour, edited through the picker, changes.
         let mut app = app_with_sample();
         let mut doc = library_doc();
         let mut schemes = default_schemes();
@@ -1257,7 +1270,6 @@ fn colour_picker_edits_or_leaves_a_scheme() {
             .find(|s| s.id == "scheme_x")
             .unwrap()
             .page;
-        // Tap the custom scheme's page swatch to open the picker on that slot.
         let sw = find_hit(
             &app,
             |a| matches!(a, Action::PickSchemeColor(id, slot) if id == "scheme_x" && *slot == 0),
@@ -1413,7 +1425,6 @@ fn font_manager_and_system_picker_set_fonts() {
             !app.shown_fonts().iter().any(|f| f.id == "serif"),
             "serif no longer in quick settings"
         );
-        // Make Mono the registry default through the default-font dropdown.
         assert!(
             app.perform_semantic_action(
                 "books.settings.default-font",
@@ -1444,7 +1455,6 @@ fn font_manager_and_system_picker_set_fonts() {
         use crate::model::FontKind;
         let mut app = app_with_sample();
         let mut doc = library_doc();
-        // Open the font manager's system-family picker.
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
         app.dispatch(Action::OpenFontPicker, &mut Edits::lend(&mut doc));
@@ -1625,7 +1635,6 @@ fn pointer_selection_spans_words_blocks_and_paragraphs() {
             .filter(|a| a.kind == AnnoKind::Highlight)
             .collect();
         assert!(hls.len() >= 2, "one ranged highlight per spanned paragraph");
-        // Every piece carries a real char range, and shares ONE group.
         assert!(
             hls.iter().all(|a| a.start < a.end),
             "each piece has a char range"
@@ -1712,7 +1721,6 @@ fn pointer_selection_spans_words_blocks_and_paragraphs() {
             s.ch, r0.cs,
             "anchor pinned to the word start, not the click char"
         );
-        // The head extended by whole words to cover the far word entirely.
         assert_eq!(e.ch, far.cs + far.cl, "head extended to the whole far word");
         assert!(
             e.ch > r0.cs + r0.cl,
@@ -1758,7 +1766,6 @@ fn notes_are_composed_reopened_and_persisted() {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        // Make a cross-paragraph selection via drag.
         let r0 = app.sel_runs[0];
         let start = Point::new(f64::midpoint(r0.x0, r0.x1), f64::midpoint(r0.y0, r0.y1));
         let later = app
@@ -1802,7 +1809,6 @@ fn notes_are_composed_reopened_and_persisted() {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1280.0, 800.0);
-        // Select a word, then start a note with the 'm' shortcut.
         let __p = page_point(&app);
         dbl_click(&mut app, &mut doc, __p);
         assert!(key_char(&mut app, &mut doc, "m"), "'m' started a note");
@@ -1871,7 +1877,6 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
         let (w, h) = (1000u32, 700u32);
         let mut app = app_with_sample();
         let mut doc = library_doc();
-        // Same page, popover closed then open.
         let closed = render_scene(&mut app, &mut doc, f64::from(w), f64::from(h));
         app.reading_settings.open();
         let open = render_scene(&mut app, &mut doc, f64::from(w), f64::from(h));
@@ -1900,7 +1905,6 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
         assert!(click(&mut app, &mut doc, aa));
         assert!(app.reading_settings.is_open(), "popover opened");
-        // Choose the Dark page tint from the popover.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let dark = find_reading_hit(&app, |action| {
             matches!(action, ReadingSettingsAction::SetReadTheme(ReadTheme::Dark))
@@ -1962,11 +1966,14 @@ fn type_popover_values_edit_and_persist() {
         .expect("settings popover exposes the Justified composition choice");
         assert!(click(&mut app, &mut doc, justified), "choice is clickable");
 
-        assert!(
-            app.layout.is_none(),
-            "composition changes invalidate layout"
-        );
         assert_eq!(app.settings.composition, CompositionStyle::Book);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(
+            app.layout
+                .as_ref()
+                .is_some_and(|layout| layout.key.composition),
+            "composition changes lay the chapter out justified"
+        );
         assert_eq!(
             TestLibrary::read_settings(&doc).composition,
             CompositionStyle::Book,
@@ -1982,7 +1989,6 @@ fn type_popover_values_edit_and_persist() {
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
         click(&mut app, &mut doc, aa);
 
-        // Text-size + button grows and persists the font scale.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let base = TestLibrary::read_settings(&doc).font_scale;
         let font = app
@@ -2000,7 +2006,6 @@ fn type_popover_values_edit_and_persist() {
             "font scale grew and persisted ({base} -> {grown})"
         );
 
-        // Line-spacing − button shrinks and persists the spacing.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let sbase = TestLibrary::read_settings(&doc).line_spacing;
         let spacing = app
@@ -2026,7 +2031,6 @@ fn type_popover_values_edit_and_persist() {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
         click(&mut app, &mut doc, aa);
-        // Tap the text-size value to type a number directly.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let val = app
             .reading_settings
@@ -2047,7 +2051,6 @@ fn type_popover_values_edit_and_persist() {
             "typed 150% -> font_scale 1.5, got {fs}"
         );
 
-        // Line spacing is click-to-type too.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let ls_val = app
             .reading_settings
@@ -2425,7 +2428,6 @@ fn page_modes_and_turn_animation() {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        // Switch to continuous scroll through the real command path.
         app.dispatch(
             Action::SetMode(ReadMode::Continuous),
             &mut Edits::lend(&mut doc),
@@ -2447,7 +2449,6 @@ fn page_modes_and_turn_animation() {
             before,
             "continuous scroll moved the reading position"
         );
-        // Progress persisted for the shelf bar.
         let id = app.book_id();
         assert!(
             TestLibrary::read_progress(&doc, &id).fraction >= 0.0,
@@ -2465,7 +2466,6 @@ fn page_modes_and_turn_animation() {
         assert_eq!(app.settings.mode, ReadMode::TwoUp);
         // A spread aligns to an even left page.
         assert_eq!(app.page % 2, 0, "the spread's left page is even");
-        // The two facing pages paint into two columns on the real draw path.
         if app.cur_page_count >= 2 {
             let cols: std::collections::HashSet<u8> = app.sel_runs.iter().map(|r| r.col).collect();
             assert!(
@@ -2626,7 +2626,6 @@ fn highlight_markers_reanchor_and_open_comments() {
         TestLibrary::upsert_annotation(&mut doc, &comment);
         app.read_record(&doc);
 
-        // A frame records the group's draggable margin marker.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let marker_rect = app
             .hi_markers
@@ -2635,7 +2634,6 @@ fn highlight_markers_reanchor_and_open_comments() {
             .map(|(r, _)| *r)
             .expect("the highlight has a draggable margin marker");
 
-        // A target paragraph in a different block.
         let target = app
             .sel_runs
             .iter()
@@ -2648,7 +2646,6 @@ fn highlight_markers_reanchor_and_open_comments() {
             f64::midpoint(target.y0, target.y1),
         );
 
-        // Grab the marker and drag it onto the target paragraph.
         ptr_move(&mut app, &mut doc, marker_rect.center());
         ptr_down(&mut app, &mut doc);
         assert!(
@@ -2736,7 +2733,6 @@ fn highlight_markers_reanchor_and_open_comments() {
             .find(|(_, g)| *g == group)
             .map(|(r, _)| r.center())
             .expect("the highlight has a marker");
-        // Press + release without moving.
         ptr_move(&mut app, &mut doc, marker);
         ptr_down(&mut app, &mut doc);
         ptr_up(&mut app, &mut doc);
@@ -2832,7 +2828,6 @@ fn highlights_are_written_and_recoloured_from_selections() {
                 .find(|a| a.kind == AnnoKind::Highlight)
                 .map(|a| a.color)
         };
-        // Select a word, then apply yellow.
         let p = page_point(&app);
         dbl_click(&mut app, &mut doc, p);
         app.dispatch(
@@ -2984,7 +2979,6 @@ fn keyboard_selection_and_copy_target_the_active_passage() {
             anchor: start,
             head: start,
         });
-        // Shift+Right extends by one character.
         assert!(key_named_mods(
             &mut app,
             &mut doc,
@@ -2999,7 +2993,6 @@ fn keyboard_selection_and_copy_target_the_active_passage() {
             },
             "char extend"
         );
-        // Shift+Left contracts back by one character.
         assert!(key_named_mods(
             &mut app,
             &mut doc,
@@ -3007,7 +3000,6 @@ fn keyboard_selection_and_copy_target_the_active_passage() {
             ModifiersState::SHIFT
         ));
         assert_eq!(app.sel.unwrap().head, start, "char contract");
-        // Ctrl+Shift+Right jumps to the next word boundary.
         let expect_word = app.doc_next_word(start);
         assert!(
             expect_word.ch > start.ch,
@@ -3144,8 +3136,6 @@ fn live_start_is_empty_and_onboards() {
     }
 }
 
-// ---- library-shelf keyboard ----------------------------------------------
-
 /// The shelf lays out a bounded grid of cards, filters and sorts, and is driven by keyboard focus.
 #[allow(
     clippy::too_many_lines,
@@ -3162,7 +3152,6 @@ fn library_shelf_layout_filtering_and_keyboard() {
         assert!(app.library.len() >= 3, "sample shelf has several books");
         assert_eq!(app.shelf_cursor, 0, "focus starts on the first book");
 
-        // Arrow-right/-left move the focus along the row.
         assert!(
             key_named(&mut app, &mut doc, NamedKey::ArrowRight),
             "arrow consumed"
@@ -3358,7 +3347,6 @@ fn library_shelf_layout_filtering_and_keyboard() {
             "book 0 (fraction=1.0) is furthest read"
         );
 
-        // The sort control + hide-read toggle are reachable in the shelf chrome.
         assert!(
             app.shelf_controls
                 .accessibility_nodes(app.library_prefs, None)
@@ -3373,8 +3361,6 @@ fn library_shelf_layout_filtering_and_keyboard() {
         );
     }
 }
-
-// ---- library: open-from-anywhere, import, share ------------------------
 
 /// Books open by path or picker, failures settle visibly, watch scans never replace explicit opens, one book has one identity and removal keeps dedup.
 #[test]
@@ -3487,7 +3473,6 @@ fn importing_and_removing_books_keeps_one_identity() {
         TestLibrary::upsert_annotation(&mut doc, &Annotation::new(&id, AnnoKind::Highlight, 0, 1));
         assert_eq!(TestLibrary::annotations_for(&doc, &id).len(), 1);
 
-        // Open the *same bytes* from a completely different path.
         app.import_and_open_for_test(&mut Edits::lend(&mut doc), &pb);
         assert_eq!(
             app.library.len(),
@@ -3529,7 +3514,6 @@ fn importing_and_removing_books_keeps_one_identity() {
             1,
             "the library asks the person before it removes the book"
         );
-        // The person agrees at the door.
         let mut library =
             ui::tilo_resource::Replica::<crate::resource::Ebook>::from_doc(doc.clone());
         library
@@ -3852,9 +3836,6 @@ fn workspace_sharing_materialises_and_verifies_books() {
     }
 }
 
-// ---- delete affordance ---------------------------------------------------
-
-/// Annotation cards can be deleted and jump to their location.
 #[test]
 fn annotation_cards_delete_and_jump_to_their_location() {
     // --- phase: annotation_delete_is_reachable_and_removes_it ---
@@ -3863,7 +3844,6 @@ fn annotation_cards_delete_and_jump_to_their_location() {
         let mut doc = library_doc();
         // Wide window so the annotations rail is docked-open.
         frame(&mut app, &mut doc, 1280.0, 800.0);
-        // Create one highlight via double-click word + swatch.
         let __p = page_point(&app);
         dbl_click(&mut app, &mut doc, __p);
         frame(&mut app, &mut doc, 1280.0, 800.0);
@@ -3902,7 +3882,6 @@ fn annotation_cards_delete_and_jump_to_their_location() {
         TestLibrary::upsert_annotation(&mut doc, &a);
         frame(&mut app, &mut doc, 1280.0, 800.0);
 
-        // Pretend we've navigated away, then jump from the annotation card.
         app.chapter = app.num_chapters().saturating_sub(1);
         let jump = find_hit(&app, |ac| matches!(ac, Action::JumpTo(_))).expect("annotation card");
         assert!(click(&mut app, &mut doc, jump), "jump handled");
@@ -3912,7 +3891,6 @@ fn annotation_cards_delete_and_jump_to_their_location() {
             Some(target),
             "jump targets the annotation's block"
         );
-        // The deferred page resolution runs on the next settled frame.
         frame(&mut app, &mut doc, 1280.0, 800.0);
         assert!(
             app.pending_jump_block.is_none(),
@@ -3961,7 +3939,6 @@ fn dispatch(app: &mut BooksApp, doc: &mut AutoCommit, action: Action) {
     app.dispatch(action, &mut Edits::lend(doc));
 }
 
-/// The selection toolbar dispatches the palette highlight actions, trashes covered highlights and shows in continuous mode.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -4018,7 +3995,6 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
                 ),
             )
             .unwrap();
-        // Dispatch the swatch's action through the real handler a click invokes.
         dispatch(&mut app, &mut doc, Action::SetColor(HiColor::Yellow));
         let places = |marks: Vec<Annotation>| {
             let mut places: Vec<_> = marks
@@ -4033,7 +4009,6 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
             places(TestLibrary::list_annotations(expected.doc())),
             "the swatch uses the canonical selection action"
         );
-        // And it really toggled the highlight off through that action.
         assert!(
             TestLibrary::list_annotations(&doc)
                 .iter()
@@ -4049,7 +4024,6 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        // Highlight a word.
         let p = page_point(&app);
         dbl_click(&mut app, &mut doc, p);
         dispatch(&mut app, &mut doc, Action::SetColor(HiColor::Blue));
@@ -4083,14 +4057,12 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
         let mut doc = library_doc();
         dispatch(&mut app, &mut doc, Action::SetMode(ReadMode::Continuous));
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        // Seed a live selection near the top of the flow and redraw.
         app.sel = Some(TextSel {
             anchor: DocPos { block: 1, ch: 0 },
             head: DocPos { block: 1, ch: 24 },
         });
         app.selected_block = Some(1);
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        // The shared HUD registered its Copy + a swatch control as clickable hits.
         assert!(
             find_hit(&app, |a| matches!(a, Action::CopySelection)).is_some(),
             "the shared selection HUD floats over the continuous flow"
@@ -4119,7 +4091,6 @@ fn bookmarks_and_their_shortcuts() {
                 .count()
         };
         assert_eq!(bookmarks(&doc), 0, "no bookmark yet");
-        // Add via the top-bar bookmark icon.
         let bm = find_hit(&app, |a| matches!(a, Action::ToggleBookmark)).expect("bookmark icon");
         assert!(click(&mut app, &mut doc, bm), "bookmark icon handled");
         assert_eq!(bookmarks(&doc), 1, "icon added a bookmark");
@@ -4268,16 +4239,6 @@ fn reader_shots_render_within_the_page_box() {
     }
 }
 
-// ---- note authoring: type / backspace / done ----------------------------
-
-// ---- jump-to-annotation location resolution -----------------------------
-
-// ---- TOC chapter navigation ---------------------------------------------
-
-// ---- type popover steppers persist --------------------------------------
-
-// ---- reader keyboard layer ----------------------------------------------
-
 /// Reader keyboard drives navigation and chrome, escape peels back layers and rails respond to width.
 #[test]
 fn reader_keyboard_escape_and_responsive_rails() {
@@ -4289,7 +4250,6 @@ fn reader_keyboard_escape_and_responsive_rails() {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert_eq!(app.chapter, 0);
 
-        // Up/Down move by chapter.
         assert!(key_named(&mut app, &mut doc, NamedKey::ArrowDown));
         assert_eq!(app.chapter, 1, "arrow-down advanced a chapter");
         assert!(key_named(&mut app, &mut doc, NamedKey::ArrowUp));
@@ -4325,7 +4285,6 @@ fn reader_keyboard_escape_and_responsive_rails() {
             "'3' set Dark"
         );
 
-        // Escape from a clean reader leaves the book.
         assert!(key_named(&mut app, &mut doc, NamedKey::Escape));
         assert_eq!(app.view, View::Library, "escape left the book");
     }
@@ -4375,7 +4334,6 @@ fn reader_keyboard_escape_and_responsive_rails() {
 
 // ---- reading-progress persistence + restore -----------------------------
 
-/// Reading progress and continuation reopen the same book at the same position.
 #[test]
 fn reading_position_persists_across_reopen() {
     // --- phase: reading_progress_persists_and_restores_on_reopen ---
@@ -4397,7 +4355,6 @@ fn reading_position_persists_across_reopen() {
             "progress written to the document"
         );
 
-        // A fresh reader on the same document restores the saved position.
         let mut reopened = app_with_sample();
         reopened.book_idx = 1;
         frame(&mut reopened, &mut doc, 1000.0, 700.0);
@@ -4653,7 +4610,6 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        // Make a single-word highlight, then open its overlay directly.
         let p = page_point(&app);
         dbl_click(&mut app, &mut doc, p);
         app.dispatch(
@@ -4693,7 +4649,6 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
             "overlay stays open after saving"
         );
 
-        // Add a SECOND comment on the same range.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let add2 = find_hit(&app, |a| matches!(a, Action::AddComment(_))).expect("add-comment #2");
         assert!(click(&mut app, &mut doc, add2), "add #2 handled");
@@ -4714,7 +4669,6 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
         );
         key_named(&mut app, &mut doc, NamedKey::Enter);
 
-        // Delete one comment.
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let del =
             find_hit(&app, |a| matches!(a, Action::DeleteComment(_))).expect("a delete affordance");
@@ -4801,7 +4755,6 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
             TestLibrary::list_annotations(&expected),
             "the button and the palette make the identical edit",
         );
-        // And it really removed the comment through that action.
         assert!(
             TestLibrary::list_annotations(&doc)
                 .iter()
@@ -4853,7 +4806,6 @@ fn font_rename_editor_commits_cancels_and_fits() {
             "Ctrl+A selected all in the real TextInput, so the keystroke replaced it",
         );
 
-        // A click far outside the field blur-commits the rename to the CRDT.
         click(&mut app, &mut doc, Point::new(950.0, 24.0));
         assert!(app.renaming.is_none(), "clicking outside ended the rename");
         let fonts = TestLibrary::read_fonts(&doc);
@@ -5246,4 +5198,47 @@ fn a_dropped_file_opens_without_a_hover_and_a_non_book_names_itself() {
         app.load_error.as_deref(),
         Some("Couldn't open notes.txt: only EPUB books can be added")
     );
+}
+
+/// "Couldn't open x.epub" offers nothing to do but close it, so it leaves
+/// on its own after a notice's lifetime: the app wakes for it, and once it
+/// is due the card is gone and leaves no close button behind.
+#[test]
+fn a_failed_open_leaves_on_its_own() {
+    use ui::time::testing::with_monotonic_time;
+    use ui::widget::toast::NOTICE_LIFETIME;
+    let mut app = BooksApp::new(crate::resource::library_dispatcher_for_test(), false);
+    app.toast_area = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let start = ui::time::now();
+    let due = start + NOTICE_LIFETIME;
+    with_monotonic_time(start, || {
+        app.settle_import_failure(
+            "Couldn’t open x.epub: not a book".into(),
+            "ebook.open_failed",
+        );
+    });
+    assert_eq!(app.next_wake_deadline(), Some(due), "it wakes the app");
+    let draw = |app: &mut BooksApp| {
+        app.hits.clear();
+        let theme = ui::theme::Theme::default();
+        let (mut scene, mut text) = (vello::Scene::new(), TextRenderer::new());
+        app.draw_load_toast(&mut PaintCtx::new(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &theme,
+        ));
+        app.hits
+            .iter()
+            .any(|hit| matches!(hit.action, Action::DismissLoadError))
+    };
+    with_monotonic_time(start, || assert!(draw(&mut app), "the failure shows"));
+    with_monotonic_time(due + Duration::from_millis(1), || {
+        assert!(!draw(&mut app), "a failure past its time is not painted");
+        app.dirty = false;
+        app.expire_load_toast();
+    });
+    assert!(app.dirty, "the window repaints without it");
+    assert_eq!(app.load_error.as_deref(), None);
+    assert_eq!(app.next_wake_deadline(), None, "nothing left to wake for");
 }

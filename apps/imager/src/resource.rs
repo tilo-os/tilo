@@ -861,7 +861,6 @@ mod tests {
             .unwrap();
         assert!(app.state().profile.enroll_local_identity);
         let enabled_document = app.read_document(|doc| doc.clone().save());
-        // The edit turning enrollment off, with its value replaced.
         let with_value = |value: serde_json::Value| {
             fn replace(json: &mut serde_json::Value, value: &serde_json::Value) {
                 match json {

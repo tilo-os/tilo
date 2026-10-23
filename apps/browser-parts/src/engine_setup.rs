@@ -15,7 +15,6 @@ const LOOK_EVERY: Duration = Duration::from_millis(300);
 /// What the page area shows while the engine is being set up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Setup {
-    /// The host is fetching the engine.
     Fetching {
         phase: InstallPhase,
         received: u64,

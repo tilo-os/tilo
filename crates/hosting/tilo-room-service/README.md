@@ -297,7 +297,8 @@ participant links every web app because the host mounts the apps' own components
 `tilo-room-service`, in one cargo build) and the desktop bundle `web-desktop-bundle` builds
 beside them for the web entry's image too; buildah
 assembles `container/Containerfile` from those outputs (`bin/`, `assets/`), then
-`container/test-image.sh` smoke-tests the archive. Main publishes
+`container/test-image.sh` smoke-tests the archive. A dispatch on main (`t
+dispatch publish-room-service --ref main`) publishes
 `registry.tilo.so/tilo/room-service:dev-<commit>`, stable the signed
 `sha-<commit>` with a digest receipt (repository, digest, tags, source revision) that sets the
 `room-service` pointer; deployments pin the digest. Build and test it from your tree with

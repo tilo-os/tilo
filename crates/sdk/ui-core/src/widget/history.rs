@@ -204,7 +204,6 @@ impl HistoryEntry {
     }
 }
 
-/// The facet an effect receipt carries.
 fn is_effect_receipt_facet(facet: &ActionFacet) -> bool {
     facet.key == "tilo.receipt" && facet.value == "effect"
 }
@@ -434,7 +433,6 @@ pub enum EntryKind {
     Details,
     /// A comment or reaction.
     Comment,
-    /// Something deleted.
     Delete,
     /// Something deleted brought back.
     Restore,

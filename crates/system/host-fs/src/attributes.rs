@@ -15,9 +15,6 @@ use std::path::Path;
 pub const SUPPORTED: bool = cfg!(unix);
 
 /// Read attribute `name` of `path`; `Ok(None)` when it is not set.
-///
-/// # Errors
-/// Returns the host's error, or `Unsupported` without extended attributes.
 #[inline]
 pub fn get(path: impl AsRef<Path>, name: impl AsRef<OsStr>) -> io::Result<Option<Vec<u8>>> {
     #[cfg(unix)]
@@ -31,10 +28,6 @@ pub fn get(path: impl AsRef<Path>, name: impl AsRef<OsStr>) -> io::Result<Option
     }
 }
 
-/// Set attribute `name` of `path` to `value`.
-///
-/// # Errors
-/// Returns the host's error, or `Unsupported` without extended attributes.
 #[inline]
 pub fn set(path: impl AsRef<Path>, name: impl AsRef<OsStr>, value: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
@@ -48,10 +41,6 @@ pub fn set(path: impl AsRef<Path>, name: impl AsRef<OsStr>, value: &[u8]) -> io:
     }
 }
 
-/// Remove attribute `name` of `path`.
-///
-/// # Errors
-/// Returns the host's error, or `Unsupported` without extended attributes.
 #[inline]
 pub fn remove(path: impl AsRef<Path>, name: impl AsRef<OsStr>) -> io::Result<()> {
     #[cfg(unix)]
@@ -66,9 +55,6 @@ pub fn remove(path: impl AsRef<Path>, name: impl AsRef<OsStr>) -> io::Result<()>
 }
 
 /// Read attribute `name` of an open file; `Ok(None)` when it is not set.
-///
-/// # Errors
-/// Returns the host's error, or `Unsupported` without extended attributes.
 #[inline]
 pub fn get_open(file: &File, name: impl AsRef<OsStr>) -> io::Result<Option<Vec<u8>>> {
     #[cfg(unix)]
@@ -82,10 +68,6 @@ pub fn get_open(file: &File, name: impl AsRef<OsStr>) -> io::Result<Option<Vec<u
     }
 }
 
-/// Set attribute `name` of an open file to `value`.
-///
-/// # Errors
-/// Returns the host's error, or `Unsupported` without extended attributes.
 #[inline]
 pub fn set_open(file: &File, name: impl AsRef<OsStr>, value: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
@@ -138,7 +120,6 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    /// The code `error` carries, if it is one of these.
     #[must_use]
     pub fn of(error: &io::Error) -> Option<Self> {
         #[cfg(unix)]

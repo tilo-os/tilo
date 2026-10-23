@@ -291,9 +291,6 @@ pub trait Notifier: Send + Sync {
 
     /// Calendar handoffs and delivered occurrences owned by this app.
     /// Hosts that retain only an absolute deadline return no calendar state.
-    ///
-    /// # Errors
-    /// The durable calendar service is unavailable or refused the caller.
     fn alarm_states(&self) -> Result<Vec<AlarmState>, NotifyError> {
         Ok(Vec::new())
     }

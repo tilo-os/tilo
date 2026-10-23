@@ -48,10 +48,6 @@ pub struct RegistrationGate(UnixStream);
 
 impl RegistrationGate {
     /// Let the launcher go on. Call only once the launch is recorded.
-    ///
-    /// # Errors
-    ///
-    /// The write error when the launcher is already gone.
     pub fn release(mut self) -> io::Result<()> {
         self.0.write_all(&[1])
     }
@@ -59,10 +55,6 @@ impl RegistrationGate {
     /// [`Self::release`], handing the launcher the shell's window door for
     /// the app (`runtime_portal::windows`) with the release: the launcher
     /// passes it on to the app it starts.
-    ///
-    /// # Errors
-    ///
-    /// The send error when the launcher is already gone.
     #[cfg(target_os = "linux")]
     pub fn release_with_window_door(self, door: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
         use std::os::fd::AsFd as _;

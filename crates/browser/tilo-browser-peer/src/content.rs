@@ -194,12 +194,13 @@ impl<T> ContentWants<T> {
     }
 }
 
-/// The pieces that answer `request`, a member's `RecordContentWant` that
-/// device `asker` published, as `NeighbourMsg::RecordContentPiece` frames
-/// from device `device`, addressed to `asker`; empty when the request is not
-/// one this page answers or `read` (given the request's app, room and hash)
-/// keeps nothing under it. What `read` returns is sent only when it hashes to
-/// what was asked for.
+/// The frames that answer `request`, a member's `RecordContentWant` that
+/// device `asker` published, from device `device`, addressed to `asker`: the
+/// `NeighbourMsg::RecordContentPiece`s of what `read` (given the request's
+/// app, room and hash) keeps under it, or one `RecordContentLacks` when it
+/// keeps nothing, so the asker stops counting on this page. Empty when the
+/// request is not one this page answers. What `read` returns is sent only
+/// when it hashes to what was asked for.
 pub fn answer(
     device: &[u8; 32],
     asker: &[u8; 32],
@@ -221,13 +222,21 @@ pub fn answer(
     if requester != neighbour_wire::peer_handle(asker) || requester == responder || !valid {
         return Vec::new();
     }
-    let Some(bytes) = read(&app_id, &cluster_id, &hash) else {
-        return Vec::new();
+    let Some(bytes) = read(&app_id, &cluster_id, &hash).filter(|bytes| {
+        u64::try_from(bytes.len()).is_ok_and(|total| total <= MAX_CONTENT_BYTES)
+            && blake3::hash(bytes).to_hex().as_str() == hash
+    }) else {
+        return postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentLacks {
+            responder,
+            requester,
+            app_id,
+            cluster_id,
+            hash,
+        })
+        .into_iter()
+        .collect();
     };
     let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    if total > MAX_CONTENT_BYTES || blake3::hash(&bytes).to_hex().as_str() != hash {
-        return Vec::new();
-    }
     let piece = |offset: usize, chunk: &[u8]| {
         postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentPiece {
             responder,
@@ -372,9 +381,22 @@ mod tests {
             "a device never answers itself"
         );
         assert!(
-            answer(&page, &host, &request, |_, _, _| Some(b"other".to_vec())).is_empty(),
+            lacks(&answer(&page, &host, &request, |_, _, _| Some(
+                b"other".to_vec()
+            ))),
             "bytes under another address are never sent"
         );
-        assert!(answer(&page, &host, &request, |_, _, _| None).is_empty());
+        assert!(lacks(&answer(&page, &host, &request, |_, _, _| None)));
+    }
+
+    /// Whether `frames` is one word that the page keeps none of it.
+    fn lacks(frames: &[Vec<u8>]) -> bool {
+        matches!(
+            frames,
+            [frame] if matches!(
+                postcard::from_bytes(frame),
+                Ok(neighbour_wire::NeighbourMsg::RecordContentLacks { .. })
+            )
+        )
     }
 }

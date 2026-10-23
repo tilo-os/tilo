@@ -1297,12 +1297,12 @@ pub(super) const APPS: &[CatalogApp] = &[
     },
     CatalogApp {
         id: "so.tilo.totp",
-        name: "TOTP",
+        name: "Authenticator",
         category: "Utility",
         platforms: &["linux", "macos", "web"],
         names: &[],
         keywords: &[
-            "authenticator",
+            "totp",
             "2fa",
             "two factor",
             "two-factor",

@@ -23,17 +23,25 @@
 //! Anything that needs a record by id uses this: a collaborator's window
 //! following a document someone moved to another workspace, and a window
 //! continuing on another of the person's devices.
+//!
+//! The frame loop keeps records and presentations without waiting for the
+//! disk, and the app that opens them next reads them from it. So a record,
+//! or a View naming it, is [`landing`] until its writes have reached the
+//! disk, and nothing opens a window on it before then: hydration says
+//! [`Hydration::Waiting`], and callers that point a window at it wait too.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use std::cell::RefCell;
 use tilo_actions::remote::{
     ActionHostError, Caller, CallerPrincipal, MAX_FETCHED_RECORD_BYTES, MAX_RECORD_PIECE_BYTES,
     Pending, PendingPoll, RecordPiece, RecordQuery, RemoteActionMessage,
 };
+
 use ui::application::NativeProfile;
-use ui::record::transfer;
+use ui::record::transfer::{self, Landing};
 use ui::record::{RecordCheckout, RecordId};
 
 use crate::shell::state::WorkspaceAuthority as _;
@@ -241,6 +249,71 @@ pub fn set_source(source: Arc<dyn RecordSource>) {
     }
 }
 
+/// Writes for one record still on their way to the disk, with the profile
+/// whose store accepted them: only that store knows how they went.
+struct Arriving {
+    address: RecordAddress,
+    profile: NativeProfile,
+    landings: Vec<Landing>,
+}
+
+thread_local! {
+    /// Kept on the frame loop that wrote them; a profile's store is not
+    /// shared between threads.
+    static ARRIVING: RefCell<Vec<Arriving>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Wait for `landings` in `profile` before anything opens `address`.
+pub(crate) fn hold_until_landed(
+    address: &RecordAddress,
+    profile: NativeProfile,
+    landings: impl IntoIterator<Item = Option<Landing>>,
+) {
+    let landings: Vec<Landing> = landings.into_iter().flatten().collect();
+    if Landing::all(profile.store().as_ref(), &landings) == durable_store::Durability::Durable {
+        return;
+    }
+    ARRIVING.with(|arriving| {
+        arriving.borrow_mut().push(Arriving {
+            address: address.clone(),
+            profile,
+            landings,
+        });
+    });
+}
+
+/// Whether writes for `address` are still on their way to the disk: `Err`
+/// when one failed, and nothing should open it as kept.
+pub(crate) fn landing(address: &RecordAddress) -> Result<bool, String> {
+    ARRIVING.with(|arriving| {
+        let mut arriving = arriving.borrow_mut();
+        let mut outcome = Ok(false);
+        arriving.retain(|entry| {
+            if &entry.address != address {
+                return true;
+            }
+            match Landing::all(entry.profile.store().as_ref(), &entry.landings) {
+                durable_store::Durability::Durable => false,
+                durable_store::Durability::Pending => {
+                    if outcome.is_ok() {
+                        outcome = Ok(true);
+                    }
+                    true
+                }
+                durable_store::Durability::Failed(reason) => {
+                    outcome = Err(reason);
+                    false
+                }
+            }
+        });
+        outcome
+    })
+}
+
+fn any_landing() -> bool {
+    ARRIVING.with(|arriving| !arriving.borrow().is_empty())
+}
+
 /// Where a hydration stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Hydration {
@@ -292,7 +365,7 @@ fn hydrate_from(
         if was_waiting && entry.state != Hydration::Waiting {
             WAITING.fetch_sub(1, Ordering::Release);
         }
-        return entry.state.clone();
+        return once_landed(address, entry.state.clone());
     }
     let Some(source) = source() else {
         return Hydration::Failed("no other device of the room is reachable".into());
@@ -308,13 +381,23 @@ fn hydrate_from(
         WAITING.fetch_add(1, Ordering::Release);
     }
     entries.push(entry);
-    state
+    once_landed(address, state)
 }
 
-/// Whether any hydration still waits for an answer. One atomic load, so the
-/// frame loop may ask every round.
+/// A kept record is kept only once it has reached the disk.
+fn once_landed(address: &RecordAddress, state: Hydration) -> Hydration {
+    match (&state, landing(address)) {
+        (Hydration::Kept(_), Ok(true)) => Hydration::Waiting,
+        (Hydration::Kept(_), Err(reason)) => Hydration::Failed(reason),
+        _ => state,
+    }
+}
+
+/// Whether any hydration still waits for an answer or for the disk. One
+/// atomic load and a thread-local check, so the frame loop may ask every
+/// round.
 pub fn any_waiting() -> bool {
-    WAITING.load(Ordering::Acquire) > 0
+    WAITING.load(Ordering::Acquire) > 0 || any_landing()
 }
 
 /// Whether [`WAITING`] agrees with the entries it counts. Both are read under
@@ -358,6 +441,7 @@ fn settle(entry: &mut Entry, data_home: &Path) {
 }
 
 /// Keep bytes another device sent as `address` in this device's profile.
+/// The record is [`landing`] until it has reached the disk.
 ///
 /// # Errors
 /// Bytes that are not that live record, or a profile that cannot hold it.
@@ -370,20 +454,23 @@ pub fn keep(
     std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let profile = NativeProfile::open(&root, Some(&address.room.to_string()))
         .map_err(|error| error.to_string())?;
-    transfer::adopt_fetched(
+    let (checkout, landing) = transfer::adopt_fetched(
         profile.store(),
         &address.app_id,
         profile.workspace_id(),
         &address.record,
         bytes,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    hold_until_landed(address, profile, [landing]);
+    Ok(checkout)
 }
 
 /// Give `instance` of `address`'s app on this device a saved presentation
 /// naming `address`'s record, unless it already names it: how a window
 /// opened here reopens on a record brought from elsewhere. `record` is the
-/// record as kept, when the caller has it.
+/// record as kept, when the caller has it. The presentation is [`landing`]
+/// until it has reached the disk; start the window after that.
 pub fn reopen_on(
     address: &RecordAddress,
     data_home: &Path,
@@ -427,8 +514,11 @@ pub fn reopen_on(
         view: ui::view::View::default(),
         application: None,
     });
-    if let Err(error) = profile.adopt_view(&view, instance, &record) {
-        tracing::warn!(%error, "could not point the window at the record brought over");
+    match profile.adopt_view(&view, instance, &record) {
+        Ok(landing) => hold_until_landed(address, profile, [landing]),
+        Err(error) => {
+            tracing::warn!(%error, "could not point the window at the record brought over");
+        }
     }
 }
 

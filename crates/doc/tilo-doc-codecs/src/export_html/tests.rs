@@ -88,7 +88,6 @@ fn html_export_block_structure_images_and_scaffolding() {
             html.contains("<strong>Bold</strong>"),
             "bold run wrapped in <strong>:\n{html}"
         );
-        // The `&` in the paragraph text is escaped.
         assert!(
             html.contains("Bold</strong> &amp; plain"),
             "ampersand escaped:\n{html}"
@@ -97,7 +96,6 @@ fn html_export_block_structure_images_and_scaffolding() {
             !html.contains(" & plain"),
             "raw ampersand must not appear:\n{html}"
         );
-        // Full document scaffolding present.
         assert!(
             html.starts_with("<!doctype html>"),
             "full document:\n{html}"
@@ -277,7 +275,6 @@ fn html_export_block_structure_images_and_scaffolding() {
             html.contains("font-size: 20pt;"),
             "size declaration:\n{html}"
         );
-        // The block references the class.
         assert!(
             html.contains("class=\"qdoc-style-Fancy\""),
             "block tagged with class:\n{html}"
@@ -586,7 +583,6 @@ fn html_export_escapes_and_neutralises_hostile_content() {
     }
     // Phase `css_injection_via_color_mark_is_sanitized`.
     {
-        // A color value trying to break out of the style attribute.
         let mut p = block("paragraph", "x");
         p.marks.push(mark(
             0,
@@ -606,7 +602,6 @@ fn html_export_escapes_and_neutralises_hostile_content() {
             },
             &tilo_content::NoContent,
         );
-        // Isolate the emitted style attribute value.
         let start = html.find("style=\"").expect("has style attr") + "style=\"".len();
         let attr = &html[start..start + html[start..].find('"').expect("closing quote")];
         // Exactly one declaration: the renderer appends a single trailing `;` to
@@ -686,7 +681,6 @@ fn html_export_marks_split_runs_at_boundaries() {
         assert!(html.contains("<em>"), "em:\n{html}");
         assert!(html.contains("<u>"), "u:\n{html}");
         assert!(html.contains("<s>"), "s:\n{html}");
-        // And the tags close.
         assert!(
             html.contains("</s>")
                 && html.contains("</u>")

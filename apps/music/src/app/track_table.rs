@@ -62,7 +62,6 @@ pub(super) enum Playback {
     Playing,
 }
 
-/// The second column of a table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Second {
     Album,
@@ -75,7 +74,6 @@ pub(super) enum Second {
 pub(super) enum Actions {
     /// Like and a compact menu for track management.
     Track,
-    /// The download's one action.
     Download,
 }
 

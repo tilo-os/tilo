@@ -150,7 +150,6 @@ impl FakeAuthorizationServer {
         self.state.lock_recover().token_lifetime = seconds;
     }
 
-    /// Issue `token` as every access token from now on.
     pub fn issue_access_token(&self, token: &str) {
         self.state.lock_recover().access_token = Some(token.to_string());
     }

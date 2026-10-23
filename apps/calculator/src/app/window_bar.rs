@@ -66,7 +66,6 @@ impl CalculatorApp {
         toolbar
     }
 
-    /// Declare the window bar's slots.
     pub(super) fn declare_window_toolbar(&self) {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }

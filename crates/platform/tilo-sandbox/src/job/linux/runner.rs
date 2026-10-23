@@ -971,17 +971,10 @@ impl Job {
     }
 
     /// The job's status if it has ended, without waiting.
-    ///
-    /// # Errors
-    /// Returns the error `waitid` gave.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         self.reap(libc::WNOHANG)
     }
 
-    /// Wait for the job to end.
-    ///
-    /// # Errors
-    /// Returns the error `waitid` gave.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         self.reap(0)?
             .ok_or_else(|| io::Error::other("waitid returned without a status"))

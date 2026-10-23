@@ -16,11 +16,6 @@ pub struct DurableReceipt {
     pub receipt_id: String,
 }
 impl DurableReceipt {
-    /// A durable receipt for `coverage` committed at `generation`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the coverage or generation is invalid.
     pub fn new(coverage: Coverage, generation: u64) -> Result<Self, String> {
         let mut receipt = Self {
             version: 1,
@@ -136,11 +131,6 @@ pub fn canonical(doc: &AutoCommit) -> bool {
         })
     })
 }
-/// The durable receipts recorded in `doc`.
-///
-/// # Errors
-///
-/// Returns an error if a receipt row is malformed.
 pub fn entries(doc: &AutoCommit) -> Result<BTreeMap<String, DurableReceipt>, String> {
     let rows = rows(doc)?;
     for (key, receipt) in &rows {
@@ -210,10 +200,6 @@ pub(crate) fn pin_before_coverage_change(
     Ok(changed.then_some(next))
 }
 /// Check that `after` never regresses a receipt of `before`.
-///
-/// # Errors
-///
-/// Returns an error if a receipt is removed or regresses.
 pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), String> {
     let old = before.map(entries).transpose()?.unwrap_or_default();
     let new = entries(after)?;
@@ -365,7 +351,6 @@ mod tests {
         monotonic(Some(&before), &doc).unwrap();
         crate::coverage::monotonic(Some(&before), &doc).unwrap();
         assert!(canonical(&doc));
-        // Non-authority writes still read as a governance change.
         assert_ne!(governed_bytes(&before), governed_bytes(&doc));
     }
     #[test]
@@ -396,7 +381,6 @@ mod tests {
         .unwrap();
         bare.commit();
         assert!(crate::coverage::entries(&bare).is_err());
-        // Garbage is refused.
         let mut bad = doc.clone();
         let (_, object) = automerge::ReadDoc::get(&bad, ROOT, FIELD_V2)
             .unwrap()

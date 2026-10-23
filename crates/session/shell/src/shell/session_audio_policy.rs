@@ -694,7 +694,6 @@ mod tests {
                 vec![speakers(), headset(true)],
                 false,
             ),
-            // Nothing changed.
             (
                 vec![speakers(), headset(true)],
                 vec![speakers(), headset(true)],

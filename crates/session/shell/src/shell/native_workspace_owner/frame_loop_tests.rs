@@ -513,17 +513,11 @@ fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
     // The session starts with no owner open: the broker's services, built
     // on the frame loop, are its first users. Each of the broker's owner
     // services (commits, document reads, memberships, tasks) is a
-    // `NativeOwnerCommitService`; the task review resolves its own.
+    // `NativeOwnerCommitService`.
     let (release, holder) = open_in_progress(&tree);
 
-    let ((commit, review), syncs) = counting_syncs(|| {
-        let commit = NativeOwnerCommitService::new(tree.clone(), Some(Arc::clone(&network)));
-        let review = crate::shell::task_review::NativeTaskReview::new(
-            tree.clone(),
-            Some(Arc::clone(&network)),
-        );
-        (commit, review)
-    });
+    let (commit, syncs) =
+        counting_syncs(|| NativeOwnerCommitService::new(tree.clone(), Some(Arc::clone(&network))));
     let still_opening = !holder.is_finished();
 
     assert_eq!(
@@ -534,7 +528,6 @@ fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
         still_opening,
         "building the session broker's services waited for the owner's open to finish"
     );
-    let review = review.expect("an owner still opening is not a missing one");
     // A synchronous question says the owner is opening, never that there
     // is none, and never answers from a guessed owner.
     assert_eq!(
@@ -545,10 +538,6 @@ fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
         WorkspaceMemberships::task_snapshot(&commit, &room)
             .expect_err("a task snapshot while the owner opens"),
         NATIVE_OWNER_OPENING
-    );
-    assert!(
-        review.requires_room(&room),
-        "a room read as needing no task review before the owner that knows had opened"
     );
 
     // A commit waits for the open in its own future, instead of failing

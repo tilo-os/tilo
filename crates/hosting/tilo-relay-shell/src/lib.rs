@@ -88,7 +88,6 @@ pub enum CheckpointKind {
         /// The user public key the checkpoint belongs to.
         user: [u8; 32],
     },
-    /// Any other checkpoint.
     Other,
 }
 

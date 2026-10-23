@@ -93,7 +93,6 @@ mod tests {
         assert!(keys.due(2, |_| true).is_empty(), "a refused record waits");
         assert_eq!(keys.due(1 + RETRY_MS, |_| true), vec![route("a")]);
         keys.answered(&route("a"), true, 1 + RETRY_MS);
-        // A newer epoch's document asks again at once.
         keys.want(route("a"));
         keys.want(route("b"));
         assert_eq!(

@@ -95,9 +95,6 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
 /// Wait up to `timeout` for `child` to exit, and reap it. `None` when it is
 /// still running at the deadline; it is left running. On Unix this sleeps in
 /// [`wait_child_or`] rather than polling.
-///
-/// # Errors
-/// Returns the error of inspecting or reaping the child.
 pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
     let deadline = Instant::now().checked_add(timeout);
     #[cfg(unix)]
@@ -121,9 +118,6 @@ pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Opt
 
 /// [`wait_timeout`], then kill and reap a child still running at the
 /// deadline. `None` when it had to be killed.
-///
-/// # Errors
-/// Returns the error of inspecting or reaping the child.
 pub fn wait_or_kill(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
     let status = wait_timeout(child, timeout)?;
     if status.is_none() {
@@ -136,9 +130,6 @@ pub fn wait_or_kill(child: &mut Child, timeout: Duration) -> std::io::Result<Opt
 /// Mark a script or program file executable for everyone and writable only
 /// by its owner (mode `0755` on Unix). A no-op where executability is not a
 /// file permission.
-///
-/// # Errors
-/// Returns the metadata lookup's or permission change's error.
 pub fn make_executable(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -162,7 +153,6 @@ pub const MAX_INPUT_BYTES: usize = 64 * 1024;
 pub struct Output {
     /// Child exit status.
     pub status: ExitStatus,
-    /// Captured standard output.
     pub stdout: Vec<u8>,
     /// Captured standard error.
     pub stderr: Vec<u8>,
@@ -196,7 +186,6 @@ pub enum Error {
     /// One output stream crossed its allocation ceiling.
     #[error("command {stream} exceeds {limit} bytes")]
     OutputTooLarge {
-        /// Stream which crossed the limit.
         stream: &'static str,
         /// Configured maximum bytes.
         limit: usize,
@@ -315,9 +304,6 @@ pub fn spawn_prepared(
 /// Up to sixteen 4096-byte chunks await observation. A slow observer disables
 /// this informational lane instead of blocking the child or capture readers.
 /// Output bytes, limits, cancellation and process-tree ownership are unchanged.
-///
-/// # Errors
-/// Returns the same input failures as [`spawn_prepared`].
 pub fn spawn_prepared_observing_stderr(
     command: Command,
     input: Option<&[u8]>,
@@ -416,12 +402,6 @@ fn read_bounded_observed(pipe: impl Read, limit: usize, capture: Option<StderrCa
 /// `stdout` and `stderr` each receive their own `output_limit`. On timeout the
 /// complete child process group is killed, closing pipes inherited by helper
 /// descendants as well.
-///
-/// # Errors
-///
-/// Returns an error for oversized input/output, spawn/wait failures, a reader
-/// failure, or expiration of `timeout`. A non-zero child status is returned in
-/// [`Output`] for the caller to interpret without exposing unbounded diagnostics.
 pub fn run(
     program: &str,
     args: &[&str],
@@ -433,11 +413,6 @@ pub fn run(
 }
 
 /// Run a bounded command whose arguments may contain non-UTF-8 OS strings.
-///
-/// # Errors
-///
-/// Returns the same bounded process, input, output, and timeout failures as
-/// [`run`].
 pub fn run_os(
     program: impl AsRef<OsStr>,
     args: &[impl AsRef<OsStr>],
@@ -451,11 +426,6 @@ pub fn run_os(
 }
 
 /// Run a bounded UTF-8 command with an explicit environment overlay.
-///
-/// # Errors
-///
-/// Returns the same bounded process, input, output, and timeout failures as
-/// [`run`].
 pub fn run_with_env(
     program: &str,
     args: &[&str],
@@ -471,11 +441,6 @@ pub fn run_with_env(
 
 /// Run a caller-prepared command while replacing its standard streams and
 /// process-group configuration with the bounded policy.
-///
-/// # Errors
-///
-/// Returns the same bounded process, input, output, and timeout failures as
-/// [`run`].
 pub fn run_prepared(
     command: Command,
     input: Option<&[u8]>,
@@ -489,11 +454,6 @@ pub fn run_prepared(
 ///
 /// This variant is intended for helpers whose primary output is legitimately
 /// much larger than their diagnostics, such as image acquisition tools.
-///
-/// # Errors
-///
-/// Returns the same bounded process, input, output, and timeout failures as
-/// [`run_prepared`].
 pub fn run_prepared_with_limits(
     command: Command,
     input: Option<&[u8]>,
@@ -515,11 +475,6 @@ pub fn run_prepared_with_limits(
 ///
 /// Most callers should retain [`MAX_INPUT_BYTES`] through [`run_prepared`].
 /// This entry point exists for bounded bulk payloads such as print documents.
-///
-/// # Errors
-///
-/// Returns the same bounded process, input, output, and timeout failures as
-/// [`run_prepared`].
 pub fn run_prepared_with_input_limit(
     command: Command,
     input: Option<&[u8]>,
@@ -547,11 +502,6 @@ pub fn run_prepared_with_input_limit(
 /// Run a prepared command reading `file` as its standard input: a handle the
 /// caller holds (a file the person chose) given to the program as it is,
 /// rather than a path it would open itself.
-///
-/// # Errors
-///
-/// Returns the same bounded process, output, and timeout failures as
-/// [`run_prepared`].
 pub fn run_prepared_with_stdin(
     command: Command,
     file: std::fs::File,
@@ -695,7 +645,6 @@ mod tests {
 
     #[test]
     fn input_and_output_limits_are_enforced_independently() {
-        // Phase `rejects_input_and_both_output_stream_overflows`.
         {
             assert!(matches!(
                 run(
@@ -723,7 +672,6 @@ mod tests {
                 );
             }
         }
-        // Phase `enforces_independent_output_limits`.
         {
             let mut command = Command::new("sh");
             command.args(["-c", "head -c 32 /dev/zero; head -c 128 /dev/zero >&2"]);
@@ -737,7 +685,6 @@ mod tests {
                 }
             ));
         }
-        // Phase `explicit_input_limit_supports_bounded_bulk_payloads`.
         {
             let bytes = vec![0x5a; MAX_INPUT_BYTES + 1];
             let output = run_prepared_with_input_limit(
@@ -782,7 +729,6 @@ mod tests {
 
     #[test]
     fn timeouts_and_dropped_handles_terminate_children_promptly() {
-        // Phase `timeout_kills_descendants_which_inherit_output_pipes`.
         {
             let directory = tempfile::tempdir().unwrap();
             let helper = directory.path().join("helper");
@@ -800,7 +746,6 @@ mod tests {
             .unwrap_err();
             assert!(matches!(error, Error::Timeout(_)));
         }
-        // Phase `timeout_interrupts_a_child_which_does_not_read_input`.
         {
             let directory = tempfile::tempdir().unwrap();
             let helper = directory.path().join("helper");
@@ -818,7 +763,6 @@ mod tests {
             .unwrap_err();
             assert!(matches!(error, Error::Timeout(_)));
         }
-        // Phase `asynchronous_handle_is_nonblocking_and_drop_cancels_promptly`.
         {
             let mut command = Command::new("sh");
             command.args(["-c", "printf ready; sleep 3600"]);
@@ -826,7 +770,6 @@ mod tests {
             assert!(child.try_wait().is_none());
             returns("dropping the handle to end the child", move || drop(child));
         }
-        // Phase `terminate_tree_escalates_when_the_grace_period_is_ignored`.
         {
             let mut command = Command::new("sh");
             command.args(["-c", "trap '' TERM; sleep 3600"]);

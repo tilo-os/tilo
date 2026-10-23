@@ -629,8 +629,6 @@ impl RenderContext {
         Ok(surface)
     }
 
-    /// # Panics
-    /// If `width` or `height` is zero.
     pub fn resize_surface(&self, surface: &mut RenderSurface<'_>, width: u32, height: u32) {
         let Some(handle) = self.devices.get(surface.dev_id) else {
             return;
@@ -889,7 +887,6 @@ mod tests {
 
     #[test]
     fn gpu_context_shares_device_loss_callbacks_and_accepts_native_damage() {
-        // Case `device_loss_observers_share_the_context_callback`.
         {
             let mut context = super::RenderContext::new();
             let index = pollster::block_on(context.device(None)).expect("real GPU adapter");
@@ -906,7 +903,6 @@ mod tests {
             assert_eq!(first.reason(), second.reason());
         }
 
-        // Case `live_retained_target_accepts_native_damage_copy`.
         {
             let gpu = shared_gpu().expect("shared GPU context for live-target copy test");
             let (target, _) = create_targets(4, 4, &gpu.device);

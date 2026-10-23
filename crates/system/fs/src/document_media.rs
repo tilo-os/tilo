@@ -49,9 +49,11 @@ use futures_util::{Stream, StreamExt as _};
 use iroh_blobs::api::blobs::BlobStatus;
 use iroh_blobs::{BlobFormat, Hash, HashAndFormat};
 use runtime_fs::blobs::{
-    BlobBackend, BlobChunks, BlobError, BlobFuture, BlobRef, BlobScope, MAX_BLOB_BYTES, ReadOutcome,
+    BlobBackend, BlobChunks, BlobError, BlobFuture, BlobRef, BlobScope, MAX_BLOB_BYTES, PublicRead,
+    ReadOutcome,
 };
 
+use crate::public_content::PublicContent;
 use crate::store::ContentStore;
 
 mod import;
@@ -92,20 +94,35 @@ async fn record_reference_tag(store: &ContentStore, tag: String, hash: Hash) -> 
 /// The daemon side of the document-media capability.
 pub struct DocumentMedia {
     store: Arc<ContentStore>,
+    /// The public content this device keeps, where it keeps any.
+    public: Option<Arc<PublicContent>>,
 }
 
 impl DocumentMedia {
     /// Serve `store`.
     pub fn new(store: Arc<ContentStore>) -> Arc<Self> {
-        Arc::new(Self { store })
+        Arc::new(Self {
+            store,
+            public: None,
+        })
+    }
+
+    /// Serve `store` and the public content this device keeps in it.
+    pub fn with_public(store: Arc<ContentStore>, public: Arc<PublicContent>) -> Arc<Self> {
+        Arc::new(Self {
+            store,
+            public: Some(public),
+        })
+    }
+
+    fn public(&self) -> Result<&Arc<PublicContent>, BlobError> {
+        self.public
+            .as_ref()
+            .ok_or_else(|| BlobError::Refused("this device keeps no public content".into()))
     }
 
     /// Store `bytes` for `scope`. The whole payload is always hashed and
     /// imported before answering, so timing does not reveal prior presence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error above [`MAX_BLOB_BYTES`] or when the store fails.
     pub async fn store(&self, scope: &BlobScope, bytes: Vec<u8>) -> Result<Hash, BlobError> {
         let len = bytes.len() as u64;
         if len > MAX_BLOB_BYTES {
@@ -286,6 +303,46 @@ impl BlobBackend for DocumentMedia {
             match parse_hash(&hash) {
                 Some(hash) => self.len_of(&scope, hash).await,
                 None => None,
+            }
+        })
+    }
+
+    fn public_keep(
+        self: Arc<Self>,
+        scope: BlobScope,
+        name: String,
+    ) -> BlobFuture<Result<(), BlobError>> {
+        Box::pin(async move { self.public()?.keep(&name, scope.app()) })
+    }
+
+    fn public_release(
+        self: Arc<Self>,
+        scope: BlobScope,
+        name: String,
+    ) -> BlobFuture<Result<(), BlobError>> {
+        Box::pin(async move { self.public()?.release(&name, scope.app()) })
+    }
+
+    fn public_read(
+        self: Arc<Self>,
+        name: String,
+        offset: u64,
+        max_len: u32,
+    ) -> BlobFuture<Result<PublicRead, BlobError>> {
+        Box::pin(async move {
+            let public = Arc::clone(self.public()?);
+            // Reading touches the disk.
+            tokio::task::spawn_blocking(move || public.read(&name, offset, max_len))
+                .await
+                .map_err(|error| BlobError::Refused(error.to_string()))?
+        })
+    }
+
+    fn refresh_public(self: Arc<Self>) -> BlobFuture<u32> {
+        Box::pin(async move {
+            match self.public.clone() {
+                Some(public) => public.refresh().await,
+                None => 0,
             }
         })
     }

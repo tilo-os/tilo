@@ -480,7 +480,6 @@ mod tests {
         let mut w = AddressSuggestions::new();
         w.set_suggestions(three());
         w.set_anchor(FIELD, WINDOW);
-        // The rows are measured as they are painted.
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
         w.draw_overlay(
@@ -493,7 +492,6 @@ mod tests {
         w
     }
 
-    /// Selection model of the suggestion list.
     #[test]
     fn suggestion_selection_starts_unchosen_wraps_and_resets() {
         let w = AddressSuggestions::new();
@@ -614,21 +612,17 @@ mod tests {
             ui::testing::dispatch(w, &ui::synthetic_input::keyboard_input(ev))
         };
 
-        // Enter with nothing chosen is the field's.
         let mut w = shown();
         assert!(!send(&mut w, NamedKey::Enter), "Enter goes on to the field");
         assert_eq!(w.take_chosen(), None);
-        // Down chooses, Enter opens it.
         assert!(send(&mut w, NamedKey::ArrowDown));
         assert!(send(&mut w, NamedKey::ArrowDown));
         assert!(send(&mut w, NamedKey::Enter));
         assert_eq!(w.take_chosen().unwrap().url, "https://b.test");
         assert_eq!(w.take_chosen(), None, "the choice drains exactly once");
-        // Escape closes the list.
         assert!(send(&mut w, NamedKey::Escape));
         assert!(!w.is_visible());
 
-        // A click on a row opens it.
         let mut w = shown();
         let (_, row) = w.test_rects()[1].clone();
         ui::testing::dispatch(

@@ -527,7 +527,6 @@ mod tests {
 
     #[test]
     fn endpoint_editor_owns_its_draft_debounce_dismiss_and_suggestions() {
-        // Phase `external_queries_replace_the_component_draft_without_drift`.
         {
             let mut editor = EndpointEditor::new();
             editor.sync_queries("Old origin", "Old destination");
@@ -536,7 +535,6 @@ mod tests {
             assert_eq!(editor.test_query(Endpoint::Destination), "Peer destination");
         }
 
-        // Phase `debounce_emits_one_typed_search_for_the_focused_endpoint`.
         {
             let mut editor = EndpointEditor::new();
             editor.focus(Endpoint::Origin);
@@ -553,7 +551,6 @@ mod tests {
             assert!(editor.take_due_search(now).is_none());
         }
 
-        // Phase `dismiss_clears_focus_and_pending_search`.
         {
             let mut editor = EndpointEditor::new();
             editor.focus(Endpoint::Destination);
@@ -563,7 +560,6 @@ mod tests {
             assert!(!editor.has_pending_query());
         }
 
-        // Phase `accepting_a_suggestion_picks_its_place`.
         {
             let mut editor = EndpointEditor::new();
             editor.focus(Endpoint::Destination);
@@ -584,7 +580,6 @@ mod tests {
                 })
             );
             assert!(!editor.is_focused(), "picking ends the edit");
-            // A typed value nothing suggested is a query to search for.
             editor.focus(Endpoint::Origin);
             assert_eq!(
                 editor.accept(Endpoint::Origin, "Ostbahnhof"),

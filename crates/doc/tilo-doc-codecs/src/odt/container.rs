@@ -38,7 +38,6 @@ mod tests {
 
     #[test]
     fn container_parts_roundtrip_and_replace_in_place() {
-        // Phase `container_roundtrips_parts`.
         {
             let odt = minimal_odt("<text:p>hi</text:p>");
             let c = ZipPackage::read(&odt).unwrap();
@@ -64,7 +63,6 @@ mod tests {
                 "mimetype still first after rewrite"
             );
         }
-        // Phase `set_replaces_in_place_and_appends`.
         {
             let mut c = ZipPackage { parts: vec![] };
             c.set("a", b"1".to_vec());

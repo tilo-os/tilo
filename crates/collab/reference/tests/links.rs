@@ -1,5 +1,3 @@
-//! The shared link corpus and the properties that keep the grammar one to one.
-
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 use std::collections::BTreeMap;

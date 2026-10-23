@@ -30,7 +30,6 @@ pub struct FleetApp {
 #[path = "fleet_generated.rs"]
 mod generated;
 
-/// Every app of the fleet.
 #[must_use]
 pub fn apps() -> &'static [FleetApp] {
     generated::APPS

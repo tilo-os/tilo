@@ -190,12 +190,10 @@ fn window() -> Duration {
 struct LoopStats {
     /// Loop iterations that ran in the window.
     ticks: u64,
-    /// Of those, the ones that painted a frame.
     painted: u64,
     window: Duration,
     /// What ended the park before each iteration, busiest first.
     woke: Tally,
-    /// The same, for the iterations that painted.
     painted_after: Tally,
     /// The `paint-stats:` summaries printed in the window, for their causes.
     summaries: Vec<String>,

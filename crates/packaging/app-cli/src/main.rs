@@ -374,7 +374,11 @@ fn print_apps(apps: &[CatalogueApp]) {
 
 fn list_installed(json: bool) -> ExitCode {
     let apps = match app_cli::installed_apps() {
-        Ok(apps) => apps,
+        Ok(mut apps) => {
+            let host = app_cli::host_apps(&apps);
+            apps.extend(host);
+            apps
+        }
         Err(error) => {
             eprintln!("app: {error}");
             return ExitCode::FAILURE;
@@ -398,14 +402,25 @@ fn list_installed(json: bool) -> ExitCode {
 
 fn print_installed(apps: &[app_cli::InstalledApp]) {
     for app in apps {
-        println!("{}  {}  ({})", app.package_id, app.version, app.from);
+        if app.missing {
+            println!(
+                "{}  {}  ({}, file not found)",
+                app.package_id, app.name, app.from
+            );
+        } else if app.version.is_empty() {
+            println!("{}  {}  ({})", app.package_id, app.name, app.from);
+        } else {
+            println!("{}  {}  ({})", app.package_id, app.version, app.from);
+        }
     }
 }
 
 fn list(json: bool) -> ExitCode {
     if !json {
         match app_cli::installed_apps() {
-            Ok(apps) => {
+            Ok(mut apps) => {
+                let host = app_cli::host_apps(&apps);
+                apps.extend(host);
                 println!("Installed:");
                 print_installed(&apps);
                 println!("Available:");

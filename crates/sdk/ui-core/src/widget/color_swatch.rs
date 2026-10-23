@@ -87,7 +87,6 @@ impl ColorSwatchFace {
         }
     }
 
-    /// The face of a [`ColorSwatch`].
     pub fn of(rect: Rect, swatch: &ColorSwatch) -> Self {
         Self::new(rect, swatch.color, swatch.spoken_name())
     }

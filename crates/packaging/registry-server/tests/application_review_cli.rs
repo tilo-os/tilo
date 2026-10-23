@@ -1,5 +1,3 @@
-//! The operator inspects one request and decides that exact displayed snapshot.
-
 use std::path::Path;
 use std::process::{Command, Output};
 

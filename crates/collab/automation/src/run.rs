@@ -74,7 +74,6 @@ impl Default for RunId {
 /// The facet naming the step path of a run's change.
 pub const STEP_FACET: &str = "step";
 
-/// The invocation id of the step at `path` in run `run`.
 #[must_use]
 pub fn invocation_id(run: RunId, path: &StepPath) -> InvocationId {
     let mut hasher = Sha256::new();
@@ -105,7 +104,6 @@ pub enum RunMode {
 pub enum RunTrigger {
     /// A person ran it.
     Manual,
-    /// One of the shortcut's triggers fired.
     Fired(TriggerSpec),
 }
 

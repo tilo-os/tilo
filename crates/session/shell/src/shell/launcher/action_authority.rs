@@ -1191,7 +1191,6 @@ mod tests {
         let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
         let room = tree.read().desktop.workspaces[0].room();
         let authority = tree.read().native_runtime.action_authority();
-        // What `follow_tree` installs, kept to this test's tree.
         let source = TreePolicySource(tree.downgrade());
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {

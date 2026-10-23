@@ -71,6 +71,8 @@ pub mod namespace_persist;
 pub mod native;
 #[cfg(feature = "filesystem")]
 pub mod peer_auth;
+#[cfg(feature = "document-media")]
+pub mod public_content;
 #[cfg(feature = "filesystem")]
 pub mod reachability;
 #[cfg(feature = "filesystem")]

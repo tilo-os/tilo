@@ -1,6 +1,3 @@
-//! `OneDrive`-specific behaviour beyond the shared conformance suite, on
-//! the fake Graph drive.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

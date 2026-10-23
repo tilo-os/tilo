@@ -262,7 +262,6 @@ fn after(s: &str, n: usize) -> &str {
     s.get(n..).unwrap_or("")
 }
 
-/// The HTML in `html`, as runs of text.
 #[must_use]
 pub fn render(html: &str) -> Vec<Run> {
     let mut end = html.len().min(MAX_INPUT);

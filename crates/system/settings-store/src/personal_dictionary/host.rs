@@ -161,9 +161,6 @@ pub fn project(
 /// Handle a dictionary command within the app's already-authorized own
 /// device-local entry. Local app owners may add explicit words; only Settings
 /// and Writer can edit/remove/reset. Commands never change permissions or stores.
-///
-/// # Errors
-/// Unowned/malformed commands, revoked bindings, stale edits or storage errors.
 pub fn command(
     source: &dyn SettingsSource,
     app: &str,

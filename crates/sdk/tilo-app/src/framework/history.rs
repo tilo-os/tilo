@@ -36,7 +36,6 @@ use ui_core::history_source::steps::{self, Checkpoint, Scope};
 pub(crate) const EDIT_TYPE: &str = "tilo.app.history-edit";
 /// The type of a history verb on one part of a chain ([`PartEdit`]).
 pub(crate) const PART_EDIT_TYPE: &str = "tilo.app.part-history-edit";
-/// The operation type of the history views.
 pub(crate) const VIEW_TYPE: &str = "tilo.app.history";
 
 /// The most steps one undo or redo takes.
@@ -173,7 +172,6 @@ impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R>
     }
 }
 
-/// A history view.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 enum HistoryView {
@@ -331,7 +329,6 @@ impl PartEdit {
         }
     }
 
-    /// The edit as the part's history records it.
     pub(crate) fn encoded(&self) -> Result<EncodedAction, String> {
         Ok(EncodedAction {
             type_id: EDIT_TYPE.to_owned(),
@@ -592,7 +589,6 @@ fn sentence(version: &Version) -> String {
         .unwrap_or_default()
 }
 
-/// One version as `history` lists it.
 pub(crate) fn entry(
     version: &Version,
     undone: &HashSet<String>,
@@ -642,7 +638,6 @@ pub struct HistoryVersion {
     pub time_ms: i64,
     /// Taken back by an undo.
     pub undone: bool,
-    /// The names of the checkpoints at this version.
     pub checkpoints: Vec<String>,
     /// Housekeeping about the document (naming a checkpoint), not a change
     /// to what it holds.
@@ -813,9 +808,6 @@ pub(crate) fn history(doc: &AutoCommit, last: usize) -> Value {
 }
 
 /// Answer a history view.
-///
-/// # Errors
-/// Returns a malformed request or an unknown version.
 pub(crate) fn answer(doc: &AutoCommit, payload: &[u8]) -> Result<ActionOutput, String> {
     let view: HistoryView = tilo_actions::decode_json(payload)
         .map_err(|error| format!("not a history view: {error}"))?;

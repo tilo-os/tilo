@@ -441,10 +441,9 @@ impl App {
             self.apply_unhosted_tab_request(request);
             changed = true;
         }
-        // No desktop bar to show the app's slots: it keeps its own toolbar.
-        changed |= crate::window_toolbar::set_hosted(false);
-        let _ = crate::window_toolbar::take_edit_request();
-        let _ = crate::window_toolbar::take_search_request();
+        // No desktop bar: the runner's own row is the window's bar, hosting
+        // the app's slots and serving its search and location requests
+        // (`native_runner::slot_bar`).
         // No desktop agent to ask: offer no entry, and drop what was asked
         // while the connection went away.
         crate::shared_selection::set_agent_host_available(false);
@@ -575,9 +574,12 @@ impl App {
                 },
             )?;
         }
-        if crate::window_toolbar::take_search_request() {
+        if let Some(opening) = crate::window_toolbar::take_search_request() {
             client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::OpenSearch { instance },
+                &crate::floating_surface::FloatingSurfaceClientMessage::OpenSearch {
+                    instance,
+                    opening,
+                },
             )?;
             *changed = true;
         }

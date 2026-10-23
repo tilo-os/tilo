@@ -22,7 +22,6 @@ pub enum DropTarget {
 /// What a tab move did to the tree, for the host's document mirror.
 #[derive(Clone, Debug)]
 pub struct TabMove {
-    /// The group the tab left.
     pub source_group: GroupId,
     /// Whether that group emptied and was removed.
     pub source_group_removed: bool,

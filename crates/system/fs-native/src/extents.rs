@@ -286,12 +286,10 @@ mod tests {
 
     #[test]
     fn extent_diffs_report_exactly_the_changed_blocks() {
-        // Phase `identical_maps_have_no_changes`.
         {
             let m = [ext(0, 1 << 20, 65536), ext(65536, 9 << 20, 4096)];
             assert!(changed_ranges(&m, 69632, &m, 69632).is_empty());
         }
-        // Phase `a_rewritten_block_inside_a_shared_extent_is_the_only_change`.
         {
             let old = [ext(0, 1 << 20, 1 << 20)];
             let new = [
@@ -304,13 +302,11 @@ mod tests {
                 vec![8192..12288]
             );
         }
-        // Phase `growth_and_hole_fills_are_changes`.
         {
             let old = [ext(0, 1 << 20, 4096)];
             let new = [ext(0, 1 << 20, 4096), ext(8192, 5 << 20, 4096)];
             assert_eq!(changed_ranges(&old, 12288, &new, 20000), vec![8192..20000]);
         }
-        // Phase `opaque_extents_are_always_changed`.
         {
             let mut inline = ext(0, 0, 100);
             inline.flags = EXTENT_DATA_INLINE | EXTENT_LAST;

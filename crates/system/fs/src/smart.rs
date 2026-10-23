@@ -318,7 +318,6 @@ mod tests {
 
     #[test]
     fn speculation_is_gated_and_budgeted() {
-        // Phase `every_runtime_gate_blocks_speculation`.
         {
             let base = PredictivePolicy::default();
             for policy in [
@@ -348,7 +347,6 @@ mod tests {
                 assert!(pending.is_empty());
             }
         }
-        // Phase `aggregate_byte_budget_and_duplicate_hashes_are_bounded`.
         {
             let policy = PredictivePolicy {
                 max_queued_bytes: 10,

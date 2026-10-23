@@ -23,7 +23,7 @@ pub const CONTEXTUAL_CHILD_LIMIT: usize = 64;
 #[effect(operation = "diffmerge.effects")]
 pub enum DiffmergeEffect {
     /// Open files
-    #[effect(job, cancellable)]
+    #[effect(attended, job, cancellable)]
     OpenFiles {
         #[param("left file path (omit both paths to choose the files)")]
         left: Option<String>,
@@ -31,6 +31,7 @@ pub enum DiffmergeEffect {
         right: Option<String>,
     },
     /// Load sample
+    #[effect(own_device)]
     LoadSample,
     /// Show two-way diff.
     #[effect(view, idempotent)]

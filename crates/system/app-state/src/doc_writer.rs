@@ -49,6 +49,7 @@ impl From<SeamError> for StoreError {
         match error {
             SeamError::Busy(path) => Self::WriterBusy { path: path.into() },
             SeamError::SourceChanged(path) => Self::SourceChanged { path: path.into() },
+            SeamError::Opening(key) => Self::Opening(key),
             other => Self::Io {
                 context: "durable storage".to_owned(),
                 source: io::Error::other(other),
@@ -794,6 +795,12 @@ impl DocWriter {
 
     /// Ask the store to commit everything submitted and report the outcome.
     ///
+    /// On a thread that must not wait on storage
+    /// ([`durable_store::waiting::forbid_on_this_thread`]: the compositor's
+    /// frame loop, which runs apps in-process) it only starts the commits:
+    /// writes the store accepted are not a failure, and their outcome
+    /// arrives through [`Self::durability_snapshot`].
+    ///
     /// # Errors
     /// The outstanding failure, or writes the store could not yet commit.
     pub fn try_flush(&self) -> Result<(), String> {
@@ -805,14 +812,19 @@ impl DocWriter {
                 .clone()
                 .unwrap_or_else(|| "writer disabled".to_owned()));
         };
-        let flushed = owner.store.flush(Some(&owner.key));
+        let flushed = owner.store.flush_where_allowed(&owner.key);
         self.settle();
         let progress = self.progress.borrow();
         if let Some(error) = &progress.error {
             return Err(error.clone());
         }
-        flushed.map_err(|error| error.to_string())?;
-        if progress.inflight.is_empty() {
+        let started_only = durable_store::waiting::forbidden();
+        match flushed {
+            Ok(()) => {}
+            Err(SeamError::Pending(_)) if started_only => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        if progress.inflight.is_empty() || started_only {
             if let Ok(history) = &self.private_history {
                 history.flush()?;
             }
@@ -850,7 +862,9 @@ impl Drop for DocWriter {
         let Some(owner) = &self.owner else {
             return;
         };
-        if let Err(error) = owner.store.flush(Some(&owner.key)) {
+        // The writes are the store's: it commits them on its own thread.
+        // Only a thread that may wait waits for them here.
+        if let Err(error) = owner.store.flush_where_allowed(&owner.key) {
             tracing::debug!(document = %owner.label.display(), %error, "writes outstanding at close");
         }
         owner.writer_claimed.set(false);
@@ -1148,6 +1162,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The compositor runs apps on its frame loop: saving, flushing and
+    /// closing a document there start the store's commits and never wait
+    /// for them, and the edits still reach the disk.
+    #[test]
+    fn a_writer_on_a_thread_that_must_not_wait_leaves_the_commit_to_the_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store: Rc<dyn DurableStore> =
+            Rc::new(FsStore::with_debounce(tmp.path(), Duration::from_secs(600)));
+        let key = StorageKey::record("so.tilo.test", "room", "on-the-loop");
+        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
+        let mut doc = owner.new_document().unwrap();
+        doc.put(ROOT, "body", "typed").unwrap();
+        {
+            let _loop = durable_store::waiting::forbid_commit_waits_strictly();
+            let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+            doc.put(ROOT, "body", "typed more").unwrap();
+            writer.save(&mut doc);
+            writer
+                .try_flush()
+                .expect("accepted writes are not a failure");
+            assert_eq!(writer.last_error(), None);
+            drop(writer);
+        }
+        store.flush(Some(&key)).unwrap();
+        drop(owner);
+        drop(store);
+        let stored = FsStore::new(tmp.path()).read(&key).unwrap().unwrap();
+        assert_eq!(
+            AutoCommit::load(&stored.bytes).unwrap().get_heads(),
+            doc.get_heads()
+        );
     }
 
     fn with_torn_tail(doc: &mut AutoCommit) -> Vec<u8> {

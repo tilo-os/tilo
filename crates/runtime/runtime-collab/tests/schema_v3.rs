@@ -355,7 +355,6 @@ async fn invocations_distinguish_empty_arguments_and_report_every_outcome() {
                 assert_eq!(
                     c.completions,
                     vec![
-                        // Empty code is the "it ran" answer.
                         (1, String::new(), String::new()),
                         (
                             2,

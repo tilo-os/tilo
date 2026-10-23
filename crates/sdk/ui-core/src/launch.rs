@@ -290,8 +290,6 @@ impl LaunchSpec {
     }
 
     /// Prepare this definition using already authenticated host inputs.
-    /// # Errors
-    /// Returns argument, capability, binding, factory, or restoration failures.
     pub fn prepare_component(
         &self,
         args: &LaunchArgs,
@@ -655,9 +653,6 @@ impl LaunchRecovery {
     }
 
     /// Take the owners out, on the launching thread.
-    ///
-    /// # Errors
-    /// Returns the recovery unchanged on any other thread.
     pub fn into_parts(
         mut self,
     ) -> Result<
@@ -678,17 +673,11 @@ impl LaunchRecovery {
     }
 
     /// The record store, taken out on the launching thread.
-    ///
-    /// # Errors
-    /// Returns the recovery unchanged on any other thread.
     pub fn into_record_store(self) -> Result<Option<crate::record::RecordStore>, Self> {
         self.into_parts().map(|(records, _)| records)
     }
 
     /// The close reports, taken out on the launching thread.
-    ///
-    /// # Errors
-    /// Returns the recovery unchanged on any other thread.
     pub fn into_close_reports(self) -> Result<Vec<crate::application::ComponentCloseReport>, Self> {
         self.into_parts().map(|(_, reports)| reports)
     }
@@ -1860,7 +1849,6 @@ mod tests {
 
     #[test]
     fn cli_parses_every_common_mode_and_preference() {
-        // Case `parses_both_common_argument_forms`.
         {
             let args = strings(&[
                 "app",
@@ -1882,7 +1870,6 @@ mod tests {
             );
         }
 
-        // Case `a_capture_can_stand_in_a_workspace_for_a_person`.
         {
             let args = strings(&[
                 "app",
@@ -1915,7 +1902,6 @@ mod tests {
             }
         }
 
-        // Case `parses_responsive_matrix_and_pseudo_locale_as_common_audit_modes`.
         {
             let parsed = parse_args(
                 &strings(&[
@@ -1935,7 +1921,6 @@ mod tests {
             assert_eq!(parsed.scenario.as_deref(), Some("wide"));
         }
 
-        // Case `a_capture_takes_a_device_scale_and_the_distinct_letters_setting`.
         {
             let parsed = parse_args(
                 &strings(&[
@@ -1982,7 +1967,6 @@ mod tests {
             }
         }
 
-        // Case `shots_dir_captures_every_scenario_and_names_none`.
         {
             let parsed = parse_args(
                 &strings(&["app", "--shots-dir", "/tmp/gallery", "--viewport=640x480"]),
@@ -2003,7 +1987,6 @@ mod tests {
             }
         }
 
-        // Case `parses_headless_payload_without_process_exit`.
         {
             let args = strings(&[
                 "app",
@@ -2016,7 +1999,6 @@ mod tests {
             assert_eq!(spec.actions.len(), 1);
         }
 
-        // Case `parses_native_audit_as_an_exclusive_common_mode`.
         {
             let parsed = parse_args(
                 &strings(&[
@@ -2055,7 +2037,6 @@ mod tests {
             ));
         }
 
-        // Case `screenshot_text_scale_prefers_cli_then_compatibility_environment`.
         {
             for (cli, environment, expected) in [
                 (Some(2.0), Some("1.25"), 2.0),
@@ -2067,7 +2048,6 @@ mod tests {
             }
         }
 
-        // Case `screenshot_motion_preference_matches_live_app_truthy_values`.
         {
             for value in ["", "  ", "0", " false ", "FALSE"] {
                 assert!(
@@ -2086,7 +2066,6 @@ mod tests {
 
     #[test]
     fn cli_rejects_malformed_unknown_and_conflicting_arguments() {
-        // Case `rejects_malformed_and_zero_viewports`.
         {
             for value in ["wide", "800", "0x600", "800x0", "800xnope"] {
                 let args = strings(&["app", "--viewport", value]);
@@ -2097,7 +2076,6 @@ mod tests {
             }
         }
 
-        // Case `rejects_invalid_text_scales`.
         {
             for value in ["nope", "NaN", "0", "0.5", "2.1"] {
                 let args = strings(&["app", "--text-scale", value]);
@@ -2108,7 +2086,6 @@ mod tests {
             }
         }
 
-        // Case `rejects_unknown_missing_and_duplicate_arguments`.
         {
             assert!(matches!(
                 parse_args(&strings(&["app", "--mystery"]), &[], &[]),
@@ -2124,7 +2101,6 @@ mod tests {
             ));
         }
 
-        // Case `history_is_a_capture_option`.
         {
             let shot = parse_args(
                 &strings(&["app", "--shots", "/tmp/a.png", "--history"]),
@@ -2150,7 +2126,6 @@ mod tests {
             ));
         }
 
-        // Case `rejects_conflicting_modes_and_shot_options_in_live_mode`.
         {
             let both = strings(&["app", "--shots", "/tmp/a.png", "--headless-drive", "{}"]);
             assert!(matches!(
@@ -2965,7 +2940,6 @@ mod prepared_launch_tests {
 
     #[test]
     fn definition_preparation_resolves_wakes_scale_and_services_once() {
-        // Case `definition_final_audit_and_shot_preparation_resolve_queued_component_wakes`.
         {
             for mode in ["audit", "shots"] {
                 let temp = tempfile::tempdir().unwrap();
@@ -3050,7 +3024,6 @@ mod prepared_launch_tests {
             }
         }
 
-        // Case `definition_text_scale_overrides_before_all_runner_layouts`.
         {
             for mode in ["native", "headless", "shots", "matrix", "audit"] {
                 for cli_scale in [None, Some("0.75")] {
@@ -3110,7 +3083,6 @@ mod prepared_launch_tests {
             }
         }
 
-        // Case `native_services_are_discovered_only_by_the_selected_native_runner`.
         {
             for enabled in [false, true] {
                 for mode in ["native", "headless", "shots", "matrix", "audit"] {
@@ -3244,7 +3216,6 @@ mod prepared_launch_tests {
 
     #[test]
     fn definition_failures_keep_typed_errors_and_the_original_retry() {
-        // Case `definition_missing_host_fails_before_factory`.
         {
             let before = calls();
             let spec = LaunchSpec::from_definition(runner_probe_definition());
@@ -3256,7 +3227,6 @@ mod prepared_launch_tests {
             assert_eq!(calls(), before);
         }
 
-        // Case `capture_scenario_failure_closes_component_and_retains_failed_save_retry`.
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("state");
@@ -3319,7 +3289,6 @@ mod prepared_launch_tests {
             records.try_open_record(&checkout).unwrap();
             assert_eq!(body(&records, &checkout), "edited");
         }
-        // Case `definition_denied_and_invalid_preparation_preserve_typed_errors`.
         {
             static DENIED: std::sync::OnceLock<crate::application::ApplicationDefinition> =
                 std::sync::OnceLock::new();
@@ -3362,7 +3331,6 @@ mod prepared_launch_tests {
             }
         }
 
-        // Case `definition_headless_state_open_failure_is_durability_exit_with_original_bytes`.
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("state");
@@ -3412,7 +3380,6 @@ mod prepared_launch_tests {
             assert_eq!(std::fs::read(&path).unwrap(), original);
         }
 
-        // Case `definition_audit_close_failure_is_operational_and_retains_original_retry`.
         {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("state");

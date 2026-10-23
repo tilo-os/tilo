@@ -548,7 +548,6 @@ mod tests {
                 .find(|hit| hit.id == id)
                 .and_then(|hit| hit.subtitle)
         };
-        // The registry's category when the desktop gives none.
         assert_eq!(subtitle("", "so.tilo.calendar").as_deref(), Some("Office"));
         assert_eq!(
             subtitle("cal", "so.tilo.calendar").as_deref(),
@@ -559,7 +558,6 @@ mod tests {
             Some("Runs on the node")
         );
         assert_eq!(subtitle("", "com.example.unknown"), None);
-        // The id is still how a developer finds it.
         assert!(!apps.query("so.tilo.calendar").is_empty());
     }
 

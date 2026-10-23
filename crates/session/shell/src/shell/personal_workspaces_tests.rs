@@ -43,7 +43,6 @@ fn list_for(device: &Device) -> PersonalWorkspaces {
     PersonalWorkspaces::new(device.cert.user_public_key, device.cert.device_public_key)
 }
 
-/// A device's tree holding one workspace of its own, named `name`.
 fn device_tree(salt: u16, name: &str) -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     tree.set_salt_override(salt);
@@ -101,7 +100,6 @@ fn deliver(
     deliver_as(PERSON, from, from_device, from_tree, to, to_tree)
 }
 
-/// [`deliver`] for the lists of `person`.
 fn deliver_as(
     person: &str,
     from: &mut PersonalWorkspaces,

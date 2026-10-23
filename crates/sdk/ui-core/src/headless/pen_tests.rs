@@ -1,6 +1,3 @@
-//! A pen's pressure, tilt and eraser reach the widget handling the pointer
-//! event they came with, through the same dispatch as every other input.
-
 use super::*;
 use crate::widget::PenSample;
 use std::{cell::RefCell, rc::Rc};

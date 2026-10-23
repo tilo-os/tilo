@@ -586,7 +586,6 @@ mod tests {
             });
         menu.set_about(Some(row.clone()));
         menu.open_at([30.0, 40.0]);
-        // Reopened, it offers the entry once.
         menu.open_at([30.0, 40.0]);
         set_agent_host_available(false);
         assert_eq!(menu.items().len(), 1);
@@ -623,7 +622,6 @@ mod tests {
         );
         assert_eq!(about.anchor.place, Some(SelectionPlace::item("doc:1")));
         assert_eq!(bounds, Some([199.5, 299.5, 200.5, 300.5]));
-        // The focused selection, where the person pointed, is what they mean.
         let (about, bounds) = AgentRequest {
             about: None,
             at: Some(vello::kurbo::Point::new(10.0, 10.0)),

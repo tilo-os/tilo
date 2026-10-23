@@ -1019,6 +1019,7 @@ fn native_snapshot(
             online: true,
             last_seen_unix_ms: 1,
             wake_routes: Vec::new(),
+            session: native_fabric::OwnerSession::default(),
             stamp: stamp.clone(),
         },
         display: Some(native_fabric::DisplayPlacement {

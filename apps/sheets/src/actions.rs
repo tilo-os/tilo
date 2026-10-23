@@ -44,7 +44,7 @@ pub enum SheetsEffect {
     /// Export CSV
     ///
     /// Saves what the active sheet shows as a CSV file.
-    #[effect(job, cancellable, destructive)]
+    #[effect(job, cancellable, risk = "export_risk")]
     ExportCsv {
         #[param("Where to write it; omit to choose")]
         path: Option<String>,
@@ -52,7 +52,7 @@ pub enum SheetsEffect {
     /// Export Excel workbook
     ///
     /// Saves every sheet as an `.xlsx` workbook.
-    #[effect(job, cancellable, destructive)]
+    #[effect(job, cancellable, risk = "export_risk")]
     ExportXlsx {
         #[param("Where to write it; omit to choose")]
         path: Option<String>,
@@ -61,7 +61,7 @@ pub enum SheetsEffect {
     #[effect(
         job,
         cancellable,
-        destructive,
+        risk = "export_risk",
         label = "Export OpenDocument spreadsheet"
     )]
     ExportOds {
@@ -126,4 +126,16 @@ pub enum SheetsEffect {
         #[param("Zero-based row")]
         row: u32,
     },
+}
+
+/// What an export risks: nothing when the person picks where in the save
+/// dialog, which is itself the confirmation; writing over whatever is at a
+/// path a caller names is destructive and asks first.
+fn export_risk(effect: &SheetsEffect) -> ui::tilo_actions::RiskLevel {
+    match effect {
+        SheetsEffect::ExportCsv { path: Some(_) }
+        | SheetsEffect::ExportXlsx { path: Some(_) }
+        | SheetsEffect::ExportOds { path: Some(_) } => ui::tilo_actions::RiskLevel::Destructive,
+        _ => ui::tilo_actions::RiskLevel::None,
+    }
 }

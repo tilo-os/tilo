@@ -320,7 +320,6 @@ mod tests {
 
     #[test]
     fn password_submission_unlocks_only_on_the_right_password() {
-        // Phase `wrong_password_stays_locked_and_records_error`.
         {
             let mut c = controller("hunter2");
             c.push_str("wrong");
@@ -330,7 +329,6 @@ mod tests {
             assert_eq!(c.buffer_len(), 0);
             assert_eq!(c.error(), Some("Incorrect username or password"));
         }
-        // Phase `correct_password_unlocks`.
         {
             let mut c = controller("hunter2");
             c.push_str("hunter2");
@@ -340,7 +338,6 @@ mod tests {
             assert_eq!(c.error(), None);
             assert!(!c.is_verifying());
         }
-        // Phase `empty_submit_is_a_noop_and_never_unlocks`.
         {
             let mut c = controller("hunter2");
             assert_eq!(c.submit(), UnlockOutcome::StillLocked);
@@ -349,7 +346,6 @@ mod tests {
             assert_eq!(c.poll_verification(), None);
             assert_eq!(c.error(), None);
         }
-        // Phase `typing_after_a_failure_clears_the_error`.
         {
             let mut c = controller("hunter2");
             c.push_str("bad");
@@ -363,7 +359,6 @@ mod tests {
 
     #[test]
     fn password_editing_works_on_graphemes_and_ignores_controls() {
-        // Phase `backspace_and_cancel_edit_the_ascii_buffer`.
         {
             let mut c = controller("hunter2");
             c.push_str("hunt");
@@ -372,7 +367,6 @@ mod tests {
             c.clear_input();
             assert_eq!(c.buffer_len(), 0);
         }
-        // Phase `backspace_removes_a_whole_composed_grapheme`.
         {
             let mut c = controller("unused");
             c.push_str("e\u{301}");
@@ -384,7 +378,6 @@ mod tests {
             c.backspace();
             assert_eq!(c.buffer_len(), 0);
         }
-        // Phase `backspace_removes_a_whole_zwj_emoji`.
         {
             let mut c = controller("unused");
             c.push_str("👩‍💻");
@@ -396,14 +389,12 @@ mod tests {
             c.backspace();
             assert_eq!(c.buffer_len(), 0);
         }
-        // Phase `control_characters_are_not_buffered`.
         {
             let mut c = controller("hunter2");
             c.push_str("a\nb\tc");
             // Only the three printable chars are kept.
             assert_eq!(c.buffer_len(), 3);
         }
-        // Phase `handle_key_routes_text_backspace_submit`.
         {
             let mut c = controller("pw");
             assert_eq!(
@@ -425,7 +416,6 @@ mod tests {
             assert_eq!(c.handle_key(LockKey::Submit), UnlockOutcome::StillLocked);
             assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
         }
-        // Phase `ignored_key_is_swallowed_without_effect`.
         {
             let mut c = controller("pw");
             c.push_str("ab");
@@ -433,8 +423,6 @@ mod tests {
             assert_eq!(c.buffer_len(), 2);
         }
     }
-
-    // ---- async verification --------------------------------------------
 
     /// A verifier that parks in `verify` until the test releases a gate, so
     /// tests can observe the "verify in flight" window deterministically and
@@ -479,7 +467,6 @@ mod tests {
 
     #[test]
     fn async_verification_never_blocks_and_can_be_cancelled() {
-        // Phase `submit_does_not_block_and_only_unlocks_after_worker_success`.
         {
             let (v, gate) = GateVerifier::new(Ok(()));
             let mut c = LockController::new(Arc::new(v), "alice");
@@ -498,7 +485,6 @@ mod tests {
             assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
             assert!(!c.is_verifying());
         }
-        // Phase `async_wrong_password_stays_locked_with_nonleaky_error`.
         {
             let (v, gate) = GateVerifier::new(Err("Incorrect username or password".to_string()));
             let mut c = LockController::new(Arc::new(v), "alice");
@@ -511,7 +497,6 @@ mod tests {
             assert!(!c.is_verifying());
             assert_eq!(c.buffer_len(), 0);
         }
-        // Phase `keys_are_swallowed_while_verifying`.
         {
             let (v, gate) = GateVerifier::new(Ok(()));
             let mut c = LockController::new(Arc::new(v), "alice");
@@ -533,7 +518,6 @@ mod tests {
             release(&gate);
             assert_eq!(poll_to_completion(&mut c), UnlockOutcome::Unlocked);
         }
-        // Phase `reset_cancels_an_in_flight_verify`.
         {
             let (v, gate) = GateVerifier::new(Ok(()));
             let mut c = LockController::new(Arc::new(v), "alice");

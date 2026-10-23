@@ -59,7 +59,6 @@ mod tests {
 
     #[test]
     fn handoff_pixels_accept_only_the_asymmetric_clockwise_edit() {
-        // Phase `asymmetric_clockwise_pixels_are_verified_independently`.
         {
             // Source: A B / C D / E F. Clockwise: E C A / F D B.
             let source = rgba(&[1, 2, 3, 4, 5, 6]);
@@ -69,7 +68,6 @@ mod tests {
                 Ok(())
             );
         }
-        // Phase `original_counterclockwise_and_corrupt_pixels_are_rejected`.
         {
             let source = rgba(&[1, 2, 3, 4, 5, 6]);
             assert!(verify_clockwise_rgba(2, 3, &source, 2, 3, &source).is_err());

@@ -1,5 +1,3 @@
-//! The emoji picker as a stacked layer.
-
 use std::time::Instant;
 
 use settings_store::hardware::ShortcutAction;

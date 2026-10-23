@@ -11,8 +11,6 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 /// Trusted owner-side transport. This handle is never included in preview input.
 pub trait FileHistoryTransport: Send + Sync {
-    /// # Errors
-    /// Returns the transport or checked-read failure for the requested scope.
     fn read(&self, query: Query) -> Result<ReadValue, ReadError>;
     /// # Errors
     /// Returns a checked-read failure when the requested version cannot be retrieved.

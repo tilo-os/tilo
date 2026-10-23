@@ -307,7 +307,6 @@ fn policy_roots(policy: &TrustPolicy, own_user: [u8; 32]) -> HashSet<[u8; 32]> {
 /// stops the daemon and every federation dial task, but leaves peers to
 /// notice by timeout.
 pub struct Relay {
-    /// Iroh endpoint the daemon accepts on.
     pub endpoint: Endpoint,
     /// Iroh router that wires the ALPN → protocol handler.
     router: Router,
@@ -423,7 +422,6 @@ pub struct RelayHandle {
 pub struct RelayIdentity {
     /// The user root pubkey the relay chains to.
     pub user_public_key: [u8; 32],
-    /// This device's signing key.
     pub device_signing_key: ed25519_dalek::SigningKey,
     /// This device's signed cert (issued by the user root).
     pub device_cert: DeviceCert,
@@ -1038,10 +1036,6 @@ impl Relay {
 
     /// Install the original native owner's bounded refresh mailbox for one bound room.
     /// Replacing an installed owner requires closing/recreating this relay.
-    ///
-    /// # Errors
-    ///
-    /// Returns `String` if the inputs violate this operation's bounds or invariants.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the runtime guard borrows the registry handle and ends with this short scope, right after its only write"
@@ -1131,10 +1125,6 @@ impl Relay {
     /// delegation against this relay's user and confine the device to the
     /// delegated rooms from its next envelope on. Replaces an earlier
     /// delegation of the same device.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the delegation is not usable now.
     pub fn register_agent(
         &self,
         delegation: tilo_relay_protocol::delegation::Delegation,
@@ -1246,10 +1236,6 @@ impl Relay {
     /// writes nothing, up to `spectators.seats` subscribed at once (see
     /// [`crate::room_access`]). The spectator person must be a member of the
     /// room, which is also what lets its devices through the handshake.
-    ///
-    /// # Errors
-    ///
-    /// The room is not open on this relay.
     pub async fn admit_spectators(
         &self,
         workspace_id: u64,

@@ -77,11 +77,6 @@ impl ShellOverlayHost {
     /// external writer must make this validated handoff after saving, or its
     /// file change takes effect at the next compositor session.  The shell's
     /// own shortcut guide does the handoff synchronously after its save.
-    ///
-    /// # Errors
-    ///
-    /// Returns a validation error when `config` contains a conflicting or
-    /// malformed shortcut binding.
     pub fn set_shortcut_config(
         &mut self,
         config: settings_store::hardware::ShortcutConfig,

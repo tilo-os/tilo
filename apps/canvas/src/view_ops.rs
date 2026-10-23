@@ -109,9 +109,6 @@ fn encode(rgba: &[u8], (width, height): (u32, u32), jpeg: bool) -> Result<Pictur
 
 /// Render `region` of `art` with `pixels_per_unit` as RGBA, its width
 /// and height.
-///
-/// # Errors
-/// Returns why nothing could be rendered.
 pub fn render_rgba(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -150,17 +147,11 @@ pub fn draw_rgba(
 }
 
 /// Opaque RGBA8 as JPEG bytes; alpha is dropped.
-///
-/// # Errors
-/// Returns the encoder's error.
 pub fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     encode_jpeg_at(rgba, width, height, JPEG_QUALITY)
 }
 
 /// Opaque RGBA8 as JPEG bytes at `quality` (1-100); alpha is dropped.
-///
-/// # Errors
-/// Returns the encoder's error.
 pub fn encode_jpeg_at(
     rgba: &[u8],
     width: u32,
@@ -172,9 +163,6 @@ pub fn encode_jpeg_at(
 
 /// What `paint` draws of `region`, as RGBA: over a neutral grey, or over
 /// transparency when `bare`.
-///
-/// # Errors
-/// Returns why nothing could be rendered.
 pub fn pixels(
     region: Rect,
     pixels_per_unit: f64,
@@ -228,9 +216,6 @@ impl Drawing {
     }
 
     /// Its pixels now, for a caller that cannot wait for them.
-    ///
-    /// # Errors
-    /// Returns why they could not be had now.
     pub fn render(self) -> Result<(Vec<u8>, u32, u32), String> {
         rgba_of(self.request().take())
     }
@@ -239,9 +224,6 @@ impl Drawing {
 /// The RGBA, width and height a pixels request answered, or why there are
 /// none in words the person reads; `None`, an answer still to come, is a
 /// picture this caller cannot wait for.
-///
-/// # Errors
-/// Returns why there are no pixels.
 pub fn rgba_of(answer: Option<PixelsAnswer>) -> Result<(Vec<u8>, u32, u32), String> {
     match answer {
         Some(Ok(pixels)) => Ok((pixels.rgba, pixels.width, pixels.height)),
@@ -337,9 +319,6 @@ impl<T: 'static> Awaiting<T> {
     }
 
     /// What it comes to now, for a caller that cannot wait for it.
-    ///
-    /// # Errors
-    /// Returns why it failed, or why its pictures could not be had now.
     pub fn now(mut self) -> Result<T, String> {
         self.poll().unwrap_or_else(|| Err(unavailable()))
     }
@@ -357,9 +336,6 @@ const SAMPLED_SIDE: f64 = 1.0; // a sampling footprint in artwork units, not on-
 /// layer composited through its mask, erasers taken off, the reference
 /// over it when it is shown. Averaged over a unit's patch, so a grainy
 /// paint gives its colour rather than one fleck's.
-///
-/// # Errors
-/// Returns a render failure.
 pub fn shown_colour(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -408,10 +384,6 @@ pub fn mean_colour(rgba: &[u8]) -> Color {
 const COMPARE_CELLS: u32 = 4;
 
 /// The artwork against its reference picture.
-///
-/// # Errors
-/// Returns that there is no reference, an invalid region, mode or size, or
-/// a render failure.
 pub fn compare(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -650,9 +622,6 @@ fn beside(drawn: &[u8], reference: &[u8], width: u32, height: u32) -> Vec<u8> {
 }
 
 /// RGBA8 as PNG bytes.
-///
-/// # Errors
-/// Returns the encoder's error.
 pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     let mut png = Vec::new();
     let mut encoder = png::Encoder::new(&mut png, width, height);
@@ -666,9 +635,6 @@ pub fn encode_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Strin
 }
 
 /// A look at the artwork: the picture and what it shows.
-///
-/// # Errors
-/// Returns an invalid region or size, or a render failure.
 pub fn look(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -699,9 +665,6 @@ pub enum PictureFinish {
 impl PictureFinish {
     /// The picture of `rgba`, `width` x `height`, and what the caller is
     /// told of it.
-    ///
-    /// # Errors
-    /// Returns an encoder's failure, or why the file was not written.
     pub fn finish(self, rgba: &[u8], width: u32, height: u32) -> Result<(Picture, Value), String> {
         match self {
             Self::Look {
@@ -740,9 +703,6 @@ impl PictureFinish {
 }
 
 /// A look at `art`, drawn, and what is left to make of it once rendered.
-///
-/// # Errors
-/// Returns what is wrong with the look asked for.
 pub fn draw_look(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -804,9 +764,6 @@ const MEASURED_LETTERS: usize = 80;
 /// Two icons balance when their ink areas match and each one's `offset`
 /// (centre of mass from the middle of its ink box) is the same; a text also
 /// lists each letter's ink box.
-///
-/// # Errors
-/// Returns an unknown id or a render failure.
 pub fn measure(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -927,9 +884,6 @@ fn ink(entry: &mut Value, rgba: &[u8], width: u32, region: Rect, scale: f64) {
 }
 
 /// The artwork at full size.
-///
-/// # Errors
-/// Returns an invalid scale or a render failure.
 pub fn export(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -943,9 +897,6 @@ pub fn export(
 
 /// The artwork at full size, drawn, and what is left to make of it once
 /// rendered.
-///
-/// # Errors
-/// Returns an invalid scale, format or quality.
 pub fn draw_export(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
@@ -1039,9 +990,6 @@ fn finish_export(
 const EXPORT_JPEG_QUALITY: u8 = 90;
 
 /// RGBA8 as lossless WebP bytes.
-///
-/// # Errors
-/// Returns the encoder's error.
 pub fn encode_webp(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     let mut webp = Vec::new();
     image::codecs::webp::WebPEncoder::new_lossless(&mut webp)
@@ -1161,9 +1109,6 @@ fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Valu
 
 /// The marks or groups `ids` (and the marks they are cut to) as an artwork
 /// of their own, cropped to what they show, shadows included.
-///
-/// # Errors
-/// Returns an id that names no mark or group.
 pub fn part(art: &Artwork, ids: &[String]) -> Result<Artwork, String> {
     let mut chosen = std::collections::BTreeSet::new();
     for id in ids {
@@ -1220,9 +1165,6 @@ pub fn part(art: &Artwork, ids: &[String]) -> Result<Artwork, String> {
 }
 
 /// The layers and marks, as an agent reads them.
-///
-/// # Errors
-/// Returns an invalid region or an unknown layer.
 pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
     let region = inspect
         .region

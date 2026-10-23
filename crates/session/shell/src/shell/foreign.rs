@@ -531,12 +531,6 @@ fn swizzle_row(order: PixelOrder, src: &[u8], width: usize, out: &mut Vec<u8>) {
 ///
 /// Split out from [`import_dmabuf_rgba`] so the `zwp_linux_dmabuf_v1`
 /// import gate can answer *at negotiation time* — rejecting makes `create` fail (renegotiate/fall back to `wl_shm`) instead of failing at commit forever.
-///
-/// # Errors
-///
-/// Returns [`DmabufImportError`] when `dmabuf`'s modifier isn't CPU-readable
-/// (`NonLinearModifier`), it has more than one plane (`MultiPlanar`), or its
-/// `FourCC` isn't one of the RGBA-family formats this compositor swizzles (`UnsupportedFormat`).
 #[cfg(target_os = "linux")]
 pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
     let format = dmabuf.format();
@@ -555,12 +549,6 @@ pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
 }
 
 /// CPU-import `dmabuf` into `out` as row-major RGBA, returning its `(width, height)`.
-///
-/// # Errors
-///
-/// Returns [`DmabufImportError`] for the same reasons as
-/// [`validate_importable`], plus degenerate width/height/stride
-/// (`InvalidDimensions`) or a failed `mmap` (`MapFailed`).
 #[cfg(target_os = "linux")]
 pub fn import_dmabuf_rgba(
     dmabuf: &Dmabuf,
@@ -5536,7 +5524,6 @@ pub fn shown_toplevel_surfaces(
         .collect()
 }
 
-/// The toplevel whose surface is `id`.
 #[cfg(target_os = "linux")]
 pub fn toplevel_surface(
     state: &crate::compositor::state::State,
@@ -6179,10 +6166,6 @@ mod tests {
             store().forget(id);
         }
 
-        /// The window itself has to answer with the same name its tab does.
-        ///
-        /// The tab title was fixed once already; the widget kept handing back
-        /// the raw wayland app-id from `app_title()`, so asking the tile directly (not the tab's stored title) got `so.tilo.chat`, an address nobody chose.
         fn a_foreign_window_answers_with_its_name_not_its_app_id() {
             let w = ForeignSurfaceWidget::new(3, "so.tilo.chat".into());
             assert_eq!(
@@ -6639,7 +6622,6 @@ mod tests {
         store().forget(id);
     }
 
-    /// A client's size hints are the limits a person resizing it meets.
     #[test]
     fn a_clients_size_hints_are_its_windows_resize_limits() {
         let id = sid(64);

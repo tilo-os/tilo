@@ -23,9 +23,6 @@ impl Identity {
     /// `None` when nothing is there. Rewriting a file or touching its times
     /// moves its change time, which no unprivileged process can set, and
     /// adding or removing an entry moves a directory's times.
-    ///
-    /// # Errors
-    /// Preserves metadata errors other than a missing path.
     pub fn of_path(path: &Path) -> io::Result<Option<Self>> {
         match std::fs::metadata(path) {
             Ok(metadata) => Self::from_metadata(&metadata).map(Some),
@@ -138,9 +135,6 @@ impl CheckedCopy {
 
     /// Read bytes and identify the same opened regular file. Only absence
     /// returns `None`; links and nonregular files are errors.
-    ///
-    /// # Errors
-    /// Preserves opening, validation, read and metadata errors.
     pub fn read(&self) -> io::Result<(Vec<u8>, Option<Identity>)> {
         let Some(mut file) = self.open_file()? else {
             return Ok((Vec::new(), None));

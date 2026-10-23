@@ -292,8 +292,6 @@ impl AudioEngine {
     }
 
     /// Start an independently authorized native Spotify transport, never a URL resolver.
-    /// # Errors
-    /// Native support is absent or the worker could not start.
     pub fn load_spotify(&mut self, uri: &str, account: &str) -> Result<(), String> {
         self.stop();
         #[cfg(feature = "spotify-native")]
@@ -2253,7 +2251,6 @@ fn build_audio_sink_bin(
     };
     let bin = gstreamer::parse::bin_from_description(description, true).ok()?;
     let sink = bin.by_name("tilo_audiosink")?;
-    // Count decoded PCM buffers arriving at the sink, and record a capture's.
     let capture = match output {
         AudioOutput::Capture(capture) => Some(capture.clone()),
         AudioOutput::System => None,
@@ -2568,7 +2565,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn real_backend_applies_deferred_state_renders_and_reports_failures() {
-        // Phase `initialization_failure_reaches_transport_without_fake_playback`.
         {
             let (release, wait) = std::sync::mpsc::channel();
             let mut engine = AudioEngine::new();
@@ -2598,7 +2594,6 @@ mod tests {
             assert!(!engine.pump());
         }
 
-        // Phase `deferred_seek_timeout_reports_error_and_stops_polling`.
         {
             let mut engine = AudioEngine::new();
             engine.backend = Some(AudioBackend::try_new(&engine.output).unwrap());
@@ -2624,7 +2619,6 @@ mod tests {
             assert!(!engine.pump());
         }
 
-        // Phase `delayed_backend_applies_latest_source_volume_seek_and_pause`.
         {
             use gstreamer::prelude::*;
             let scratch = tempfile::tempdir().unwrap();
@@ -2781,7 +2775,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn initializer_cancel_stop_and_stub_state_are_honest() {
-        // Phase `canceled_initializer_disposes_result_without_joining_or_polling`.
         {
             struct Owned(std::sync::mpsc::Sender<()>);
             impl Drop for Owned {
@@ -2806,7 +2799,6 @@ mod tests {
             }
         }
 
-        // Phase `stopped_initialization_does_not_poll_or_start_parallel_replacement`.
         {
             let (release, wait) = std::sync::mpsc::channel();
             let mut engine = AudioEngine::new();
@@ -2833,7 +2825,6 @@ mod tests {
             assert!(engine.take_error().is_none());
         }
 
-        // Phase `stub_tracks_uri_and_volume`.
         {
             let mut e = AudioEngine::new();
             e.load("https://example.test/audio.m4a");
@@ -2842,7 +2833,6 @@ mod tests {
             assert!((e.volume() - 0.5).abs() < 1e-6);
         }
 
-        // Phase `is_live_matches_feature`.
         {
             assert_eq!(AudioEngine::is_live(), cfg!(feature = "audio"));
         }
@@ -2856,7 +2846,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn bounded_download_and_staged_pump_honour_cancel_range_and_native_uri() {
-        // Phase `bounded_download_observes_cancel_before_connecting`.
         {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
             listener
@@ -2889,7 +2878,6 @@ mod tests {
             std::fs::remove_file(path).expect("release download fixture");
         }
 
-        // Phase `bounded_download_rejects_server_ignoring_range`.
         {
             use std::io::{Read, Write};
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
@@ -2932,7 +2920,6 @@ mod tests {
             std::fs::remove_file(path).expect("release download fixture");
         }
 
-        // Phase `staged_file_pump_uses_native_uri_and_renders_audio`.
         {
             use gstreamer::prelude::*;
             use std::sync::Arc;
@@ -3391,7 +3378,6 @@ mod tests {
         report
     }
 
-    /// The state of each element of `pipeline`.
     #[cfg(feature = "audio")]
     fn element_states(pipeline: Option<&gstreamer::Element>) -> String {
         use gstreamer::prelude::*;

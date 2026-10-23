@@ -1,5 +1,3 @@
-//! Production sandbox recipe, Landlock, launch ancestry, real sockets and
-//! cross-process selected descriptors. Mounted SDK/history is proven separately.
 use super::*;
 use serde::{Deserialize, Serialize};
 

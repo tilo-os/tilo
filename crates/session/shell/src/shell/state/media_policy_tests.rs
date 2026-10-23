@@ -1,4 +1,3 @@
-//! Exercise shell admission/projection itself, including refused-batch side effects.
 use super::*;
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use std::collections::BTreeMap;

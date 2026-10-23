@@ -34,6 +34,7 @@ enum Vault {
 }
 
 const CLOSED: &str = "the vault is not open in this window";
+const OPENING: &str = "the vault is still opening";
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
@@ -119,7 +120,30 @@ impl PasswordsModel {
     pub fn opens_vault(&self) -> bool {
         self.store.is_some()
     }
+    /// Whether the vault can be read now. A window on the compositor's
+    /// frame loop, which never waits on the disk, opens the person's vault
+    /// on a thread of its own, which calls `ready` once it is open;
+    /// anywhere else it is opened by the first read.
+    pub fn open_without_waiting(&self, ready: impl FnOnce() + Send + 'static) -> bool {
+        match &self.store {
+            Some(Vault::Shared(owner)) if ui::storage::waiting::forbidden() => {
+                owner.open_without_waiting(ready)
+            }
+            _ => true,
+        }
+    }
+    /// Refuse to open the vault on a thread that must never wait on the
+    /// disk: there it is opened by [`Self::open_without_waiting`].
+    fn opened(&self) -> Result<(), String> {
+        match &self.store {
+            Some(Vault::Shared(owner)) if !owner.is_open() && ui::storage::waiting::forbidden() => {
+                Err(OPENING.to_owned())
+            }
+            _ => Ok(()),
+        }
+    }
     fn read<T>(&self, read: impl FnOnce(&SecretStore) -> T) -> Result<T, String> {
+        self.opened()?;
         match self.store.as_ref().ok_or_else(|| CLOSED.to_owned())? {
             Vault::Local(store) => Ok(read(store)),
             Vault::Shared(owner) => owner
@@ -128,6 +152,7 @@ impl PasswordsModel {
         }
     }
     fn edit<T>(&mut self, edit: impl FnOnce(&mut SecretStore) -> T) -> Result<T, String> {
+        self.opened()?;
         match self.store.as_mut().ok_or_else(|| CLOSED.to_owned())? {
             Vault::Local(store) => Ok(edit(store)),
             Vault::Shared(owner) => owner
@@ -145,6 +170,9 @@ impl PasswordsModel {
     }
     /// Current application access shown in the vault's management UI.
     pub fn app_grants(&self) -> Vec<CredentialGrant> {
+        if self.opened().is_err() {
+            return Vec::new();
+        }
         match &self.store {
             Some(Vault::Shared(owner)) => owner.grants().unwrap_or_default(),
             _ => self.read(SecretStore::grants).unwrap_or_default(),
@@ -152,6 +180,9 @@ impl PasswordsModel {
     }
     /// Private review metadata from the matching original owner only.
     pub fn app_proposals(&self) -> Vec<accounts::CredentialProposal> {
+        if self.opened().is_err() {
+            return Vec::new();
+        }
         match &self.store {
             Some(Vault::Shared(owner)) => owner.proposals().unwrap_or_default(),
             _ => Vec::new(),
@@ -197,6 +228,7 @@ impl PasswordsModel {
     /// # Errors
     /// Returns an error if the vault cannot durably store the revocation.
     pub fn revoke_app_grant(&mut self, grant: &CredentialGrant) -> Result<bool, String> {
+        self.opened()?;
         match &mut self.store {
             Some(Vault::Shared(owner)) => owner.revoke_grant(grant),
             _ => self.edit(|store| store.revoke_grant(grant))?,

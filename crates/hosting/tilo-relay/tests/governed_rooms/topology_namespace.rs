@@ -59,8 +59,6 @@ fn owns(peer: &StatePeer, salt: u16, member: &TestDevice) -> bool {
         })
 }
 
-/// Claiming the topology namespace `salt`, as the member's own action in
-/// `room`.
 fn claim(room: &str, salt: u16) -> tilo_actions::remote::RemoteActionMessage {
     invocation(
         tilo_relay::rooms::MEMBER_ACTIONS_PROVIDER,

@@ -33,7 +33,7 @@ use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use super::{Action, BooksApp, ShelfCard, ShelfGrid, View, paint_scroll_thumb};
-use crate::library_index::{LibraryIndex, Read};
+use crate::library_index::{LibraryIndex, Read, Standing};
 use crate::model::Book;
 use crate::search_provider::{
     ANNOTATION_KIND, AUTHOR_FACET, BOOK_FACET, BOOK_KIND, BookSearch, CHAPTER_KIND, LOCATION_KIND,
@@ -141,6 +141,13 @@ pub(super) struct BookQuery {
     reveal_since: ui::time::Instant,
 }
 
+/// What a book's tile says while its text waits for a device that has it.
+const WAITING_STATUS: &str = "Waiting for a device that has it";
+/// What it adds for a screen reader.
+const WAITING_DETAIL: &str = "Opens when a device that has it is online.";
+/// What a book's tile says when none of the connected devices has its text.
+const UNAVAILABLE_STATUS: &str = "None of your online devices has this book.";
+
 /// One result as laid out: where it is, what opening it does, and what it
 /// is called.
 struct QueryRow {
@@ -168,10 +175,15 @@ impl BookQuery {
         query
     }
 
-    /// The live search: Project Gutenberg over the network, waking `wake`'s
-    /// window when it answers.
-    pub(super) fn live(wake: ui::WakeHandle) -> Self {
-        let store: Arc<dyn RemoteSource> = Arc::new(crate::store::Gutenberg);
+    /// The live search: Project Gutenberg from the device's copy of its
+    /// catalogue, or over the network, waking `wake`'s window when it
+    /// answers.
+    pub(super) fn live(
+        wake: ui::WakeHandle,
+        catalogue: Arc<crate::catalogue::DeviceCatalogue>,
+    ) -> Self {
+        let store: Arc<dyn RemoteSource> =
+            Arc::new(crate::store::Gutenberg::with_catalogue(catalogue));
         let mut engine = QueryEngine::new(kinds()).with_remote(store);
         engine.set_waker(wake.clone());
         let mut query = Self::with_engine(engine, &crate::store::cover_fetcher());
@@ -204,6 +216,12 @@ impl BookQuery {
             reveal_on_arrival: None,
             reveal_since: ui::time::now(),
         }
+    }
+
+    /// The library's index as this device holds it.
+    #[cfg(test)]
+    pub(super) fn index_mut(&mut self) -> &mut LibraryIndex {
+        &mut self.index
     }
 
     /// Scroll the results by `dy`; whether they moved.
@@ -278,6 +296,8 @@ impl BooksApp {
         for book in self.library.iter() {
             book.id.hash(&mut hasher);
         }
+        let may_index = self.may_index();
+        may_index.hash(&mut hasher);
         let key = hasher.finish();
         self.query.index.read_arrived();
         let arrived = self.query.index.take_loaded();
@@ -286,8 +306,10 @@ impl BooksApp {
             self.query.indexed = Some(key);
             self.elsewhere = Arc::new(books_elsewhere(entries, &self.library));
             // A segment built here is kept in the content store with the
-            // book's row; without one it would not reach other devices.
-            if self.content.is_some() {
+            // book's row; without one it would not reach other devices. A
+            // participant who may not keep it there builds none: the books
+            // here are searched from their own text.
+            if self.content.is_some() && may_index {
                 self.query.index.build_missing(&self.library, entries);
             }
             let here: std::collections::HashSet<&str> =
@@ -308,6 +330,25 @@ impl BooksApp {
         self.reveal_arrived();
     }
 
+    /// What `book`'s tile says of its text while it is being opened and is
+    /// neither here nor on its way, and what a screen reader hears besides.
+    /// It follows the devices as they come and go.
+    pub(super) fn shelf_status(&self, book: &str) -> Option<(&'static str, Option<&'static str>)> {
+        let opening = self.query.reveal_on_arrival.as_ref()?;
+        if opening.0 != book {
+            return None;
+        }
+        let (fetching, standing) = self.query.index.fetching()?;
+        if fetching != book {
+            return None;
+        }
+        match standing {
+            Standing::Fetching => None,
+            Standing::Waiting => Some((WAITING_STATUS, Some(WAITING_DETAIL))),
+            Standing::Unavailable => Some((UNAVAILABLE_STATUS, None)),
+        }
+    }
+
     /// Take in what fetching the book `id` came to: the book on the shelf,
     /// or why it is not coming, said plainly with what will bring it.
     fn take_fetched_book(&mut self, id: &str, read: Read<crate::content::LoadedBook>) {
@@ -320,10 +361,8 @@ impl BooksApp {
                 }
                 None
             }
-            Read::OnItsWay => None,
-            Read::Unavailable => Some(
-                "This book's text is on another device. It opens here once a device that has it is online.",
-            ),
+            // Still to come: where it stands is followed, not ended.
+            Read::OnItsWay | Read::Waiting | Read::Unavailable => None,
             Read::Unreadable => Some("This book's text could not be read."),
         };
         if let Some(message) = message {
@@ -336,7 +375,7 @@ impl BooksApp {
             {
                 self.query.reveal_on_arrival = None;
             }
-            self.load_error = Some(message.to_owned());
+            self.load_error.show(message.to_owned());
         }
         self.dirty = true;
     }
@@ -372,20 +411,31 @@ impl BooksApp {
             .any(|entry| entry.id == book && entry.shared)
     }
 
-    /// Since when the text of `book` has been on its way here, while it is.
+    /// Since when the text of `book` has been on its way here, while it is:
+    /// fetched from a connected device, or downloaded from the workspace.
     pub(super) fn arriving(&self, book: &str) -> Option<ui::time::Instant> {
-        self.query.index.arriving(book).or_else(|| {
-            self.query
-                .reveal_on_arrival
-                .as_ref()
-                .filter(|(waiting, ..)| waiting == book)
-                .map(|_| self.query.reveal_since)
-        })
+        if self
+            .query
+            .index
+            .fetching()
+            .is_some_and(|(fetching, _)| fetching == book)
+        {
+            return self.query.index.arriving(book);
+        }
+        self.query
+            .reveal_on_arrival
+            .as_ref()
+            .filter(|(waiting, ..)| waiting == book)
+            .map(|_| self.query.reveal_since)
     }
 
-    /// Whether a book's text is on its way, its card's bar moving.
+    /// Whether a book's text is on its way, its card's bar moving. Not
+    /// while it waits for a device that has it: nothing moves then.
     pub(super) fn awaiting_arrival(&self) -> bool {
-        self.query.reveal_on_arrival.is_some()
+        self.query
+            .reveal_on_arrival
+            .as_ref()
+            .is_some_and(|(book, ..)| self.arriving(book).is_some())
     }
 
     /// Open the passage a hit named once its book is here.
@@ -404,6 +454,17 @@ impl BooksApp {
         self.dirty = true;
     }
 
+    /// Whether this participant may keep a book's index with its row.
+    fn may_index(&self) -> bool {
+        self.dispatch.may_invoke(&crate::resource::index_book(
+            "",
+            crate::resource::StoredContent {
+                hash: String::new(),
+                size: 0,
+            },
+        ))
+    }
+
     /// Keep the segments built since the last frame in the content store,
     /// each joining its book's row.
     pub(super) fn keep_built_segments(&mut self, doc: &mut ui::widget::Edits<'_>) {
@@ -411,6 +472,9 @@ impl BooksApp {
         let Some(store) = self.content.clone() else {
             return;
         };
+        if built.is_empty() || !self.may_index() {
+            return;
+        }
         for (book, segment) in built {
             match store.put(&segment) {
                 Ok(hash) => {
@@ -480,6 +544,7 @@ impl BooksApp {
 
     /// Take in what the library and the store sent since the last frame.
     pub(super) fn poll_query(&mut self) {
+        self.follow_catalogue_setting();
         // A staged search waits for the library's entries to be built.
         if self.search_worker.is_none()
             && self.search_fingerprint != 0
@@ -851,6 +916,7 @@ impl BooksApp {
                         here: false,
                         shared: self.shared_in_workspace(&book.id),
                         arriving: self.arriving(&book.id),
+                        status: self.shelf_status(&book.id),
                         progress: self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0),
                         notes: None,
                         focused: false,
@@ -863,6 +929,7 @@ impl BooksApp {
                     open: Action::OpenBook(index),
                     here: true,
                     arriving: None,
+                    status: None,
                     shared: self
                         .library_paths
                         .get(&book.id)

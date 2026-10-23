@@ -748,7 +748,6 @@ pub struct RetainedGpuTarget {
     /// Sparse submissions from the latest paint that actually selected the experimental Area PPT8
     /// shader, including an overflowed sparse attempt before dense recovery.
     last_area_ppt8_sparse_attempts: usize,
-    /// Full submissions from the latest paint that selected the single-workgroup clip leaf.
     last_clip_single_group_full_attempts: usize,
     /// Sparse submissions from the latest paint that selected the single-workgroup clip leaf.
     last_clip_single_group_sparse_attempts: usize,

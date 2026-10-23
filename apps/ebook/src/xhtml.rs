@@ -825,7 +825,6 @@ mod tests {
         }
     }
 
-    /// Presentation `MathML` lowers to shared structured math with scripts, inline math, limits and matrices kept two-dimensional.
     #[test]
     fn mathml_lowers_to_structured_two_dimensional_math() {
         // --- phase: presentation_mathml_lowers_to_shared_structured_math ---

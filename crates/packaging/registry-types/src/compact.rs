@@ -44,7 +44,6 @@ pub struct VersionIndexRef {
     pub size_bytes: u64,
 }
 
-/// One entry of a compact snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactRegistryEntry {
     /// The publisher's entry with `versions` reduced to [`newest_versions`].
@@ -265,9 +264,6 @@ pub fn compact_snapshot_hash(snapshot: &CompactRegistrySnapshot) -> Result<Strin
 /// signature, freshness, bounds and publisher authorization. Publisher
 /// signatures cover complete entries, so they are checked per entry by
 /// [`verify_version_index`], and on install by the package's own signature.
-///
-/// # Errors
-/// Returns the precise freshness, shape, signature, or authorization failure.
 pub fn verify_compact_snapshot(
     snapshot: &CompactRegistrySnapshot,
     pinned_owner_pubkey_hex: &str,
@@ -314,11 +310,6 @@ pub fn verify_compact_snapshot(
 
 /// Check version index `bytes` against the entry of a verified compact
 /// snapshot that names it, and return the complete publisher-signed entry.
-///
-/// # Errors
-/// Returns [`VersionIndexError`] when the bytes are not the signed index,
-/// belong to another entry, are not signed by the entry's publisher, or do
-/// not reduce to the snapshot's entry.
 pub fn verify_version_index(
     compact: &CompactRegistryEntry,
     bytes: &[u8],
@@ -383,9 +374,6 @@ pub struct CatalogueEntry<'a> {
 impl CatalogueSnapshot {
     /// Decode either form; the compact one names its full sibling's hash.
     /// The `protocol` both carry is checked when the snapshot is verified.
-    ///
-    /// # Errors
-    /// Returns the JSON error for anything that is neither form.
     pub fn from_json(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         let probe: FormProbe = serde_json::from_slice(bytes)?;
         if probe.snapshot_hash_hex.is_some() {
@@ -395,10 +383,6 @@ impl CatalogueSnapshot {
         }
     }
 
-    /// Verify the snapshot in its own form.
-    ///
-    /// # Errors
-    /// Returns the precise freshness, shape, signature, or authorization failure.
     pub fn verify(
         &self,
         pinned_owner_pubkey_hex: &str,
@@ -473,7 +457,6 @@ impl CatalogueSnapshot {
         }
     }
 
-    /// The compact entry for `package_id`, when this snapshot is compact.
     pub fn compact_entry(&self, package_id: &str) -> Option<&CompactRegistryEntry> {
         match self {
             Self::Full(_) => None,
@@ -682,11 +665,9 @@ mod tests {
             CatalogueSnapshot::Full(_)
         ));
 
-        // Every older version is still committed to, through the index.
         let restored = verify_version_index(&compact.entries[0], &indexes[0].bytes).unwrap();
         assert_eq!(restored, full.entries[0]);
 
-        // Tampering with the compact form breaks its signature.
         let mut tampered = compact.clone();
         tampered.entries[0].entry.versions.remove(1);
         assert_eq!(
@@ -743,7 +724,6 @@ mod tests {
             Err(VersionIndexError::Size)
         );
 
-        // A signer that commits to the wrong file is caught by its content.
         let committed = |bytes: &[u8]| {
             let mut entry = notes.clone();
             entry.version_index = VersionIndexRef {

@@ -171,10 +171,6 @@ pub struct HandedBook {
 /// Parse a handed-over EPUB under the usual byte and archive bounds, then
 /// keep its bytes in `store` so every mount of the library (and a reload in
 /// the same session) can read the book by the hash its library row names.
-///
-/// # Errors
-/// A reader-safe reason when the bytes are not a readable EPUB or the store
-/// refuses them.
 pub fn open_handed_book(
     bytes: &[u8],
     store: Option<&tilo_content::ContentStore>,
@@ -203,10 +199,6 @@ pub struct Placed {
 /// Place a book a person chose by its contents where the library reads it
 /// again: on the shared workspace when this device has one, so peers read
 /// it too (collaborative by default, as an import is), else in `store`.
-///
-/// # Errors
-/// A reader-safe reason when the bytes are not a readable EPUB or nowhere
-/// keeps them.
 pub fn place_chosen_book(
     bytes: &[u8],
     store: Option<&tilo_content::ContentStore>,
@@ -246,7 +238,6 @@ fn byte_count(bytes: &[u8]) -> u64 {
     u64::try_from(bytes.len()).unwrap_or(u64::MAX)
 }
 
-/// The library row for a handed-over book.
 pub fn handed_book_entry(handed: &HandedBook) -> LibraryEntry {
     LibraryEntry {
         id: handed.book.id.clone(),
@@ -535,8 +526,6 @@ pub fn bundled_book_entry() -> Option<LibraryEntry> {
     Some(prepare_imported_book(Path::new(BUNDLED_PATH), book).1)
 }
 
-// --- Sample library: hermetic `--shots` / test content only -----------------
-
 /// The multi-book sample library used by the headless renderer and tests. Never
 /// shown to a real user; it exists so screenshots have a populated shelf.
 pub fn load_sample_library() -> Vec<Book> {
@@ -672,7 +661,6 @@ mod tests {
         book
     }
 
-    /// The shelf rows `doc` holds.
     fn shelf(doc: &Library) -> Vec<LibraryEntry> {
         doc.state().unwrap().entries.values().cloned().collect()
     }
@@ -782,7 +770,6 @@ mod tests {
                 book.id.starts_with("book:"),
                 "the import produced a content id"
             );
-            // Recorded once, and hydrating the library yields exactly that book.
             assert_eq!(shelf(&doc).len(), 1);
             let lib = hydrate_library(&shelf(&doc), &HashMap::new(), None);
             drop(library_env);

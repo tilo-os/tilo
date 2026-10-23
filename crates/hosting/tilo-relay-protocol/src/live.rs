@@ -130,7 +130,6 @@ fn finite(values: &[f32]) -> Result<()> {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveRecord {
-    /// Application identifier.
     #[serde(deserialize_with = "text128")]
     pub app: String,
     /// Record identifier within the application; empty names its package-primary record.
@@ -182,7 +181,6 @@ pub struct LiveAnchor {
 /// 16-byte scope digest when the scoped form would not fit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnchorScope<'a> {
-    /// The editor's postcard scope key.
     Key(&'a [u8]),
     /// The 16-byte digest of the editor's scope key.
     Digest([u8; 16]),
@@ -546,7 +544,6 @@ pub enum OpsFrame {
     Preview {
         /// Monotonic per-publisher, per-record sequence.
         seq: u64,
-        /// Record the preview applies to.
         record: LiveRecord,
         /// 1..=[`MAX_PREVIEW_OPS`] operations.
         ops: Vec<PreviewOp>,
@@ -641,10 +638,6 @@ impl LiveFrame {
     }
 
     /// Canonical encoding after checking every bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the value violates its bounds.
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
         let bytes = postcard::to_allocvec(self).map_err(|_| LiveWireError::Codec)?;
@@ -655,11 +648,6 @@ impl LiveFrame {
     }
 
     /// Decode, rejecting oversize and noncanonical input.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `bytes` is not a canonical encoding within
-    /// bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.is_empty() || bytes.len() > MAX_OPS_FRAME_BYTES {
             return Err(LiveWireError::Codec);
@@ -779,7 +767,6 @@ impl SealedLiveFrame {
         self.open(open)
     }
 
-    /// The channel that sealed the frame.
     pub fn channel_id(&self) -> ChannelId {
         ChannelId(uuid::Uuid::from_bytes(self.channel))
     }
@@ -858,10 +845,6 @@ impl SealedLiveFrame {
     }
 
     /// Canonical encoding within the kind's bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the encoding exceeds the bound.
     pub fn encode(&self) -> Result<Vec<u8>> {
         if self.payload.is_empty() {
             return Err(LiveWireError::Invalid);
@@ -875,11 +858,6 @@ impl SealedLiveFrame {
 
     /// Decode, rejecting oversize, noncanonical and unsealed input. A
     /// cleartext [`LiveFrame`] never decodes as a sealed one.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `bytes` is not a canonical sealed frame within
-    /// bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.is_empty() || bytes.len() > MAX_SEALED_OPS_FRAME_BYTES {
             return Err(LiveWireError::Codec);
@@ -991,7 +969,6 @@ mod tests {
         assert!(event.validate().is_err());
         event.interaction_json = " ".repeat(MAX_SEMANTIC_INTERACTION_BYTES + 1);
         assert!(event.validate().is_err());
-        // Existing preview-end discriminants and payload remain unchanged.
         assert_eq!(
             LiveFrame::Ops(OpsFrame::End { record: record() })
                 .encode()

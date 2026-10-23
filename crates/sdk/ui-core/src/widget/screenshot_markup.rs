@@ -150,7 +150,6 @@ struct ToolbarLayout {
     /// Where the "Opaque" badge stands while the redact tool is active;
     /// `Rect::ZERO` when the toolbar has no room for it.
     redact_badge: Rect,
-    /// The tool picker pill, anchored above the tool button.
     tool_picker: Rect,
     /// The colour palette pill, anchored above the `colors` button — only
     /// present when the swatches did not fit inline and the picker is open.
@@ -1391,7 +1390,6 @@ mod tests {
 
     #[test]
     fn flattened_export_changes_only_annotated_pixels() {
-        // Case `flattening_preserves_dimensions_and_changes_only_annotated_pixels`.
         {
             let original: Arc<[u8]> = Arc::from(vec![20_u8; 16 * 16 * 4]);
             let mut markup = ScreenshotMarkup::new(original.clone(), 16, 16);
@@ -1408,7 +1406,6 @@ mod tests {
             assert_eq!(&export.rgba[0..4], &original[0..4]);
         }
 
-        // Case `highlighter_alpha_blends_instead_of_destroying_source_pixels`.
         {
             let original: Arc<[u8]> = Arc::from(vec![100_u8, 100, 100, 255]);
             let mut markup = ScreenshotMarkup::new(original, 1, 1);
@@ -1424,7 +1421,6 @@ mod tests {
             assert_eq!(export.rgba[3], 255);
         }
 
-        // Case `arrow_export_adds_a_real_head_in_source_pixels`.
         {
             let original: Arc<[u8]> = Arc::from(vec![0_u8; 64 * 64 * 4]);
             let stroke = |tool| MarkupStroke {
@@ -1443,7 +1439,6 @@ mod tests {
             assert!(changed(&arrow.flattened().rgba) > changed(&pen.flattened().rgba));
         }
 
-        // Case `rectangle_export_closes_all_four_edges_in_source_pixels`.
         {
             let original: Arc<[u8]> = Arc::from(vec![0_u8; 64 * 64 * 4]);
             let mut markup = ScreenshotMarkup::new(original, 64, 64);
@@ -1461,7 +1456,6 @@ mod tests {
             assert_eq!(export.rgba[bottom_edge + 3], 255);
         }
 
-        // Case `redact_export_is_opaque_and_does_not_touch_pixels_outside_its_box`.
         {
             let original: Arc<[u8]> = Arc::from(vec![180_u8; 32 * 32 * 4]);
             let mut markup = ScreenshotMarkup::new(original.clone(), 32, 32);
@@ -1485,7 +1479,6 @@ mod tests {
 
     #[test]
     fn strokes_undo_redo_animate_and_extend_exactly() {
-        // Case `undo_and_redo_move_the_exact_stroke_without_rebuilding_it`.
         {
             let original: Arc<[u8]> = Arc::from(vec![0_u8; 4 * 4 * 4]);
             let mut markup = ScreenshotMarkup::new(original, 4, 4);
@@ -1504,7 +1497,6 @@ mod tests {
             assert!(markup.redo.is_empty());
         }
 
-        // Case `deterministic_entrance_preserves_receipt_and_settled_endpoints`.
         {
             let original: Arc<[u8]> = Arc::from(vec![0_u8; 16 * 9 * 4]);
             let spawn = Rect::new(1_200.0, 18.0, 1_246.0, 42.0);
@@ -1526,7 +1518,6 @@ mod tests {
             assert!(!markup.needs_animation_frame());
         }
 
-        // Case `ordinary_cursor_motion_extends_a_stroke_without_starting_a_pan`.
         {
             let original: Arc<[u8]> = Arc::from(vec![0_u8; 100 * 80 * 4]);
             let mut markup = ScreenshotMarkup::new(original, 100, 80);
@@ -1547,7 +1538,6 @@ mod tests {
 
     #[test]
     fn zoom_and_fit_track_source_pixels_without_changing_export() {
-        // Case `zoom_keeps_the_source_pixel_under_the_pointer_and_never_changes_export`.
         {
             let original: Arc<[u8]> = Arc::from(vec![33_u8; 100 * 80 * 4]);
             let mut markup = ScreenshotMarkup::new(original.clone(), 100, 80);
@@ -1573,7 +1563,6 @@ mod tests {
             assert_eq!(markup.canvas, markup.fit_canvas);
         }
 
-        // Case `fit_never_upscales_and_percentage_tracks_real_source_scale`.
         {
             let small: Arc<[u8]> = Arc::from(vec![0_u8; 100 * 80 * 4]);
             let mut markup = ScreenshotMarkup::new(small, 100, 80);

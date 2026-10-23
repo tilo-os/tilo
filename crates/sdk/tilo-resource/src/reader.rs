@@ -49,7 +49,6 @@ impl Demand {
         self
     }
 
-    /// Whether position `index` is demanded.
     pub fn covers(&self, index: usize) -> bool {
         self.ranges.iter().any(|range| range.contains(&index))
     }
@@ -180,9 +179,6 @@ impl<R: Resource> StateSlot for Held<'_, R> {
 
 impl<R: Resource> Reader<R> {
     /// Read the resource from `doc` and start following its changes.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold this resource.
     pub fn open(doc: &mut Doc) -> Result<Self, ModelError> {
         let mut state = R::read(doc)?;
         R::load(&mut state, doc, &Demand::none())?;
@@ -196,9 +192,6 @@ impl<R: Resource> Reader<R> {
 
     /// Read the resource from a document that may only be read, and follow
     /// its changes from the next [`sync`](Self::sync) on.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold this resource.
     pub fn read(doc: &Doc) -> Result<Self, ModelError> {
         let mut state = R::read(doc)?;
         R::load(&mut state, doc, &Demand::none())?;
@@ -281,9 +274,6 @@ impl<R: Resource> Reader<R> {
 
     /// Ask for the parts `demand` names (replacing the previous demand) and
     /// read those not read yet. Returns whether the state changed.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold this resource.
     #[inline(never)]
     pub fn demand(&mut self, doc: &Doc, demand: Demand) -> Result<bool, ModelError>
     where

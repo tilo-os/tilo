@@ -36,6 +36,7 @@ use std::rc::Rc;
 use std::sync::mpsc::TryRecvError;
 use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
+use ui::widget::toast::Transient;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
@@ -70,9 +71,6 @@ use crate::model::{BufferEdit, Column, EditMode, Endian, HexModel};
 use crate::resource::HexEditor;
 use layout::{CellMetrics, ENDIAN_LABELS, Geo, MODE_LABELS};
 use ui::widget::toggle_group::Segment;
-
-/// How long a failure toast stays up.
-const FLASH_MS: u128 = 3500;
 
 /// What a cancelled chooser answers.
 const CANCELLED: &str = "cancelled";
@@ -144,11 +142,9 @@ pub struct HexView {
     find_open: bool,
     /// Every match of the bar's query, as byte ranges, in order.
     matches: Vec<FindMatch>,
-    /// The match the bar is on.
     match_idx: Option<usize>,
 
     // --- go to ---
-    /// The go-to-offset prompt, in a popover at the status bar's offset.
     goto: Popover<PopoverPrompt>,
     /// The offset readout in the status bar, which opens the prompt.
     offset_readout: Rect,
@@ -210,9 +206,9 @@ pub struct HexView {
     /// A chooser in flight, drained once per frame in `sync`, and the open
     /// or save effect it answers.
     io: Option<(FileIo, EffectReply)>,
-    /// A failed open or save: its title, the reason and its birth time. Shown
-    /// as a toast until it expires.
-    problem: Option<(String, String, Instant)>,
+    /// A failed open or save: its title and the reason, shown as a toast
+    /// for a notice's lifetime.
+    problem: Transient<(String, String)>,
 
     /// "Opened": a change worth noticing once, floating at the
     /// content's bottom-trailing corner and fading by itself.
@@ -272,7 +268,7 @@ impl HexView {
             expect_open: false,
             path: None,
             io: None,
-            problem: None,
+            problem: Transient::new(),
             status_bubble: ui::StatusBubble::new(),
             focused: false,
             dispatch: None,
@@ -387,11 +383,9 @@ impl HexView {
 
     /// A failed open or save: a toast with the reason.
     fn problem(&mut self, title: &str, reason: impl Into<String>) {
-        self.problem = Some((title.to_owned(), reason.into(), ui::time::now()));
+        self.problem.show((title.to_owned(), reason.into()));
         self.dirty = true;
     }
-
-    // --- file open / save (through the host portal) --------------------
 
     /// Start the host file chooser to open a file, answering `reply` when
     /// it closes.
@@ -574,11 +568,10 @@ impl HexView {
         }
     }
 
-    /// True while a chooser is open or a failure toast is counting down —
-    /// the app keeps pumping frames so the pick drains and the toast
-    /// expires.
+    /// True while a chooser is open: the app keeps pumping frames so the
+    /// pick drains.
     fn is_busy(&self) -> bool {
-        self.io.is_some() || self.problem.is_some()
+        self.io.is_some()
     }
 
     /// Parse a go-to offset: `0x1F` hex, bare hex digits that include a
@@ -710,7 +703,6 @@ impl HexView {
         self.dirty = true;
     }
 
-    /// Whether `point` is over the inspector drawer.
     fn over_inspector(&self, point: Point) -> bool {
         self.geo.inspector_visible && self.geo.inspector.contains(point)
     }
@@ -867,12 +859,13 @@ impl Widget for HexView {
         self.drain_chooser();
 
         // Expire a failure toast so an idle window settles back to no message.
-        if let Some((_, _, born)) = &self.problem
-            && born.elapsed().as_millis() > FLASH_MS
-        {
-            self.problem = None;
+        if self.problem.expire() {
             self.dirty = true;
         }
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.problem.deadline()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1621,7 +1614,6 @@ mod tests {
         // A text query that is not in the buffer finds nothing.
         assert!(Findable::find(&mut view, "Þ", FindOptions::default()).is_empty());
 
-        // Case and whole-word rules apply to text.
         let mut view = HexView::new(b"IHDR ihdr IHDRx".to_vec(), "text.bin");
         let any = FindOptions::default();
         assert_eq!(Findable::find(&mut view, "ihdr", any).len(), 3);
@@ -1636,7 +1628,6 @@ mod tests {
         };
         assert_eq!(Findable::find(&mut view, "ihdr", word).len(), 2);
 
-        // A large search retains a bounded result index.
         let mut view = HexView::new(vec![0; search::MAX_RETAINED_MATCHES + 50], "large.bin");
         let found = Findable::find(&mut view, "00", hex);
         assert_eq!(found.len(), search::MAX_RETAINED_MATCHES);
@@ -1844,7 +1835,6 @@ mod tests {
         paint_frame(&mut view, &mut tr, &theme);
         assert_eq!(view.model.endian(), Endian::Big);
 
-        // A click on a hex cell puts the cursor there, in the hex column.
         let g = view.geo.clone();
         let cell = Rect::new(
             g.hex_x(3),
@@ -1865,7 +1855,6 @@ mod tests {
         assert_eq!(view.model.endian(), Endian::Little);
         paint_frame(&mut view, &mut tr, &theme);
 
-        // The toggle hides the docked inspector and the grid takes the room.
         let before = view.geo.content.width();
         assert!(click(&mut view, g.toggle));
         view.drawer.snap(false);

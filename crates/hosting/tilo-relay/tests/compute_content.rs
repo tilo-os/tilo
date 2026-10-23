@@ -883,8 +883,6 @@ async fn a_batch_of_small_inputs_a_home_server_replica_holds_moves_no_bytes() {
             )
             .await
             .unwrap();
-            // Whichever copy they came from, the staged inputs are the
-            // laptop's bytes.
             for digest in inputs {
                 let bytes = staged.get(*digest).unwrap().unwrap();
                 assert_eq!(blake3::hash(&bytes).as_bytes(), digest);

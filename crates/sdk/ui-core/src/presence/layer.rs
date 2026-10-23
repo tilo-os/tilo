@@ -100,7 +100,6 @@ impl PresenceCtx {
 #[cfg(feature = "native")]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayerMarks {
-    /// Where the layer on screen painted.
     pub shown: Vec<Rect>,
     /// Where this frame's layer paints.
     pub painted: Vec<Rect>,

@@ -617,7 +617,6 @@ mod tests {
             assert!(reason.contains("offload route"), "{reason}");
             drop(held);
 
-            // Turned off, the same configuration routes nothing.
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(tilo_runtime::offload::OFFLOAD_ENV, "off");
             assert!(route(&chrome).is_none(), "offload is off: no route");

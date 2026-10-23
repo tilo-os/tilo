@@ -31,7 +31,6 @@ impl Virsh {
         }
     }
 
-    /// The argv `virsh` runs with for `args`.
     #[must_use]
     pub fn argv(&self, args: &[&str]) -> Vec<OsString> {
         Connection::Session.virsh_args(args.iter().copied())

@@ -43,9 +43,6 @@ fn the_hosts_empty_document_for_a_new_record_merges_as_nothing() {
     );
 }
 
-/// A room replays a record by author, so a replica can be sent a change
-/// before the change it builds on, and that one only inside a snapshot.
-/// The waiting change is kept and applies once the snapshot arrives.
 #[test]
 fn a_change_that_arrives_before_the_one_it_builds_on_survives_a_snapshot() {
     let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));

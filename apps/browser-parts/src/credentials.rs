@@ -695,7 +695,6 @@ mod tests {
     /// Form discovery, private and insecure pages, late replies.
     #[test]
     fn credential_discovery_is_scoped_to_safe_current_documents() {
-        // Phase `address_mode_discovers_forms_without_keychain_account_requests`.
         {
             let (_app, book) = crate::autofill::tests::address_book();
             let mut model = Credentials::new(false);
@@ -720,7 +719,6 @@ mod tests {
             );
         }
 
-        // Phase `private_and_insecure_pages_never_request_credentials`.
         {
             let mut private = Credentials::new(true);
             private.navigation("https://example.com");
@@ -730,7 +728,6 @@ mod tests {
             assert!(normal.open(true).is_empty());
         }
 
-        // Phase `navigation_and_close_reject_late_document_replies`.
         {
             let mut model = Credentials::new(false);
             model.navigation("https://example.com/a");
@@ -748,7 +745,6 @@ mod tests {
     /// Account selection, deletion confirmation and capture lifetime.
     #[test]
     fn credential_selection_and_capture_require_explicit_fresh_choices() {
-        // Phase `multiple_accounts_require_selection_and_delete_confirmation`.
         {
             let mut model = Credentials::new(false);
             model.navigation("https://example.com");
@@ -786,7 +782,6 @@ mod tests {
             assert!(model.act(Action::ConfirmDelete).is_empty());
         }
 
-        // Phase `expired_capture_cannot_be_saved`.
         {
             let mut model = Credentials::new(false);
             model.navigation("https://example.com");
@@ -801,7 +796,6 @@ mod tests {
             assert!(model.capture.is_none());
         }
 
-        // Phase `capture_waits_for_explicit_save_and_is_consumed_once`.
         {
             let mut model = Credentials::new(false);
             model.navigation("https://example.com");

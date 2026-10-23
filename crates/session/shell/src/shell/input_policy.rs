@@ -931,7 +931,6 @@ pub enum SuperGesture {
 pub struct SuperTap {
     /// When the lone Super went down, while nothing else has happened.
     armed: Option<std::time::Instant>,
-    /// The hold became a peek.
     peeking: bool,
     /// The peek grew into the whole surface.
     full: bool,
@@ -2619,7 +2618,6 @@ mod lock_chord_tests {
 
     #[test]
     fn remote_input_kill_switch_is_only_a_super_escape_press_owned_by_the_shell() {
-        /// `Super+Esc` on press is the remote-input kill switch.
         fn super_escape_press_is_the_remote_input_kill_switch() {
             let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
             assert!(is_remote_input_kill_switch(&ev, mods_with_super(true)));

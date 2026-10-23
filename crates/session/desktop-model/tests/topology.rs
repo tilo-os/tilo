@@ -1,5 +1,3 @@
-//! Moving and splitting tabs edits the tree and reports exactly what moved.
-
 #![allow(
     clippy::unwrap_used,
     clippy::indexing_slicing,

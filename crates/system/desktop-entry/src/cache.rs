@@ -8,6 +8,13 @@
 //! worker whenever an application directory changes (an app installed or
 //! removed, an entry edited in place). A caller only ever takes the latest
 //! scan.
+//!
+//! An entry for a downloaded program ([`crate::downloaded`]) says whether
+//! its file is still there, and that file lives outside the application
+//! directories. So the folders on the way to each such file are watched
+//! too, for that one name: deleting, moving or renaming the file (or a
+//! folder above it) reads the scan again, and the entry shows the file is
+//! gone without anyone having to try to start it.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +29,76 @@ struct Cached {
     dirs: Vec<PathBuf>,
     desktop: Vec<String>,
     scan: Watched<Scan>,
+    /// The downloaded programs' folders being watched, and their watches.
+    programs: std::sync::Arc<Mutex<ProgramWatches>>,
+}
+
+#[derive(Default)]
+struct ProgramWatches {
+    programs: Vec<PathBuf>,
+    _watches: Vec<tilo_files::native::ChangeWatch>,
+}
+
+/// Every folder between each program and the root, each with the one name
+/// in it that leads to the program.
+fn program_paths(scan: &Scan) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = scan
+        .entries
+        .iter()
+        .filter_map(|entry| entry.downloaded.as_ref())
+        .map(|downloaded| downloaded.program.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Watch the way to each downloaded program in `scan`, replacing the
+/// watches of a previous scan when the programs changed. A change re-reads
+/// the scan on the watch's thread.
+fn watch_programs(scan: &Scan, slot: &Mutex<ProgramWatches>) {
+    let programs = program_paths(scan);
+    let mut held = slot.lock_recover();
+    if held.programs == programs {
+        return;
+    }
+    let mut watches = Vec::new();
+    for program in &programs {
+        let mut child = program.as_path();
+        while let Some(parent) = child.parent() {
+            if parent.as_os_str().is_empty() {
+                break;
+            }
+            let leads_to = child.to_path_buf();
+            if let Ok(watch) =
+                tilo_files::native::watch_changes(parent, move |path| path == leads_to, refresh)
+            {
+                watches.push(watch);
+            }
+            if parent.parent().is_none() || Some(parent) == tilo_paths::home().as_deref() {
+                break;
+            }
+            child = parent;
+        }
+    }
+    *held = ProgramWatches {
+        programs,
+        _watches: watches,
+    };
+}
+
+/// Read the current scan again, on this thread, now: for a writer in this
+/// process that must see its own change (an entry it just wrote), and for a
+/// downloaded program's file that changed. Reads the disk; never call it on
+/// the compositor's loop.
+pub fn refresh() {
+    let scan = cell()
+        .lock_recover()
+        .as_ref()
+        .map(|cached| cached.scan.clone());
+    if let Some(scan) = scan {
+        scan.refresh();
+    }
 }
 
 fn cell() -> &'static Mutex<Option<Cached>> {
@@ -67,14 +144,28 @@ pub fn cached_scan_snapshot() -> (u64, Scan) {
         let generation = REVISION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
         return (generation, scan_dirs(&dirs, &desktop));
     };
-    watched.on_change(|| {
+    let programs = std::sync::Arc::new(Mutex::new(ProgramWatches::default()));
+    let follow = std::sync::Arc::clone(&programs);
+    watched.on_change(move || {
         REVISION.fetch_add(1, Ordering::AcqRel);
+        // Looked up rather than captured: a captured handle would keep the
+        // value (and its worker) alive after the cache let go of it.
+        let current = cell()
+            .lock_recover()
+            .as_ref()
+            .filter(|cached| std::sync::Arc::ptr_eq(&cached.programs, &follow))
+            .map(|cached| cached.scan.get());
+        if let Some(scan) = current {
+            watch_programs(&scan, &follow);
+        }
     });
     let scan = (*watched.get()).clone();
+    watch_programs(&scan, &programs);
     *guard = Some(Cached {
         dirs,
         desktop,
         scan: watched,
+        programs,
     });
     let generation = REVISION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
     drop(guard);

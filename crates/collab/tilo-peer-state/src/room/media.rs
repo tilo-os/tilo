@@ -117,11 +117,6 @@ pub fn security_basis(
 
 /// Strict governed-document validation. Missing policy remains disabled. This
 /// checks consistency only; callers must independently authenticate the writer.
-///
-/// # Errors
-///
-/// Returns a [`MediaPolicyError`] if either document's policy is malformed or the
-/// transition is not permitted in `mode`.
 pub fn validate_transition(
     before: Option<&AutoCommit>,
     after: &AutoCommit,
@@ -222,11 +217,6 @@ pub fn refresh_authorization(
 
 /// Validate every active binding selecting this exact admitted app/record route.
 /// Unrelated routes and ended tombstones carry no Chat mutation restriction.
-///
-/// # Errors
-///
-/// Returns a [`MediaPolicyError`] if a binding for this route no longer resolves in
-/// `candidate`.
 pub fn validate_bound_chat_change(
     policy: &RoomMediaV1,
     app: &str,
@@ -236,11 +226,6 @@ pub fn validate_bound_chat_change(
     binding::validate_legacy(policy, app, record, candidate)
 }
 /// Resolve one exact admitted Chat object, never a synthesized/default channel.
-///
-/// # Errors
-///
-/// Returns a [`MediaPolicyError`] if the route or channel does not resolve to one exact
-/// admitted Chat object.
 pub fn resolve_chat_binding(
     app: &str,
     record: &str,
@@ -293,19 +278,11 @@ pub fn encode(value: &RoomMediaV1) -> Result<Vec<u8>, MediaPolicyError> {
     Ok(bytes)
 }
 /// Strict data parsing only: the caller still verifies writer, security basis and current authority.
-///
-/// # Errors
-///
-/// Returns a [`MediaPolicyError`] if a present policy is malformed or invalid.
 pub fn parse(doc: &AutoCommit) -> Result<Option<RoomMediaV1>, MediaPolicyError> {
     read::parse(&super::read::LegacyRead(doc), &read::LegacyPolicy).map_err(read::legacy_error)
 }
 
 /// Structural validation of a room media policy.
-///
-/// # Errors
-///
-/// Returns a [`MediaPolicyError`] naming the first invalid field.
 pub fn validate(value: &RoomMediaV1) -> Result<(), MediaPolicyError> {
     if value.version != 1 {
         return Err(MediaPolicyError::UnsupportedVersion);
@@ -364,17 +341,12 @@ impl ChatCallBindingV1 {
         self.app_id == app && self.record_id == record && self.channel_id == channel
     }
 
-    /// Whether `self` and `other` bind the same channel.
     #[must_use]
     pub fn same_channel(&self, other: &Self) -> bool {
         other.names_channel(&self.app_id, &self.record_id, &self.channel_id)
     }
 
     /// Structural validation of a Chat call binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`MediaPolicyError`] if a field is not canonical.
     pub fn validate(&self) -> Result<(), MediaPolicyError> {
         binding::validate_fields(
             &self.app_id,
@@ -397,11 +369,6 @@ fn lower_hex(value: &str) -> bool {
 
 /// Structural fences only. In particular, the basis digest must independently be derived from
 /// the current committed security inputs; accepting two matching claims is not that derivation.
-///
-/// # Errors
-///
-/// Returns a [`MediaPolicyError`] if the transition breaks a structural fence for
-/// `mode`.
 pub fn validate_policy_transition(
     before: Option<&RoomMediaV1>,
     after: Option<&RoomMediaV1>,
@@ -503,10 +470,6 @@ pub fn parse_call_id(value: &str) -> Result<[u8; 32], MediaPolicyError> {
 }
 impl MediaCallResultV1 {
     /// Aggregate restore must call this when deserializing a nested receipt directly.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`MediaPolicyError`] if the receipt is malformed.
     pub fn validate(&self) -> Result<(), MediaPolicyError> {
         if self.version != 1 {
             return Err(MediaPolicyError::UnsupportedVersion);
@@ -529,10 +492,6 @@ impl MediaCallResultV1 {
         canonical_bytes(self).map_err(|_| MediaPolicyError::Malformed)
     }
     /// Decode and validate a canonical call result.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`MediaPolicyError`] if the bytes are malformed or not canonical.
     pub fn decode(bytes: &[u8]) -> Result<Self, MediaPolicyError> {
         if bytes.len() > MAX_RESULT_BYTES {
             return Err(MediaPolicyError::Capacity);
@@ -1399,7 +1358,6 @@ mod room_media_tests {
                 prefix.extend(postcard::to_allocvec(value).unwrap());
             }
             prefix.extend(postcard::to_allocvec(&(fields[index].1 + 1)).unwrap());
-            // The oversized string bytes are deliberately absent.
             let mut policy = wire_prefix(1);
             policy.extend([7; 32]);
             policy.extend(&prefix);

@@ -6911,6 +6911,56 @@ fn pump_test_control_conn(
     }
 }
 
+/// Follow the person's session on their other devices
+/// (`crate::shell::owner_session`): idle time here counts from their use of a
+/// nearby one, and a lock or unlock there may be followed. Publishes this
+/// device's own session to them.
+fn follow_owner_session(
+    net: &crate::shell::network::ShellNetwork,
+    session: &mut SessionManager,
+    follow: &mut crate::shell::owner_session::SessionFollow,
+) -> Option<crate::shell::owner_session::Follow> {
+    let (local, _) = net.local_device_fabric_identity()?;
+    let now = Instant::now();
+    let now_ms = tilo_clock::unix_now_ms();
+    let since_input = u64::try_from(session.input_idle_for(now).as_millis()).unwrap_or(u64::MAX);
+    let input_ms = now_ms.saturating_sub(since_input);
+    let followed = net
+        .with_device_fabric(|fabric| {
+            let snapshots = fabric.snapshots();
+            let others = || {
+                snapshots
+                    .iter()
+                    .filter(|(device, _)| **device != local)
+                    .map(|(_, snapshot)| &snapshot.presence)
+            };
+            if let Some(used) = snapshots.get(&local).and_then(|own| {
+                crate::shell::owner_session::latest_use_nearby(&own.presence, others())
+            }) && let Some(at) =
+                now.checked_sub(Duration::from_millis(now_ms.saturating_sub(used)))
+            {
+                session.note_use_elsewhere(at);
+            }
+            let own = snapshots.get(&local).map(|own| &own.presence);
+            follow.decide(
+                session.is_locked(),
+                input_ms,
+                session.in_use(now),
+                others().map(|presence| {
+                    let nearby = own.is_some_and(|own| {
+                        crate::shell::owner_session::shares_network(own, presence)
+                    });
+                    (presence.session, nearby)
+                }),
+            )
+        })
+        .flatten();
+    crate::shell::device_fabric_runtime::set_owner_session(
+        follow.presence(session.is_locked(), input_ms),
+    );
+    followed
+}
+
 /// Turn a [`SessionTransition`] into a real backend effect.
 ///
 /// `Dimmed`/`Undimmed` lower and restore the backlight, or switch the paint
@@ -7885,380 +7935,11 @@ fn priority_route(
     }
 }
 
-/// Start the device fabric's pump on its own thread, or say why not.
-fn start_device_fabric(
-    network: &Arc<crate::shell::network::ShellNetwork>,
-    notifications: &crate::notifications::NotificationBridge,
-) -> Option<
-    crate::shell::device_fabric_runtime::worker::FabricWorker<
-        crate::shell::device_fabric_runtime::FabricTurn,
-    >,
-> {
-    match crate::shell::device_fabric_runtime::spawn_worker(
-        Arc::clone(network),
-        notifications.clone(),
-    ) {
-        Ok(worker) => Some(worker),
-        Err(error) => {
-            tracing::error!(%error, "device fabric: could not start its thread");
-            None
-        }
-    }
-}
-
-fn active_physical_gamepad_binding(
-    tree: &crate::shell::state::WorkspaceTree,
-) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
-    let workspace = tree.desktop.active_workspace()?;
-    let strip_id = tree
-        .desktop
-        .active_strip
-        .get(&workspace.id)
-        .copied()
-        .or_else(|| workspace.strips.first().map(|strip| strip.id))?;
-    let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
-    let group_id = tree
-        .desktop
-        .active_group_for(strip_id)
-        .filter(|group_id| {
-            strip
-                .window_groups
-                .iter()
-                .any(|group| group.id == *group_id)
-        })
-        .or_else(|| strip.window_groups.first().map(|group| group.id))?;
-    let group = strip
-        .window_groups
-        .iter()
-        .find(|group| group.id == group_id)?;
-    let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
-    let app_id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
-    let workspace_id = workspace.room().to_string();
-    Some(crate::shell::physical_gamepad::PhysicalGamepadBinding {
-        app_id,
-        session_id: format!("{workspace_id}:{}", tab.id),
-        workspace_id,
-    })
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "one bridge closure maps every Quick Settings fabric action onto its runtime call beside the shared snapshot cache"
-)]
-fn install_device_fabric_bridge(
-    host: &mut crate::shell::overlay_host::ShellOverlayHost,
-    fabric_net: Arc<crate::shell::network::ShellNetwork>,
-    tree_handle: crate::shell::state::WorkspaceTreeHandle,
-) {
-    let fabric_cache = std::rc::Rc::new(std::cell::RefCell::new(
-        None::<(Instant, u64, crate::shell::overlay_host::DeviceFabricView)>,
-    ));
-    // `pw-dump` and `wpctl` run on the graph's own thread; the view reads
-    // the graph as last read and never waits on `PipeWire`.
-    let local_audio =
-        crate::shell::local_audio_graph::LocalAudioGraph::system(fabric_net.loop_waker());
-    host.set_device_fabric_bridge({
-        let fabric_cache = std::rc::Rc::clone(&fabric_cache);
-        std::rc::Rc::new(move |action| {
-            use crate::shell::overlay_host::DeviceFabricUiAction;
-            if matches!(action, DeviceFabricUiAction::Snapshot)
-                && let Some((updated, audio_revision, view)) = fabric_cache.borrow().as_ref()
-                && updated.elapsed() < Duration::from_millis(750)
-                && *audio_revision == local_audio.revision()
-            {
-                return Ok(view.clone());
-            }
-            match action {
-                DeviceFabricUiAction::MoveDisplay(request) => {
-                    crate::shell::device_fabric_runtime::move_device_display(
-                        &fabric_net,
-                        &request,
-                    )?;
-                }
-                DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
-                DeviceFabricUiAction::WakeDevice { device } => {
-                    crate::shell::device_wake::request_wake(&fabric_net, &device)?;
-                }
-                DeviceFabricUiAction::HandoffMedia { session_id, target } => {
-                    let _ = crate::shell::device_fabric_runtime::request_media_handoff(
-                        &fabric_net,
-                        &session_id,
-                        &target,
-                    )?;
-                }
-                DeviceFabricUiAction::CancelMediaHandoff { request_id } => {
-                    crate::shell::device_fabric_runtime::cancel_media_handoff(
-                        &fabric_net,
-                        request_id,
-                    )?;
-                }
-                DeviceFabricUiAction::RetryMediaHandoff { request_id } => {
-                    let _ = crate::shell::device_fabric_runtime::retry_media_handoff(
-                        &fabric_net,
-                        request_id,
-                    )?;
-                }
-                DeviceFabricUiAction::RouteLocalAudio { node_id } => {
-                    local_audio.submit(
-                        crate::shell::local_audio_graph::LocalAudioEdit::RouteOutput(node_id),
-                    )?;
-                }
-                DeviceFabricUiAction::SelectLocalInput { node_id } => {
-                    local_audio.submit(
-                        crate::shell::local_audio_graph::LocalAudioEdit::SelectInput(node_id),
-                    )?;
-                }
-                DeviceFabricUiAction::StepInputLevel { node_id, raise } => {
-                    local_audio.submit(
-                        crate::shell::local_audio_graph::LocalAudioEdit::StepInput {
-                            node_id,
-                            raise,
-                        },
-                    )?;
-                }
-                DeviceFabricUiAction::HandoffBluetooth {
-                    address,
-                    name,
-                    target,
-                } => {
-                    let _ = crate::shell::device_fabric_runtime::request_bluetooth_handoff(
-                        &fabric_net,
-                        &address,
-                        &name,
-                        &target,
-                    )?;
-                }
-                DeviceFabricUiAction::AuthorizeBluetoothHandoff {
-                    request_id,
-                    approved,
-                } => {
-                    crate::shell::device_fabric_runtime::authorize_bluetooth_handoff(
-                        &fabric_net,
-                        request_id,
-                        approved,
-                    )?;
-                }
-                DeviceFabricUiAction::CancelBluetoothHandoff { request_id } => {
-                    crate::shell::device_fabric_runtime::cancel_bluetooth_handoff(
-                        &fabric_net,
-                        request_id,
-                    )?;
-                }
-                DeviceFabricUiAction::RetryBluetoothHandoff { request_id } => {
-                    let _ = crate::shell::device_fabric_runtime::retry_bluetooth_handoff(
-                        &fabric_net,
-                        request_id,
-                    )?;
-                }
-                DeviceFabricUiAction::AuthorizeGamepadForwarding {
-                    forwarding_id,
-                    approved,
-                } => {
-                    crate::shell::device_fabric_runtime::authorize_typed_gamepad_forwarding(
-                        forwarding_id,
-                        approved,
-                    )?;
-                }
-                DeviceFabricUiAction::StartPhysicalGamepad {
-                    source_token,
-                    target,
-                } => {
-                    let binding = active_physical_gamepad_binding(&tree_handle.read())
-                        .ok_or_else(|| crate::shell::i18n::t("fabric-focus-app-for-controller"))?;
-                    let _ = crate::shell::physical_gamepad::start_physical_gamepad_forwarding(
-                        &fabric_net,
-                        source_token,
-                        &target,
-                        binding,
-                    )?;
-                }
-                DeviceFabricUiAction::StopPhysicalGamepad { session } => {
-                    crate::shell::physical_gamepad::stop_physical_gamepad_forwarding(
-                        &fabric_net,
-                        session,
-                    )?;
-                }
-                DeviceFabricUiAction::StartRemoteAudio {
-                    source_token,
-                    target,
-                } => {
-                    let _ = crate::shell::device_fabric_runtime::request_remote_audio(
-                        &fabric_net,
-                        source_token,
-                        &target,
-                    )?;
-                }
-                DeviceFabricUiAction::AuthorizeRemoteAudio {
-                    session_id,
-                    approved,
-                } => {
-                    crate::shell::device_fabric_runtime::authorize_remote_audio(
-                        &fabric_net,
-                        session_id,
-                        approved,
-                    )?;
-                }
-                DeviceFabricUiAction::StopRemoteAudio { session_id } => {
-                    crate::shell::device_fabric_runtime::stop_remote_audio(
-                        &fabric_net,
-                        session_id,
-                    )?;
-                }
-                DeviceFabricUiAction::ResolveSpeakerGroupConsent {
-                    group,
-                    kind,
-                    approved,
-                } => {
-                    crate::shell::device_fabric_runtime::require_speaker_groups()?;
-                    crate::shell::speaker_group_runtime::resolve_consent(
-                        &fabric_net,
-                        group,
-                        kind,
-                        approved,
-                    )?;
-                }
-                DeviceFabricUiAction::LeaveSpeakerGroup { group, kind } => {
-                    crate::shell::speaker_group_runtime::leave_group(&fabric_net, group, kind)?;
-                }
-                DeviceFabricUiAction::StartSpeakerGroupAudio {
-                    source_token,
-                    group,
-                } => {
-                    let _ = crate::shell::device_fabric_runtime::request_speaker_group_audio(
-                        &fabric_net,
-                        source_token,
-                        group,
-                    )?;
-                }
-                DeviceFabricUiAction::PlayMediaOnSpeakerGroup { session_id, group } => {
-                    let _ = crate::shell::device_fabric_runtime::play_media_on_speaker_group(
-                        &fabric_net,
-                        &session_id,
-                        group,
-                    )?;
-                }
-                DeviceFabricUiAction::StopSpeakerGroupSession { session_id } => {
-                    crate::shell::speaker_group_runtime::stop_session(&fabric_net, session_id)?;
-                }
-                DeviceFabricUiAction::RequestRemoteCapture { peer, kind } => {
-                    let binding =
-                        active_physical_gamepad_binding(&tree_handle.read()).ok_or_else(|| {
-                            crate::shell::i18n::t("fabric-focus-app-for-remote-input")
-                        })?;
-                    let app =
-                        crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
-                            binding.app_id,
-                            binding.workspace_id,
-                        )
-                        .map_err(|error| error.to_string())?;
-                    crate::shell::remote_capture::runtime::request_remote_capture(
-                        &fabric_net,
-                        app,
-                        peer,
-                        kind,
-                    )?;
-                }
-                DeviceFabricUiAction::AuthorizeRemoteCapture {
-                    request_id,
-                    approved,
-                } => {
-                    crate::shell::remote_capture::runtime::decide_remote_capture(
-                        &fabric_net,
-                        request_id,
-                        approved,
-                    )?;
-                }
-                DeviceFabricUiAction::ApproveRemoteCaptureTarget { session_id } => {
-                    crate::shell::remote_capture::runtime::approve_remote_capture_target(
-                        session_id,
-                    )?;
-                }
-                DeviceFabricUiAction::StopRemoteCapture { session_id } => {
-                    crate::shell::remote_capture::runtime::stop_remote_capture(
-                        &fabric_net,
-                        session_id,
-                    )?;
-                }
-                DeviceFabricUiAction::RequestPhoneTethering { phone } => {
-                    let _ = crate::shell::personal_tethering_runtime::request_phone_tethering(
-                        &fabric_net,
-                        &phone,
-                    )?;
-                }
-                DeviceFabricUiAction::AuthorizePhoneTethering {
-                    request_id,
-                    approved,
-                } => {
-                    crate::shell::personal_tethering_runtime::authorize_phone_tethering(
-                        request_id, approved,
-                    )?;
-                }
-                DeviceFabricUiAction::DisconnectPhoneTethering { request_id } => {
-                    crate::shell::personal_tethering_runtime::disconnect_phone_tethering(
-                        request_id,
-                    )?;
-                }
-                DeviceFabricUiAction::AuthorizeDeviceUnlock {
-                    request_digest,
-                    approved,
-                } => {
-                    crate::shell::device_unlock_runtime::decide_device_unlock(
-                        request_digest,
-                        approved,
-                    )?;
-                }
-                DeviceFabricUiAction::RemoveDevice { device } => {
-                    let mut key = [0_u8; 32];
-                    hex::decode_to_slice(device.as_str(), &mut key)
-                        .map_err(|error| error.to_string())?;
-                    crate::shell::device_unlock_runtime::remove_device(key)?;
-                }
-                DeviceFabricUiAction::Place { device, edge } => {
-                    crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
-                }
-                DeviceFabricUiAction::ApplyCalibration { device } => {
-                    crate::shell::device_fabric_runtime::apply_spatial_calibration(
-                        &fabric_net,
-                        &device,
-                    )?;
-                }
-                DeviceFabricUiAction::DismissCalibration { device } => {
-                    crate::shell::device_fabric_runtime::dismiss_spatial_calibration(&device)?;
-                }
-                DeviceFabricUiAction::RevertCalibration { device } => {
-                    crate::shell::device_fabric_runtime::revert_spatial_calibration(
-                        &fabric_net,
-                        &device,
-                    )?;
-                }
-                DeviceFabricUiAction::GrantControl { controller } => {
-                    let _ = crate::shell::device_fabric_runtime::grant_input_control(
-                        &fabric_net,
-                        &controller,
-                    )?;
-                }
-                DeviceFabricUiAction::RevokeControl { controller } => {
-                    crate::shell::device_fabric_runtime::revoke_input_control(
-                        &fabric_net,
-                        &controller,
-                    )?;
-                }
-            }
-            let audio_revision = local_audio.revision();
-            let mut view = crate::shell::device_fabric_runtime::device_fabric_view(
-                &fabric_net,
-                local_audio.graph(),
-            );
-            view.local_gamepads =
-                crate::shell::physical_gamepad::local_physical_gamepads().unwrap_or_default();
-            let focus = active_physical_gamepad_binding(&tree_handle.read());
-            view.remote_audio =
-                crate::shell::device_fabric_runtime::remote_audio_view(focus.as_ref());
-            *fabric_cache.borrow_mut() = Some((Instant::now(), audio_revision, view.clone()));
-            Ok(view)
-        })
-    });
-}
+#[path = "native_device_fabric.rs"]
+mod device_fabric;
+use device_fabric::{
+    active_physical_gamepad_binding, install_device_fabric_bridge, start_device_fabric,
+};
 
 /// Start the authenticated peer transport and install the chrome commands
 /// that use it. Kept as one operation so first-login can call the exact same
@@ -8386,6 +8067,7 @@ fn install_session_peer_sync(
     net: Arc<crate::shell::network::ShellNetwork>,
 ) -> Arc<crate::shell::network::ShellNetwork> {
     crate::shell::link_open::attach_network(&net);
+    crate::shell::device_certification::attach_network(&net);
     net.attach_session_inhibitors(frame_builder.host().session_inhibitors());
     frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
@@ -8441,9 +8123,6 @@ fn attach_collab_broker_bridges(
             .attach_app_action_broker(action_broker);
     }
     frame_builder.host_mut().attach_tracker(broker.tracker());
-    if let Some(review) = broker.task_review() {
-        frame_builder.host_mut().attach_task_review(review);
-    }
     // The roster reads who is in which voice channel, and the call this
     // device is in, from the session's calls.
     if let Some(media) = broker.native_media_service() {
@@ -10217,6 +9896,7 @@ pub fn run() {
     crate::shell::storage_notice::start(Arc::clone(&session_wake));
     // NTFS drives open only through the shell's own sheet; see shell::drives.
     crate::shell::drives::start(Arc::clone(&session_wake));
+    crate::shell::app_list::set_wake(Arc::clone(&session_wake));
     crate::app_icons::set_wake(Arc::clone(&session_wake));
     crate::shell::mpris::set_now_playing_wake(Arc::clone(&session_wake));
     crate::shell::install_component_wake(Arc::clone(&session_wake));
@@ -10821,11 +10501,22 @@ pub fn run() {
     // in the model with nothing presented.
     let mut transition_hold_sleep = Duration::ZERO;
     let mut credit_transition_hold;
+    // The person's session on their other devices: this one follows a lock
+    // or unlock there and tells them about its own.
+    let mut session_follow = crate::shell::owner_session::SessionFollow::default();
+    // The fabric samples this device's presence once a second; following
+    // the others more often would change nothing.
+    let mut session_followed: Option<Instant> = None;
     // Every session transition reaches the backend, presenter, logind lifecycle,
-    // dimmer and output management alike.
+    // dimmer and output management alike. A lock or unlock that comes here is
+    // the person's own, which their other devices follow; the idle timer's
+    // and the followed ones are applied apart.
     macro_rules! apply_session_transitions {
         ($transitions:expr) => {
             for t in $transitions {
+                if matches!(t, SessionTransition::Locked | SessionTransition::Unlocked) {
+                    session_follow.changed_by_person(tilo_clock::unix_now_ms());
+                }
                 apply_session_transition(
                     t,
                     backend.as_mut(),
@@ -10881,6 +10572,11 @@ pub fn run() {
     )
     .map_err(|error| eprintln!("tilo compositor: the main-loop watchdog did not start: {error}"))
     .ok();
+    // Nor does a turn wait on storage: apps running in-process ask their
+    // stores to commit, and the stores' own threads do the waiting. A store
+    // still asked to wait here is reported to the main-thread audit.
+    super::liveness::audit_storage_waits();
+    let no_storage_waits = durable_store::waiting::forbid_on_this_thread();
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -12283,8 +11979,44 @@ pub fn run() {
             session_changed = true;
         }
 
+        if let Some(net) = peer_sync.as_ref().filter(|_| {
+            session_followed.is_none_or(|followed| followed.elapsed() >= Duration::from_secs(1))
+        }) {
+            session_followed = Some(Instant::now());
+            let followed = follow_owner_session(net, &mut session, &mut session_follow);
+            if followed == Some(crate::shell::owner_session::Follow::Unlock) {
+                // As after the person's own unlock: the next lock starts bare.
+                lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                frame_builder.set_lock_keyboard_keys(Vec::new());
+                frame_builder.set_lock_surfaces(Vec::new());
+            }
+            let transitions = match followed {
+                Some(crate::shell::owner_session::Follow::Lock) => {
+                    session.request_lock(Instant::now())
+                }
+                Some(crate::shell::owner_session::Follow::Unlock) => {
+                    session.request_unlock(Instant::now())
+                }
+                None => Vec::new(),
+            };
+            for t in transitions {
+                session_changed = true;
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
+                    &mut screen_dimmer,
+                    Some(&mut state.output_management),
+                );
+            }
+        }
+
         // Advance the idle timers and apply any timeout-driven transitions (blank, auto-lock, suspend).
         for t in session.tick_inhibited(Instant::now(), &inhibit_registry) {
+            if t == SessionTransition::Locked {
+                session_follow.locked_by_idle();
+            }
             if t == SessionTransition::Suspend {
                 // Idle-suspend is gated by the inhibitor registry (media playing, a task
                 // running). `tick_inhibited` already restarts the period while a hold is
@@ -12527,7 +12259,17 @@ pub fn run() {
         {
             continuity_feed_polled = Some(Instant::now());
             let feed = network.continuity_feed();
-            frame_builder.with_chrome(|st| st.set_continuity_feed(feed));
+            let shown = crate::shell::device_fabric_runtime::take_shown_tab();
+            frame_builder.with_chrome(|st| {
+                st.set_continuity_feed(feed);
+                // Another of the person's devices moved a window here. A
+                // tab whose workspace has not arrived yet is not shown.
+                if let Some(tab) = shown
+                    && !st.show_tab(tab)
+                {
+                    tracing::info!(tab, "a window moved here is not in this desktop");
+                }
+            });
         }
 
         // Client fullscreen is a per-output overlay drawn above everything,
@@ -15174,6 +14916,8 @@ pub fn run() {
             tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
         }
     }
+    // Teardown may wait for the stores' last commits: the loop is over.
+    drop(no_storage_waits);
 
     // The session is ending (logout, a close request, a run deadline): every
     // layout change queued for the state writer reaches the disk before the
@@ -15336,73 +15080,7 @@ fn sync_quick_settings_from_osd(
 }
 
 #[cfg(test)]
-mod lock_focus_tests {
-    use crate::compositor::backend::headless::output_fixture;
-    use crate::compositor::lock_screen::LockLayout;
-    use crate::compositor::lock_screen::lock_outputs;
-
-    #[test]
-    fn the_lock_screen_puts_the_password_field_on_the_focused_display() {
-        let outputs = output_fixture("laptop-beside-1080p").expect("fixture");
-        let theme = ui::theme::Theme::dark();
-        for focused in [&outputs[1], &outputs[0]] {
-            let lock = lock_outputs(&outputs, (0.0, 0.0), Some(focused.id.0));
-            assert_eq!(lock.len(), outputs.len(), "every display is covered");
-            let shown = focused.scene_rect();
-            let password = LockLayout::for_output(lock[0], &theme).password;
-            assert!(
-                password.area() > 0.0 && shown.union(password) == shown,
-                "the password field {password:?} is on the focused display {shown:?}"
-            );
-        }
-        let unfocused = lock_outputs(&outputs, (0.0, 0.0), None);
-        assert_eq!(
-            unfocused[0].origin,
-            (
-                f64::from(outputs[0].position.0),
-                f64::from(outputs[0].position.1)
-            ),
-            "without a focused display the primary carries it"
-        );
-    }
-
-    #[test]
-    fn without_focus_the_built_in_panel_carries_the_password_at_its_own_scale() {
-        let mut outputs = output_fixture("laptop-beside-1080p").expect("fixture");
-        // The built-in panel listed second, as a dock can report it.
-        outputs.swap(0, 1);
-        outputs[0].identity.connector = "DP-2".into();
-        outputs[1].identity.connector = "eDP-1".into();
-        let theme = ui::theme::Theme::dark();
-        let lock = lock_outputs(&outputs, (0.0, 0.0), None);
-        assert_eq!(lock.len(), 2, "one lock surface per display");
-        let builtin = outputs[1].scene_rect();
-        let password = LockLayout::for_output(lock[0], &theme).password;
-        assert!(
-            builtin.union(password) == builtin,
-            "the password field {password:?} is on the built-in panel {builtin:?}"
-        );
-        // The 2x panel draws the card at twice the 1x monitor's size.
-        let external = LockLayout::for_output(lock[1], &theme);
-        let laptop = LockLayout::for_output(lock[0], &theme);
-        assert!(
-            laptop.scale > external.scale * 1.5,
-            "the card follows its display's scale: {} on 2x vs {} on 1x",
-            laptop.scale,
-            external.scale
-        );
-        let surfaces = crate::compositor::lock_screen::lock_surfaces(&lock, &theme, false);
-        assert_eq!(
-            surfaces
-                .iter()
-                .filter(|surface| surface.password.is_some())
-                .count(),
-            1,
-            "one password field across every display"
-        );
-        assert!(surfaces[0].password.is_some() && surfaces[1].password.is_none());
-    }
-}
+mod lock_focus_tests;
 
 #[cfg(test)]
 mod media_osd_publication_tests;
@@ -16758,7 +16436,10 @@ mod tests {
         {
             let mut fb = FrameBuilder::new((800, 600));
             assert!(client_input_allowed(&fb));
-            fb.enable_onboarding(std::path::PathBuf::from("/tmp/tilo-onboarding-test"));
+            fb.enable_test_onboarding(crate::onboarding_view::OnboardingView::isolated(
+                std::path::PathBuf::from("/tmp/tilo-onboarding-test"),
+                false,
+            ));
             assert!(fb.host().onboarding_active());
             assert!(
                 !client_input_allowed(&fb),

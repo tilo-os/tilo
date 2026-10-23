@@ -30,7 +30,6 @@ use crate::navigation::{self, Admitted};
 pub(super) enum SearchRequest {
     Open(Option<String>),
     Toggle,
-    /// Every application, to open one as a window of its own.
     Applications,
     /// Window `GroupId`'s new-tab control: which application to open there.
     NewTab(StripId, GroupId),
@@ -130,7 +129,6 @@ impl HostAction {
     }
 }
 
-/// Whether `notification` offers one of the host's actions.
 pub fn is_host_offer(notification: &crate::notifications::Notification) -> bool {
     notification
         .actions

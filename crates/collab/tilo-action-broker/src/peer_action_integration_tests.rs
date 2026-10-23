@@ -317,14 +317,12 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
             matches!(&recorded, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == request.action),
             "the receipt records the effect it was: {recorded:?}"
         );
-        // Losing a private response and reconnecting queries the same key.
         let _lost_reply = send(&caller, room, 52, invoke(&request));
         caller.close().await;
         let caller = client(&relay, 52, room).await;
         let recovered = send(&caller, room, 52, ActionMessage::Status { invocation: request.invocation });
         assert!(matches!(reply(&caller, recovered).await, ActionMessage::Observation { update: Some(update), .. } if update == terminal));
         assert!(rx.lock().await.try_recv().is_err());
-        // Current room authority gates catalogue, durable disclosure and invoke.
         let membership = fixture.membership.as_ref().unwrap().clone();
         membership.write().workspaces[0].set_owner("replacement-owner");
         for message in [
@@ -818,13 +816,11 @@ async fn native_peer_facade_admits_effects_only_on_their_source_device_signature
         current.write(EnvelopeV2::SignedDirected(claimed)).await;
         assert_eq!(current.answer(claimed_id).await, Err(tilo_delivery_protocol::peer_actions::UnavailableReason::NotAuthorised));
 
-        // The device's own signature admits the effect, as that person.
         let effect = directed(room, 52, invoke(&request));
         let frame = signed_by(&effect, 52, now_ns());
         current.write(EnvelopeV2::SignedDirected(frame.clone())).await;
         assert!(matches!(current.answer(effect.request_id).await, Ok(ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { invocation }), .. }) if invocation == request.invocation));
         assert!(fixture.invocation_rx.try_recv().is_ok(), "the signed effect dispatched");
-        // The same signed frame delivered again is refused.
         current.write(EnvelopeV2::SignedDirected(frame)).await;
         assert_eq!(current.answer(effect.request_id).await, Ok(rejected("action_replayed")));
         // So is a frame signed outside the freshness window, either way.

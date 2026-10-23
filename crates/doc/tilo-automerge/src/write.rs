@@ -13,10 +13,6 @@ use crate::ReadTyped;
 /// Change-only writers for every [`Transactable`].
 pub trait WriteTyped: Transactable {
     /// Put the string `value` at `prop` of `obj` unless it is already there.
-    ///
-    /// # Errors
-    ///
-    /// Returns the [`AutomergeError`] of a put that fails.
     fn put_str_if_changed(
         &mut self,
         obj: &ObjId,
@@ -32,10 +28,6 @@ pub trait WriteTyped: Transactable {
 
     /// Put the unsigned integer `value` at `prop` of `obj` unless it is
     /// already there.
-    ///
-    /// # Errors
-    ///
-    /// Returns the [`AutomergeError`] of a put that fails.
     fn put_uint_if_changed(
         &mut self,
         obj: &ObjId,
@@ -51,10 +43,6 @@ pub trait WriteTyped: Transactable {
 
     /// Put `value` at `prop` of `obj` when it is `Some` and differs; delete
     /// the entry when it is `None` and a value is present.
-    ///
-    /// # Errors
-    ///
-    /// Returns the [`AutomergeError`] of a put or delete that fails.
     fn put_opt_str_if_changed(
         &mut self,
         obj: &ObjId,

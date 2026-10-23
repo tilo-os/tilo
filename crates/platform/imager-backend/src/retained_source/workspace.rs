@@ -16,10 +16,6 @@ pub struct ControlStream {
 }
 
 /// Retain the checked, root-controlled worker directory ancestry.
-/// # Errors
-/// Returns an error if directory opening or creation fails, ancestry is not
-/// namespace-controlled, worker permissions are not owner-only, or the host is
-/// unsupported.
 pub fn working_parent() -> io::Result<File> {
     #[cfg(target_os = "linux")]
     {
@@ -33,8 +29,6 @@ pub fn working_parent() -> io::Result<File> {
 
 /// Create private controller state beneath its already checked worker parent.
 /// The caller must retain `working_parent()` throughout this workspace's life.
-/// # Errors
-/// Returns an error if private directory creation fails or the host is unsupported.
 pub fn temporary_directory(prefix: &str) -> io::Result<tempfile::TempDir> {
     #[cfg(target_os = "linux")]
     {

@@ -1,4 +1,3 @@
-//! Real PTY bytes and published operations through the native idle-model seam.
 use super::*;
 use automerge::AutoCommit;
 use std::io::{Read, Write};

@@ -2003,7 +2003,6 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             assert!(callbacks <= progress.inspected, "unaccounted provider work");
             progress
         };
-        // A completed-query redraw starts at most one finite validation pass.
         let mut progress = step(palette);
         ticks = 0;
         while progress.pending {

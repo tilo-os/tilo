@@ -1,4 +1,3 @@
-//! The owner over its own file, as the standalone runtime keeps it.
 use crate::testing::{APP, ROOM, raw_fixture};
 use crate::{DocumentRead, NativeWorkspaceOwner, RoomId, open_file};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};

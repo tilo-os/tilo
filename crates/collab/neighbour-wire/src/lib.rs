@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 10;
+pub const PEER_PROTOCOL_VERSION: u32 = 11;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -558,6 +558,18 @@ pub enum NeighbourMsg {
         views: Vec<SurfaceView>,
         decode: Vec<SurfaceDecodeLimit>,
     },
+    /// `responder`'s answer to `requester`'s [`Self::RecordContentWant`]
+    /// when it keeps none of the content: the requester stops counting on
+    /// it, and once every device it is connected to that could hold the
+    /// content said so, the content is unavailable rather than on its way.
+    /// Appended to preserve every existing Postcard discriminant.
+    RecordContentLacks {
+        responder: PeerId,
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+    },
 }
 
 impl NeighbourMsg {
@@ -618,6 +630,7 @@ impl NeighbourMsg {
             | Self::PersonalWorkspaces { .. }
             | Self::RecordContentWant { .. }
             | Self::RecordContentPiece { .. }
+            | Self::RecordContentLacks { .. }
             | Self::SurfaceKeyframeRequest { .. }
             | Self::LivePresence { .. }
             | Self::SurfaceViewRequest { .. } => false,
@@ -660,6 +673,7 @@ impl NeighbourMsg {
             Self::SurfaceKeyframeRequest { .. } => "SurfaceKeyframeRequest",
             Self::LivePresence { .. } => "LivePresence",
             Self::SurfaceViewRequest { .. } => "SurfaceViewRequest",
+            Self::RecordContentLacks { .. } => "RecordContentLacks",
         }
     }
 }
@@ -745,6 +759,16 @@ mod tests {
             NeighbourMsg::LivePresence {
                 peer: 3,
                 frame: vec![1, 2, 3],
+            },
+        ));
+        all.push((
+            "record content lacks",
+            NeighbourMsg::RecordContentLacks {
+                responder: 3,
+                requester: 4,
+                app_id: "so.tilo.slides".into(),
+                cluster_id: "room".into(),
+                hash: "ab".into(),
             },
         ));
         all
@@ -1181,7 +1205,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 31;
+    const VARIANT_COUNT: usize = 33;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1230,7 +1254,7 @@ mod tests {
         (
             "surface view request",
             concat!(
-                "1e032430373834386666652d313839382d346637322d383431392d3062353463",
+                "1f032430373834386666652d313839382d346637322d383431392d3062353463",
                 "3933653664616401878080808080c0f65e800ad00501046832363401800fb808",
             ),
         ),
@@ -1242,7 +1266,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b09",
+                "0b0b",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1400,6 +1424,10 @@ mod tests {
             ),
         ),
         ("live presence", "1e0303010203"),
+        (
+            "record content lacks",
+            "2003040e736f2e74696c6f2e736c6964657304726f6f6d026162",
+        ),
     ];
 
     fn every_variant_encodes_to_its_pinned_bytes() {

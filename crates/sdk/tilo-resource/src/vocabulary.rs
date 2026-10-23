@@ -68,7 +68,6 @@ impl<R: Resource> AnyAction for Typed<R> {
 }
 
 impl Built {
-    /// `action`, an action of `R`.
     #[must_use]
     pub fn of<R: Resource>(action: R::Action) -> Self {
         Self(Box::new(Typed::<R>(action)))
@@ -169,6 +168,11 @@ pub struct Declaration {
     /// ([`Resource::ACTION_TYPE`]).
     pub action_type: &'static str,
     pub build: Builds,
+    /// The resource's own published action this one invokes, and the
+    /// arguments it fixes of it: a bound field edit is the resource's field
+    /// edit of that edit, a bound verb that verb with its bound values. What
+    /// another provider keeping the resource runs it as.
+    pub invokes: Option<(String, serde_json::Map<String, serde_json::Value>)>,
 }
 
 impl AsRef<Self> for Declaration {
@@ -204,6 +208,7 @@ impl Declaration {
             resource: vocabulary.kind,
             action_type: vocabulary.action_type,
             build,
+            invokes: None,
         }
     }
 }
@@ -314,7 +319,6 @@ impl<R: Resource> VocabularyOf<R> {
     };
 }
 
-/// The vocabulary of `R`.
 #[must_use]
 pub fn vocabulary<R: Resource>() -> &'static Vocabulary {
     &VocabularyOf::<R>::VOCABULARY

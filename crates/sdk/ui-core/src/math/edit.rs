@@ -85,8 +85,6 @@ impl Editor {
         self.row().len()
     }
 
-    // -- caret movement ------------------------------------------------------
-
     /// Move left one atom. Steps out of / into structures GeoGebra-style.
     pub fn move_left(&mut self, extend: bool) {
         if !extend && let Some(sel) = self.selection() {
@@ -259,7 +257,6 @@ impl Editor {
     }
 
     pub fn select_all(&mut self) {
-        // Select the whole current row.
         self.anchor = Some(0);
         self.caret.offset = self.row_len();
     }
@@ -306,8 +303,6 @@ impl Editor {
             self.anchor = None;
         }
     }
-
-    // -- deletion ------------------------------------------------------------
 
     /// Backspace: delete selection, else the atom before the caret. At the
     /// front of a structure's box, unwrap that structure (`GeoGebra` style).
@@ -380,8 +375,6 @@ impl Editor {
         self.anchor = None;
         true
     }
-
-    // -- insertion -----------------------------------------------------------
 
     /// Insert a node at the caret, replacing any selection first.
     fn insert_node(&mut self, node: Node) {
@@ -623,8 +616,6 @@ impl Editor {
         taken
     }
 
-    // -- helpers over the char run before the caret --------------------------
-
     fn ident_run_before(&self) -> String {
         let row = self.row();
         let mut s = String::new();
@@ -674,8 +665,6 @@ impl Editor {
             self.caret.offset = start.saturating_add(n);
         }
     }
-
-    // -- clipboard -----------------------------------------------------------
 
     /// The selected sub-row serialized to a linear string (for copy/cut).
     pub fn selected_linear(&self) -> Option<String> {

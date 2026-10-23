@@ -59,10 +59,13 @@ if grep -Fqx 'authselectmode require' "$chrony_config" 2>/dev/null \
 else
   warn "Chrony can select an unauthenticated or insufficiently diverse time source"
 fi
-if systemctl is-enabled --quiet systemd-pstore.service 2>/dev/null; then
-  warn "systemd-pstore persistence is enabled; kernel crash records may be copied to disk"
+pstore_storage="$(systemd-analyze cat-config systemd/pstore.conf 2>/dev/null \
+  | sed -n 's/^Storage=//p' | tail -n 1)"
+if systemctl is-enabled --quiet systemd-pstore.service 2>/dev/null \
+   && [ "${pstore_storage:-external}" = external ]; then
+  warn "systemd-pstore archives kernel crash records under /var/lib/systemd/pstore"
 else
-  ok "persistent pstore crash-record copying is disabled"
+  ok "pstore crash records go only to the journal"
 fi
 if installed systemd-coredump \
    || systemctl is-enabled --quiet systemd-coredump.socket 2>/dev/null; then

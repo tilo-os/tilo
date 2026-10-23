@@ -198,6 +198,17 @@ impl Palette {
             .find(|palette| palette.name().eq_ignore_ascii_case(name))
     }
 
+    /// The colour for something new beside things already in `taken`: the
+    /// first colour none of them has, or, with every colour taken, the one
+    /// fewest have.
+    pub fn next_after(taken: impl IntoIterator<Item = Palette>) -> Self {
+        let taken: Vec<Palette> = taken.into_iter().collect();
+        Self::ALL
+            .into_iter()
+            .min_by_key(|palette| taken.iter().filter(|used| *used == palette).count())
+            .unwrap_or_default()
+    }
+
     pub fn from_index(i: usize) -> Self {
         // `i % Self::ALL.len()` is always in bounds since `ALL` is a fixed,
         // non-empty array; `Self::ALL[0]` is a compile-time-safe fallback.
@@ -1390,7 +1401,6 @@ mod tests {
 
     #[test]
     fn recurrence_expands_rules_limits_zones_and_round_trips_rrule() {
-        // Case `weekly_recurrence_lands_on_same_weekday`.
         {
             let mut e = sample_event(date(2026, 6, 15)); // Monday
             e.recurrence = Recurrence::Weekly;
@@ -1400,7 +1410,6 @@ mod tests {
                 vec![date(2026, 6, 15), date(2026, 6, 22), date(2026, 6, 29)]
             );
         }
-        // Case `weekdays_recurrence_skips_weekends`.
         {
             let mut e = sample_event(date(2026, 6, 15));
             e.recurrence = Recurrence::Weekdays;
@@ -1409,7 +1418,6 @@ mod tests {
             assert_eq!(occ.len(), 5);
             assert!(occ.iter().all(|d| d.weekday().num_days_from_monday() < 5));
         }
-        // Case `recurrence_limits_exceptions_and_moved_occurrences_are_absolute`.
         {
             let mut event = sample_event(date(2026, 6, 1));
             event.recurrence = Recurrence::Daily;
@@ -1431,13 +1439,11 @@ mod tests {
                 vec![date(2026, 6, 1), date(2026, 6, 6), date(2026, 6, 7)]
             );
         }
-        // Case `none_recurrence_is_single_day`.
         {
             let e = sample_event(date(2026, 6, 15));
             assert!(e.occurs_on(date(2026, 6, 15)));
             assert!(!e.occurs_on(date(2026, 6, 16)));
         }
-        // Case `rrule_round_trips`.
         {
             for r in [
                 Recurrence::Daily,
@@ -1453,7 +1459,6 @@ mod tests {
 
     #[test]
     fn day_membership_covers_all_day_spans_and_overdue_open_tasks() {
-        // Case `all_day_events_use_an_exclusive_end_but_occupy_each_visible_day`.
         {
             let mut e = sample_event(date(2026, 6, 15));
             e.all_day = true;
@@ -1468,7 +1473,6 @@ mod tests {
             assert!(e.occurs_on(date(2026, 6, 17)));
             assert!(!e.occurs_on(date(2026, 6, 18)));
         }
-        // Case `legacy_all_day_final_minute_stays_one_visible_day`.
         {
             let mut e = sample_event(date(2026, 6, 15));
             e.all_day = true;
@@ -1480,7 +1484,6 @@ mod tests {
             assert!(e.occurs_on(date(2026, 6, 15)));
             assert!(!e.occurs_on(date(2026, 6, 16)));
         }
-        // Case `today_filter_includes_overdue_open_tasks`.
         {
             let model = seed_demo(date(2026, 6, 15));
             let today = model.tasks_for(&ListSel::Today, date(2026, 6, 15));
@@ -1528,7 +1531,6 @@ mod tests {
                 }
             }
         }
-        // Case `demo_seed_keeps_a_realistic_spread`.
         {
             // Sanity that the neutral replacements are actually present, so a future
             // edit can't silently gut the sample into an empty/placeholder set.

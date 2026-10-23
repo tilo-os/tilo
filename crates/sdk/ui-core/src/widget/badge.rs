@@ -173,7 +173,6 @@ impl<'a> BadgeFace<'a> {
         self.style = style;
         self
     }
-    /// The badge height in `theme`.
     pub fn height(theme: &Theme) -> f64 {
         BadgeMetrics::of(theme).height
     }

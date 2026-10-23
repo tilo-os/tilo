@@ -198,7 +198,6 @@ pub(crate) struct LayerWork {
 }
 
 impl LayerWork {
-    /// Every layer and the whole output.
     fn whole(size: (u32, u32)) -> Self {
         Self {
             backdrop: true,
@@ -857,7 +856,6 @@ impl StripLayers {
         }
     }
 
-    /// Composite `rect` of `output` from the layers.
     pub(crate) fn encode_composite(&self, target: CompositeTarget<'_>, rect: FineDamageRect) {
         self.composite.encode(
             target,
@@ -1535,8 +1533,6 @@ mod tests {
         );
     }
 
-    /// A whole layer is warmed in bands of at most about a million pixels,
-    /// a whole number of tile rows each, that cover the output once.
     #[test]
     fn warm_bands_cover_the_output_once_in_tile_rows() {
         assert_eq!(warm_bands((1024, 1024)), None);

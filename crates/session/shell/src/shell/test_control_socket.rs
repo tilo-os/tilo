@@ -23,11 +23,6 @@ pub use tilo_control::{
 /// only then renamed into place, so it is never reachable with wider
 /// permissions, even briefly and even when `path` is in a shared directory.
 /// A stale socket at `path` is replaced; anything else there is refused.
-///
-/// # Errors
-///
-/// Returns the filesystem error, or `AlreadyExists` when `path` names
-/// something other than a socket.
 pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
     let parent = path
         .parent()
@@ -79,7 +74,6 @@ mod tests {
 
     #[test]
     fn control_socket_is_private_replaces_only_stale_sockets() {
-        // Phase `default_lives_under_an_absolute_runtime_dir_only`.
         {
             assert_eq!(
                 default_socket_path(Some("/run/user/1000".into())),
@@ -98,7 +92,6 @@ mod tests {
             assert_eq!(admin_socket_path(Some("run/user".into())), None);
         }
 
-        // Phase `bound_socket_is_private_and_reachable`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let path = default_socket_path(Some(runtime.path().into())).unwrap();
@@ -112,14 +105,12 @@ mod tests {
             assert_eq!(socket.permissions().mode() & 0o777, 0o600);
             assert_eq!(socket.uid(), rustix::process::geteuid().as_raw());
             UnixStream::connect(&path).unwrap();
-            // The staging directory is gone.
             assert_eq!(
                 std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
                 1
             );
         }
 
-        // Phase `a_stale_socket_is_replaced`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let path = runtime.path().join("control.sock");
@@ -130,7 +121,6 @@ mod tests {
             UnixStream::connect(&path).unwrap();
         }
 
-        // Phase `a_file_or_link_at_the_path_is_left_alone`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let file = runtime.path().join("notes.txt");

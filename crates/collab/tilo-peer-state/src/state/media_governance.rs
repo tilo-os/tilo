@@ -148,11 +148,6 @@ impl StatePeer {
 
 impl PeerGovernanceMut<'_> {
     /// Host enrollment and its invitation-only delegation share one basis change.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer or the certificate or
-    /// delegation is refused.
     pub fn admit_certificate_with_workspace_delegation(
         self,
         cert: DeviceCert,
@@ -166,10 +161,6 @@ impl PeerGovernanceMut<'_> {
 }
 impl PeerMediaGovernance<'_> {
     /// Data publication allows room-first missing Chat; media readiness does not.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the room media governance is invalid.
     pub fn validate_media_governance_for_publication(self) -> Result<(), String> {
         if let Some(policy) = self.peer.validate_present_media_policy()? {
             self.peer.validate_media_bindings(&policy, false)?;
@@ -192,10 +183,6 @@ impl PeerMediaGovernance<'_> {
     /// such a Chat as ciphertext and cannot check the channel itself; the
     /// steward resolved the binding through the channel's keys when it
     /// opened the call, and only a governor that holds them may vouch so.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the policy fails validation against this snapshot.
     pub fn stewarded_media_policy(self) -> Result<Option<RoomMediaV1>, String> {
         let peer = self.peer;
         let policy = peer.validate_present_media_policy()?;
@@ -221,10 +208,6 @@ impl PeerMediaGovernance<'_> {
         Ok(policy)
     }
     /// Resolve the exact admitted Chat binding of a call channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the route or channel does not resolve.
     pub fn resolve_media_binding(
         self,
         app: &str,
@@ -343,12 +326,6 @@ impl PeerMediaGovernanceMut<'_> {
         *self.peer = candidate;
         Ok(true)
     }
-    /// Author a room media policy as the governance writer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer or the policy is invalid for
-    /// the current room.
     pub fn author_media_policy(
         self,
         policy: &RoomMediaV1,

@@ -83,14 +83,12 @@ mod tests {
 
     #[test]
     fn epub_cover_bytes_come_only_from_a_declared_cover() {
-        // Phase `extracts_declared_cover_bytes`.
         {
             let cover = crate::testutil::solid_png(20, 30, [200, 50, 10]);
             let epub = epub_with_cover(&cover);
             let got = cover_bytes(&epub).expect("cover resolved");
             assert_eq!(got, cover, "the exact cover entry bytes come back");
         }
-        // Phase `cover_bytes_is_none_for_non_epub`.
         {
             assert!(cover_bytes(b"definitely not a zip").is_none());
         }

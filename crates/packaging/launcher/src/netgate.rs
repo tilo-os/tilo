@@ -520,10 +520,6 @@ pub fn proxy_env(port: u16) -> Vec<(&'static str, String)> {
 /// [`connect_upstream_async`]. Built on first use: two workers, since a
 /// relay only moves bytes and waits on sockets, and the daemon profile's
 /// bounded blocking pool, which is where name resolution runs.
-///
-/// # Errors
-///
-/// Returns the error that kept the runtime from starting.
 pub fn egress_runtime() -> io::Result<&'static tokio::runtime::Handle> {
     static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
     RUNTIME
@@ -725,10 +721,6 @@ fn read_port<S: Read>(stream: &mut S) -> io::Result<u16> {
 
 /// Write a reply header. The bound-address fields are zeroed — a
 /// CONNECT client has no use for them.
-///
-/// # Errors
-///
-/// Returns an error if `stream` fails to write.
 pub fn write_reply<S: Write>(stream: &mut S, code: u8) -> io::Result<()> {
     stream.write_all(&[0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
 }
@@ -1164,11 +1156,6 @@ fn no_addresses() -> io::Error {
 /// candidate address that turns out to be this device unless the policy
 /// named the host exactly. Other confined transports must use this rather
 /// than resolving a permitted name themselves.
-///
-/// # Errors
-///
-/// Returns an error if DNS resolution fails, every resolved address is
-/// rejected by policy, or no permitted address can be connected to.
 pub async fn connect_upstream_async(
     dest: &Destination,
     policy: &EgressPolicy,
@@ -1265,7 +1252,6 @@ mod tests {
 
     #[test]
     fn egress_policy_without_grants_follows_the_manifest() {
-        // Phase `a_manifest_allowlist_is_enforced_instead_of_being_dropped`.
         {
             let maps = v(&[
                 "tile.openstreetmap.org",
@@ -1286,7 +1272,6 @@ mod tests {
                 "a filtered decision must not share the host network: {decision:?}"
             );
         }
-        // Phase `a_host_manifest_with_no_grants_stays_unrestricted`.
         {
             // The ten apps whose endpoint is user data keep working
             // exactly as before when the user has granted nothing.
@@ -1295,7 +1280,6 @@ mod tests {
                 EgressDecision::Unrestricted
             );
         }
-        // Phase `an_unknown_mode_is_blocked_not_shared`.
         {
             for spelling in ["allow-list", "Off", "none", "allowlist ", ""] {
                 assert_eq!(
@@ -1305,14 +1289,12 @@ mod tests {
                 );
             }
         }
-        // Phase `no_manifest_network_and_no_grant_is_blocked`.
         {
             assert_eq!(
                 EgressDecision::resolve("off", &[], &[]),
                 EgressDecision::Blocked
             );
         }
-        // Phase `dns_only_does_not_fall_through_to_unrestricted`.
         {
             // The canonical manifest vocabulary has a `dns-only` mode, answered
             // explicitly rather than falling into "not off means unrestricted".
@@ -1325,7 +1307,6 @@ mod tests {
 
     #[test]
     fn grants_narrow_but_never_widen_the_manifest_allowlist() {
-        // Phase `a_specific_grant_narrows_a_host_manifest`.
         {
             // The point of the whole exercise: a user who granted one host
             // to an app whose manifest asks for `host` gets one host.
@@ -1338,7 +1319,6 @@ mod tests {
                 "a grant naming one host must not share the whole host network: {decision:?}"
             );
         }
-        // Phase `a_star_grant_is_unrestricted`.
         {
             assert_eq!(
                 EgressDecision::resolve("host", &[], &v(&["*"])),
@@ -1349,7 +1329,6 @@ mod tests {
                 EgressDecision::Unrestricted
             );
         }
-        // Phase `a_star_grant_narrows_to_an_explicit_manifest_allowlist`.
         {
             // "Allow everything this app asks for" must mean the declared
             // endpoints, not the whole internet.
@@ -1364,7 +1343,6 @@ mod tests {
                 "a `*` grant must not widen a package that enumerated its endpoints: {decision:?}"
             );
         }
-        // Phase `a_suffix_grant_selects_the_declared_endpoints_under_it`.
         {
             let maps = v(&[
                 "tile.openstreetmap.org",
@@ -1382,7 +1360,6 @@ mod tests {
                 "an endpoint outside the granted suffix must not survive: {policy:?}"
             );
         }
-        // Phase `a_grant_cannot_exceed_an_explicit_manifest_allowlist`.
         {
             let decision = EgressDecision::resolve(
                 "allowlist",
@@ -1397,7 +1374,6 @@ mod tests {
                  {policy:?}"
             );
         }
-        // Phase `a_grant_outside_the_manifest_allowlist_leaving_nothing_blocks`.
         {
             let decision = EgressDecision::resolve(
                 "allowlist",
@@ -1406,7 +1382,6 @@ mod tests {
             );
             assert_eq!(decision, EgressDecision::Blocked);
         }
-        // Phase `an_address_literal_never_matches_a_hostname_grant`.
         {
             // The bypass this closes: resolving the allowed name yourself then
             // asking the gate for the address would make every name-scoped grant
@@ -1424,7 +1399,6 @@ mod tests {
             assert!(!by_addr.permits("93.184.216.34"));
             assert_eq!(by_addr, EgressPolicy::none());
         }
-        // Phase `subdomain_grants_use_the_shared_matcher`.
         {
             // `.example.com` is `host_covers`' suffix form, the same spelling the
             // compositor evaluates — asserted so a matcher change shows up here.
@@ -1449,7 +1423,6 @@ mod tests {
         assert!(policy.permits("example.com"));
         assert!(!policy.permits("example.com.evil.net"));
         assert!(!decision.shares_host_network());
-        // And it caps a manifest allowlist like the `.` spelling does.
         let decision = EgressDecision::resolve(
             "allowlist",
             &v(&["imap.fastmail.com", "evil.example"]),
@@ -1543,7 +1516,6 @@ mod tests {
 
     #[test]
     fn the_gate_relay_bounds_its_resources_and_forwards_early_bytes() {
-        // Phase `gate_socket_path_is_short_enough_for_sun_path`.
         {
             // 108 bytes including the NUL. A path over the limit cannot be
             // connected to, and the failure surfaces far from its cause.
@@ -1554,7 +1526,6 @@ mod tests {
             );
             assert!(SANDBOX_GATE_PATH.len() < 100);
         }
-        // Phase `the_gate_serves_no_more_than_its_connection_limit_at_once`.
         {
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("gate.sock");
@@ -1576,7 +1547,6 @@ mod tests {
             let mut second = std::os::unix::net::UnixStream::connect(&socket).unwrap();
             second.write_all(&[0x05, 0x01, 0x00]).unwrap();
 
-            // Closing the tunnel frees the slot, and the waiting client is served.
             drop(first);
             drop(held);
             second
@@ -1587,7 +1557,6 @@ mod tests {
             assert_eq!(greeting, [0x05, 0x00]);
             assert_eq!(gate.stats().allowed(), 1);
         }
-        // Phase `the_relay_carries_no_more_than_its_connection_limit_at_once`.
         {
             let dir = tempfile::tempdir().unwrap();
             let socket = dir.path().join("gate.sock");
@@ -1633,8 +1602,6 @@ mod tests {
             let port = service.local_addr().unwrap().port();
             let _gate = NetGate::start(&socket, EgressPolicy::from_grants(["localhost"])).unwrap();
 
-            // Greeting, request and payload in one write, as an optimistic
-            // client sends them.
             let mut all = vec![0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x03, 9];
             all.extend_from_slice(b"localhost");
             all.extend_from_slice(&port.to_be_bytes());
@@ -1738,10 +1705,8 @@ mod tests {
 
     #[test]
     fn socks5_greetings_and_requests_parse_or_are_refused() {
-        // Phase `the_first_byte_picks_the_protocol`.
         {
             assert_eq!(detect_protocol(0x05), Protocol::Socks5);
-            // Every HTTP method starts with an uppercase letter.
             for m in *b"CGPH" {
                 assert_eq!(detect_protocol(m), Protocol::HttpConnect);
             }
@@ -1751,7 +1716,6 @@ mod tests {
             let mut p = pipe(vec![0x04, 0x01]);
             assert!(socks5_greet(&mut p).is_err());
         }
-        // Phase `parses_a_domain_connect_request`.
         {
             let mut req = vec![0x05, 0x01, 0x00, 0x03, 11];
             req.extend_from_slice(b"example.com");
@@ -1771,7 +1735,6 @@ mod tests {
             assert_eq!(dest.host_key(), "198.51.100.9");
             assert_eq!(dest.port(), 80);
         }
-        // Phase `a_non_connect_command_is_refused_with_a_reply`.
         {
             // 0x03 is UDP ASSOCIATE.
             let req = vec![0x05, 0x03, 0x00, 0x01, 1, 2, 3, 4, 0, 80];
@@ -1789,7 +1752,6 @@ mod tests {
 
     #[test]
     fn http_proxy_heads_parse_to_the_requested_authority() {
-        // Phase `connect_carries_the_name_the_client_asked_for`.
         {
             // The property that matters: an HTTP CONNECT names a host, so the
             // policy sees a name, same as socks5h, without a client feature flag.
@@ -1812,7 +1774,6 @@ mod tests {
                 Destination::Domain("example.com".to_string(), 443)
             );
         }
-        // Phase `an_absolute_form_request_is_rewritten_to_origin_form`.
         {
             // A plain-HTTP proxied request arrives with an absolute URI, which
             // origin servers aren't required to accept, so it's rewritten first.
@@ -1848,7 +1809,6 @@ mod tests {
             let policy = EgressPolicy::from_grants(["example.com"]);
             assert!(!policy.permits(&req.dest.host_key()));
         }
-        // Phase `a_malformed_head_parses_to_nothing_rather_than_a_default_host`.
         {
             assert!(parse_http_proxy_head("").is_none());
             assert!(parse_http_proxy_head("GARBAGE\r\n\r\n").is_none());
@@ -1862,7 +1822,6 @@ mod tests {
 
     #[test]
     fn device_local_destinations_need_an_exact_or_wildcard_grant() {
-        // Phase `loopback_and_link_local_are_device_local_in_every_spelling`.
         {
             for addr in [
                 "127.0.0.1",
@@ -1883,7 +1842,6 @@ mod tests {
                 );
             }
         }
-        // Phase `a_public_address_is_not_device_local`.
         {
             // Reserved for documentation (RFC 5737 / 3849), so no machine
             // running this test holds them.
@@ -1894,7 +1852,6 @@ mod tests {
                 );
             }
         }
-        // Phase `this_hosts_own_addresses_are_device_local_even_when_they_look_public`.
         {
             // Every address the host holds routes to its own services; loopback
             // is assertable without knowing the network.
@@ -1903,7 +1860,6 @@ mod tests {
             // be bound.
             assert!(!is_assigned_to_this_host("198.51.100.9".parse().unwrap()));
         }
-        // Phase `only_an_exact_grant_or_the_wildcard_reaches_this_device`.
         {
             let suffix = EgressPolicy::from_grants([".localhost"]);
             assert!(

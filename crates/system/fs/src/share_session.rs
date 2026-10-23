@@ -54,11 +54,6 @@ impl ShareSession {
     }
 
     /// Open a named-recipient session using the system clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when peer, workspace, invite, or live authorization
-    /// validation fails.
     pub fn open_named(
         workspace_id: Uuid,
         peer: AuthenticatedFsPeer,
@@ -77,11 +72,6 @@ impl ShareSession {
     }
 
     /// Open a named-recipient session with an explicit clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when peer, workspace, invite, or live authorization
-    /// validation fails.
     pub fn open_named_with_clock(
         workspace_id: Uuid,
         peer: AuthenticatedFsPeer,
@@ -108,11 +98,6 @@ impl ShareSession {
     }
 
     /// Redeem and open a bearer session using the system clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when peer validation, redemption, or live
-    /// authorization fails.
     pub fn open_bearer(
         workspace_id: Uuid,
         peer: AuthenticatedFsPeer,
@@ -132,11 +117,6 @@ impl ShareSession {
 
     /// Redeem and open a bearer session with an explicit clock. Redemption is
     /// performed online before the session exists; the secret is not retained.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when peer validation, redemption, or live
-    /// authorization fails.
     pub fn open_bearer_with_clock(
         workspace_id: Uuid,
         peer: AuthenticatedFsPeer,
@@ -191,11 +171,6 @@ impl ShareSession {
     /// Rich authorization result used by protocol boundaries. This performs
     /// all live checks and is also the implementation behind
     /// [`RecordAuthorizer`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when actor, record, peer certification, grant, or
-    /// permission validation fails.
     pub fn authorize(
         &self,
         actor: &FileActor,
@@ -414,7 +389,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn share_sessions_bind_subject_scope_and_keep_live_checks() {
-        // Phase `named_session_rejects_wrong_person_and_device`.
         {
             let fixture = Fixture::new();
             let stranger = Ed25519PublicKey::from_bytes([99; 32]);
@@ -446,7 +420,6 @@ mod tests {
                 Err(ShareSessionError::PeerIdentityMismatch)
             ));
         }
-        // Phase `view_cannot_write_and_record_scope_is_exact`.
         {
             let fixture = Fixture::new();
             let token = fixture.named_token(
@@ -472,7 +445,6 @@ mod tests {
                 Err(ShareSessionError::WrongRecord)
             ));
         }
-        // Phase `grant_and_device_revocation_take_effect_after_session_creation`.
         {
             let fixture = Fixture::new();
             let token = fixture.named_token(
@@ -497,7 +469,6 @@ mod tests {
             assert!(!session.actor_is_certified(&actor));
             assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
         }
-        // Phase `expiry_is_rechecked_after_session_creation`.
         {
             let fixture = Fixture::new();
             let token = fixture.named_token(
@@ -510,7 +481,6 @@ mod tests {
             fixture.clock.set(5_000);
             assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
         }
-        // Phase `bearer_one_use_allows_same_actor_reconnect_and_keeps_live_checks`.
         {
             let fixture = Fixture::new();
             let mut rng = UnwrapErr(SysRng);

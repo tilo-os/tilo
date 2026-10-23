@@ -222,7 +222,7 @@ pub mod prelude {
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordSaveStatus};
-    pub use ui_core::storage::{Scope, SettingsSchema};
+    pub use ui_core::storage::{DeviceClass, Scope, SettingsSchema};
     pub use ui_core::tilo_actions;
     pub use ui_core::tilo_actions::{ActionError, ActionNeed, ActionRegistry, ExecutionLocus};
     pub use ui_core::tokens::TextRole;

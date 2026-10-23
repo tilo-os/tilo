@@ -63,9 +63,6 @@ impl HostPolicy {
     /// shared vocabulary: "Always" (`Never`, or a deadline) on disk; "This
     /// session" (`EndOfSession`) and "Allow" (`AfterUse`) in this session
     /// only.
-    ///
-    /// # Errors
-    /// Returns the write error for a decision kept on disk.
     pub fn record_allow(
         store: &crate::store::Store,
         app_id: &str,
@@ -113,9 +110,6 @@ impl HostPolicy {
     }
 
     /// Write the decisions that outlive a restart.
-    ///
-    /// # Errors
-    /// Returns the write error.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let durable = Self {
             capabilities: self
@@ -199,11 +193,6 @@ struct Handoff {
     app_id: String,
 }
 
-/// Encode the launcher's handoff for `app_id`.
-///
-/// # Errors
-///
-/// Returns an error if the app id is too long to fit the bounded handoff.
 pub fn encode_handoff(app_id: &str) -> std::io::Result<Vec<u8>> {
     let json = serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": app_id }))
         .map_err(std::io::Error::other)?;
@@ -221,10 +210,6 @@ pub fn encode_handoff(app_id: &str) -> std::io::Result<Vec<u8>> {
 /// Read who is calling from the head of a connection. Returns the caller and
 /// the bytes already consumed that belong to the request (a connection
 /// without a handoff starts directly with its JSON line).
-///
-/// # Errors
-///
-/// Returns an error if a handoff starts but is malformed or truncated.
 pub fn read_caller(stream: &mut impl Read) -> std::io::Result<(Caller, Vec<u8>)> {
     // One byte first: a request is JSON and never starts with the magic's
     // first byte, so a short request (`{}`) is never waited on for more.
@@ -259,7 +244,6 @@ pub fn read_caller(stream: &mut impl Read) -> std::io::Result<(Caller, Vec<u8>)>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RequestedBy {
-    /// The person, through the Terminal's own controls.
     #[default]
     Person,
     /// An agent, through the Terminal's published actions.
@@ -362,11 +346,6 @@ impl HostDenied {
 }
 
 /// Decide a Host request. Pure, so every refusal is testable without a pty.
-///
-/// # Errors
-///
-/// Returns the first gate the request fails, in the order the module
-/// documentation lists them.
 pub fn decide_host(
     caller: &Caller,
     requested_by: RequestedBy,
@@ -592,7 +571,6 @@ mod tests {
             ));
         assert!(!restricted.allows_host_shell(TERMINAL_APP_ID, now));
 
-        // Allowing twice keeps one record.
         let mut twice = allowed();
         twice.allow_host_shell(TERMINAL_APP_ID);
         assert_eq!(twice.capabilities.len(), 1);

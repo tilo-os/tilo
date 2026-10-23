@@ -2284,7 +2284,7 @@ mod tests {
                 &mut app,
                 CONTINUITY,
                 "allow-capability",
-                serde_json::json!({ "capability": "clipboard", "on": true }),
+                serde_json::json!({ "capability": "clipboard", "on": false }),
             )
             .unwrap();
             assert!(
@@ -2299,7 +2299,7 @@ mod tests {
 
             let saved = app.settings::<ContinuityPrivacy>().get();
             assert!(saved.enabled);
-            assert!(saved.effective(Capability::Clipboard));
+            assert!(!saved.effective(Capability::Clipboard) && saved.effective(Capability::Media));
             assert_eq!(saved.audit.len(), 2);
             let encoded = serde_json::to_string(&saved.audit).unwrap();
             for forbidden in ["payload", "token", "address", "file_name"] {

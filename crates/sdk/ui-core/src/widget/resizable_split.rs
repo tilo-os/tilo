@@ -612,6 +612,15 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         }
     }
 
+    /// Whether the first pane stands at its content size: built so
+    /// ([`Self::with_content_sized_first`]) or reset to it, and the divider
+    /// not moved since. A control that resets the split has nothing to do
+    /// while this holds.
+    #[must_use]
+    pub fn is_at_content_size(&self) -> bool {
+        self.content_sized_first && !self.handle.layout_dirty
+    }
+
     /// Restore the first pane's natural content size after manual resizing.
     pub fn reset_to_content_size(&mut self) {
         self.content_sized_first = true;
@@ -1471,10 +1480,16 @@ mod tests {
             .with_divider_id("request-divider");
         let (mut tree, node) = solve(&mut split, 400.0, 300.0);
         assert_eq!(split.left().get_rect().width(), 120.0);
+        assert!(split.is_at_content_size());
         split.set_split_position(0.7);
+        assert!(
+            !split.is_at_content_size(),
+            "a moved divider has something to reset"
+        );
         relayout(&mut split, &mut tree, node, 400.0, 300.0);
         assert_eq!(split.left().get_rect().width(), 280.0);
         split.reset_to_content_size();
+        assert!(split.is_at_content_size());
         relayout(&mut split, &mut tree, node, 400.0, 300.0);
         assert_eq!(split.left().get_rect().width(), 120.0);
         assert_eq!(split.handle.hit_rect().center().x, 120.0);
@@ -1533,7 +1548,6 @@ mod tests {
         );
         assert!(!s.layout_dirty, "laid out at the new ratio");
 
-        // Dragging past either end clamps.
         dispatch(&mut s, &tree, node, &cursor_moved(100.0, 150.0));
         dispatch(&mut s, &tree, node, &mouse_press());
         dispatch(&mut s, &tree, node, &cursor_moved(2.0, 150.0));

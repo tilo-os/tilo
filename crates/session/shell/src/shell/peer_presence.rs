@@ -129,7 +129,6 @@ impl SharedDesk {
         self.with(|desk| desk.tiles = tiles);
     }
 
-    /// Replace the strip shown with `strip`.
     pub fn set_strip(&self, strip: Option<ShownStrip>) {
         self.with(|desk| desk.strip = strip);
     }
@@ -2507,7 +2506,6 @@ mod tests {
             );
         }
 
-        // Phase `a_certified_person_without_membership_has_no_chip`.
         {
             let ws = room_admitting("ada", "someone-else", CapRole::Editor);
             let labels = PeerLabels::from([(handle, "Bob".to_string())]);

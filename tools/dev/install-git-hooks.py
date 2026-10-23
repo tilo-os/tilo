@@ -50,7 +50,6 @@ def install(root):
         raise ValueError(result.stderr.strip())
     if git(root, "config", "--get", "core.hooksPath").stdout.strip() != ".githooks":
         raise ValueError("Hook installation could not be verified.")
-    # Merge drivers run from the top of the working tree being merged.
     for driver, mode in MERGE_DRIVERS.items():
         for key, value in (("name", "generated file: take main's side, then regenerate"),
                            ("driver", f".githooks/merge-generated {mode} %O %A %B %P %L")):

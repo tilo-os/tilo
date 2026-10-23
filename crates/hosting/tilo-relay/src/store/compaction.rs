@@ -45,7 +45,6 @@ pub(crate) struct SnapshotWrite {
 /// What [`WorkspaceStore::replace_channel`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Replaced {
-    /// Entries removed.
     pub removed: usize,
     /// Entries left in the channel, the snapshot's own included.
     pub kept: usize,

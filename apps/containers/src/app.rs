@@ -92,11 +92,9 @@ impl Confirm {
 /// Kind of text the prompt dialog collects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PromptKind {
-    /// Create a new named volume.
     NewVolume,
     /// Tag an existing image (the source is in `Prompt::context`).
     TagImage,
-    /// Pull an image by reference.
     PullImage,
 }
 
@@ -181,9 +179,6 @@ pub struct ControlledRefreshRequest {
 
 #[cfg(test)]
 impl ControlledRefreshRequest {
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn snapshot(&self, engine: Engine) -> Result<(), String> {
         self.events
             .send(Bg::Snapshot(engine))
@@ -200,27 +195,18 @@ pub struct ControlledPullRequest {
 
 #[cfg(test)]
 impl ControlledPullRequest {
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn line(&self, line: impl Into<String>) -> Result<(), String> {
         self.events
             .send(Bg::Pull(StreamMsg::Line(line.into())))
             .map_err(|_| "controlled pull receiver disconnected".into())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn done(&self) -> Result<(), String> {
         self.events
             .send(Bg::Pull(StreamMsg::Done))
             .map_err(|_| "controlled pull receiver disconnected".into())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn fail(&self, error: impl Into<String>) -> Result<(), String> {
         self.events
             .send(Bg::Pull(StreamMsg::Failed(error.into())))
@@ -238,10 +224,6 @@ pub struct ControlledCreateRequest {
 impl ControlledCreateRequest {
     /// Deliver the existing post-run refresh event. The current create worker
     /// exposes no classified create success/failure result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn post_run_snapshot(&self, engine: Engine) -> Result<(), String> {
         self.events
             .send(Bg::Snapshot(engine))
@@ -511,7 +493,6 @@ impl ContainersApp {
         self.publish_model();
     }
 
-    /// Show the selected container's `tab`.
     pub(crate) fn show_tab(&mut self, tab: DetailTab) {
         self.view.tab = tab;
         self.parts.offsets.detail.set((0.0, 0.0));
@@ -627,7 +608,6 @@ impl ContainersApp {
         rows
     }
 
-    /// The live row `id`, wherever it is in the engine.
     pub(crate) fn engine_row(&self, id: &str) -> Option<LiveRow> {
         let live = self.engine.live;
         if let Some(container_id) = id
@@ -696,8 +676,6 @@ impl ContainersApp {
     fn connected(&self) -> bool {
         !self.past && (self.engine.live || !self.live)
     }
-
-    // ---- background work ------------------------------------------------
 
     /// Kick a background podman re-probe so stats stay fresh without blocking
     /// the UI thread. No-op offline.
@@ -880,8 +858,6 @@ impl ContainersApp {
         self.engine_changed();
     }
 
-    // ---- streaming pull -------------------------------------------------
-
     /// Start a streaming `podman pull` of `reference` on a worker thread and
     /// show its progress. Offline it simulates a quick success so the demo
     /// responds.
@@ -956,8 +932,6 @@ impl ContainersApp {
         }
     }
 
-    // ---- image / volume actions ----------------------------------------
-
     /// Remove an image (post-confirmation). Force-removes so an unused tag
     /// goes even if a stopped container references it.
     pub(crate) fn remove_image(&mut self, reference: &str) {
@@ -976,7 +950,6 @@ impl ContainersApp {
         }
     }
 
-    /// Tag an image with a new reference.
     pub(crate) fn tag_image(&mut self, source: &str, new_tag: &str) {
         let new_tag = new_tag.trim();
         if new_tag.is_empty() {
@@ -1135,8 +1108,6 @@ impl ContainersApp {
             self.show_toast(format!("Created a container from {image}"), false);
         }
     }
-
-    // ---- dialogs --------------------------------------------------------
 
     pub(crate) fn set_create_open(&mut self, open: bool) {
         if self.create_open == open {
@@ -1338,8 +1309,6 @@ impl ContainersApp {
         }
     }
 
-    // ---- intents --------------------------------------------------------
-
     /// Apply what the window's controls asked for.
     pub(crate) fn drain_intents(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.show_opened();
@@ -1416,8 +1385,6 @@ impl ContainersApp {
         }
     }
 
-    // ---- view state -----------------------------------------------------
-
     /// Hand the window what it shows, when that changed.
     fn publish_model(&mut self) {
         // A container that left the engine is no longer shown as chosen.
@@ -1469,7 +1436,6 @@ impl ContainersApp {
         }
     }
 
-    /// The dialog on top, if one is open.
     fn top_dialog_mut(&mut self) -> Option<&mut dyn Widget> {
         if let Some(dialog) = self.confirm_dialog.as_mut() {
             return Some(dialog);
@@ -1902,7 +1868,6 @@ impl ContainersApp {
         }
     }
 
-    /// Whether the new-container form is open.
     pub fn is_create_open(&self) -> bool {
         self.create_open
     }
@@ -1917,7 +1882,6 @@ impl ContainersApp {
         self.view.selected.as_deref()
     }
 
-    /// The selected container's detail tab.
     pub fn tab(&self) -> DetailTab {
         self.view.tab
     }

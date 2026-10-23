@@ -820,9 +820,6 @@ impl<R: Resource> Dispatcher<R> {
     /// and nothing took yet — a destructive verb or a removal waiting for
     /// the person's confirmation — as the actions the door would apply once
     /// they agreed. Taking them empties the queue.
-    ///
-    /// # Errors
-    /// Returns why a queued invocation does not build.
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_asked(&self) -> Result<Vec<R::Action>, String> {
         self.core
@@ -1070,8 +1067,10 @@ impl<R: Resource> Dispatcher<R> {
     /// Whether the participant may take `invoke`: what its declaration, or
     /// the typed value it applies, needs. One this resource does not declare
     /// (an edit bound to a surface's view state) is left to the host, which
-    /// checks what its published action needs.
-    fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
+    /// checks what its published action needs. A surface asks before work
+    /// that only feeds a write (an index it would keep with a row), so a
+    /// participant who may not make the write is not sent it.
+    pub fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
         if invoke.id == tilo_resource::APPLY || invoke.id == tilo_resource::FIELD_EDIT {
             return match invoke.build(0) {
                 Ok(action) => self.may_apply(&action),
@@ -1257,8 +1256,6 @@ impl<R: Resource> Dispatcher<R> {
         applied
     }
 
-    /// Hand an action that needs confirming to the host's door, which asks
-    /// before it applies: nothing applied now skips the person's consent.
     fn ask_first(&self, invoke: Invoke<R>, action: &R::Action) -> Result<(), ActionError> {
         if let Some(reason) = self.core.unreadable() {
             return Err(ActionError::Refused(reason));
@@ -1334,6 +1331,22 @@ impl<R: Resource> Dispatcher<R> {
         action: &R::Action,
     ) -> Result<(), ActionError> {
         self.apply_now_as(edits, action, self.core.context(), true)
+    }
+
+    /// Apply `action` now to the document `edits` lends, for `invoker`: a
+    /// step a door carries out for whoever invoked it that writes this
+    /// record too (a container listing a new child), attributed to them.
+    ///
+    /// # Errors
+    /// As [`apply_now`](Self::apply_now).
+    pub(crate) fn apply_now_for(
+        &self,
+        edits: &mut Edits<'_>,
+        action: &R::Action,
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<(), ActionError> {
+        let context = self.core.context().with_invoker(invoker.clone());
+        self.apply_now_as(edits, action, context, true)
     }
 
     fn apply_now_as(

@@ -52,10 +52,6 @@ impl std::fmt::Debug for AnthropicJudge {
 
 impl AnthropicJudge {
     /// The judge `profile` describes, its key read from `store`.
-    ///
-    /// # Errors
-    /// The profile is not an enabled Anthropic profile with a default model,
-    /// or the store holds no key for it.
     pub fn from_profile(
         profile: &ProviderProfile,
         store: &SecretStore,
@@ -93,7 +89,6 @@ impl AnthropicJudge {
         })
     }
 
-    /// The request body for `case`.
     #[must_use]
     pub fn body(&self, case: &Case) -> serde_json::Value {
         serde_json::json!({

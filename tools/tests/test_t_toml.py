@@ -92,6 +92,46 @@ class TTomlTests(unittest.TestCase):
         self.assertEqual(t_toml.local_closure(packages, {"top"}, dev=False), {"top", "lib", "base"})
         self.assertEqual(t_toml.local_closure(packages, {"top"}, dev=True), {"top", "lib", "base", "helper"})
 
+    def test_dependencies_of_adds_the_directories_its_packages_reach(self):
+        def package(path, *deps):
+            return {"name": path.rpartition("/")[2], "manifest_path": f"/w/{path}/Cargo.toml",
+                    "dependencies": [{"name": dep.rpartition("/")[2], "kind": kind, "path": f"/w/{dep}"}
+                                     for dep, kind in deps]}
+        packages = {p["name"]: p for p in (
+            package("apps/notes", ("crates/doc/model", None), ("crates/sdk/kit", None), ("crates/dev/fixture", "dev")),
+            package("apps/new", ("crates/media/codec", None)),
+            package("crates/doc/model", ("crates/doc/model/core", None), ("crates/text/shape", "build")),
+            package("crates/doc/model/core"), package("crates/text/shape"), package("crates/media/codec"),
+            package("crates/sdk/kit"), package("crates/dev/fixture"), package("crates/unrelated"))}
+        manifest = t_toml.suites.parse(
+            '[[cargo]]\npackage = "cli"\ninputs = ["apps/", "crates/sdk/"]\n'
+            'readers = ["crates/cli/src/lib.rs"]\ndependencies_of = ["apps/"]\n'
+            '[[cargo]]\npackage = "other"\ninputs = ["os/x"]\nreaders = ["crates/other/src/lib.rs"]\n')
+        expanded = t_toml.with_dependency_inputs(manifest, packages, Path("/w"))
+        # A new app's dependencies come in with it; dev-dependencies, packages no app reaches and
+        # directories an input already covers don't.
+        self.assertEqual(expanded.cargo[0].inputs, ("apps/", "crates/sdk/", "crates/doc/model/",
+                                                    "crates/media/codec/", "crates/text/shape/"))
+        self.assertEqual(expanded.cargo[1], manifest.cargo[1])
+
+    def test_the_app_cli_is_keyed_by_every_app_and_what_the_apps_depend_on(self):
+        config = t_matrix.load(ROOT)
+        families = {family["name"]: family for family in config["cargo"]}
+        packages = {p["name"]: p for p in t_toml.workspace_graph.cargo_metadata(ROOT)["packages"]}
+        dirs = {name: Path(p["manifest_path"]).resolve().parent.relative_to(ROOT).as_posix()
+                for name, p in packages.items()}
+        apps = {name for name, directory in dirs.items() if directory.startswith("apps/")}
+        reached = t_toml.local_closure(packages, apps, False)
+        for family in ("test", "clippy", "check"):
+            inputs = families[family]["package_inputs"]["tilo-app-cli"]
+            with self.subTest(family=family):
+                for manifest in sorted(ROOT.glob("apps/*/tilo-app.toml")):
+                    path = manifest.relative_to(ROOT).as_posix()
+                    self.assertTrue(any(matches(path, glob) for glob in inputs), path)
+                for name in sorted(reached):
+                    path = f"{dirs[name]}/src/lib.rs"
+                    self.assertTrue(any(matches(path, glob) for glob in inputs), path)
+
     def test_each_default_app_has_a_size_check_keyed_by_its_own_build(self):
         config = t_matrix.load(ROOT)
         checks = {check["name"]: check for check in config["check"]}

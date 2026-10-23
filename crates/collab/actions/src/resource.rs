@@ -191,10 +191,6 @@ impl<I> ActionBinding<I> {
 
 impl ActionBinding<()> {
     /// Bind a nullary control to a nullary exported action.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the action is not exported or requires arguments.
     pub fn unit(resource: &Resource, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
         // Refuse a required-argument action at construction, not first click.
@@ -210,10 +206,6 @@ impl ActionBinding<()> {
 
     /// Look up the real exported spec by stable id, then create a nullary
     /// binding. Useful when the resource is assembled inline or generated.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `action_id` is not exported or requires arguments.
     pub fn unit_for(resource: &Resource, action_id: &str) -> Result<Self, ActionBindingError> {
         let spec = resource
             .actions
@@ -227,11 +219,6 @@ impl ActionBinding<()> {
     }
 
     /// Bind a control to a fixed, strictly validated JSON argument object.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the action is not exported or `arguments` violate
-    /// its parameter contract.
     pub fn static_json(
         resource: &Resource,
         spec: &ActionSpec,
@@ -253,11 +240,6 @@ impl ActionBinding<()> {
     }
 
     /// Look up the real exported spec by id, then bind fixed JSON arguments.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `action_id` is not exported or `arguments` violate
-    /// its parameter contract.
     pub fn static_json_for(
         resource: &Resource,
         action_id: &str,
@@ -896,6 +878,25 @@ pub struct ActionSpec {
     /// applies as, for a nested resource's action. See
     /// [`ActionSpec::applied_as`].
     applied_as: Option<(String, String)>,
+    /// The provider that publishes and runs the action, when it is not the
+    /// resource's publisher, and the resource it publishes it on there when
+    /// another than the one it is offered on here: a view binds its
+    /// controls to another provider's action ([`ActionSpec::run_by`]).
+    provider: Option<Arc<RunBy>>,
+}
+
+/// Where another provider runs an action a view offers
+/// ([`ActionSpec::run_by`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunBy {
+    /// The provider that publishes and runs it.
+    pub provider: String,
+    /// The resource it publishes it on, when another than the one it is
+    /// offered on here (a row's operation on a record the provider keeps).
+    pub resource: Option<String>,
+    /// The action it publishes and the arguments this one fixes of it,
+    /// when it is offered here as another (a bound edit of its field edit).
+    pub invokes: Option<(String, serde_json::Map<String, serde_json::Value>)>,
 }
 
 impl Clone for ActionSpec {
@@ -919,6 +920,7 @@ impl Clone for ActionSpec {
             continuation_resolver: self.continuation_resolver.clone(),
             carrier: self.carrier,
             applied_as: self.applied_as.clone(),
+            provider: self.provider.clone(),
         }
     }
 }
@@ -940,6 +942,40 @@ struct TypedActionSeed {
 }
 
 impl ActionSpec {
+    /// This action as `provider` publishes and runs it: a view shows another
+    /// provider's resource and binds its controls to that provider's
+    /// actions. The view's publisher never runs nor publishes it; its host
+    /// invokes it at `provider`, which admits and runs it as any caller's.
+    #[must_use]
+    pub fn run_by(self, provider: impl Into<String>) -> Self {
+        self.run_as(RunBy {
+            provider: provider.into(),
+            resource: None,
+            invokes: None,
+        })
+    }
+
+    /// [`Self::run_by`] as `run` says where the provider publishes it.
+    #[must_use]
+    pub fn run_as(mut self, run: RunBy) -> Self {
+        self.provider = Some(Arc::new(run));
+        self
+    }
+
+    /// Where another provider than the resource's publisher runs this
+    /// action ([`Self::run_by`]).
+    #[must_use]
+    pub fn run_by_provider(&self) -> Option<&RunBy> {
+        self.provider.as_deref()
+    }
+
+    /// The provider that runs this action, when it is another than the
+    /// resource's publisher ([`Self::run_by`]).
+    #[must_use]
+    pub fn provider(&self) -> Option<&str> {
+        self.provider.as_deref().map(|run| run.provider.as_str())
+    }
+
     /// Mark this action as applied as the enclosing resource of kind `kind`
     /// (labelled `label`): a nested resource (a note's rich-text body)
     /// publishes its document actions re-encoded as the record's field
@@ -1040,11 +1076,6 @@ impl ActionSpec {
     }
 
     /// Strict argument validation without invoking an encoder.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`ArgError`] when the deferred declaration is malformed or
-    /// `supplied` does not bind to the declared parameters.
     pub fn validate_json(
         &self,
         supplied: &serde_json::Map<String, serde_json::Value>,
@@ -1122,6 +1153,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         }
     }
 
@@ -1163,6 +1195,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         })
     }
 
@@ -1198,6 +1231,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         }
     }
 
@@ -1251,6 +1285,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         }
     }
 
@@ -1317,6 +1352,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         })
     }
 
@@ -1365,6 +1401,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         }
     }
 
@@ -1467,6 +1504,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         }
     }
 
@@ -1925,11 +1963,6 @@ impl ActionSpec {
     /// refused here, and the caller never receives an [`EncodedAction`] to
     /// dispatch — so a bad call cannot become a partial mutation, because
     /// nothing was ever handed to the executor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ArgError`] when the supplied arguments do not satisfy this
-    /// action's declared parameters.
     pub fn build_args(
         &self,
         supplied: impl IntoIterator<Item = (String, ArgValue)>,
@@ -1940,11 +1973,6 @@ impl ActionSpec {
     }
 
     /// [`build_args`](Self::build_args) for arguments that arrived as JSON.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ArgError`] when a value is unrepresentable or the supplied
-    /// arguments do not satisfy this action's declared parameters.
     pub fn build_json(
         &self,
         supplied: &serde_json::Map<String, serde_json::Value>,
@@ -2493,7 +2521,6 @@ mod tests {
                 .unwrap()
                 .clone()
         );
-        // The typed projection and the palette's one-field input build the same bytes.
         assert_eq!(named.build_json(&typed).unwrap(), encode("Plan"));
         let ActionInput::Prompted { prompt, build, .. } = &named.input else {
             panic!("a prompted action prompts");

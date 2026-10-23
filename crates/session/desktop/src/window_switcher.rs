@@ -224,7 +224,6 @@ impl WindowApp {
     }
 }
 
-/// One window as the switcher lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SwitcherWindow {
     pub address: WindowAddress,

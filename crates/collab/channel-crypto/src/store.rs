@@ -46,7 +46,6 @@ use crate::{Error, Result};
 /// Exports larger than this are refused when imported.
 const MAX_EXPORT_BYTES: usize = 320 * 1024 * 1024;
 
-/// One of a steward's records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum StewardRecord {
     /// The MLS group, sealed under the vault key.
@@ -85,7 +84,6 @@ pub struct FileStewardStore {
 }
 
 impl FileStewardStore {
-    /// The records of `channel` under `dir`.
     pub fn new(dir: &Path, channel: ChannelId) -> Self {
         Self {
             dir: dir.to_path_buf(),
@@ -154,10 +152,6 @@ impl MemoryStewardStore {
 
     /// The records [`Self::export`] produced. The steward that opens them
     /// checks them as it checks files.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an oversized, undecodable or unknown export.
     pub fn import(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > MAX_EXPORT_BYTES {
             return Err(Error::InvalidState("steward export is too large".into()));

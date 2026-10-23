@@ -75,8 +75,6 @@ HIGHER_IS_BETTER = frozenset({"fps"})
 VERDICTS = ("improved", "regressed", "unchanged", "inconclusive")
 
 
-# --- statistics ---------------------------------------------------------------
-
 def signed_rank_null(n: int) -> list[int]:
     """How many of the 2**n sign patterns give each Wilcoxon T+ (no ties)."""
     counts = [1]
@@ -248,8 +246,6 @@ def analyse(records: list[record.Record], level: float = CONFIDENCE) -> Analysis
     return Analysis(paired, only, len(rounds))
 
 
-# --- report -------------------------------------------------------------------
-
 def number(value: float) -> str:
     return f"{value:,.0f}" if abs(value) >= 10_000 else f"{value:.4g}"
 
@@ -329,8 +325,6 @@ def provenance(records: list[record.Record]) -> tuple[dict[str, dict[str, str]],
     harness = next((item.meta["ab_harness"] for item in records if "ab_harness" in item.meta), "unknown")
     return sides, sorted({item.group for item in records}), harness
 
-
-# --- groups -------------------------------------------------------------------
 
 @dataclasses.dataclass
 class RunContext:
@@ -544,8 +538,6 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           {"browser-bundle": BROWSER_BUNDLE}, {}, {}, run_browser),
 )}
 
-
-# --- orchestration ------------------------------------------------------------
 
 def git(repo: Path, *args: str) -> str:
     result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)

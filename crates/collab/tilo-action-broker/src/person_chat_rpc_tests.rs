@@ -40,7 +40,6 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = room.to_string();
             {
-                // The membership's workspace is the room's.
                 let mut membership = env.membership.write();
                 let before = membership.workspaces[0].clone();
                 let mut workspace =

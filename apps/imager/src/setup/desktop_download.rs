@@ -505,7 +505,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn desktop_download_resumes_or_restarts_ranges_without_duplicate_bytes() {
-        // Phase `desktop_download_resumes_interrupted_transfer`.
         {
             let split = 8;
             let (_root, result, requests) = run(vec![
@@ -530,7 +529,6 @@ mod tests {
             assert!(requests[1].contains("range: bytes=8-"));
         }
 
-        // Phase `desktop_download_ignored_range_restarts_without_duplicate_bytes`.
         {
             let (_root, result, requests) = run(vec![
                 response(
@@ -544,7 +542,6 @@ mod tests {
             assert!(requests[1].contains("range: bytes=8-"));
         }
 
-        // Phase `desktop_download_inconsistent_range_restarts_cleanly`.
         {
             let (_root, result, requests) = run(vec![
                 response(
@@ -570,7 +567,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn desktop_download_rejects_bad_objects_redirects_and_transports() {
-        // Phase `desktop_download_rejects_oversized_and_digest_mismatch_without_publishing`.
         {
             for reply in [
                 full(b"an oversized package that must fail"),
@@ -588,7 +584,6 @@ mod tests {
             }
         }
 
-        // Phase `desktop_download_revalidates_cached_bytes_and_rejects_bad_objects`.
         {
             let root = tempfile::tempdir().unwrap();
             let (url, _, handle) = server(vec![full(BYTES)], Arc::default());
@@ -609,7 +604,6 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), b"tampered");
         }
 
-        // Phase `desktop_download_same_origin_redirects_only`.
         {
             let (_root, result, requests) = run(vec![
                 response(
@@ -629,7 +623,6 @@ mod tests {
             assert!(result.is_err());
         }
 
-        // Phase `desktop_download_production_rejects_test_http_transport`.
         {
             let root = tempfile::tempdir().unwrap();
             assert!(
@@ -642,14 +635,12 @@ mod tests {
             );
         }
     }
-    /// Cancellation and interruption.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn desktop_download_cancellation_and_interruption_discard_staging() {
-        // Phase `desktop_download_cancellation_does_not_create_or_return_package`.
         {
             let root = tempfile::tempdir().unwrap();
             assert!(
@@ -663,7 +654,6 @@ mod tests {
             assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
         }
 
-        // Phase `desktop_download_cancellation_during_response_discards_staging`.
         {
             let root = tempfile::tempdir().unwrap();
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -687,7 +677,6 @@ mod tests {
             assert_eq!(std::fs::read_dir(cache).unwrap().count(), 0);
         }
 
-        // Phase `desktop_download_terminal_interruption_removes_staging`.
         {
             let replies = (0..3)
                 .map(|_| {
@@ -716,7 +705,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn desktop_download_cache_is_private_and_rejects_links_and_swaps() {
-        // Phase `desktop_download_cache_is_private_nonexecutable_and_rejects_links`.
         #[cfg(unix)]
         {
             use std::os::unix::fs::{PermissionsExt, symlink};
@@ -744,7 +732,6 @@ mod tests {
             assert!(download_for_test(&metadata, &linked, &AtomicBool::new(false)).is_err());
         }
 
-        // Phase `desktop_download_rejects_changed_cache_directory_before_returning_path`.
         {
             let root = tempfile::tempdir().unwrap();
             let cache = root.path().join("cache");

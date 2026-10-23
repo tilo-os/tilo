@@ -97,10 +97,30 @@ fn await_private_reply(harness: &mut ui::headless::FrameHarness, mut pump: impl 
     );
 }
 
-fn seed_person<P: Resource<State = P> + Fields + SharedRecord>(
+fn seed_person<P: Resource<State = P> + Fields + SharedRecord + Clone + Send + 'static>(
     apps: &mut super::super::super::InProcessApps,
     value: &P,
 ) {
+    if P::OWNER == accounts::person::ACCOUNTS_OWNER {
+        let value = value.clone();
+        apps.person_records
+            .as_ref()
+            .unwrap()
+            .run(move |records| {
+                let record = records.shared::<P>().unwrap();
+                record.record().edit(false, |doc| {
+                    value
+                        .write_fields(doc, &automerge::ROOT)
+                        .map_err(|error| error.to_string())
+                })?;
+                record.record().flush();
+                Ok::<_, String>(())
+            })
+            .unwrap()
+            .unwrap();
+        carry_accounts(apps);
+        return;
+    }
     let records = ui::record::person::PersonRecords::open(
         &mut apps.owners,
         P::OWNER,
@@ -120,6 +140,36 @@ fn seed_person<P: Resource<State = P> + Fields + SharedRecord>(
         })
         .unwrap();
     records.flush().unwrap();
+}
+/// Carry the person's accounts the session keeps to the copy the apps it
+/// shows keep, as the record's route does between them.
+fn carry_accounts(apps: &mut super::super::super::InProcessApps) {
+    let document = apps
+        .person_records
+        .as_ref()
+        .unwrap()
+        .run(|records| {
+            records
+                .shared::<accounts::person::PersonAccounts>()
+                .unwrap()
+                .record()
+                .document()
+                .unwrap()
+        })
+        .unwrap();
+    ui::record::person::PersonRecords::open(
+        &mut apps.owners,
+        accounts::person::ACCOUNTS_OWNER,
+        apps.author.clone(),
+    )
+    .unwrap()
+    .open_record(
+        ui::record::RecordKind::new(accounts::person::PersonAccounts::KIND),
+        &|doc| accounts::person::PersonAccounts::initialize(doc).map_err(|error| error.to_string()),
+    )
+    .unwrap()
+    .merge_peer_document(document)
+    .unwrap();
 }
 fn effect(
     harness: &mut ui::headless::FrameHarness,
@@ -212,6 +262,7 @@ fn default_native_broker_source_refuses_inactive_wrong_person_and_socket() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("apps"),
+        Some(rig.root.path().join("apps").join("person")),
         &rig.owner.principal,
         socket.clone(),
     )
@@ -278,6 +329,7 @@ fn first_account_preparation_uses_original_native_source_without_opening_custody
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("first-account-apps"),
+        Some(rig.root.path().join("first-account-apps").join("person")),
         &rig.owner.principal,
         socket,
     )
@@ -343,6 +395,7 @@ fn native_credential_owner_refuses_foreign_requests_and_retired_source_before_st
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("apps"),
+        Some(rig.root.path().join("apps").join("person")),
         &rig.owner.principal,
         socket,
     )
@@ -428,6 +481,7 @@ fn native_permission_proposal_reaches_original_protected_passwords_confirmation_
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("permission-apps"),
+        Some(rig.root.path().join("permission-apps").join("person")),
         &rig.owner.principal,
         socket,
     )
@@ -528,6 +582,12 @@ fn native_permission_proposal_retirement_never_grants_after_lock_unlock() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("retired-permission-apps"),
+        Some(
+            rig.root
+                .path()
+                .join("retired-permission-apps")
+                .join("person"),
+        ),
         &rig.owner.principal,
         socket,
     )
@@ -836,6 +896,7 @@ fn default_native_launch_receives_displays_and_replies_on_exact_signed_account()
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("apps"),
+        Some(rig.root.path().join("apps").join("person")),
         &rig.owner.principal,
         socket,
     )
@@ -967,6 +1028,7 @@ fn native_private_link_setup_crosses_sensitive_actions_and_never_exports_qr() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("apps"),
+        Some(rig.root.path().join("apps").join("person")),
         &rig.owner.principal,
         socket,
     )
@@ -1167,7 +1229,6 @@ fn completed_first_enrollment(
 
 #[test]
 fn reviewed_first_enrollment_publishes_original_settings_action_without_credential_or_ready_loan() {
-    use tilo_actions::Action as _;
     let rig = Rig::new();
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);
@@ -1175,39 +1236,24 @@ fn reviewed_first_enrollment_publishes_original_settings_action_without_credenti
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("publication-apps"),
+        Some(rig.root.path().join("publication-apps").join("person")),
         &rig.owner.principal,
         socket,
     )
     .unwrap();
-    let settings = ui::record::person::PersonRecords::open(
-        &mut apps.owners,
-        accounts::person::ACCOUNTS_OWNER,
-        apps.author.clone(),
-    )
-    .unwrap();
-    let record = settings
-        .open_original_record(
-            ui::record::RecordKind::new(accounts::person::PersonAccounts::KIND),
-            |doc| {
-                accounts::person::PersonAccounts::initialize(doc).map_err(|error| error.to_string())
-            },
+    let person = apps.person_records.clone().unwrap();
+    person
+        .change_accounts(
+            accounts::person::PersonAccounts::SAVE_ACCOUNT.with((
+                "existing-mail".into(),
+                "email".into(),
+                "Existing mail".into(),
+                serde_json::json!({}),
+                true,
+                0,
+            )),
+            || Ok(()),
         )
-        .unwrap();
-    let existing = accounts::person::PersonAccounts::SAVE_ACCOUNT
-        .with((
-            "existing-mail".into(),
-            "email".into(),
-            "Existing mail".into(),
-            serde_json::json!({}),
-            true,
-            0,
-        ))
-        .build(tilo_resource::origin_now_ms())
-        .unwrap();
-    record
-        .edit(true, |doc| {
-            existing.apply(doc).map_err(|error| error.to_string())
-        })
         .unwrap();
     let (enrollment, candidate, provider) = completed_first_enrollment(&apps);
     let id = candidate.owner().account.clone();
@@ -1216,10 +1262,7 @@ fn reviewed_first_enrollment_publishes_original_settings_action_without_credenti
         .unwrap();
     assert_eq!(published.account, ServiceAccount::new("signal", &id));
     assert_eq!(published.scope, format!("signal:{OWN_ACI}"));
-    let state = record
-        .read(accounts::person::PersonAccounts::read)
-        .unwrap()
-        .unwrap();
+    let state = person.accounts(Clone::clone).unwrap();
     assert_eq!(state.accounts.len(), 2);
     assert!(
         state
@@ -1246,13 +1289,7 @@ fn reviewed_first_enrollment_publishes_original_settings_action_without_credenti
         apps.publish_native_signal_enrollment(candidate, "Duplicate".into())
             .is_err()
     );
-    assert_eq!(
-        record
-            .read(accounts::person::PersonAccounts::read)
-            .unwrap()
-            .unwrap(),
-        before
-    );
+    assert_eq!(person.accounts(Clone::clone).unwrap(), before);
     enrollment.cancel();
     duplicate.cancel();
     provider.join().unwrap();
@@ -1270,6 +1307,7 @@ fn native_profile_custody_refuses_local_key_before_storage_and_retired_enrollmen
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("profile-apps"),
+        Some(rig.root.path().join("profile-apps").join("person")),
         &rig.owner.principal,
         socket,
     )
@@ -1345,6 +1383,7 @@ fn exercise_verified_enrollment_profile(include_ram: bool) {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("sealed-profile-apps"),
+        Some(rig.root.path().join("sealed-profile-apps").join("person")),
         &rig.owner.principal,
         socket,
     )
@@ -1614,7 +1653,7 @@ fn approve_fixture_profile_key(
 }
 
 #[test]
-fn retired_native_enrollment_never_initializes_the_canonical_account_owner() {
+fn retired_native_enrollment_publishes_no_account() {
     let rig = Rig::new();
     let lifecycle = LocalSessionAuthority::new();
     lifecycle.lifecycle().publish_native_state(false, false);
@@ -1622,6 +1661,12 @@ fn retired_native_enrollment_never_initializes_the_canonical_account_owner() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("retired-publication-apps"),
+        Some(
+            rig.root
+                .path()
+                .join("retired-publication-apps")
+                .join("person"),
+        ),
         &rig.owner.principal,
         socket,
     )
@@ -1633,34 +1678,13 @@ fn retired_native_enrollment_never_initializes_the_canonical_account_owner() {
         apps.publish_native_signal_enrollment(candidate, "Stale identity".into())
             .is_err()
     );
-    let initialized = std::cell::Cell::new(0);
-    let settings = ui::record::person::PersonRecords::open(
-        &mut apps.owners,
-        accounts::person::ACCOUNTS_OWNER,
-        apps.author.clone(),
-    )
-    .unwrap();
-    let record = settings
-        .open_original_record(
-            ui::record::RecordKind::new(accounts::person::PersonAccounts::KIND),
-            |doc| {
-                initialized.set(initialized.get() + 1);
-                accounts::person::PersonAccounts::initialize(doc).map_err(|error| error.to_string())
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        initialized.get(),
-        1,
-        "retired evidence never opened an empty canonical owner"
-    );
     assert!(
-        record
-            .read(accounts::person::PersonAccounts::read)
+        apps.person_records
+            .as_ref()
             .unwrap()
-            .unwrap()
-            .accounts
-            .is_empty()
+            .accounts(|state| state.accounts.is_empty())
+            .unwrap(),
+        "retired evidence published no account"
     );
     assert!(apps.messaging.is_none());
     enrollment.cancel();
@@ -1698,6 +1722,7 @@ fn actual_session_lock_retires_visible_private_link_and_never_revives_after_unlo
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = super::super::super::InProcessApps::native_for_profile(
         &rig.root.path().join("apps"),
+        Some(rig.root.path().join("apps").join("person")),
         &rig.owner.principal,
         socket,
     )

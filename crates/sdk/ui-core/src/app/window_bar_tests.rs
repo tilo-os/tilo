@@ -151,8 +151,8 @@ fn relay(app: &mut App, shell: &mut ShellEnd, window: &mut WindowGroup) {
                 FloatingSurfaceClientMessage::WindowOffer { offer, .. } => {
                     window.set_tab_window_offer(1, Some(offer));
                 }
-                FloatingSurfaceClientMessage::OpenSearch { .. } => {
-                    window.open_search_for_app(1);
+                FloatingSurfaceClientMessage::OpenSearch { opening, .. } => {
+                    window.open_search_for_app(1, opening);
                 }
                 _ => {}
             }
@@ -214,6 +214,7 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
             search: SearchOffer::Document,
             count: None,
             history: Some(HistoryOffer::Closed),
+            ..WindowOffer::default()
         })
     );
     assert!(
@@ -226,12 +227,13 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
             search: SearchOffer::Document,
             count: None,
             history: Some(HistoryOffer::Closed),
+            ..WindowOffer::default()
         }),
     );
 
     // The app's Ctrl+F asks the bar for its search, and the bar's field
     // opens with the keyboard.
-    crate::window_toolbar::open_search();
+    crate::window_toolbar::open_search(crate::window_toolbar::SearchOpening::Find);
     relay(&mut app, &mut shell, &mut window);
     assert!(window.window_search().is_open());
     assert!(window.window_search().is_remote());

@@ -94,7 +94,6 @@ async fn presence_and_cursor_publishes_round_trip() {
                 let channel = collab.join_channel("c", b"id").await.unwrap();
                 let presence = channel.presence().await.unwrap();
 
-                // Publish every variant.
                 presence.publish_cursor(1.5, 2.5).await.unwrap();
                 presence
                     .publish_pointer(b"art-pointer", 4.0, 5.0)
@@ -128,8 +127,6 @@ async fn presence_and_cursor_publishes_round_trip() {
                     assert_eq!(c.presence_left, vec![b"art-d".to_vec()]);
                 }
 
-                // Drain the unified stream and assert every seeded variant decodes into
-                // the right shape.
                 let stream = presence.subscribe_all().await.unwrap();
 
                 let e1 = stream.read().await.unwrap();

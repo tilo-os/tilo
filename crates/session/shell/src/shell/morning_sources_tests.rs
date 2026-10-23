@@ -1,4 +1,3 @@
-//! Synthetic provider behind the production native catalogue/command adapter.
 use super::*;
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::*;

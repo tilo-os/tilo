@@ -147,7 +147,6 @@ pub fn sign_round2(
     message: &[u8],
     commitments: &[SigningRound1Commitment],
 ) -> Result<SigningRound2Partial, ThresholdError> {
-    // Build a sorted commitment view for deterministic wire form.
     let mut sorted = commitments.to_vec();
     sorted.sort_by_key(|c| c.from_share_index);
     let mut by_id = BTreeMap::new();
@@ -246,7 +245,6 @@ pub fn aggregate_signature(
     // `Some(threshold)` since `aggregate`'s pre-checks consult it.
     let pkp = PublicKeyPackage::new(verifying_shares, verifying_key, Some(threshold));
 
-    // Build the SignatureShare map.
     let mut shares = BTreeMap::new();
     for p in partials {
         let id = u16_to_identifier(p.from_share_index)?;

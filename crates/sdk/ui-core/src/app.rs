@@ -262,7 +262,6 @@ mod continuation_tests {
 
     #[test]
     fn vanished_continuations_clear_the_durable_projection() {
-        // Case `continuation_disappearance_clears_the_durable_projection`.
         {
             let request = continuation_publication("ebook".into(), None, true);
             assert!(matches!(
@@ -826,8 +825,6 @@ impl App {
     }
 
     /// Mount an already prepared component with explicit presentation and local services.
-    /// # Errors
-    /// Returns the original component recovery owners when mounting is refused.
     pub fn from_component(
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
@@ -1400,10 +1397,6 @@ impl App {
 
     /// Fallible form of [`Self::from_factory`]. A failed factory closes all
     /// capabilities it created before returning the error.
-    ///
-    /// # Errors
-    ///
-    /// Returns the error produced by `factory`.
     pub fn try_from_factory<E>(
         state: State,
         factory: impl FnOnce() -> Result<Box<dyn Widget>, E>,
@@ -2892,7 +2885,6 @@ mod generic_floating_activity_tests {
 
     #[test]
     fn floating_activity_pumps_and_proxies_until_the_exact_primary_frame() {
-        // Case `generic_pip_activity_edge_dismisses_without_touching_native_surfaces`.
         {
             let previous = HashSet::from([
                 "browser.media-pip".to_string(),
@@ -2917,7 +2909,6 @@ mod generic_floating_activity_tests {
             );
         }
 
-        // Case `native_float_allocation_follows_the_complete_soft_chrome`.
         {
             let compact = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 292.0));
             let expanded = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 352.0));
@@ -2925,7 +2916,6 @@ mod generic_floating_activity_tests {
             assert_eq!((expanded.width, expanded.height), (376.0, 312.0));
         }
 
-        // Case `ownership_proxy_waits_for_the_exact_primary_frame_to_present`.
         {
             let gates = HashMap::from([
                 ("waiting".to_string(), None),
@@ -3065,6 +3055,10 @@ mod committed_document;
 #[path = "app/document_routes.rs"]
 mod document_routes;
 
+#[cfg(feature = "broker-transport")]
+#[path = "app/record_routes.rs"]
+pub mod record_routes;
+
 #[cfg(test)]
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
@@ -3196,7 +3190,6 @@ mod legacy_owner_routing_tests {
 
     #[test]
     fn legacy_owner_routing_resolves_current_aliases_and_rejects_drained_errors() {
-        // Case `semantic_targets_resolve_current_legacy_aliases_across_disjoint_roots`.
         {
             let store = crate::record::RecordStore::in_memory();
             let first = crate::record::RecordCheckout::new(
@@ -4214,7 +4207,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("Emit request");
                 assert!(ledger.borrow().is_empty());
                 let stale = host.submit_id();
-                // Whatever lands in the field, one Confirm is the consent.
                 host.value("wrong");
                 host.activate("Confirm");
                 assert_eq!(

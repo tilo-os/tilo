@@ -90,7 +90,6 @@ mod tests {
 
     #[test]
     fn host_clock_reads_bracket_in_order_and_report_invalid_or_unavailable() {
-        // Case `host_reads_bracket_the_original_instant_read_in_order`.
         {
             let calls = RefCell::new(Vec::new());
             let expected = tilo_clock::now();
@@ -117,7 +116,6 @@ mod tests {
             assert_eq!(times.next(), None);
         }
 
-        // Case `reversed_and_nonfinite_reads_remain_invalid_evidence`.
         {
             for (lo, hi) in [(5.0, 4.0), (f64::INFINITY, 8.0), (0.0, 0.0)] {
                 let mut times = [lo, hi].into_iter();
@@ -134,7 +132,6 @@ mod tests {
             }
         }
 
-        // Case `platform_sample_explicitly_reports_clock_availability`.
         {
             let before = tilo_clock::now();
             let (instant, bracket) = sample(tilo_clock::now);

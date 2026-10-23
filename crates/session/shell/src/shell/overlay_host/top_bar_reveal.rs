@@ -225,7 +225,6 @@ mod tests {
             "pushed to the edge"
         );
         let t = t + DWELL;
-        // Along the bar it stays.
         let t = path(
             &mut r,
             Point::new(620.0, 0.0),
@@ -264,7 +263,6 @@ mod tests {
         );
         r.settle(ms(t, 2000));
         assert_eq!(r.presence(false), TopBarPresence::Hidden);
-        // A click right at the top goes to the window and cancels the rest.
         let p = Point::new(310.0, 2.0);
         r.on_motion(p, DISPLAY, BAR, ms(t, 2100));
         r.on_press(p, DISPLAY, BAR);

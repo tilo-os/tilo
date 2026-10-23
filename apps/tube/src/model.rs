@@ -588,6 +588,11 @@ pub struct TubeModel {
     /// Playhead position (seconds) on the current watch page.
     pub playhead: f64,
     pub playing: bool,
+    /// The video no source would play, and what `YouTube` said if it
+    /// refused: its watch page says so where the picture would be and
+    /// offers to try again, rather than standing on a still poster.
+    #[serde(skip)]
+    pub unplayable: Option<Unplayable>,
     /// Videos the user has liked this session (local, mirrored into the CRDT).
     /// The watch page's like pill reads this to render its active state + the
     /// incremented count.
@@ -682,6 +687,7 @@ impl Default for TubeModel {
             search_query: String::new(),
             playhead: 0.0,
             playing: false,
+            unplayable: None,
             liked: Vec::new(),
             comment_likes: BTreeSet::new(),
             notices: Vec::new(),
@@ -808,6 +814,12 @@ impl TubeModel {
             return url;
         }
         &v.thumbnail_url
+    }
+
+    /// What the watch page of `video` says about it not playing, if it did not.
+    #[must_use]
+    pub fn unplayable(&self, video: &str) -> Option<&Unplayable> {
+        self.unplayable.as_ref().filter(|u| u.video == video)
     }
 
     /// Push a transient notice onto the front of the toast stack (newest first,
@@ -1369,4 +1381,12 @@ mod tests {
             live: false,
         }
     }
+}
+
+/// A video no source played.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unplayable {
+    pub video: VideoId,
+    /// `YouTube`'s own words when it refused, such as a bot check.
+    pub said: Option<String>,
 }

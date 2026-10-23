@@ -69,7 +69,6 @@ impl ShellOverlayHost {
         self.open_app_chooser(purpose, reply);
     }
 
-    /// Whether the palette is choosing an app for an app.
     pub(crate) fn choosing_app(&self) -> bool {
         self.app_chooser.is_some()
     }

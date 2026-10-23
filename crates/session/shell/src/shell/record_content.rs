@@ -53,7 +53,6 @@ impl ContentShelf for SessionShelf {
     }
 }
 
-/// The shell network as the route of a record's content.
 struct NetworkPeers(Arc<ShellNetwork>);
 
 impl ContentPeers for NetworkPeers {
@@ -64,9 +63,16 @@ impl ContentPeers for NetworkPeers {
     fn answer(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece) {
         self.0.answer_record_content(route, peer, piece);
     }
+
+    fn lacks(&self, route: &CrdtRoute, peer: ContentPeer, hash: &str) {
+        self.0.lacks_record_content(route, peer, hash);
+    }
+
+    fn sources(&self, route: &CrdtRoute) -> tilo_action_broker::record_content::ContentSources {
+        self.0.record_content_sources(route)
+    }
 }
 
-/// The session's record-content service over `network`.
 pub fn session_record_content(network: &Arc<ShellNetwork>) -> Arc<RouteContent> {
     RouteContent::new(
         Arc::new(SessionShelf),
@@ -90,6 +96,10 @@ pub fn drain(inbound: &Mutex<Vec<InboundRecordContent>>, content: &RouteContent)
                 content.peer_wants(&route, peer, true, &hash);
             }
             InboundRecordContent::Piece { route, piece } => content.peer_piece(&route, &piece),
+            InboundRecordContent::Lacks { route, peer, hash } => {
+                content.peer_lacks(&route, peer, &hash);
+            }
+            InboundRecordContent::SourcesChanged => content.sources_changed(),
         }
     }
     true

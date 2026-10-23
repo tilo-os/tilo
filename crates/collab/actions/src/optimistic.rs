@@ -178,11 +178,6 @@ impl OptimisticQueue {
     /// Remove a refused action, roll the live replica back to confirmed state,
     /// and replay every survivor with fresh ids/base heads. The caller sends
     /// the returned replacements and cancels/ignores `superseded` ids.
-    ///
-    /// # Errors
-    ///
-    /// Returns a decode or action-application error. The queue and live
-    /// document remain unchanged on failure.
     pub fn reject(
         &mut self,
         live: &mut AutoCommit,
@@ -212,11 +207,6 @@ impl OptimisticQueue {
     /// work on top. With no pending work the live replica simply becomes the
     /// merged confirmed state. See the type-level transport contract before
     /// merging a snapshot that contains this client's accepted actions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an Automerge merge error or a pending-action replay error. The
-    /// queue and live document remain unchanged on failure.
     pub fn merge_authoritative(
         &mut self,
         live: &mut AutoCommit,

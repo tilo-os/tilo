@@ -11,9 +11,7 @@ const LAPTOP: &str = include_str!("../../../tests/fixtures/laptop-2026-10-20/sta
 const HOSTED_ROOMS: &str =
     include_str!("../../../tests/fixtures/laptop-2026-10-20/hosted-rooms.json");
 
-/// The "Lounge" workspace.
 const LOUNGE: WorkspaceId = WorkspaceId(17_471_151_804_430_418_299);
-/// "Home".
 const HOME: WorkspaceId = WorkspaceId(17_471_151_804_430_417_921);
 /// The windows of the Lounge, in order.
 const LOUNGE_TABS: [u64; 5] = [
@@ -82,7 +80,6 @@ fn shown(tree: &WorkspaceTree) -> Vec<RoomId> {
         .collect()
 }
 
-/// The rooms of the archived workspaces.
 fn archived(tree: &WorkspaceTree) -> Vec<RoomId> {
     tree.archived_workspaces
         .iter()
@@ -180,10 +177,6 @@ fn the_laptops_lounge_becomes_the_sites_room_with_its_windows_and_its_id() {
     assert_eq!(tree.one_record_violations(), Vec::<String>::new());
 }
 
-/// The switcher shows one Lounge after the migration: tilo.coffee's, with
-/// its windows. The Lounge of the host before and the placeholder that
-/// holds files are archived, whole: off the switcher and the desktop,
-/// restorable, nothing in them deleted, no id changed.
 #[test]
 fn the_laptop_shows_exactly_one_lounge_and_keeps_the_other_two_archived() {
     let mut tree = laptop();

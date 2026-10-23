@@ -149,8 +149,6 @@ fn presented_library_fills_the_list() {
     assert!(app.open_id_for_test().is_some());
 }
 
-/// The sidebar lists the library's places with their counts, and choosing
-/// one narrows the list.
 #[test]
 fn sidebar_places_narrow_the_list() {
     let mut app = demo();
@@ -399,7 +397,6 @@ fn copying_a_templated_snippet_opens_the_variables_dialog() {
     assert!(app.expand_open_for_test());
 }
 
-/// The list is one focus stop whose keys move the open snippet.
 #[test]
 fn the_list_moves_the_open_snippet_by_keys() {
     let mut app = launched(&[
@@ -543,14 +540,10 @@ fn focusing_new_snippet_does_not_activate_it() {
     );
 }
 
-// ---- responsive layout ---------------------------------------------
-
 fn framed(app: SnippetsApp, width: u32) -> Framed<SnippetsApp> {
     Framed::new(ui::State::new(), app, (width, 800), Theme::dark())
 }
 
-/// The shell docks the sidebar when wide, makes it a drawer when narrow,
-/// and pushes the snippet in front of the list when very narrow.
 #[test]
 fn the_shell_docks_wide_draws_narrow_and_pushes_very_narrow() {
     // Case `wide_keeps_sidebar_docked_and_open`.
@@ -630,8 +623,6 @@ fn the_content_column_lays_out_its_controls() {
     let targets = Framed::harness(&app).targets();
     assert!(targets.contains_key("snippets.favorite") && targets.contains_key("snippets.more"));
 }
-
-// ---- the published tree, agents and history ------------------------------
 
 fn has_control(app: &mut TestApp<SnippetsShell>, label: &str) -> bool {
     app.harness()
@@ -879,7 +870,32 @@ fn click_label(app: &mut TestApp<SnippetsShell>, label: &str) {
     app.settle();
 }
 
-/// A pointer click on Copy copies the open snippet and counts the use.
+/// The language picked with the pointer applies: a click opens the list
+/// below the picker and a click on a language there chooses it.
+#[test]
+fn a_pointer_click_picks_the_language() {
+    let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
+    open_row(&mut app, "Deploy");
+    let nodes = app.harness().a11y_nodes();
+    let picker = nodes
+        .iter()
+        .filter(|(_, node)| node.label() == Some("Language"))
+        .find_map(|(_, node)| node.bounds().filter(|b| b.width() > 0.0))
+        .expect("the language picker is drawn");
+    click_label(&mut app, "Language");
+    // The list opens under the picker, one 32 px row per language: Plain
+    // text, Shell, then Rust.
+    app.harness()
+        .click_at(picker.x0 + 30.0, picker.y1 + 28.0 + 64.0);
+    app.settle();
+    assert_eq!(
+        by_title(&app, "Deploy").1.language,
+        Language::Rust,
+        "the clicked language applies: {:?}",
+        app.harness().control_failures()
+    );
+}
+
 #[test]
 fn a_pointer_click_on_copy_copies() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
@@ -997,4 +1013,42 @@ fn the_collapse_button_collapses_and_expands_the_sidebar() {
         (width(&mut app) - open).abs() < 0.5,
         "the button expanded it again"
     );
+}
+
+/// In the desktop the window's bar shows the library's "New snippet", and a
+/// press there adds one. An empty library's one action is in the window
+/// itself, so its bar offers none that would do nothing.
+#[test]
+fn the_window_bars_new_snippet_adds_one() {
+    let bar_actions = |app: &mut TestApp<SnippetsShell>| -> Vec<String> {
+        app.harness().present_in_window_bar();
+        app.settle();
+        ui::window_toolbar::declared()
+            .map(|toolbar| {
+                toolbar
+                    .actions
+                    .into_iter()
+                    .map(|action| action.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut empty = launched(&[]);
+    let offered = bar_actions(&mut empty);
+    assert!(
+        !offered.iter().any(|id| id == "snippets.new"),
+        "{offered:?}"
+    );
+    drop(empty);
+
+    let mut app = launched(&[snippet("Deploy", "make deploy")]);
+    let offered = bar_actions(&mut app);
+    assert!(offered.iter().any(|id| id == "snippets.new"), "{offered:?}");
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "snippets.new".into(),
+        });
+    app.settle();
+    let failures = format!("{:?}", app.harness().control_failures());
+    assert_eq!(app.state().snippets.len(), 2, "{failures}");
 }

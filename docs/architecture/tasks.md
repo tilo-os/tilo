@@ -21,7 +21,7 @@ kind `tasks.tracker`), written the one way every app is
 | `model` | a provider's model, or the agent's own | `choose-model` (never under a run) |
 | `labels` | `Set<String>` | `add-label`; removing one is a field edit |
 | `parent` | `Option<Id>`, read-only | `create`, `move-under` (refuses cycles) |
-| `links` | `Collection<Link>` (app, kind, resource, label) | `link`, `unlink` |
+| `links` | `Collection<Link>` (app, record, kind, resource, label) | `link`, `unlink` |
 | `comments` | `Collection<Message>`, the thread | `comment`, `send-message`, the run's reports |
 | `run` | `Option<Run>`, read-only | the run verbs below |
 
@@ -29,6 +29,11 @@ History, undo, sync, search and permissions are the framework's. Nested issues
 are a parent id on a flat collection, as notes' pages are; a parent's progress
 is counted from its direct children, never stored. The thread is the
 `comments` field, so a Commenter may post in it and nothing else.
+
+Every issue in a tracker is read by everyone who reads the tracker: a read
+decision reaches a record, never part of one. An issue that needs different
+access is its own record, with the access every resource has; Tasks offers
+no verb of its own for it.
 
 Numbers come from a counter: increments merge, so the next number is always
 past every issue a replica has seen. Two issues made concurrently on two
@@ -42,7 +47,10 @@ An issue's address is its item resource, `tasks.tracker/issues/<id>`
 by its number as an identity field, and by title, description and labels; a
 hit, a reference and an agent all open it through the issue's `open` view
 action. A link to any other resource is a `Link` (app, kind, resource,
-label), the same address a `tilo_reference::ResourceRef` carries.
+label), the same address a `tilo_reference::ResourceRef` carries, with the
+record of the app that keeps it (a page kept on its own); a link made before
+links named a record has none, which means the app's own record of the
+workspace, so old links need no migration.
 
 Any app opens a reference the same way, with one action: the resource's
 `open` in the app that keeps it (`ResourceRef::open_target`, see
@@ -52,8 +60,8 @@ their grants; the host launches Tasks when no window shows the tracker. `#12`
 is the tracker's to resolve, never the shell's: the tracker's `open` takes it
 as its anchor and shows the issue numbered 12 (`Tracker::by_number`), so an
 agent or another app that holds only the text asks Tasks. The issue page shows
-its links as reference chips (`ViewCx::reference`) that open each where it
-lives.
+its links as reference chips (`ViewCx::reference`) that open each in the
+record it names.
 
 ## Views
 

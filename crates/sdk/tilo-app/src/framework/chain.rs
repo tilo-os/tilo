@@ -449,10 +449,6 @@ impl<P: Chained> ChainState<P> {
     /// `invoker`: checked as an undoable change where the chain publishes
     /// the verb, and written into the part's history as any of its steps.
     /// Answers the part and its version after.
-    ///
-    /// # Errors
-    /// The participant may not, the part is neither here nor known to the
-    /// room, or history refused the edit.
     fn apply_history(
         &self,
         edit: &PartEdit,
@@ -748,9 +744,6 @@ impl<P: Chained> Chain<P> {
     /// Hold the earlier part `index` too: read it from this device, which
     /// asks the room for it when it has not got it yet (its changes arrive
     /// and [`Self::revision`] moves).
-    ///
-    /// # Errors
-    /// The part is neither here nor known to the room yet.
     pub fn hold(&self, index: u64) -> Result<(), String> {
         self.state.hold(index)
     }
@@ -1058,6 +1051,7 @@ impl Chains {
         &self,
         me: Option<&str>,
         payload: &[u8],
+        live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let request: super::record::RecordAction =
             tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
@@ -1071,6 +1065,6 @@ impl Chains {
         let invoker = ui_core::invocation_scope::current_invoker()
             .or_else(|| me.map(ActionInvoker::actor))
             .ok_or("nobody changes a past version")?;
-        door.apply_answering(&request.action, &invoker)
+        door.apply_in(&request.action, &invoker, live)
     }
 }

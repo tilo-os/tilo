@@ -644,7 +644,6 @@ public (active)
             assert_eq!(z.interfaces, vec!["wlan0", "eth0"]);
             assert_eq!(z.services, vec!["dhcpv6-client", "mdns", "ssh"]);
             assert!(!z.masquerade);
-            // Two simple ports become allow-from-anywhere rules...
             assert!(z.rules.iter().any(|r| r.matcher
                 == Matcher::Port {
                     port: "8080".into(),
@@ -688,7 +687,6 @@ public (active)
         {
             // A masquerade rich rule has no accept/reject verb we model.
             assert!(parse_rich_rule("rule family=\"ipv4\" masquerade").is_none());
-            // Non-rule lines are ignored.
             assert!(parse_rich_rule("  services: ssh").is_none());
         }
 

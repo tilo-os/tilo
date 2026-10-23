@@ -1,4 +1,3 @@
-//! Exercise the startup wrapper over the real session/host-view storage path.
 use super::{Host, Service};
 use crate::{ConditionalUpdate, DisplayUpdate, SessionPaths, SessionSettings, SettingsSource};
 use serde_json::{Map, Value, json};

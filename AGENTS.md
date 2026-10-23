@@ -34,7 +34,7 @@ Most user-facing design questions reduce to that one decision:
   person's click and an agent's call land in the same place. Inside a window the only search
   entry is the window bar's field: typing turns the window's view into a query view of the
   app's resources (`tilo_app::framework::views`), narrows its list or finds in its document.
-  Apps draw no search or filter field of their own (`tools/policy/check_app_search_fields.py`).
+  Apps draw no search or filter field of their own (`tools/policy/check_app_toolbars.py`).
 - **Undo, history, device sync and theming are system services**, not forty implementations.
 - **Collaboration reduces to transport.** Invite someone to a workspace, give them a role per
   app; each machine draws natively and state syncs as a CRDT. Agents are ordinary

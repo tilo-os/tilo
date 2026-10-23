@@ -854,6 +854,13 @@ impl App {
                 )
                 .arrive(hash, bytes);
             }
+            CollabEvent::RecordContentState { route, hash, state } => {
+                crate::collaboration::record_content::ContentLane::of(
+                    &route.app_id,
+                    route.record.as_deref().unwrap_or(""),
+                )
+                .stands(hash, state);
+            }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 self.presence_ctx
                     .upsert_remote_cursor(user_id, [x, y], None);
@@ -1107,6 +1114,7 @@ impl App {
         result: Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
     ) {
         if self.settle_follow_up(request_id, &result)
+            || self.settle_hosted(request_id, &result)
             || self.close_broker_result(request_id, &result)
         {
             return;

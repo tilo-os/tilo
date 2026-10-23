@@ -426,8 +426,6 @@ async fn file_chooser_opens_and_saves_what_the_user_picked() {
             picker.navigate_to(&fresh);
             picker.set_rect(rect);
         }
-        // Type the filename, character by character, through the host's
-        // modal keyboard route.
         for ch in "notes.md".chars() {
             dispatch(&mut host, &key_press(ch));
         }

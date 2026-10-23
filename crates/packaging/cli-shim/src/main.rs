@@ -77,7 +77,6 @@ fn read_sidecar(path: &Path) -> Result<Sidecar, String> {
 }
 
 fn execv_launcher(launcher: &Path, argv: &[String]) -> ! {
-    // Build the raw C argv + terminating NULL.
     let path_c = CString::new(launcher.as_os_str().as_encoded_bytes())
         .unwrap_or_else(|_| die("tilo-cli-shim: launcher path contains a NUL byte"));
     let owned: Vec<CString> = argv

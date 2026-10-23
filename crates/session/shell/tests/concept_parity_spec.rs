@@ -1385,8 +1385,6 @@ mod helper_tests {
             assert_eq!(colors[0], (99, 102, 241, 255));
         }
 
-        // Phase `contains_color_close_respects_tolerance`.
-        // Guards the tolerance helper's boundary.
         {
             let palette = vec![(99, 102, 241, 255)];
             assert!(contains_color_close(&palette, (99, 102, 241), 0));

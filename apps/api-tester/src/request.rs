@@ -126,7 +126,8 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
         .with_icon(Icon::Check)
         .with_accessible_name("Save request")
         .tooltip("Save this request to a collection")
-        .on_effect(pusher(
+        // It opens the save form; the save it leads to is its own action.
+        .on_own_device_effect(pusher(
             sink,
             Cmd::OpenForm(FormMode::SaveRequest, FormTarget::default()),
         ));

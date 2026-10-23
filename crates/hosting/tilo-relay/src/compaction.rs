@@ -854,7 +854,6 @@ fn plan_opening(
 /// A channel's content in units the host can reason about: a whole
 /// mutation, a complete segmented transfer, or something it cannot read.
 struct Unit {
-    /// Indexes of the entries that hold it.
     entries: Vec<usize>,
     /// The mutation, or `None` for content the host cannot read.
     mutation: Option<DocumentMutation>,
@@ -1120,10 +1119,6 @@ fn fold(entries: &[ChannelEntry], readable: &Readable) -> Option<Folded> {
 /// publishes it (`payloads` frames each body): one retained envelope per
 /// document frame, the first as the checkpoint. The publisher is the host's own handle, which a native shell
 /// requires of every document it accepts.
-///
-/// # Errors
-///
-/// Returns a description when the snapshot is too large or encoding fails.
 pub(crate) fn document_frames(
     payloads: &dyn ShellPayloads,
     key: &ed25519_dalek::SigningKey,

@@ -38,7 +38,10 @@ use crate::widget::{
 };
 
 /// What a find runs over: text, or a byte view's hex digits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum FindMode {
     #[default]
     Text,
@@ -48,12 +51,69 @@ pub enum FindMode {
     Regex,
 }
 
-/// The options the bar's chips set.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+/// The options a find runs under: the bar's chips, the window search's
+/// options.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
 pub struct FindOptions {
     pub match_case: bool,
     pub whole_word: bool,
     pub mode: FindMode,
+}
+
+/// What a document's find offers beyond matching text under Match case and
+/// Whole word: replacing matches, a regular expression, a byte view's hex
+/// digits. The find's options offer just these.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
+pub struct FindAbilities {
+    pub replace: bool,
+    pub regex: bool,
+    pub hex: bool,
+}
+
+impl FindAbilities {
+    /// What `target` offers.
+    #[must_use]
+    pub fn of(target: &dyn Findable) -> Self {
+        Self {
+            replace: target.supports_replace(),
+            regex: target.supports_regex(),
+            hex: target.supports_hex(),
+        }
+    }
+
+    /// What the first [`Findable`] in `root`'s subtree offers; nothing
+    /// beyond matching when there is none.
+    #[must_use]
+    pub fn of_root(root: &mut dyn Widget) -> Self {
+        with_findable(root, &mut |target| Self::of(target)).unwrap_or_default()
+    }
+
+    /// Whether it offers nothing beyond matching text.
+    #[must_use]
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// `options` as this find can run them: a mode it does not offer falls
+    /// back to text.
+    #[must_use]
+    pub fn allow(self, mut options: FindOptions) -> FindOptions {
+        let offered = match options.mode {
+            FindMode::Text => true,
+            FindMode::Hex => self.hex,
+            FindMode::Regex => self.regex,
+        };
+        if !offered {
+            options.mode = FindMode::Text;
+        }
+        options
+    }
 }
 
 /// One match, as a span of the findable's own content (a byte range of its
@@ -1292,7 +1352,6 @@ impl FindScope {
         &mut self.bar
     }
 
-    /// The content the scope wraps.
     #[must_use]
     pub fn content(&self) -> &dyn Widget {
         self.content.as_ref()
@@ -1743,7 +1802,6 @@ mod tests {
         let _ = send(&mut scope, &ctrl_f(), ctrl);
         assert!(scope.is_open());
         assert!(scope.take_structure_dirty(), "the band joins the layout");
-        // Lay out again with the band, then check it sits above the content.
         let focus = send(&mut scope, &WindowEvent::Focused(true), plain);
         assert!(focus.is_none());
         assert!(scope.bar.get_rect().height() > 0.0);
@@ -2127,9 +2185,7 @@ mod host_driven_tests {
             Rect::ZERO,
             "the field has no X of its own"
         );
-        // The band follows the host's content edge.
         assert!((bar.field.get_rect().x0 - 40.0).abs() < 1e-9);
-        // Text and Hex share one strip.
         let text_rect = bar.parts.iter().find(|(p, _)| *p == Part::Text).unwrap().1;
         let hex_rect = bar.parts.iter().find(|(p, _)| *p == Part::Hex).unwrap().1;
         assert!(

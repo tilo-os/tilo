@@ -476,7 +476,6 @@ mod tests {
             services
         );
 
-        // Discovery claims are intersected with signed device authority.
         let advertised = ServiceCapabilities::personal_server();
         assert_eq!(
             advertised.authorized_by(&tilo_user_identity::DeviceCapabilities::member()),

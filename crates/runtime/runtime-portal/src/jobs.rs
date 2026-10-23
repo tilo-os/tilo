@@ -196,8 +196,6 @@ pub fn runtime_dir() -> Option<PathBuf> {
         .filter(|dir| dir.is_absolute())
 }
 
-// --- wire --------------------------------------------------------------------
-
 /// A message is NUL-separated fields over a `SOCK_SEQPACKET` socket: nothing
 /// it carries (a verb, a label, a path, a number) contains a NUL.
 ///
@@ -214,17 +212,11 @@ pub fn encode(fields: &[&[u8]]) -> io::Result<Vec<u8>> {
     Ok(fields.join(&0))
 }
 
-/// The fields of a message.
 #[must_use]
 pub fn decode(message: &[u8]) -> Vec<&[u8]> {
     message.split(|byte| *byte == 0).collect()
 }
 
-/// Send one message with `fds`.
-///
-/// # Errors
-///
-/// The socket's error, or a message that could not be sent whole.
 pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
     use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
     let message = encode(fields)?;
@@ -250,10 +242,6 @@ pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) ->
 
 /// One message and the descriptors that came with it, close-on-exec;
 /// `None` at end of file.
-///
-/// # Errors
-///
-/// The socket's error, or a message cut short.
 pub fn receive(
     socket: BorrowedFd<'_>,
     buffer: &mut [u8],
@@ -526,10 +514,6 @@ pub fn own_pidfd() -> io::Result<OwnedFd> {
 
 /// The pid, in this process's pid namespace, of the process a pidfd refers
 /// to (`Pid:` in its fdinfo).
-///
-/// # Errors
-///
-/// The process has ended, or is not visible here.
 pub fn pid_of_pidfd(pidfd: BorrowedFd<'_>) -> io::Result<u32> {
     let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd()))?;
     pid_in_fdinfo(&info).ok_or_else(|| io::Error::other("the process has ended"))

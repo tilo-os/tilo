@@ -226,7 +226,6 @@ impl RuntimeRequests {
         }
     }
 
-    /// Answer one request from `app_id`.
     #[must_use]
     pub fn answer(self: &Arc<Self>, app_id: &str, request: &Request) -> Response {
         let refused = |message: String| Response::Refused { message };

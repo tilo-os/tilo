@@ -40,7 +40,6 @@ pub struct InstalledApp {
     pub opens_extensions: Vec<String>,
     /// Concrete normalized MIME claims from `[providers].mime`.
     pub opens_mime_types: Vec<String>,
-    /// Normalized URI schemes from `[providers].schemes`.
     pub opens_uri_schemes: Vec<String>,
     /// `[providers].secondary`: another app claiming the same resource is
     /// the default for it.

@@ -50,7 +50,6 @@ struct Naming {
 /// What a name being typed in the bar is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Purpose {
-    /// A new strip.
     NewStrip,
     /// The workspace's own name.
     RenameWorkspace,
@@ -976,7 +975,6 @@ mod tests {
     #[test]
     fn strips_without_room_are_one_press_away() {
         let mut frame = None;
-        // The narrowest wide bar that still shows the switcher at all.
         for width in (900..1600).step_by(20) {
             let (candidate, chrome) = bar(Some(places()), width);
             if candidate.strips.more.is_some() && !candidate.strips.chips.is_empty() {

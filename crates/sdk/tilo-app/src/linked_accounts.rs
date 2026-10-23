@@ -38,7 +38,6 @@ pub struct Reading {
     pub service: String,
     /// The room is connected to the service (a server is bridged).
     pub connected: bool,
-    /// The reader's linked account there.
     #[serde(default)]
     pub account: Option<AccountName>,
     /// The reader started linking and the code is still good.
@@ -112,6 +111,11 @@ pub trait LinkedAccountsHost {
     fn revision(&self) -> u64;
     /// Ask again where every account stands.
     fn refresh(&self);
+    /// Ask again where the account with `app`'s service stands.
+    fn refresh_app(&self, app: &str) {
+        let _ = app;
+        self.refresh();
+    }
     /// Start linking the person's account with `app`'s service.
     fn link(&self, app: &str);
     /// Unlink the person's account with `app`'s service.
@@ -154,6 +158,12 @@ impl LinkedAccounts {
         }
     }
 
+    pub fn refresh_app(&self, app: &str) {
+        if let Some(host) = &self.0 {
+            host.refresh_app(app);
+        }
+    }
+
     pub fn link(&self, app: &str) {
         if let Some(host) = &self.0 {
             host.link(app);
@@ -164,6 +174,63 @@ impl LinkedAccounts {
         if let Some(host) = &self.0 {
             host.unlink(app);
         }
+    }
+}
+
+/// How often a panel showing a code asks again whether it was sent.
+pub const LINKING_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Asks again while a panel shows a code: the person sends it elsewhere
+/// (`/link` in Discord), so nothing here moves when the account links, and
+/// the panel would show the code until it was opened again.
+#[derive(Debug, Default)]
+pub struct LinkingRecheck {
+    due: Option<ui_core::time::Instant>,
+}
+
+impl LinkingRecheck {
+    /// At `now`, with `accounts` shown (or not, `shown` false): asks again
+    /// once [`LINKING_RECHECK`] passed since it last did while a code waits.
+    /// When to call again, `None` while no code waits on a shown panel.
+    pub fn follow(
+        &mut self,
+        accounts: &LinkedAccounts,
+        shown: bool,
+        now: ui_core::time::Instant,
+    ) -> Option<ui_core::time::Instant> {
+        // Only the services a code waits for are asked: every other record
+        // of the room answers no reading, each ask a refusal at the host.
+        let waiting: Vec<String> = if shown {
+            accounts
+                .accounts()
+                .into_iter()
+                .filter(|account| matches!(account.state, LinkState::Linking(_)))
+                .map(|account| account.app)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if waiting.is_empty() {
+            self.due = None;
+            return None;
+        }
+        match self.due {
+            Some(due) if now < due => {}
+            Some(_) => {
+                for app in &waiting {
+                    accounts.refresh_app(app);
+                }
+                self.due = now.checked_add(LINKING_RECHECK);
+            }
+            None => self.due = now.checked_add(LINKING_RECHECK),
+        }
+        self.due
+    }
+
+    /// When to call [`Self::follow`] again.
+    #[must_use]
+    pub const fn due(&self) -> Option<ui_core::time::Instant> {
+        self.due
     }
 }
 
@@ -310,6 +377,10 @@ impl LinkedAccountsHost for RoomAccounts {
         }
     }
 
+    fn refresh_app(&self, app: &str) {
+        self.read(app);
+    }
+
     fn link(&self, app: &str) {
         let Some(action) = self
             .known
@@ -375,6 +446,8 @@ mod tests {
     #[derive(Default)]
     struct Host {
         reading: RefCell<Reading>,
+        /// The apps asked, in order.
+        asked: RefCell<Vec<String>>,
     }
 
     impl RoomRecordActions for Rc<Host> {
@@ -389,6 +462,7 @@ mod tests {
             _: serde_json::Map<String, serde_json::Value>,
             done: Box<dyn FnOnce(ActionAnswer)>,
         ) {
+            self.asked.borrow_mut().push(app.to_owned());
             if app != "so.tilo.discord" {
                 return done(Err("unknown_action".into()));
             }
@@ -418,6 +492,7 @@ mod tests {
                 link: "link-account".into(),
                 ..Reading::default()
             }),
+            asked: RefCell::default(),
         });
         let woken = Rc::new(Cell::new(0));
         let wake = Rc::clone(&woken);
@@ -457,5 +532,68 @@ mod tests {
 
         accounts.unlink("so.tilo.discord");
         assert_eq!(accounts.accounts()[0].state, LinkState::Unlinked);
+    }
+
+    #[test]
+    fn a_shown_code_is_asked_after_until_the_account_links() {
+        let host = Rc::new(Host {
+            reading: RefCell::new(Reading {
+                service: "Discord".into(),
+                connected: true,
+                link: "link-account".into(),
+                ..Reading::default()
+            }),
+            asked: RefCell::default(),
+        });
+        let accounts = LinkedAccounts::new(Rc::new(RoomAccounts::new(
+            Rc::new(Rc::clone(&host)),
+            Rc::new(|| {}),
+        )));
+        let mut recheck = LinkingRecheck::default();
+        let start = ui_core::time::Instant::now();
+        let later = |by: std::time::Duration| start.checked_add(by).unwrap();
+        accounts.refresh();
+        assert_eq!(
+            recheck.follow(&accounts, true, start),
+            None,
+            "nothing to ask after while no code shows"
+        );
+        accounts.link("so.tilo.discord");
+        let due = recheck.follow(&accounts, true, start);
+        assert_eq!(due, Some(later(LINKING_RECHECK)));
+        assert_eq!(
+            recheck.follow(&accounts, false, start),
+            None,
+            "a closed panel asks nothing"
+        );
+        assert_eq!(recheck.follow(&accounts, true, start), due);
+
+        // The person sends the code in Discord: only asking again shows it.
+        {
+            let mut reading = host.reading.borrow_mut();
+            reading.pending = false;
+            reading.account = Some(AccountName {
+                user_name: "ada".into(),
+                display_name: None,
+            });
+        }
+        recheck.follow(&accounts, true, later(LINKING_RECHECK / 2));
+        assert!(
+            matches!(accounts.accounts()[0].state, LinkState::Linking(_)),
+            "not asked again before it is due"
+        );
+        host.asked.borrow_mut().clear();
+        recheck.follow(&accounts, true, later(LINKING_RECHECK));
+        assert_eq!(
+            *host.asked.borrow(),
+            ["so.tilo.discord"],
+            "only the service a code waits for is asked again"
+        );
+        assert!(matches!(accounts.accounts()[0].state, LinkState::Linked(_)));
+        assert_eq!(
+            recheck.follow(&accounts, true, later(LINKING_RECHECK)),
+            None,
+            "a linked account is not asked after"
+        );
     }
 }

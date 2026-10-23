@@ -300,12 +300,13 @@ fn accepted(
             )
             .ok()
         })
-        .is_some_and(|profile| {
-            profile
+        .and_then(|profile| {
+            let landing = profile
                 .adopt_view(view, carried.instance, &carried.target)
-                .is_ok()
+                .ok()?;
+            Some(Arriving::new(profile, [landing]))
         });
-    if !presented {
+    let Some(arriving) = presented else {
         roll_back(
             st,
             plan,
@@ -314,9 +315,22 @@ fn accepted(
             &t("window-transfer-failed-storage"),
         );
         return None;
-    }
+    };
     set_note(st, tab, crate::shell::peer_windows::OPENING.to_string());
-    start(st, transfers, plan, mode, tab, carried, resume)
+    // The instance reads its presentation from the disk.
+    land(
+        st,
+        transfers,
+        plan,
+        Landing {
+            tab,
+            carried,
+            arriving,
+            then: Then::Start { mode, resume },
+            since: Instant::now(),
+        },
+        false,
+    )
 }
 
 /// Whether the source changed after the transfer read it.

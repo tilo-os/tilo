@@ -799,7 +799,6 @@ mod tests {
             "and still shown here, as they were"
         );
 
-        // This device, the room's governor, makes the room's layout personal.
         let changes = owner
             .with_current(room, |view| {
                 let mut doc = view.peer().admitted_room().ok_or("no room")?.clone();
@@ -967,7 +966,6 @@ mod tests {
             )
         };
         let projections = || PROJECTIONS.with(std::cell::Cell::get);
-        // The governor has registered this session's namespace to this device.
         let mut room = automerge::AutoCommit::new();
         let owners = room
             .put_object(
@@ -982,7 +980,6 @@ mod tests {
         let mut settled = None;
         let mut pending = Vec::new();
 
-        // Phase `windows_the_room_lacks_are_published_on_every_look`.
         let first = windows(7);
         let Ok(Some(Plan::Publish(changes))) = plan(
             &room,
@@ -1052,7 +1049,6 @@ mod tests {
         }
         assert_eq!(projections(), 3, "a settled room is not copied again");
 
-        // Phase `a_window_or_room_change_is_looked_at_again`.
         assert!(matches!(
             plan(
                 &room,
@@ -1199,7 +1195,6 @@ mod tests {
             "the room carries a history"
         );
 
-        // Without the memo, each look copies the room to find nothing to do.
         let before = copies();
         for _ in 0..LOOKS {
             let mut fresh = None;

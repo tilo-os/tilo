@@ -84,7 +84,6 @@ pub struct Follower {
     /// The host's state directory; each requested bot keeps its
     /// installation under `requested-bots/<entry>`.
     pub state: PathBuf,
-    /// The operator's bots, by entry.
     pub operator: BTreeSet<String>,
     /// The connectors this host can run for a requested bot (the Discord
     /// bridge); `None` where it runs none.

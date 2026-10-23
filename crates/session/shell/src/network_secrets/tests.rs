@@ -1,7 +1,3 @@
-//! The agent over a peer-to-peer D-Bus link to a stand-in `NetworkManager`,
-//! answered through the same sheet controller the compositor draws, in the
-//! shell's words.
-
 use std::sync::Arc;
 use std::time::Duration;
 

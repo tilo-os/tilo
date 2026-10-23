@@ -205,11 +205,6 @@ pub enum DelegatedError {
 /// `identity`: a complete `tool` image for `identity`, built for `runtime`
 /// on `arch`. The signed image is written to `<dest>/<hex id>.tapp`;
 /// returns its id.
-///
-/// # Errors
-///
-/// [`DelegatedError`] for a file that is not a regular file, too large,
-/// malformed, incomplete, or anything but the tool asked for.
 pub fn sign_delegated(
     tapp: &Path,
     runtime: &PackageId,

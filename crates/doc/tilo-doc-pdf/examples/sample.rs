@@ -73,7 +73,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         block("heading", "A Table", &[("level", AttrVal::Int(2))]),
     ];
 
-    // Build a small table.
     let row = |cells: &[&str]| {
         let mut r = block("row", "", &[]);
         r.children = cells.iter().map(|c| block("cell", c, &[])).collect();

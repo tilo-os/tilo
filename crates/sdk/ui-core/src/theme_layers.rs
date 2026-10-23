@@ -158,12 +158,6 @@ impl Default for DistributionDefaults {
 
 impl DistributionDefaults {
     /// Structural check. A failure means this layer is not applied.
-    ///
-    /// # Errors
-    ///
-    /// Returns a static message when the schema is not this build's, the
-    /// document fails its own check, the preset is unknown, or a pin names
-    /// no role.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.schema_version != DISTRIBUTION_DEFAULTS_SCHEMA_VERSION {
             return Err("unsupported distribution defaults schema");
@@ -268,11 +262,6 @@ impl AccessibilityLayer {
     /// [`ACCESSIBILITY_SCHEMA_MIN`]..=[`ACCESSIBILITY_SCHEMA_VERSION`]
     /// are rejected, as is a non-finite scale. A finite scale outside the
     /// usable band is clamped by [`Self::materialize`], not rejected.
-    ///
-    /// # Errors
-    ///
-    /// Returns a static message when the schema is outside the admitted
-    /// range or a scale is not finite.
     pub fn validate(&self) -> Result<(), &'static str> {
         if !schema_admitted(
             self.schema_version,
@@ -722,7 +711,6 @@ mod tests {
         assert_eq!(palette.name, "House");
         assert!(palette.document.palette.dark);
 
-        // Alias key `distribution` is the same layer.
         let from_json = Theme::resolved_from_settings(
             r#"{"appearance":{"mode":"dark","distribution":{"schema_version":2,"theme":"light","policy":{"pins":["palette"]}}}}"#,
         );
@@ -890,7 +878,6 @@ mod tests {
             user.type_.distinct_letters = Some(false);
         }
         assert!(!distinct(&stack));
-        // A theme in the default face that asks for them.
         let mut stack = light_stack();
         if let Some(user) = stack.user_theme.as_mut() {
             user.type_.distinct_letters = Some(true);
@@ -906,7 +893,6 @@ mod tests {
         stack.accessibility.hyperlegible = false;
         stack.accessibility.distinct_letters = Some(true);
         assert!(distinct(&stack));
-        // The flat settings key.
         let on = accessibility_layer(None, Some(&serde_json::json!({ "distinct_letters": true })));
         assert_eq!(on.distinct_letters, Some(true));
         let off = accessibility_layer(

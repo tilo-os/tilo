@@ -24,6 +24,9 @@ pub(crate) struct Sink {
     /// The builder's URL as the record holds it, for the variable hint.
     pub(crate) url: Rc<RefCell<String>>,
     pub(crate) reset_area: ui::LocalState<bool>,
+    /// Whether the person moved the divider between the request and the
+    /// response: only then does resetting the area change anything.
+    pub(crate) area_resized: ui::LocalState<bool>,
 }
 impl Sink {
     pub(crate) fn borrow(&self) -> std::cell::Ref<'_, Vec<Cmd>> {
@@ -201,6 +204,7 @@ impl Default for Sink {
             method: ui::LocalState::new(String::new()),
             url: Rc::default(),
             reset_area: ui::LocalState::new(false),
+            area_resized: ui::LocalState::new(false),
         }
     }
 }

@@ -327,9 +327,6 @@ impl WeakNativeWorkspaceOwner {
 impl NativeWorkspaceOwner {
     /// Restore every enrolled room of `authority`, the record `store` last
     /// published. The owner is not yet shared with anyone.
-    ///
-    /// # Errors
-    /// A pending enrollment or a committed room fails its validation.
     pub fn restore(
         store: Arc<dyn Store>,
         authority: NativeAuthorityStorage,
@@ -425,9 +422,6 @@ impl NativeWorkspaceOwner {
 
     /// Canonical task state from the current admitted owner view, never the
     /// desktop presentation cache.
-    ///
-    /// # Errors
-    /// The room is fenced, absent, or its task-control sidecar is malformed.
     pub fn workspace_task_snapshot(
         &self,
         room: RoomId,
@@ -442,9 +436,6 @@ impl NativeWorkspaceOwner {
     }
 
     /// Result retained by the owner for one device-scoped task invocation.
-    ///
-    /// # Errors
-    /// The room is fenced, absent, or its task-control sidecar is malformed.
     pub fn workspace_task_result(
         &self,
         room: RoomId,
@@ -468,10 +459,6 @@ impl NativeWorkspaceOwner {
     /// against. It must equal both the active run's acknowledgement and the
     /// latest durable direction, preventing a delayed pre-direction action from
     /// entering after a newer direction has been acknowledged.
-    ///
-    /// # Errors
-    /// The room is fenced, the task/run/revision lease is stale, or `admit`
-    /// refuses the ordinary invocation.
     pub fn with_task_action_admission<T>(
         &self,
         room: RoomId,
@@ -524,17 +511,12 @@ impl NativeWorkspaceOwner {
         admit()
     }
     /// Store availability only; room authority still requires `with_current`.
-    ///
-    /// # Errors
-    /// The owner is fenced.
     pub fn health(&self) -> Result<(), String> {
         if self.0.current.read().fenced || !self.0.store.healthy() {
             return Err("native owner continuity is fenced".into());
         }
         Ok(())
     }
-    /// # Errors
-    /// The room is fenced or has no committed enrollment, or `read` fails.
     pub fn with_current<T>(
         &self,
         room: RoomId,

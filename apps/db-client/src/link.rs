@@ -103,7 +103,6 @@ impl Default for ViewModel {
 /// What a view asks the controller to do.
 #[derive(Clone, Debug)]
 pub enum Intent {
-    /// Make a saved connection the active one and open it.
     Connect(Uuid),
     /// Open a saved connection or saved query a search hit or an agent
     /// names.
@@ -153,12 +152,10 @@ impl Link {
         Self::default()
     }
 
-    /// Publish a new model.
     pub fn publish(&self, model: ViewModel) {
         self.inner.borrow_mut().model = model;
     }
 
-    /// Read the model.
     pub fn read<R>(&self, read: impl FnOnce(&ViewModel) -> R) -> R {
         read(&self.inner.borrow().model)
     }

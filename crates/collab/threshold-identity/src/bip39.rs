@@ -327,7 +327,6 @@ mod tests {
             Ok(32)
         );
 
-        // Wrong count, unknown word, broken checksum.
         assert_eq!(decode("abandon abandon"), Err(MnemonicError::WordCount(2)));
         let mut words: Vec<&str> = phrase.split(' ').collect();
         words[3] = "tilo";

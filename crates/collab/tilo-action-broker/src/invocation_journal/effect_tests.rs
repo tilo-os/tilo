@@ -156,7 +156,6 @@ fn prepared_effect_restore_refuses_malformed_or_downgraded_bindings() {
         let (mut journal, key, request, update) = fixture(&root);
         journal.prepare_effect(&key, update, &request).unwrap();
         drop(journal);
-        // Reopening folds the appended preparation into the snapshot.
         drop(InvocationJournal::open(&root).unwrap());
         let path = root.join("records.json");
         let mut data: serde_json::Value =

@@ -1,5 +1,3 @@
-//! The owner's reduction of desktop commands over a workspace.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

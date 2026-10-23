@@ -111,10 +111,6 @@ pub fn write_windows_profile_block_bound(
 
 /// Encode, write, sync, and verify using the caller's already-open file.
 /// The caller retains file identity and any regular-file/device admission.
-///
-/// # Errors
-/// Returns an error for an invalid profile, insufficient capacity, cancellation,
-/// I/O failure, or read-back mismatch.
 pub fn write_profile_block_to_file(
     device: &mut std::fs::File,
     target_size: u64,

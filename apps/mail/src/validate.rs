@@ -69,7 +69,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn classify_maps_transport_errors_with_auth_first() {
-        // Phase `classify_maps_real_transport_errors_to_specific_reasons`.
         {
             // Auth: the exact IMAP tagged-NO an server sends on bad credentials.
             assert!(
@@ -85,14 +84,12 @@ mod tests {
                 classify_conn_failure("Connection refused (os error 111)")
                     .contains("connection refused")
             );
-            // DNS failure.
             assert!(
                 classify_conn_failure(
                     "failed to lookup address information: Name or service not known"
                 )
                 .contains("host not found")
             );
-            // TLS/certificate.
             assert!(
                 classify_conn_failure("invalid peer certificate: UnknownIssuer")
                     .contains("TLS/certificate")
@@ -104,7 +101,6 @@ mod tests {
             assert!(unknown.contains("some novel failure mode"), "{unknown}");
         }
 
-        // Phase `classify_prioritises_auth_over_generic_transport_words`.
         {
             // A message that mentions both a socket concept and auth must classify
             // as auth (the more actionable, specific cause).

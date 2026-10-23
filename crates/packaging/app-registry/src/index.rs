@@ -126,11 +126,6 @@ pub struct RuntimeRef {
 
 impl RuntimeRef {
     /// Parse `tilo-runtime/1.2.0`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `s` has no `/` separator, the name half is
-    /// empty, or the version half isn't valid semver.
     pub fn parse(s: &str) -> Result<Self, IndexError> {
         let (name, ver) = s
             .rsplit_once('/')
@@ -270,11 +265,6 @@ impl IndexEntry {
             .map_err(|_| IndexError::Hex("tapp_hash is not 32 bytes".into()))
     }
 
-    /// Parse the `package_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `package_id` isn't a valid [`PackageId`] string.
     pub fn parse_package_id(&self) -> Result<PackageId, IndexError> {
         self.package_id.parse().map_err(|e| {
             IndexError::BadIdentity(format!("package_id {:?}: {e:?}", self.package_id))
@@ -297,11 +287,6 @@ impl IndexEntry {
 
     /// Canonical bytes the publisher signs. Binds every advertised
     /// field so a registry cannot relabel the bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `tapp_hash` is malformed, or a field is too
-    /// long to fit the wire format's length prefix.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, IndexError> {
         let mut out = Vec::new();
         out.extend_from_slice(ENTRY_MAGIC);
@@ -333,10 +318,6 @@ impl IndexEntry {
     }
 
     /// Verify the publisher signature over this entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the publisher key or signature are malformed, or the signature doesn't verify.
     pub fn verify_publisher(&self) -> Result<(), IndexError> {
         let key = self.publisher_key()?;
         let vk = VerifyingKey::from_bytes(&key).map_err(|_| IndexError::InvalidKey)?;
@@ -408,19 +389,11 @@ impl RegistryIndex {
     }
 
     /// Decode from the served JSON bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `bytes` isn't valid JSON for [`RegistryIndex`]'s shape.
     pub fn from_json(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
     }
 
     /// Encode to pretty JSON for serving / on-disk storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if serialisation fails.
     pub fn to_json(&self) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec_pretty(self)
     }
@@ -490,11 +463,6 @@ impl RegistryIndex {
 
     /// Verify the index signature against `expected_key` (the pinned
     /// registry operator key). Fail-closed: unsigned or mismatched → `Err`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the index is unsigned, the embedded signer
-    /// key doesn't match `expected_key`, or the signature doesn't verify.
     pub fn verify_signature(&self, expected_key: &[u8; 32]) -> Result<(), IndexError> {
         if self.signature.is_empty() || self.signer_identity.is_empty() {
             return Err(IndexError::Unsigned);
@@ -615,7 +583,6 @@ mod tests {
         idx.verify_signature(&registry.public_key_bytes()).unwrap();
         assert!(idx.verify_signature(&other.public_key_bytes()).is_err());
 
-        // JSON round-trips with the signature intact.
         let bytes = idx.to_json().unwrap();
         let back = RegistryIndex::from_json(&bytes).unwrap();
         back.verify_signature(&registry.public_key_bytes()).unwrap();
@@ -645,7 +612,6 @@ mod tests {
             .unwrap();
         assert_eq!(best4.isa, "x86_64-v4");
 
-        // A version requirement is respected.
         let idx = index_of(
             ["1.0.0", "1.2.0", "2.0.0"].map(|ver| sample_entry("so.tilo.editor", ver, "x86_64")),
         );
@@ -659,7 +625,6 @@ mod tests {
             .unwrap();
         assert_eq!(best.version, "1.2.0");
 
-        // The runtime gate blocks a missing or different-major runtime.
         let mut e = sample_entry("so.tilo.editor", "1.0.0", "x86_64");
         e.runtime = Some("tilo-runtime/1.2.0".into());
         let idx = index_of([e]);

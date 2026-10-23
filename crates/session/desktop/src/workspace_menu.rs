@@ -49,9 +49,7 @@ pub struct WorkspaceMenuModel {
     pub host: Option<String>,
     /// Join a workspace, leave this one, start a new one.
     pub actions: Vec<WorkspaceAction>,
-    /// The person may rename the workspace.
     pub can_rename: bool,
-    /// The person may add a strip to it.
     pub can_add_strip: bool,
 }
 

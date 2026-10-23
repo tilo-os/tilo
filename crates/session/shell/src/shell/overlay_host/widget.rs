@@ -8,6 +8,12 @@
 use super::*;
 
 impl Widget for ShellOverlayHost {
+    fn has_pending_visual_work(&self) -> bool {
+        let mut pending = self.palette_visible && self.search_indexes_settling;
+        self.for_each_child(&mut |child| pending |= child.has_pending_visual_work());
+        pending
+    }
+
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -117,10 +123,7 @@ impl Widget for ShellOverlayHost {
             .fold(false, |changed, actions| {
                 actions.pump(&mut self.agent_quick_composer, tracker) | changed
             });
-        let action_dirty = action_dirty
-            | self.reveal_requested_draft()
-            | self.pump_composer_run()
-            | self.switch_composer_agent();
+        let action_dirty = action_dirty | self.switch_composer_agent();
         if action_dirty {
             self.agent_quick_composer.sync(doc, path);
         }
@@ -128,6 +131,7 @@ impl Widget for ShellOverlayHost {
         let person_quick_dirty = self.person_quick_composer.update(doc, path)
             | (self.peer_sync_overlay.visible() && self.peer_sync_overlay.update(doc, path))
             | self.run_peer_sync_sheet_request()
+            | self.pump_uninstall()
             | person_activation
             | person_context_dirty
             | person_action_dirty;
@@ -209,17 +213,19 @@ impl Widget for ShellOverlayHost {
                 )
             };
             let state = chrome.borrow();
-            search_index_ready =
-                self.search_registry
-                    .refresh_indexes(&crate::shell::search::QueryArgs {
-                        needle: &current_query,
-                        scope,
-                        active_provider_id: active_provider.as_deref(),
-                        wanted_kinds: &self.active_kind_filter,
-                        chrome: &state,
-                        doc,
-                        doc_root: path,
-                    });
+            let args = crate::shell::search::QueryArgs {
+                needle: &current_query,
+                scope,
+                active_provider_id: active_provider.as_deref(),
+                wanted_kinds: &self.active_kind_filter,
+                chrome: &state,
+                doc,
+                doc_root: path,
+            };
+            search_index_ready = self.search_registry.refresh_indexes(&args);
+            self.search_indexes_settling = self.search_registry.indexes_settling(&args);
+        } else {
+            self.search_indexes_settling = false;
         }
         steps.mark("search-index");
         self.poll_pending_launchpad_actions();
@@ -498,6 +504,10 @@ impl Widget for ShellOverlayHost {
                 .build_layout(taffy, theme, node_map)
         });
         self.peer_sync_node = self.build_peer_sync_layout(taffy, theme, node_map);
+        let uninstall_window = self.build_uninstall_layout(taffy, theme, node_map);
+        if uninstall_window.is_none() {
+            self.uninstall_nodes = None;
+        }
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
         self.place_on_focused_display(taffy, capture_node);
         self.capture_node = Some(capture_node);
@@ -595,6 +605,7 @@ impl Widget for ShellOverlayHost {
             children.push(pairing_node);
         }
         children.extend(self.peer_sync_node);
+        children.extend(uninstall_window);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -725,6 +736,7 @@ impl Widget for ShellOverlayHost {
         }
         self.pairing
             .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
+        self.apply_uninstall_layout(taffy);
         if let Some(node) = self.peer_sync_node {
             // The sheet centres on, and measures itself against, the
             // display it opens on.
@@ -964,6 +976,9 @@ impl Widget for ShellOverlayHost {
         if self.peer_sync_node.is_some() {
             out.push(&self.peer_sync_overlay);
         }
+        if let (Some(asking), Some(_)) = (&self.uninstall_sheet, self.uninstall_nodes) {
+            out.push(&asking.dialog);
+        }
         out
     }
 
@@ -1006,6 +1021,9 @@ impl Widget for ShellOverlayHost {
         if self.peer_sync_node.is_some() {
             out.push(&mut self.peer_sync_overlay);
         }
+        if let (Some(asking), Some(_)) = (&mut self.uninstall_sheet, self.uninstall_nodes) {
+            out.push(&mut asking.dialog);
+        }
         out
     }
 
@@ -1013,6 +1031,10 @@ impl Widget for ShellOverlayHost {
         self.agent_quick_composer.take_focus_reset()
             | self.person_quick_composer.take_focus_reset()
             | self.peer_sync_overlay.take_focus_reset()
+            | self
+                .uninstall_sheet
+                .as_mut()
+                .is_some_and(|asking| asking.dialog.take_focus_reset())
             | self.bar_popovers.profile.take_focus_reset()
             | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
@@ -1084,6 +1106,7 @@ impl Widget for ShellOverlayHost {
             | self.person_quick_composer.take_structure_dirty()
             | (self.peer_sync_overlay.visible() != self.peer_sync_node.is_some())
             | self.peer_sync_overlay.take_structure_dirty()
+            | self.take_uninstall_changed()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.bar_popovers.structure_stale()

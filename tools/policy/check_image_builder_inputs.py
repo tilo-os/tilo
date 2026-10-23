@@ -197,7 +197,7 @@ def compile_includes(repo: Path, tracked: list[str], roots: list[str]) -> dict[s
             line_offsets.append(line_offsets[-1] + len(line))
         for read in entries:
             target = read.target
-            if target is None or target.split("/", 1)[0] in roots:
+            if target is None or read.runtime or target.split("/", 1)[0] in roots:
                 continue
             if test_only(text, line_offsets[read.line - 1]):
                 continue

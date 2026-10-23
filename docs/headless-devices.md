@@ -70,6 +70,26 @@ it through the same privileged helper Settings uses. Name the device with
 log in again on the new device so its session runs as the identity, and check
 either device with `tilo-identity status`.
 
+Any of your devices can approve, the same way. When the device you approve on
+cannot add devices by itself (a device you paired, rather than set up first),
+your other devices ask you too: each shows "A device asks to be you", naming
+the new device, the device that found it and its code. Approve it there when
+the new device shows the same code; if more than one of your devices must
+agree, each asks, and `approve` says how many still have to. A device you
+removed is refused before anyone is asked. Home servers are added from the
+device you set up first.
+
+A device holding the key without a screen answers the same ask from a shell:
+
+```sh
+tilo-identity asking                  # the devices asking, their codes, who found them
+tilo-identity approve --code 123456   # when the new device shows that code
+tilo-identity decline --code 123456
+```
+
+`approve` answers a device asking here before it looks on the network, so the
+one command approves either way.
+
 ## Devices
 
 ```sh
@@ -94,6 +114,20 @@ device you are using; do it from another one.
   `tilo-enroll approve-device` as you, or as root when the machine keeps the
   identity's root key under `/var/lib/tilo`, writing your identity directory
   only as you.
+- On a device without the whole key, `approve` takes the session's
+  `identity.device.pair.discover` and `.approve` actions instead. The session
+  proposes the certificate to your other devices over their private fabric
+  (`tilo_identity_host::certification_ceremony`,
+  `crates/session/shell/src/shell/device_certification.rs`), gathers the
+  signature (FROST shares are combined there), and runs
+  `tilo-enroll approve-device --approved-cert`. A device holding the key
+  signs its answer with the identity's key, as every build expects; one
+  without it signs with its own certified key and names its certificate. The
+  joining device accepts either, the latter only from the device that minted
+  its token while the identity certified it.
+- `asking`, and `approve` or `decline` of a device asking, are the session's
+  `identity.device.pair.asking` and `.answer` actions; `.answer` signs through
+  the same step as the "A device asks to be you" notification's Approve.
 - `devices` and `revoke` are the shell's `identity.devices.list` and
   `identity.device.revoke` steps.
 
@@ -104,6 +138,8 @@ device you are using; do it from another one.
 | `no new device was found nearby` | Start `tilo-identity pair` on the new device first; check that both are on one network segment. |
 | `no trusted Tilo device approved nearby pairing` | Run `tilo-identity approve` on the other device while `pair` waits. |
 | `this device cannot approve new devices` | Approve from the device that created the identity. |
+| `none of your devices online now can approve it` | Turn on the device you set up first, then pair again. |
+| `It was not approved in time` | Approve on your other device within about three minutes, or pair again. |
 | `this device's key ... is missing` | Make sure your account is in the `tilo-identity` group (`id -nG`), then log in again. |
 
 See also [Device sync, remote control and serving mesh](device-mesh.md) and

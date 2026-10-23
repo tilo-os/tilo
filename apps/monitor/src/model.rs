@@ -121,7 +121,6 @@ impl Metrics {
 pub enum ProcessDataStatus {
     /// The first live snapshot is still being collected.
     Loading,
-    /// The operating system returned one or more processes.
     Ready,
     /// The operating system successfully returned a genuinely empty list.
     Empty,
@@ -151,7 +150,6 @@ impl MonitorModel {
         reason = "net_rx_hist/net_tx_hist are the standard receive/transmit pair; renaming either would read worse"
     )]
     pub fn sample() -> Self {
-        // ---- per-core history: a few cores hot, most idle-ish -------
         let cores: Vec<f32> = SAMPLE_CORE_LOAD.to_vec();
 
         // Synthesise wavy histories so the charts read as "alive".
@@ -327,7 +325,6 @@ type SampleRow = (
 /// names (e.g. two "Web Content") attach to the *first* matching parent,
 /// which is what a real renderer fan-out looks like.
 const SAMPLE_ROWS: &[SampleRow] = &[
-    // ---- the user session, rooted at the compositor ----------------
     ("shell", "", "ada", 14.6, 412, 24, "Running", false),
     ("browser", "shell", "ada", 12.3, 643, 14, "Running", false),
     (
@@ -388,7 +385,6 @@ const SAMPLE_ROWS: &[SampleRow] = &[
         false,
     ),
     ("Xwayland", "shell", "ada", 4.3, 176, 5, "Running", false),
-    // ---- the system service tree, rooted at systemd ----------------
     ("systemd", "", "root", 0.2, 18, 1, "Sleeping", false),
     ("tilo-fs", "systemd", "root", 8.9, 224, 14, "Running", false),
     (
@@ -667,7 +663,6 @@ mod tests {
     /// formatters.
     #[test]
     fn model_sample_and_formatters() {
-        // Phase `sample_is_fully_populated`.
         {
             let m = MonitorModel::sample();
             assert!(!m.processes.is_empty());
@@ -676,7 +671,6 @@ mod tests {
             assert!(m.metrics.mem_used > 0 && m.metrics.mem_used < m.metrics.mem_total);
         }
 
-        // Phase `fmt_helpers`.
         {
             assert_eq!(fmt_rate(0.0), "0 B/s");
             assert_eq!(fmt_rate(2_400_000.0), "2.4 MB/s");

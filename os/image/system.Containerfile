@@ -99,6 +99,8 @@ COPY \
     os/usr/lib/systemd/user/tilo-cache-gc.timer \
     os/usr/lib/systemd/user/tilo-app-update.service \
     os/usr/lib/systemd/user/tilo-app-update.timer \
+    os/usr/lib/systemd/user/tilo-public-content-refresh.service \
+    os/usr/lib/systemd/user/tilo-public-content-refresh.timer \
     os/usr/lib/systemd/user/tilo-runtime-resident.service \
     os/usr/lib/systemd/user/tilo-runtime-resident.path \
     /usr/lib/systemd/user/
@@ -493,7 +495,13 @@ COPY \
 COPY \
     os/usr/lib/systemd/system/tilo-security-audit.service \
     os/usr/lib/systemd/system/tilo-security-audit.timer \
+    os/usr/lib/systemd/system/tilo-pstore-console.service \
     /usr/lib/systemd/system/
+# A reset leaves its kernel log in pstore on boards that reserve a ramoops
+# region (os/kernel/patches/0021); systemd-pstore moves it into the journal on
+# the next boot, and tilo-pstore-console.service makes the console log in it
+# carry more than critical messages.
+COPY os/usr/lib/systemd/pstore.conf.d/10-tilo.conf /usr/lib/systemd/pstore.conf.d/10-tilo.conf
 
 # ---------------------------------------------------------------------------
 # Bounded rollback protection
@@ -650,6 +658,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-app-update.timer && \
+    systemctl --global enable tilo-public-content-refresh.timer && \
     systemctl --global enable tilo-runtime-resident.service tilo-runtime-resident.path && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
@@ -668,6 +677,7 @@ RUN systemctl enable greetd.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \
     systemctl enable cups.socket && \
     systemctl enable tilo-security-audit.timer && \
+    systemctl enable systemd-pstore.service tilo-pstore-console.service && \
     systemctl enable tilo-rollback-harden.timer && \
     systemctl enable tilo-rollback-confirm.timer && \
     systemctl enable tilo-boot-entries.timer tilo-boot-health.service && \
@@ -709,7 +719,6 @@ RUN for u in \
         systemd-coredump.socket \
         systemd-coredump@.service \
         systemd-binfmt.service \
-        systemd-pstore.service \
         systemd-pcrlock-file-system.service \
         systemd-pcrlock-firmware-code.service \
         systemd-pcrlock-firmware-config.service \

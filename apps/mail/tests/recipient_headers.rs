@@ -1,5 +1,3 @@
-//! Recipient fields use mailbox syntax, including quoted display names.
-
 use mail::model::{Addr, Draft, Folder};
 use mail::transport::{build_mime, parse_addr_list, parse_eml};
 

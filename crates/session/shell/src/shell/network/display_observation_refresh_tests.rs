@@ -1,5 +1,3 @@
-//! Causal display refresh through the real pump, private snapshots and signed custody.
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};

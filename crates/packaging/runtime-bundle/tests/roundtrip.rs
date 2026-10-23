@@ -144,7 +144,6 @@ fn unsigned_bundles_round_trip_over_every_host_layout() {
 
         // ld.so.cache should be included when present.
         assert!(manifest.files.iter().any(|f| f.path == "etc/ld.so.cache"));
-        // Sorted.
         assert!(manifest.files.windows(2).all(|w| w[0].path <= w[1].path));
 
         let verified = verify_bundle(out.path()).expect("verify");
@@ -196,7 +195,6 @@ fn unsigned_bundles_round_trip_over_every_host_layout() {
         );
 
         verify_bundle(out.path()).expect("verify aarch64");
-        // Arch mismatch policy refuses.
         let err = verify_bundle_with(
             out.path(),
             &VerifyOptions {
@@ -305,7 +303,6 @@ fn signed_bundles_verify_and_catch_a_tampered_root() {
             Some(identity.public_key_hex()).as_deref()
         );
 
-        // Verify accepts.
         verify_bundle(out.path()).expect("verify signed");
         verify_bundle_with(
             out.path(),
@@ -317,7 +314,6 @@ fn signed_bundles_verify_and_catch_a_tampered_root() {
         )
         .expect("required publisher matches");
 
-        // Different publisher pin refuses.
         let other = Identity::generate();
         let err = verify_bundle_with(
             out.path(),

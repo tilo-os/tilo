@@ -118,10 +118,6 @@ const RESELECTIONS: usize = 3;
 /// Look `package` up in the installed set and hold its payload tree. An
 /// update that removed the tree between the lookup and the hold makes it
 /// look again, so the launch opens the build that replaced it.
-///
-/// # Errors
-///
-/// Returns the catalogue's error, or one from taking the lease.
 pub fn find_installed_held(
     package: &str,
 ) -> Result<Option<(package_store::InstalledPackage, Option<FileLock>)>, String> {
@@ -448,7 +444,6 @@ type = "gui"
                 // chose, on that build's runtime, both whole.
                 assert_eq!(opened, Opened::Mounted("1.0.0".into()), "{at:?}");
             }
-            // With the launch gone, the next collection takes what it held.
             fx.collect();
             assert!(
                 !fx.runtimes().join(OLD_RUNTIME).exists(),

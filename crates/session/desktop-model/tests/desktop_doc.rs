@@ -1,6 +1,3 @@
-//! The device's desktop document records exactly what the tree holds, and
-//! each narrow edit mirrors the matching tree change.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

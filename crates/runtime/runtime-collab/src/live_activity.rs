@@ -44,11 +44,6 @@ impl From<live_activity::Client> for LiveActivityHandle {
 
 impl LiveActivityHandle {
     /// Show `activity` as the app's live activity, or end it with `None`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the activity is too large, the broker
-    /// refuses it or disconnects.
     pub async fn show(&self, activity: Option<&Value>) -> Result<(), NotAvailable> {
         let bytes = match activity {
             Some(activity) => serde_json::to_vec(activity)
@@ -68,10 +63,6 @@ impl LiveActivityHandle {
 
     /// The controls pressed on the app's activity after `after`, once there
     /// is one, and the serial to pass back for the next.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the broker refuses or disconnects.
     pub async fn controls(&self, after: u64) -> Result<(u64, Vec<Value>), NotAvailable> {
         let mut request = self.inner.controls_request();
         request.get().set_after(after);
@@ -119,7 +110,6 @@ impl LiveActivities {
         self.revision.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Show `activity` as app `app_id`'s, or end it.
     pub fn show(&self, app_id: &str, activity: Option<Value>) {
         let mut apps = self.lock();
         let app = apps.entry(app_id.to_owned()).or_default();

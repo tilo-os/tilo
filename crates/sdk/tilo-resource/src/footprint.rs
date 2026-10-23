@@ -29,7 +29,6 @@ use crate::model::{Doc, Model};
 use crate::path::Segment;
 use crate::shape::Shape;
 
-/// The record unit, as footprints and [`units_of`] name it.
 pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
 
 /// The document key of a record's unit index: the storage patterns of its
@@ -214,9 +213,6 @@ pub fn patterns(shape: Shape) -> Vec<String> {
 }
 
 /// Keep the unit index of a record of shape `shape` in `doc`, written once.
-///
-/// # Errors
-/// Returns the document's write error.
 pub fn index(doc: &mut Doc, shape: Shape) -> Result<(), automerge::AutomergeError> {
     if !has_units(shape) || doc.get(&ROOT, UNIT_INDEX)?.is_some() {
         return Ok(());

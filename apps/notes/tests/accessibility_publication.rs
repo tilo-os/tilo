@@ -123,6 +123,11 @@ fn a_note_holding_among(app: &mut App, damage: &mut SurfaceDamage, text: &str, n
     ] {
         input(app, damage, event);
     }
+    // The new note opens to be named; Enter keeps its name and goes to its
+    // body.
+    let enter = Key::Named(ui::winit::keyboard::NamedKey::Enter);
+    input(app, damage, key_input(&enter, ElementState::Pressed));
+    input(app, damage, key_input(&enter, ElementState::Released));
     // The pointer rests in the empty page below the note.
     input(app, damage, cursor_moved(640.0, 700.0));
     for letter in text.chars() {

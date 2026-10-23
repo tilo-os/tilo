@@ -170,7 +170,6 @@ fn reading(book: &str) -> String {
     format!("ebook.selection:{id}")
 }
 
-/// The shelf rows of the library `doc` holds.
 fn shelf(doc: &ui::tilo_resource::Doc) -> Vec<crate::model::LibraryEntry> {
     crate::resource::read_doc(doc)
         .entries

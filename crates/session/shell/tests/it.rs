@@ -85,6 +85,8 @@ mod dmabuf_feedback_protocol;
 mod dmabuf_scanout_feedback;
 #[path = "document_open_e2e.rs"]
 mod document_open_e2e;
+#[path = "downloaded_apps.rs"]
+mod downloaded_apps;
 #[path = "e2e_shell_flows.rs"]
 mod e2e_shell_flows;
 #[path = "emoji_picker_commit.rs"]

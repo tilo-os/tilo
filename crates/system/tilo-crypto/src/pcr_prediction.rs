@@ -6,11 +6,6 @@ use base64::Engine as _;
 /// exactly PCR 11, and an RSA PKCS#1 v1.5 SHA-256 signature by
 /// `public_key_pem` over `approved_policy || be64(generation)`, the message
 /// the build's prediction signer signs.
-///
-/// # Errors
-///
-/// Returns an error if the sidecar is malformed, describes another generation,
-/// bank or PCR set, or its signature does not verify.
 pub fn verify_pcr_prediction(
     public_key_pem: &str,
     prediction_json: &[u8],

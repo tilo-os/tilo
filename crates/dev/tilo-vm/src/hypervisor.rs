@@ -150,9 +150,6 @@ impl Runner for SystemRunner {
 }
 
 /// Run each command in order, stopping at the first failure.
-///
-/// # Errors
-/// The first command that fails.
 pub fn run_all(runner: &mut dyn Runner, commands: &[CommandLine]) -> Result<(), CliError> {
     for command in commands {
         let output = runner.output(command)?;
@@ -404,8 +401,6 @@ pub fn vm_files(disk: &str) -> Vec<String> {
     files
 }
 
-// ---- a dev device reached over SSH (a board) ---------------------------------
-
 /// The adapter of a machine that already runs a Tilo dev image, such as a
 /// board installed from its board dev disk, registered with `vm add`.
 pub const DEVICE: &str = "device";
@@ -468,8 +463,6 @@ impl Hypervisor for Device {
         true
     }
 }
-
-// ---- libvirt (Linux) ----------------------------------------------------------
 
 pub struct Libvirt;
 
@@ -749,8 +742,6 @@ impl Hypervisor for Libvirt {
     }
 }
 
-// ---- raw QEMU via os/dev/vm.sh (Linux, CI and scenario tests) ---------------
-
 /// The headless adapter for CI and scenario tests: it drives `os/dev/vm.sh`
 /// from the worktree root, with that script's own conventions. A VM made
 /// this way is invisible to virt-manager and Boxes, so it is never the
@@ -885,8 +876,6 @@ impl Hypervisor for Qemu {
         Some(Self::script(vm, &["cmd"]).arg(args.join(" ")))
     }
 }
-
-// ---- UTM (macOS) --------------------------------------------------------------
 
 pub struct Utm;
 
@@ -1101,8 +1090,6 @@ impl Hypervisor for Utm {
         Some(command)
     }
 }
-
-// ---- QEMU with WHPX (Windows ARM64) -----------------------------------------
 
 /// Windows ARM64 Home has WHPX even though it has no Hyper-V management
 /// module. QEMU is launched detached; the published qcow2 stays read-only.
@@ -1436,8 +1423,6 @@ impl Hypervisor for Whpx {
         Some(powershell(&script))
     }
 }
-
-// ---- Hyper-V (Windows) ----------------------------------------------------------
 
 pub struct HyperV;
 
@@ -2383,7 +2368,6 @@ start_qemu() { printf '%s' "$1"; }
                 os.contains("<cmdline>root=UUID=1 ro console=ttyS0 a&lt;b</cmdline>"),
                 "{os}"
             );
-            // Redefined under the existing domain's UUID, which virsh reports.
             let mut runner = fake("e7482d68-86d0-43dc-8f53-fc6b508ea038\n");
             let commands = Libvirt.redefine(&vm, KEY, &mut runner).unwrap();
             assert_eq!(

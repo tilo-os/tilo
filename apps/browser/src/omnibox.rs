@@ -39,7 +39,6 @@ pub enum Tier {
     Prefix,
     /// The host contains the text (`you` or `tube` in `m.youtube.com`).
     HostWord,
-    /// A word of the title or address starts with the text.
     Word,
     /// The text occurs inside the title or address.
     Substring,

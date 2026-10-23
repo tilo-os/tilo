@@ -41,7 +41,6 @@ pub(crate) const OTHER_KINDS: &[(&str, &str)] = &[
     ("x400", "X.400"),
 ];
 
-/// A repeated row of the form.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum RowKind {
     Phone,

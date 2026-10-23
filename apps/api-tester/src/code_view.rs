@@ -386,7 +386,6 @@ mod tests {
         }
     }
 
-    /// A press on a caret folds its block away, and the next press unfolds it.
     #[test]
     fn pressing_a_caret_folds_and_unfolds_its_block() {
         let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();
@@ -463,7 +462,11 @@ mod tests {
     fn tokens_follow_the_face_that_arrives_after_the_first_paint() {
         let root = ui::font_catalog::checkout_root();
         let fonts = ui::font_catalog::FontCatalog::product("", "en-US")
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(|name| {
+                let bytes = std::fs::read(root.join(name)).ok()?;
+                let digest = ui::font_catalog::test_sha256(&bytes);
+                Some((bytes, digest))
+            })
             .expect("startup fonts");
         let body = serde_json::json!({ "name": "tilo", "count": 3 }).to_string();
         let mut d = FrameHarness::for_root_with(

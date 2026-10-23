@@ -328,3 +328,28 @@ fn a_past_version_previews_the_graph_the_window_shows() {
         "the preview shows the graph, not the keypad: {preview}"
     );
 }
+
+#[test]
+fn typing_a_formula_is_one_change() {
+    let mut app = hosted();
+    press_bar(&mut app, "calculator.mode:1");
+    click(&mut app, "calculator.graph.field:2d:0");
+    app.harness().type_text("3*x+sin(x)");
+    app.settle();
+    app.flush().unwrap();
+    app.harness()
+        .open_history()
+        .expect("the window's History opens");
+    app.settle();
+    app.harness().relayout();
+    let typed: Vec<String> = history_rows(&mut app)
+        .into_iter()
+        .map(|(_, name)| name)
+        .filter(|name| name.contains("y = 3"))
+        .collect();
+    assert_eq!(typed.len(), 1, "one row for the formula: {typed:?}");
+    assert!(
+        typed[0].ends_with("y = 3*x+sin(x)"),
+        "the row reads as the whole formula: {typed:?}"
+    );
+}

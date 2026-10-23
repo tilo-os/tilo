@@ -397,7 +397,6 @@ impl BrowserWidget {
     }
 }
 
-/// A visit's Unix time as the local date and time.
 fn visit_time(unix_secs: u64) -> Option<chrono::DateTime<chrono::Local>> {
     let secs = i64::try_from(unix_secs).ok()?;
     chrono::DateTime::from_timestamp(secs, 0).map(|utc| utc.with_timezone(&chrono::Local))

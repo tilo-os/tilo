@@ -282,7 +282,6 @@ mod real {
             println!("decoder: {decoder}");
         }
 
-        // A second request for the same source reuses the pipeline.
         let again = pool.session(&src);
         assert!(
             std::sync::Arc::ptr_eq(&session, &again),

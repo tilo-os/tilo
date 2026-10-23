@@ -24,7 +24,6 @@ pub fn with_reader<T>(read: impl FnOnce(&Reader<'_>) -> T) -> T {
     read(&reader)
 }
 
-/// The sentence for one entry.
 pub fn sentence(entry: &ActionContext) -> String {
     with_reader(|reader| reader.sentence(entry))
 }

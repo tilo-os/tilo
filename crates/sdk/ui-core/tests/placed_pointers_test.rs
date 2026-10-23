@@ -89,3 +89,76 @@ fn pointers_outside_the_surface_or_taken_away_are_not_drawn() {
     harness.set_placed_pointers(vec![outside]);
     assert!(harness.placed_pointers().is_empty());
 }
+
+/// A window showing Ada's caret, labelled with her name, at (100, 80).
+struct AdasCaret;
+
+impl tilo_ui::Widget for AdasCaret {
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui::Widget>,
+    ) -> taffy::NodeId {
+        use tilo_ui::widget::TaffyTreeExt;
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut tilo_ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        presence.draw_peer_caret_labeled(
+            scene,
+            theme,
+            text_renderer,
+            transform,
+            &UserId("ada-device".into()),
+            "Eager Dolphin",
+            vello::kurbo::Rect::new(100.0, 70.0, 102.0, 90.0),
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "AdasCaret"
+    }
+}
+
+/// The pointers as the frame shows them over Ada's caret, with hers at `at`.
+fn pointers_over_adas_caret(at: (f64, f64)) -> Vec<tilo_ui::presence::PeerCursor> {
+    let mut harness =
+        FrameHarness::new_with_theme(State::new(), Box::new(AdasCaret), SIZE, Theme::dark());
+    let presence = PresenceCtx::empty();
+    let cursor = presence.placed_cursor(PlacedPointer {
+        user: UserId("ada-device".into()),
+        at,
+        name: Some("Eager Dolphin".into()),
+        agent: false,
+        activity: None,
+        chat: None,
+        reaction: None,
+    });
+    harness.set_placed_pointers(vec![cursor]);
+    harness.relayout();
+    harness.render_rgba();
+    harness.drawn_placed_pointers()
+}
+
+#[test]
+fn a_pointer_right_beside_its_persons_caret_shows_one_name_tag() {
+    let beside = pointers_over_adas_caret((120.0, 90.0));
+    assert_eq!(beside.len(), 1);
+    assert!(
+        beside[0].name_opacity <= 0.0,
+        "the caret's tag names her; the pointer beside it does not again"
+    );
+    let away = pointers_over_adas_caret((300.0, 150.0));
+    assert!(
+        away[0].name_opacity > 0.0,
+        "a pointer away from her caret keeps its own name"
+    );
+}

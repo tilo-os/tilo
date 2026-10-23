@@ -179,6 +179,7 @@ impl Standing {
             person,
             role: self.role(),
             layout_shared: true,
+            members: None,
         }
     }
 }
@@ -227,6 +228,10 @@ pub(crate) struct Shared {
     /// desktop's): its windows and desks are the person's own, sent to
     /// nobody, and the room's later layout no longer replaces them.
     pub own_layout: Rc<Cell<bool>>,
+    /// The room's members as its governance lists them, once heard: what
+    /// someone no longer among them made is released, anyone's here to
+    /// close ([`tilo_desktop_model::ownership::released`]).
+    pub members: Rc<RefCell<Option<std::collections::BTreeSet<String>>>>,
     /// The person's accounts with the services this room is connected to,
     /// read from the connectors' room records by the room's host
     /// ([`PageRoomActions`]).
@@ -300,10 +305,16 @@ impl PeerWindow {
 }
 
 impl Shared {
-    /// `person` as the desktop's policy asks about them here.
-    pub fn standing_of<'a>(&self, person: &'a str) -> tilo_desktop_model::commands::Standing<'a> {
+    /// `person` as the desktop's policy asks about them here, among the
+    /// room's `members` (borrowed from [`Self::members`]).
+    pub fn standing_of<'a>(
+        &self,
+        person: &'a str,
+        members: Option<&'a std::collections::BTreeSet<String>>,
+    ) -> tilo_desktop_model::commands::Standing<'a> {
         tilo_desktop_model::commands::Standing {
             layout_shared: !self.own_layout.get(),
+            members,
             ..self.standing.of(person)
         }
     }
@@ -584,7 +595,8 @@ impl Shared {
         if self.moderates.load(Ordering::Relaxed) {
             return HashMap::new();
         }
-        let standing = self.standing_of(me);
+        let members = self.members.borrow();
+        let standing = self.standing_of(me, members.as_ref());
         let authors = self.authors.borrow();
         let local = self.peer_windows.borrow();
         tree.workspaces
@@ -651,7 +663,6 @@ impl Shared {
         std::mem::take(&mut *self.newly_dismissed.borrow_mut())
     }
 
-    /// Every tab's bound record.
     pub fn bound_records(&self) -> Vec<(TabId, RecordCheckout)> {
         self.records
             .borrow()
@@ -725,7 +736,6 @@ impl PageRoomActions {
         std::mem::take(&mut self.queue.borrow_mut().outbox)
     }
 
-    /// The page's answer to request `id`.
     pub fn answer(&self, id: u32, answer: tilo_app::linked_accounts::ActionAnswer) {
         let done = self.queue.borrow_mut().waiting.remove(&id);
         if let Some(done) = done {
@@ -1338,9 +1348,6 @@ pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_jso
 
 /// Take a desktop a peer shared: bind its tabs' records, then hand the tree
 /// to the surface's reconcile.
-///
-/// # Errors
-/// The value is not a shared desktop, or it has no workspace.
 pub(crate) fn apply_shared(
     handle: &DesktopHandle,
     shared: &Shared,
@@ -1571,9 +1578,6 @@ pub(crate) fn mount(
 
 /// Parse a `DesktopTree` (JSON) changed elsewhere, for
 /// [`DesktopHandle::replace_tree`].
-///
-/// # Errors
-/// The JSON is not a desktop tree, or it has no workspace.
 pub(crate) fn parse_tree(json: &str) -> Result<DesktopTree, String> {
     let tree = serde_json::from_str(json)
         .and_then(DesktopTree::from_json)

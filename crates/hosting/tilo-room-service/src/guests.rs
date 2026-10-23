@@ -135,11 +135,9 @@ mod tests {
         assert!(ledger.removed("aa", 1_000).unwrap());
         assert!(ledger.cooling_down("hash-1", 1_000 + COOLDOWN_MS - 1));
         assert!(!ledger.cooling_down("hash-1", 1_000 + COOLDOWN_MS));
-        // The person too, whatever address they come back from.
         assert!(ledger.person_removed("aa", 1_000 + COOLDOWN_MS - 1));
         assert!(!ledger.person_removed("aa", 1_000 + COOLDOWN_MS));
         assert!(!ledger.person_removed("bb", 2_000));
-        // It survives a restart of the service.
         let reopened = GuestLedger::open(path).unwrap();
         assert!(reopened.cooling_down("hash-1", 2_000));
         assert!(reopened.person_removed("aa", 2_000));

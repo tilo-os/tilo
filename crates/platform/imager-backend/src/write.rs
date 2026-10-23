@@ -207,8 +207,6 @@ pub fn stream_copy_bound(
 /// Hash exactly the reviewed source length and require EOF. This runs before
 /// a catalog-backed write opens its destination, so a corrupt cached image
 /// cannot cause any destructive I/O.
-/// # Errors
-/// Returns an error on cancellation, a short/long source relative to review, or a native read failure.
 pub fn hash_source_exact(
     reader: &mut impl Read,
     expected_size: u64,
@@ -273,8 +271,6 @@ pub fn verify_readback(
     verify_readback_bound(src, dst, len, &|| false, &mut on_progress)
 }
 
-/// # Errors
-/// Returns an error on cancellation, native open/seek/read failures, or unexpectedly short source/destination content.
 pub fn verify_readback_bound(
     src: &Path,
     dst: &Path,
@@ -338,8 +334,6 @@ pub fn verify_readback_bound(
 /// Read exactly `buf.len()` bytes, tolerating short reads by looping. A source
 /// image file and a freshly written device should both yield full chunks; a
 /// premature EOF surfaces as an error the caller reports as a verify failure.
-/// # Errors
-/// Returns the underlying reader error, unexpected EOF, or an invalid/overflowing reader byte count.
 pub fn read_exact_fill(r: &mut impl Read, buf: &mut [u8]) -> io::Result<()> {
     let mut off = 0;
     while off < buf.len() {

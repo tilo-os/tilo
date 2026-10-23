@@ -66,7 +66,7 @@ pub use crypto::{CIPHERSUITE, MemberKey};
 pub use endpoint::ChannelContentKeys;
 pub use errors::{Error, Result};
 pub use governance::{
-    ChannelGate, DeliveryKind, GovernanceDelivery, GovernanceJournal, MirrorAppend,
+    ChannelGate, DeliveryKind, GovernanceDelivery, GovernanceJournal, MirrorAppend, admission,
 };
 pub use group::{ChannelGroup, MemberAddition};
 pub use member::{Access, ChannelMember, MemberEvent};

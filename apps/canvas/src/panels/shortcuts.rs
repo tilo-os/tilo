@@ -16,7 +16,6 @@ pub struct Shortcut {
     pub does: &'static str,
 }
 
-/// A group of shortcuts under a heading.
 pub struct Group {
     /// The Fluent id of the heading.
     pub heading: &'static str,

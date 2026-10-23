@@ -40,7 +40,6 @@ mod tests {
 
     #[test]
     fn catalogue_resolves_every_used_key() {
-        // Phase `every_key_the_app_uses_resolves_to_a_real_string`.
         {
             // A key that resolves to itself is a key with no catalogue entry — the
             // failure mode that ships an untranslatable literal to a screen.

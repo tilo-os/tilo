@@ -351,7 +351,6 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "room.activity.explore",
     "room.activity.replay",
     "room.activity.acknowledge",
-    "room.activity.tasks",
     "tab.menu",
     "tab.drag.cancel",
     "room.activity.morning.toggle",
@@ -405,7 +404,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         // new request.
         // Ends the bot's or the agent's access at once; undone only by
         // admitting it again.
-        BOT_REMOVE_ID | "agent.remove" => {
+        // The app leaves the device; what of the person's it held goes to
+        // the Trash, never further.
+        BOT_REMOVE_ID | "agent.remove" | APP_UNINSTALL_ID | APP_REMOVE_FROM_APPS_ID => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Destructive;
             contract.confirmation = ConfirmationPolicy::Confirm;
@@ -939,6 +940,101 @@ const BOT_REMOVE_PARAMS: &[ActionParam] = &[
         "Remove this bot: its host stops it.",
     ),
 ];
+
+/// Uninstalling an app from the person's apps ([`crate::shell::app_list`]).
+pub(crate) const APP_UNINSTALL_ID: &str = "app.uninstall";
+/// Taking an app off the person's apps without uninstalling it: a part of
+/// the system, or a downloaded program, whose file stays.
+pub(crate) const APP_REMOVE_FROM_APPS_ID: &str = "app.remove-from-apps";
+
+const APP_UNINSTALL_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "app",
+        ParamType::Text,
+        "The app: a Tilo package id, a desktop-file id or a Flatpak id, as Files' Applications place and search list it.",
+    ),
+    ActionParam::optional(
+        "remove_data",
+        ParamType::Boolean,
+        "For a Flatpak: move its data (~/.var/app/<id>) to the Trash too. On unless set to false.",
+    ),
+    ActionParam::optional(
+        "confirm",
+        ParamType::Boolean,
+        "Uninstall now. Without it the person is asked first, in the uninstall sheet.",
+    ),
+];
+
+const APP_REMOVE_FROM_APPS_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "app",
+        ParamType::Text,
+        "The app, a part of the system or a downloaded program (whose file stays), as Files' Applications place and search list it.",
+    ),
+    ActionParam::optional(
+        "confirm",
+        ParamType::Boolean,
+        "Take it off the person's apps now. Without it the person is asked first.",
+    ),
+];
+
+/// `app.uninstall` and `app.remove-from-apps`: one action wherever it is
+/// asked for. Without `confirm` the person is asked in the shell's sheet,
+/// as Files, search and the Store ask; with it, it runs.
+fn uninstall_app(args: &ActionArgs, remove_from_apps: bool) -> Result<(), ActionError> {
+    use os_actions::AppRemoval;
+    let id = args.text("app").unwrap_or_default().trim().to_owned();
+    if id.is_empty() {
+        return Err(ActionError::Refused("name the app".into()));
+    }
+    // Taking a downloaded program's entry off the person's apps leaves its
+    // file where it is and can be undone by adding it again: nothing to ask.
+    if remove_from_apps
+        && let Some(item) = crate::shell::app_list::find(&id)
+        && matches!(
+            item.source,
+            crate::shell::app_list::AppSource::Downloaded { .. }
+        )
+    {
+        return crate::shell::app_list::remove_from_apps(item).map_err(ActionError::Refused);
+    }
+    if args.boolean("confirm") != Some(true) {
+        crate::shell::app_list::ask(&id);
+        return Ok(());
+    }
+    let Some(item) = crate::shell::app_list::find(&id) else {
+        return Err(ActionError::Refused(
+            if crate::shell::app_list::settling() {
+                format!("the app list is still being read; ask again for {id}")
+            } else {
+                format!("{id} is not in the person's apps")
+            },
+        ));
+    };
+    match (item.removal(), remove_from_apps) {
+        (AppRemoval::RemoveFromApps, false) => {
+            return Err(ActionError::Refused(format!(
+                "{} is part of the system and cannot be uninstalled; {APP_REMOVE_FROM_APPS_ID} takes it off the person's apps",
+                item.name
+            )));
+        }
+        (AppRemoval::Uninstall | AppRemoval::UninstallWithData, true) => {
+            return Err(ActionError::Refused(format!(
+                "{} can be uninstalled; {APP_UNINSTALL_ID} does that",
+                item.name
+            )));
+        }
+        (AppRemoval::None, _) => {
+            return Err(ActionError::Refused(format!(
+                "{} comes with the system and stays",
+                item.name
+            )));
+        }
+        _ => {}
+    }
+    let remove_data = args.boolean("remove_data").unwrap_or(true);
+    crate::shell::app_list::uninstall(item, remove_data).map_err(ActionError::Refused)
+}
 
 /// The label of the system action `id` when an app may prepare it for the
 /// person ([`ui::search::SearchOffer`]): only adding a bot, which the person
@@ -1808,6 +1904,20 @@ impl Action {
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
         Action {
+            id: device_pairing::ASKING_ID,
+            label: "search-action-identity-device-pair-asking",
+            subtitle: "search-action-identity-device-pair-asking-subtitle",
+            params: device_pairing::ASKING_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
+            id: device_pairing::ANSWER_ID,
+            label: "search-action-identity-device-pair-answer",
+            subtitle: "search-action-identity-device-pair-answer-subtitle",
+            params: device_pairing::ANSWER_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
             id: identity_admin::LIST_ID,
             label: "search-action-identity-list",
             subtitle: "search-action-identity-list-subtitle",
@@ -2339,6 +2449,20 @@ impl Action {
                 st.bump();
                 Ok(())
             },
+        },
+        Action {
+            id: APP_UNINSTALL_ID,
+            label: "search-action-app-uninstall",
+            subtitle: "search-action-app-uninstall-subtitle",
+            params: APP_UNINSTALL_PARAMS,
+            apply: |_, args| uninstall_app(args, false),
+        },
+        Action {
+            id: APP_REMOVE_FROM_APPS_ID,
+            label: "search-action-app-remove-from-apps",
+            subtitle: "search-action-app-remove-from-apps-subtitle",
+            params: APP_REMOVE_FROM_APPS_PARAMS,
+            apply: |_, args| uninstall_app(args, true),
         },
         Action {
             id: BOT_REMOVE_ID,
@@ -4432,12 +4556,6 @@ impl ActionsProvider {
                 "search-action-activity-acknowledge-keywords",
             ),
             (
-                tilo_desktop::activity::ACTIVITY_TASKS,
-                "search-action-activity-tasks",
-                "search-action-catch-up-tasks-subtitle",
-                "search-action-activity-tasks-keywords",
-            ),
-            (
                 tilo_desktop::activity::HISTORY_COMPARE,
                 "search-action-history-compare",
                 "search-action-history-compare-subtitle",
@@ -4964,7 +5082,6 @@ fn workspace_view_copy(
     let activity = |view: ActivityView| {
         let subtitle = match view {
             ActivityView::CatchUp => "search-action-activity-catch-up-subtitle",
-            ActivityView::Tasks => "search-action-activity-tasks-subtitle",
             ActivityView::Explore => "search-action-activity-explore-subtitle",
             ActivityView::Replay => "search-action-activity-replay-subtitle",
         };
@@ -7171,7 +7288,6 @@ mod tests {
             "room.activity.explore",
             "room.activity.replay",
             "room.activity.acknowledge",
-            "room.activity.tasks",
         ] {
             assert!(
                 out.iter().any(|action| action.id == id

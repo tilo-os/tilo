@@ -77,7 +77,6 @@ store-package-local-description = Signed local application. Installation require
 store-package-local-source = Local package
 store-app-installed = App installed.
 store-app-updated = App updated.
-store-app-removed = App removed.
 
 store-search-empty = No apps found
 store-search-empty-help = Try a different search or category.
@@ -212,7 +211,7 @@ store-category-bots = Bots
 store-action-open = Open
 store-action-install = Install
 store-action-update = Update
-store-action-remove = Remove
+store-action-remove = Uninstall
 store-action-keep = Keep on this device
 store-action-release = Allow cleanup
 store-action-flatpak-setup = Install Flatpak first

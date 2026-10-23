@@ -365,7 +365,6 @@ mod tests {
     /// Handoff encoding, validation and profile mapping.
     #[test]
     fn handoff_round_trips_validates_and_maps_only_profile_keys() {
-        // Phase `padded_handoff_round_trips_through_a_whitespace_tolerant_parser`.
         {
             let h = sample();
             let bytes = h.to_padded(4096).unwrap();
@@ -375,7 +374,6 @@ mod tests {
             assert!(h.to_padded(16).is_err());
         }
 
-        // Phase `validation_rejects_inconsistent_extents_and_secrets`.
         {
             let mut h = sample();
             h.target_extent.last_lba += 1;
@@ -398,7 +396,6 @@ mod tests {
             assert!(Handoff::parse(&serde_json::to_vec(&unknown).unwrap()).is_err());
         }
 
-        // Phase `install_profile_maps_to_the_media_profile_keys_only`.
         {
             let mut profile = crate::model::InstallProfile::default();
             profile.user.username = "ada".into();

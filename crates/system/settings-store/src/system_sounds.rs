@@ -423,7 +423,6 @@ mod tests {
             true
         ));
         assert!(!should_play(SystemSoundEvent::Error, &p, presenting, true));
-        // A priority sender pierced focus time in the notification policy.
         assert!(should_play(SystemSoundEvent::Message, &p, focus, true));
         assert!(!should_play(
             SystemSoundEvent::Message,

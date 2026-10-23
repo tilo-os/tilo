@@ -383,7 +383,7 @@ fn split_failure(message: &str) -> (&str, Option<&str>) {
 }
 
 /// The technical reason of a failure, behind a closed "Details" disclosure.
-fn failure_details(reason: &str) -> El {
+fn failure_details(what: &str, reason: &str) -> El {
     Box::new(
         Section::new(vec![Box::new(
             Text::new(reason).with_role(TextRole::Caption).dimmed(),
@@ -391,7 +391,8 @@ fn failure_details(reason: &str) -> El {
         .with_header(SectionHeader::group(crate::i18n::t(
             "settings-failure-details",
         )))
-        .collapsed(),
+        .collapsed()
+        .disclosure_id(format!("failure-details:{what}")),
     )
 }
 
@@ -415,7 +416,7 @@ pub fn error_caption(message: &str) -> El {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(headline))
-                .push(failure_details(reason)),
+                .push(failure_details(what, reason)),
         ),
     }
 }

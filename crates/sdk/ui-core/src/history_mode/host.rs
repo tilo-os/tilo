@@ -27,7 +27,6 @@ use winit::event::WindowEvent;
 /// Below this width History takes the whole window, its preview a page of
 /// its own; at or above it, History is a panel beside the content.
 const SIDE_PANEL_MIN_WIDTH: f64 = 600.0;
-/// The side panel's width.
 pub(super) const SIDE_PANEL_WIDTH: f64 = 360.0;
 
 #[derive(Clone, Copy)]

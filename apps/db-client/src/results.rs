@@ -373,7 +373,6 @@ mod tests {
             "text compares without regard to case: a, B, c"
         );
 
-        // A new result starts unsorted.
         table.bind(Some(result()));
         assert_eq!(table.sorted(), None);
     }

@@ -43,7 +43,6 @@ pub(crate) fn related() -> Column {
     stack().with_rhythm(Rhythm::Related)
 }
 
-/// A form as one block of a scrolling page.
 pub(crate) fn form_block(form: Form) -> Box<dyn Widget> {
     Box::new(form)
 }

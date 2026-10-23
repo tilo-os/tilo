@@ -120,7 +120,6 @@ impl OpeningCard {
         }
     }
 
-    /// The card of `package`'s window.
     #[must_use]
     pub fn for_package(mut self, package: &str) -> Self {
         self.package = Some(package.to_owned());

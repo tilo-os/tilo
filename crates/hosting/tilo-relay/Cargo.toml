@@ -242,6 +242,8 @@ tilo-fs = { path = "../../system/fs" }
 # The scope of a room's document media, which an offloaded action's inputs
 # and outputs are.
 runtime-fs = { path = "../../runtime/runtime-fs" }
+# The workspace-join exchange every governor answers, over this relay's rooms.
+tilo-governor = { path = "../../collab/tilo-governor" }
 collab-types = { path = "../../collab/collab-types" }
 # A node stewards the encrypted channels of the rooms it governs.
 channel-crypto = { path = "../../collab/channel-crypto" }

@@ -571,6 +571,21 @@ impl SearchResultsView {
         }
     }
 
+    /// Where the empty-state line is set: its left edge, the width it wraps
+    /// at and its style. A longer line (why a confirmation asks) wraps inside
+    /// the card, centred, rather than running past a narrow window's edges.
+    fn empty_frame(&self, theme: &Theme) -> (f64, f32, crate::text_render::TextStyle) {
+        let style = theme
+            .text(TextRole::Caption)
+            .with_align(crate::text_render::ParagraphAlign::Center);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "card widths are logical pixels well within f32 range"
+        )]
+        let width = (self.rect.width() - PAD * 2.0).max(1.0) as f32;
+        (self.rect.x0 + PAD, width, style)
+    }
+
     fn draw_empty(
         &self,
         scene: &mut Scene,
@@ -578,16 +593,15 @@ impl SearchResultsView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let style = theme.text(TextRole::Caption);
-        let (tw, th) = tr.measure_style(&self.empty_text, None, &style);
-        let cx = self.rect.center().x - f64::from(tw) / 2.0;
+        let (x, width, style) = self.empty_frame(theme);
+        let (_, th) = tr.measure_style(&self.empty_text, Some(width), &style);
         let cy = (self.rect.y1 - self.empty_footer + self.rect.y0) / 2.0 - f64::from(th) / 2.0;
         tr.draw_style(
             scene,
             &self.empty_text,
             theme.tokens.colors.text_dim,
-            compose(transform, Affine::translate((cx, cy))),
-            None,
+            compose(transform, Affine::translate((x, cy))),
+            Some(width),
             &style,
         );
     }
@@ -1309,7 +1323,6 @@ mod tests {
                 clippy::cast_sign_loss,
                 reason = "a small test surface"
             )]
-            // The system search panel floats over the desktop.
             let rgba = OffscreenRenderer::new(w as u32, h as u32)
                 .render(&scene, theme.tokens.colors.surfaces.base);
             #[allow(
@@ -1332,7 +1345,6 @@ mod tests {
                 theme.name
             );
 
-            // Hovered row against the bare panel ground beside its inset.
             let row = v
                 .plan()
                 .rows
@@ -1368,15 +1380,33 @@ mod tests {
         v
     }
 
+    /// Why a confirmation asks is a sentence, and a window may be narrow:
+    /// the line wraps inside the card and still fits its empty band.
+    #[test]
+    fn a_long_empty_line_wraps_inside_a_narrow_card() {
+        let theme = Theme::dark();
+        let mut view = SearchResultsView::new().with_empty_text(
+            "This workspace asks before \u{201c}Save\u{201d} reaches outside it, and you decide: confirm to go ahead.",
+        );
+        view.set_rect(Rect::new(10.0, 0.0, 250.0, EMPTY_H));
+        let (x, width, style) = view.empty_frame(&theme);
+        assert!(x >= view.rect.x0 && x + f64::from(width) <= view.rect.x1);
+        let mut text = TextRenderer::new();
+        let (wrapped_width, wrapped_height) =
+            text.measure_style(&view.empty_text, Some(width), &style);
+        let (_, line) = text.measure_style("Ag", None, &style);
+        assert!(wrapped_width <= width + 0.5, "{wrapped_width} > {width}");
+        assert!(wrapped_height > line * 1.5, "the sentence wraps");
+        assert!(f64::from(wrapped_height) <= EMPTY_H, "{wrapped_height}");
+    }
+
     #[test]
     fn result_groups_index_preview_and_size_the_panel() {
-        // Case `set_groups_builds_flat_index_and_clamps_cursor`.
         {
             let mut v = view_from("");
             assert_eq!(v.len(), 3, "two contacts + one app");
             v.set_cursor(99);
             assert_eq!(v.cursor(), v.len() - 1, "cursor clamps into range");
-            // Shrinking the list re-clamps.
             v.set_groups(vec![SearchGroup {
                 kind: "Apps".into(),
                 results: vec![SearchResult::new("Apps", "Calculator", "app:calc")],
@@ -1384,7 +1414,6 @@ mod tests {
             assert_eq!(v.cursor(), 0);
         }
 
-        // Case `preview_reserves_fixed_space_and_is_announced`.
         {
             let mut view = SearchResultsView::new();
             view.set_results(vec![
@@ -1409,7 +1438,6 @@ mod tests {
             );
         }
 
-        // Case `empty_results_show_empty_state_and_no_activation`.
         {
             let mut v = SearchResultsView::new().with_empty_text("Nothing here");
             v.set_groups(vec![]);
@@ -1429,7 +1457,6 @@ mod tests {
             assert_eq!(v.take_activated(), None, "no row ⇒ nothing to activate");
         }
 
-        // Case `desired_height_grows_with_content`.
         {
             let empty = SearchResultsView::new().desired_height();
             let full = view_from("").desired_height();
@@ -1442,7 +1469,6 @@ mod tests {
 
     #[test]
     fn results_activate_from_keyboard_and_pointer() {
-        // Case `keyboard_navigation_wraps_and_enter_activates`.
         {
             let mut v = view_from("");
 
@@ -1463,7 +1489,6 @@ mod tests {
             dispatch(&mut v, &key(NamedKey::ArrowUp));
             assert_eq!(v.cursor(), v.len() - 1, "up wraps to the bottom");
 
-            // Enter activates the highlighted row and drains once.
             v.set_cursor(0);
             dispatch(&mut v, &key(NamedKey::Enter));
             assert_eq!(
@@ -1474,7 +1499,6 @@ mod tests {
             assert_eq!(v.take_activated(), None, "activation drains after one read");
         }
 
-        // Case `clicking_a_row_selects_and_activates_it`.
         {
             let mut v = view_from("");
             // The plan is the same geometry draw uses; target the third row (the App).

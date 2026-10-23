@@ -160,8 +160,6 @@ impl DirectoryClient {
             inner: Rc::new(out.get_handle()?),
         })
     }
-    /// # Errors
-    /// Returns raw link bytes or substituted-link, revocation or transport failure.
     pub async fn readlink(
         &self,
         name: &EntryName,
@@ -184,8 +182,6 @@ impl DirectoryClient {
         }
         Ok(target.to_vec())
     }
-    /// # Errors
-    /// Returns live held-directory metadata or transport/authority failure.
     pub async fn metadata(&self) -> Result<DirectoryStat, NotAvailable> {
         let reply = self.inner.metadata_request().send().promise.await?;
         let out = reply.get()?;
@@ -209,8 +205,6 @@ impl DirectoryClient {
             )?,
         })
     }
-    /// # Errors
-    /// Returns no-follow child metadata or transport/authority failure.
     pub async fn stat(&self, name: &EntryName) -> Result<Option<DirectoryStat>, NotAvailable> {
         let mut req = self.inner.stat_request();
         req.get().set_name(component(name)?);
@@ -390,8 +384,6 @@ impl DirectoryClient {
             true,
         )
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn retire_created(
         &self,
         name: &EntryName,
@@ -413,8 +405,6 @@ impl DirectoryClient {
         )?;
         Ok(NativeJobClient::from_raw(out.get_job()?))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn create_file(&self, name: &EntryName) -> Result<NativeJobClient, NotAvailable> {
         let mut req = self.inner.create_file_request();
         req.get().set_name(component(name)?);
@@ -576,8 +566,6 @@ impl DirectoryClient {
         )?;
         Ok(())
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn rename_replace(
         &self,
         name: &EntryName,
@@ -596,8 +584,6 @@ impl DirectoryClient {
         )?;
         Ok(NativeJobClient::from_raw(reply.get()?.get_job()?))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn rename_no_replace(
         &self,
         name: &EntryName,
@@ -674,8 +660,6 @@ impl NativeJobClient {
     fn from_raw(inner: fs_capnp::native_job::Client) -> Self {
         Self { inner }
     }
-    /// # Errors
-    /// Refuses revoked scope, malformed updates, native publication errors or transport loss.
     pub async fn poll(&mut self) -> Result<JobPoll, NotAvailable> {
         let reply = self.inner.poll_request().send().promise.await?;
         let out = reply.get()?;
@@ -767,8 +751,6 @@ impl NativeJobClient {
     }
     /// Request canonical job cancellation. An in-flight native commit may already
     /// have happened; callers must consume its actual terminal outcome.
-    /// # Errors
-    /// Refuses revoked scope, native errors or transport loss.
     pub async fn cancel(&self) -> Result<(), NotAvailable> {
         let reply = self.inner.cancel_request().send().promise.await?;
         crate::native_reply::check(
@@ -1146,8 +1128,6 @@ pub struct ReplacementPinClient {
     inner: fs_capnp::replacement_pin::Client,
 }
 impl ReplacementPinClient {
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn commit_with_history(&self, receipt: &[u8]) -> Result<(), NotAvailable> {
         if receipt.is_empty() || receipt.len() > crate::external_history::LIMIT {
             return Err(invalid("Invalid certified commit receipt length").into());
@@ -1252,8 +1232,6 @@ pub struct PendingReplacementClient {
     inner: fs_capnp::pending_replacement::Client,
 }
 impl PendingReplacementClient {
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn acknowledged_committed_pin(&self) -> Result<ReplacementPinClient, NotAvailable> {
         let reply = self
             .inner
@@ -1277,8 +1255,6 @@ impl PendingReplacementClient {
         pin.observe().await?;
         Ok(pin)
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn acknowledged_committed_job(&self) -> Result<NativeJobClient, NotAvailable> {
         let reply = self
             .inner
@@ -1304,8 +1280,6 @@ impl PendingReplacementClient {
         job.check_scope().await?;
         Ok(job)
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn arm_daemon_handoff(&self, challenge: &[u8; 32]) -> Result<[u8; 16], NotAvailable> {
         if *challenge == [0; 32] {
             return Err(invalid("empty handoff challenge").into());
@@ -1348,8 +1322,6 @@ impl PendingReplacementClient {
         request.send().promise.await?;
         Ok(())
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn check_scope(&self) -> Result<(), NotAvailable> {
         self.inner.check_scope_request().send().promise.await?;
         Ok(())
@@ -1484,8 +1456,6 @@ impl CreatedTemporaryClient {
         Self { inner }
     }
 
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn set_permissions(&self, mode: u32) -> Result<(), NotAvailable> {
         if mode & !0o7777 != 0 {
             return Err(invalid("invalid own-created mode").into());
@@ -1531,8 +1501,6 @@ impl CreatedTemporaryClient {
         }
     }
 
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn prepare_replace(&self) -> Result<PendingReplacementClient, NotAvailable> {
         let response = self.inner.prepare_replace_request().send().promise.await?;
         let value = response.get()?;
@@ -1711,7 +1679,6 @@ mod history_read_codec_tests {
             out.set_parent_inode(2);
             out.set_inode(3);
             out.set_name(b"document");
-            // An actual connected malicious producer exceeds the raw lineage bound.
             let mut parents = out.init_parents(65);
             for i in 0..65 {
                 parents.set(i, b"parent");

@@ -75,7 +75,6 @@ pub enum CallerPrincipal {
     /// the hex encoding of the user root its certificate chains to, so two
     /// devices of one person are the same principal.
     Person(String),
-    /// A delegated agent, by its agent id.
     Agent(String),
     /// An application, by its package id, acting under its own identity
     /// rather than borrowing the authority of the person using it.
@@ -425,7 +424,6 @@ impl Caller {
         self.user_public_key.as_ref()
     }
 
-    /// Whether the caller acts from a foreign device.
     #[must_use]
     pub const fn is_foreign_device(&self) -> bool {
         self.foreign
@@ -469,7 +467,6 @@ impl RemoteActionTarget {
     }
 }
 
-/// The id of the room `room`'s governance resource.
 #[must_use]
 pub fn room_governance_resource(room: &str) -> String {
     format!("{ROOM_GOVERNANCE_KIND}:{room}")
@@ -493,8 +490,13 @@ pub mod device_pairing {
     pub const APPROVE: &str = "approve";
     /// Forget a discovered device and stop approving it (`device`).
     pub const REJECT: &str = "reject";
+    /// The devices another of the person's devices found, asking here to be
+    /// the person; answers each with the `ask` that names it.
+    pub const ASKING: &str = "asking";
+    /// Approve or decline one of them (`ask`, `approve`, `confirm`), as its
+    /// notification does.
+    pub const ANSWER: &str = "answer";
 
-    /// The target of pairing step `step`.
     #[must_use]
     pub fn target(step: &str) -> RemoteActionTarget {
         RemoteActionTarget {
@@ -560,7 +562,6 @@ pub mod identity_admin {
         HOME_PEER_RETRY,
     ];
 
-    /// The target of identity step `step`.
     #[must_use]
     pub fn target(step: &str) -> RemoteActionTarget {
         RemoteActionTarget {
@@ -578,7 +579,6 @@ pub mod identity_admin {
         pub key_hex: String,
         /// The key's short form people compare between screens.
         pub fingerprint: String,
-        /// Whether it is the device answering.
         pub current: bool,
         /// Whether its trust was revoked.
         pub revoked: bool,
@@ -704,7 +704,6 @@ impl InvokeRequest {
 /// Explicit confirmation carried with an invocation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Confirmation {
-    /// The caller confirmed the action.
     Confirmed,
     /// The caller typed the phrase the contract asks for.
     Phrase(String),
@@ -875,7 +874,7 @@ impl ApplicationLaunch {
         description: &str,
     ) -> crate::ActionSpec {
         let app_id = app_id.to_owned();
-        crate::ActionSpec::typed_operation(
+        let spec = crate::ActionSpec::typed_operation(
             id,
             label,
             description,
@@ -898,7 +897,16 @@ impl ApplicationLaunch {
                     }
                 })
             },
-        )
+        );
+        Self::launched_here(spec)
+    }
+
+    /// Opening an app is what the launcher does for whoever is at this
+    /// desktop: it opens a window of their own and reaches no one else, so
+    /// a room's grants have nothing to consent to ([`crate::OWN_DEVICE_SCOPE`]).
+    fn launched_here(mut spec: crate::ActionSpec) -> crate::ActionSpec {
+        spec.contract.tags.push(crate::OWN_DEVICE_SCOPE.to_owned());
+        spec
     }
 
     /// This launch as the action `id` an app offers on a resource of its
@@ -912,7 +920,7 @@ impl ApplicationLaunch {
                     payload: Vec::new(),
                 }
             });
-        crate::ActionSpec::typed_operation(
+        Self::launched_here(crate::ActionSpec::typed_operation(
             id,
             label,
             description,
@@ -920,7 +928,7 @@ impl ApplicationLaunch {
             Self::TYPE,
             Vec::new(),
             move |_| encoded.clone(),
-        )
+        ))
     }
 }
 
@@ -1426,7 +1434,6 @@ pub const MAX_FETCHED_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordQuery {
-    /// The room the record belongs to.
     pub room: String,
     /// The application whose record it is.
     pub app: String,
@@ -1569,11 +1576,6 @@ impl RemoteActionFrame {
     /// Decode bytes from a transport. The version is checked before the
     /// message, so a frame from a newer peer is refused by version rather
     /// than misread.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`RemoteFrameError`] for oversized, unknown-version or
-    /// malformed input.
     pub fn decode(bytes: &[u8]) -> Result<Self, RemoteFrameError> {
         #[derive(Deserialize)]
         struct Version {
@@ -2075,6 +2077,25 @@ mod tests {
 
     fn mallory() -> Caller {
         Caller::authenticated([9; 32], [8; 32])
+    }
+
+    /// Camera's "Open Photos" opens a window of the person's own, as the
+    /// launcher does: a room's grants have nothing to consent to, so a guest
+    /// is not asked first.
+    #[test]
+    fn opening_an_app_needs_no_room_consent() {
+        for spec in [
+            ApplicationLaunch::app("so.tilo.photos").spec("open-photos", "Open Photos", ""),
+            ApplicationLaunch::content_spec("so.tilo.photos", "open-capture", "Open", ""),
+        ] {
+            assert!(spec.contract.is_own_device(), "{}", spec.id);
+            assert_eq!(
+                spec.contract.need().kind,
+                crate::ActionKind::Read,
+                "{}",
+                spec.id
+            );
+        }
     }
 
     #[test]

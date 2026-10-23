@@ -889,7 +889,6 @@ pub(crate) fn room_document_id(room: RoomId, package_id: &str) -> Option<RecordI
     RecordId::parse(&format!("uuid:{id}"))
 }
 
-/// Read an app's room document from its validated location.
 fn read_room_document(location: &ValidatedRecordLocation) -> Option<AutoCommit> {
     let current = validate_record_location(&location.scan_root, &location.document)?;
     let bytes = std::fs::read(&current.document).ok()?;
@@ -1001,7 +1000,6 @@ mod tests {
 
     #[test]
     fn rooms_hold_distinct_recognisable_references_to_untouched_records() {
-        // Phase `a_room_holds_references_and_the_record_is_untouched`.
         {
             let mut rr = RoomRecords::in_memory();
             let a = room();
@@ -1026,7 +1024,6 @@ mod tests {
             assert!(rr.holds(b, &id), "the record is still in the other room");
         }
 
-        // Phase `known_keeps_equal_record_ids_in_different_rooms_distinct`.
         {
             let mut rr = RoomRecords::in_memory();
             let home = room();
@@ -1065,7 +1062,6 @@ mod tests {
             assert_eq!(referenced.title(), "report.odt");
         }
 
-        // Phase `titles_name_the_thing_a_person_would_recognise`.
         {
             let file = RecordId::for_file("/home/q/books/dune.epub");
             assert_eq!(record_title(&file, &RecordKind::new("book")), "dune.epub");
@@ -1092,7 +1088,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn record_index_answers_fresh_stays_in_memory_and_refuses_exhausted_generations() {
-        // Phase `every_change_is_visible_in_the_next_answer`.
         {
             let mut rr = RoomRecords::in_memory();
             let a = room();
@@ -1140,7 +1135,6 @@ mod tests {
             );
         }
 
-        // Phase `an_unchanged_index_hands_back_the_same_corpus`.
         {
             let mut rr = RoomRecords::in_memory();
             rr.reference(room(), &RecordId::minted(), &RecordKind::new("book"));
@@ -1157,7 +1151,6 @@ mod tests {
             );
         }
 
-        // Phase `an_in_memory_index_never_reaches_the_disk`.
         {
             let rr = RoomRecords::in_memory();
             assert!(
@@ -1167,7 +1160,6 @@ mod tests {
             assert!(rr.known().is_empty());
         }
 
-        // Phase `exhausted_generations_refuse_mutations_and_scan_replacements`.
         {
             let mut rr = RoomRecords::in_memory();
             let room = room();
@@ -1207,7 +1199,6 @@ mod tests {
             assert_eq!(scan.revision, u64::MAX);
         }
 
-        // Phase `validated_cold_load_is_read_only_and_checks_record_identity`.
         {
             let temp = tempfile::tempdir().unwrap();
             let record_dir = temp.path().join("records").join("one");

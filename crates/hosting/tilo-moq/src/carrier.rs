@@ -155,10 +155,6 @@ pub fn refuse(session: &web_transport_quinn::Session, error: PrefaceError) {
 
 impl Admission {
     /// Tell the client it is admitted. Call only after origins are attached.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream is gone.
     pub async fn admit(&mut self) -> Result<(), PrefaceError> {
         self.send
             .write_all(&[STATUS_ADMITTED])
@@ -302,11 +298,6 @@ impl Drop for Connected {
 /// `publish` is announced and served to the host; broadcasts the host
 /// announces land in `subscribe`. The session's driver runs on the current
 /// Tokio runtime until the session closes; a revocation closes it.
-///
-/// # Errors
-///
-/// Returns [`AdmissionError`] when the grant is refused or the session fails
-/// before `moq-lite` is running.
 pub async fn start(
     transport: web_transport_quinn::Session,
     grant: &[u8],
@@ -511,7 +502,6 @@ pub fn loopback() -> Result<Loopback, String> {
 pub struct DevIdentity {
     /// The self-signed certificate.
     pub chain: Vec<CertificateDer<'static>>,
-    /// Its private key.
     pub key: rustls::pki_types::PrivateKeyDer<'static>,
     /// SHA-256 of the certificate (lowercase hex).
     pub fingerprint: String,

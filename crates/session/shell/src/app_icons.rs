@@ -151,7 +151,6 @@ struct Known {
     generation: u64,
     /// Theme name a window's `app_id` or a desktop-file id resolves to.
     names: HashMap<String, Slot<Option<String>>>,
-    /// Whether any theme has artwork for a theme name.
     probes: HashMap<String, Slot<bool>>,
     /// A theme name rasterised at a device size.
     pixels: HashMap<(String, u32), Slot<Option<ImageData>>>,

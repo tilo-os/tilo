@@ -1,5 +1,5 @@
-//! An exact task/run conversation whose retained Chat presentation can move to
-//! the shared floating-surface host without duplicating its private editor.
+//! A direct conversation whose retained Chat presentation can move to the
+//! shared floating-surface host without duplicating its private editor.
 
 use ui::Widget;
 use ui::floating_surface::{
@@ -24,9 +24,8 @@ pub(crate) struct AgentConversationSurface {
 }
 
 impl AgentConversationSurface {
-    pub(crate) fn from_attached(parent: &mut ChatApp, agent: &str) -> Self {
-        let mut view = ChatApp::conversation_instance(parent, agent);
-        std::mem::swap(&mut view.agent_tasks, &mut parent.agent_tasks);
+    pub(crate) fn from_attached(parent: &mut ChatApp, public_key: &str) -> Self {
+        let mut view = ChatApp::conversation_instance(parent);
         std::mem::swap(&mut view.composer_main, &mut parent.composer_main);
         parent
             .composer_main
@@ -47,15 +46,7 @@ impl AgentConversationSurface {
         let compact = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
         Self {
             id: format!("chat-conversation:{}", uuid::Uuid::new_v4()),
-            conversation: parent.direct_person.as_ref().map_or_else(
-                || crate::composer::ConversationKey::Agent {
-                    workspace: crate::app::ROOM_SCOPE.to_owned(),
-                    route: parent
-                        .agent_draft_route()
-                        .unwrap_or_else(|| agent.to_owned()),
-                },
-                |public_key| crate::app::ChatApp::person_conversation_key(public_key),
-            ),
+            conversation: ChatApp::person_conversation_key(public_key),
             view: Box::new(view),
             placement,
             source,
@@ -71,7 +62,6 @@ impl AgentConversationSurface {
         if !self.view_owns_editor {
             return;
         }
-        std::mem::swap(&mut parent.agent_tasks, &mut self.view.agent_tasks);
         std::mem::swap(&mut parent.composer_main, &mut self.view.composer_main);
         parent.focus = self.view.focus;
         parent.draft_main.clone_from(&self.view.draft_main);
@@ -83,7 +73,6 @@ impl AgentConversationSurface {
         if self.view_owns_editor {
             return;
         }
-        std::mem::swap(&mut self.view.agent_tasks, &mut parent.agent_tasks);
         std::mem::swap(&mut self.view.composer_main, &mut parent.composer_main);
         parent
             .composer_main
@@ -106,38 +95,10 @@ impl AgentConversationSurface {
     pub(crate) fn request(&self) -> FloatingSurfaceRequest {
         FloatingSurfaceRequest {
             id: self.id.clone(),
-            title: if let crate::composer::ConversationKey::Person { public_key, .. } =
-                &self.conversation
-            {
+            title: {
+                let crate::composer::ConversationKey::Person { public_key, .. } =
+                    &self.conversation;
                 self.view.person_display_name(public_key)
-            } else {
-                self.view
-                    .direct_agent
-                    .as_deref()
-                    .map_or_else(String::new, |agent| {
-                        self.view
-                            .direct_agent_tasks()
-                            .and_then(crate::agent_tasks::AgentTaskView::current)
-                            .map_or_else(
-                                || self.view.agent_display_name(agent),
-                                |task| {
-                                    crate::i18n::t_args(
-                                        "chat-agent-task-window",
-                                        &[
-                                            ("title", task.title.clone().into()),
-                                            (
-                                                "run",
-                                                task.run_epoch
-                                                    .unwrap_or_default()
-                                                    .to_string()
-                                                    .into(),
-                                            ),
-                                            ("name", self.view.agent_display_name(agent).into()),
-                                        ],
-                                    )
-                                },
-                            )
-                    })
             },
             role: FloatingRole::Conversation,
             source: FloatingSource::AppElement {

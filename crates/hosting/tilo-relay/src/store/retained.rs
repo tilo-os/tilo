@@ -464,7 +464,6 @@ fn create_lineage(v2: PathBuf, lineage: &Path) -> Result<Option<PathBuf>, StoreE
     Ok(None)
 }
 
-/// Whether anything is at `path`.
 fn exists(path: &Path) -> Result<bool, StoreError> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -701,10 +700,6 @@ impl CheckpointStage {
         self.build.staged.as_deref().unwrap_or(&self.build.active)
     }
     /// The lineage directory's name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the lineage path has no name.
     pub fn lineage_name(&self) -> Result<&std::ffi::OsStr, StoreError> {
         self.build
             .lineage
@@ -777,10 +772,6 @@ impl CheckpointStage {
         Ok(())
     }
     /// Collect what the promotion replaced.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when collection fails.
     pub fn finish_gc(
         &mut self,
         limit: super::bounded::WorkLimit,
@@ -830,7 +821,6 @@ impl RetainBuild {
             .as_ref()
             .map_or(&self.sorter.stats, |s| s.stats())
     }
-    /// The retention pass's own work.
     pub fn retention_stats(&self) -> &super::bounded::WorkStats {
         &self.sorter.stats
     }
@@ -2962,7 +2952,6 @@ pub(super) mod tests {
             store.load_retained().unwrap(),
             vec![new.clone(), uncovered.clone()]
         );
-        // The next commit's collection reclaims what the failed one left.
         assert_eq!(selections(), 0);
         document.put(automerge::ROOT, "next", 4).unwrap();
         let next_tail = frame(false, document.save_incremental(), 4);

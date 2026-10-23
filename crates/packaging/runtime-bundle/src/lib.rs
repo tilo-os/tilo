@@ -41,7 +41,6 @@ pub const ABI_DIGEST_DOMAIN: &[u8] = b"tilo-runtime-abi-v1\0";
 /// an app's `tilo-runtime/<version>`.
 pub const NATIVE_ABI_MARKER: &str = "+native.";
 
-/// Hex digits of the ABI digest.
 pub const ABI_DIGEST_HEX_LEN: usize = 32;
 
 /// The ABI digest of the runtime build whose payload has `root_hash`.
@@ -488,7 +487,6 @@ impl Identity {
         self.signing_key.verifying_key().to_bytes()
     }
 
-    /// Hex encoding of the public key.
     pub fn public_key_hex(&self) -> String {
         hex::encode(self.public_key_bytes())
     }
@@ -2036,7 +2034,6 @@ mod tests {
             extra_bins: &[],
         };
         let (expected, _) = build_abi_bundle(unique.path(), "2026.07", &opts).unwrap();
-        // Explicit includes and ldd's transitive closure name the same inputs.
         let (actual, root) = build_abi_bundle(
             repeated.path(),
             "2026.07",
@@ -2089,7 +2086,6 @@ mod tests {
         assert_eq!(fs::read_dir(out.path()).unwrap().count(), 0);
     }
 
-    /// The bundle's payload paths, sorted.
     fn payload_paths(manifest: &BundleManifest) -> Vec<&str> {
         manifest.files.iter().map(|f| f.path.as_str()).collect()
     }
@@ -2423,7 +2419,6 @@ mod tests {
             );
             assert!(manifest.signature_hex.is_some());
 
-            // Default verify accepts a valid signed bundle.
             let v = verify_bundle(out.path()).expect("verify");
             assert_eq!(v.publisher_hex, manifest.publisher_hex);
 
@@ -2501,7 +2496,6 @@ mod tests {
             let text = fs::read_to_string(&bundle_toml).unwrap();
             let mut manifest: BundleManifest = toml::from_str(&text).unwrap();
             let sig = manifest.signature_hex.as_mut().unwrap();
-            // Flip one hex nibble deterministically.
             let bytes: &mut [u8] = unsafe { sig.as_bytes_mut() };
             bytes[0] = if bytes[0] == b'0' { b'1' } else { b'0' };
             fs::write(&bundle_toml, toml::to_string_pretty(&manifest).unwrap()).unwrap();

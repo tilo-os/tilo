@@ -786,7 +786,6 @@ fn seat_focus_metadata_tracks_actual_wayland_focus_and_clearing() {
     assert_eq!(metadata["routed_keyboard_surface"], window);
     assert!(!metadata.to_string().contains("private window content"));
 
-    // Read the actual text-input handle independently of keyboard routing.
     let protocol_surface = h.state.client_input.surface(window).unwrap().clone();
     h.state.seat.text_input().set_focus(Some(protocol_surface));
     assert_eq!(h.state.seat_focus_json()["text_input"]["surface"], window);
@@ -918,7 +917,6 @@ fn authenticated_window_harness() -> (Harness, shell::shell::state::RoomId, u32,
         .unwrap();
     let h = Harness::with_identity(|state| {
         {
-            // The harness's workspace, as the room the client runs in.
             let mut tree = state.workspace_tree.write();
             let before = tree.workspaces[0].clone();
             let mut workspace =

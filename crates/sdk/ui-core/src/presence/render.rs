@@ -1,4 +1,5 @@
 use super::PresenceCtx;
+use super::caret_tag::{CaretTag, LabeledCaret};
 use crate::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
@@ -190,14 +191,38 @@ impl PresenceCtx {
         name: &str,
         caret_rect: Rect,
     ) {
+        self.draw_peer_caret_labeled_in(
+            scene,
+            theme,
+            text_renderer,
+            transform,
+            user,
+            name,
+            LabeledCaret::new(caret_rect),
+        );
+    }
+
+    /// [`Self::draw_peer_caret_labeled`] for text with content above its
+    /// first line (a note's title and dates over its body): a chip that
+    /// would rise above [`LabeledCaret::top`] hangs below the caret instead,
+    /// so a caret on the first line never covers what is above the text.
+    pub fn draw_peer_caret_labeled_in(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        transform: Affine,
+        user: &UserId,
+        name: &str,
+        caret: LabeledCaret,
+    ) {
+        let caret_rect = caret.rect;
         let color = color_for(self, user, theme);
         scene.fill(Fill::NonZero, transform, color, None, &caret_rect);
 
         let is_agent = self.is_agent(user);
         let (chip_w, chip_h) = peer_pill_size_for(text_renderer, theme, name, is_agent);
-        let cx = caret_rect.x0;
-        let cy = caret_rect.y0 - chip_h - 2.0;
-        let chip_rect = Rect::new(cx, cy, cx + chip_w, cy + chip_h);
+        let chip_rect = caret.chip_rect(chip_w, chip_h);
         draw_peer_pill_kind(
             scene,
             transform,
@@ -208,6 +233,10 @@ impl PresenceCtx {
             color,
             is_agent,
         );
+        self.note_caret_tag(CaretTag {
+            label: name.to_owned(),
+            at: transform * Point::new(caret_rect.x0, caret_rect.center().y),
+        });
     }
 
     /// Outline `rect` in the peer's colour — "this peer has *this object*
@@ -1810,7 +1839,6 @@ mod tests {
                 );
                 let mut r = OffscreenRenderer::new(120, 120);
                 let rgba = r.render(&scene, Color::BLACK);
-                // Inside the arrow, just under its tip.
                 OffscreenRenderer::sample(&rgba, 120, at[0] as u32 + 3, at[1] as u32 + 8)
             };
 
@@ -2019,14 +2047,12 @@ mod tests {
             let mut r = OffscreenRenderer::new(120, 120);
             let rgba = r.render(&scene, Color::BLACK);
 
-            // The ring, on the left edge at mid-height.
             let (er, eg, eb, _a) = OffscreenRenderer::sample(&rgba, 120, 20, 50);
             assert!(
                 eg > er && eg > eb && eg > 100,
                 "the outline edge should be charlie's emerald, got ({er},{eg},{eb})"
             );
 
-            // The wash, in the middle, well away from any edge.
             let (wr, wg, wb, _a) = OffscreenRenderer::sample(&rgba, 120, 60, 50);
             assert!(
                 wg > wr && wg > wb && wg > 0,
@@ -2071,7 +2097,6 @@ mod tests {
                 "the chip should be the peer's emerald, got ({cr},{cg},{cb})"
             );
 
-            // And the object is still outlined underneath it.
             let (er, eg, eb, _a) = OffscreenRenderer::sample(&rgba, 140, 30, 60);
             assert!(
                 eg > er && eg > eb && eg > 100,
@@ -2152,7 +2177,6 @@ mod tests {
             let mut r = OffscreenRenderer::new(200, 140);
             let rgba = r.render(&scene, Color::BLACK);
 
-            // Above the object's top edge, at its left.
             let (cr, cg, cb, ca) = OffscreenRenderer::sample(&rgba, 200, 12, 52);
             assert!(ca > 0, "expected the chip above the object");
             assert!(
@@ -2356,7 +2380,6 @@ mod tests {
             let mut ctx = PresenceCtx::empty();
             ctx.upsert_remote_cursor("bob".to_string(), [180.0, 50.0], None);
             let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
-            // A point on the right-edge band.
             assert_eq!(
                 ctx.hit_test_offscreen_mist(viewport, Point::new(98.0, 50.0)),
                 Some("bob".to_string())
@@ -2548,13 +2571,11 @@ mod tests {
             let mut r = OffscreenRenderer::new(200, 200);
             let rgba = r.render(&scene, Color::WHITE);
 
-            // The arrow itself, just under its tip.
             let (dr, dg, db, _) = OffscreenRenderer::sample(&rgba, 200, 63, 68);
             assert!(
                 dr > 180 && dg > 80 && dg < 160 && db < 90,
                 "expected bob's orange at the pointer, got ({dr},{dg},{db})"
             );
-            // The pill, below-right of the pointer.
             let (pr, pg, pb, pa) = OffscreenRenderer::sample(&rgba, 200, 80, 78);
             assert!(pa > 0, "expected an opaque pill below-right of the pointer");
             assert!(
@@ -2660,7 +2681,6 @@ mod tests {
         // See [`marker_pigment`].
         {
             let theme = Theme::default();
-            // Paper, as the word processor draws it in *either* palette.
             let paper = Color::from_rgb8(0xfa, 0xfa, 0xf8);
             let paper_rgb = (0xfa, 0xfa, 0xf8);
 

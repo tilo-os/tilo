@@ -112,13 +112,11 @@ impl AnswerScope {
     }
 }
 
-/// The id of `agent`'s answer for `kind` at `scope`.
 #[must_use]
 pub fn grant_id(agent: &str, scope: &AnswerScope, kind: ActionKind) -> GrantId {
     GrantId(format!("{PREFIX}{agent}:{}:{kind}", scope.key()))
 }
 
-/// Whether `grant` is an answer a person set for an agent.
 #[must_use]
 pub fn is_answer(grant: &Grant) -> bool {
     matches!(grant.subject, Subject::Agent(_)) && grant.id.as_str().starts_with(PREFIX)

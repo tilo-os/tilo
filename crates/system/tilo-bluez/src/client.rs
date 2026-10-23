@@ -69,11 +69,6 @@ impl BluezClient {
     }
 
     /// Every adapter `BlueZ` knows about, in path order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `GetManagedObjects` D-Bus call fails (for
-    /// example, `bluetoothd` is not running).
     pub async fn adapters(&self) -> zbus::Result<Vec<AdapterInfo>> {
         let objects = self.managed_objects().await?;
         let mut out: Vec<AdapterInfo> = objects
@@ -97,10 +92,6 @@ impl BluezClient {
     /// Every device on every adapter, sorted for display, with the name cache refreshed as a
     /// side effect so the pairing agent can title its prompts without calling back into a
     /// waiting daemon.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `GetManagedObjects` D-Bus call fails.
     pub async fn devices(&self) -> zbus::Result<Vec<DeviceInfo>> {
         let objects = self.managed_objects().await?;
         let mut out: Vec<DeviceInfo> = objects
@@ -149,41 +140,22 @@ impl BluezClient {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `adapter` is not a valid object path or `BlueZ`
-    /// rejects the `Powered` property write.
     pub async fn set_powered(&self, adapter: &str, on: bool) -> zbus::Result<()> {
         self.set_adapter_prop(adapter, "Powered", on).await
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `adapter` is not a valid object path or reading
-    /// the `Powered` property fails.
     pub async fn is_powered(&self, adapter: &str) -> zbus::Result<bool> {
         self.adapter_prop(adapter, "Powered").await
     }
 
     /// Make this machine visible to others. Off by default and never left on — a permanently
     /// discoverable adapter is a standing invitation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `adapter` is not a valid object path or `BlueZ`
-    /// rejects the `Discoverable` property write.
     pub async fn set_discoverable(&self, adapter: &str, on: bool) -> zbus::Result<()> {
         self.set_adapter_prop(adapter, "Discoverable", on).await
     }
 
     /// Begin scanning. The scan runs until [`Self::stop_discovery`] or until this client's
     /// connection closes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if powering on the adapter fails, or if
-    /// `StartDiscovery` fails for a reason other than a scan already being
-    /// in progress.
     pub async fn start_discovery(&self, adapter: &str) -> zbus::Result<()> {
         // Powering on first: StartDiscovery on a powered-off adapter fails with
         // `org.bluez.Error.NotReady`, which reads as "scanning is broken" rather than "Bluetooth is off".
@@ -204,10 +176,6 @@ impl BluezClient {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `StopDiscovery` fails for a reason other than
-    /// there being no scan to stop, or someone else's session owning it.
     pub async fn stop_discovery(&self, adapter: &str) -> zbus::Result<()> {
         let proxy =
             zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
@@ -226,10 +194,6 @@ impl BluezClient {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `adapter` is not a valid object path or reading
-    /// the `Discovering` property fails.
     pub async fn is_discovering(&self, adapter: &str) -> zbus::Result<bool> {
         self.adapter_prop(adapter, "Discovering").await
     }
@@ -242,11 +206,6 @@ impl BluezClient {
     /// `org.bluez.Agent1` object one or more times before returning, and pairing only completes
     /// if those calls are answered. The reply can take as long as the user takes to compare a
     /// passkey, so this deliberately imposes no short timeout of its own.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if pairing fails for a reason other than the device
-    /// already being paired.
     pub async fn pair(&self, device: &str) -> zbus::Result<()> {
         let proxy = self.device_proxy(device).await?;
         match proxy.call_method("Pair", &()).await {
@@ -262,11 +221,6 @@ impl BluezClient {
     }
 
     /// Abort an in-flight pairing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `CancelPairing` fails for a reason other than
-    /// there being no pairing in progress.
     pub async fn cancel_pairing(&self, device: &str) -> zbus::Result<()> {
         let proxy = self.device_proxy(device).await?;
         match proxy.call_method("CancelPairing", &()).await {
@@ -280,20 +234,12 @@ impl BluezClient {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `device` is not a valid object path or the
-    /// `Connect` call fails.
     pub async fn connect_device(&self, device: &str) -> zbus::Result<()> {
         let proxy = self.device_proxy(device).await?;
         proxy.call_method("Connect", &()).await?;
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `device` is not a valid object path or the
-    /// `Disconnect` call fails.
     pub async fn disconnect_device(&self, device: &str) -> zbus::Result<()> {
         let proxy = self.device_proxy(device).await?;
         proxy.call_method("Disconnect", &()).await?;
@@ -304,11 +250,6 @@ impl BluezClient {
     /// re-authorising every profile (`BlueZ` answers `AuthorizeService` itself for trusted
     /// devices) — a real grant, so it's set explicitly after a successful pairing rather than
     /// implied by it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `device` is not a valid object path or `BlueZ`
-    /// rejects the `Trusted` property write.
     pub async fn set_trusted(&self, device: &str, trusted: bool) -> zbus::Result<()> {
         let proxy =
             zbus::Proxy::new(&self.connection, DEST, device.to_string(), PROPS_IFACE).await?;
@@ -328,11 +269,6 @@ impl BluezClient {
     /// Set the user-visible Device1 Alias. This is the BlueZ-owned rename,
     /// not a second Settings-side nickname database, so every Bluetooth UI
     /// and application sees the same name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `alias` is empty after trimming, `device` is not
-    /// a valid object path, or `BlueZ` rejects the `Alias` property write.
     pub async fn set_alias(&self, device: &str, alias: &str) -> zbus::Result<()> {
         let alias = alias.trim();
         if alias.is_empty() {
@@ -353,12 +289,6 @@ impl BluezClient {
     }
 
     /// Forget a device: drops the bond, the keys and the trust. The device must pair again from scratch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `device` is not a valid object path, or
-    /// `RemoveDevice` fails for a reason other than the device already
-    /// being gone.
     pub async fn remove_device(&self, adapter: &str, device: &str) -> zbus::Result<()> {
         let proxy =
             zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
@@ -460,7 +390,6 @@ mod tests {
 
     #[test]
     fn pairing_errors_read_as_english_or_the_daemons_own_message() {
-        // Phase `pairing_failures_read_as_english_not_dbus_names`.
         {
             assert_eq!(
                 bluez_error_text("org.bluez.Error.AuthenticationFailed", None),
@@ -487,7 +416,6 @@ mod tests {
                 "br-connection-profile-unavailable"
             );
         }
-        // Phase `unmapped_errors_without_detail_still_name_something`.
         {
             assert_eq!(
                 bluez_error_text("org.bluez.Error.Failed", None),

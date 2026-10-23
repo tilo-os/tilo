@@ -1455,7 +1455,6 @@ mod tests {
             assert!(flat.contains(&"Open in playlist"), "{flat:?}");
         }
 
-        // Phase `contextual_resources_are_bounded_but_late_catalog_items_resolve_lazily`.
         {
             let mut ctx = MusicResourceCtx::default();
             for number in 0..(OPEN_RESOURCE_CATEGORY_LIMIT + 9) {
@@ -1497,7 +1496,6 @@ mod tests {
             );
         }
 
-        // Phase `track_resource_exposes_exact_parent_navigation_targets`.
         {
             let track = CatalogTrackResource {
                 id: "track-1".into(),
@@ -1530,7 +1528,6 @@ mod tests {
             }
         }
 
-        // Phase `document_mutations_advertise_write_permission_and_views_advertise_read`.
         {
             let (app, doc) = seeded();
             let resources = app.palette_tree(&doc);
@@ -1555,7 +1552,6 @@ mod tests {
             }
         }
 
-        // Phase `every_top_level_destination_is_a_safe_canonical_view_resource`.
         {
             let ctx = MusicResourceCtx::default();
             let root = published_tree(&ctx)
@@ -1601,7 +1597,6 @@ mod tests {
             assert!(anchor_effect("music.view:../../etc/passwd").is_none());
         }
 
-        // Phase `published_resource_action_surface_validates_with_music_handlers`.
         {
             let (app, doc) = seeded();
             let resources = app.palette_tree(&doc);
@@ -1615,12 +1610,10 @@ mod tests {
 
     #[test]
     fn playlist_creation_and_covers_are_portable_and_validated() {
-        // Phase `portable_playlist_cover_replays_to_a_peer_without_a_local_path`.
         {
             let mut a = library();
             let mut b = a.fork();
             let playlist = first_playlist(&a).id;
-            // A tiny valid PNG, representative of the normalized portal output.
             let cover = tiny_portable_png();
             assert!(portable_cover_value(&cover));
             assert!(!cover.contains("file:"));
@@ -1642,7 +1635,6 @@ mod tests {
             );
         }
 
-        // Phase `playlist_cover_edit_refuses_local_unsafe_and_malformed_values`.
         {
             let mut library = library();
             let playlist = first_playlist(&library).id;
@@ -1670,7 +1662,6 @@ mod tests {
             }
         }
 
-        // Phase `new_playlist_verb_creates_a_playlist`.
         {
             let mut library = library();
             let before = library.state().unwrap().playlists.len();
@@ -1709,7 +1700,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn playback_and_queue_arguments_are_typed_canonical_and_fresh() {
-        // Phase `playback_and_queue_are_local_effects_with_typed_arguments`.
         {
             let mut ctx = MusicResourceCtx::default();
             ctx.playback.current = Some("track-1".into());
@@ -1803,7 +1793,6 @@ mod tests {
             );
         }
 
-        // Phase `queue_occurrences_are_canonical_and_duplicate_safe`.
         {
             let mut ctx = MusicResourceCtx::default();
             ctx.playback.queue = vec!["track-1".into(), "track-1".into(), "track-2".into()];
@@ -1864,7 +1853,6 @@ mod tests {
             );
         }
 
-        // Phase `resource_arguments_refuse_wrong_kind_and_stale_tracks`.
         {
             let (mut app, _doc) = seeded();
             let effects = MusicEffect::specs();
@@ -1895,7 +1883,6 @@ mod tests {
             );
         }
 
-        // Phase `stale_library_edits_are_refused`.
         {
             let mut library = library();
             let gone = Library::playlist_paths("gone").tracks.insert_as(
@@ -1918,7 +1905,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn playlist_membership_rows_resolve_lazily_and_edits_converge() {
-        // Phase `late_playlist_membership_resolves_lazily_with_canonical_actions`.
         {
             let playlist = PlaylistResource {
                 id: "playlist:日本語".into(),
@@ -1980,7 +1966,6 @@ mod tests {
             );
         }
 
-        // Phase `stale_membership_remove_is_refused_and_a_move_lands_once`.
         {
             let mut library = library();
             let playlist = first_playlist(&library);
@@ -1999,7 +1984,6 @@ mod tests {
             assert_eq!(first_playlist(&library).track_ids()[1], track);
         }
 
-        // Phase `divergent_playlist_edits_converge_by_stable_membership`.
         {
             let mut a = library();
             let mut b = a.fork();

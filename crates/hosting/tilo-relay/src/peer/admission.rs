@@ -567,11 +567,17 @@ async fn prepare_admission(
     // A change only the steward reads reaches no other session, live
     // or through a catch-up.
     let steward = steward_audience(&runtime, steward_only);
+    // A device's own change is not sent back to it. What the host commits
+    // itself (the governor's decisions, a room bot's writes) no session
+    // sent, so it reaches the host device's own session too: the room
+    // actions the host runs for members read through that session, and
+    // would otherwise never see a bot complete what a member started.
+    let host_commit = source.is_none();
     let sessions = runtime
         .subscribers
         .iter()
         .filter(|(key, sub)| {
-            **key != author
+            (**key != author || host_commit)
                 && !(role == crate::auth::PeerRole::PeerRelay
                     && sub.role == crate::auth::PeerRole::PeerRelay)
                 && steward

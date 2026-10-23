@@ -273,9 +273,6 @@ pub enum CloudResponse {
 /// Fence an account metadata writer against explicit interrupted-commit recovery.
 /// Hold this guard from preparation through save and completion. Lock files are
 /// stable and must not be removed, including after a daemon restart.
-///
-/// # Errors
-/// Returns an error if another writer or recovery owns this account.
 pub fn import_writer_lock(
     config_root: &Path,
     account: &str,
@@ -319,9 +316,6 @@ impl CloudClient {
     }
 
     /// Browse or transfer bytes without exposing provider credentials.
-    ///
-    /// # Errors
-    /// Returns an I/O error if the socket or framing exchange fails.
     pub fn import(
         &mut self,
         account: &str,
@@ -338,9 +332,6 @@ impl CloudClient {
 
     /// Freeze and stop a clean sync mount before changing its account mode.
     /// Begin the commit within 120 seconds, or abort with the token.
-    ///
-    /// # Errors
-    /// Returns an error while local edits, uploads or writable handles remain.
     pub fn prepare_import(&mut self, account: &str) -> std::io::Result<String> {
         match self.request(&CloudRequest::PrepareImport {
             account: account.to_owned(),
@@ -351,9 +342,6 @@ impl CloudClient {
     }
 
     /// Restore a prepared mount after an account-store write fails.
-    ///
-    /// # Errors
-    /// Returns an error if the token expired or the account configuration changed.
     pub fn abort_import(&mut self, account: &str, token: &str) -> std::io::Result<()> {
         self.control(&CloudRequest::AbortImport {
             account: account.to_owned(),
@@ -362,9 +350,6 @@ impl CloudClient {
     }
 
     /// Pin a hold across metadata persistence, including service restarts.
-    ///
-    /// # Errors
-    /// Returns an error if the preparation expired or configuration changed.
     pub fn begin_commit_import(&mut self, account: &str, token: &str) -> std::io::Result<()> {
         self.control(&CloudRequest::BeginCommitImport {
             account: account.to_owned(),

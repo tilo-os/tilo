@@ -8,7 +8,6 @@ use super::Action;
 /// Where a part's widgets leave the actions they ask for.
 pub(super) type Asked = ui::framework::page_part::Asked<Action>;
 
-/// One embedded part of the page.
 pub(super) type PagePart = ui::framework::page_part::PagePart<Action>;
 
 /// A widget callback that asks for `action`.

@@ -78,7 +78,6 @@ struct Fit {
     total: f64,
 }
 
-/// Paints an empty state's illustration into the square it is given.
 pub type Illustration<'a> = &'a dyn Fn(&mut PaintCtx<'_>, Rect);
 
 /// What an empty state shows: optional icon or illustration, title,
@@ -122,6 +121,37 @@ impl<'a> EmptyStateContent<'a> {
         }
     }
 
+    /// The accessibility of a state painted with [`EmptyState::paint`]: a
+    /// group over `rect` named by the title and described by the message,
+    /// and its action as a button where it was drawn (`action`, the rect
+    /// `paint` returned), answering `action_target`. A widget that paints
+    /// an empty state itself adds this node, so what is drawn is also there
+    /// for assistive technology and agents.
+    pub fn access_node(
+        &self,
+        rect: Rect,
+        action: Option<Rect>,
+        action_target: &str,
+    ) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let mut node = AccessNode::new(Role::Group)
+            .with_name(self.title)
+            .with_bounds(rect);
+        if let Some(message) = self.message {
+            node = node.with_description(message);
+        }
+        if let (Some(label), Some(action)) = (self.action_label, action) {
+            node = node.with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name(label)
+                    .with_bounds(action)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_action_target(action_target),
+            ]);
+        }
+        node
+    }
+
     fn parts(&self) -> Parts {
         Parts {
             icon: self.icon.is_some() || self.illustration.is_some(),
@@ -144,7 +174,6 @@ struct StackStyle {
     pad_y: f64,
     min_button: f64,
     glyph: f64,
-    /// The technical detail's text, under its disclosure.
     details: TextStyle,
     /// The height of the "Details" disclosure control.
     details_toggle: f64,
@@ -620,7 +649,6 @@ pub struct EmptyState {
     layout_dirty: bool,
     /// The technical detail behind the "Details" disclosure.
     details: Option<String>,
-    /// Whether the disclosure is open.
     details_open: bool,
     /// Where the disclosure control was drawn (empty without details).
     details_rect: Rect,
@@ -726,7 +754,6 @@ impl EmptyState {
         }
     }
 
-    /// Whether the "Details" disclosure is open.
     #[must_use]
     pub fn details_open(&self) -> bool {
         self.details_open
@@ -1835,7 +1862,6 @@ mod tests {
             let mut es = EmptyState::new("Nothing here").with_action("Add");
             lay_out(&mut es, 600.0, 400.0);
             let _ = draw(&mut es);
-            // Top-left corner is well outside the centered pill.
             dispatch(&mut es, &cursor(Point::new(2.0, 2.0)));
             assert!(
                 !dispatch(&mut es, &mouse_press()),

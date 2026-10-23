@@ -16,7 +16,6 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// One publisher row in `publishers.toml`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublisherRow {
     /// Ed25519 pubkey, hex encoded.

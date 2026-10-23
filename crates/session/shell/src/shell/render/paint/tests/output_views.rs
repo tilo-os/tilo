@@ -356,7 +356,6 @@ fn a_calibrated_output_matches_the_readback_qcms_pass() {
             max_delta <= panel.max_code_delta,
             "{transform:?}: the GPU calibration differs from the readback's qcms pass by {max_delta} code values"
         );
-        // Without the profile the same output is further from the readback than that.
         let uncalibrated = paint_output_pixels(&mut bridge, &scene, &view, revision + 100);
         let uncalibrated_delta = uncalibrated
             .chunks_exact(4)

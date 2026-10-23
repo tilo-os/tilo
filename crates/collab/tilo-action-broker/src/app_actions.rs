@@ -56,9 +56,7 @@ pub struct AppActionConsentRequest {
     pub resource: String,
     /// The action's id on `resource`, as a grant scopes it.
     pub action: String,
-    /// The resource as its publisher labels it.
     pub resource_label: String,
-    /// The action as its publisher labels it.
     pub action_label: String,
     pub risk: tilo_actions::RiskLevel,
     /// Whether each use still asks for confirmation, whatever is granted.

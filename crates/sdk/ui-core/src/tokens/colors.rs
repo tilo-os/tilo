@@ -186,7 +186,6 @@ pub struct Surfaces {
     /// The ink tiers ([`Colors::text_primary`] and friends) are defined on
     /// this surface.
     pub content: Color,
-    /// The navigation region of a window.
     pub sidebar: Color,
     /// The detail / inspector region of a window.
     pub inspector: Color,
@@ -402,7 +401,6 @@ impl PresenceHue {
             .unwrap_or(Self::Blue)
     }
 
-    /// The OKLCH hue, in degrees.
     #[must_use]
     pub fn degrees(self) -> f32 {
         PRESENCE_HUES.get(self.slot()).copied().unwrap_or(265.0)
@@ -1880,7 +1878,6 @@ mod tests {
         );
         let plain_fill = Oklch::from_color(plain.intent.accent);
         assert!(plain_fill.c < 0.01, "inverted emphasis has no hue");
-        // The default accent is the person's own colour.
         let stock = Colors::dark();
         assert_eq!(stock.emphasis, Emphasis::You);
         let you = Oklch::from_color(stock.intent.accent);
@@ -1973,7 +1970,6 @@ mod tests {
             let dark = Colors::dark();
             let light = Colors::light();
             for slot in 0..PRESENCE_LEN {
-                // A dark slot read on light lands on light's own slot.
                 let got = light.presence.of(dark.presence.get(slot));
                 let want = light.presence.get(slot);
                 for (g, w) in [
@@ -1984,7 +1980,6 @@ mod tests {
                     assert!(g.abs_diff(w) <= 2, "slot {slot}: {got:?} vs {want:?}");
                 }
             }
-            // Any colour lands at the palette's lightness, whatever its own.
             let loud = Color::from_rgb8(255, 0, 0);
             let painted = Oklch::from_color(dark.presence.of(loud));
             assert!((painted.l - 0.74).abs() <= 0.006);

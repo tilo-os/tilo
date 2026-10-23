@@ -120,11 +120,6 @@ impl SqliteEngine {
     /// Introspect the full schema. `SQLite` has a single implicit namespace,
     /// which we surface as a "main" schema so the tree shape matches the
     /// multi-schema engines.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if any of the underlying
-    /// introspection queries (listing tables/views, or a table's columns,
-    /// foreign keys or indexes) fail.
     pub fn introspect(&self) -> Result<DatabaseSchema, String> {
         let mut tables = Vec::new();
 
@@ -235,7 +230,6 @@ impl SqliteEngine {
 
         let mut out = Vec::new();
         for (name, unique) in rows {
-            // Skip auto-indexes SQLite creates for UNIQUE/PK constraints.
             if name.starts_with("sqlite_autoindex") {
                 continue;
             }
@@ -372,9 +366,6 @@ pub enum LiveEngine {
 
 impl LiveEngine {
     /// Introspect the full schema for whichever engine backs this handle.
-    ///
-    /// # Errors
-    /// Returns whatever the backing engine's own `introspect` returns.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         match self {
             LiveEngine::Sqlite(e) => e.introspect(),
@@ -384,9 +375,6 @@ impl LiveEngine {
     }
 
     /// Run a single SQL statement against whichever engine backs this handle.
-    ///
-    /// # Errors
-    /// Returns whatever the backing engine's own `run` returns.
     pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
         match self {
             LiveEngine::Sqlite(e) => e.run(sql),
@@ -409,10 +397,6 @@ impl LiveEngine {
     /// backing engine expects — double quotes for SQLite/PostgreSQL, backticks
     /// for `MySQL` — so a table named like a keyword (or a `MySQL` table at all)
     /// browses correctly rather than erroring on the wrong quote style.
-    ///
-    /// # Errors
-    /// Returns whatever the backing engine's own `run` returns for the
-    /// generated `SELECT`.
     pub fn browse_table(
         &mut self,
         schema: &str,
@@ -444,10 +428,6 @@ impl LiveEngine {
 /// the bundled sample or an on-disk file for `SQLite`, a real TCP socket for
 /// `PostgreSQL` and `MySQL`. This is the single seam the [`crate::worker`] thread
 /// calls; it never runs on the UI thread because each variant blocks.
-///
-/// # Errors
-/// Returns an error string if a `SQLite` profile has no file path set, or if
-/// opening/connecting to the target engine fails.
 pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
     if profile.is_sample {
         return SqliteEngine::open_sample().map(LiveEngine::Sqlite);
@@ -476,7 +456,6 @@ mod tests {
             let eng = SqliteEngine::open_sample().unwrap();
             let schema = eng.introspect().unwrap();
             assert_eq!(schema.schemas.len(), 1);
-            // The sample ships several tables.
             assert!(schema.table_count() >= 4, "got {}", schema.table_count());
             let artists = schema.find_table("artists").expect("artists table");
             assert!(artists.columns.iter().any(|c| c.primary_key));

@@ -49,7 +49,6 @@ pub(crate) fn ban_request(room: &str, person: &str) -> InvokeRequest {
 }
 
 impl ChatApp {
-    /// Ban the author of `message` from the room.
     pub(crate) fn ban_author(&mut self, message: &str) {
         let Some(author) = self.message(message).map(|m| m.author.clone()) else {
             return;

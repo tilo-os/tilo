@@ -100,7 +100,6 @@ pub fn is_ours(domain_xml: &str, config: &VmConfig) -> bool {
             || domain_xml.contains(&format!("guest=\"{guest}\"")))
 }
 
-/// The `<uuid>` of a defined domain.
 #[must_use]
 pub fn domain_uuid(domain_xml: &str) -> Option<&str> {
     let uuid = domain_xml

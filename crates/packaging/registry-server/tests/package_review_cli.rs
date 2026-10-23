@@ -1,5 +1,3 @@
-//! A local operator's inspection stays bound to the exact signed request.
-
 use std::path::Path;
 use std::process::{Command, Output};
 

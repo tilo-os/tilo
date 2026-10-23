@@ -39,7 +39,6 @@ pub enum VoiceEvent {
     Granted {
         /// The room's workspace.
         workspace_id: u64,
-        /// The grant.
         grant: Box<VoiceGrant>,
     },
     /// The participation ended: the call ended, the device may no longer
@@ -47,7 +46,6 @@ pub enum VoiceEvent {
     Ended {
         /// The room's workspace.
         workspace_id: u64,
-        /// The call.
         call: [u8; 32],
         /// Why.
         reason: String,
@@ -58,7 +56,6 @@ struct Joined {
     call: [u8; 32],
     /// Known once the host granted the join.
     participation: Option<[u8; 32]>,
-    /// A fresh join is on its way to the host.
     joining: bool,
     /// What this participation shows besides its voice: said to the host
     /// when it changes, with every heartbeat and after a fresh grant.
@@ -113,7 +110,6 @@ impl Participations {
         })
     }
 
-    /// Leave the call of `workspace_id`, if any.
     pub(crate) fn leave(&mut self, workspace_id: u64) -> Option<Envelope> {
         let joined = self.joined.remove(&workspace_id)?;
         Some(Envelope::VoiceLeave {
@@ -352,12 +348,10 @@ mod tests {
                 ..
             })
         ));
-        // The fresh join is granted a new participation, which replaces it.
         let (event, _) = calls.inbound(&grant([1; 32], [10; 32])).unwrap();
         assert!(
             matches!(event, Some(VoiceEvent::Granted { grant, .. }) if grant.participation == [10; 32])
         );
-        // A late grant for the old one is left at the host.
         let (event, reply) = calls.inbound(&grant([1; 32], [9; 32])).unwrap();
         assert!(event.is_none());
         assert!(matches!(

@@ -213,7 +213,6 @@ mod tests {
         ];
         assert!(note_person_input(&mut session, &events, later).is_empty());
         assert_eq!(session.idle_for(later), Duration::from_secs(60));
-        // One input anywhere in the batch counts.
         let mixed = [BackendEvent::Redraw, pen(TabletPhase::ProximityIn)];
         note_person_input(&mut session, &mixed, later);
         assert_eq!(session.idle_for(later), Duration::ZERO);

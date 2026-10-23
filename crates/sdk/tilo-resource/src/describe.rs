@@ -18,7 +18,6 @@ struct Located {
     owner: Option<(&'static str, String)>,
     /// The last item on the path: its id and label.
     item: Option<(String, Option<String>)>,
-    /// The shape of what the path leads to.
     shape: Shape,
     /// What the last field on the path reads as while absent, for a scalar.
     absent: Option<fn() -> Option<serde_json::Value>>,

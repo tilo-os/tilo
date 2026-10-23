@@ -208,7 +208,6 @@ mod tests {
 
     #[test]
     fn languages_resolve_to_grammars_that_classify_tokens() {
-        // Every language resolves to its grammar.
         for language in [
             Language::Rust,
             Language::Toml,
@@ -246,7 +245,6 @@ mod tests {
             "rust string literal"
         );
 
-        // Plain text is one text run.
         let mut state = highlighter(Language::PlainText).start();
         let spans = state.highlight_line("just words here");
         assert!(

@@ -249,7 +249,6 @@ impl<T: Model> Model for Set<T> {
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
-    // Run by one set of functions for every set, over `T`'s table.
     const TABLE: &'static ModelTable = &SetOf::<T>::TABLE;
     crate::model::leaf_paths!();
     crate::__table_functions!();
@@ -277,7 +276,6 @@ pub struct SetDesc {
     differing: for<'a> fn(&'a dyn Any, &'a dyn Any) -> Option<Vec<&'a str>>,
 }
 
-/// The [`SetDesc`] of `Set<T>`.
 pub struct SetOf<T>(std::marker::PhantomData<T>);
 
 impl<T: Model> SetOf<T> {
@@ -953,13 +951,11 @@ impl<T> Grid<T> {
         self.columns.insert(at, id, ())
     }
 
-    /// Remove a row and its cells.
     pub fn remove_row(&mut self, row: &Id) -> bool {
         self.cells.remove(row.as_str());
         self.rows.remove(row).is_some()
     }
 
-    /// Remove a column and its cells.
     pub fn remove_column(&mut self, column: &Id) -> bool {
         // Only the rows holding a cell of the column change.
         self.cells.retain_where(
@@ -1560,9 +1556,6 @@ impl<'de, O: serde::de::DeserializeOwned + Default> Deserialize<'de> for Settled
 
 impl<O: serde::de::DeserializeOwned + Default> Settled<O> {
     /// Read from its JSON form.
-    ///
-    /// # Errors
-    /// Why `value` is not a settlement with an `O`.
     pub fn from_json_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
         Ok(match settled_parts(value)? {
             (true, result) => Self::Done(serde_json::from_value(result)?),

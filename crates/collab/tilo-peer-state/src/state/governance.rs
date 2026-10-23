@@ -10,11 +10,6 @@ use super::{
 
 impl PeerGovernance<'_> {
     /// The sandbox capabilities the room's governance grants its apps.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or a capability is
-    /// malformed.
     pub fn governed_sandbox(self) -> Result<Vec<collab_types::caps::CapOverride>, String> {
         let doc = self
             .peer
@@ -31,10 +26,6 @@ impl PeerGovernance<'_> {
     /// The standing of every governed member device at `now`: what a relay
     /// that does not hold the room's governance decides their changes
     /// with, each held to its foreign-device bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the room's governance is missing or malformed.
     pub fn governed_standings(
         self,
         now: SystemTime,
@@ -52,10 +43,6 @@ impl PeerGovernance<'_> {
             .collect())
     }
     /// Current governed access derived from the admitted room document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
     pub fn governed_access(self, now: SystemTime) -> Result<GovernedAccess, String> {
         let policy = self
             .peer
@@ -120,10 +107,6 @@ impl PeerGovernance<'_> {
     /// may not read one of the records a Deny over a pattern stands for
     /// ([`collab_types::pattern_read_witnesses`]): such a channel is withheld
     /// from them until a device names its record, and from no one else.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
     pub fn withheld_record_readers(
         self,
         now: SystemTime,
@@ -185,10 +168,6 @@ impl PeerGovernance<'_> {
     }
     /// Authority-authored collaborator projection. The structural owner is
     /// exposed separately by [`PeerGovernance::owner_user_public_key`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
     pub fn governed_members(self, now: SystemTime) -> Result<Vec<GovernedMember>, String> {
         let doc = self
             .peer
@@ -301,10 +280,6 @@ impl PeerGovernance<'_> {
         )
     }
     /// Check a verified membership refresh against current governance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the refreshed device is no longer a governed member.
     pub fn verify_member_refresh(
         self,
         membership: &crate::join::VerifiedMembership,
@@ -405,11 +380,6 @@ impl PeerGovernanceMut<'_> {
         Ok(changed)
     }
     /// Record a verified workspace delegation in pinned governance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, the delegation does not
-    /// verify, its service is absent from the governed roster, or governance is missing.
     pub fn install_workspace_delegation(
         self,
         delegation: crate::join::WorkspaceDelegation,

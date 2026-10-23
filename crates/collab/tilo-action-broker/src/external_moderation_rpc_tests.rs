@@ -162,7 +162,6 @@ mod external_moderation_rpc_tests {
                 Some(argument),
                 tilo_actions::InvocationId::new(),
             );
-            // Simulate the trusted host sheet answering these exact bytes.
             let witness = self.state.witness_confirmation(&binding).unwrap();
             let token = self
                 .state
@@ -542,7 +541,6 @@ mod external_moderation_rpc_tests {
                             .expect("unconfirmed or changed operation must be refused");
                         assert!(error.contains("confirmation"), "{altered}: {error}");
                     }
-                    // A fresh answer for exactly these bytes reaches the host gate.
                     room.invoke(980, &offered.resource, action, &exact);
                     let id = stream.read().await.unwrap().invocation_uuid;
                     let request = Request {

@@ -244,7 +244,6 @@ mod tests {
     /// Find queries, buffered text and zoom bounds per tab.
     #[test]
     fn find_and_zoom_state_is_per_tab_race_free_and_bounded() {
-        // Phase `changing_query_ignores_stale_results_and_keeps_other_tab_untouched`.
         {
             let capture = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
@@ -280,7 +279,6 @@ mod tests {
             assert!(capture.commands().contains(&WebViewCommand::StopFinding));
         }
 
-        // Phase `buffered_find_text_and_navigation_reset_do_not_lose_or_reuse_matches`.
         {
             let capture = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture;
@@ -302,7 +300,6 @@ mod tests {
             assert_eq!((controls.count, controls.active), (0, 0));
         }
 
-        // Phase `zoom_is_bounded_and_reset_is_explicit_per_tab`.
         {
             let capture = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();

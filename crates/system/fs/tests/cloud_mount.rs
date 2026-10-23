@@ -556,7 +556,6 @@ fn idle_sync_does_not_rewrite_tree_json() {
         let saved = std::fs::read_to_string(dir.path().join("tree.json")).unwrap();
         assert!(saved.contains("todo.md"), "{saved}");
 
-        // What was persisted is what a restart lists, without the server.
         mount.volume.shutdown();
         drop(mount);
         server.set_offline(true);
@@ -1184,7 +1183,6 @@ fn the_control_socket_lists_mounts_without_credentials() {
             Err(error) => error.to_string(),
             Ok(reply) => format!("served: {reply:?}"),
         });
-        // The file socket answers them.
         let revisions = CloudClient::connect(&files_socket).unwrap().file(
             "files-1",
             FileRequest::Revisions {

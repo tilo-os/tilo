@@ -1,4 +1,3 @@
-//! A keyless member's own sealed write, renewed through its key holder.
 use super::*;
 use crate::{InputDisposition, TransportOrigin};
 use collab_types::EncryptionMetadata;

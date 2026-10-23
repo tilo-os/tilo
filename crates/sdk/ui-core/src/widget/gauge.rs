@@ -304,7 +304,6 @@ impl<'a> ProgressRingFace<'a> {
         self.size.diameter_with_readout(theme, self.value.is_some())
     }
 
-    /// Paint the ring centred in `rect`.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         let theme = ctx.theme;
         let side = self.diameter(theme).min(rect.width()).min(rect.height());

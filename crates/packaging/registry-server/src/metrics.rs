@@ -32,7 +32,6 @@ pub(crate) fn response(published: &Published) -> Response<Full<Bytes>> {
     response
 }
 
-/// The metrics body for `published`.
 pub(crate) fn render(published: &Published) -> String {
     let snapshot = match &published.full {
         FullSnapshot::Verified { encoded, .. } => SnapshotState::Verified {
@@ -130,7 +129,6 @@ mod tests {
             Some(1_792_700_000)
         );
         assert_eq!(sample(&body, "tilo_registry_snapshot_verified"), Some(1));
-        // Every sample is declared once as a gauge, as the text format wants.
         for name in [
             "tilo_registry_channel_authorization_expires_at_seconds",
             "tilo_registry_channel_authorization_generation",

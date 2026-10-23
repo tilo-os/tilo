@@ -2148,7 +2148,16 @@ impl Widget for RemoteApp {
             *ctx.handled = true;
             return;
         }
-        if !self.toasts.is_empty() {
+        // An open popup of the window (a dropdown's list, a menu) takes the
+        // pointer before a toast in the corner it may reach over.
+        let popup_holds_pointer = self.body().modal_capture().is_some()
+            && matches!(
+                event,
+                WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::Touch(_)
+            );
+        if !self.toasts.is_empty() && !popup_holds_pointer {
             self.toasts.handle_event(event, ctx);
         }
         if !*ctx.handled

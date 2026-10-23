@@ -20,11 +20,6 @@ pub struct ProcessLease {
 impl ProcessLease {
     /// Capture a live process. The lease is valid only while the same kernel
     /// process occupies `pid`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when procfs is unavailable, the process is gone, or
-    /// its stat record is malformed.
     pub fn capture(pid: u32) -> io::Result<Self> {
         Ok(Self {
             pid,
@@ -70,11 +65,6 @@ impl ProcessLease {
 
     /// Verify the lease and require the process to belong to `uid`. The
     /// polkit broker uses this before forwarding an unprivileged request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when validation fails or procfs reports another
-    /// process owner.
     #[cfg(unix)]
     pub fn validate_owner(self, uid: u32) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt as _;
@@ -119,7 +109,6 @@ mod tests {
 
     #[test]
     fn process_leases_bind_start_time_and_expire_with_the_process() {
-        // Phase `current_process_lease_round_trips_and_rejects_wrong_start_time`.
         {
             use std::os::unix::fs::MetadataExt as _;
 
@@ -135,7 +124,6 @@ mod tests {
                     .is_err()
             );
         }
-        // Phase `lease_expires_when_process_exits`.
         {
             let mut child = Command::new("/bin/sh")
                 .args(["-c", "while :; do sleep 1; done"])

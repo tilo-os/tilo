@@ -111,7 +111,6 @@ pub(super) struct HtmlBody {
     view: Option<WebView>,
     /// The document last prepared, and how.
     prepared: Option<(Setting, Prepared)>,
-    /// What is loaded in the engine.
     loaded: Option<Setting>,
     /// How far the loaded document is: the sizes the engine reports are
     /// of it once it replaced the one before, and of its content once it

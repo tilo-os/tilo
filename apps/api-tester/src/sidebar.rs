@@ -38,7 +38,8 @@ const DELETE: &str = "delete";
 pub(crate) fn new_collection(sink: &Sink) -> Element {
     let sink = sink.clone();
     Box::new(
-        Button::icon_only("api.new-collection", Icon::Plus, "New collection").on_effect(
+        // It opens the form; the collection it creates is its own action.
+        Button::icon_only("api.new-collection", Icon::Plus, "New collection").on_own_device_effect(
             move || {
                 sink.borrow_mut().push(Cmd::OpenForm(
                     FormMode::NewCollection,
@@ -49,7 +50,6 @@ pub(crate) fn new_collection(sink: &Sink) -> Element {
     )
 }
 
-/// The environment picker over the lists.
 pub(crate) fn frame(environment: Element, lists: Element) -> Element {
     // The list insets its own rows; the picker takes the sidebar's gutter.
     let gutter = Spacing::BASE.s3;

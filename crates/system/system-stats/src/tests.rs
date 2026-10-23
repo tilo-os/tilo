@@ -1,6 +1,3 @@
-//! The service end to end, over a machine laid out in a directory and real
-//! processes for the ends.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

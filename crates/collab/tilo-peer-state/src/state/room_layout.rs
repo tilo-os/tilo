@@ -45,11 +45,6 @@ impl PeerGovernanceMut<'_> {
     /// Set the room's layout scope to `layout`, authored by the governor
     /// `key`. Choosing what the room already chose changes nothing. Returns
     /// whether it changed the room.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer or the change is
-    /// refused.
     pub fn author_room_layout(
         self,
         layout: RoomLayout,
@@ -75,11 +70,6 @@ impl PeerGovernanceMut<'_> {
     /// a device other than the governor `key`'s. What the governor or the
     /// room itself (an unregistered namespace) holds stays, and so does the
     /// namespace registry. Returns whether it changed the room.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer or the change is
-    /// refused.
     pub fn drop_member_windows(self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
         self.peer.require_governance_writer(key, now)?;
         let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;

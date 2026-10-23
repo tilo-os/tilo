@@ -514,7 +514,6 @@ impl ChatApp {
         Rect::new(v.x0 - left, v.y0 - top, v.x1 + right, v.y1 + bottom)
     }
 
-    // --------------------------------------------------------- huddle (PiP)
     pub(crate) fn draw_huddle_bg(
         &self,
         scene: &mut Scene,
@@ -781,9 +780,16 @@ impl ChatApp {
         // Sibling controls sit an `s2` apart, like the expanded bar's.
         let gap = f64::from(theme.tokens.spacing.s2);
         let muted = self.call.muted;
+        let no_microphone = crate::i18n::t("chat-call-no-microphone");
         let mut ctrls: Vec<(&str, Icon, ButtonRole, Hit)> = vec![
             (
-                if muted { "Unmute" } else { "Mute" },
+                if self.microphone_missing() {
+                    no_microphone.as_str()
+                } else if muted {
+                    "Unmute"
+                } else {
+                    "Mute"
+                },
                 if muted { Icon::MicOff } else { Icon::Mic },
                 ButtonRole::Secondary,
                 Hit::CallMute,
@@ -857,7 +863,6 @@ impl ChatApp {
         }
     }
 
-    // ----------------------------------------------------- expanded overlay
     pub(crate) fn draw_call_overlay_bg(
         &self,
         scene: &mut Scene,
@@ -1151,7 +1156,9 @@ impl ChatApp {
         let speak = self.call_allows(crate::call::CallAction::Speak);
         [
             (
-                t(if self.call.muted {
+                t(if self.microphone_missing() {
+                    "chat-call-no-microphone"
+                } else if self.call.muted {
                     "chat-call-unmute"
                 } else {
                     "chat-call-mute"
@@ -1380,7 +1387,6 @@ impl ChatApp {
             .is_some_and(|hovered| std::mem::discriminant(hovered) == std::mem::discriminant(hit))
     }
 
-    // -------------------------------------------------------- emoji picker
     /// The picker popover: a filter field, a tab per Unicode group, and a
     /// scrolling grid showing either the matches or recently used emoji
     /// followed by the selected group.
@@ -1623,7 +1629,6 @@ impl ChatApp {
         *y += rows as f64 * cell;
     }
 
-    // ------------------------------------------------------ history popover
     /// Every version of an edited message, newest first.
     pub(crate) fn draw_history_popover(
         &self,
@@ -2006,7 +2011,6 @@ mod tests {
                 block.disc_cy - block.side / 2.0 >= tile.y0 + gap - 1e-9
                     && bottom <= plate_top - gap + 1e-9
             };
-            // Room for a smaller disc and the caption.
             let tile = Rect::new(0.0, 0.0, 200.0, 100.0);
             let block = viewfinder_block(tile, sides, caption_h, plate_h, gap).unwrap();
             assert!(block.side < sides.wanted && block.side >= sides.least);

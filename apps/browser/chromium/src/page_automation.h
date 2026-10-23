@@ -34,7 +34,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void Detach() { registration_=nullptr;browser_=nullptr;pending_.reset(); }
   // A main-frame navigation began. An action that caused one answers once it
   // loads, so the caller's next read sees the page the action opened.
-  void NavigationStarted() { ++navigations_; }
+  void NavigationStarted() {
+    ++navigations_;
+    if(pending_ && pending_->awaiting_start) { pending_->awaiting_start=false;pending_->awaiting_load=true; }
+  }
   void NavigationFinished() {
     if(pending_ && pending_->awaiting_load) Succeed(pending_->message,std::nullopt);
   }
@@ -52,7 +55,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       }
     }
     native_attempted_=false;native_object_.clear();
-    pending_=Pending{request,++token_,navigations_,false,owned,{}};
+    pending_=Pending{request,++token_,navigations_,false,owned};
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
       if(self->pending_ && self->pending_->token==token) self->Fail("timeout","The page did not answer in time");
     },CefRefPtr<PageAutomation>(this),token_),private_text?5000:kTimeoutMs);
@@ -74,16 +77,18 @@ class PageAutomation final : public CefDevToolsMessageObserver {
 
  private:
   static constexpr int64_t kTimeoutMs=30000;
-  // Long enough for a click's navigation to begin, so its reply can say so.
-  static constexpr int64_t kSettleMs=300;
   // A started navigation is awaited this long; a slower one is reported as
   // still loading and the caller waits for it.
   static constexpr int64_t kLoadWaitMs=10000;
-  enum class Stage { FrameTree, World, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, Evaluate };
+  enum class Stage { FrameTree, World, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, Evaluate, Fence };
   struct TextFrame { std::string id,loader;int world=0,document=0;bool same_origin=true; };
   struct Pending {
     int request;uint64_t token;uint64_t navigations;bool retried;
-    CefRefPtr<CefDictionaryValue> command;std::string message;bool awaiting_load=false;
+    CefRefPtr<CefDictionaryValue> command;std::string message;
+    // "none": the action ran no page code. "started": the page began leaving
+    // the document while it handled the action's input. "possible": it had
+    // not, and may still navigate later on its own.
+    std::string navigation="none";bool awaiting_start=false,awaiting_load=false;
   };
   std::string Action() const { return pending_->command->GetString("action").ToString(); }
   bool PrivateText() const { return pending_->command->GetString("op")=="text_input"; }
@@ -110,10 +115,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // No universal access, origin bypass or debugger pause is requested.
     Call(Stage::TextWorld,"Page.createIsolatedWorld",params);
   }
-  void Begin() {
-    if(Action()=="press" && !pending_->command->HasKey("element")) { Act(nullptr);return; }
-    Call(Stage::FrameTree,"Page.getFrameTree",nullptr);
-  }
+  void Begin() { Call(Stage::FrameTree,"Page.getFrameTree",nullptr); }
   void Call(Stage stage,const char* method,CefRefPtr<CefDictionaryValue> params) {
     stage_=stage;call_=browser_->GetHost()->ExecuteDevToolsMethod(0,method,params);
     if(!call_) Fail("unavailable","The page's inspector connection is unavailable");
@@ -188,6 +190,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       world_=result->GetInt("executionContextId");
       document_=page_documents=page_documents%2147483647+1;
       Evaluate();
+    } else if(stage_==Stage::Fence) {
+      auto remote=success && result?result->GetDictionary("result"):nullptr;
+      auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
+      // No answer means the document went away under the fence: a navigation
+      // that began during the action has committed.
+      Fenced(value?Text(value,"navigation"):navigations_!=pending_->navigations?"started":"possible");
     } else {
       if(!success) {
         if(PrivateText()) {
@@ -269,7 +277,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void Evaluate() {
     auto command=CefDictionaryValue::Create();
     const auto action=Action();
-    command->SetString("action",action=="click"?"locate":action=="press"?"focus":action);
+    const bool elementless=!pending_->command->HasKey("element");
+    command->SetString("action",action=="click"?"locate":action=="press"?(elementless?"arm":"focus"):action);
     command->SetInt("doc",PrivateText()?text_frame_.document:document_);
     for(const char* key:{"element","text","key","lease","history_scope"}) if(pending_->command->HasKey(key)) command->SetString(key,pending_->command->GetString(key));
     for(const char* key:{"cross_origin","secret","native_caret","enabled"}) if(pending_->command->HasKey(key)) command->SetBool(key,pending_->command->GetBool(key));
@@ -296,6 +305,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       text_owner_=text_frame_;text_lease_=data->GetString("lease").ToString();
     }
     if(PrivateText() && (action=="cancel_text_input" || action=="commit_text_input" || action=="undo_text_input" || action=="redo_text_input")) { text_owner_.reset();text_lease_.clear(); }
+    // An edit runs the page's input handlers.
+    if(action=="commit_text_input" || action=="undo_text_input" || action=="redo_text_input") pending_->navigation="possible";
     if(action=="outline" || action=="changes") { Succeed(Text(value,"message"),Text(value,"outline"));return; }
     if(action=="at" || action=="settle" || action=="reader" || action=="prepare_text_input" || action=="start_text_input" || action=="check_text_input" || action=="commit_text_input" || action=="cancel_text_input" || action=="undo_text_input" || action=="redo_text_input") {
       Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr,
@@ -310,13 +321,19 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       key_(key);
     }
     pending_->message=action=="press"?"Pressed "+Chord():Text(value,"message");
-    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
-      if(self->pending_ && self->pending_->token==token) self->Settled();
-    },CefRefPtr<PageAutomation>(this),pending_->token),kSettleMs);
+    // Answers once the page has handled the input: see `fence` in page_automation.js.
+    auto params=CefDictionaryValue::Create();
+    params->SetString("expression","globalThis.__tiloPage.fence()");
+    params->SetInt("contextId",world_);params->SetBool("returnByValue",true);
+    params->SetBool("awaitPromise",true);params->SetBool("silent",true);
+    Call(Stage::Fence,"Runtime.evaluate",params);
   }
-  void Settled() {
-    if(navigations_==pending_->navigations || !browser_->IsLoading()) { Succeed(pending_->message,std::nullopt);return; }
-    pending_->awaiting_load=true;
+  void Fenced(const std::string& navigation) {
+    pending_->navigation=navigation=="started"?"started":"possible";
+    if(pending_->navigation!="started") { Succeed(pending_->message,std::nullopt);return; }
+    if(navigations_==pending_->navigations) pending_->awaiting_start=true;
+    else if(browser_->IsLoading()) pending_->awaiting_load=true;
+    else { Succeed(pending_->message,std::nullopt);return; }
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,uint64_t token) {
       if(self->pending_ && self->pending_->token==token) self->Succeed(self->pending_->message,std::nullopt);
     },CefRefPtr<PageAutomation>(this),pending_->token),kLoadWaitMs);
@@ -337,7 +354,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void Succeed(const std::string& message,std::optional<std::string> outline,CefRefPtr<CefDictionaryValue> data=nullptr,CefRefPtr<CefDictionaryValue> history=nullptr) {
     auto fields=CefDictionaryValue::Create();fields->SetBool("ok",true);
     fields->SetString("url",browser_->GetMainFrame()->GetURL());fields->SetString("message",message.substr(0,1024));
-    const bool navigated=navigations_!=pending_->navigations;
+    // A navigation the page asked for that the browser never began is not one.
+    const bool navigated=pending_->navigation=="started" && navigations_!=pending_->navigations;
+    fields->SetString("navigation",navigated?"started":pending_->navigation=="none"?"none":"possible");
     fields->SetBool("navigated",navigated);fields->SetBool("loading",navigated && browser_->IsLoading());
     if(outline) fields->SetString("outline",*outline);else fields->SetNull("outline");
     if(data) fields->SetDictionary("data",data->Copy(false));

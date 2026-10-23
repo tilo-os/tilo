@@ -50,7 +50,6 @@ pub enum Channel {
 /// One request for a live sink, in the order it must be issued.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// `set_preedit_string` + `commit` on the input method.
     Preedit(String),
     /// `commit_string` + `commit` on the input method.
     Commit(String),
@@ -258,7 +257,6 @@ mod tests {
         let mut vk = PreeditEmulator::new();
         assert_eq!(vk.symbols(&pre("t")), vec![Symbol::Unicode('t')]);
         assert_eq!(vk.symbols(&pre("th")), vec![Symbol::Unicode('h')]);
-        // A correction keeps the shared prefix and retypes the rest.
         assert_eq!(
             vk.symbols(&pre("the")),
             vec![Symbol::Unicode('e')],

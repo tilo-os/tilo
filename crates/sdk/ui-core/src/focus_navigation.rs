@@ -397,7 +397,6 @@ mod trap_tests {
         let ids: Vec<NodeId> = (0..4_u64).map(NodeId::from).collect();
         let [canvas, label, menu, other] = [ids[0], ids[1], ids[2], ids[3]];
         let page = [canvas, label, other];
-        // A menu opens over the canvas and closes without a choice.
         let (mut active, mut before) = (false, None);
         assert_eq!(
             reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true),
@@ -407,7 +406,6 @@ mod trap_tests {
             reconcile_trap(&mut active, &mut before, Some(menu), &page, false),
             Some(Some(canvas))
         );
-        // Again, and its choice focuses the label it began editing.
         assert_eq!(
             reconcile_trap(&mut active, &mut before, Some(canvas), &[menu], true),
             Some(Some(menu))

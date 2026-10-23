@@ -306,7 +306,7 @@ await command({kind: 'select', route: (await snapshot()).entries.find(e => e.lab
 await settles('Notes is active', label, 'Notes');
 await sleep(1000);
 // The empty notebook's own button, which opens the note in its editor.
-await click(...await named('New note', 'Create the first note'));
+await click(...await named('New note', 'Creates the first note'));
 await typing('');
 await polls('one pointer activation creates exactly one note', () => evaluate(`(()=>{
   const walk=n=>{if(!n)return null;if(n.test_id==='page_tree')return n;

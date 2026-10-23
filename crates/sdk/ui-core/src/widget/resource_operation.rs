@@ -276,19 +276,11 @@ impl<'a> ResourceOperation<'a> {
 
     /// Recheck the original caller and owner lifetime of a required
     /// operation. A local operation carries no scope to check.
-    ///
-    /// # Errors
-    ///
-    /// Returns the scope's refusal once its caller or owner has retired.
     pub fn check(&self) -> Result<(), String> {
         self.scope.map_or(Ok(()), ResourceInvocationScope::check)
     }
 
     /// Offer this operation to `widget`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first admission or synchronous-operation error.
     pub fn start(
         &self,
         widget: &mut (impl Widget + ?Sized),
@@ -302,10 +294,6 @@ impl<'a> ResourceOperation<'a> {
 /// Offer `op` to `widget` for a caller that grants no document access. A
 /// handler that writes anyway is refused. Its bytes are retained: rolling
 /// back would also discard the caller's own uncommitted edits.
-///
-/// # Errors
-///
-/// Returns the handler's error, or a refusal when it wrote the document.
 pub(crate) fn start_without_document_writes(
     widget: &mut (impl Widget + ?Sized),
     op: &ResourceOperation<'_>,
@@ -324,10 +312,6 @@ pub(crate) fn start_without_document_writes(
 /// Offer `op` to each retained child in order and return the first start.
 /// This is the default routing; a [`ResourceOperations::start_operation`]
 /// that handles some types itself calls it for the rest.
-///
-/// # Errors
-///
-/// Returns a required operation's retired scope, or the first child error.
 pub fn start_in_children<W: Widget + ?Sized>(
     widget: &mut W,
     op: &ResourceOperation<'_>,
@@ -340,7 +324,7 @@ pub fn start_in_children<W: Widget + ?Sized>(
 
 /// [`start_in_children`] once the children are in hand: not generic, so it
 /// is compiled once rather than for every widget type that routes by default.
-fn start_in(
+pub(crate) fn start_in(
     children: Vec<&mut (dyn Widget + '_)>,
     op: &ResourceOperation<'_>,
     doc: &mut crate::widget::Edits<'_>,
@@ -395,10 +379,6 @@ pub trait ResourceOperations: Widget {
     /// the scope with any job it starts and uses its checked callbacks at each
     /// later effect or document mutation. Hand operations a widget does not
     /// own to [`start_in_children`].
-    ///
-    /// # Errors
-    ///
-    /// Returns the first admission or synchronous-operation error.
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
@@ -443,10 +423,6 @@ pub fn resource_operation_handlers(widget: &(impl Widget + ?Sized)) -> HashSet<S
 }
 
 /// Offer `op` to `widget`: [`ResourceOperations::start_operation`].
-///
-/// # Errors
-///
-/// Returns the first admission or synchronous-operation error.
 pub fn start_operation(
     widget: &mut (impl Widget + ?Sized),
     op: &ResourceOperation<'_>,
@@ -482,7 +458,7 @@ fn local_history_handlers(widget: &(impl Widget + ?Sized)) -> &'static [&'static
     }
 }
 
-fn subtree_handlers(widget: &(impl Widget + ?Sized), local: &[&str]) -> HashSet<String> {
+pub(crate) fn subtree_handlers(widget: &(impl Widget + ?Sized), local: &[&str]) -> HashSet<String> {
     let mut handlers = local
         .iter()
         .map(|handler| (*handler).to_string())
@@ -498,7 +474,7 @@ fn subtree_handlers(widget: &(impl Widget + ?Sized), local: &[&str]) -> HashSet<
     handlers
 }
 
-fn start_by_default(
+pub(crate) fn start_by_default(
     widget: &mut (impl Widget + ?Sized),
     op: &ResourceOperation<'_>,
     doc: &mut crate::widget::Edits<'_>,
@@ -510,7 +486,7 @@ fn start_by_default(
     start_in_children(widget, op, doc, path)
 }
 
-fn poll_by_default(
+pub(crate) fn poll_by_default(
     widget: &mut (impl Widget + ?Sized),
     invocation: tilo_actions::InvocationId,
     cancellation_requested: bool,

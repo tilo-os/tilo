@@ -1,4 +1,3 @@
-//! The ordinary journey defers sensitive handoff work to the destination.
 use super::*;
 use ui::theme::Theme;
 

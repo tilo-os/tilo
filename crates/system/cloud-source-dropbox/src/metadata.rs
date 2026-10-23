@@ -60,7 +60,6 @@ pub fn parent_path(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 
-/// Whether `path` is `root` or below it.
 pub fn is_within(path: &str, root: &str) -> bool {
     root.is_empty()
         || path == root

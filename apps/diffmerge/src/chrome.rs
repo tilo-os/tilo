@@ -157,7 +157,10 @@ impl Chrome {
                 } else {
                     "toolbar-sample"
                 });
-                Button::new("diffmerge.load-sample", &label).on_effect(self.request(command))
+                // The relayed effect decides who may run it, so the button
+                // itself asks nothing.
+                Button::new("diffmerge.load-sample", &label)
+                    .on_own_device_effect(self.request(command))
             }
             Command::Open => {
                 let button = if header.compact {
@@ -167,7 +170,7 @@ impl Chrome {
                 };
                 button
                     .role(ButtonRole::Primary)
-                    .on_effect(self.request(command))
+                    .on_own_device_effect(self.request(command))
             }
             Command::Mode(_) => return self.mode(header),
         };

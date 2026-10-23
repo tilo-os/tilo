@@ -1,11 +1,14 @@
 //! The shell's own buttons as slots in the window's bar
-//! ([`NavShell::with_window_toolbar`]).
+//! ([`NavShell::with_window_toolbar`]), and the slots the shell declares
+//! itself from its headers for an app that declares none ([`ShellBar`]).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::{InspectorPlacement, NavShell};
-use crate::window_toolbar::{ToolbarEvent, WindowToolbar};
+use super::{
+    Column, InspectorPlacement, NavPane, NavShell, Part, Staged, Widget, at, is_app_search,
+};
+use crate::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 /// The shell's buttons, and an app inside it ([`WindowBarLink`]), report
 /// presses here; the shell runs them at its next sync or update.
@@ -222,4 +225,359 @@ impl NavShell {
         }
         true
     }
+}
+
+/// The window bar's slots as the shell declares them for an app that
+/// declares none: while the desktop's bar hosts the window, the headers'
+/// titles and buttons are the bar's location and actions, and the shell
+/// draws no header row. A header holding anything but buttons keeps the
+/// row, as does a window where another part declares the slots. One
+/// shell of a window declares them: the first that does, until it is gone.
+pub(super) struct ShellBar {
+    id: u64,
+    /// The desktop's bar hosts the window ([`crate::window_toolbar::is_hosted`]).
+    hosted: bool,
+    /// Another part of the window declares the slots: the shell keeps its
+    /// header row and declares nothing from then on.
+    yielded: bool,
+}
+
+/// The shell that declares a window's slots, and what it declared.
+type Owner = (u64, Option<WindowToolbar>);
+
+thread_local! {
+    /// Each window's declaring shell, by the window
+    /// ([`crate::window_toolbar::current_window`]): a host that runs several
+    /// apps on one thread (the browser desktop) shows each in a window of
+    /// its own, and one window's shell must not take another's slots.
+    static OWNERS: std::cell::RefCell<std::collections::HashMap<Option<usize>, Owner>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    static NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Read the current window's declaring shell.
+fn with_owner<R>(read: impl FnOnce(Option<&Owner>) -> R) -> R {
+    let window = crate::window_toolbar::current_window();
+    OWNERS.with(|owners| read(owners.borrow().get(&window)))
+}
+
+/// Set (or with `None`, clear) the current window's declaring shell.
+fn set_owner(owner: Option<Owner>) {
+    let window = crate::window_toolbar::current_window();
+    OWNERS.with(|owners| {
+        let mut owners = owners.borrow_mut();
+        match owner {
+            Some(owner) => {
+                owners.insert(window, owner);
+            }
+            None => {
+                owners.remove(&window);
+            }
+        }
+    });
+}
+
+impl Default for ShellBar {
+    fn default() -> Self {
+        let id = NEXT_ID.with(|next| {
+            let id = next.get();
+            next.set(id.wrapping_add(1));
+            id
+        });
+        Self {
+            id,
+            hosted: false,
+            yielded: false,
+        }
+    }
+}
+
+impl ShellBar {
+    /// Whether this shell may declare the window's slots: no other shell
+    /// of the window does.
+    fn may_declare(&self) -> bool {
+        with_owner(|owner| owner.is_none_or(|(id, _)| *id == self.id))
+    }
+
+    /// Whether what the window's bar holds is another part's declaration
+    /// than a shell's.
+    fn declared_by_another_part() -> bool {
+        let Some(declared) = crate::window_toolbar::declared() else {
+            return false;
+        };
+        with_owner(|owner| owner.is_none_or(|(_, ours)| ours.as_ref() != Some(&declared)))
+    }
+
+    fn declare(&self, toolbar: Option<WindowToolbar>) {
+        let owned = toolbar.is_some();
+        crate::window_toolbar::declare(toolbar);
+        set_owner(owned.then(|| (self.id, crate::window_toolbar::declared())));
+    }
+
+    fn owns(&self) -> bool {
+        with_owner(|owner| owner.is_some_and(|(id, _)| *id == self.id))
+    }
+}
+
+impl Drop for ShellBar {
+    fn drop(&mut self) {
+        // The slots go with the shell that declared them; a shell built in
+        // its place declares its own. A shell dropped while another window
+        // is current only gives up its claim: its own window goes with it.
+        // A shell dropped as its thread ends finds the slots gone already.
+        let window = crate::window_toolbar::current_window();
+        let retract = OWNERS
+            .try_with(|owners| {
+                let mut owners = owners.borrow_mut();
+                let mine: Vec<Option<usize>> = owners
+                    .iter()
+                    .filter(|(_, (id, _))| *id == self.id)
+                    .map(|(window, _)| *window)
+                    .collect();
+                for owned in &mine {
+                    owners.remove(owned);
+                }
+                mine.contains(&window)
+            })
+            .unwrap_or(false);
+        if retract {
+            crate::window_toolbar::retract();
+        }
+    }
+}
+
+impl NavShell {
+    /// Whether the shell declares the slots from its headers now: not for
+    /// an app that runs the sidebar toggle in slots of its own
+    /// ([`Self::with_window_toolbar`], [`Self::set_sidebar_toggle_in_window_bar`]).
+    pub(super) fn shell_bar_wanted(&self) -> bool {
+        self.shell_bar.hosted
+            && !self.shell_bar.yielded
+            && self.shell_bar.may_declare()
+            && !self.inputs.borrow().toggle_in_bar
+            && self.header_slots().is_some()
+    }
+
+    /// Each column's header actions as the next build shows them.
+    fn header_actions(&self, column: Column) -> &[super::Element] {
+        match at(&self.pending.actions, column) {
+            Some(actions) => actions,
+            None => &at(&self.headers, column).actions,
+        }
+    }
+
+    /// The headers' buttons as the bar's actions, each with the column and
+    /// the path to it there (the action's place in the header, then the
+    /// children down to the button), in column order. A row or group of
+    /// buttons gives its buttons. `None` while a header holds something the
+    /// bar cannot show: a leading fill, or a control that is not a button.
+    fn header_slots(&self) -> Option<Vec<(ToolbarAction, Column, Vec<usize>)>> {
+        let mut slots = Vec::new();
+        for column in Column::ALL {
+            // As in the shell's own header row, a column the shell does not
+            // have offers nothing: its buttons are not the window's.
+            if !self.has_column(column) {
+                continue;
+            }
+            let leading = match at(&self.pending.leading, column) {
+                Some(Staged(next)) => next.is_some(),
+                None => at(&self.headers, column).leading.is_some(),
+            };
+            if leading {
+                return None;
+            }
+            for (index, element) in self.header_actions(column).iter().enumerate() {
+                let mut path = vec![index];
+                collect_slots(element.as_ref(), column, &mut path, &mut slots)?;
+            }
+        }
+        Some(slots)
+    }
+
+    /// Whether the shell has `column` as of its next build (shown or not:
+    /// a closed sidebar is still the window's).
+    fn has_column(&self, column: Column) -> bool {
+        let inputs = self.inputs.borrow();
+        match column {
+            Column::Sidebar => inputs.has_sidebar,
+            Column::Overview => inputs.has_overview,
+            Column::Content => true,
+            Column::Inspector => inputs.has_inspector,
+        }
+    }
+
+    /// The header buttons the shell hands to the window's bar: drawn and
+    /// pressed there, not laid out in the shell, yet the window's controls
+    /// all the same. They publish their actions and take the operations a
+    /// press in the bar starts, as they do in a header row.
+    pub(super) fn bar_parts(&self) -> Vec<Part> {
+        if !self.inputs.borrow().shell_bar {
+            return Vec::new();
+        }
+        let exposed = self.exposed_parts();
+        Column::ALL
+            .into_iter()
+            .filter(|column| self.has_column(*column))
+            .flat_map(|column| {
+                (0..at(&self.headers, column).actions.len()).map(move |i| Part::Action(column, i))
+            })
+            .filter(|part| !exposed.contains(part))
+            .collect()
+    }
+
+    /// The header buttons among `parts` ([`Self::bar_parts`]), each once.
+    pub(super) fn parts_mut(&mut self, parts: &[Part]) -> Vec<&mut (dyn Widget + 'static)> {
+        let mut widgets = Vec::new();
+        for (index, header) in self.headers.iter_mut().enumerate() {
+            let Some(column) = Column::ALL.into_iter().find(|c| c.index() == index) else {
+                continue;
+            };
+            for (i, action) in header.actions.iter_mut().enumerate() {
+                if parts.contains(&Part::Action(column, i)) {
+                    widgets.push(action.as_mut());
+                }
+            }
+        }
+        widgets
+    }
+
+    /// What the window shows, for the bar's location: the title of the
+    /// column in front. Sidebar and inspector titles label their columns.
+    fn shell_location(&self) -> Option<ToolbarLocation> {
+        let title = |column: Column| at(&self.headers, column).title.title.clone();
+        let front = if self.geometry.stack.len() > 1 {
+            self.front_pane()
+        } else {
+            NavPane::Content
+        };
+        let label = match front {
+            NavPane::Sidebar => None,
+            NavPane::Overview => title(Column::Overview),
+            NavPane::Content => title(Column::Content).or_else(|| title(Column::Overview)),
+        }?;
+        Some(ToolbarLocation {
+            label,
+            ..ToolbarLocation::default()
+        })
+    }
+
+    /// Declare the slots from the headers while the shell owns them, follow
+    /// the desktop's bar coming and going, and step aside for another part
+    /// of the window that declares them (the sync pass).
+    pub(super) fn sync_shell_bar(&mut self) {
+        let hosted = crate::window_toolbar::is_hosted();
+        if hosted != self.shell_bar.hosted {
+            self.shell_bar.hosted = hosted;
+            self.slots_changed();
+        }
+        if self.shell_bar.yielded {
+            return;
+        }
+        if ShellBar::declared_by_another_part() {
+            self.shell_bar.yielded = true;
+            if self.shell_bar.owns() {
+                set_owner(None);
+            }
+            self.slots_changed();
+            return;
+        }
+        let slots = if self.inputs.borrow().shell_bar {
+            self.header_slots()
+        } else {
+            None
+        };
+        let Some(slots) = slots else {
+            if self.shell_bar.owns() {
+                self.shell_bar.declare(None);
+            }
+            return;
+        };
+        let mut toolbar = self.window_toolbar();
+        toolbar.location = self.shell_location();
+        Self::push_window_actions(&mut toolbar, slots.into_iter().map(|(action, ..)| action));
+        self.shell_bar.declare(Some(toolbar));
+    }
+
+    /// Run what the person did in the bar on the slots the shell declared:
+    /// its own buttons, and a header button pressed as the keyboard
+    /// presses it (the settle pass).
+    pub(super) fn run_shell_bar_events(
+        &mut self,
+        edits: &mut crate::widget::Edits<'_>,
+        path_root: &automerge::ObjId,
+    ) {
+        if !self.inputs.borrow().shell_bar {
+            return;
+        }
+        let events = crate::window_toolbar::take_events();
+        if events.is_empty() {
+            return;
+        }
+        let slots = self.header_slots().unwrap_or_default();
+        for event in events {
+            if self.window_toolbar_event(&event) {
+                continue;
+            }
+            let ToolbarEvent::Action { id } = event else {
+                continue;
+            };
+            let Some((_, column, path)) = slots.iter().find(|(action, ..)| action.id == id) else {
+                continue;
+            };
+            let Some((&first, rest)) = path.split_first() else {
+                continue;
+            };
+            let header = &mut self.headers[column.index()];
+            let element = match self.pending.actions[column.index()].as_mut() {
+                Some(pending) => pending.get_mut(first),
+                None => header.actions.get_mut(first),
+            };
+            let mut widget: Option<&mut dyn Widget> = element.map(|element| element.as_mut() as _);
+            for &child in rest {
+                widget = widget.and_then(|widget| widget.children_mut().into_iter().nth(child));
+            }
+            if let Some(widget) = widget {
+                widget.perform_action(&crate::a11y::Action::Activate, &[], edits, path_root);
+            }
+        }
+        self.invalidate();
+    }
+}
+
+/// The buttons under `widget` as the bar's actions, at `path` in `column`'s
+/// header. The app's search button is the bar's own search and gives none.
+/// `None` for a control that is not a button: the header keeps its row.
+fn collect_slots(
+    widget: &dyn Widget,
+    column: Column,
+    path: &mut Vec<usize>,
+    slots: &mut Vec<(ToolbarAction, Column, Vec<usize>)>,
+) -> Option<()> {
+    if is_app_search(widget) {
+        return Some(());
+    }
+    let id = widget.test_id().filter(|id| !id.is_empty()).map_or_else(
+        || {
+            let at: Vec<String> = path.iter().map(usize::to_string).collect();
+            format!("nav-shell.{}.{}", column.key(), at.join("."))
+        },
+        str::to_owned,
+    );
+    if let Some(action) = widget.window_slot(id) {
+        slots.push((action, column, path.clone()));
+        return Some(());
+    }
+    let children = widget.children();
+    if children.is_empty() {
+        // An empty row holds nothing to show; anything else on its own (a
+        // label, a field, a picker) is not a button.
+        return widget.accessibility().is_none().then_some(());
+    }
+    for (index, child) in children.into_iter().enumerate() {
+        path.push(index);
+        let collected = collect_slots(child, column, path, slots);
+        path.pop();
+        collected?;
+    }
+    Some(())
 }

@@ -82,7 +82,6 @@ pub enum ChannelEvent {
         /// Signer of this revocation — must be `Channel::owner` or hold a
         /// `Govern` grant.
         signed_by: Ed25519PublicKey,
-        /// Detached signature by `signed_by`.
         signature: Signature,
     },
     /// Change the channel's display name. Signed by the owner.
@@ -91,7 +90,6 @@ pub enum ChannelEvent {
         new_name: String,
         /// Signer of this rename.
         signed_by: Ed25519PublicKey,
-        /// Detached signature by `signed_by`.
         signature: Signature,
     },
     /// Apply a `ChannelSettingsDelta`. Signed by the owner.
@@ -153,12 +151,6 @@ impl ChannelEvent {
     /// `signature`. `RoleAttestation` signs over the embedded `Attestation`'s
     /// own `signing_bytes`, so the validator can re-verify both the outer
     /// event signature and the inner attestation signature independently.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CanonicalError`] if canonicalising the variant's view
-    /// fails (for `AttestationIssued`, this includes the embedded
-    /// attestation's own `signing_bytes`).
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         match self {
             ChannelEvent::Genesis {
@@ -431,7 +423,6 @@ mod tests {
             let sid = SpaceId::new();
             let now = SystemTime::UNIX_EPOCH;
 
-            // Build the view, sign over it, stamp the signature back in.
             let mut g = ChannelEvent::Genesis {
                 channel_id: cid,
                 space: sid,
@@ -445,7 +436,6 @@ mod tests {
             if let ChannelEvent::Genesis { signature, .. } = &mut g {
                 *signature = sig;
             }
-            // Re-derive view bytes and verify.
             let view = g.signing_bytes().unwrap();
             assert!(verify_event(&view, &sig, &pk).is_ok());
         }

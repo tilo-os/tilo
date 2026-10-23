@@ -185,7 +185,6 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         let replayed = tokio::time::timeout(Duration::from_millis(300), b_client.recv()).await;
         assert!(replayed.is_err(), "remote actions are never replayed late");
 
-        // Without an app-serving plane the relay executes nothing.
         a_client
             .send(directed(host_key, frame(invoke(InvocationId::new()))))
             .unwrap();

@@ -57,8 +57,6 @@ fn library() -> Vec<Item> {
     ]
 }
 
-// ---- queries and chips --------------------------------------------------
-
 #[test]
 fn typed_tokens_are_the_same_chips_as_picked_ones() {
     let kinds = kinds();
@@ -113,8 +111,6 @@ fn a_query_refines_an_earlier_one_only_with_the_same_chips() {
     assert!(!narrowed.refines(&earlier));
 }
 
-// ---- the view stack ---------------------------------------------------------
-
 #[derive(Clone, Debug, PartialEq)]
 enum TestView {
     Library,
@@ -149,8 +145,6 @@ fn back_returns_to_the_view_before_as_it_was_left() {
     stack.forget(|view| matches!(view, TestView::Search(_)));
     assert_eq!(stack.previous(), Some(&TestView::Library));
 }
-
-// ---- local results ----------------------------------------------------------
 
 #[test]
 fn local_results_are_there_when_the_query_is_set_grouped_by_type() {
@@ -229,8 +223,6 @@ fn a_change_to_the_local_items_changes_the_rows_where_they_stand() {
             .any(|(_, id)| id == "s9")
     );
 }
-
-// ---- remote sources ------------------------------------------------------
 
 /// A remote source that answers from a script and records what it was asked.
 #[derive(Default)]
@@ -517,8 +509,6 @@ fn a_query_a_source_does_not_answer_leaves_its_section_idle() {
     assert!(engine.results().remote.is_empty());
 }
 
-// ---- chips offered -------------------------------------------------------
-
 #[test]
 fn one_chip_per_facet_reading_its_choice() {
     let mut engine = QueryEngine::new(kinds());
@@ -594,8 +584,6 @@ fn artist_only(engine: &QueryEngine, artist: &str) -> QuerySpec {
     QuerySpec::text(engine.results().query.text.clone()).toggled(&Chip::value("artist", artist))
 }
 
-// ---- kept views ----------------------------------------------------------
-
 #[test]
 fn a_kept_query_is_kept_once_and_named_after_what_was_searched() {
     let kinds = kinds();
@@ -614,8 +602,6 @@ fn a_kept_query_is_kept_once_and_named_after_what_was_searched() {
     assert!(kept.forget(&id));
     assert!(kept.kept_views.is_empty());
 }
-
-// ---- actions as controls ------------------------------------------------------
 
 #[test]
 fn matching_actions_come_as_their_controls() {
@@ -654,8 +640,6 @@ fn matching_actions_come_as_their_controls() {
     assert_eq!(hits[0].control, ControlDecl::button("new-playlist"));
     assert!(action_hits(&specs, &controls, "", 5).is_empty());
 }
-
-// ---- an app's search entries, and prose ----------------------------------
 
 const BOOK: &str = "test.book";
 const PASSAGE: &str = "test.passage";

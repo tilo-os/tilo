@@ -428,7 +428,6 @@ mod tests {
             assert_eq!(style.padding.left, length(0.0_f32));
             assert_eq!(style.padding.top, length(r.tight));
         }
-        // A later pixel gap replaces the rhythm, and the other way round.
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut map = HashMap::new();

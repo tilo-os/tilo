@@ -214,7 +214,6 @@ mod tests {
 
     #[test]
     fn nav_history_pushes_pops_replaces_and_moves_forward() {
-        // Case `root_is_current_and_not_poppable`.
         {
             let mut s = NavStack::new("home");
             assert_eq!(*s.current(), "home");
@@ -224,7 +223,6 @@ mod tests {
             assert_eq!(s.depth(), 1);
         }
 
-        // Case `push_then_back_returns_to_previous`.
         {
             let mut s = NavStack::new("home");
             s.push("results");
@@ -238,7 +236,6 @@ mod tests {
             assert_eq!(s.back(), None, "cannot pop past root");
         }
 
-        // Case `duplicate_push_is_a_noop`.
         {
             let mut s = NavStack::new("home");
             s.push("home");
@@ -256,7 +253,6 @@ mod tests {
             );
         }
 
-        // Case `replace_current_does_not_grow_history`.
         {
             let mut s = NavStack::new("home");
             s.push("search:a");
@@ -266,7 +262,6 @@ mod tests {
             assert_eq!(s.back(), Some(&"home"), "back skips over the replaced view");
         }
 
-        // Case `apply_back_action_pops`.
         {
             let mut s = NavStack::new(1);
             s.push(2);
@@ -274,7 +269,6 @@ mod tests {
             assert_eq!(s.apply(NavAction::Back), None);
         }
 
-        // Case `back_then_forward_restores_the_newer_entry`.
         {
             let mut s = NavStack::new("home");
             s.push("settings");
@@ -284,7 +278,6 @@ mod tests {
             assert!(!s.can_go_forward());
         }
 
-        // Case `push_after_back_discards_forward_history`.
         {
             let mut s = NavStack::new("home");
             s.push("settings");
@@ -298,7 +291,6 @@ mod tests {
 
     #[test]
     fn edge_swipe_back_fires_once_only_for_a_horizontal_drag_from_the_edge() {
-        // Case `edge_swipe_fires_back_once_on_rightward_drag_from_edge`.
         {
             let mut g = EdgeSwipeBack::new(24.0, 80.0);
             g.pointer_down(Point::new(8.0, 400.0));
@@ -322,7 +314,6 @@ mod tests {
             assert!(!g.is_armed());
         }
 
-        // Case `edge_swipe_ignores_presses_away_from_edge`.
         {
             let mut g = EdgeSwipeBack::new(24.0, 80.0);
             g.pointer_down(Point::new(300.0, 400.0));
@@ -334,7 +325,6 @@ mod tests {
             );
         }
 
-        // Case `edge_swipe_ignores_mostly_vertical_drag`.
         {
             let mut g = EdgeSwipeBack::new(24.0, 80.0);
             g.pointer_down(Point::new(6.0, 100.0));

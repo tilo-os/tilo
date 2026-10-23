@@ -58,11 +58,11 @@ mode = "off"
 screencast = "via-host"
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
-shell-ui = "optional@13"
+collab = "optional@6"
+tilo-fs = "optional@6"
+shell-ui = "optional@14"
 # Conversation inference uses the launcher-authenticated gateway, never provider keys.
-model-gateway = "optional@2"
+model-gateway = "optional@6"
 
 [actions]
 query = true

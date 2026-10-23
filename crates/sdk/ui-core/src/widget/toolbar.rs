@@ -2711,8 +2711,6 @@ mod tests {
         assert!((painted.center() - square.center()).hypot() < 0.5);
     }
 
-    /// Icon commands are pointer-target squares, toggles report their state
-    /// and a painted host lays a toolbar out without taffy.
     #[test]
     fn icon_commands_and_toggles_lay_out_in_a_painted_host() {
         // Motion reads at its end: this test checks the resting frame.
@@ -2769,7 +2767,6 @@ mod tests {
             Some("Marker colour: Green")
         );
 
-        // Squeezed, the well waits in the More menu under its name.
         tb.lay_out_in(Rect::new(0.0, 0.0, 60.0, 40.0), &mut text, &theme);
         assert!(tb.has_overflow());
         assert!(tb.menu_indices.contains(&Some(0)) || tb.is_shown(0));
@@ -2841,7 +2838,6 @@ mod tests {
     fn toolbar_lays_out_named_commands_separators_and_overflow() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `toolbar_exposes_focusable_named_commands`.
         {
             let tb = lay_out(n_button_toolbar(3), 100.0);
             assert!(tb.is_focusable());
@@ -2850,7 +2846,6 @@ mod tests {
             assert!(node.children.iter().all(|c| c.name.is_some()));
         }
 
-        // Case `accessibility_reports_toolbar_role`.
         {
             use crate::a11y::Role;
             let tb = n_button_toolbar(3);
@@ -2907,7 +2902,6 @@ mod tests {
                 "visible_count must drop below 10 when overflowing (got {})",
                 tb.visible_count()
             );
-            // And the visible items still produced real rects.
             for i in 0..tb.visible_count() {
                 assert!(
                     !tb.item_rects[i].is_zero_area(),
@@ -2954,12 +2948,10 @@ mod tests {
                     "button {index} extent {extent:?} is under the {target} px pointer target"
                 );
             }
-            // The renderer-less estimate follows the same floor.
             tb.recompute_visible(400.0, &dense);
             assert_eq!(tb.visible_count(), 2);
         }
 
-        // Case `toolbar_separator_paints_a_divider_line`.
         {
             let mut tb = Toolbar::new(Orientation::Horizontal)
                 .push_button("A", || {})
@@ -3002,7 +2994,6 @@ mod tests {
             );
         }
 
-        // Case `measured_labels_and_tiny_overflow_follow_lifecycle`.
         {
             let mut tb = Toolbar::new(Orientation::Horizontal)
                 .push_button("WWW", || {})
@@ -3189,7 +3180,6 @@ mod lifecycle_tests {
     fn commands_are_reachable_once_by_every_route_with_matching_semantic_bounds() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `pointer_survives_layout_between_press_and_release`.
         {
             let (mut tb, counts) = counted(2);
             settle(&mut tb, 350.0, 45.0, 1.0);
@@ -3201,7 +3191,6 @@ mod lifecycle_tests {
             assert_eq!(*counts.borrow(), vec![1, 0]);
         }
 
-        // Case `tab_focus_starts_at_first_command_and_arrows_skip_decoration`.
         {
             let mut tb = Toolbar::new(Orientation::Horizontal)
                 .push_button("First", || {})
@@ -3215,7 +3204,6 @@ mod lifecycle_tests {
             assert_eq!(tb.focus, Some(Target::Item(3)));
         }
 
-        // Case `every_callback_is_reachable_once_by_each_input_route`.
         {
             for route in 0..3 {
                 let (mut tb, counts) = counted(8);
@@ -3282,7 +3270,6 @@ mod lifecycle_tests {
             }
         }
 
-        // Case `accessibility_menu_rows_have_routes_bounds_and_focus`.
         {
             let (mut tb, _) = counted(12);
             settle(&mut tb, 120.0, 45.0, 1.0);
@@ -3310,7 +3297,6 @@ mod lifecycle_tests {
             );
         }
 
-        // Case `review_emitted_accessibility_bounds_match_paint_and_scrolling`.
         {
             let (mut tb, _) = counted(12);
             settle(&mut tb, 180.0, 45.0, 1.0);
@@ -3359,7 +3345,6 @@ mod lifecycle_tests {
     fn toolbar_lifecycle_measures_scales_orients_and_reconciles_overflow() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `measured_unicode_scale_orientation_and_resize`.
         {
             for orientation in [Orientation::Horizontal, Orientation::Vertical] {
                 let mut tb = Toolbar::new(orientation)
@@ -3389,7 +3374,6 @@ mod lifecycle_tests {
             }
         }
 
-        // Case `decorations_never_create_an_overflow_menu`.
         {
             let mut tb = Toolbar::new(Orientation::Horizontal)
                 .push_button("A", || {})
@@ -3406,7 +3390,6 @@ mod lifecycle_tests {
             assert!(tb.menu_indices.iter().all(Option::is_some));
         }
 
-        // Case `resize_reconciles_original_indices_and_meaningful_separators`.
         {
             let mut tb = Toolbar::new(Orientation::Horizontal)
                 .push_separator()
@@ -3441,7 +3424,6 @@ mod lifecycle_tests {
             assert!(tb.menu.get_rect().x0 >= 0.0 && tb.menu.get_rect().x1 <= 360.0);
         }
 
-        // Case `vertical_navigation_and_tiny_chip_stay_inside_allocation`.
         {
             let mut tb = Toolbar::new(Orientation::Vertical)
                 .push_button("One", || {})
@@ -3463,7 +3445,6 @@ mod lifecycle_tests {
     fn overflow_popup_dismissal_restores_focus_without_click_through() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `escape_and_outside_press_restore_focus_without_click_through`.
         {
             let (mut tb, counts) = counted(5);
             settle(&mut tb, 180.0, 45.0, 1.0);
@@ -3483,7 +3464,6 @@ mod lifecycle_tests {
             assert_eq!(*counts.borrow(), vec![0; 5]);
         }
 
-        // Case `review_popup_close_rehits_pointer_before_second_click`.
         {
             for pointer_open in [false, true] {
                 for relayout in [false, true] {
@@ -3531,7 +3511,6 @@ mod lifecycle_tests {
             }
         }
 
-        // Case `review_nonleft_popup_press_does_not_capture_next_sibling_click`.
         {
             for button in [MouseButton::Right, MouseButton::Middle] {
                 let (toolbar, _) = counted(8);
@@ -3748,20 +3727,17 @@ mod command_state_tests {
         assert_eq!(node.children[0].role, Role::ToggleButton);
         assert_eq!(node.children[0].state.checked, Some(true));
         assert_eq!(node.children[2].name.as_deref(), Some("Match case"));
-        // A disabled command is announced as disabled and does nothing.
         tb.set_enabled(1, false);
         let node = Widget::accessibility(&tb).unwrap();
         assert!(node.children[1].state.disabled);
         let reset = tb.item_rect(1).unwrap();
         click(&mut tb, reset.center());
         assert_eq!(tb.take_activated(), None);
-        // The toggle runs and reports itself.
         let toggle = tb.item_rect(0).unwrap();
         click(&mut tb, toggle.center());
         assert_eq!(ran.get(), 1);
         assert_eq!(tb.take_activated(), Some(0));
         assert_eq!(tb.take_activated(), None, "once");
-        // A label follows the model and the row is measured again.
         let before = tb.item_rect(1).unwrap().width();
         tb.set_label(1, "Reset all adjustments");
         lay(&mut tb, 600.0);
@@ -3805,10 +3781,8 @@ mod command_state_tests {
             tb.item_rect(0).is_none() || tb.item_rect(1).is_none(),
             "the low priority gives way"
         );
-        // Everything is still reachable once.
         let shown = (0..5).filter(|i| tb.item_rect(*i).is_some()).count();
         assert_eq!(shown + tb.menu_indices.iter().flatten().count(), 5);
-        // The More menu opens on demand and a toggle there carries its check.
         lay(&mut tb, 120.0);
         tb.open_overflow();
         assert!(tb.is_overflow_open());
@@ -3856,7 +3830,6 @@ mod command_state_tests {
             ],
         );
         lay(&mut tb, 400.0);
-        // The window the toolbar stands in, with room under it.
         tb.viewport = Some(Rect::new(0.0, 0.0, 400.0, 400.0));
         let sort = tb.item_rect(0).unwrap();
         click(&mut tb, sort.center());

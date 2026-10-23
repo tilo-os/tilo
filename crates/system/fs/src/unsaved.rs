@@ -278,10 +278,6 @@ impl UnsavedEntry {
 }
 
 /// The blake3 hash and length of the file at `path`, read in bounded memory.
-///
-/// # Errors
-///
-/// Returns the read error.
 pub(crate) fn file_digest(path: &Path) -> io::Result<(blake3::Hash, u64)> {
     use std::io::Read as _;
     let mut file = std::fs::File::open(path)?;
@@ -311,7 +307,6 @@ mod tests {
 
     #[test]
     fn unsaved_bytes_stage_whole_and_torn_or_escaping_keys_are_refused() {
-        // Phase `staged_bytes_round_trip_and_are_replaced_whole`.
         {
             let dir = tempfile::tempdir().unwrap();
             let store = UnsavedStore::open(dir.path().join("unsaved")).unwrap();
@@ -326,7 +321,6 @@ mod tests {
             assert!(!store.contains("k1"));
             assert!(store.load_all().0.is_empty());
         }
-        // Phase `a_torn_pair_is_reported_not_trusted`.
         {
             let dir = tempfile::tempdir().unwrap();
             let store = UnsavedStore::open(dir.path()).unwrap();
@@ -338,7 +332,6 @@ mod tests {
             assert!(loaded.is_empty());
             assert_eq!(damaged.len(), 1);
         }
-        // Phase `keys_cannot_escape_the_directory`.
         {
             let dir = tempfile::tempdir().unwrap();
             let store = UnsavedStore::open(dir.path()).unwrap();

@@ -182,10 +182,6 @@ impl Rooms {
 
     /// Make `room`, which just opened a door (a public listing), personal
     /// unless its governor already chose its scope.
-    ///
-    /// # Errors
-    ///
-    /// The room is not governed here, or the change could not be committed.
     pub(super) async fn default_to_personal(&self, room: &str) -> Result<(), CollaborationError> {
         let chosen = {
             let state = self.room(room).await?;
@@ -207,11 +203,6 @@ impl Rooms {
     /// A room made personal is held to it here at once, even when its
     /// governance cannot be written: the relay never shares more than the
     /// room was asked to.
-    ///
-    /// # Errors
-    ///
-    /// The room is not governed here, or its governance could not be
-    /// written.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed and settled; whether the lint sees it depends on the features built"
@@ -265,10 +256,6 @@ impl Rooms {
     /// room document (each entry in a member's topology namespace) and from
     /// the shared desktop record (every window, and the strips people made).
     /// What the room itself holds stays. Changes nothing a second time.
-    ///
-    /// # Errors
-    ///
-    /// The room is not governed here, or a change could not be committed.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed and settled; whether the lint sees it depends on the features built"

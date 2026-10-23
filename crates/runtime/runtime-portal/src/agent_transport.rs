@@ -13,12 +13,6 @@ use crate::RawFd;
 /// attestation on it before any Cap'n Proto traffic.
 ///
 /// The descriptor can be claimed once per process.
-///
-/// # Errors
-///
-/// Returns an error when the variable is missing or invalid, the descriptor
-/// was already claimed, the attestation exchange fails, or the launcher
-/// refuses the process binding.
 pub fn claim_managed_agent_fd() -> io::Result<RawFd> {
     imp::claim_managed_agent_fd()
 }
@@ -26,10 +20,6 @@ pub fn claim_managed_agent_fd() -> io::Result<RawFd> {
 /// Connect to an explicit collaboration endpoint socket, for headless
 /// diagnostics that run outside the launcher but exercise the production
 /// protocol.
-///
-/// # Errors
-///
-/// Returns the socket connection error.
 pub fn connect_endpoint(path: &Path) -> io::Result<RawFd> {
     imp::connect_endpoint(path)
 }

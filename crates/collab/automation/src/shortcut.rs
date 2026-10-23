@@ -514,7 +514,6 @@ pub struct ScheduleClaim {
     pub trigger: usize,
     /// The fire time taken, in milliseconds since the Unix epoch.
     pub due_ms: i64,
-    /// The device that runs it.
     pub device: String,
 }
 
@@ -525,7 +524,6 @@ impl ScheduleClaim {
         format!("{}/{}", self.shortcut, self.trigger)
     }
 
-    /// Whether this claim supersedes `other` for the same schedule.
     #[must_use]
     pub fn supersedes(&self, other: &Self) -> bool {
         (self.due_ms, other.device.as_str()) > (other.due_ms, self.device.as_str())

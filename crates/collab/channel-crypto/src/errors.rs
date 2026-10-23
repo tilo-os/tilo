@@ -110,7 +110,6 @@ impl Error {
         Self::Storage(format!("{e:?}"))
     }
 
-    /// Wrap a TLS-codec error.
     pub(crate) fn tls_codec<E: std::fmt::Debug>(e: E) -> Self {
         Self::TlsCodec(format!("{e:?}"))
     }

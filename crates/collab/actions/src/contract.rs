@@ -119,7 +119,6 @@ pub const PEOPLE_AUDIENCE_TAG: &str = "audience:people";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Audience {
-    /// Listed for people and agents alike.
     #[default]
     Everyone,
     /// Listed for people only: an action whose point is what a person sees
@@ -375,11 +374,6 @@ read_through_json_value!(ResultSpec);
 
 impl ResultSpec {
     /// Check that a completed action returned the shape it advertised.
-    ///
-    /// # Errors
-    ///
-    /// Returns a human-readable contract violation when `output` does not
-    /// match this result specification.
     pub fn validate(&self, output: &crate::ActionOutput) -> Result<(), String> {
         match self {
             // An action with no result may still name what it created.
@@ -418,7 +412,10 @@ impl ResultSpec {
 /// a chooser for them, asks them for a credential or a sign-in, or shows
 /// something only they may see. Whoever acts for a person (an agent, a bot,
 /// an app) is always asked first, and no answer allows it unasked, not even
-/// one given for that very action.
+/// one given for that very action. The person's own click needs no room's
+/// consent: the chooser, the sign-in or the reveal in front of them is
+/// their decision, so like an effect of [`OWN_DEVICE_SCOPE`] it needs only
+/// what reading needs and runs only on the device of whoever starts it.
 pub const ATTENDED_TAG: &str = "tilo.attended";
 
 /// The contract tag of an effect whose whole scope is the invoking
@@ -503,7 +500,6 @@ pub struct Offload {
     /// Whether it needs a GPU.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gpu: bool,
-    /// CPU time ceiling, in milliseconds.
     pub cpu_time_ms: u64,
     /// Memory ceiling, in bytes. The inputs count against it.
     pub memory_bytes: u64,
@@ -567,8 +563,9 @@ impl ActionContract {
     pub fn need(&self) -> ActionNeed {
         ActionNeed {
             // An outside effect on the person's own device reaches nothing
-            // a room's grants govern ([`OWN_DEVICE_SCOPE`]).
-            kind: if self.kind == ActionKind::Outside && self.is_own_device() {
+            // a room's grants govern ([`OWN_DEVICE_SCOPE`]), and one they
+            // attend is their own decision ([`ATTENDED_TAG`]).
+            kind: if self.kind == ActionKind::Outside && self.runs_on_invokers_device() {
                 ActionKind::Read
             } else {
                 self.kind
@@ -611,6 +608,14 @@ impl ActionContract {
     /// Whether the action needs its person attending. See [`ATTENDED_TAG`].
     pub fn is_attended(&self) -> bool {
         self.tags.iter().any(|tag| tag == ATTENDED_TAG)
+    }
+
+    /// Whether the action acts on the device of whoever invokes it, so only
+    /// the person at that device (and those acting for them) runs it: an
+    /// effect of [`OWN_DEVICE_SCOPE`] or one its person attends
+    /// ([`ATTENDED_TAG`]).
+    pub fn runs_on_invokers_device(&self) -> bool {
+        self.is_own_device() || self.is_attended()
     }
 
     /// Who the action is listed for, as its tags record it. See [`Audience`].
@@ -824,6 +829,23 @@ impl ActionContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An outside effect the person attends (their chooser, a sign-in) or
+    /// one on their own device needs only what reading needs, so a room's
+    /// guest starts it with no workspace consent; it runs on the device of
+    /// whoever starts it. Any other outside effect still reaches outside.
+    #[test]
+    fn an_attended_or_own_device_effect_needs_no_room_consent() {
+        let outside = ActionContract::for_operation(OperationKind::Effect);
+        assert_eq!(outside.need().kind, ActionKind::Outside);
+        assert!(!outside.runs_on_invokers_device());
+        for tag in [ATTENDED_TAG, OWN_DEVICE_SCOPE] {
+            let mut contract = outside.clone();
+            contract.tags.push(tag.to_owned());
+            assert_eq!(contract.need().kind, ActionKind::Read, "{tag}");
+            assert!(contract.runs_on_invokers_device(), "{tag}");
+        }
+    }
 
     /// An action is for everyone unless the app says otherwise, and the
     /// audience it says replaces the one before: people's listings leave out

@@ -32,7 +32,7 @@ pub fn parse_bytes(text: &str) -> Result<Vec<u8>, String> {
 #[effect(operation = "hex_editor.effects")]
 pub enum HexEffect {
     /// Open a file.
-    #[effect(job, cancellable, label = "Open file")]
+    #[effect(attended, job, cancellable, label = "Open file")]
     OpenFile {
         #[param("file to open; omit to use the system file picker")]
         path: Option<String>,
@@ -91,14 +91,12 @@ mod tests {
             bytes: Hex(bytes.to_vec()),
         };
         let delete = |offset| BufferEdit::Delete { offset, len: 1 };
-        // Two nibbles of one byte, then the next byte.
         assert!(overwrite(4, &[0xa0]).continues(&overwrite(4, &[0xab])));
         assert!(overwrite(4, &[0xab]).continues(&overwrite(5, &[0xc0])));
         assert!(!overwrite(4, &[0xab]).continues(&overwrite(9, &[0xc0])));
         // Insert mode: a byte inserted, completed in place, the next inserted.
         assert!(insert(4, &[0xa0]).continues(&overwrite(4, &[0xab])));
         assert!(overwrite(4, &[0xab]).continues(&insert(5, &[0xc0])));
-        // Delete in place and Backspace.
         assert!(delete(4).continues(&delete(4)));
         assert!(delete(4).continues(&delete(3)));
         assert!(!delete(4).continues(&delete(7)));

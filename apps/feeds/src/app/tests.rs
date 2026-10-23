@@ -1,5 +1,3 @@
-//! Behaviour of the reader window.
-
 #![allow(clippy::float_cmp, reason = "tests assert exact values")]
 
 use super::*;
@@ -63,7 +61,6 @@ fn sync_over(app: &mut FeedsApp, mut doc: AutoCommit) -> AutoCommit {
     doc
 }
 
-/// The library `doc` holds.
 fn loaded(doc: &AutoCommit) -> Library {
     Library::read(doc).unwrap()
 }
@@ -213,7 +210,15 @@ fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
             .find(|c| c.name.as_deref() == Some(name))
             .unwrap_or_else(|| panic!("{name} is a control"))
     };
-    assert!(control("Refresh all feeds").disabled);
+    // Disabled, Refresh says why rather than doing nothing on a press.
+    let refresh = control("There are no subscriptions to refresh");
+    assert!(refresh.disabled);
+    assert!(
+        controls
+            .iter()
+            .all(|c| c.name.as_deref() != Some("Refresh all feeds")),
+        "with nothing subscribed, Refresh is not offered as if it could run"
+    );
     assert!(control("Mark all as read").disabled);
     assert!(!control("Add subscription").disabled);
     for absent in ["Star article", "Open original article", "Reading settings"] {
@@ -233,7 +238,6 @@ fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
     );
 }
 
-/// An open article brings its commands into the reader's header.
 #[test]
 fn an_open_article_offers_its_commands() {
     let mut mounted = framed(FeedsApp::new_demo());
@@ -594,7 +598,6 @@ fn the_add_dialog_field_is_native_and_submits_a_subscription() {
     check_add_dialog_an_empty_required_field_keeps_the_dialog_open();
 }
 
-/// Tags are edited through the canonical action and may be cleared.
 #[test]
 fn the_tag_editor_uses_the_canonical_action() {
     let mut a = app();
@@ -897,7 +900,6 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     assert!(dispatch(a, doc, &WindowEvent::Focused(false)) || a.core().menu.is_none());
     assert!(a.core().menu.is_none());
 
-    // Mark all as read marks the feed's articles and persists.
     a.core_mut().apply_menu_action(
         MenuAction::MarkFeedRead(feed.clone()),
         &mut ui::widget::Edits::lend(doc),
@@ -974,8 +976,6 @@ fn sidebar_counts_and_titles_follow_the_library() {
     assert_eq!(a.titles.0, title);
 }
 
-/// The reading settings open under their button and their controls change
-/// the reader.
 #[test]
 fn reading_settings_open_under_their_button() {
     let mut a = app();
@@ -999,7 +999,6 @@ fn reading_settings_open_under_their_button() {
     assert!(!a.settings_panel_open());
 }
 
-/// Lists scroll to their content and keep the open article in view.
 #[test]
 fn the_list_scrolls_and_keeps_the_open_article_in_view() {
     let a = app();
@@ -1202,7 +1201,6 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
     assert!(host.state().folders.is_empty());
 }
 
-/// The center of the control `name`, as the host places it.
 fn control_center(
     host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>,
     name: &str,
@@ -1283,4 +1281,40 @@ fn the_sidebar_shortcut_collapses_and_expands_the_sidebar() {
     host.harness().key("L");
     pump_frames(&mut host);
     assert!(sidebar_width(&mut host) < 0.5, "the shortcut collapsed it");
+}
+
+/// In a half-width window, where the sidebar is a screen of its own, the
+/// window bar's Show sidebar brings it up from the article list: the places
+/// are not reachable only through Back.
+#[test]
+fn show_sidebar_brings_up_the_places_in_a_half_width_window() {
+    let libraries: [(fn() -> FeedsApp, u32); 2] = [(FeedsApp::new, 640), (app, 640)];
+    for (library, width) in libraries {
+        let mut mounted = framed_at(library(), (width, 800));
+        Framed::harness_mut(&mut mounted).present_in_window_bar();
+        settle(&mut mounted);
+        assert_eq!(
+            mounted.shell().geometry().sidebar,
+            SidebarPlacement::Screen,
+            "{width} wide"
+        );
+        assert!(!mounted.shell().is_sidebar_open(), "{width} wide");
+        assert_eq!(
+            ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
+            Some(false),
+            "the bar offers Show sidebar {width} wide"
+        );
+        Framed::harness_mut(&mut mounted)
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        settle(&mut mounted);
+        assert!(
+            mounted.shell().is_sidebar_open(),
+            "Show sidebar showed the places {width} wide"
+        );
+        assert_eq!(
+            ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
+            Some(true),
+            "the bar's toggle now hides it {width} wide"
+        );
+    }
 }

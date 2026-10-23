@@ -244,11 +244,6 @@ impl HttpBlobs {
     /// Fetch every blob in `hashes`, in order, each checked against its hash.
     /// Holds every blob in memory; installers stream through [`BlobFetcher`]
     /// instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a request fails, the server lacks a blob, a
-    /// response exceeds the size ceiling, or bytes do not match their hash.
     pub async fn fetch_all(&self, hashes: &[BlobHash]) -> Result<Vec<Bytes>> {
         let client = Self::client()?;
         let mut out = Vec::with_capacity(hashes.len());
@@ -277,11 +272,6 @@ impl HttpBlobs {
     /// `<base>/thin/<id hex>.tapp`, or `None` when the registry has no
     /// such package. The bytes are not trusted: the caller checks they
     /// form package `id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the request fails or the response exceeds the
-    /// size ceiling.
     pub async fn fetch_thin(&self, id: &PackageId) -> Result<Option<Bytes>> {
         let client = Self::client()?;
         let url = format!("{}/thin/{}.tapp", self.base_url, id.to_hex());
@@ -1015,7 +1005,6 @@ mod tests {
         HttpBlobs::new(&url).fetch(&[hash], &mut sink).unwrap();
         assert_eq!(sink.0, vec![(hash, blob.clone())]);
 
-        // Sixteen listed bytes, a megabyte of zeros behind them.
         objects.insert(
             format!("/blobs/{}.zst", chunks[1].hash),
             twin(&vec![0; 1 << 20]),

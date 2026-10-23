@@ -34,6 +34,11 @@ pub struct Persona {
     pub service: String,
     /// The account's stable id on that service.
     pub account: String,
+    /// The room member (their root key, hex) the account is linked to, as
+    /// the bot speaking for it keeps the link: the shown name is then that
+    /// member's own, not one made to look like it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<String>,
 }
 
 /// Why an appearance was refused.
@@ -66,12 +71,14 @@ pub enum AppearanceError {
     /// The bytes do not hash to the name.
     #[error("the avatar's bytes do not match its hash")]
     AvatarMismatch,
-    /// The service name is malformed.
     #[error("the persona's service must be 1 to 32 lowercase letters, digits or '-'")]
     BadService,
     /// The account is malformed.
     #[error("the persona's account must be 1 to 128 visible characters")]
     BadAccount,
+    /// The linked member is not named by a root key.
+    #[error("the persona's linked member must be a root key in lowercase hex")]
+    BadLinked,
 }
 
 impl Appearance {
@@ -135,6 +142,14 @@ impl Appearance {
                     .any(|c| hidden(c) || c.is_whitespace())
             {
                 return Err(AppearanceError::BadAccount);
+            }
+            if persona.linked.as_deref().is_some_and(|person| {
+                person.len() != 64
+                    || !person
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            }) {
+                return Err(AppearanceError::BadLinked);
             }
         }
         Ok(())
@@ -304,11 +319,13 @@ mod tests {
         let discord = Persona {
             service: "discord".into(),
             account: "80351110224678912".into(),
+            linked: None,
         };
         assert!(Appearance::new("alice", None, Some(discord)).is_ok());
         let shouting = Persona {
             service: "Discord".into(),
             account: "1".into(),
+            linked: None,
         };
         assert_eq!(
             Appearance::new("alice", None, Some(shouting)),
@@ -317,10 +334,21 @@ mod tests {
         let empty = Persona {
             service: "discord".into(),
             account: String::new(),
+            linked: None,
         };
         assert_eq!(
             Appearance::new("alice", None, Some(empty)),
             Err(AppearanceError::BadAccount)
+        );
+        let linked = |person: &str| Persona {
+            service: "discord".into(),
+            account: "1".into(),
+            linked: Some(person.into()),
+        };
+        assert!(Appearance::new("alice", None, Some(linked(&"ab".repeat(32)))).is_ok());
+        assert_eq!(
+            Appearance::new("alice", None, Some(linked("alice"))),
+            Err(AppearanceError::BadLinked)
         );
     }
 

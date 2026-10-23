@@ -165,7 +165,6 @@ mod tests {
         let archive = dir.path().join("layer.tar");
         std::fs::write(&archive, b"layer bytes").unwrap();
 
-        // Phase `a_put_layer_is_found_again`.
         {
             assert!(cache.get("sha256:aa", "shell").is_none());
             cache.put("shell", &archive, &pulled("sha256:aa")).unwrap();
@@ -179,7 +178,6 @@ mod tests {
             );
             assert!(cache.get("../x", "shell").is_none());
         }
-        // Phase `the_imported_hash_is_remembered_with_the_layer`.
         {
             assert_eq!(cache.layer_hash("sha256:aa", "shell"), None);
             cache
@@ -190,11 +188,9 @@ mod tests {
                 Some("999eb36b8b34")
             );
             assert!(cache.record_hash("sha256:zz", "shell", "ab").is_err());
-            // A new put of the same build starts without one.
             cache.put("shell", &archive, &pulled("sha256:aa")).unwrap();
             assert_eq!(cache.layer_hash("sha256:aa", "shell"), None);
         }
-        // Phase `only_the_most_recently_used_stay`.
         {
             let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
             cache.put("shell", &archive, &pulled("sha256:bb")).unwrap();
@@ -204,7 +200,6 @@ mod tests {
                     .set_modified(old)
                     .unwrap();
             }
-            // Using aa makes bb the least recently used.
             assert!(cache.get("sha256:aa", "shell").is_some());
             cache.put("shell", &archive, &pulled("sha256:cc")).unwrap();
             assert!(cache.get("sha256:bb", "shell").is_none(), "evicted");
@@ -213,7 +208,6 @@ mod tests {
             let left = std::fs::read_dir(&cache.dir).unwrap().count();
             assert_eq!(left, 2);
         }
-        // Phase `a_pull_without_a_digest_is_not_kept`.
         {
             cache.put("shell", &archive, &Pulled::default()).unwrap();
             assert_eq!(std::fs::read_dir(&cache.dir).unwrap().count(), 2);

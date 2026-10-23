@@ -47,7 +47,6 @@ pub enum DiffHit {
     StageFile,
     /// Discard the file's worktree changes (after confirmation).
     DiscardFile,
-    /// One hunk's action.
     Hunk(usize, HunkAction),
 }
 
@@ -85,7 +84,6 @@ pub struct Metrics {
     /// One hunk header row: a Small control with the file header's `s2`
     /// margin above and below it.
     pub hunk_h: f64,
-    /// Width of one monospace cell.
     pub cell_w: f64,
     /// Width of the widest line number.
     pub number_w: f64,
@@ -100,7 +98,6 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// Measure for `diff` in `theme`.
     pub fn measure(text: &mut TextRenderer, theme: &Theme, diff: &FileDiff) -> Self {
         let code = theme.text(TextRole::Code);
         let numbers = number_style(theme);
@@ -149,7 +146,6 @@ fn number_style(theme: &Theme) -> TextStyle {
 /// One row of the laid-out diff.
 #[derive(Clone, Copy, Debug)]
 enum Row {
-    /// A hunk's `@@` line, at the line index.
     Hunk(usize),
     /// A unified code line, at the line index.
     Line(usize),
@@ -326,7 +322,6 @@ fn pair_rows(lines: &[DiffLine]) -> Vec<Row> {
     rows
 }
 
-/// Paint `input.diff` into `pane`.
 pub fn paint(ctx: &mut PaintCtx<'_>, pane: Rect, input: &DiffInput<'_>) -> DiffDraw {
     let m = Metrics::measure(ctx.text, ctx.theme, input.diff);
     let mut targets = Vec::new();
@@ -922,8 +917,6 @@ mod tests {
         assert!(two.row_h > m.row_h && two.hunk_h >= m.hunk_h);
     }
 
-    /// Each hunk offers its own action, the worktree side offers discard
-    /// beside it, and the file header carries the file's actions.
     #[test]
     fn hunks_and_the_file_offer_their_actions() {
         let diff = sample_diff();

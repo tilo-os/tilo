@@ -35,7 +35,6 @@ use crate::tokens::TextRole;
 use crate::widget::control_size::ControlSize;
 use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget, layout_rect};
 
-/// The banner's metrics, from the theme.
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
     pad_x: f64,
@@ -152,9 +151,7 @@ impl<'a> BannerContent<'a> {
 pub struct BannerHit {
     /// The banner's box.
     pub rect: Rect,
-    /// The main action's face, when the banner has one.
     pub action: Option<Rect>,
-    /// The second action's face, when the banner has one.
     pub secondary_action: Option<Rect>,
     /// The dismiss control's face, when the banner is dismissible.
     pub dismiss: Option<Rect>,
@@ -314,7 +311,6 @@ fn geometry_with(
     }
 }
 
-/// Paint the banner's well into `rect`.
 fn paint_well(ctx: &mut PaintCtx<'_>, rect: Rect) {
     let theme = ctx.theme;
     let radius = f64::from(theme.tokens.radii.control);
@@ -450,7 +446,6 @@ impl BannerKind {
         }
     }
 
-    /// The icon ink on `on_well`, the theme resolved for the banner's well.
     fn icon_ink(self, on_well: &Theme) -> Color {
         self.color(on_well)
     }

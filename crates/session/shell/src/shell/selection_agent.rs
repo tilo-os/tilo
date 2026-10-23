@@ -214,7 +214,6 @@ pub(crate) struct SelectionRequests {
 }
 
 impl SelectionRequests {
-    /// `app_id` on `connection` answers selection requests.
     pub(crate) fn capable(&mut self, connection: u64, app_id: &str) {
         self.capable.insert(connection, app_id.to_owned());
     }
@@ -385,7 +384,6 @@ impl SelectionRequests {
             .cloned()
     }
 
-    /// `agent` was asked in `room`.
     pub(crate) fn asked(&mut self, room: &str, agent: &str) {
         self.last_agent.insert(room.to_owned(), agent.to_owned());
     }

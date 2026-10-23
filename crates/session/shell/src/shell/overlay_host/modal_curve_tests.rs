@@ -71,7 +71,6 @@ fn modal_transitions_pump_only_the_frames_they_need() {
         // motion rather than about the machine's load.
         let now = ui::time::now();
         assert!(!h.palette_transition.is_visible(now));
-        // Drive the open transition the way `draw` does.
         h.palette_transition.show(
             true,
             ui::motion::Appear::SPEC,

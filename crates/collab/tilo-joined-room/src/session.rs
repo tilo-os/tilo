@@ -42,10 +42,6 @@ impl Connect {
     /// What a session for this room must be pinned to now: the host hint,
     /// this device's certificate, the revocations to dial with and the
     /// owner's continuity.
-    ///
-    /// # Errors
-    /// Custody differs from the enrollment, this device may no longer act in
-    /// the room, or its host is revoked.
     pub fn material(
         &self,
         identity: &HostIdentity,
@@ -374,9 +370,6 @@ impl Input {
         self.retained
     }
     /// Observe the actual committed owner generation, without granting admission.
-    ///
-    /// # Errors
-    /// The enrolled room is unavailable or fenced.
     pub fn generation(&self) -> Result<u64, String> {
         self.scope
             .connect
@@ -455,9 +448,6 @@ impl Input {
     }
     /// The author's current standing in the room: the room's policy, and
     /// the bound on a device not theirs.
-    ///
-    /// # Errors
-    /// The room is fenced or the author is not a member.
     pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
         self.scope.connect.owner.with_current(self.room(), |view| {
             view.peer()
@@ -694,8 +684,6 @@ mod dial_error_tests {
             DialError::from(ClientError::PeerVersion { theirs: behind }),
             DialError::PeerVersion { theirs: behind }
         );
-        // Over a site's HTTPS routes, from a host that predates versioned
-        // handshakes too.
         let unversioned = tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL;
         assert_eq!(
             DialError::from(ClientError::Https(

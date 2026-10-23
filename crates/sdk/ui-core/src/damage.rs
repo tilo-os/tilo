@@ -67,7 +67,6 @@ mod tests {
     use super::{Region, coalesce_regions};
     #[test]
     fn damage_regions_merge_only_when_that_saves_raster_work() {
-        // Case `overlaps_merge_without_extra_raster_work`.
         {
             let result = coalesce_regions(vec![
                 Region {
@@ -94,7 +93,6 @@ mod tests {
             );
         }
 
-        // Case `near_but_gapped_regions_do_not_expand_work`.
         {
             let result = coalesce_regions(vec![
                 Region {
@@ -113,7 +111,6 @@ mod tests {
             assert_eq!(result.len(), 2);
         }
 
-        // Case `far_regions_stay_separate`.
         {
             let result = coalesce_regions(vec![
                 Region {

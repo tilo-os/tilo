@@ -35,12 +35,6 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireError(pub String);
 
-/// Parse one request line.
-///
-/// # Errors
-///
-/// Returns [`WireError`] for malformed JSON, a non-object, a missing `op`,
-/// or an ill-typed field of a served op.
 pub fn parse(line: &str) -> Result<Request, WireError> {
     let value: Value =
         serde_json::from_str(line).map_err(|error| WireError(format!("invalid JSON: {error}")))?;
@@ -148,7 +142,6 @@ mod tests {
 
     #[test]
     fn wire_requests_parse_or_are_refused_and_envelopes_match_the_compositor() {
-        // Phase `served_ops_parse_and_foreign_ops_are_unsupported_not_malformed`.
         {
             assert!(matches!(
                 parse(r#"{"op":"actions_enumerate"}"#),
@@ -181,7 +174,6 @@ mod tests {
                 Ok(Request::Unsupported { op }) if op == "click_named"
             ));
         }
-        // Phase `malformed_requests_are_refused_with_a_reason`.
         {
             for line in [
                 "not json",
@@ -196,7 +188,6 @@ mod tests {
                 assert!(parse(line).is_err(), "accepted {line}");
             }
         }
-        // Phase `a_request_seq_is_echoed_and_its_absence_changes_nothing`.
         {
             assert_eq!(
                 request_seq(r#"{"op":"state_dump","seq":7}"#),
@@ -214,7 +205,6 @@ mod tests {
             assert_eq!(tagged["seq"], 7);
             assert!(tagged.get("state").is_some());
         }
-        // Phase `envelopes_match_the_compositor_socket`.
         {
             assert_eq!(answer(&json!({"n": 1})), r#"{"answer":{"n":1}}"#);
             assert_eq!(state(&json!({})), r#"{"state":{}}"#);

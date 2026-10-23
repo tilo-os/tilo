@@ -106,7 +106,6 @@ pub enum ZoomGesture {
 }
 
 impl ZoomGesture {
-    /// The zoom gesture `event` is under `modifiers`, if it is one.
     #[must_use]
     pub fn of(
         event: &WindowEvent,
@@ -164,7 +163,6 @@ pub fn offer(widget: &mut dyn crate::widget::Widget, step: ZoomStep) -> Option<f
         .find_map(|child| offer(child, step))
 }
 
-/// Whether a widget under `widget` zooms its own content.
 pub fn provided(widget: &mut dyn crate::widget::Widget) -> bool {
     crate::widget::capability::capability_mut::<dyn ContentZoom>(&mut *widget).is_some()
         || widget
@@ -265,7 +263,6 @@ impl WindowZoom {
         }
     }
 
-    /// Whether the indicator shows at `now`.
     #[must_use]
     pub fn indicator_visible(&self, now: Instant) -> bool {
         self.bubble.is_visible(now)

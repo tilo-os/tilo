@@ -1,6 +1,4 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-//! `--json` keeps stdout to exactly one JSON document, whatever the command
-//! and its child processes print.
 
 use std::path::Path;
 use std::process::{Command, Output};

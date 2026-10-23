@@ -50,7 +50,6 @@ impl PadControl {
     }
 }
 
-/// An edge of the pad.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PadSide {
     Left,
@@ -103,7 +102,6 @@ impl PadLayout {
 pub enum PadMapAction {
     /// The focused tablet-aware app's own label for it.
     App(String),
-    /// A shortcut the pad's settings map it to.
     Shortcut(ShortcutAction),
     /// What a ring or strip does in its current mode.
     Dial(PadDialAction),

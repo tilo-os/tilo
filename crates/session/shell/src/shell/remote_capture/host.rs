@@ -32,7 +32,6 @@ const TOOLS: [&str; 7] = [
 /// The label of the v4l2loopback device a remote camera is played into.
 const REMOTE_CAMERA_LABEL: &str = "Tilo Remote Camera";
 
-/// One probe of the machine.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Probe {
     tools: BTreeMap<&'static str, PathBuf>,

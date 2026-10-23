@@ -61,7 +61,6 @@ const DECODE_WAIT: Duration = Duration::from_millis(150);
 /// starts.
 type SharedWake = Arc<Mutex<Option<PictureWake>>>;
 
-/// Run the wake in `slot`, if one is set.
 fn ring(slot: Option<&SharedWake>) {
     let wake = slot.and_then(|slot| slot.lock().ok().and_then(|wake| wake.clone()));
     if let Some(wake) = wake {
@@ -1893,7 +1892,6 @@ impl RealtimeDecoder {
         self.units_in_flight = self.units_in_flight.saturating_sub(pictures);
     }
 
-    /// `unit` as the next buffer of the stream.
     fn next_buffer(&mut self, unit: &[u8], keyframe: bool) -> gst::Buffer {
         // A monotonically increasing timestamp keeps every element's
         // bookkeeping happy; the caller's own timing travels separately.
@@ -2323,7 +2321,6 @@ mod late_picture_tests {
         let units = vp9_units();
         let (mut decoder, _wakes) = decoder_without_waiting();
         let spec = realtime_vp9_spec();
-        // The worker's own result is dropped with its receiver.
         let (start, built) = mpsc::channel();
         decoder.starting = Some(Starting { spec, built });
 
@@ -2451,7 +2448,6 @@ mod late_picture_tests {
             "the silent element was passed over: {:?}",
             decoder.tried
         );
-        // The replacement has the full start-up on a loaded runner.
         decoder.startup_limit = startup_timeout();
         let newest = collect_newest(&mut decoder).expect("the next candidate decoded");
         assert_shows(

@@ -371,8 +371,6 @@ fn the_book_publishes_places_items_and_search() {
     );
 }
 
-/// A merge through the duplicate's place merges, and one undo restores
-/// both contacts.
 #[test]
 fn a_published_merge_merges_and_one_undo_restores_both() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
@@ -576,7 +574,6 @@ fn the_window_edits_the_book_through_its_door() {
     assert_eq!(favorite(&app), before);
 }
 
-/// History says what each change to the book did, in the person's words.
 #[test]
 fn history_says_what_each_change_did() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();

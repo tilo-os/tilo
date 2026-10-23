@@ -24,7 +24,6 @@ const TARGET_ICON_PX: u32 = 32;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ActionManifest {
     pub title: Option<String>,
-    /// Popup page, relative to the extension root.
     pub popup: Option<String>,
     /// Best icon file, relative to the extension root.
     pub icon: Option<String>,
@@ -91,7 +90,6 @@ pub struct Installed {
 }
 
 impl Installed {
-    /// Read an installed extension's manifest.
     pub fn read(info: &ExtensionInfo, enabled: bool, pinned: bool) -> Option<Self> {
         let id = crate::extensions::chrome_id(info)?;
         let manifest = std::fs::read_to_string(info.path.join("manifest.json")).ok()?;
@@ -139,7 +137,6 @@ pub struct ActionState {
     pub title: Option<String>,
 }
 
-/// One toolbar button.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Button {
     pub id: String,
@@ -204,8 +201,6 @@ pub fn model(installed: &[Installed], state_of: impl Fn(&str) -> Option<ActionSt
 pub fn badge_text(text: &str) -> String {
     text.chars().take(MAX_BADGE_CHARS).collect()
 }
-
-// ---- Service-worker exchange -------------------------------------------
 
 /// `Target.getTargets`.
 pub fn targets_request() -> (&'static str, Value) {

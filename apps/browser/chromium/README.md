@@ -26,7 +26,7 @@ target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host
 
 Linux produces `target/chromium/tilo-chromium-host` and adjacent CEF resources;
 run the browser against it with `TILO_CHROMIUM_HOST` set to that path. On Tilo
-OS the engine is the signed runtime bundle `tilo-runtime/2026.10.22-chromium`
+OS the engine is the signed runtime bundle `tilo-runtime/2026.10.23-chromium`
 (`ui::webview::chromium::runtime`): the image build runs
 `build-host.py --sdk-archive … --runtime …` and signs the resulting tree, the
 browser's manifest lists it under `optional-runtimes`, and the launcher mounts
@@ -182,9 +182,17 @@ text and interactive elements; interactive elements carry refs
 never resolves in a later document or another tab. Password and card-number
 values are reported by length only. Clicks and keys go through CEF's own input
 path, so pages see trusted events with user activation; fill, select and submit
-edit the DOM and dispatch the page's input, change and submit events. An action
-that starts a main-frame navigation answers once it loads (up to ten seconds),
-with `navigated` set and the new URL.
+edit the DOM and dispatch the page's input, change and submit events.
+
+An action that operates the page answers once the page has handled its input,
+with `navigation` saying what that did. `started`: the page began a main-frame
+navigation, or planned a form submission, while handling it; the answer then
+waits for that load (up to ten seconds) and carries the new URL, `navigated` and
+`loading`. `possible`: it had not, and may still navigate on its own; a click
+grants the user activation Chromium attributes a later navigation to. Such a
+navigation is not the action's answer: it arrives in the `network` log as its
+document request, marked `navigation` with Chromium's `user_gesture`. `none`:
+the action ran none of the page's code (reading, reader view).
 
 Not yet covered: cross-origin and same-origin iframe content (listed as
 `iframe` lines), file inputs, and drag gestures.

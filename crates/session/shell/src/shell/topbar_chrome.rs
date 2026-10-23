@@ -585,7 +585,6 @@ mod native_source_tests {
             activity_id: Some("timer-1".into()),
         }));
         board.show(CLOCKS_APP, None);
-        // A fresh source takes the ended activity in at once.
         let source = native_source(chrome.clone());
         assert!(source.snapshot().clock_activity.is_none(), "it ended");
         assert!(!chrome.borrow().overlays.clock);

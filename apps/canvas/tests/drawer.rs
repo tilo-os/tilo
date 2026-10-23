@@ -131,3 +131,33 @@ fn phone_tools_live_below_the_artwork_and_survive_rotation() {
         );
     }
 }
+
+/// Every accessible name drawn in `root`'s tree.
+fn names(root: &dyn ui::widget::Widget, out: &mut Vec<String>) {
+    if let Some(name) = root.accessibility().and_then(|node| node.name) {
+        out.push(name);
+    }
+    for child in root.children() {
+        names(child, out);
+    }
+}
+
+/// The welcome offers a new artwork, opening one and the recent ones; it
+/// teaches no keys or tools, which the app shows where they are used.
+#[test]
+fn the_welcome_lists_no_shortcuts() {
+    let mut app = TestApp::<App>::capture_at(None, (1280, 800)).expect("blank artwork");
+    let targets = app.harness().targets();
+    assert!(
+        targets.contains_key("canvas-welcome-new"),
+        "the welcome is up"
+    );
+    let mut shown = Vec::new();
+    names(app.harness().root_widget(), &mut shown);
+    for teaching in ["Press ?", "(B)", "(R, E, L)", "ask one to paint"] {
+        assert!(
+            shown.iter().all(|name| !name.contains(teaching)),
+            "the welcome teaches {teaching:?}: {shown:?}"
+        );
+    }
+}

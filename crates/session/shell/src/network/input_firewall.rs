@@ -34,7 +34,6 @@ pub const RATE_WINDOW: Duration = Duration::from_secs(1);
 /// Clicks inside [`CLICK_BURST_WINDOW`] still tolerated before the next one is a burst.
 pub const CLICK_BURST_LIMIT: usize = 10;
 
-/// The window a click burst is measured over.
 pub const CLICK_BURST_WINDOW: Duration = Duration::from_millis(100);
 
 /// How long a peer stays blocked after a click burst — long enough to break an automated storm, short enough not to lock out a trackpad fumble.
@@ -141,7 +140,6 @@ pub struct ShellView {
     chrome_regions: Vec<(SurfaceId, Rect)>,
     /// Optional interactive bounds; the full tile remains the coordinate basis.
     input_regions: Vec<(SurfaceId, Rect)>,
-    /// The surface holding keyboard focus, or `None` when shell chrome owns it.
     keyboard_focus: Option<SurfaceId>,
     /// Shell chrome (overlay, palette, permission prompt) is drawn over the tiles and taking input.
     chrome_captures: bool,
@@ -366,7 +364,6 @@ impl RemoteInputFirewall {
         self.peers.clear();
     }
 
-    /// Whether the kill switch is latched.
     pub fn kill_switch_engaged(&self) -> bool {
         self.kill_switch
     }
@@ -748,7 +745,6 @@ mod tests {
 
     #[test]
     fn pointer_motion_is_admitted_only_inside_visible_shared_regions() {
-        // Phase `a_firewall_that_has_seen_no_layout_refuses_everything`.
         {
             let mut fw = RemoteInputFirewall::new();
             let verdict = fw.review(
@@ -759,7 +755,6 @@ mod tests {
             );
             assert_eq!(verdict, Err(Denial::NoView));
         }
-        // Phase `motion_inside_the_region_is_translated_into_output_space`.
         {
             let mut fw = firewall();
             let out = fw
@@ -772,7 +767,6 @@ mod tests {
                 .expect("inside the tile");
             assert_eq!(out, InputEvent::PointerMotion { x: 110.0, y: 70.0 });
         }
-        // Phase `motion_outside_the_region_is_refused`.
         {
             let mut fw = firewall();
             for (x, y) in [(-1.0, 10.0), (10.0, -1.0), (400.0, 10.0), (10.0, 300.0)] {
@@ -788,7 +782,6 @@ mod tests {
                 );
             }
         }
-        // Phase `motion_is_refused_where_another_surface_is_on_top`.
         {
             let mut fw = RemoteInputFirewall::new();
             // The private surface is enumerated first, so it is in front.
@@ -811,7 +804,6 @@ mod tests {
                 Err(Denial::Occluded),
             );
         }
-        // Phase `chrome_drawn_over_the_tiles_occludes_every_shared_surface`.
         {
             let mut fw = RemoteInputFirewall::new();
             fw.publish_view(ShellView::new(
@@ -906,7 +898,6 @@ mod tests {
 
     #[test]
     fn buttons_need_a_current_valid_coordinate() {
-        // Phase `a_button_without_a_prior_motion_has_no_coordinate_and_is_refused`.
         {
             let mut fw = firewall();
             assert_eq!(
@@ -922,7 +913,6 @@ mod tests {
                 Err(Denial::NoPointerPosition),
             );
         }
-        // Phase `pointer_leave_invalidates_the_peers_click_coordinate`.
         {
             let mut fw = firewall();
             let now = Instant::now();
@@ -954,7 +944,6 @@ mod tests {
                 Err(Denial::NoPointerPosition)
             );
         }
-        // Phase `button_rechecks_surface_local_position_after_nonzero_origin_motion`.
         {
             let mut fw = firewall();
             let now = Instant::now();
@@ -988,7 +977,6 @@ mod tests {
 
     #[test]
     fn keys_reach_the_seat_only_while_the_shared_surface_has_focus() {
-        // Phase `a_focus_grab_naming_a_surface_the_share_does_not_cover_is_refused`.
         {
             let mut fw = firewall();
             assert_eq!(
@@ -1001,7 +989,6 @@ mod tests {
                 Err(Denial::SurfaceMismatch),
             );
         }
-        // Phase `keys_are_muted_while_the_host_focuses_another_surface`.
         {
             let mut fw = RemoteInputFirewall::new();
             fw.publish_view(ShellView::new(
@@ -1024,7 +1011,6 @@ mod tests {
                 Err(Denial::FocusMuted),
             );
         }
-        // Phase `an_ordinary_key_reaches_the_seat_when_the_shared_surface_has_focus`.
         {
             let mut fw = firewall();
             assert!(
@@ -1086,7 +1072,6 @@ mod tests {
                 Err(Denial::SystemChord),
             );
         }
-        // Phase `ctrl_alt_delete_is_refused`.
         {
             let mut fw = firewall();
             let now = Instant::now();
@@ -1116,7 +1101,6 @@ mod tests {
                 Err(Denial::SystemChord),
             );
         }
-        // Phase `alt_tab_is_refused`.
         {
             let mut fw = firewall();
             let now = Instant::now();
@@ -1144,7 +1128,6 @@ mod tests {
                 Err(Denial::SystemChord),
             );
         }
-        // Phase `print_screen_is_kept_on_the_host`.
         {
             let mut fw = firewall();
             assert_eq!(
@@ -1161,7 +1144,6 @@ mod tests {
                 Err(Denial::SystemChord),
             );
         }
-        // Phase `the_super_key_never_reaches_the_seat`.
         {
             let mut fw = firewall();
             assert_eq!(
@@ -1208,7 +1190,6 @@ mod tests {
         reason = "the rate-budget phase compares admission verdicts to literal booleans; each phase keeps one former test's body verbatim"
     )]
     fn rate_limits_local_priority_and_kill_switch_block_the_peer() {
-        // Phase `tests_mod_the_hundred_and_twenty_first_event_in_a_second_is_dropped`.
         {
             let mut fw = firewall();
             let t0 = Instant::now();
@@ -1235,7 +1216,6 @@ mod tests {
                 ),
                 Err(Denial::RateLimited),
             );
-            // A second later the window has rolled and the peer is served again.
             let later = t0 + RATE_WINDOW + Duration::from_millis(1);
             assert!(
                 fw.review(
@@ -1247,7 +1227,6 @@ mod tests {
                 .is_ok(),
             );
         }
-        // Phase `an_eleventh_click_inside_a_hundred_milliseconds_blocks_the_peer`.
         {
             let mut fw = firewall();
             let t0 = Instant::now();
@@ -1309,7 +1288,6 @@ mod tests {
                 .is_ok(),
             );
         }
-        // Phase `local_input_blocks_the_remote_side_for_five_hundred_milliseconds`.
         {
             let mut fw = firewall();
             let t0 = Instant::now();
@@ -1320,7 +1298,6 @@ mod tests {
             );
             assert_eq!(fw.host_override(t0 + PHYSICAL_PRIORITY_WINDOW), None);
         }
-        // Phase `the_kill_switch_latches_until_it_is_cleared`.
         {
             let mut fw = firewall();
             assert_eq!(fw.host_override(Instant::now()), None);
@@ -1334,11 +1311,9 @@ mod tests {
             fw.clear_kill_switch();
             assert_eq!(fw.host_override(Instant::now()), None);
         }
-        // Phase `a_denied_event_still_costs_the_peer_its_rate_budget`.
         {
             let mut fw = firewall();
             let t0 = Instant::now();
-            // Every one of these is refused on the region check.
             for i in 0..MAX_EVENTS_PER_SECOND {
                 let at = t0 + Duration::from_micros(i as u64);
                 assert_eq!(
@@ -1835,7 +1810,6 @@ mod production_path {
         {
             let mut state = staged();
 
-            // Exactly the event the unlocked staging accepts.
             state
                 .review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y: 10.0 })
                 .expect("the same event is accepted while the session is unlocked");
@@ -1876,7 +1850,6 @@ mod production_path {
             assert_eq!(verdict, Err(Denial::PhysicalPriority));
             assert_eq!(pointer_at(&state), before);
         }
-        // Phase `physical_priority_mutes_new_actions_but_allows_held_input_cleanup`.
         {
             const SHIFT: u32 = 42;
             const A: u32 = 30;

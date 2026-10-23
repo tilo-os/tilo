@@ -937,6 +937,9 @@ impl ResourceSurface<PdfMarkup, PdfEffect> for PdfApp {
             PdfEffect::ImportPdfContent { content, name } => self
                 .import_pdf_content(&content, name.as_deref(), cx)
                 .map(ui::framework::Effected::value),
+            PdfEffect::SelectText { .. } | PdfEffect::CopySelection => {
+                self.selection_effect(&effect, || cx.reply())
+            }
             effect => self.answer_effect(&effect, || cx.reply()),
         }
     }

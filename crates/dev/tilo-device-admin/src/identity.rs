@@ -50,10 +50,6 @@ impl Identity {
     ///
     /// The certificate's signature is not checked here: the other side
     /// checks it on every session, and refuses one that does not verify.
-    ///
-    /// # Errors
-    /// A missing or unreadable key, or a certificate that is present but
-    /// unreadable or names another key.
     pub fn load(root: &Path) -> anyhow::Result<Self> {
         let paths = IdentityPaths::under(root);
         let key = persist::read_device_key(&paths.device_privkey)
@@ -102,10 +98,6 @@ pub fn revocations_path(paths: &IdentityPaths) -> PathBuf {
         .join("revocations.bin")
 }
 
-/// Load and verify a revocation list.
-///
-/// # Errors
-/// Read, decode or signature failures. A missing file is an empty list.
 pub fn load_revocations(path: &Path) -> anyhow::Result<RevocationList> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,

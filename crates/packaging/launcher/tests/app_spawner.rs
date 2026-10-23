@@ -78,7 +78,6 @@ impl Tree {
             kind: AppKind::Tilo,
             program: PathBuf::from(argv[0]),
             args: argv.iter().map(Into::into).collect(),
-            // This process's environment, as a launcher gets the compositor's.
             env: std::env::vars_os()
                 .chain(env.iter().map(|(k, v)| (k.into(), v.into())))
                 .collect(),

@@ -214,8 +214,7 @@ impl ShellOverlayHost {
     }
 
     /// No agent of the focused workspace takes tasks: start the one asked
-    /// last there (else its first admitted agent), as Task Center's "Start
-    /// agent" does, and open the composer about `seed` once it takes them.
+    /// last there (else its first admitted agent), and open the composer about `seed` once it takes them.
     /// Whether one is starting. Only someone who may administer the
     /// workspace starts its agents.
     fn start_admitted_agent(
@@ -297,7 +296,6 @@ impl ShellOverlayHost {
         Some((ActionSessionSource::new(broker), live))
     }
 
-    /// The focused tab's app id.
     fn focused_app_id(&self) -> Option<String> {
         self.chrome
             .as_ref()?
@@ -374,7 +372,6 @@ mod tests {
     #[test]
     fn the_composer_keeps_clear_of_all_the_selected_text_it_was_told_of() {
         let window = Rect::new(100.0, 50.0, 900.0, 650.0);
-        // The caret ends a selection of three lines of a paragraph.
         let caret = Rect::new(400.0, 300.0, 402.0, 318.0);
         let paragraph = Rect::new(200.0, 264.0, 800.0, 336.0);
         assert_eq!(

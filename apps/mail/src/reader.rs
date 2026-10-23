@@ -215,12 +215,10 @@ type HtmlRuns = (
     bool,
 );
 
-/// The label of an attachment chip.
 pub(crate) fn attachment_label(attachment: &crate::model::Attachment) -> String {
     format!("{} ({})", attachment.filename, attachment.size_human())
 }
 
-/// The recipients line under a sender.
 fn recipients_line(message: &Message) -> String {
     let names: Vec<String> = message
         .to
@@ -427,7 +425,6 @@ impl Flow<'_, '_> {
 struct RemoteButtons {
     /// Load this message's remote images.
     load: Option<Rect>,
-    /// Load them for every message from its sender.
     always: Option<Rect>,
     /// Stop loading them for its sender.
     stop: Option<Rect>,
@@ -492,7 +489,6 @@ pub struct MessageReader {
     remote_buttons: RemoteButtons,
     /// The conversation the scroll offset belongs to.
     shown: Option<MessageId>,
-    /// The open message's HTML body.
     html: html::HtmlBody,
     /// The message the HTML body shows.
     html_message: Option<MessageId>,
@@ -523,7 +519,6 @@ pub struct MessageReader {
     text_current: Option<usize>,
     /// The query find runs in the HTML body.
     html_query: Option<String>,
-    /// Whether the reader has the keyboard, which its text uses.
     focused: bool,
     /// A button is held over the text: the pointer is selecting.
     selecting: bool,
@@ -731,7 +726,6 @@ impl MessageReader {
             theme,
             presence,
         );
-        // Find's matches in this text, over the glyphs they cover.
         for (index, found) in self.text_matches.iter().enumerate() {
             if found.message != message.id {
                 continue;
@@ -1858,7 +1852,6 @@ mod tests {
         let engine = html_engine();
         engine.set_measures_document(true);
         reader.set_html_engine(engine.clone());
-        // Every frame of the open, as it is presented.
         let present = |reader: &mut MessageReader, when: &str| {
             draw(reader);
             assert!(
@@ -2037,7 +2030,6 @@ mod tests {
             "one message is not its sender"
         );
 
-        // A plain message skips the webview.
         let plain = message_from(&shared, "lena@fischer.example");
         let mut doc = crate::resource::TestMail::doc();
         shared

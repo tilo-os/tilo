@@ -31,7 +31,6 @@ fn access_nodes(root: &mut dyn Widget) -> Vec<(AkNodeId, AkNode)> {
     build_tree_update(&*root, &node_map, None, 1.0).nodes
 }
 
-/// All emitted nodes of a given role.
 fn of_role(nodes: &[(AkNodeId, AkNode)], role: AkRole) -> Vec<&AkNode> {
     nodes
         .iter()
@@ -327,7 +326,6 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
         // No GenericContainer leaked from the collapsed Column.
         assert!(of_role(&nodes, AkRole::GenericContainer).is_empty());
 
-        // Each widget's top-level role is present exactly once.
         assert_eq!(of_role(&nodes, AkRole::Group).len(), 1, "segmented group");
         assert_eq!(of_role(&nodes, AkRole::List).len(), 1, "swatch list");
         assert_eq!(
@@ -336,7 +334,6 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
             "two gauges"
         );
         assert_eq!(of_role(&nodes, AkRole::Menu).len(), 1, "slash menu");
-        // Two distinct gauges, told apart by their accessible names.
         assert!(nodes.iter().any(|(_, n)| n.label() == Some("GPU")));
         assert!(nodes.iter().any(|(_, n)| n.label() == Some("Battery")));
     }

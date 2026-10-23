@@ -220,6 +220,9 @@ pub(super) struct ActionRuntime {
     /// Each edit an effect submitted for its invoker that the host is still
     /// admitting, by broker request, to the effect invocation it continues.
     pub(super) follow_ups: std::collections::HashMap<u64, tilo_actions::InvocationId>,
+    /// Each invocation of another provider's action a control here is bound
+    /// to that the provider is still answering, by broker request.
+    pub(super) hosted_requests: std::collections::HashSet<u64>,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
@@ -244,7 +247,6 @@ pub(super) struct ActionRuntime {
 /// Which answer from the session action host a request is waiting for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum BrokerReply {
-    /// The receipt for an invocation.
     Receipt(tilo_actions::InvocationId),
     /// The state of an invocation being observed.
     Update(tilo_actions::InvocationId),
@@ -290,6 +292,7 @@ impl ActionRuntime {
             directed_invocations: std::collections::HashMap::new(),
             acting_for: std::collections::HashMap::new(),
             follow_ups: std::collections::HashMap::new(),
+            hosted_requests: std::collections::HashSet::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),

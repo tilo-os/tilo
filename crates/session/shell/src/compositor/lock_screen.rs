@@ -126,7 +126,6 @@ fn keyboard_max_width(theme: &Theme) -> f64 {
 pub struct LockOutput {
     /// Top-left of this output in the combined space.
     pub origin: (f64, f64),
-    /// Output size in compositor logical pixels.
     pub size: (f64, f64),
     /// Device scale reported for this output: physical pixels per logical
     /// pixel. `origin` and `size` are the output's physical pixels in the
@@ -1686,7 +1685,6 @@ mod tests {
                 "the semantic tree must not encode the password or its mask"
             );
         }
-        // Phase `verifying_lock_tree_disables_password_mutation_and_announces_state`.
         {
             let v = LockView {
                 verifying: true,
@@ -1718,7 +1716,6 @@ mod tests {
         let before = scene.encoding().n_paths;
         let osd = Osd::volume(0.4, false);
         let raised = osd.raised_at;
-        // Past the fade-in, the readout is fully opaque.
         let held = raised + OSD_FADE_IN;
         draw_lock_osd(&mut scene, &outputs, &theme, &mut text, osd, held);
         assert!(
@@ -1991,7 +1988,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn lock_layout_reserves_room_for_large_text() {
-        // Phase `clock_stays_inside_portrait_output_at_maximum_text_scale`.
         {
             let mut text = TextRenderer::new();
             for text_scale in [1.0, 2.0, 3.0, 4.0] {
@@ -2016,7 +2012,6 @@ mod tests {
                 assert_inside(layout.password, layout.output, "portrait password");
             }
         }
-        // Phase `accessible_lock_layout_reserves_every_text_row`.
         {
             let output = LockOutput {
                 origin: (0.0, 0.0),
@@ -2081,7 +2076,6 @@ mod tests {
                 );
             }
         }
-        // Phase `maximum_text_scale_keeps_real_credential_copy_inside_its_rows`.
         {
             let title = ui::i18n::I18nManager::lookup_plain("lock-welcome-back");
             let notifications = count_label(12);
@@ -2127,7 +2121,6 @@ mod tests {
                 }
             }
         }
-        // Phase `large_type_wide_breakpoint_reserves_room_for_both_columns`.
         {
             let theme = Theme::dark().with_text_scale(1.5);
             for (width, wide) in [(1649.0, false), (1650.0, true)] {
@@ -2154,7 +2147,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn lock_layout_is_bounded_and_responsive() {
-        // Phase `wide_lock_separates_clock_from_credentials_and_compact_stacks_them`.
         {
             let theme = Theme::dark();
             let wide = LockLayout::for_output(single(1600.0, 900.0)[0], &theme);
@@ -2177,7 +2169,6 @@ mod tests {
             );
             assert_inside(large.password, large.panel, "large password");
         }
-        // Phase `responsive_layout_is_bounded_and_non_overlapping`.
         {
             let theme = Theme::dark();
             for output in [
@@ -2264,7 +2255,6 @@ mod tests {
             }
             assert!((high_density.scale - normal.scale * 2.0).abs() < 1e-9);
         }
-        // Phase `startup_sized_output_keeps_every_lock_rect_contained`.
         {
             let layout = LockLayout::for_output(
                 LockOutput {
@@ -2388,8 +2378,6 @@ mod tests {
             );
         }
     }
-
-    // ---- multi-output ---------------------------------------------------
 
     fn playing() -> PlayerSnapshot {
         crate::shell::now_playing::tests::player(

@@ -35,7 +35,6 @@ struct KeptAccessRow {
 /// while it changes, no row is kept.
 #[derive(Debug, PartialEq)]
 struct AccessRowsContext<'a> {
-    /// Every row's "N of M".
     row_count: usize,
     disabled: bool,
     /// The revision of the translations the move buttons' labels are looked
@@ -480,8 +479,6 @@ mod tests {
             assert_eq!(view.access_row_builds_for_test(), rows + 3);
             assert_eq!(Widget::accessibility(&view), published_afresh(&view));
 
-            // Focus reaching the tree is published as a fresh walk
-            // publishes it.
             view.set_focus(true);
             let _ = Widget::accessibility_shared(&view);
             assert_eq!(Widget::accessibility(&view), published_afresh(&view));

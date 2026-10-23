@@ -22,7 +22,6 @@ pub(crate) enum Ty {
     Secret,
     /// A resource address, with the resource kind when it is declared.
     Resource(Option<String>),
-    /// An object, with its schema when one is declared.
     Object(Option<Value>),
     /// An array, with the schema of its items when one is declared.
     Array(Option<Value>),

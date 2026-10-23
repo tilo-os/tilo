@@ -367,7 +367,6 @@ impl NotificationStack {
         self.focus.is_some()
     }
 
-    /// Whether keyboard focus is in the stack.
     pub fn has_keyboard_focus(&self) -> bool {
         self.focus.is_some()
     }
@@ -1666,7 +1665,6 @@ pub(super) mod tests {
         // A fast sweep down the screen across the stack, 40 px every 8 ms.
         let x = card.center().x;
         let mut ms = 0;
-        // From well above the stack to well below it.
         for step in 0..16_u32 {
             let py = card.y0 - 120.0 + 40.0 * f64::from(step);
             stack.note_pointer_at(&host, Some(Point::new(x, py)), at(ms));

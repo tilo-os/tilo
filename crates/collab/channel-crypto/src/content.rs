@@ -98,7 +98,6 @@ impl ContentKeyring {
         }
     }
 
-    /// The key of `epoch`, if held.
     pub fn get(&self, epoch: u64) -> Option<&SymmetricKey> {
         self.keys.get(&epoch)
     }

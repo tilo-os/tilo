@@ -831,11 +831,6 @@ pub struct ComputeDelivery {
 
 impl ComputeClient {
     /// Connect and mutually authenticate to an exact same-owner relay.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when dialing, framing, or certified-device
-    /// authentication fails, including a mismatched pinned relay device.
     pub async fn connect(
         endpoint: Endpoint,
         relay_address: EndpointAddr,
@@ -987,10 +982,6 @@ impl ComputeClient {
     }
 
     /// Send one bounded typed compute envelope.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when encoding or writing the frame fails.
     pub async fn send(&mut self, envelope: &ComputeEnvelope) -> Result<(), ComputeSessionError> {
         write_compute(&mut self.send, envelope).await
     }
@@ -999,11 +990,6 @@ impl ComputeClient {
     ///
     /// Cancel-safe: the control stream is read by a task of the client's
     /// own, so a `receive` dropped in a `select!` or a timeout loses nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on EOF, an oversize frame, or invalid encoding, and
-    /// once the stream has ended.
     pub async fn receive(&mut self) -> Result<ComputeDelivery, ComputeSessionError> {
         let envelope = self.deliveries.recv().await.ok_or_else(|| {
             ComputeSessionError::Connection("the compute control stream has ended".into())

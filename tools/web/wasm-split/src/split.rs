@@ -270,7 +270,6 @@ impl<'a> Splitter<'a> {
         let mut unused_symbols = self.unused_main_symbols();
         self.keep_referenced(&mut unused_symbols);
 
-        // Use the original module that contains all the right ids
         let mut out = std::mem::take(&mut self.source_module);
 
         // 1. Clear out the active segments that try to initialize functions for modules we just split off.
@@ -335,7 +334,6 @@ impl<'a> Splitter<'a> {
             .cloned()
             .collect();
 
-        // Convert split chunk functions to imports
         let mut relies_on_chunks = HashSet::new();
         for (idx, chunk) in self.chunks.iter().enumerate() {
             let nodes_to_extract = unique_symbols
@@ -428,7 +426,6 @@ impl<'a> Splitter<'a> {
         // Delete all the functions that are not reachable from the main module
         self.delete_main_funcs_from_split(&mut out, &symbols_to_delete);
 
-        // Remove the reloc and linking custom sections
         self.remove_custom_sections(&mut out);
 
         // Run the gc to remove unused functions - also validates the module to ensure we can emit it properly
@@ -527,7 +524,6 @@ impl<'a> Splitter<'a> {
 
         self.convert_shared_to_imports(&mut out, segment_start, &shared_funcs, &symbols_to_import);
 
-        // Fill the slots of this chunk's functions that others call.
         let mut slot = segment_start + self.split_points.len();
         let mut own = Vec::new();
         for node in &shared_funcs {
@@ -552,10 +548,8 @@ impl<'a> Splitter<'a> {
                 .insert(element);
         }
 
-        // Make sure we haven't deleted anything important....
         self.delete_main_funcs_from_split(&mut out, &symbols_to_delete);
 
-        // Remove the reloc and linking custom sections
         self.remove_custom_sections(&mut out);
 
         // Run the gc to remove unused functions - also validates the module to ensure we can emit it properly
@@ -885,7 +879,6 @@ impl<'a> Splitter<'a> {
             out.elements.delete(id);
         }
 
-        // Add in our new segments
         let ifunc_table_ = out.tables.get_mut(ifunc_table);
         for (offset, items) in initializers {
             let kind = ElementKind::Active {
@@ -913,10 +906,8 @@ impl<'a> Splitter<'a> {
             .expand_ifunc_table_max(out, ifunc_table_id, self.split_points.len() + ifuncs.len())
             .unwrap();
 
-        // Make sure to re-export the split func
         out.exports.add(&split_export_name, split_export_func);
 
-        // Add the elements back to the table
         out.tables
             .get_mut(ifunc_table_id)
             .elem_segments
@@ -967,7 +958,6 @@ impl<'a> Splitter<'a> {
             out.memories.get_mut(memory_id).data_segments.clear();
         }
 
-        // Add exports that call the corresponding import
         let exports = out.exports.iter().map(|e| e.id()).collect::<Vec<_>>();
         for export_id in exports {
             out.exports.delete(export_id);
@@ -1054,7 +1044,6 @@ impl<'a> Splitter<'a> {
         let mut builder = FunctionBuilder::new(&mut out.types, &params, &results);
         let mut body = builder.name("stub".into()).func_body();
 
-        // Push the params onto the stack
         for arg in args.iter() {
             body.local_get(*arg);
         }
@@ -1425,7 +1414,6 @@ impl<'a> Splitter<'a> {
             }
         }
 
-        // Fill in the parent graph
         for (parnet, children) in self.call_graph.iter() {
             for child in children {
                 self.parent_graph.entry(*child).or_default().insert(*parnet);
@@ -1455,7 +1443,6 @@ impl<'a> Splitter<'a> {
         self.shared_symbols = {
             let mut shared_funcs = HashSet::new();
 
-            // Add all the symbols shared between the various modules
             for split in self.split_points.iter() {
                 shared_funcs.extend(self.main_graph.intersection(&split.reachable_graph));
             }
@@ -1741,7 +1728,6 @@ impl<'a> ModuleWithRelocations<'a> {
         for (func_id, range) in &self.code_ranges {
             let (func_id, range) = (*func_id, range.clone());
 
-            // Walk with relocation
             while let Some(entry) =
                 relocations.next_if(|entry| entry.relocation_range().start < range.end)
             {

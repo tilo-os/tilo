@@ -204,8 +204,6 @@ impl NativeWorkspaceOwner {
         self.publish_pending(&next, Some(room))?;
         Ok(id)
     }
-    /// # Errors
-    /// The store is fenced.
     pub fn pending_enrollment(
         &self,
         room: RoomId,
@@ -217,9 +215,6 @@ impl NativeWorkspaceOwner {
     }
     /// The in-flight enrollment redeeming `invitation`, where the host has
     /// no slots to find it by.
-    ///
-    /// # Errors
-    /// The store is fenced or a retained proof no longer decodes.
     pub fn pending_enrollment_for_invitation(
         &self,
         invitation: &str,
@@ -247,8 +242,6 @@ impl NativeWorkspaceOwner {
         }
         Ok(None)
     }
-    /// # Errors
-    /// The store is fenced or the slot is ambiguous.
     pub fn pending_enrollment_for_slot(
         &self,
         local: WorkspaceId,
@@ -476,10 +469,6 @@ impl NativeWorkspaceOwner {
     /// Prepare a signed local document mutation from the current committed
     /// room and admit it in the same owner turn. This keeps its sequence and
     /// document basis current when other publications race the caller.
-    ///
-    /// # Errors
-    /// The room is fenced, preparation fails, or exact admission and durable
-    /// publication refuse the prepared write.
     pub fn commit_document_with_current(
         &self,
         room: RoomId,

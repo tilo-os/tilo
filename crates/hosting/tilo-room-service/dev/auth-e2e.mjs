@@ -144,8 +144,10 @@ export function parseBanner(text) {
   return match ? {room: match[1]} : null;
 }
 
-/** The membership `memberships` (localStorage's JSON) keeps for `origin`, or `null`. */
+/** The membership `memberships` (localStorage's JSON) keeps for `origin`, or `null`;
+ * `null` too without an origin (a caller that accepts any host, as the site web view). */
 export function membershipFor(memberships, origin) {
+  if (!origin) return null;
   let all;
   try { all = JSON.parse(memberships ?? '{}') ?? {}; } catch { return null; }
   return all[new URL(origin).origin] ?? null;
@@ -540,16 +542,43 @@ export const CHAT_CHANNEL = `(async () => {
   if (!window) return null;
   const post = tiloMount.actions(undefined, {window}).find(action => action.address.action === 'post');
   if (!post) return null;
-  const room = await tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window}).catch(() => null);
+  // An app's action answers at once and a room's own a promise: either way
+  // awaited, so a refusal reads as nothing rather than throwing.
+  const room = await Promise.resolve().then(() => tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window})).catch(() => null);
   const channel = room?.output?.value?.channels
     ?.find(({value}) => value.kind === 'text' && !value.archived && !value.conversation_with)?.id;
   return channel ? {window, resource: post.address.resource, channel} : null;
 })()`;
 
+/** In the page: why `CHAT_CHANNEL` finds nothing, step by step, for a
+ * failure's report. */
+export const CHAT_WHY = `(async () => {
+  const shown = tiloMount.navigation.getSnapshot();
+  const entry = shown.entries.find(entry => entry.app === 'so.tilo.chat');
+  const window = entry?.route?.tab;
+  if (!window) return {step: 'window', apps: shown.entries.map(entry => entry.app)};
+  let actions;
+  try {
+    actions = tiloMount.actions(undefined, {window}).map(action => action.address.resource + ' ' + action.address.action);
+  } catch (error) {
+    return {step: 'actions', error: String(error?.message ?? error)};
+  }
+  if (!actions.some(action => action.endsWith(' post'))) return {step: 'post', actions: actions.slice(0, 40)};
+  let room;
+  try {
+    room = await tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window});
+  } catch (error) {
+    return {step: 'read-room', error: String(error?.message ?? error)};
+  }
+  const channels = room?.output?.value?.channels;
+  return {step: 'channel', state: room?.state ?? null, error: room?.error ?? null,
+    channels: Array.isArray(channels) ? channels.map(({id, value}) => ({id, kind: value?.kind, archived: value?.archived, with: value?.conversation_with})) : channels ?? null};
+})()`;
+
 /** Post `text` in Chat from `tab`: `{channel}` it went to, or `{error}`. */
 async function postInChat(tab, text) {
   const chat = await until(() => tab.evaluate(CHAT_CHANNEL), 60_000);
-  if (!chat) return {error: 'no Chat channel to post in'};
+  if (!chat) return {error: 'no Chat channel to post in', why: await tab.evaluate(CHAT_WHY).catch(error => error.message)};
   return tab.evaluate(`(async () => {
     const result = await tiloMount.invokeAction(${JSON.stringify(chat.resource)}, 'post',
       {channel: ${JSON.stringify(chat.channel)}, text: ${JSON.stringify(text)}}, {window: ${JSON.stringify(chat.window)}});
@@ -588,6 +617,43 @@ const WIDGET = id => `(() => {
     value: node.semantics?.value ?? null, focused: Boolean(node.semantics?.state?.focused)};
 })()`;
 
+/** In the page: press the control a reader knows as a button or menu item
+ * named `name`, through assistive technology, as automation driving the
+ * desktop by role does. Apps' toolbars are the window bar's slots, drawn by
+ * the desktop as the bar's own children (or its More menu's items in a
+ * narrow window), so they carry no test id of the app's. True once pressed,
+ * null while the desktop shows no such control. */
+const PRESS_NAMED = name => `(() => {
+  const pressable = new Set(['Button', 'MenuItem']);
+  const find = node => {
+    if (!node) return null;
+    const own = node.semantics;
+    if (own && pressable.has(own.role) && own.name === ${JSON.stringify(name)}) {
+      return {path: node.path, target: own.action_target ?? undefined};
+    }
+    const synthetic = (access, path) => {
+      for (const child of access?.children ?? []) {
+        if (pressable.has(child.role) && child.name === ${JSON.stringify(name)} && child.action_target) {
+          return {path, target: child.action_target};
+        }
+        const found = synthetic(child, path);
+        if (found) return found;
+      }
+      return null;
+    };
+    const inside = synthetic(own, node.path);
+    if (inside) return inside;
+    for (const child of node.children ?? []) {
+      const found = find(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const control = find(tiloMount.state()?.semantics?.root);
+  if (!control) return null;
+  return tiloMount.semantic(control.path, control.target, 'activate', '', 0, 0) === true || null;
+})()`;
+
 /** Click at `at` in `tab`, as a person's pointer does. */
 async function click(tab, at) {
   for (const type of ['mousePressed', 'mouseReleased']) {
@@ -603,13 +669,20 @@ async function typeInNewContact(tab, text) {
     const shown = tiloMount.navigation.getSnapshot();
     await tiloMount.navigation.dispatch({kind: 'open', app: 'so.tilo.contacts', generation: shown.generation});
   })()`).catch(() => {});
-  const start = await until(() => tab.evaluate(WIDGET('contacts.new')), 60_000);
-  if (!start) return {error: 'Contacts showed no New contact'};
-  await click(tab, start);
+  if (!await until(() => tab.evaluate(PRESS_NAMED('New contact')), 60_000)) {
+    return {error: 'Contacts showed no New contact'};
+  }
   const field = await until(() => tab.evaluate(WIDGET('contacts.form.first')), 30_000);
   if (!field) return {error: 'New contact showed no first name field'};
-  await click(tab, field);
-  if (!await until(async () => (await tab.evaluate(WIDGET('contacts.form.first')))?.focused, 10_000)) {
+  // The form opens in place of the list and may still be settling where
+  // it stands: click where the field is now until it takes focus.
+  const focused = await until(async () => {
+    const now = await tab.evaluate(WIDGET('contacts.form.first'));
+    if (now?.focused) return now;
+    if (now) await click(tab, now);
+    return null;
+  }, 20_000);
+  if (!focused) {
     return {error: 'the first name field did not take focus'};
   }
   for (const key of text) {
@@ -991,7 +1064,16 @@ async function main() {
     if (moderating.entry !== 'open') await shoot('moderator', moderator);
     const visitor = await browser.context();
     const guest = await page(browser, visitor);
-    const guestOpened = await open(guest, `${web}/`, settleOptions);
+    let guestOpened = await open(guest, `${web}/`, settleOptions);
+    // The host just started again: until its relay has the room back, the
+    // door answers 503 and the page watches live, then joins by itself.
+    // What is checked here is the removal, so wait for that join.
+    if (!guestOpened.membership) {
+      guestOpened = await until(async () => {
+        const now = await settle(guest, settleOptions);
+        return now.membership ? now : null;
+      }, 90_000) ?? guestOpened;
+    }
     const guestKey = guestOpened.membership?.userPublicKey ?? null;
     const guestJoins = joinsTo(guest.requests, api);
     if (guestOpened.entry !== 'open') await shoot('removed-guest', guest);
@@ -1011,12 +1093,13 @@ async function main() {
     keepLog('removed-member', guest);
     const removedJoins = joinsTo(guest.requests.slice(sinceRemoval), api);
     check('removed-member', moderating.entry === 'open' && moderating.membership?.userPublicKey === me
-      && guestOpened.entry === 'open' && guestJoins.length === 1 && guestJoins[0].status === 200 && removal.ok
+      && guestOpened.entry === 'open' && guestJoins.at(-1)?.status === 200
+      && guestJoins.slice(0, -1).every(j => j.status === 503) && removal.ok
       && removedOpened.entry === 'refused' && !removedOpened.desktop && removedOpened.arrival !== 'done' && removedOwn
       && /\bremoved\b/.test(removedOpened.status) && removedJoins.length <= (byItself ? 1 : 2)
       && removedJoins.every(j => j.status === 403),
     {moderator: {entry: moderating.entry, membership: moderating.membership, status: moderating.status},
-      guest: {entry: guestOpened.entry, phase: guestOpened.phase, arrival: guestOpened.arrival, joins: guestJoins.map(j => j.status),
+      guest: {entry: guestOpened.entry, phase: guestOpened.phase, arrival: guestOpened.arrival, joins: guestJoins.map(j => j.status === 200 ? 200 : {status: j.status, body: j.body}),
         userPublicKey: guestKey, status: guestOpened.status, loading: guestOpened.loading}, removal, byItself, ownDesktop: removedOwn,
       entry: removedOpened.entry, desktop: removedOpened.desktop, arrival: removedOpened.arrival,
       joins: removedJoins.map(j => j.status), membership: removedOpened.membership, status: removedOpened.status,

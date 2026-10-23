@@ -1673,6 +1673,12 @@ fn an_explicitly_chosen_window_is_revealed_after_the_strip_was_panned_away() {
     pan_away(&mut host);
     settle(&mut host);
     assert!(!first_visible(&mut host), "the reveal happens once");
+
+    // Another of the person's devices showing the window here, by tab id.
+    assert!(!chrome.borrow_mut().show_tab(999_999), "a tab not here");
+    assert!(chrome.borrow_mut().show_tab(1));
+    settle(&mut host);
+    assert!(first_visible(&mut host), "a window moved here is revealed");
 }
 
 #[test]

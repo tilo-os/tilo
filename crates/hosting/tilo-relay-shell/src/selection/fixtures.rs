@@ -67,10 +67,6 @@ pub fn producer_frame(meta: &serde_json::Value, row: &serde_json::Value, time: u
 }
 /// Receive the relay delta `frame` into `peer` at `now`, as a retained
 /// relay delta when `retained`.
-///
-/// # Errors
-///
-/// Returns the peer's refusal.
 pub fn receive(
     peer: &mut StatePeer,
     frame: Envelope,

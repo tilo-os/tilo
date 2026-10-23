@@ -1,6 +1,3 @@
-//! Shared signed-in headless desktop fixture for idle and workspace measurements.
-//! The scheduled timing benchmark lives in `examples/idle-wakeups.rs`.
-
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};

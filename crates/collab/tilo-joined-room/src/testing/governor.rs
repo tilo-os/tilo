@@ -344,8 +344,6 @@ impl TestGovernor {
             .map(|bytes| (bytes.as_slice(), Retention::Checkpoint))
     }
 
-    /// # Errors
-    /// The room's governance is missing.
     pub fn governed_access(&self, now: SystemTime) -> Result<GovernedAccess, String> {
         self.peer.governance().governed_access(now)
     }

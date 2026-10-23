@@ -445,7 +445,6 @@ impl RichTextLayout {
         }
     }
 
-    /// The text of a paragraph-planned layout.
     fn paragraph_text(&self) -> Option<&str> {
         self.prepared
             .as_ref()

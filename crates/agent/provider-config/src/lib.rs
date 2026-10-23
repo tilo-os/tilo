@@ -1206,7 +1206,6 @@ mod tests {
         };
         assert!(config.set_agent_model("writer", Some(unknown)).is_err());
 
-        // The choice stays on this device with the default, and reads back.
         let (stored, hosted) = config.clone().stored();
         assert_eq!(stored.agent_models["writer"], local);
         assert_eq!(

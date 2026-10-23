@@ -126,8 +126,6 @@ fn encode_jpeg(rgb: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
     ui::jpeg::encode_rgb8(w, h, rgb, QUALITY).ok()
 }
 
-// ---- RIFF / AVI muxer ------------------------------------------------
-
 fn push_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
@@ -284,8 +282,6 @@ fn encode_avi(frames: &[Vec<u8>], w: u32, h: u32, fps: u32) -> Vec<u8> {
     out
 }
 
-// ---- probe -----------------------------------------------------------
-
 /// The largest clip [`probe_avi`] reads (whole; the header is its first
 /// 512 bytes).
 #[cfg(test)]
@@ -370,7 +366,6 @@ mod tests {
 
     #[test]
     fn recorder_writes_probeable_avi_of_real_jpeg_frames_and_rejects_bad_input() {
-        // Phase `recorder_encodes_real_jpeg_frames`.
         {
             let mut rec = Recorder::new(FPS);
             assert!(rec.is_empty());
@@ -382,10 +377,8 @@ mod tests {
             assert_eq!(rec.duration_ms(), 166);
             let avi = rec.finish().expect("non-empty clip encodes");
 
-            // Real RIFF/AVI container framing.
             assert_eq!(&avi[0..4], b"RIFF");
             assert_eq!(&avi[8..12], b"AVI ");
-            // RIFF size field matches the actual byte count.
             let riff_size = u32::from_le_bytes([avi[4], avi[5], avi[6], avi[7]]) as usize;
             assert_eq!(riff_size, avi.len() - 8);
             // The movi list and a per-frame index are present.
@@ -396,9 +389,7 @@ mod tests {
             // Each frame appears once in movi and once in idx1.
             assert_eq!(dc, 5 * 2);
         }
-        // Phase `recorded_frame_is_a_decodable_jpeg`.
         {
-            // Prove the embedded frames are genuine JPEGs by decoding one back.
             let mut rec = Recorder::new(FPS);
             rec.push(&solid_frame(80, 60, 10, 220, 30));
             let avi = rec.finish().unwrap();
@@ -415,7 +406,6 @@ mod tests {
                 .expect("embedded frame decodes as JPEG");
             assert_eq!((decoded.width(), decoded.height()), (80, 60));
         }
-        // Phase `write_and_probe_round_trips`.
         {
             let mut rec = Recorder::new(FPS);
             for _ in 0..12 {
@@ -438,11 +428,9 @@ mod tests {
             assert_eq!(dur, 400);
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `empty_recorder_finishes_none`.
         {
             assert!(Recorder::new(FPS).finish().is_none());
         }
-        // Phase `frames_of_a_different_size_are_skipped`.
         {
             let mut rec = Recorder::new(FPS);
             assert!(rec.push(&solid_frame(32, 32, 1, 2, 3)));

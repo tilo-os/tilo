@@ -107,7 +107,6 @@ pub struct WebConfig {
 /// believed from: that proxy, never the open internet.
 #[derive(Clone, Debug)]
 pub struct CountryHeader {
-    /// The header's name.
     pub name: String,
     /// The peers whose header is believed.
     pub proxies: tilo_relay_protocol::proxies::TrustedProxies,
@@ -946,7 +945,6 @@ fn status(status: StatusCode, message: &str) -> Response<Body> {
     reply(status, message.as_bytes().to_vec())
 }
 
-/// `value` as JSON, answered with `code`.
 fn json_status<T: serde::Serialize>(code: StatusCode, value: &T) -> Response<Body> {
     match serde_json::to_vec(value) {
         Ok(json) => {
@@ -961,7 +959,6 @@ fn json_status<T: serde::Serialize>(code: StatusCode, value: &T) -> Response<Bod
     }
 }
 
-/// `value` as JSON.
 fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
     json_status(StatusCode::OK, value)
 }

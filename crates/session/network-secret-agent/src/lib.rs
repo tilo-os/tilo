@@ -138,7 +138,6 @@ impl Message {
         }
     }
 
-    /// `self` with `$name` set to `value`.
     #[must_use]
     pub fn with(mut self, name: &'static str, value: impl Into<Line>) -> Self {
         self.args.push((name, value.into()));
@@ -879,7 +878,6 @@ pub fn agent_owned_secrets(connection: &ConnectionDict) -> BTreeMap<String, Sett
     found
 }
 
-/// The connection's uuid, if it has one.
 pub fn connection_uuid(connection: &ConnectionDict) -> Option<String> {
     prop_str(connection, "connection", "uuid").filter(|uuid| !uuid.is_empty())
 }

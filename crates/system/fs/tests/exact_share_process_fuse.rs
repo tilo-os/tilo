@@ -1370,7 +1370,6 @@ fn idle_share_recipient_stays_asleep() {
     let viewer_file = wait_for_process(&mut viewer, "the viewer to list the shared file", || {
         one_visible_file(&viewer_mount)
     });
-    // Open it, as someone reading the shared document does.
     assert_eq!(std::fs::read(&viewer_file).unwrap(), PAYLOAD);
 
     // Startup and hydration settle well inside 10 s; the window sees idle.

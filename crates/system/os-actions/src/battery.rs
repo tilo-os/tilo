@@ -364,11 +364,6 @@ pub fn set_charge_limit(percent: u32) -> Result<(), String> {
 
 /// Apply and then re-read the hardware contract.  A successful systemd start
 /// is not enough: firmware may accept the write while clamping or ignoring it.
-///
-/// # Errors
-///
-/// Returns an error message if [`set_charge_limit`] fails, the charge-cap control disappears
-/// after applying the change, or the firmware clamps the cap to a value other than `percent`.
 pub fn set_charge_limit_checked(percent: u32) -> Result<ChargeCapCapability, String> {
     set_charge_limit(percent)?;
     let actual =
@@ -395,7 +390,6 @@ mod tests {
 
     #[test]
     fn battery_health_and_charge_caps_follow_the_kernel_contract() {
-        // Phase `health_uses_matching_kernel_capacity_units`.
         {
             let dir = tempfile::tempdir().unwrap();
             for (name, value) in [
@@ -410,8 +404,6 @@ mod tests {
             assert_eq!(info.health_percent(), Some(80));
             assert_eq!(info.summary(), "61% · On battery");
         }
-        // Phase `level_without_capacity_comes_from_energy_left`, as
-        // Qualcomm's battmgr publishes it.
         {
             let dir = tempfile::tempdir().unwrap();
             for (name, value) in [
@@ -425,19 +417,16 @@ mod tests {
             assert_eq!(info.capacity, 96);
             assert_eq!(info.summary(), "96% · Plugged in, not charging");
         }
-        // Phase `vendor_charge_cap_is_normalized`.
         {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("charge_stop_threshold"), "80\n").unwrap();
             let info = BatteryInfo::from_battery_dir(dir.path(), true);
             assert_eq!(info.charge_limit, Some(80));
         }
-        // Phase `charge_cap_rejects_values_outside_the_service_contract`.
         {
             assert!(set_charge_limit(49).is_err());
             assert!(set_charge_limit(101).is_err());
         }
-        // Phase `ideapad_conservation_mode_is_exposed_as_discrete_choices`.
         {
             let root = tempfile::tempdir().unwrap();
             let path = root
@@ -502,7 +491,6 @@ mod tests {
 
     #[test]
     fn battery_capabilities_are_per_device_and_enumerate_every_supply() {
-        // Phase `capability_does_not_depend_on_battery_name`.
         {
             let root = tempfile::tempdir().unwrap();
             let battery = root.path().join("class/power_supply/CMB1");
@@ -516,7 +504,6 @@ mod tests {
             assert!(cap.supports_start_threshold);
             assert!(cap.choices.contains(&85));
         }
-        // Phase `mixed_multi_battery_contract_is_not_presented_as_one_control`.
         {
             let root = tempfile::tempdir().unwrap();
             for (name, limit) in [("BAT-main", "80"), ("CMB-aux", "90")] {
@@ -527,7 +514,6 @@ mod tests {
             }
             assert!(charge_capability_from(root.path()).is_none());
         }
-        // Phase `enumerates_multiple_batteries_and_ups_without_serials`.
         {
             let root = tempfile::tempdir().unwrap();
             for (id, kind, cap) in [("BAT1", "Battery", "70"), ("ups0", "UPS", "95")] {

@@ -70,7 +70,6 @@ impl DrawnOnTop {
         })
     }
 
-    /// The image drawn.
     pub(crate) fn image(&self) -> &ImageData {
         &self.image
     }
@@ -307,10 +306,8 @@ mod tests {
     #[test]
     fn anything_but_one_whole_image_fill_is_not_on_top() {
         let image = image(64, 32);
-        // Nothing drawn.
         let scene = Scene::new();
         assert!(DrawnOnTop::last_in(&scene, 0).is_none());
-        // A colour fill.
         let mut scene = Scene::new();
         below(&mut scene);
         assert!(DrawnOnTop::last_in(&scene, 0).is_none());

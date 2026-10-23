@@ -61,7 +61,6 @@ impl std::fmt::Debug for Carrier {
 /// they give the room.
 #[derive(Clone)]
 pub struct DoorAdmission {
-    /// The token, as the door answered it.
     pub token: Vec<u8>,
     /// How the person names themself: a display name.
     pub name: String,
@@ -375,11 +374,6 @@ mod server {
 
     /// Run one `what` exchange under a slot of `exchanges` and `timeout`,
     /// refusing it outright when every slot is taken.
-    ///
-    /// # Errors
-    ///
-    /// Fails when every slot is taken, when the exchange outlives `timeout`,
-    /// or when the exchange itself fails.
     pub async fn bounded_accept<E: std::fmt::Display>(
         exchanges: &Arc<tokio::sync::Semaphore>,
         timeout: std::time::Duration,

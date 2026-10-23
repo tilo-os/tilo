@@ -242,7 +242,6 @@ fn http_connect(socket: &str, host: &str, port: u16) -> Outcome {
     {
         return Outcome::Failed("connect write".into());
     }
-    // Read the proxy's response head.
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -326,7 +325,6 @@ fn socks_exchange<S: Read + Write>(s: &mut S, host: &str, port: u16) -> Outcome 
     if head[1] != reply::SUCCESS {
         return Outcome::Refused(head[1]);
     }
-    // Drain the bound-address field of a successful reply.
     let rest = match head[3] {
         0x01 => 4 + 2,
         0x04 => 16 + 2,
@@ -678,15 +676,12 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
         let report = run_probe(&decision, Some(&socket), allowed_port, other_port, true);
         report.dump("granted: localhost");
 
-        // Reaches the allowlisted host, end to end, by name.
         assert_eq!(
             report.get("gate_by_name"),
             "BODY:ALLOWED-SERVER",
             "a granted host must actually be reachable — a filter that denies everything is not \
              enforcement, it is breakage"
         );
-        // And via the relay, the path an unmodified HTTP client takes
-        // through ALL_PROXY.
         assert_eq!(
             report.get("relay_by_name"),
             "BODY:ALLOWED-SERVER",
@@ -749,7 +744,6 @@ fn grants_decide_which_hosts_the_sandbox_reaches() {
             report.get("raw_allowed")
         );
 
-        // The gate itself agrees about what it did.
         assert!(
             gate.stats().allowed() >= 3,
             "gate should have allowed the by-name connections on both protocols, saw {}",

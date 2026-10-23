@@ -103,6 +103,11 @@ impl ShellOverlayHost {
             None
         });
 
+        overlay_part(scene, "shell.app-uninstall", desktop, |scene| {
+            self.draw_uninstall(scene, transform, text_renderer, theme, presence);
+            None
+        });
+
         overlay_part(scene, "shell.shortcut-help", desktop, |scene| {
             if self.overlay_flags().shortcut_help {
                 self.draw_shortcut_help(scene, transform, text_renderer, theme);

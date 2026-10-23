@@ -210,7 +210,6 @@ mod tests {
         let h = qs.drawn_rect(rect, mid).height();
         assert!(h < 420.0 && h > 260.0, "the height is on its way: {h}");
 
-        // Back mid-way reverses from where it is drawn.
         qs.follow(&frame(true, &root, 420.0, mid));
         let back = qs.current(mid, 360.0, motion);
         assert!(

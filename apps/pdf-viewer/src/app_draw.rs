@@ -488,6 +488,7 @@ impl PdfApp {
     // ---- orchestration ---------------------------------------------
 
     fn draw_all(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        self.canvas_hover_zones.clear();
         self.current_page = self.nearest_page();
         // A page change (not the initial open) briefly floats the page bubble.
         if self.has_document
@@ -583,6 +584,10 @@ impl PdfApp {
 
         // The floating selection HUD over the page (shared `ui` component).
         self.draw_selection_hud(scene, base, tr, theme);
+        // On a touchscreen, the grips that move either end of the selection.
+        if let Some(grips) = self.selection_grips() {
+            grips.draw(scene, base, theme);
+        }
         self.draw_page_bubble(scene, base, tr, theme);
         if self.search_active {
             self.draw_find_bar(scene, base, tr, theme);
@@ -602,6 +607,9 @@ impl PdfApp {
         self.draw_rail(scene, base, tr, theme, &thumb_imgs);
         let mut edit_rect = Rect::ZERO;
         let hits = self.draw_sidebar(scene, base, tr, theme, &mut edit_rect);
+        if self.show_sidebar && !self.overlay_mode {
+            self.review.paint_resize(scene, base, theme);
+        }
         self.edit_rect = edit_rect;
         if let Some(rect) = free_text_edit {
             self.edit_rect = rect;
@@ -640,13 +648,15 @@ impl PdfApp {
             } else {
                 Rect::ZERO
             },
+            hud: self.sel_hud.as_ref().map_or(Rect::ZERO, |hud| {
+                ui::widget::floating_surface::painted_bounds(hud.rect(), theme)
+            }),
             floating: self
                 .status_note
                 .as_deref()
                 .is_some_and(|note| !note.is_empty())
                 || self.tooltip.is_visible()
                 || self.search_active
-                || self.selection.is_some()
                 || self.editing.is_some()
                 || self.context_menu.is_some()
                 || self.marker_colours.is_some()
@@ -749,30 +759,18 @@ impl PdfApp {
         self.raster_images.begin_frame();
 
         let canvas = self.canvas_rect;
-        let scroll_y = self.scroll_y();
-        if (scroll_y - self.last_raster_scroll_y).abs() > f64::EPSILON {
-            self.scroll_heading = (scroll_y - self.last_raster_scroll_y).signum();
-            self.last_raster_scroll_y = scroll_y;
-        }
+        self.raster_heading.follow(self.scroll_y());
         let card_w_px = (self.pw() * self.zoom()).max(1.0);
         // Render a little above display resolution so pages stay crisp when
         // the compositor scales the surface.
         let page_bucket = crate::source::RasterBackend::bucket_for(
             ((card_w_px * RASTER_SS).round() as u32).clamp(96, 4096),
         );
-        // What the scroll reaches next: a screen ahead in the direction it
-        // last moved, half a screen behind.
-        let reach = canvas.height();
-        let (ahead, behind) = if self.scroll_heading < 0.0 {
-            (reach * 0.5, reach)
-        } else {
-            (reach, reach * 0.5)
-        };
         let PagesInReach {
             visible,
             prefetch,
             tiled,
-        } = self.pages_in_reach(ahead, behind);
+        } = self.pages_in_reach(self.raster_heading.reach(canvas.height()));
 
         let placeholder_bucket =
             crate::source::RasterBackend::bucket_for(crate::tiles::PLACEHOLDER_PAGE_PX);
@@ -843,15 +841,15 @@ impl PdfApp {
     /// their distance from its centre, those `ahead`/`behind` of it with
     /// their distance from its edge, each nearest first, and the on-screen
     /// pages drawn too large for one bitmap, which are drawn from tiles.
-    fn pages_in_reach(&self, ahead: f64, behind: f64) -> PagesInReach {
+    fn pages_in_reach(&self, (ahead, behind): (f64, f64)) -> PagesInReach {
         let canvas = self.canvas_rect;
-        let (mut visible, mut prefetch, mut tiled) = (Vec::new(), Vec::new(), Vec::new());
+        let mut tiled = Vec::new();
         let count = self.doc.page_count();
         let unit = self.stack_unit();
         if count == 0 || unit <= 0.0 {
             return PagesInReach {
-                visible,
-                prefetch,
+                visible: Vec::new(),
+                prefetch: Vec::new(),
                 tiled,
             };
         }
@@ -859,31 +857,29 @@ impl PdfApp {
         let content_y = |y: f64| self.viewport.screen_to_content(Point::new(canvas.x0, y)).y;
         let first = (content_y(canvas.y0 - behind) / unit).floor().max(0.0) as usize;
         let last = ((content_y(canvas.y1 + ahead) / unit).floor().max(0.0) as usize).min(count - 1);
-        let centre = canvas.center().y;
-        for i in first..=last {
-            let o = self
-                .viewport
-                .content_point_to_screen(Point::new(0.0, i as f64 * unit));
-            let (top, bottom) = (o.y, o.y + pageh);
-            if top <= canvas.y1 && bottom >= canvas.y0 {
-                match self.tile_placement(i, o) {
-                    Some(placement) => tiled.push(placement),
-                    None => visible.push((i, (f64::midpoint(top, bottom) - centre).abs())),
+        let origin = |i: usize| {
+            self.viewport
+                .content_point_to_screen(Point::new(0.0, i as f64 * unit))
+        };
+        let reach = tilo_page_raster::reach::pages_in_reach(
+            first..=last,
+            (canvas.y0, canvas.y1),
+            (ahead, behind),
+            |i| {
+                let top = origin(i).y;
+                Some((top, top + pageh))
+            },
+            |i, _| match self.tile_placement(i, origin(i)) {
+                Some(placement) => {
+                    tiled.push(placement);
+                    true
                 }
-            } else if top <= canvas.y1 + ahead && bottom >= canvas.y0 - behind {
-                let distance = if top > canvas.y1 {
-                    top - canvas.y1
-                } else {
-                    canvas.y0 - bottom
-                };
-                prefetch.push((i, distance));
-            }
-        }
-        visible.sort_by(|a, b| a.1.total_cmp(&b.1));
-        prefetch.sort_by(|a, b| a.1.total_cmp(&b.1));
+                None => false,
+            },
+        );
         PagesInReach {
-            visible,
-            prefetch,
+            visible: reach.visible,
+            prefetch: reach.prefetch,
             tiled,
         }
     }
@@ -927,27 +923,14 @@ impl PdfApp {
     /// so the open→first-paint path pays for the top page alone and the rest
     /// follow as results wake later frames.
     fn submit_page_renders(&mut self, document_id: u64, order: &[(usize, u32)]) {
-        let mut new_pages = MAX_NEW_PAGE_RASTERS_PER_FRAME;
-        let mut new_thumbs = MAX_NEW_THUMB_RASTERS_PER_FRAME;
-        let mut batch: Vec<(usize, u32)> = Vec::new();
-        for key in order {
-            if batch.contains(key) {
-                continue;
-            }
-            if self.raster_render_pending.contains(key) {
-                batch.push(*key);
-                continue;
-            }
-            let budget = if key.1 > crate::tiles::THUMB_MAX_PX {
-                &mut new_pages
-            } else {
-                &mut new_thumbs
-            };
-            if *budget > 0 {
-                *budget -= 1;
-                batch.push(*key);
-            }
-        }
+        let batch = tilo_page_raster::admit(
+            order,
+            &self.raster_render_pending,
+            tilo_page_raster::Admission {
+                pages: MAX_NEW_PAGE_RASTERS_PER_FRAME,
+                thumbnails: MAX_NEW_THUMB_RASTERS_PER_FRAME,
+            },
+        );
         if batch == self.raster_render_batch {
             return;
         }
@@ -970,7 +953,8 @@ impl PdfApp {
             self.raster_render_pending = batch.iter().copied().collect();
             self.raster_render_batch = batch;
         } else if !batch.is_empty() {
-            self.status_note = Some("PDF render worker is unavailable".to_string());
+            self.status_note
+                .show("PDF render worker is unavailable".to_string());
         }
     }
 
@@ -1014,74 +998,26 @@ impl PdfApp {
         wanted: &[crate::tiles::WantedTile],
         page_tiles: &mut std::collections::HashMap<usize, render::PageTiles>,
     ) {
-        let mut batch = Vec::new();
-        let mut missing_on: HashSet<usize> = HashSet::new();
-        for tile in wanted {
-            let key = UiTileKey {
-                page: tile.page,
-                level: tile.level,
-                col: tile.col,
-                row: tile.row,
-            };
-            if let Some(image) = self.raster_tiles.get(&key) {
-                if tile.visible
-                    && let Some(entry) = page_tiles.get_mut(&(tile.page + 1))
-                {
-                    entry.tiles.push((tile.region, image));
-                }
-            } else {
-                if tile.visible {
-                    self.pending_visuals = true;
-                    missing_on.insert(tile.page);
-                }
-                if batch.len() < crate::tiles::MAX_TILE_BATCH {
-                    batch.push(crate::source::TileRequest {
-                        document_id,
-                        page: tile.page,
-                        level: tile.level,
-                        col: tile.col,
-                        row: tile.row,
-                    });
-                }
-            }
-        }
-        // Pages still missing tiles at this level paint what other levels
-        // left, nearest level last (on top).
-        for page in missing_on {
-            let Some(entry) = page_tiles.get_mut(&(page + 1)) else {
-                continue;
-            };
-            let current = entry.placement.level;
-            let mut held: Vec<UiTileKey> = self
-                .raster_tiles
-                .keys()
-                .filter(|key| key.page == page && key.level != current)
-                .copied()
-                .collect();
-            held.sort_by_key(|key| std::cmp::Reverse((key.level - current).abs()));
-            let canvas = self.canvas_rect;
-            for key in held {
-                let Some(region) =
-                    crate::tiles::tile_region(entry.placement.size, key.level, key.col, key.row)
-                else {
-                    continue;
-                };
-                let placement = crate::tiles::PagePlacement {
-                    level: key.level,
-                    screen_per_px: entry.placement.screen_per_px
-                        * f64::from(crate::tiles::level_scale(current))
-                        / f64::from(crate::tiles::level_scale(key.level)),
-                    ..entry.placement
-                };
-                let (x0, y0, x1, y1) = placement.screen_rect(region);
-                if x1 < canvas.x0 || x0 > canvas.x1 || y1 < canvas.y0 || y0 > canvas.y1 {
-                    continue;
-                }
-                if let Some(image) = self.raster_tiles.get(&key) {
-                    entry.under.push((placement.screen_per_px, region, image));
-                }
-            }
-        }
+        let canvas = self.canvas_rect;
+        let plan = crate::tiles::plan_tiles(
+            wanted,
+            &mut self.raster_tiles,
+            (canvas.x0, canvas.y0, canvas.x1, canvas.y1),
+            page_tiles,
+            1,
+        );
+        self.pending_visuals |= plan.missing;
+        let batch: Vec<crate::source::TileRequest> = plan
+            .batch
+            .iter()
+            .map(|key| crate::source::TileRequest {
+                document_id,
+                page: key.page,
+                level: key.level,
+                col: key.col,
+                row: key.row,
+            })
+            .collect();
         if batch != self.raster_tile_batch {
             let submitted = self.raster_handle.as_ref().is_some_and(|handle| {
                 handle
@@ -1094,7 +1030,8 @@ impl PdfApp {
             if submitted {
                 self.raster_tile_batch = batch;
             } else if !batch.is_empty() {
-                self.status_note = Some("PDF render worker is unavailable".to_string());
+                self.status_note
+                    .show("PDF render worker is unavailable".to_string());
             }
         }
     }
@@ -1121,13 +1058,12 @@ impl PdfApp {
     /// Ask the PDF worker for the engine text layer of the pages currently in
     /// view; the layers land in `self.raster_text` as they arrive.
     fn refresh_raster_text(&mut self) {
-        // The engine text layer only feeds the selection + search-hit overlays
-        // and is expensive to extract (hundreds of ms per page). On an idle or
-        // scroll frame — no selection, no search hits — skip it entirely so
-        // opening a document and scrolling stay smooth. A selection that starts
-        // on a page whose layer isn't here yet asks for it inside
-        // `begin_selection`; a search asks for every page in
-        // `recompute_matches`, so the visible ones are usually here already.
+        // The engine text layer feeds the selection and search-hit overlays.
+        // It is read on the worker, below the window's thread, and kept
+        // (bounded by `evict_text_layers`) once here: a press needs the
+        // page's layer, which `hover_text` asks for ahead of it. While a
+        // selection, search hits or a highlight drag is live, every page on
+        // screen asks for its layer so the overlays follow the scroll.
         let need = self.selection.is_some()
             || !self.raster_matches.is_empty()
             || self
@@ -1135,7 +1071,6 @@ impl PdfApp {
                 .as_ref()
                 .is_some_and(|drag| drag.tool == Tool::Highlight);
         if !need {
-            self.raster_text.clear();
             return;
         }
         let Some(document) = self.raster_document.as_ref() else {
@@ -1160,7 +1095,8 @@ impl PdfApp {
                 })
             {
                 self.raster_text_pending.remove(&i);
-                self.status_note = Some("PDF text worker is unavailable".to_string());
+                self.status_note
+                    .show("PDF text worker is unavailable".to_string());
             }
         }
     }
@@ -1385,6 +1321,9 @@ impl PdfApp {
         let label = match self.content.state(&imported.hash) {
             ContentState::Resolved => return,
             ContentState::Pending => "Imported page is loading…",
+            ContentState::Waiting => {
+                "Imported page arrives once a collaborator who has it is online"
+            }
             ContentState::Unavailable => "Imported page is unavailable",
         };
         let page_rect = Rect::new(
@@ -1577,12 +1516,12 @@ impl PdfApp {
             }
         }
 
-        // Live selection.
-        if let Some(sel) = self.selection
-            && sel.page == page_num
-            && sel.is_active()
+        // Live selection, the part of it on this page.
+        if let Some((a, b)) = self
+            .selection
+            .filter(TextSelection::is_active)
+            .and_then(|sel| sel.range_on(page_num, layer.chars.len()))
         {
-            let (a, b) = sel.range();
             let bands: Vec<Rect> = layer.bands_for_range(a, b).iter().map(to_screen).collect();
             render::draw_selection_bands(scene, base, theme, &bands);
         }
@@ -1602,7 +1541,8 @@ impl PdfApp {
     ) {
         self.sel_hud = None;
         let Some(sel) = self.selection else { return };
-        if sel.dragging || !sel.is_active() || self.editing.is_some() {
+        if sel.dragging || !sel.is_active() || self.editing.is_some() || self.context_menu.is_some()
+        {
             return;
         }
         let Some(bounds_rect) = self.selection_screen_bounds() else {
@@ -1613,25 +1553,7 @@ impl PdfApp {
         // for the seeded screenshot path — with no PDF open there is no raster
         // text layer, so this only fires for a staged selection.
         if !self.raster_active() {
-            let z = self.zoom();
-            let origins = self.page_origins();
-            if let Some(sel) = self.selection
-                && let Some(origin) = origins.get(sel.page.saturating_sub(1))
-            {
-                let bands: Vec<Rect> = self
-                    .selection_page_bands()
-                    .iter()
-                    .map(|r| {
-                        Rect::new(
-                            origin.x + r.x * z,
-                            origin.y + r.y * z,
-                            origin.x + (r.x + r.w) * z,
-                            origin.y + (r.y + r.h) * z,
-                        )
-                    })
-                    .collect();
-                render::draw_selection_bands(scene, base, theme, &bands);
-            }
+            render::draw_selection_bands(scene, base, theme, &self.selection_screen_bands());
         }
         // Anchor above the top edge of the selection, horizontally centred on it.
         let anchor = Point::new(
@@ -1653,21 +1575,32 @@ impl PdfApp {
             base,
             tr,
             theme,
+            // One menu for the selection whatever made it: keyboard
+            // shortcuts shown where a keyboard is the way in.
             &ui::HudControls {
                 swatches: &swatches,
                 show_note: true,
                 show_delete: false,
+                show_select_all: true,
+                shortcuts: self.interaction.modality != ui::interaction::InputModality::Touch,
             },
-            ui::HudPlacement::new(anchor, self.canvas_rect).below(bounds_rect.y1),
+            // Clear of the end grip's knob, where it shows.
+            ui::HudPlacement::new(anchor, self.canvas_rect).below(
+                self.selection_grips().map_or(bounds_rect.y1, |grips| {
+                    grips.reach_below().max(bounds_rect.y1)
+                }),
+            ),
             self.last_mouse,
         );
 
+        self.canvas_hover_zones.push(hud.rect());
         self.sel_hud = Some(hud);
     }
 
     /// A transient toast (e.g. "Saved to …" or "Copied 42 characters")
-    /// centred near the bottom of the canvas. Set on an action, cleared by the
-    /// next document interaction (Esc, a new open/load).
+    /// centred near the bottom of the canvas. Set on an action, gone after a
+    /// notice's lifetime or the next document interaction (Esc, a new
+    /// open/load).
     fn draw_toast(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let Some(note) = self.status_note.as_deref() else {
             return;
@@ -1675,7 +1608,7 @@ impl PdfApp {
         if note.is_empty() {
             return;
         }
-        paint_transient(
+        self.status_note.paint(
             scene,
             base,
             tr,
@@ -3073,6 +3006,7 @@ impl PdfApp {
         // pill itself), so approaching the bottom edge surfaces the indicator.
         let reach = f64::from(theme.tokens.spacing.s8);
         let zone = Rect::new(rect.x0 - reach, rect.y0 - reach, rect.x1 + reach, canvas.y1);
+        self.canvas_hover_zones.push(zone);
         let over = self.shots_page_bubble || zone.contains(self.last_mouse);
         self.page_bubble.set_hover(over, now);
 

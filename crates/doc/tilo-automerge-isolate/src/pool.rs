@@ -275,7 +275,6 @@ impl Routes {
 
 /// What the worker builds the caller's document from.
 enum Base {
-    /// Its own copy.
     Cached,
     /// Its copy at an earlier state, plus the caller's changes since.
     After(Key, Vec<u8>),
@@ -861,7 +860,6 @@ mod tests {
                 tilo_automerge::ApplyIncoming::merge_incoming(other, writer).unwrap();
             }
         }
-        // Leave the two heads concurrent.
         bo.put(automerge::ROOT, "bo", true).unwrap();
         bo.commit();
         tilo_automerge::ApplyIncoming::merge_incoming(&mut ada, &mut bo).unwrap();
@@ -884,7 +882,6 @@ mod tests {
         assert_eq!(hashes, reference.document().change_hashes());
         assert_eq!(hashes.len(), doc.get_changes(&[]).len());
 
-        // The caller's load with them builds the document a full load does.
         let mut validated = engine::load_validated(&saved, &hashes).unwrap();
         assert_eq!(validated.get_heads(), reference.get_heads());
         assert_eq!(

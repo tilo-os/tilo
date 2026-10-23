@@ -23,7 +23,6 @@ pub struct Page {
 pub struct Setting {
     /// Stable name, as links and search hits address the setting.
     pub id: &'static str,
-    /// The slug of the page it is on.
     pub page: &'static str,
     /// The widget id of the control that changes it. One `*` stands for any
     /// run of characters (one display's id among several); `|` separates the
@@ -51,7 +50,6 @@ impl Page {
         format!("settings-index-page-{}-words", key(self.slug))
     }
 
-    /// The link that opens the page.
     #[must_use]
     pub fn link(self) -> String {
         format!("settings://{}", self.slug)
@@ -66,7 +64,6 @@ impl Page {
 }
 
 impl Setting {
-    /// The catalogue key of the setting's name.
     #[must_use]
     pub fn name_key(self) -> String {
         format!("settings-index-setting-{}", key(self.id))
@@ -110,7 +107,6 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
     }
 }
 
-/// The page with `slug`.
 #[must_use]
 pub fn page(slug: &str) -> Option<Page> {
     PAGES.iter().copied().find(|page| page.slug == slug)

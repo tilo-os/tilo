@@ -84,7 +84,6 @@ fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, t
     );
 }
 
-/// Title key of a layout.
 pub(crate) fn layout_title_key(mode: DisplayLayoutMode) -> &'static str {
     match mode {
         DisplayLayoutMode::Extend => "display-mode-extend",
@@ -185,7 +184,6 @@ pub(crate) struct DisplayLayouts {
     committed: DisplayConfig,
     transaction: Option<DisplayTransaction>,
     polled_at: Option<Instant>,
-    /// Generation of the published display snapshot `outputs` came from.
     outputs_seen: Option<u64>,
     /// Generation of the published person's displays `person` came from.
     person_seen: Option<u64>,
@@ -342,7 +340,6 @@ impl DisplayLayouts {
                     self.staging = None;
                     self.staged = staged_transaction(&receipt);
                     self.notice = None;
-                    // Show the stored change, with its Keep and Revert.
                     self.settings_seen = SettingsSeen::Unread;
                     self.polled_at = None;
                 }
@@ -2957,7 +2954,6 @@ mod tests {
             "the refusal is said, not only drawn"
         );
 
-        // A staged layout's receipt names the change to answer.
         let receipt = crate::shell::search::ActionReceipt::completed_with(
             serde_json::json!({ "transaction": 7 }),
         );

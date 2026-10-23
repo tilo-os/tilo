@@ -39,7 +39,6 @@ fn may_change(ws: &Workspace, person: &str) -> bool {
     answer(ws, person, &TreePath::root(), ActionKind::Undoable) == Answer::Allow
 }
 
-/// Whether `person` may read the room.
 fn may_read(ws: &Workspace, person: &str) -> bool {
     answer(ws, person, &TreePath::root(), ActionKind::Read) == Answer::Allow
 }
@@ -98,7 +97,6 @@ fn only_the_owner_administers_a_room() {
             "an unowned room must have no administrators, not only administrators"
         );
 
-        // Adoption is the production remedy, and it names a specific owner.
         let adopted = tree.adopt_ownerless_workspaces(&ALICE.to_string());
         assert_eq!(adopted, vec![id]);
         assert!(ws_of(&tree, id).may_administer(&ALICE.to_string()));

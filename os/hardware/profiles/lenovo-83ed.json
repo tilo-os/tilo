@@ -4,7 +4,11 @@
   "architecture": "aarch64",
   "devicetree": "qcom/x1e80100-lenovo-yoga-slim7x.dtb",
   "kernel_args": [
-    "systemd.tpm2_wait=0"
+    "systemd.tpm2_wait=0",
+    "systemd.watchdog_sec=30",
+    "sbsa_gwdt.action=1",
+    "softlockup_panic=1",
+    "nmi_watchdog=panic"
   ],
   "system_firmware": [
     "qcom/a740_sqe.fw",

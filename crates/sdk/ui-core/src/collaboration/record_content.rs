@@ -10,7 +10,12 @@
 //! - content the record references and this device lacks is asked of the
 //!   host, which answers from this device or the record's route
 //!   ([`CollabRequest::WantContent`](super::CollabRequest::WantContent)), and
-//!   reads as [`ContentState::Pending`] until it is here;
+//!   reads as where the host says the want stands until it is here
+//!   ([`CollabEvent::RecordContentState`](super::CollabEvent::RecordContentState)):
+//!   [`ContentState::Pending`] while a connected device is asked for it,
+//!   [`ContentState::Waiting`] while none that could hand it over is
+//!   connected, [`ContentState::Unavailable`] once every connected one said
+//!   it keeps none;
 //! - content that arrives ([`CollabEvent::RecordContent`](super::CollabEvent::RecordContent))
 //!   is verified and kept in the store, where the app's next read finds it.
 //!   The event syncs the window, and [`arrivals`] moves: an app waiting for
@@ -58,6 +63,8 @@ fn arrived_somewhere() {
 struct LaneState {
     /// Content asked for and not yet here.
     wanted: BTreeSet<String>,
+    /// Where the host said a want stands, for those it said so of.
+    standing: HashMap<String, ContentState>,
     /// Requests the window has yet to send.
     asks: Vec<String>,
     offers: Vec<(String, Vec<u8>)>,
@@ -187,10 +194,16 @@ impl ContentLane {
         self.wake();
     }
 
-    fn is_wanted(&self, hash: &str) -> bool {
-        self.state
-            .lock()
-            .is_ok_and(|state| state.wanted.contains(hash))
+    /// Where a want of `hash` stands, while it is wanted.
+    fn standing(&self, hash: &str) -> Option<ContentState> {
+        let state = self.state.lock().ok()?;
+        state.wanted.contains(hash).then(|| {
+            state
+                .standing
+                .get(hash)
+                .copied()
+                .unwrap_or(ContentState::Pending)
+        })
     }
 
     /// The requests to send on the record's route now.
@@ -227,6 +240,18 @@ impl ContentLane {
         arrived_somewhere();
     }
 
+    /// The record's host said where a want of `hash` stands. A window
+    /// waiting for the content looks again: what it shows follows.
+    pub fn stands(&self, hash: String, standing: ContentState) {
+        if let Ok(mut state) = self.state.lock() {
+            if !state.wanted.contains(&hash) || standing == ContentState::Resolved {
+                return;
+            }
+            state.standing.insert(hash, standing);
+        }
+        arrived_somewhere();
+    }
+
     fn take_arrived(&self) -> Vec<(String, Vec<u8>)> {
         self.state
             .lock()
@@ -237,6 +262,7 @@ impl ContentLane {
     fn settled(&self, hash: &str) {
         if let Ok(mut state) = self.state.lock() {
             state.wanted.remove(hash);
+            state.standing.remove(hash);
         }
     }
 }
@@ -305,13 +331,10 @@ impl ContentBackend for RecordContent {
         self.keep_arrived();
         match self.local.state(hash) {
             ContentState::Resolved => ContentState::Resolved,
-            local => {
-                if self.lane.is_wanted(&hash.to_ascii_lowercase()) {
-                    ContentState::Pending
-                } else {
-                    local
-                }
-            }
+            local => self
+                .lane
+                .standing(&hash.to_ascii_lowercase())
+                .unwrap_or(local),
         }
     }
 

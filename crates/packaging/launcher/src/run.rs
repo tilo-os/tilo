@@ -589,7 +589,6 @@ mod headless_console_launch_tests {
 
     #[test]
     fn launch_claims_and_device_hints_follow_the_manifest() {
-        // Phase `uri_is_revalidated_against_the_launch_manifest`.
         {
             let manifest = browser_manifest();
             let accepted = RunOptions {
@@ -620,7 +619,6 @@ mod headless_console_launch_tests {
                 );
             }
         }
-        // Phase `only_gui_game_packages_receive_the_scheduler_hint`.
         {
             let game: ManifestView = crate::manifest::test_manifest(
                 "id = \"so.tilo.game\"\nversion = \"1\"\nkind = \"app\"\ncategory = \"Games\"",
@@ -639,7 +637,6 @@ mod headless_console_launch_tests {
                 &RunOptions::default()
             ));
         }
-        // Phase `only_game_launches_receive_the_ntsync_device`.
         {
             let mut game = vec!["/app/game".to_string()];
             splice_game_ntsync(&mut game, true).unwrap();
@@ -800,7 +797,6 @@ mod managed_service_tests {
 
     #[test]
     fn managed_service_launches_are_confined_to_headless_service_packages() {
-        // Phase `managed_service_requires_service_kind_and_headless_entrypoint`.
         {
             let service = manifest("service", "cli");
             assert!(validate_launch_mode(&service, &service_options()).is_ok());
@@ -813,7 +809,6 @@ mod managed_service_tests {
                 Err(RunError::InvalidServiceLaunch(_))
             ));
         }
-        // Phase `managed_service_cannot_receive_a_display_or_open_resource`.
         {
             let manifest = manifest("service", "cli");
             let display = RunOptions {
@@ -827,7 +822,6 @@ mod managed_service_tests {
             };
             assert!(validate_launch_mode(&manifest, &document).is_err());
         }
-        // Phase `no_launch_can_readdress_its_signed_package_id`.
         {
             let service = RunOptions {
                 app_id: Some("so.tilo.other".into()),
@@ -886,12 +880,6 @@ pub fn resolve_capabilities(manifest: &ManifestView, opts: &RunOptions) -> Capab
 
 /// Priority: explicit override > manifest declaration (per-user, then
 /// system; system first for an ABI-bound version) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
-///
-/// # Errors
-///
-/// Returns [`RunError`] if the manifest's runtime reference is malformed, if
-/// the resolved bundle fails signature/publisher verification, or if no
-/// bundle is found and `opts.allow_missing_runtime` is unset.
 pub fn resolve_runtime_test_helper(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
@@ -1064,12 +1052,6 @@ pub fn resolve_gpu_selection(
 
 /// Priority: explicit override > manifest declaration (per-user, then
 /// system; system first for an ABI-bound version) > no bind. `Ok(None)` (no declaration) is distinct from `Err`.
-///
-/// # Errors
-///
-/// Returns [`RunError`] if the manifest's runtime reference is malformed, if
-/// the resolved bundle fails signature/publisher verification, or if no
-/// bundle is found and `opts.allow_missing_runtime` is unset.
 pub fn resolve_runtime(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
@@ -1679,7 +1661,6 @@ mod dev_override_tests {
 
     #[test]
     fn trust_roots_follow_the_build_profile() {
-        // Phase `a_release_build_reads_the_images_trusted_publisher_list`.
         {
             let path = trusted_publishers_path_from(dev_override_from(
                 false,
@@ -1688,7 +1669,6 @@ mod dev_override_tests {
             ));
             assert_eq!(path, Path::new(TRUSTED_PUBLISHERS_FILE));
         }
-        // Phase `a_developer_build_honours_the_trusted_publisher_override`.
         {
             let path = trusted_publishers_path_from(dev_override_from(
                 true,
@@ -1697,7 +1677,6 @@ mod dev_override_tests {
             ));
             assert_eq!(path, Path::new("/dev/runtime/trusted-publishers.txt"));
         }
-        // Phase `a_release_build_ignores_the_runtime_bundle_root_override`.
         {
             let gated = dev_override_from(
                 false,
@@ -4236,7 +4215,6 @@ mod captured_resource_tests {
 
     #[test]
     fn captured_output_is_bounded_and_cancellable() {
-        // Phase `limits_are_nonzero_and_launcher_bounded`.
         {
             assert!(plan().validate().is_ok());
             for invalid in [
@@ -4263,7 +4241,6 @@ mod captured_resource_tests {
                 ));
             }
         }
-        // Phase `stdout_and_stderr_share_one_hard_memory_budget`.
         {
             let used = Arc::new(AtomicUsize::new(0));
             let exceeded = Arc::new(AtomicBool::new(false));
@@ -4286,7 +4263,6 @@ mod captured_resource_tests {
             assert_eq!(used.load(AtomicOrdering::Acquire), 8);
             assert!(exceeded.load(AtomicOrdering::Acquire));
         }
-        // Phase `cancellation_is_target_local_and_sticky`.
         {
             let cancellation = CaptureCancellation::default();
             let observer = cancellation.clone();
@@ -5086,7 +5062,6 @@ mod identity_resolution_tests {
 
     #[test]
     fn identity_record_resolution_honours_the_requested_source() {
-        // Phase `explicit_record_wins_and_skips_existence_check`.
         {
             let opts = RunOptions {
                 identity: IdentitySource::Record(PathBuf::from("/nowhere/does/not/exist.json")),
@@ -5098,7 +5073,6 @@ mod identity_resolution_tests {
                 "explicit path is used verbatim, no exists() check"
             );
         }
-        // Phase `a_named_store_resolves_its_active_identity`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let store = store_with_primary(tmp.path());
@@ -5111,7 +5085,6 @@ mod identity_resolution_tests {
                 Some(store.join("primary.json"))
             );
         }
-        // Phase `an_empty_store_resolves_nothing`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let opts = RunOptions {
@@ -5157,7 +5130,6 @@ mod identity_resolution_tests {
             assert_eq!(std::fs::read(&path).unwrap(), original);
             assert!(!store.path().join("secrets").exists());
         }
-        // Phase `explicit_identity_outside_the_managed_store_is_never_rewritten`.
         {
             use std::os::unix::fs::PermissionsExt;
 
@@ -5484,7 +5456,6 @@ mod identity_resolution_tests {
 
     #[test]
     fn the_user_identity_store_is_located_via_xdg_then_home() {
-        // Phase `the_user_store_prefers_xdg_config_home`.
         {
             let mut home = tilo_test_env::TestHome::new().unwrap();
             // A record under `$HOME/.config` must lose to `$XDG_CONFIG_HOME`.
@@ -5497,7 +5468,6 @@ mod identity_resolution_tests {
                 Some(ident)
             );
         }
-        // Phase `the_user_store_falls_back_to_home_without_xdg`.
         {
             let mut home = tilo_test_env::TestHome::new().unwrap();
             let ident = store_with_primary(&home.home().join(".config")).join("primary.json");
@@ -5549,7 +5519,6 @@ mod app_dir_tests {
 
     #[test]
     fn the_app_directory_is_resolved_per_room_and_never_from_the_manifest() {
-        // Phase `workspace_launch_without_an_author_grant_is_read_only`.
         {
             let m = manifest("so.tilo.fixture");
             let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
@@ -5564,7 +5533,6 @@ mod app_dir_tests {
                 crate::capabilities::Participation::Unscoped
             );
 
-            // The room's grants make the app an author.
             let dir = tempfile::tempdir().expect("tempdir");
             let file = dir.path().join("grants.json");
             std::fs::write(

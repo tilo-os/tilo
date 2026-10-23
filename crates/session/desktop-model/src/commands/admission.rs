@@ -10,10 +10,6 @@ use crate::workspace::Workspace;
 /// [`DesktopCommand::OpenTab`] a person would make, placed in the owner's own
 /// turn inside the strips `owned` accepts. Every other command is returned
 /// unchanged; the owner checks and applies that exact command.
-///
-/// # Errors
-///
-/// Returns a description when no owned strip can receive an opened app.
 pub fn resolve_open_app(
     workspace: &Workspace,
     command: DesktopCommand,

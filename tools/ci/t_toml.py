@@ -39,6 +39,7 @@ so t.toml carries both, generated between markers:
 """
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import json
 import os
@@ -314,7 +315,7 @@ def goldens(image: str) -> str:
 
 
 def arm64_goldens(image: str) -> str:
-    """The nightly goldens on aarch64, in the same image, to see where its pixels differ from x86_64's."""
+    """The goldens on aarch64, in the same image, to see where its pixels differ from x86_64's."""
     sys.path.insert(0, str(ROOT / "tools/ci"))
     import nextest_filters
     golden = nextest_filters.filters()["GOLDEN_FILTER"]
@@ -328,7 +329,7 @@ def arm64_goldens(image: str) -> str:
                               f"--no-tests=pass {packages} -E '{golden}'"),
         'env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
         "writable_sources = true",
-        'on = ["schedule:0 3 * * *", "dispatch"]',
+        'on = ["stable", "dispatch"]',
         'cost = "heavy"',
         "default = false",
     ]) + "\n"
@@ -760,7 +761,28 @@ def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dic
             "size-checks": size_checks(manifest, packages), **test_families(packages)}
 
 
+def with_dependency_inputs(manifest: suites.Manifest, packages: dict[str, dict], root: Path) -> suites.Manifest:
+    """`manifest` with each entry's `dependencies_of` turned into inputs: the directory of every
+    workspace package that a package under one of those directories reaches through normal and
+    build dependencies, less those its inputs already cover."""
+    dirs = {name: Path(package["manifest_path"]).resolve().parent.relative_to(root.resolve()).as_posix()
+            for name, package in packages.items()}
+    cargo = []
+    for reader in manifest.cargo:
+        seeds = {name for name, directory in dirs.items()
+                 if any((directory + "/").startswith(parent) for parent in reader.dependencies_of)}
+        reached = sorted(dirs[name] + "/" for name in local_closure(packages, seeds, False))
+        inputs = list(reader.inputs)
+        for directory in reached:
+            if not any(directory.startswith(path) for path in inputs if path.endswith("/")):
+                inputs.append(directory)
+        cargo.append(dataclasses.replace(reader, inputs=tuple(inputs)))
+    return dataclasses.replace(manifest, cargo=tuple(cargo))
+
+
 def generated(manifest: suites.Manifest) -> dict[str, str]:
+    metadata = workspace_graph.cargo_metadata(ROOT)
+    manifest = with_dependency_inputs(manifest, {p["name"]: p for p in metadata["packages"]}, ROOT)
     inputs = package_inputs(manifest)
     return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "clippy-package-inputs": inputs,
             "check-package-inputs": inputs, "suites": suite_checks(manifest),
@@ -769,7 +791,7 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
             "security-reads": security_reads(), "policy-steps": policy_checks(),
             "workspace-layout-reads": workspace_layout_reads(),
             "t-toml-reads": t_toml_reads(manifest),
-            **product_blocks(products.load()), **cargo_checks(manifest),
+            **product_blocks(products.load()), **cargo_checks(manifest, metadata),
             # The OS image's layer actions, keyed by what each of os/image/'s pieces reads.
             "os-layers": os_toml.block()}
 

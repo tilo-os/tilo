@@ -51,7 +51,6 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
             bytes.ends_with(b"%%EOF\n"),
             "must end with the PDF EOF marker"
         );
-        // Exactly one page for this much content.
         assert_eq!(
             count(&bytes, b"/Type /Page\n"),
             0,
@@ -123,7 +122,6 @@ fn pdf_export_lays_out_blocks_tables_pages_and_images() {
         let bytes = render_pdf(&snap, &tilo_content::NoContent).expect("render empty");
         assert!(bytes.starts_with(b"%PDF"), "valid header even when empty");
         assert!(bytes.ends_with(b"%%EOF\n"));
-        // Exactly one page.
         assert_eq!(count(&bytes, b"/Type /Pages"), 1, "one pages tree");
         // The pages tree declares Count 1.
         assert!(count(&bytes, b"/Count 1 ") == 1, "single-page document");

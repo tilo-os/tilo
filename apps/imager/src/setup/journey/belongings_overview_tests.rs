@@ -1,4 +1,3 @@
-//! Exercise the overview's production composition with explicitly chosen fixture roots.
 use super::super::{
     super::strings::{t, t_args},
     InstallerPreview, Page,

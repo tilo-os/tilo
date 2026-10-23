@@ -39,7 +39,6 @@ pub fn cursor_text(cursor: &[u8]) -> String {
     }
 }
 
-/// The bytes [`cursor_text`] encoded.
 pub fn cursor_bytes(text: &str) -> Result<Vec<u8>, String> {
     text.strip_prefix(BASE64_CURSOR).map_or_else(
         || Ok(text.as_bytes().to_vec()),
@@ -51,7 +50,6 @@ pub fn cursor_bytes(text: &str) -> Result<Vec<u8>, String> {
     )
 }
 
-/// The lowercase words of a needle.
 pub fn needle_words(needle: &str) -> Vec<String> {
     needle
         .split(|c: char| c.is_whitespace() || c == ',')

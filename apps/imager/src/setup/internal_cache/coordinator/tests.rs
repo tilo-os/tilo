@@ -582,7 +582,6 @@ fn transfer_hook_worker(
     .unwrap()
 }
 
-/// Failures and cancellation during creation, initialization, preparation and publication.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1130,7 +1129,6 @@ fn cancel_and_discard_win_and_disclose_retained_state() {
     );
 }
 
-/// Disconnection and paused scope release.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1275,7 +1273,6 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
     );
 }
 
-/// Lost acks.
 #[test]
 fn lost_acks_stay_uncertain_until_fresh_recovery() {
     isolated(

@@ -321,7 +321,6 @@ mod tests {
 
     #[test]
     fn video_packets_round_trip_and_bound_untrusted_lengths() {
-        // Phase `video_packet_round_trips_without_touching_the_codec_payload`.
         {
             let packet = VideoPacket {
                 width: 1280,
@@ -337,7 +336,6 @@ mod tests {
                 packet
             );
         }
-        // Phase `video_packet_rejects_untrusted_oversized_length_before_allocating`.
         {
             let mut wire = Vec::new();
             wire.extend_from_slice(&VIDEO_PACKET_MAGIC);
@@ -353,7 +351,6 @@ mod tests {
 
     #[test]
     fn stream_ceilings_follow_user_and_receiver_capabilities() {
-        // Phase `stream_ceiling_is_the_minimum_of_user_and_receiver_capabilities`.
         {
             let policy = DisplayStreamPolicy {
                 adaptive: true,
@@ -370,7 +367,6 @@ mod tests {
             let profile = policy.ceiling(Some((3840, 2160)));
             assert_eq!((profile.max_width, profile.max_height), (1280, 720));
         }
-        // Phase `native_policy_uses_receiver_capability_without_a_wireless_preset`.
         {
             let profile = DisplayStreamPolicy::default().ceiling(Some((2560, 1440)));
             assert_eq!((profile.max_width, profile.max_height), (2560, 1440));

@@ -3,7 +3,7 @@
 [[resources]]
 kind = "chat.workspace"
 label = "Chat"
-version = 5
+version = 6
 fields = [
   { path = "categories", type = "Collection<Category>", readonly = true, stored = "collection" },
   { path = "categories.*.name", type = "String", label = true, readonly = true },
@@ -318,6 +318,7 @@ fields = [
   { path = "messages.*.appearance.persona", type = "Option<ShownPersona>", stored = "record" },
   { path = "messages.*.appearance.persona.service", type = "String" },
   { path = "messages.*.appearance.persona.account", type = "String" },
+  { path = "messages.*.appearance.persona.linked", type = "Option<String>" },
 ]
 
 [[resources.verbs]]

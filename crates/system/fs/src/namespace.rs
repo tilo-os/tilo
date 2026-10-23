@@ -773,13 +773,9 @@ impl Namespace {
             return self.save_incremental();
         };
         delta.extend(self.doc.save_after(&heads));
-        // Move the incremental cursor past the batch.
         let _ = self.doc.save_incremental();
         delta
     }
-    /// # Errors
-    ///
-    /// Returns an error if `data` is not a valid incremental automerge change set for this document.
     pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let before = self.doc.get_heads();
         self.doc.load_incoming(data)?;
@@ -833,10 +829,6 @@ impl Namespace {
     }
 
     /// Apply a remote delta: advance the watermark, resolve, and return the resolution delta to broadcast (empty if none).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `data` is not a valid incremental automerge change set for this document.
     pub fn apply_remote_and_resolve(
         &mut self,
         data: &[u8],
@@ -1013,11 +1005,6 @@ impl Namespace {
     /// restored from an older copy, or another workspace's) is dropped, so
     /// its next exchange is a full sync. A peer that lost what it agreed to
     /// is caught by Automerge itself, as in [`Self::begin_sync_with`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error, and keeps the progress held, if `bytes` is
-    /// truncated, damaged, of another version or beyond the bounds.
     pub fn restore_peer_sync_states(&mut self, bytes: &[u8]) -> anyhow::Result<usize> {
         let decoded = decode_peer_sync_states(bytes)?;
         self.peer_sync_states = decoded
@@ -1056,9 +1043,6 @@ impl Namespace {
         self.sync_bytes_generated
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `data` is not a valid sync message, or applying it against `state` fails.
     pub fn sync_receive(
         &mut self,
         state: &mut automerge::sync::State,
@@ -1660,11 +1644,6 @@ impl Namespace {
     /// Project one already-verified structural binding. The operation is
     /// idempotent and never replaces an occupied destination: replacement is
     /// reserved for the complete-participant transaction materializer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the binding does not describe one valid live node
-    /// move in this namespace.
     pub fn apply_signed_binding(
         &mut self,
         binding: &FileBindingV1,
@@ -1757,10 +1736,6 @@ impl Namespace {
     /// Apply one fully committed replacement-rename transaction while the
     /// namespace lock is held. All preconditions are checked before mutation;
     /// the returned delta contains both the victim tombstone and source move.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when transaction verification or projection fails.
     pub fn apply_replacement_transaction(
         &mut self,
         transaction: &FileMutationTransaction,
@@ -1859,10 +1834,6 @@ impl Namespace {
     /// Apply either supported signed multi-record mutation to a complete
     /// namespace clone, publishing the clone only after every precondition and
     /// both record projections succeed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when transaction verification or projection fails.
     pub fn apply_mutation_transaction(
         &mut self,
         transaction: &FileMutationTransaction,
@@ -1929,11 +1900,6 @@ impl Namespace {
     }
 
     /// Install a durably staged merge delta and its signed content revision.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the transaction or delta is invalid, incomplete,
-    /// or inconsistent with the resulting projection.
     pub fn apply_staged_merge_delta(
         &mut self,
         transaction: &FileMutationTransaction,
@@ -2049,11 +2015,6 @@ impl Namespace {
     /// ids are actor-local, so independently replaying the semantic mutation
     /// can produce different (but equivalent) bytes; recovery must instead
     /// apply the journaled bytes that peers will receive.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the transaction or delta is invalid, incomplete,
-    /// or inconsistent with the resulting projection.
     pub fn apply_staged_keep_both_delta(
         &mut self,
         transaction: &FileMutationTransaction,
@@ -2529,10 +2490,6 @@ impl Namespace {
     /// Minimal live record graph used by the content store to resolve manifest
     /// chunks. Kept crate-private so callers cannot accidentally disclose
     /// another record's roots while checking one requested blob.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the bound is invalid or a live record lacks identity.
     pub fn live_record_blob_roots(
         &self,
         max_live_records: usize,
@@ -3937,7 +3894,6 @@ mod tests {
 
     #[test]
     fn tree_operations_create_move_trash_and_persist() {
-        // Phase `root_is_inode_one_and_listable`.
         {
             let mut ns = Namespace::new("a").unwrap();
             assert_eq!(ns.id_for_ino(ROOT_INO), Some(ROOT_ID));
@@ -3945,7 +3901,6 @@ mod tests {
             assert_eq!(ns.getattr(ROOT_INO).unwrap().kind, FileType::Directory);
             assert_eq!(ns.readdir(ROOT_INO).unwrap().len(), 2); // "." ".."
         }
-        // Phase `create_lookup_and_nested_readdir`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let ino = ns
@@ -3972,7 +3927,6 @@ mod tests {
                 .unwrap();
             assert_eq!(dotdot.0, ROOT_INO);
         }
-        // Phase `remove_moves_subtree_to_trash`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let dir = ns.create_dir(ROOT_INO, "d", 1).unwrap();
@@ -3985,7 +3939,6 @@ mod tests {
             );
             assert!(ns.lookup(ROOT_INO, "d").is_none());
         }
-        // Phase `rename_is_a_move_that_preserves_inode`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let ino = ns.create_file(ROOT_INO, "old", Some(&h(9)), 4, 1).unwrap();
@@ -4002,7 +3955,6 @@ mod tests {
             );
             assert_eq!(ns.hash_for(ino), Some(h(9)));
         }
-        // Phase `rename_rejects_move_into_own_descendant`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let d1 = ns.create_dir(ROOT_INO, "d1", 1).unwrap();
@@ -4013,7 +3965,6 @@ mod tests {
             );
             assert!(ns.lookup(ROOT_INO, "d1").is_some());
         }
-        // Phase `tree_survives_save_and_reload`.
         {
             let mut a = Namespace::new("a").unwrap();
             let dir = a.create_dir(ROOT_INO, "docs", 1).unwrap();
@@ -4033,7 +3984,6 @@ mod tests {
         reason = "The signed two-record fixture verifies source replacement, victim tombstoning, emitted namespace delta, and idempotent replay together."
     )]
     fn signed_bindings_and_replacements_are_verified_exact_and_fail_closed() {
-        // Phase `verified_bindings_move_by_stable_parent_and_never_replace_a_sibling`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let left = ns.create_dir(ROOT_INO, "left", 1).unwrap();
@@ -4217,7 +4167,6 @@ mod tests {
             assert!(ns.ino_for_record_id(victim_record).is_none());
             assert_eq!(ns.apply_replacement_transaction(&transaction), Ok(None));
         }
-        // Phase `signed_mode_ignores_forged_namespace_content_and_thumbnail_fields`.
         {
             let mut ns = Namespace::new("owner").unwrap();
             let ino = ns
@@ -4265,7 +4214,6 @@ mod tests {
             assert!(!ns.set_content(ino, Some(&h(8)), 8, 8));
             assert!(!ns.set_thumb(ino, &h(8)));
         }
-        // Phase `duplicate_live_record_bindings_fail_closed_in_signed_mode`.
         {
             let mut ns = Namespace::new("owner").unwrap();
             let first = ns.create_file(ROOT_INO, "a", None, 0, 1).unwrap();
@@ -4294,7 +4242,6 @@ mod tests {
             assert_eq!(ns.hash_for(first), None);
             assert_eq!(ns.hash_for(duplicate), None);
         }
-        // Phase `projected_file_uses_exact_remote_record_and_refuses_aliases`.
         {
             let mut ns = Namespace::new("recipient").unwrap();
             let record = FileRecordId::new();
@@ -4325,7 +4272,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn record_ids_are_stable_persisted_backfilled_and_resolve_live_blobs() {
-        // Phase `record_ids_survive_save_reload_and_root_is_persisted`.
         {
             let mut original = Namespace::new("a").unwrap();
             let file = original
@@ -4345,7 +4291,6 @@ mod tests {
                 file_record
             );
         }
-        // Phase `legacy_snapshots_migrate_record_ids_deterministically_on_next_save`.
         {
             let mut legacy = Namespace::new("legacy").unwrap();
             legacy
@@ -4382,7 +4327,6 @@ mod tests {
             assert_eq!(persisted.record_id_for(ROOT_INO), Some(expected_root));
             assert_eq!(persisted.record_id_for(persisted_ino), Some(expected_file));
         }
-        // Phase `conflict_copy_gets_a_distinct_record_id`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let original = ns.create_file(ROOT_INO, "doc", Some(&h(1)), 1, 1).unwrap();
@@ -4392,7 +4336,6 @@ mod tests {
             assert_ne!(ns.record_id_for(copy), Some(original_record));
             assert!(ns.record_id_for(copy).is_some());
         }
-        // Phase `save_incremental_still_backfills_record_ids_after_an_import`.
         {
             let mut ns = Namespace::new("a").unwrap();
             ns.create_file(ROOT_INO, "x", Some(&h(1)), 1, 1).unwrap();
@@ -4402,7 +4345,6 @@ mod tests {
             let original = ns.lookup(ROOT_INO, "x").unwrap().ino.0;
             assert_eq!(copy.record_id_for(copied), ns.record_id_for(original));
         }
-        // Phase `malformed_parent_cycle_cannot_loop_record_index_rebuild`.
         {
             let mut ns = Namespace::new("owner").unwrap();
             let a = ns.create_dir(ROOT_INO, "a", 1).unwrap();
@@ -4419,7 +4361,6 @@ mod tests {
                 "unreachable cyclic nodes must be withheld rather than making a rebuild non-terminating"
             );
         }
-        // Phase `direct_blob_lookup_returns_only_live_stable_records`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let first = ns
@@ -4455,7 +4396,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `live_blob_paths_follow_rename_thumbnail_and_delete`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let docs = ns.create_dir(ROOT_INO, "docs", 1).unwrap();
@@ -4477,7 +4417,6 @@ mod tests {
 
     #[test]
     fn content_revisions_are_never_torn_and_legacy_writes_supersede_explicitly() {
-        // Phase `concurrent_content_revisions_never_expose_a_torn_hash_size_tuple`.
         {
             let mut a = Namespace::new("a").unwrap();
             let ino = a
@@ -4521,7 +4460,6 @@ mod tests {
             assert!(conflicts.iter().any(|(_, value)| value == &revision_a));
             assert!(conflicts.iter().any(|(_, value)| value == &revision_b));
         }
-        // Phase `legacy_content_write_explicitly_supersedes_atomic_revision`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let ino = ns
@@ -4546,7 +4484,6 @@ mod tests {
 
     #[test]
     fn byte_names_survive_load_save_rename_and_replication_exactly() {
-        // Phase `legacy_string_name_loads_exactly_and_next_rename_persists_bytes`.
         {
             let mut legacy = Namespace::new("legacy-name").unwrap();
             let ino = legacy
@@ -4577,7 +4514,6 @@ mod tests {
                 "legacy UTF-8 identity must survive byte-scalar migration and restart"
             );
         }
-        // Phase `byte_names_survive_save_lookup_and_rename_exactly`.
         {
             let mut ns = Namespace::new("bytes").unwrap();
             let original = b"photo-\xFF.png";
@@ -4608,7 +4544,6 @@ mod tests {
             let final_ino = final_open.lookup(ROOT_INO, renamed).unwrap().ino.0;
             assert_eq!(final_open.record_id_for(final_ino), Some(record_id));
         }
-        // Phase `byte_names_replicate_without_display_normalization`.
         {
             let name = b"replicated-\xFF.bin";
             let mut source = Namespace::new("source").unwrap();
@@ -4637,7 +4572,6 @@ mod tests {
         let mut source = Namespace::new("source").unwrap();
         source.create_file(ROOT_INO, "before", None, 0, 1).unwrap();
         let mut peer = Namespace::from_bytes("peer", &source.save()).unwrap();
-        // A change nobody took yet leads the batch.
         source.create_file(ROOT_INO, "pending", None, 0, 1).unwrap();
         source.begin_incremental_batch();
         source.create_file(ROOT_INO, "one", None, 0, 2).unwrap();
@@ -4645,7 +4579,6 @@ mod tests {
             source.save_incremental().is_empty(),
             "no delta inside a batch"
         );
-        // Persisting the document meanwhile moves the incremental cursor.
         let _ = source.save();
         source.create_file(ROOT_INO, "two", None, 0, 3).unwrap();
         let delta = source.end_incremental_batch();
@@ -4662,7 +4595,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn concurrent_namespace_changes_merge_and_converge() {
-        // Phase `disjoint_inserts_merge`.
         {
             let mut a = Namespace::new("a").unwrap();
             let bytes = a.save();
@@ -4675,7 +4607,6 @@ mod tests {
             assert!(a.lookup(ROOT_INO, "from_a").is_some());
             assert!(a.lookup(ROOT_INO, "from_b").is_some());
         }
-        // Phase `concurrent_cross_move_resolves_acyclically_and_converges`.
         {
             let mut a = Namespace::new("a").unwrap();
             let xino = a.create_dir(ROOT_INO, "X", 1).unwrap();
@@ -4727,7 +4658,6 @@ mod tests {
                 );
             }
         }
-        // Phase `delete_dir_vs_create_child_converges_to_deleted`.
         {
             let mut a = Namespace::new("a").unwrap();
             let dino = a.create_dir(ROOT_INO, "d", 1).unwrap();
@@ -4755,7 +4685,6 @@ mod tests {
                 "but it is not reachable from root (consistently trashed, not orphaned)"
             );
         }
-        // Phase `incremental_apply_and_resolve`.
         {
             let mut a = Namespace::new("a").unwrap();
             let snap = a.save();
@@ -4767,7 +4696,6 @@ mod tests {
             b.apply_remote_and_resolve(&delta).unwrap();
             assert_eq!(b.lookup(ROOT_INO, "delta.txt").unwrap().size, 7);
         }
-        // Phase `sync_protocol_converges_two_namespaces`.
         {
             // Diverge from a shared base doc; the incremental sync ping-pong must converge them.
             let mut a = Namespace::new("a").unwrap();
@@ -4801,7 +4729,6 @@ mod tests {
 
     #[test]
     fn documents_import_export_and_merge_semantically() {
-        // Phase `document_import_export_roundtrips`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
@@ -4818,7 +4745,6 @@ mod tests {
                 "round-trip lost content: {s}"
             );
         }
-        // Phase `failed_import_preserves_existing_document`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
@@ -4846,7 +4772,6 @@ mod tests {
                 "existing document must survive a rejected import"
             );
         }
-        // Phase `document_concurrent_edits_merge_semantically`.
         {
             // The point of model B: concurrent edits to the same document merge at the text level, not a conflict copy.
             let mut a = Namespace::new("a").unwrap();
@@ -4874,7 +4799,6 @@ mod tests {
 
     #[test]
     fn record_indexes_track_structure_and_page_tails_directly() {
-        // Phase `indexed_record_tail_page_is_direct_and_does_not_rebuild_the_namespace`.
         {
             let mut ns = Namespace::new("a").unwrap();
             ns.record_index.clear();
@@ -4899,7 +4823,6 @@ mod tests {
             assert_eq!(page[0].path, "/synthetic-100001");
             assert_eq!(ns.record_index_rebuild_count(), before);
         }
-        // Phase `structural_index_tracks_creates_moves_deletes_and_merges`.
         {
             let mut a = Namespace::new("a").unwrap();
             let dir = a.create_dir(ROOT_INO, "dir", 1).unwrap();
@@ -5113,7 +5036,6 @@ mod tests {
             "a completed exchange is resumed from"
         );
 
-        // Phase `heads_this_document_does_not_hold_are_not_resumed_from`.
         let mut unknown = automerge::sync::State::new();
         unknown.shared_heads = vec![automerge::ChangeHash([7; 32])];
         device.finish_sync_with(SERVER, &unknown);
@@ -5127,7 +5049,6 @@ mod tests {
         assert!(device.lookup(ROOT_INO, "after-unknown").is_some());
         assert!(converged(&mut device, &mut host));
 
-        // Phase `a_peer_restarted_from_an_older_copy_receives_everything`.
         let older = host.save();
         host.create_file(ROOT_INO, "lost-by-host", Some(&h(3)), 1, 3)
             .unwrap();
@@ -5145,7 +5066,6 @@ mod tests {
         assert!(host.lookup(ROOT_INO, "from-device").is_some());
         assert!(converged(&mut device, &mut host));
 
-        // Phase `a_restarted_peer_with_its_document_converges_both_ways`.
         let mut host = Namespace::from_bytes("host", &host.save()).unwrap();
         host.create_file(ROOT_INO, "after-restart", Some(&h(5)), 1, 5)
             .unwrap();
@@ -5157,7 +5077,6 @@ mod tests {
         assert!(host.lookup(ROOT_INO, "while-host-restarted").is_some());
         assert!(converged(&mut device, &mut host));
 
-        // Phase `an_idle_exchange_after_the_fallbacks_is_small_again`.
         let idle = exchange(&mut device, &mut host);
         assert!(idle < 512, "an idle exchange resumes once more ({idle} B)");
     }
@@ -5263,7 +5182,6 @@ mod tests {
         exchange(&mut device, &mut host);
         let progress = device.encode_peer_sync_states();
 
-        // Phase `damaged_bytes_are_refused_whole`.
         let mut flipped = progress.clone();
         flipped[PEER_SYNC_STATES_TAG.len() + 10] ^= 1;
         let mut other_version = progress.clone();
@@ -5304,7 +5222,6 @@ mod tests {
             );
         }
 
-        // Phase `progress_newer_than_the_restored_document_is_dropped`.
         let mut restored = Namespace::from_bytes("device", &older_device).unwrap();
         assert_eq!(
             restored.restore_peer_sync_states(&progress).unwrap(),
@@ -5316,12 +5233,10 @@ mod tests {
         assert!(restored.lookup(ROOT_INO, "second").is_some());
         assert!(converged(&mut restored, &mut host));
 
-        // Phase `another_workspaces_progress_is_dropped`.
         let mut stranger = with_history("stranger", 10);
         assert_eq!(stranger.restore_peer_sync_states(&progress).unwrap(), 0);
         assert!(!stranger.in_sync_with(&SERVER));
 
-        // Phase `older_progress_resumes_from_further_back`.
         let mut device = Namespace::from_bytes("device", &device.save()).unwrap();
         assert_eq!(device.restore_peer_sync_states(&older_progress).unwrap(), 1);
         assert!(

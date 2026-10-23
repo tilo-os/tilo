@@ -1,4 +1,3 @@
-//! Live semantic recovery from a changed, explicitly reviewed home.
 use super::*;
 use crate::resource::GuidedInstallerShell;
 use std::{

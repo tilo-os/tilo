@@ -142,6 +142,9 @@ pub(crate) struct Room {
     /// a public room does. The attached desktops are their people's own
     /// from then on: sent to nobody, and not replaced by the room's.
     own_layout: bool,
+    /// The room's members as its governance lists them, once heard: what
+    /// someone no longer among them made on the desktop is released.
+    members: Option<std::collections::BTreeSet<String>>,
     /// How many commits of each record route this page published the room
     /// has not answered yet: once none is left, what the record's windows
     /// said they did is said (`RecordStore::room_settled`).
@@ -171,9 +174,6 @@ fn storage_key(app: &str, room: &str, record: &str) -> Result<StorageKey, &'stat
 
 /// Start replicating `room` for peer `id`. `events` must have been created
 /// when the peer started.
-///
-/// # Errors
-/// The room is not a uuid.
 pub(crate) fn open(
     id: u32,
     device: String,
@@ -207,6 +207,7 @@ pub(crate) fn open(
         standing: crate::desktop::Standing::unknown(),
         followed: 0,
         own_layout: false,
+        members: None,
         in_flight: HashMap::new(),
         content: ContentWants::default(),
     };
@@ -320,6 +321,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         }
         if let Some((_, shared)) = &attachment.desktop {
             shared.own_layout.set(room.own_layout);
+            shared.members.replace(room.members.clone());
             room.moderates = Arc::clone(&shared.moderates);
             room.standing.share(&shared.standing);
         }
@@ -517,7 +519,12 @@ impl Room {
         let (Some(before), Some(after)) = (parse(room), parse(value)) else {
             return None;
         };
-        let acts = tilo_desktop_model::ownership::foreign_acts(&before, &after, author);
+        let acts = tilo_desktop_model::ownership::foreign_acts(
+            &before,
+            &after,
+            author,
+            self.members.as_ref(),
+        );
         let first = acts.first()?;
         warn(&format!("undid a change to what others made: {acts:?}"));
         Some(
@@ -627,6 +634,7 @@ impl Room {
                 _ => {}
             }
         }
+        self.follow_members(&mut woken);
         // Withdrawn before what arrived since is merged: a peer's change can
         // never build on one the room refused.
         for (route, changes, reason) in refusals {
@@ -1236,6 +1244,22 @@ impl Room {
     fn follow_layout(&mut self, woken: &mut HashSet<u64>) {
         if !self.own_layout && self.peer.status().personal_rooms.contains(&self.uuid) {
             self.keep_own_layout(woken);
+        }
+    }
+
+    /// The room's members as the peer last heard its governance list them:
+    /// the attached desktops release what someone who left made.
+    fn follow_members(&mut self, woken: &mut HashSet<u64>) {
+        let members = self.peer.status().room_members.get(&self.uuid).cloned();
+        if members == self.members {
+            return;
+        }
+        self.members = members;
+        for (&id, mounted) in &self.mounts {
+            if let Some((_, shared)) = &mounted.attachment.desktop {
+                shared.members.replace(self.members.clone());
+                woken.insert(id);
+            }
         }
     }
 

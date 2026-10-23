@@ -241,7 +241,6 @@ pub mod wire {
         Ready,
         /// Asked the channel's steward for access and not admitted yet.
         Waiting,
-        /// This device was removed from the channel.
         Removed,
         /// The channel cannot be provisioned on this device right now.
         Unavailable,

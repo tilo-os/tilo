@@ -70,6 +70,11 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub enum StoreError {
     #[error("another writer owns {path}")]
     WriterBusy { path: PathBuf },
+    /// The store's own thread is still opening the key for a thread that
+    /// declined waiting ([`durable_store::DurableStore::decline_waiting`]),
+    /// and wakes it when done.
+    #[error("{0} is still being opened")]
+    Opening(String),
     #[error("existing document is empty: {path}")]
     EmptyExistingDocument { path: PathBuf },
     #[error("storage source changed: {path}")]
@@ -751,13 +756,14 @@ impl DocStore {
         Ok(self.owner.stored()?.is_some())
     }
 
-    /// Submit one write through the owner and wait for its outcome.
+    /// Submit one write through the owner and, where this thread may wait on
+    /// storage, wait for its outcome.
     fn commit(&self, op: WriteOp) -> Result<(), StoreError> {
         let store = self.owner.store();
         let key = self.owner.key();
         let writer = self.owner.unstored_writer();
         let revision = store.write(key, op, writer.as_deref())?;
-        match store.flush(Some(key)) {
+        match store.flush_where_allowed(key) {
             Ok(()) | Err(durable_store::StoreError::Pending(_)) => {}
             Err(error) => return Err(error.into()),
         }

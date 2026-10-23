@@ -341,6 +341,22 @@ impl OwnerDocumentRoutes {
                 collect(child, owners);
             }
         }
+        if !self.observe_witness(witness, generation) {
+            return vec![];
+        }
+        let mut current = vec![];
+        collect(root, &mut current);
+        self.hold_trees(&mut current);
+        // Hidden live subtrees retain their admitted collaboration owners.
+        crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
+            collect(live, &mut current)
+        });
+        self.install(current, outer)
+    }
+
+    /// Follow the primary route `witness` (of `generation`): another one
+    /// starts every route over. Whether there is one to sync beside.
+    fn observe_witness(&mut self, witness: Option<PrimaryRouteWitness>, generation: u64) -> bool {
         if self.witness != witness || self.primary_generation != generation {
             if !self.primary.is_empty() || self.owners.iter().any(|route| !route.pending.is_empty())
             {
@@ -354,16 +370,40 @@ impl OwnerDocumentRoutes {
             self.witness = witness;
             self.primary_generation = generation;
         }
-        if self.witness.is_none() {
+        self.witness.is_some()
+    }
+
+    /// [`Self::reconcile`] for a holder without a widget tree, whose
+    /// records are `owners`: every one answers snapshot requests, as no host
+    /// replays its route.
+    #[cfg(feature = "broker-transport")]
+    pub(crate) fn reconcile_owners(
+        &mut self,
+        owners: &[HistoryOwner],
+        witness: Option<PrimaryRouteWitness>,
+        outer: &AutoCommit,
+    ) -> Vec<RouteSpec> {
+        let generation = self.primary_generation;
+        if !self.observe_witness(witness, generation) {
             return vec![];
         }
-        let mut current = vec![];
-        collect(root, &mut current);
-        self.hold_trees(&mut current);
-        // Hidden live subtrees retain their admitted collaboration owners.
-        crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
-            collect(live, &mut current)
-        });
+        let mut current: Vec<(HistoryOwner, bool)> = Vec::new();
+        for owner in owners {
+            if !current.iter().any(|(known, _)| known.same_owner(owner)) {
+                current.push((owner.clone(), true));
+            }
+        }
+        self.install(current, outer)
+    }
+
+    /// Hold the routes of the `current` owners (each with whether it
+    /// answers snapshot requests), giving up those no owner holds any more.
+    /// The routes newly joined.
+    fn install(
+        &mut self,
+        current: Vec<(HistoryOwner, bool)>,
+        outer: &AutoCommit,
+    ) -> Vec<RouteSpec> {
         self.owners.retain_mut(|entry| {
             entry.owners.retain(|owner| {
                 current.iter().any(|(actual, _)| actual.same_owner(owner))

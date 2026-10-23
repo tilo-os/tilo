@@ -34,7 +34,6 @@ use zip::result::ZipError as RawZipError;
 pub struct ZipLimits {
     /// Maximum number of entries (files and directories) in the archive.
     pub max_parts: usize,
-    /// Maximum uncompressed size of any single part.
     pub max_part_bytes: u64,
     /// Maximum uncompressed size of everything read from the archive.
     pub max_total_bytes: u64,
@@ -174,7 +173,6 @@ impl<R: Read + Seek> BoundedArchive<R> {
         })
     }
 
-    /// The limits this archive is read under.
     #[must_use]
     pub const fn limits(&self) -> &ZipLimits {
         &self.limits
@@ -580,7 +578,6 @@ mod tests {
         reason = "one fixture per limit, each with its own before/during-inflation assertions"
     )]
     fn size_limits_stop_bombs_before_and_during_inflation() {
-        // Too many entries.
         let entries: Vec<(String, Vec<u8>)> =
             (0..20u8).map(|i| (format!("p{i}.dat"), vec![i])).collect();
         let refs: Vec<(&str, &[u8])> = entries
@@ -736,7 +733,6 @@ mod tests {
         );
         assert_eq!(read_zip_parts(&z, &ZipLimits::default()).unwrap().len(), 1);
 
-        // Detection is case-insensitive and bounded to the prolog.
         assert!(contains_dtd(b"<!doctype x>"));
         assert!(contains_dtd(b"<!EnTiTy a 'b'>"));
         assert!(!contains_dtd(b"<doc/>"));
@@ -761,7 +757,6 @@ mod tests {
             max_part_bytes: 64,
             max_total_bytes: 1024,
         };
-        // Phase `files_land_under_the_directory`.
         {
             let dir = scratch("lands");
             let bytes = zip_with(
@@ -772,7 +767,6 @@ mod tests {
             assert_eq!(archive.extract_to(&dir).unwrap(), 2);
             assert_eq!(std::fs::read(dir.join("sub/page.js")).unwrap(), b"x");
         }
-        // Phase `a_header_that_lies_small_is_caught_at_inflate_time`.
         {
             let dir = scratch("lies");
             let big = vec![b'a'; 4096];
@@ -792,7 +786,6 @@ mod tests {
                 "an over-limit part is never written"
             );
         }
-        // Phase `names_cannot_leave_the_directory`.
         {
             let dir = scratch("escape");
             let bytes = zip_with(&[("../escape.txt", b"x")], CompressionMethod::Stored);

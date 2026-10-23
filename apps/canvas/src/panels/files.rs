@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::TryRecvError;
 use ui::tilo_resource::Invoke;
 
-use ui::framework::{Dispatcher, Live, Setting};
+use ui::framework::{Dispatcher, Live, RecordEnv, Setting};
 use ui::portal::{
     ContentsChannel, ContentsOutcome, DestinationChannel, DestinationOutcome, FileFilter,
     PickRequest, PickedContents, SaveChannel, SaveOutcome,
@@ -75,8 +75,13 @@ pub struct FileDesk {
     recents: Setting<RecentArtworks>,
     live: Live<Artwork>,
     dispatch: Dispatcher<Artwork>,
+    /// Where the window opens another of the workspace's artworks.
+    env: RecordEnv<Artwork>,
     chooser: Option<Pending>,
     exporting: Option<Exporting>,
+    /// An artwork of the workspace asked to open in this window, until the
+    /// host answers.
+    reopening: Option<ui::application::ReplacementOutcome>,
     text: Option<TextRenderer>,
 }
 
@@ -86,16 +91,18 @@ impl FileDesk {
         tools: Tools,
         recents: Setting<RecentArtworks>,
         live: Live<Artwork>,
-        dispatch: Dispatcher<Artwork>,
+        env: RecordEnv<Artwork>,
     ) -> Self {
         Self {
             content,
             tools,
             recents,
             live,
-            dispatch,
+            dispatch: env.dispatcher(),
+            env,
             chooser: None,
             exporting: None,
+            reopening: None,
             text: None,
         }
     }
@@ -168,6 +175,10 @@ impl FileDesk {
                 self.chooser = Some(Pending::Open(request.send_contents()));
             }
             FileRequest::OpenRecent(path) => self.open(&PathBuf::from(path)),
+            FileRequest::OpenWorkspace(uri) => match self.env.open_here(&[uri]) {
+                Ok(outcome) => self.reopening = Some(outcome),
+                Err(why) => self.say("canvas-open-failed", &[("why", why.into())]),
+            },
             FileRequest::Save => match self.tools.file.get() {
                 Some(path) => self.save_to(&PathBuf::from(path), true),
                 None => match self.tools.kept.with(Clone::clone) {
@@ -313,6 +324,18 @@ impl FileDesk {
     /// Hear back from an open chooser, or a write it led to.
     fn poll(&mut self) {
         self.finish_export();
+        // Once opened, the artwork takes the window with a view of its own;
+        // what is left to say is why it did not.
+        if let Some(answer) = self
+            .reopening
+            .as_ref()
+            .and_then(ui::application::ReplacementOutcome::get)
+        {
+            self.reopening = None;
+            if let Err(why) = answer {
+                self.say("canvas-open-failed", &[("why", why.into())]);
+            }
+        }
         let Some(pending) = self.chooser.take() else {
             return;
         };
@@ -769,7 +792,6 @@ mod tests {
     fn an_artwork_made_from_a_picture_is_exported_under_a_name_of_its_own() {
         use base64::Engine as _;
         crate::locales::CATALOG.ensure();
-        // The window's content store, which the opened picture is kept in.
         let window = ui::rt::wake::WakeScope::new();
         ui::tilo_resource::content::register(
             &window.handle(),

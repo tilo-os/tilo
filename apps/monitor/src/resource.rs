@@ -362,7 +362,6 @@ mod tests {
             "Update frequency: Every 1.5 seconds"
         );
 
-        // Another of the person's devices changed them.
         app.settings::<MonitorPreferences>()
             .set(&MonitorPreferences {
                 interval_ms: 3000,
@@ -376,7 +375,6 @@ mod tests {
             "Update frequency: Every 3 seconds"
         );
 
-        // A cadence chosen here is stored for every device.
         let versions = app.versions().len();
         // The menu opens on the current cadence; the next one down is 5 s.
         click_widget(&mut app, "monitor.cadence");
@@ -495,7 +493,6 @@ mod tests {
                 .expect("a stat line")
                 .started_at
         };
-        // Elsewhere, as the service in this process reads it.
         #[cfg(not(target_os = "linux"))]
         let started_at = {
             use tilo_system_stats::probe::Probe as _;
@@ -548,7 +545,6 @@ mod tests {
         })
         .unwrap();
 
-        // Inspecting its row through the door selects it.
         click(&mut app, "Tree view");
         assert!(
             !inspected(&mut app, child.id()),
@@ -558,7 +554,6 @@ mod tests {
         app.harness().relayout();
         assert!(inspected(&mut app, child.id()), "the child is selected");
 
-        // A search hit is anchored at the row, and opening it inspects it.
         let hit = app
             .surface_mut::<MonitorApp>()
             .process_search_entries()

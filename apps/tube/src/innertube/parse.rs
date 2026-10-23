@@ -151,6 +151,23 @@ pub fn watch(next: &Value, player: Option<&Value>, id: &str) -> Option<(Video, V
     Some((video, related))
 }
 
+/// `YouTube`'s reason for not playing, when the player answer refuses.
+#[must_use]
+pub fn refusal(player: &Value) -> Option<String> {
+    let status = player
+        .pointer("/playabilityStatus/status")
+        .and_then(Value::as_str)?;
+    if status == "OK" {
+        return None;
+    }
+    Some(
+        player
+            .pointer("/playabilityStatus/reason")
+            .and_then(Value::as_str)
+            .map_or_else(|| status.to_owned(), str::to_owned),
+    )
+}
+
 /// The progressive stream a player answer names, best first; or why the
 /// answer refused (a bot check, a removed or private video).
 pub fn stream(player: &Value) -> Result<Stream, String> {

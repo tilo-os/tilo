@@ -941,7 +941,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn broker_consent_is_scoped_to_the_exact_origin_and_revocable() {
-        // Phase `broker_blocks_lookalike_origins_and_remembers_only_session_consent`.
         {
             let root = root();
             let mut store = SecretStore::open_in(&root);
@@ -988,7 +987,6 @@ mod tests {
             std::fs::remove_dir_all(root).ok();
         }
 
-        // Phase `durable_consent_survives_restart_but_is_scoped_to_the_exact_origin`.
         {
             let root = root();
             let mut store = SecretStore::open_in(&root);
@@ -1034,7 +1032,6 @@ mod tests {
             std::fs::remove_dir_all(root).ok();
         }
 
-        // Phase `durable_access_can_be_inspected_and_revoked_by_app_or_item`.
         {
             let root = root();
             let mut store = SecretStore::open_in(&root);
@@ -1080,7 +1077,6 @@ mod tests {
 
     #[test]
     fn broker_accepts_only_canonical_origins_and_trusted_prompt_metadata() {
-        // Phase `origins_use_web_origin_rules_and_reject_credential_or_control_injection`.
         {
             assert_eq!(
                 canonical_origin(" HTTPS://BÜCHER.example:443/path?q=1 ").unwrap(),
@@ -1100,7 +1096,6 @@ mod tests {
             }
         }
 
-        // Phase `broker_rejects_untrusted_prompt_metadata_before_consulting_the_user`.
         {
             let root = root();
             let mut store = SecretStore::open_in(&root);

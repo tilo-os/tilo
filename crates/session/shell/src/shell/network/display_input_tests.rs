@@ -1,6 +1,3 @@
-//! The production arrangement publisher and lease actions, against certified
-//! synthetic identities and a private settings/state tree.
-
 use super::tests::{
     authenticated_personal_peer, authenticated_workspace_peer, drain,
     personal_workspaces_network_for_test, rich_display_network_snapshot,

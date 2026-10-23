@@ -181,7 +181,6 @@ mod tests {
 
     #[test]
     fn realtime_intents_reject_unsafe_values_and_require_their_preconditions() {
-        // Case `semantic_intents_reject_transport_and_secret_shaped_values`.
         {
             let safe = RealtimeResumeIntent {
                 provider: "tilo.chat".into(),
@@ -205,7 +204,6 @@ mod tests {
             }
         }
 
-        // Case `share_audio_requires_a_screen_share`.
         {
             assert!(
                 !RealtimeMediaFacets {
@@ -217,7 +215,6 @@ mod tests {
             );
         }
 
-        // Case `accept_requires_bounded_unique_target_local_authorizations`.
         {
             let authorization = "ab".repeat(OPAQUE_CAPTURE_AUTHORIZATION_BYTES);
             let valid = RealtimeCommand::Accept {
@@ -258,7 +255,6 @@ mod tests {
 
     #[test]
     fn realtime_wire_json_round_trips_without_extension_fields() {
-        // Case `command_reply_and_event_json_round_trip_without_extension_fields`.
         {
             let command = RealtimeCommand::Register {
                 intent: RealtimeResumeIntent {

@@ -187,7 +187,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 13;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 14;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 /// What a model may know about one change it is asked to describe: the
@@ -433,9 +433,12 @@ pub enum FloatingSurfaceClientMessage {
         instance: Option<u64>,
     },
     /// Open the search in this app's window's bar, as a click on its control
-    /// does (the app's Ctrl+F).
+    /// does (the app's Ctrl+F), or with its replacement field holding the
+    /// keyboard (the app's Ctrl+H).
     OpenSearch {
         instance: Option<u64>,
+        #[serde(default)]
+        opening: crate::window_toolbar::SearchOpening,
     },
     /// Describe these changes of the resource whose History is open: the
     /// shell asks the model on this device and answers with
@@ -642,7 +645,6 @@ pub enum FloatingSurfaceHostMessage {
 }
 
 impl FloatingSurfaceHostMessage {
-    /// The message that tells a window `appearance`.
     #[must_use]
     pub fn appearance(appearance: &crate::theme::WindowAppearance) -> Self {
         Self::Appearance {
@@ -845,8 +847,6 @@ impl FloatingSurfaceServiceClient {
     }
 
     /// Construct an explicit fixture connection through the production stream adapter.
-    /// # Errors
-    /// Returns the same stream configuration failures as native service admission.
     #[cfg(feature = "test-support")]
     pub fn from_test_stream(stream: UnixStream) -> std::io::Result<Self> {
         Self::from_stream(stream)
@@ -909,11 +909,6 @@ impl FloatingSurfaceServiceClient {
 
     /// Flush queued writes and collect every complete host message currently
     /// available. `WouldBlock` is ordinary idle state, never a disconnect.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when queued writes or incoming reads fail, the peer
-    /// disconnects, a frame exceeds the protocol limit, or JSON is invalid.
     pub fn pump(&mut self) -> Result<Vec<FloatingSurfaceHostMessage>, String> {
         self.flush_outgoing()
             .map_err(|error| format!("send floating-surface message: {error}"))?;
@@ -1264,11 +1259,6 @@ impl TryFrom<FloatingSurfaceProtocolSource> for FloatingSource {
 }
 
 /// Convert protocol coordinates into a validated rectangle.
-///
-/// # Errors
-///
-/// Returns an error when any coordinate is non-finite or the rectangle has
-/// non-positive width or height.
 pub fn protocol_rect(coords: [f64; 4]) -> Result<Rect, String> {
     let [x0, y0, x1, y1] = coords;
     if coords.iter().any(|value| !value.is_finite()) || x1 <= x0 || y1 <= y0 {
@@ -1278,9 +1268,6 @@ pub fn protocol_rect(coords: [f64; 4]) -> Result<Rect, String> {
 }
 
 /// Validate optional interactive geometry without enlarging the native window.
-///
-/// # Errors
-/// Returns an error for malformed geometry or an input region outside `window`.
 pub fn protocol_input_rect(window: Rect, coords: Option<[f64; 4]>) -> Result<Option<Rect>, String> {
     coords
         .map(|coords| {
@@ -2002,7 +1989,6 @@ mod tests {
 
     #[test]
     fn attached_and_detached_surfaces_stay_inside_their_owner() {
-        // Case `attached_surface_follows_the_app`.
         {
             let p = FloatingPlacement::attached(Size::new(320.0, 180.0));
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2012,7 +1998,6 @@ mod tests {
             assert_eq!(b.y0 - a.y0, 40.0);
         }
 
-        // Case `inline_attached_region_is_the_single_source_geometry`.
         {
             let app = Rect::new(100.0, 80.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
@@ -2024,7 +2009,6 @@ mod tests {
             assert_eq!(p.rect(app, desk), inline, "invalid geometry is ignored");
         }
 
-        // Case `programmatic_return_requires_confirmed_desktop_ownership`.
         {
             let app = Rect::new(100.0, 80.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
@@ -2066,7 +2050,6 @@ mod tests {
             );
         }
 
-        // Case `attached_chrome_keeps_the_complete_surface_inside_its_app`.
         {
             let app = Rect::new(100.0, 80.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2085,7 +2068,6 @@ mod tests {
             assert_eq!(complete.x1, app.x1 - 16.0);
         }
 
-        // Case `drag_crossing_app_edge_hands_surface_to_desktop`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2112,7 +2094,6 @@ mod tests {
             );
         }
 
-        // Case `detached_surface_uses_real_desktop_reachability_bounds`.
         {
             let app = Rect::new(100.0, 100.0, 700.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2127,7 +2108,6 @@ mod tests {
             assert_eq!(r.x1, desk.x1 - 64.0 + 320.0);
         }
 
-        // Case `edge_snap_eases_from_the_release_rect_instead_of_jumping`.
         {
             let app = Rect::new(100.0, 100.0, 700.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2152,7 +2132,6 @@ mod tests {
 
     #[test]
     fn handoff_motion_is_continuous_across_owners() {
-        // Case `handoff_flourish_keeps_the_surface_center_fixed`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2169,7 +2148,6 @@ mod tests {
             );
         }
 
-        // Case `visual_review_can_compare_both_owners_at_the_exact_same_handoff_phase`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2200,7 +2178,6 @@ mod tests {
             );
         }
 
-        // Case `handoff_flourish_follows_recent_pointer_velocity`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2226,7 +2203,6 @@ mod tests {
             assert!(motion.strength > 0.9, "a quick throw gets the full cue");
         }
 
-        // Case `reattachment_preserves_the_dragged_rect_on_the_transfer_frame`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2253,7 +2229,6 @@ mod tests {
             assert_eq!(p.rect(app, desk), initial + (returned - origin));
         }
 
-        // Case `shell_to_app_adoption_preserves_pointer_velocity_and_next_drag_delta`.
         {
             let app = Rect::new(0.0, 0.0, 700.0, 600.0);
             let desktop = Rect::new(0.0, 0.0, 1600.0, 900.0);
@@ -2314,7 +2289,6 @@ mod tests {
             assert!(!p.is_dragging());
         }
 
-        // Case `reduced_motion_lands_a_declined_handoff_home_at_once`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2335,7 +2309,6 @@ mod tests {
             );
         }
 
-        // Case `declined_handoff_animates_back_without_a_first_frame_jump`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
@@ -2381,7 +2354,6 @@ mod tests {
 
     #[test]
     fn surface_protocol_carries_explicit_geometry_and_rejects_invalid_frames() {
-        // Case `composite_sources_make_multi_window_pip_a_first_class_request`.
         {
             let req = FloatingSurfaceRequest {
                 id: "pair".into(),
@@ -2400,7 +2372,6 @@ mod tests {
             assert!(matches!(req.source, FloatingSource::Composite(ref v) if v.len() == 2));
         }
 
-        // Case `protocol_round_trip_preserves_composite_source_geometry`.
         {
             let request = FloatingSurfaceRequest {
                 id: "comparison".into(),
@@ -2435,7 +2406,6 @@ mod tests {
             assert_eq!(FloatingSurfaceRequest::try_from(wire).unwrap(), request);
         }
 
-        // Case `native_surface_protocol_carries_outer_and_content_geometry`.
         {
             let messages = [
                 FloatingSurfaceHostMessage::PrepareSurface {
@@ -2497,7 +2467,6 @@ mod tests {
             );
         }
 
-        // Case `protocol_rejects_invalid_geometry`.
         {
             let base = FloatingSurfaceProtocolRequest {
                 id: "call".into(),
@@ -2520,7 +2489,6 @@ mod tests {
             assert!(FloatingSurfaceRequest::try_from(inverted).is_err());
         }
 
-        // Case `host_protocol_makes_bounds_and_ownership_explicit`.
         {
             let bounds = FloatingSurfaceHostMessage::DesktopBounds {
                 bounds: [0.0, 0.0, 3200.0, 1080.0],
@@ -2543,7 +2511,6 @@ mod tests {
 
     #[test]
     fn prepare_rebases_the_live_handoff_without_frame_jumps() {
-        // Case `prepare_applies_clamping_without_ending_the_live_handoff`.
         {
             let app = Rect::new(200.0, 100.0, 900.0, 700.0);
             let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
@@ -2571,7 +2538,6 @@ mod tests {
             );
         }
 
-        // Case `prepare_rebases_a_held_drag_without_moving_its_first_native_frame`.
         {
             let app = Rect::new(0.0, 0.0, 700.0, 600.0);
             let desk = Rect::new(0.0, 0.0, 1_400.0, 900.0);
@@ -2596,7 +2562,6 @@ mod tests {
             assert_eq!(placement.rect(app, desk), prepared);
         }
 
-        // Case `prepare_preserves_pointer_motion_that_arrived_after_the_handoff_request`.
         {
             let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
             let desk = Rect::new(0.0, 0.0, 1_600.0, 900.0);
@@ -2632,7 +2597,6 @@ mod tests {
             assert_eq!(placement.rect(app, desk), live_before_prepare + app_origin);
         }
 
-        // Case `proxy_phase_primary_motion_stays_in_desktop_pointer_space`.
         {
             let app = Rect::new(0.0, 0.0, 1_310.0, 768.0);
             let desktop = Rect::new(0.0, 0.0, 1_600.0, 900.0);
@@ -2671,7 +2635,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn nonblocking_service_client_bounds_output_and_completes_lifecycles() {
-        // Case `nonblocking_service_client_bounds_queued_output`.
         {
             let (app_side, _shell_side) = UnixStream::pair().unwrap();
             let mut client = FloatingSurfaceServiceClient::from_stream(app_side).unwrap();
@@ -2687,7 +2650,6 @@ mod tests {
             );
         }
 
-        // Case `nonblocking_service_client_exchanges_complete_lifecycle_frames`.
         {
             use std::io::{BufRead, BufReader};
 

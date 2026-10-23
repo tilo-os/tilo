@@ -268,10 +268,6 @@ impl PasswordSealedThunderbird {
 
     /// Seal exactly the reviewed selection under a fresh content key, wrapped
     /// with the person's preparation password and the same setup binding.
-    ///
-    /// # Errors
-    /// Refuses an invalid password/binding, a stale selection or a changed
-    /// source. No excluded account, folder, address book or calendar is read.
     pub fn seal(
         reviewed: &ReviewedThunderbird,
         selection: &ThunderbirdSelection,

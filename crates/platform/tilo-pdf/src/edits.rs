@@ -162,7 +162,6 @@ pub struct AdoptedAnnotation {
     pub unchanged: bool,
 }
 
-/// A value for a form field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FieldValue {
     Text(String),

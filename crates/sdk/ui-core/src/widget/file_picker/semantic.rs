@@ -99,7 +99,8 @@ impl FilePicker {
             "listing": match &self.listing { Listing::Folder => "folder", Listing::Recent => "recent", Listing::Search(_) => "search" },
             "query": self.query.value().chars().take(256).collect::<String>(),
             "can_recent": !self.recent.is_empty(),
-            "looking_up": self.looking_up()}),
+            "looking_up": self.looking_up(), "checking": self.check.is_some(),
+            "name_error": self.name_error.is_some()}),
         )
     }
 
@@ -137,15 +138,9 @@ impl FilePicker {
                     .find(|row| entry_id(&row.path) == entry)
                     .ok_or(PickerRefusal::UnavailableEntry)?
                     .clone();
-                let within_scope = if row.is_dir {
-                    self.safe_existing_directory(&row.path).is_some()
-                } else {
-                    self.safe_existing_file(&row.path).is_some()
-                };
-                if !within_scope {
+                if !Self::within_scope(&row) {
                     return Err(PickerRefusal::OutsideScope);
                 }
-                // Select is the ordinary single-click selection. Directory traversal is explicit.
                 if navigate {
                     if !row.is_dir {
                         return Err(PickerRefusal::UnavailableEntry);
@@ -162,7 +157,7 @@ impl FilePicker {
                 self.go_up();
             }
             PickerOperation::Confirm => {
-                if !self.can_commit_open() {
+                if self.check.is_some() || !self.can_commit_open() {
                     return Err(PickerRefusal::Unavailable);
                 }
                 self.click_open();

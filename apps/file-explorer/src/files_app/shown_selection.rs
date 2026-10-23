@@ -16,7 +16,10 @@ pub(super) struct ShownSelection {
 /// Retain the actual destination before reading its listing. Virtual views
 /// have no destination descriptor; no pathname fallback is invented.
 pub(super) fn folder(path: &Path) -> Option<Arc<RetainedObject>> {
-    if crate::recent::is_location(path) || crate::archive::location(path).is_some() {
+    if crate::recent::is_location(path)
+        || crate::applications::is_location(path)
+        || crate::archive::location(path).is_some()
+    {
         return None;
     }
     let metadata = std::fs::symlink_metadata(path).ok()?;

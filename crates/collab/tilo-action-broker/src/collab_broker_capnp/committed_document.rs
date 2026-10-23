@@ -77,10 +77,6 @@ impl NativeDocumentReadContext {
         Ok(None)
     }
     /// Re-checks the admitted channel's live custody and admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message once the broker, worker, launcher custody or admission ended.
     pub fn revalidate(&self) -> Result<(), String> {
         (self.revalidate)()
     }
@@ -124,9 +120,6 @@ pub trait NativeDocumentReads: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
     /// Prepare only a missing record for a live, original-package-attested
     /// person launch. This is not a read/capture fallback or a wire capability.
-    ///
-    /// # Errors
-    /// Creator custody, the SDK's declared kind or durable publication fails.
     fn prepare_application(
         &self,
         context: &NativeDocumentReadContext,
@@ -164,10 +157,6 @@ pub trait NativeDocumentReads: Send + Sync {
     }
     /// Must check exact current selected custody, caller certificate, and native
     /// document Read permission. Called again before every returned chunk.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the caller may not read the document now.
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String>;
     /// Called only after the broker reserves maximum bytes. Implementations must
     /// use the actual bounded native save, refusing before output allocation.
@@ -206,10 +195,6 @@ pub trait NativeDocumentReads: Send + Sync {
     /// broker then captures under its byte budget. A held `Await` asks this
     /// on every announcement, so it must stay cheap, and it must refuse
     /// exactly what [`Self::authorize`] refuses.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the caller may not read the document now.
     fn unchanged(
         &self,
         context: &NativeDocumentReadContext,
@@ -889,11 +874,6 @@ impl CapnpChannelHandle {
     /// caller's Open then meets the same refusal and fails closed, so a
     /// revocation ends the reader as it always did, only without the poll.
     /// No document byte and no readiness ever comes from this answer.
-    ///
-    /// # Errors
-    ///
-    /// The channel expired, a capture is unacknowledged, or a newer request
-    /// on this channel replaced the wait.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc channel handles are Rc-based; driven only on the broker LocalSet"

@@ -1,5 +1,3 @@
-//! An app's settings capability over the session's records.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -132,8 +130,6 @@ fn a_record_change_reaches_a_waiting_reader_and_others_do_not() {
         let unchanged = settings.read(0).await.unwrap();
         assert_eq!(unchanged.revision, first.revision);
         assert_eq!(unchanged.document_json, first.document_json);
-        // Another device's write of the app's personal entry, as the device
-        // fabric applies it.
         records
             .update_section("app_personal", object(json!({APP: {"interval_ms": 3000}})))
             .unwrap();

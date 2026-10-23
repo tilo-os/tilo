@@ -119,7 +119,6 @@ pub struct WebView {
     held: Vec<MouseButton>,
     /// Physical size last sent as a `Resize`, to avoid spamming the engine.
     last_sent_size: (u32, u32),
-    /// The engine scale last sent with it.
     last_sent_scale: f32,
     /// Last expected/observed mismatch for which we requested a repaint.
     /// A matching frame clears it, so a stalled backend cannot cause a
@@ -1315,14 +1314,12 @@ mod tests {
 
     #[test]
     fn keyboard_focus_is_forwarded_to_the_page() {
-        // Case `focused_page_owns_tab_for_dom_focus_navigation`.
         {
             let mut page = WebView::new(TestEngine::new());
             page.set_focus(true);
             assert!(page.wants_tab_input());
         }
 
-        // Case `focus_change_notifies_engine_once`.
         {
             let engine = TestEngine::new();
             let (mut w, _tree, _node) = laid_out(engine.clone());
@@ -1343,7 +1340,6 @@ mod tests {
             );
         }
 
-        // Case `key_mapping_covers_text_and_named_keys`.
         {
             assert_eq!(
                 WebView::map_key(&WKey::Character("a".into())),
@@ -1411,7 +1407,6 @@ mod tests {
         // Input lands where the engine drew: its far corner is the frame's.
         let (x, y) = view.to_engine(Point::new(3840.0, 2160.0));
         assert!((x - width as f32).abs() <= 1.0 && (y - height as f32).abs() <= 1.0);
-        // A display the engine can fill keeps the device's scale.
         view.set_viewport(Rect::new(0.0, 0.0, 1920.0, 1080.0), 2.0);
         assert_eq!(
             engine.commands().last(),
@@ -1429,7 +1424,6 @@ mod tests {
 
     #[test]
     fn engine_learns_physical_size_and_retina_scale_before_input() {
-        // Case `layout_sends_physical_resize_once`.
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
@@ -1450,7 +1444,6 @@ mod tests {
             );
         }
 
-        // Case `first_retina_draw_sets_dpi_without_an_input_event`.
         {
             let engine = TestEngine::new();
             let (mut view, _, _) = laid_out(engine.clone());
@@ -1480,7 +1473,6 @@ mod tests {
             assert_eq!(engine.commands().len(), count);
         }
 
-        // Case `mounting_in_a_retina_window_sets_dpi_before_input`.
         {
             let engine = TestEngine::new();
             let (mut view, _, _) = laid_out(engine.clone());
@@ -1501,7 +1493,6 @@ mod tests {
             );
         }
 
-        // Case `mounting_reissues_physical_size_when_retina_scale_was_preseeded`.
         {
             let engine = TestEngine::new();
             let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
@@ -1553,7 +1544,6 @@ mod tests {
             );
         }
 
-        // Case `first_mount_does_not_downgrade_a_preseeded_retina_scale`.
         {
             let engine = TestEngine::new();
             let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
@@ -1641,7 +1631,6 @@ mod tests {
     fn a_page_keeps_its_surface_scale_through_hover_and_rescales_once_per_display() {
         let engine = TestEngine::new();
         let (mut view, tree, node) = laid_out(engine.clone());
-        // The HiDPI panel.
         mount_at(&mut view, 2.0);
         let mounted = resizes(&engine);
         assert_eq!(
@@ -1695,7 +1684,6 @@ mod tests {
             "one re-render at the new display's scale, then none"
         );
 
-        // And to a fractionally scaled panel.
         mount_at(&mut view, 1.75);
         for step in 0..6 {
             hover(&mut view, &tree, node, 1.0, 40.0 + f64::from(step));
@@ -1737,7 +1725,6 @@ mod tests {
                 "hover re-rendered the page at {scale}"
             );
 
-            // The frame the engine paints for that request is drawn.
             *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
                 trace_id: None,
                 rgba: Arc::new(vec![255; physical.0 as usize * physical.1 as usize * 4]),
@@ -1759,7 +1746,6 @@ mod tests {
 
     #[test]
     fn engine_frames_are_accepted_by_size_and_density_with_bounded_repaint_retries() {
-        // Case `stale_frame_dimensions_request_one_bounded_repaint_retry`.
         {
             let engine = TestEngine::new();
             let (mut view, _, _) = laid_out(engine.clone());
@@ -1795,7 +1781,6 @@ mod tests {
             );
         }
 
-        // Case `cef_outward_rounding_is_not_treated_as_a_stale_frame`.
         {
             let engine = TestEngine::new();
             let (mut view, _, _) = laid_out(engine.clone());
@@ -1806,7 +1791,6 @@ mod tests {
             assert_eq!(engine.commands().len(), initial);
         }
 
-        // Case `fractional_dpr_accepts_exact_and_cef_rounded_frames`.
         {
             let engine = TestEngine::new();
             let (mut view, _, _) = laid_out(engine.clone());
@@ -1825,7 +1809,6 @@ mod tests {
             assert_eq!(engine.commands().len(), initial);
         }
 
-        // Case `old_density_frames_are_not_drawn_and_recovery_is_bounded`.
         {
             let engine = TestEngine::new();
             let mut view = WebView::new(engine.clone());
@@ -1869,7 +1852,6 @@ mod tests {
 
     #[test]
     fn engine_frames_draw_at_their_placed_geometry_and_scene_trace() {
-        // Case `exact_engine_frames_draw_at_fractional_and_odd_physical_sizes`.
         {
             for (width, height, scale) in [(802, 451, 1.75), (801, 451, 2.0), (800, 600, 2.0)] {
                 let engine = TestEngine::new();
@@ -1909,7 +1891,6 @@ mod tests {
             }
         }
 
-        // Case `quantized_engine_frames_draw_on_either_side_of_requested_size`.
         {
             // CEF rounds outward twice; an engine rounding the logical size to
             // nearest turns an 802x451 request at 3x into 267x150 logical /
@@ -1957,7 +1938,6 @@ mod tests {
             }
         }
 
-        // Case `scene_trace_follows_drawn_cached_image_and_excludes_stale_geometry`.
         {
             let engine = TestEngine::new();
             let mut view = WebView::new(engine.clone());
@@ -2016,7 +1996,6 @@ mod tests {
             );
         }
 
-        // Case `scene_trace_follows_nested_layout_on_repeated_and_new_frames`.
         {
             let engine = TestEngine::new();
             let mut view = WebView::new(engine.clone());
@@ -2064,7 +2043,6 @@ mod tests {
             }
         }
 
-        // Case `draw_after_navigation_paints_frame_image`.
         {
             let engine = TestEngine::new();
             let (mut w, _tree, _node) = laid_out(engine.clone());
@@ -2125,7 +2103,6 @@ mod tests {
 
     #[test]
     fn pointer_input_forwards_inside_only_and_navigates_history() {
-        // Case `pointer_inside_forwards_translated_coordinates`.
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
@@ -2159,7 +2136,6 @@ mod tests {
             }));
         }
 
-        // Case `pointer_outside_sends_nothing`.
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
@@ -2225,14 +2201,12 @@ mod tests {
                 })
             );
             assert!(!w.wants_pointer_capture());
-            // Released, the page hears nothing more from outside it.
             let count = engine.commands().len();
             dispatch(&mut w, &tree, node, &to(50.0, -40.0));
             dispatch(&mut w, &tree, node, &button(ElementState::Released));
             assert_eq!(engine.commands().len(), count);
         }
 
-        // Case `back_side_button_navigates_history`.
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
@@ -2259,7 +2233,6 @@ mod tests {
             assert!(engine.commands().contains(&WebViewCommand::GoBack));
         }
 
-        // Case `wheel_scrolls_in_physical_pixels`.
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
@@ -2291,7 +2264,6 @@ mod tests {
             }));
         }
 
-        // Case `nav_gesture_sends_history_commands`.
         {
             use crate::gesture::NavDirection;
             let engine = TestEngine::new();

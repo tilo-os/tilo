@@ -1,4 +1,3 @@
-//! Real raw-name directory grants and durable native jobs over the existing RPC.
 #![cfg(unix)]
 #![allow(
     clippy::unwrap_used,

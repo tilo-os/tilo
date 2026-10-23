@@ -267,16 +267,9 @@ pub trait ItemStorage: 'static {
     /// What a stored value that is not of this storage is called in errors.
     const NAME: &'static str;
 
-    /// The items stored in the map `map`.
-    ///
-    /// # Errors
-    /// Returns an item that does not read.
     fn load<T: Model + Identified>(doc: &Doc, map: &ObjId) -> Result<Vec<T>, ModelError>;
 
     /// Write `items` into `slot`.
-    ///
-    /// # Errors
-    /// Returns the document's write error.
     fn store<T: Model + Identified>(
         items: &[T],
         doc: &mut Doc,
@@ -284,9 +277,6 @@ pub trait ItemStorage: 'static {
     ) -> Result<(), ModelError>;
 
     /// Bring `items` up to date after `delta`; the default reads them again.
-    ///
-    /// # Errors
-    /// Returns an item that does not read.
     #[inline(never)]
     fn refresh<T: Model + Identified>(
         items: &mut Vec<T>,
@@ -451,7 +441,6 @@ impl<T: Identified, S> Items<T, S> {
         Self::default()
     }
 
-    /// Where the item `id` is.
     pub fn position_of(&self, id: &Id) -> Option<usize> {
         let stock = self.stock.get();
         match &stock.ids {
@@ -470,7 +459,6 @@ impl<T: Identified, S> Items<T, S> {
         }
     }
 
-    /// The item `id`.
     pub fn find(&self, id: &Id) -> Option<&T> {
         self.items().get(self.position_of(id)?)
     }
@@ -548,13 +536,11 @@ impl<R, T: Model + Identified, S> Path<R, Items<T, S>> {
         T::paths_at(self.child(Segment::Item(id.clone())))
     }
 
-    /// The path of the item `id` itself.
     #[must_use]
     pub fn item_path(&self, id: &Id) -> Path<R, T> {
         self.child(Segment::Item(id.clone()))
     }
 
-    /// Remove the item `id`.
     #[must_use]
     pub fn remove(&self, id: &Id) -> Edit<R> {
         self.edit(EditOp::RemoveItem { id: id.clone() })

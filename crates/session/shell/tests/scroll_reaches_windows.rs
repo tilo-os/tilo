@@ -206,7 +206,6 @@ impl Harness {
             .collect()
     }
 
-    /// The window's tile on screen.
     fn tile(&self) -> Rect {
         self.tiles()
             .into_iter()
@@ -272,7 +271,6 @@ impl Harness {
         }
     }
 
-    /// One notch of a mouse wheel.
     fn wheel_notch(&mut self) {
         self.input(&WindowEvent::MouseWheel {
             device_id: winit::event::DeviceId::dummy(),

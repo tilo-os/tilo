@@ -11,6 +11,10 @@
 //!   does, their segments' sizes, a library of `BOOKS` (500 when not given)
 //!   whose text is all elsewhere read back from its segments, and how long
 //!   its results take after each keystroke.
+//! - `--bench-catalogue` measures Project Gutenberg's catalogue as the
+//!   device keeps a copy of it, fetched as the device fetches it: how long
+//!   its index takes to build, and how long its rows take after each
+//!   keystroke.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,6 +32,10 @@ pub const COMMANDS: &[Command] = &[
     Command {
         option: "--bench-index",
         run: bench_index,
+    },
+    Command {
+        option: "--bench-catalogue",
+        run: bench_catalogue,
     },
 ];
 
@@ -91,6 +99,38 @@ fn prefixes(query: &str) -> Vec<String> {
         .char_indices()
         .map(|(at, c)| query.get(..at + c.len_utf8()).unwrap_or(query).to_owned())
         .collect()
+}
+
+/// Where Project Gutenberg publishes its catalogue, as the device fetches
+/// its copy.
+const CATALOGUE_URL: &str = "https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv.gz";
+
+/// The most a catalogue the bench fetches may be.
+const MAX_CATALOGUE_BYTES: usize = 64 * 1024 * 1024;
+
+/// The catalogue copy's index build and its rows per keystroke.
+fn bench_catalogue(_: &str) -> Result<(), String> {
+    let bytes = crate::store::fetch(CATALOGUE_URL, &[], MAX_CATALOGUE_BYTES)
+        .map_err(|error| format!("--bench-catalogue: not fetched ({error})"))?;
+    let started = ui::time::now();
+    let index = crate::catalogue::CatalogueIndex::from_gzip(&bytes)
+        .ok_or("--bench-catalogue: not a gzip-compressed catalogue")?;
+    println!("index of {} books: {:.1}ms", index.len(), millis(started));
+    let mut samples = Vec::new();
+    for query in BENCH_QUERIES.split(',') {
+        for typed in prefixes(query) {
+            let words: Vec<String> = typed
+                .split_whitespace()
+                .map(ui::search::normalize_search_text)
+                .collect();
+            let started = ui::time::now();
+            let rows = index.search(&words, ui::framework::views::GROUP_LIMIT);
+            samples.push(millis(started));
+            std::hint::black_box(rows);
+        }
+    }
+    report("catalogue rows per keystroke", &mut samples);
+    Ok(())
 }
 
 /// The sample shelf `copies` times over, each copy a book of its own.
@@ -167,7 +207,7 @@ fn bench_search(value: &str) -> Result<(), String> {
 
 /// The store's first rows per keystroke, typed at a person's pace.
 fn bench_store(queries: &[&str]) {
-    let store: Arc<dyn RemoteSource> = Arc::new(crate::store::Gutenberg);
+    let store: Arc<dyn RemoteSource> = Arc::new(crate::store::Gutenberg::live());
     let mut engine = QueryEngine::new(crate::app::query_kinds()).with_remote(Arc::clone(&store));
     // Focusing the field warms the connection before the first character.
     let started = ui::time::now();

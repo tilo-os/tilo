@@ -114,7 +114,6 @@ pub(crate) fn response(data: &ResponseData, view: ResponseView, sink: &Sink) -> 
     }
 }
 
-/// The body in the chosen view.
 pub(crate) fn body(data: &ResponseData, view: ResponseView) -> Element {
     match view {
         ResponseView::Pretty if data.is_json() => Box::new(

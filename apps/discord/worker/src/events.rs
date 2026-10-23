@@ -153,7 +153,6 @@ pub fn emoji_name(emoji: &Value) -> String {
 }
 
 impl Guild {
-    /// The guild as `GUILD_CREATE` describes it.
     #[must_use]
     pub fn from_create(data: &Value, bot_user: &str, cdn_base: &str) -> Self {
         let mut guild = Self {
@@ -309,7 +308,6 @@ impl Guild {
         }
     }
 
-    /// The layout event for gateway sequence `sequence`.
     #[must_use]
     pub fn layout(&self, sequence: u64) -> Emit {
         let layout = LayoutChanged {
@@ -421,7 +419,6 @@ impl Guild {
         ))
     }
 
-    /// `MESSAGE_DELETE` of `id` in `channel`.
     #[must_use]
     pub fn message_deleted(&self, id: &str, channel: &str, executor: Option<String>) -> Emit {
         let (channel_id, _) = self.place(channel);

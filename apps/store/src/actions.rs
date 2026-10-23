@@ -157,9 +157,6 @@ pub fn execute_with_host(
         | (ActionKind::RuntimeInstall, StoreSource::Tilo { .. }) => {
             open_tilo(host, item, action, staging_dir)
         }
-        (ActionKind::Remove, StoreSource::Tilo { .. }) => tilo_existing(host, item, |host, id| {
-            host.remove(id).map(|()| "Removed app.".into())
-        }),
         (ActionKind::MarkInstalled, StoreSource::Tilo { .. }) if item.installed.is_installed() => {
             tilo_existing(host, item, |host, id| {
                 host.pin(id, true)
@@ -222,12 +219,6 @@ pub fn execute_with_host(
                     package_root: None,
                 }),
             }
-        }
-        (ActionKind::FlatpakRemove, StoreSource::Flathub | StoreSource::FlatpakRemote { .. }) => {
-            host_result(host, |host| {
-                host.flatpak(app_host::client::FlatpakAction::Remove, &item.id, None)
-                    .map(|_| ui::i18n!("store-app-removed"))
-            })
         }
         (ActionKind::NeedsFlatpakHost, _) => {
             ActionOutcome::fail("Install flatpak on the host to use this action.")

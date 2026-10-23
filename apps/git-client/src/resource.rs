@@ -816,7 +816,6 @@ mod tests {
             shown.contains(destination.to_str().unwrap()),
             "the actual checkout path is shown: {shown}"
         );
-        // Device paths stay out of the shared repository projection.
         assert!(
             !serde_json::to_string(&app.state().shared)
                 .unwrap()
@@ -929,7 +928,6 @@ mod tests {
             "wrapping can be enabled again"
         );
 
-        // A preference stored by another window or device shows here.
         app.settings::<Settings>()
             .set(&Settings {
                 diff_layout: DiffLayout::Unified,

@@ -4951,6 +4951,13 @@ pub(crate) mod tests {
                     SheetsEffect::ImportOds { path: at },
                 ),
             };
+            assert!(
+                matches!(
+                    app.effect(&export),
+                    Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+                ),
+                "writing over a named path asks first"
+            );
             app.effect_confirmed(&export).unwrap();
             assert!(path.exists(), "the .{ext} was written");
             assert!(shown(&mut app).1.starts_with("Exported"));
@@ -4991,7 +4998,8 @@ pub(crate) mod tests {
     }
 
     /// Without a path, the host's chooser picks where an export is saved and
-    /// which file is imported; cancelling it changes nothing.
+    /// which file is imported; cancelling it changes nothing. The save dialog
+    /// is the export's confirmation, so nothing asks before it.
     #[test]
     fn the_file_chooser_saves_exports_and_picks_imports() {
         let dir = tempfile::tempdir().unwrap();
@@ -5001,8 +5009,8 @@ pub(crate) mod tests {
         let mut app = sample_app();
 
         recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-        app.effect_confirmed(&SheetsEffect::ExportCsv { path: None })
-            .unwrap();
+        app.effect(&SheetsEffect::ExportCsv { path: None })
+            .expect("exporting through the save dialog asks nothing first");
         let written = std::fs::read_to_string(&path).expect("the chosen file was written");
         assert!(written.starts_with("Category"), "{written}");
         assert_eq!(

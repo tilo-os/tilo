@@ -1,4 +1,3 @@
-//! Real native clock, certified local action, and durable terminal owner barrier.
 #[path = "native_checkpoint_tests.rs"]
 mod checkpoints;
 use crate::shell::{

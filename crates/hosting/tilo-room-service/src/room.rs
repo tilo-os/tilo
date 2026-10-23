@@ -87,7 +87,6 @@ struct Placement {
 
 type OperatorInput = Box<dyn AsyncWrite + Send + Unpin>;
 
-/// The `--state` of a room's relay, under the room's directory.
 pub(crate) fn relay_state(directory: &Path) -> PathBuf {
     directory.join("state")
 }

@@ -400,9 +400,6 @@ pub trait Guest {
     }
 
     /// `lock`: the root-private runtime directory and its lock file, opened.
-    ///
-    /// # Errors
-    /// Either is not root's own, private and real.
     fn lock(&self) -> Result<File> {
         let base = self.base();
         fs::DirBuilder::new()
@@ -526,9 +523,6 @@ fn notify_ready() -> Result<()> {
 /// `idle`: no installer transient unit and no `tilo-install` process.
 /// Independent of the replaceable helper's flock protocol: older helpers
 /// must not be refreshed while an installer launcher or backend is alive.
-///
-/// # Errors
-/// Either is running, or the listing fails.
 pub fn idle(guest: &dyn Guest) -> Result<()> {
     let units = guest.command(&[
         "systemctl",
@@ -882,9 +876,6 @@ pub fn serve(guest: &dyn Guest) -> Result<()> {
 /// `tilo-vm-install-proof code-refresh-check STATE_DIR`: the installer
 /// backend, holding the refresh lock, refuses to run over a refresh that
 /// did not finish applying.
-///
-/// # Errors
-/// A marker in `base` that is unreadable or not in the applied state.
 pub fn check_applied(base: &Path) -> Result<()> {
     let marker = base.join("active.json");
     if !marker.exists() {

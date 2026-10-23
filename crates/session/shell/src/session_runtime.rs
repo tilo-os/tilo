@@ -19,11 +19,6 @@ use tokio::runtime::Runtime;
 const WORKERS: usize = 2;
 
 /// The session runtime, started on first use.
-///
-/// # Errors
-///
-/// A description of why the runtime could not be started. The failure is
-/// remembered, so every caller degrades the same way.
 pub fn runtime() -> Result<&'static Runtime, String> {
     static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
     RUNTIME
@@ -279,7 +274,6 @@ mod tests {
         reason = "a phase with an early return keeps its original body as a nested fn"
     )]
     fn session_starts_are_delivered_in_order_and_never_hang() {
-        // Phase `deliveries_arrive_in_order_and_wake_the_loop`.
         {
             let (wake, woken) = channel_wake();
             let (delivery, mailbox) = mailbox::<u32>(wake);
@@ -311,7 +305,6 @@ mod tests {
             assert_eq!(outcome, Ok(7));
         }
         a_blocking_start_reports_once_it_finishes();
-        // Phase `a_start_that_never_reports_is_a_failure_not_a_hang`.
         {
             let (wake, _woken) = channel_wake();
             let (delivery, mailbox) = mailbox::<Result<u32, String>>(wake);
@@ -324,7 +317,6 @@ mod tests {
 
     #[test]
     fn registrations_are_held_until_released_and_late_ones_dropped() {
-        // Phase `a_registration_is_held_until_released`.
         {
             let runtime = test_runtime();
             let (registered_tx, registered_rx) = mpsc::channel::<()>();
@@ -345,7 +337,6 @@ mod tests {
             drop(registration);
             dropped_rx.recv().unwrap();
         }
-        // Phase `a_registration_finishing_after_release_is_not_kept`.
         {
             let runtime = test_runtime();
             let (finish, finished) = tokio::sync::oneshot::channel::<()>();

@@ -39,11 +39,6 @@ impl std::fmt::Debug for AdmissionError {
 }
 impl BoundedOwnerDirectory {
     /// Inspect the exact retained FD. This does not acquire a lease or sync data.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] when the directory's current privacy
-    /// profile is not a supported bounded owner-only profile.
     pub fn admit(directory: StorageDirectory) -> Result<Self, AdmissionError> {
         match directory.inner.validate_bounded() {
             Ok(()) => Ok(Self { directory }),
@@ -59,11 +54,6 @@ impl BoundedOwnerDirectory {
         self.directory.identity()
     }
     /// Revalidate the retained directory's bounded privacy profile.
-    ///
-    /// # Errors
-    ///
-    /// Returns the native error when the held directory no longer satisfies the
-    /// bounded owner-only profile.
     pub fn validate(&self) -> io::Result<()> {
         self.directory.inner.validate_bounded()
     }
@@ -82,11 +72,6 @@ impl BoundedOwnerDirectory {
     }
     /// Open a current existing private regular sentinel, without create/truncate.
     /// The caller separately acquires its actual `FileLease`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid name, a directory that fails validation,
-    /// or a missing or non-private sentinel.
     pub fn open_lease_existing(&self, name: &OsStr) -> io::Result<File> {
         name_check(name)?;
         self.validate()?;
@@ -201,21 +186,11 @@ impl BoundedOwnerDirectory {
             .map_err(ChildOpenError::Open)?;
         Self::admit(StorageDirectory { inner }).map_err(ChildOpenError::Admission)
     }
-    /// Maximum requested heap bytes for the generated stage name. OS errors are
-    /// inline; normal publication retains no name after rename/commit.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidInput` when `name` is not a valid bounded child name.
     pub fn publication_allocation_bytes(name: &OsStr) -> io::Result<usize> {
         name_check(name)?;
         Ok(name.as_bytes().len().saturating_add(37))
     }
     /// Exact requested heap bytes for the retained existing-commit name.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidInput` when `name` is not a valid bounded child name.
     pub fn existing_commit_allocation_bytes(name: &OsStr) -> io::Result<usize> {
         name_check(name)?;
         Ok(name.as_bytes().len())

@@ -50,7 +50,8 @@ use crate::shell::device_fabric::{
     ClipboardEntry, ClipboardPayload, DeviceFabric, DeviceFabricSnapshot, DeviceKind,
     DevicePresence, DisplayEdge, DisplayPlacement, DisplayRect, FABRIC_SCHEMA_VERSION,
     FabricCapabilities, FabricInputEvent, FabricStamp, InputLease, MAX_INPUT_LEASE_MS,
-    MediaHandoffFailure, MediaSession, MediaSourceLocator, PersonalFabricAction, RoamingSetting,
+    MediaHandoffFailure, MediaSession, MediaSourceLocator, OwnerSession, PersonalFabricAction,
+    RoamingSetting,
 };
 use crate::shell::network::{ShellNetwork, fabric_monotonic_us};
 pub(crate) use nearby_changes::{
@@ -2288,6 +2289,7 @@ impl DeviceFabricRuntime {
     fn handle_fabric_actions(&mut self, network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
         prune_spatial_leases(network);
         self.remote_capture.drain_pending_actions(network);
+        crate::shell::device_certification::pump(network);
         for received in network.take_personal_fabric_actions() {
             let crate::shell::network::ReceivedPersonalFabricAction {
                 envelope,
@@ -2309,6 +2311,9 @@ impl DeviceFabricRuntime {
                 continue;
             }
             if crate::shell::device_wake::handle_action(network, &envelope) {
+                continue;
+            }
+            if crate::shell::device_certification::handle_action(network, &envelope) {
                 continue;
             }
             if handle_fabric_clock_action(network, &envelope, received_monotonic_us) {
@@ -2492,6 +2497,9 @@ impl DeviceFabricRuntime {
                 }
                 PersonalFabricAction::WindowViews { views, decode } => {
                     window_views::record(envelope.source, views, &decode);
+                }
+                PersonalFabricAction::ShowTab { tab } => {
+                    *shown_tab_slot().lock_recover() = Some(tab);
                 }
                 action => handle_spatial_action(network, &route, &envelope.target, action),
             }
@@ -4272,6 +4280,9 @@ fn apply_spatial_action(
         | PersonalFabricAction::SpeakerListen { .. }
         | PersonalFabricAction::SpeakerHeard { .. }
         | PersonalFabricAction::WindowViews { .. }
+        | PersonalFabricAction::ShowTab { .. }
+        | PersonalFabricAction::CertifyAsk { .. }
+        | PersonalFabricAction::CertifyAnswer { .. }
         | PersonalFabricAction::WakeDevice { .. }
         | PersonalFabricAction::WakeReport { .. }
         | PersonalFabricAction::WakeProbe { .. }
@@ -7535,6 +7546,43 @@ pub(super) fn flush_spatial_input(network: &ShellNetwork) {
     }
 }
 
+fn shown_tab_slot() -> &'static Mutex<Option<u64>> {
+    static TAB: OnceLock<Mutex<Option<u64>>> = OnceLock::new();
+    TAB.get_or_init(Mutex::default)
+}
+
+/// The tab another of the person's devices last asked this one to show
+/// ([`PersonalFabricAction::ShowTab`]), taken once.
+pub(crate) fn take_shown_tab() -> Option<u64> {
+    shown_tab_slot().lock_recover().take()
+}
+
+/// Ask `target`, another of the person's devices, to show `tab`.
+///
+/// # Errors
+///
+/// Returns why the request could not be sent.
+pub(crate) fn show_tab_on(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    tab: u64,
+) -> Result<(), String> {
+    network
+        .send_personal_fabric_action(target, PersonalFabricAction::ShowTab { tab })
+        .map(|_| ())
+}
+
+fn owner_session_slot() -> &'static Mutex<OwnerSession> {
+    static SESSION: OnceLock<Mutex<OwnerSession>> = OnceLock::new();
+    SESSION.get_or_init(Mutex::default)
+}
+
+/// The person's session here, as the next local snapshot carries it to their
+/// other devices (`crate::shell::owner_session`).
+pub(crate) fn set_owner_session(session: OwnerSession) {
+    *owner_session_slot().lock_recover() = session;
+}
+
 /// One causal native-seat phase. Releases precede every surviving input in a
 /// frame, so an old lease's barrier cannot erase a replacement lease's edge.
 pub(crate) enum SpatialInputBatch {
@@ -7857,6 +7905,7 @@ fn build_local_snapshot(
             online: true,
             last_seen_unix_ms: 0,
             wake_routes: Vec::new(),
+            session: *owner_session_slot().lock_recover(),
             stamp: stamp.clone(),
         },
         media,
@@ -8874,7 +8923,7 @@ mod tests {
             assert_eq!(caps.secret_store, wifi);
         }
         assert!(!permits_roaming_setting(
-            ContinuityPolicySnapshot::default(),
+            ContinuityPolicySnapshot::OFF,
             arrangement_key
         ));
     }
@@ -9363,6 +9412,7 @@ mod tests {
                 online: true,
                 last_seen_unix_ms: counter,
                 wake_routes: Vec::new(),
+                session: OwnerSession::default(),
                 stamp: stamp.clone(),
             },
             media: Vec::new(),
@@ -10013,6 +10063,7 @@ mod tests {
                     online: true,
                     last_seen_unix_ms: 0,
                     wake_routes: Vec::new(),
+                    session: OwnerSession::default(),
                     stamp: FabricStamp {
                         counter: 0,
                         device: device.clone(),
@@ -10049,6 +10100,7 @@ mod tests {
                     online: true,
                     last_seen_unix_ms: 0,
                     wake_routes: Vec::new(),
+                    session: OwnerSession::default(),
                     stamp: old_stamp.clone(),
                 },
                 media: Vec::new(),
@@ -10398,7 +10450,7 @@ mod tests {
                 "Desktop"
             );
             assert!(
-                roaming_provenance(&fabric, ContinuityPolicySnapshot::default())
+                roaming_provenance(&fabric, ContinuityPolicySnapshot::OFF)
                     .settings
                     .is_empty()
             );

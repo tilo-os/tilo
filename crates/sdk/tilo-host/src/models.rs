@@ -22,9 +22,6 @@ impl ProviderAdministration {
     }
 
     /// Obtain this host's authority, never an ambient or another mount's session.
-    ///
-    /// # Errors
-    /// Returns unavailable when the host did not grant administration.
     pub fn get(&self) -> Result<std::sync::Arc<dyn ProviderAdmin>, ModelError> {
         self.0
             .clone()
@@ -32,9 +29,6 @@ impl ProviderAdministration {
     }
 
     /// Capture the launcher's separately authorized administration capability.
-    ///
-    /// # Errors
-    /// Returns unavailable when launcher administration is unsupported or absent.
     #[cfg(feature = "native")]
     pub fn from_launcher() -> Result<Self, ModelError> {
         tilo_model_gateway::runtime_client::provider_admin_from_launcher().map(Self::new)
@@ -65,9 +59,6 @@ impl Models {
     }
 
     /// Capture the launcher's authenticated capability and deliberate selection.
-    ///
-    /// # Errors
-    /// Returns unavailable without a supported launcher, runtime or selection.
     #[cfg(feature = "native")]
     pub fn from_launcher() -> Result<Self, ModelError> {
         tilo_model_gateway::runtime_client::from_launcher().map(Self::new)

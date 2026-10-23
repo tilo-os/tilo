@@ -1,5 +1,3 @@
-//! Shortcuts checked and run against a fake action host.
-
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Mutex;

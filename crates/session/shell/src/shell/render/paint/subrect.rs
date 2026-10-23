@@ -405,7 +405,6 @@ mod tests {
             }
         }
 
-        // Phase `offset_subrect_picks_the_right_source_region`.
         {
             // Combined scene 6x2; second output is a 2x2 region at global position (4,0) — the swizzle must pull source columns 4 and 5, not 0 and 1.
             let (cw, ch) = (6usize, 2usize);
@@ -434,7 +433,6 @@ mod tests {
             assert_eq!(dst[d + 1], 1, "dst(1,1).G should be source row 1");
         }
 
-        // Phase `destination_pitch_padding_is_untouched`.
         {
             // A DRM dumb buffer's pitch usually exceeds out_w*4; the trailing padding bytes must stay as they were.
             let (w, h) = (2usize, 2usize);
@@ -460,7 +458,6 @@ mod tests {
             }
         }
 
-        // Phase `overhanging_output_is_clamped_not_panicking`.
         {
             // Output wider/taller than the source region remaining: must clamp.
             let (w, h) = (3usize, 3usize);
@@ -510,7 +507,6 @@ mod tests {
             assert_eq!((dst[bottom_left + 2], dst[bottom_left + 1]), (1, 2));
         }
 
-        // Phase `profiled_path_copies_only_the_output_viewport`.
         {
             let src = ramp_rgba(5, 2);
             let mut output = Vec::new();

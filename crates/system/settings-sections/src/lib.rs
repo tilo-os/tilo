@@ -14,6 +14,9 @@ pub mod prefs;
 /// which a change is admitted.
 pub const APP_ID: &str = "so.tilo.settings";
 
+/// The app's title, which the person's steps on their sections name.
+pub const APP_TITLE: &str = "Settings";
+
 /// Declare every section the session keeps.
 pub fn declare(records: &mut ui::framework::Records<'_>) {
     records

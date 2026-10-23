@@ -717,10 +717,32 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
         // Said where the picture would play, not left as a still poster.
         content = content.push(Box::new(Banner::info(t("tube-live-in-app"))));
     }
+    if let Some(unplayable) = model.unplayable(&v.id) {
+        content = content.push(Box::new(unplayable_banner(ui, unplayable)));
+    }
     let content = content
         .push(Box::new(stage))
         .push(Box::new(Column::new().with_intrinsic_height().push(lower)));
     Scrollable::new_vertical().with_child(Box::new(content))
+}
+
+/// Why the open video is not playing, in plain words, with `YouTube`'s own
+/// reason when it gave one, and a way to ask again.
+fn unplayable_banner(ui: Ui<'_>, unplayable: &crate::model::Unplayable) -> Banner {
+    let message = match &unplayable.said {
+        Some(said) => t_args(
+            "tube-unplayable-youtube-said",
+            &[arg("reason", said.clone())],
+        ),
+        None => t("tube-unplayable-no-source"),
+    };
+    Banner::warning(t("tube-unplayable"))
+        .with_id("tube-unplayable")
+        .with_message(message)
+        .with_action(
+            Button::new("retry_playback", &t("tube-try-again"))
+                .on_click(ui.push(Action::RetryPlayback)),
+        )
 }
 
 /// Hand the shared player this video's `SponsorBlock` segments, the quality

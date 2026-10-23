@@ -105,7 +105,6 @@ pub trait Host {
     }
 }
 
-/// The installed system as it is.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 

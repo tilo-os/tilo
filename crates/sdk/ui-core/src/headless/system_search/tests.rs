@@ -716,7 +716,6 @@ fn search_captures_keyboard_before_live_and_embedded_history_toolbars() {
             !history_captures(&f),
             "Enter must not open background History"
         );
-        // Once search closes, History retains its ordinary keyboard action.
         f.perform_semantic_named("history-open", None, &crate::a11y::Action::Focus)
             .unwrap();
         enter(&mut f);

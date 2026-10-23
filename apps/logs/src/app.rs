@@ -50,7 +50,6 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// The most recent journal records read.
 const JOURNAL_LIMIT: usize = 2000;
 
-/// One read of the journal.
 type JournalRead = Result<Vec<LogEntry>, JournalLoadError>;
 
 /// An `Instant` at least `POLL_INTERVAL` in the past, so writing it into
@@ -117,7 +116,6 @@ pub struct LogsApp {
     /// Distinct boots: (`boot_id`, label), newest first.
     boots: Vec<(String, String)>,
 
-    // ---- caches, refreshed from the doc on sync ----
     filter: Filter,
     /// Indices into `entries` that pass `filter`, in display order.
     filtered: Vec<usize>,
@@ -143,7 +141,6 @@ pub struct LogsApp {
     /// live region. It never includes a chosen path or log contents.
     export_status: Option<String>,
 
-    // ---- the window ----
     rect: Rect,
     shell: NavShell,
     shared: Shared,
@@ -163,7 +160,6 @@ pub struct LogsApp {
     /// re-resolves current availability and permissions before effects run.
     pending_control_invocation: Option<ControlInvocation>,
 
-    // ---- journal source ----
     /// Whether the journal controls are offered: everywhere but a past
     /// version.
     allow_live: bool,
@@ -280,7 +276,6 @@ impl LogsApp {
         self.units = units;
     }
 
-    /// Recompute `filtered` from the current `filter`.
     fn recompute_filtered(&mut self) {
         self.filtered = self
             .entries
@@ -934,7 +929,6 @@ mod tests {
     fn captured(viewport: (u32, u32)) -> TestApp<LogsShell> {
         let mut app = TestApp::new().unwrap();
         surface(&mut app, |viewer| {
-            // Exercise live effect admission with a deterministic local journal.
             viewer.reads = false;
             viewer.reading = None;
             viewer.source_loading = false;

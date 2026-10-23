@@ -34,10 +34,6 @@ pub(crate) fn interleaved(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
 }
 
 /// Connect to `host:port`, racing its addresses.
-///
-/// # Errors
-///
-/// A user-facing reason when the name does not resolve or no address accepts.
 pub(crate) async fn tcp(host: &str, port: u16) -> Result<TcpStream, String> {
     let addrs = tokio::net::lookup_host((host, port))
         .await
@@ -91,11 +87,6 @@ where
 /// after another, each with the whole command timeout, so on a network that
 /// drops one address family an account check or a send waited ten seconds
 /// for every dead address before the SMTP server was even asked.
-///
-/// # Errors
-///
-/// A user-facing reason when no address accepts, TLS fails, or the server
-/// does not answer as SMTP.
 pub(crate) async fn smtp(
     host: &str,
     port: u16,

@@ -1,4 +1,3 @@
-//! Production keyboard routing across shaped rows and block boundaries.
 use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::{BlockEditor, CursorPlacement, Widget};

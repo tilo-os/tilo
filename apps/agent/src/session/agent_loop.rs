@@ -313,7 +313,6 @@ pub(super) struct LoopState {
 
 /// An independent invoke running in its application while the turn goes on.
 struct InFlight {
-    /// The call, as resolved when it started.
     call: StreamedCall,
     offer: surface::Offer,
     /// What was available when it started, to report what it unlocked.
@@ -349,7 +348,6 @@ struct Prepared {
 struct Succeeded<'a> {
     offer: &'a surface::Offer,
     before: &'a HashMap<String, bool>,
-    /// The catalogue revision when it started.
     before_revision: u64,
     /// The application an open started, and the windows it had before.
     opened: Option<(String, HashSet<(u64, String)>)>,
@@ -2553,8 +2551,6 @@ mod tests {
         ));
     }
 
-    // -- A scripted model ------------------------------------------------
-
     /// Answers each turn with the next scripted event list and records the
     /// request bodies, like the gateway but without a network.
     #[derive(Default)]
@@ -2694,8 +2690,6 @@ mod tests {
         .to_string())));
         events
     }
-
-    // -- A scripted broker: one small document app ------------------------
 
     const PEER: u64 = 7;
     const CHAT_PEER: u64 = 8;
@@ -2862,7 +2856,6 @@ mod tests {
     /// How the fixture host treats a re-ask that asks to be held.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     enum ReaskHold {
-        /// For as long as the re-ask asked.
         #[default]
         AsAsked,
         /// Until its child moves on, however long the re-ask asked.
@@ -4346,8 +4339,6 @@ mod tests {
         );
     }
 
-    /// A fresh open whose receipt names the new window ends on the
-    /// catalogue that publishes it.
     #[test]
     fn a_fresh_open_ends_on_the_window_its_receipt_names() {
         let mut f = open_then_type(World {
@@ -4993,7 +4984,6 @@ mod tests {
         }
         let catalogue_end = first.find("The request:").unwrap();
         assert_eq!(first[..catalogue_end], second[..catalogue_end]);
-        // Within a task, earlier messages are replayed unchanged.
         assert_eq!(
             bodies[2]["messages"].as_array().unwrap()[..2],
             bodies[1]["messages"].as_array().unwrap()[..2]
@@ -5518,8 +5508,6 @@ mod tests {
         assert!(!asks_for_message("tell me what this chat says"));
         assert!(asks_for_message("ping me in chat"));
     }
-
-    // -- Independent invokes, run alongside each other ---------------------
 
     /// An `invoke` of `action` on `resource` in `peer`'s record; marked
     /// independent of the steps before it when `independent`.

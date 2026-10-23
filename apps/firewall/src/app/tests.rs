@@ -175,7 +175,6 @@ fn the_zones_dock_while_they_fit_and_become_a_screen_when_narrow() {
     assert_eq!(narrow.shell.geometry().sidebar, SidebarPlacement::Screen);
 }
 
-/// The zone list selects a zone and the page follows it.
 #[test]
 fn choosing_a_zone_in_the_list_opens_its_page() {
     let mut app = framed(1280.0, 800.0);
@@ -347,7 +346,6 @@ fn confirm(app: &mut TestApp<FirewallShell>) {
     app.settle();
 }
 
-/// Making a zone active changes the document's default zone.
 #[test]
 fn making_a_zone_active_changes_the_default() {
     let mut app = hosted();
@@ -359,7 +357,6 @@ fn making_a_zone_active_changes_the_default() {
     assert!(frame.contains("is now the active zone"), "{frame}");
 }
 
-/// The delete button in a row opens the confirmation dialog.
 #[test]
 fn the_row_delete_button_opens_the_confirmation() {
     let mut app = framed(1280.0, 800.0);

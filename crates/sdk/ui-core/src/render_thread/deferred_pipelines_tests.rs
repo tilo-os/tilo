@@ -381,3 +381,46 @@ fn the_web_renderer_awaits_only_the_first_frame_s_pipelines() {
         "compiled asynchronously, nothing is created inline again"
     );
 }
+
+#[test]
+fn a_window_s_damage_only_frame_builds_no_pipeline_once_the_deferred_build_is_done() {
+    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let mut window =
+        Renderer::new_deferring(&gpu.device, options(), PipelineDeferral::Unused).unwrap();
+    assert!(
+        window.sparse_fine_supported(),
+        "the adapter draws damage-only frames"
+    );
+    let scene = window_scene();
+    let _ = draw(&gpu, &mut window, &scene);
+    let (built, finished) = std::sync::mpsc::channel();
+    window.start_deferred_pipelines(&gpu.device, move || {
+        let _ = built.send(());
+    });
+    finished
+        .recv_timeout(tilo_test_env::hang_bound())
+        .expect("the build reports it built every deferred pipeline");
+    let target = target(&gpu.device);
+    let damage = window
+        .render_to_texture_with_damage(
+            &gpu.device,
+            &gpu.queue,
+            &scene,
+            &target.view,
+            &RenderParams {
+                base_color: Color::from_rgb8(10, 10, 12),
+                width: WIDTH,
+                height: HEIGHT,
+                antialiasing_method: AaConfig::Area,
+            },
+            &[vello::FineDamageRect {
+                x: 16,
+                y: 40,
+                width: 120,
+                height: 24,
+            }],
+        )
+        .expect("the damage renders");
+    assert!(damage.is_some(), "the frame took the damage-only path");
+    assert_eq!(window.deferred_pipelines().built_inline, 0);
+}

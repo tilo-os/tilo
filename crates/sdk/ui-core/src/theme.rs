@@ -319,7 +319,6 @@ impl Theme {
         Self::preset(Preset::Dark)
     }
 
-    /// The light theme.
     pub fn light() -> Self {
         Self::preset(Preset::Light)
     }
@@ -976,7 +975,6 @@ pub struct SurfaceShape {
 }
 
 impl SurfaceShape {
-    /// `bounds` with every corner rounded at `radius`.
     #[must_use]
     pub fn rounded(bounds: vello::kurbo::Rect, radius: f64) -> Self {
         Self {
@@ -985,7 +983,6 @@ impl SurfaceShape {
         }
     }
 
-    /// Whether any corner is rounded.
     #[must_use]
     pub fn is_rounded(&self) -> bool {
         let r = self.radii;
@@ -1099,7 +1096,6 @@ mod tests {
             );
             assert_ne!(i.accent, i.accent_hover);
         }
-        // A ground of the palette's own polarity keeps the authored fill.
         let dark = Theme::dark();
         let sidebar = dark.tokens.colors.surfaces.sidebar;
         assert_eq!(
@@ -1360,7 +1356,6 @@ mod tests {
 
     #[test]
     fn text_and_ui_scale_multiply_compose_and_clamp() {
-        // Case `text_scale_multiplies_every_type_size`.
         {
             let base = Theme::dark();
             let scaled = Theme::dark().with_text_scale(1.5);
@@ -1370,13 +1365,11 @@ mod tests {
             }
         }
 
-        // Case `text_scale_is_clamped_to_a_sane_range`.
         {
             assert!(Theme::dark().with_text_scale(0.0).text_scale >= 0.5);
             assert!(Theme::dark().with_text_scale(100.0).text_scale <= 4.0);
         }
 
-        // Case `ui_scale_multiplies_spacing_radii_and_type_together`.
         {
             let base = Theme::dark();
             let bs = base.tokens.spacing.s3;
@@ -1402,13 +1395,11 @@ mod tests {
             assert!((scaled.radius_standard - f64::from(r.control) * 1.5).abs() < 1e-4);
         }
 
-        // Case `ui_scale_is_clamped_to_a_sane_range`.
         {
             assert!(Theme::dark().with_ui_scale(0.0).ui_scale >= 0.5);
             assert!(Theme::dark().with_ui_scale(100.0).ui_scale <= 3.0);
         }
 
-        // Case `ui_scale_and_text_scale_compose_on_type`.
         {
             let base = Theme::dark();
             let base_type = base.text(crate::tokens::TextRole::Body).size;
@@ -1421,7 +1412,6 @@ mod tests {
             assert!((composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3);
         }
 
-        // Case `responsive_scale_is_ui_scale_times_text_growth_and_never_shrinks`.
         {
             assert_eq!(Theme::dark().responsive_scale(), 1.0);
             assert_eq!(Theme::dark().with_text_scale(2.0).responsive_scale(), 2.0);
@@ -1433,13 +1423,11 @@ mod tests {
 
     #[test]
     fn a11y_preferences_fold_into_the_theme() {
-        // Case `reduce_motion_flag_threads_onto_the_theme`.
         {
             assert!(!Theme::dark().reduce_motion, "default is motion on");
             assert!(Theme::dark().with_reduce_motion(true).reduce_motion);
         }
 
-        // Case `configured_theme_honours_the_host_reduce_motion_input`.
         {
             assert!(Theme::configured_from_text("", true).reduce_motion);
             assert!(!Theme::configured_from_text("", false).reduce_motion);
@@ -1494,7 +1482,6 @@ mod tests {
 
     #[test]
     fn a_document_sets_every_role_it_names() {
-        // Case `settings_json_materializes_a_custom_theme`.
         {
             let doc = quiet_ocean(1.25);
             let json = serde_json::json!({
@@ -1514,7 +1501,6 @@ mod tests {
             assert!(crate::tokens::contrast::audit(&theme.tokens.colors).is_empty());
         }
 
-        // Case `density_rescales_the_whole_scale_and_clamps`.
         {
             let theme = Theme::from_document(&quiet_ocean(1.25)).unwrap();
             let s = theme.tokens.spacing;
@@ -1527,7 +1513,6 @@ mod tests {
             assert!(Theme::from_document(&quiet_ocean(0.1)).is_none());
         }
 
-        // Case `shape_type_motion_and_material_reach_their_tokens`.
         {
             let mut doc = quiet_ocean(1.0);
             doc.shape.window_radius = 28.0;
@@ -1563,7 +1548,6 @@ mod tests {
             assert!((fill.h - 150.0).abs() < 6.0 && fill.c > 0.08);
         }
 
-        // Case `a_document_of_another_schema_or_a_missing_id_applies_nothing`.
         {
             let mut old = quiet_ocean(1.0);
             old.schema_version = 4;
@@ -1608,7 +1592,6 @@ mod configured_theme {
 
     #[test]
     fn startup_theme_follows_the_settings_file_or_its_absence() {
-        // Case `a_high_contrast_preference_on_disk_is_the_theme_that_starts`.
         {
             let dir = tempfile::tempdir().expect("temp config dir");
             let settings = dir.path().join("settings.json");
@@ -1624,7 +1607,6 @@ mod configured_theme {
                 "a settings file asking for high contrast must produce it",
             );
 
-            // The accessibility switch, whatever theme is chosen beside it.
             std::fs::write(
                 &settings,
                 r#"{"appearance":{"mode":"light","high_contrast":true}}"#,

@@ -21,7 +21,6 @@ use serde_json::{Map, Value};
 
 use crate::{ActionError, EncodedAction};
 
-/// The key a content reference is written under.
 pub const CONTENT_REFERENCE_KEY: &str = "tilo.content/1";
 
 /// The shortest text or byte run kept as content rather than inline.
@@ -132,9 +131,6 @@ pub(crate) fn keep(env: &crate::ActionEnvelope) {
 impl EncodedAction {
     /// This action with every text or byte run of at least `threshold`
     /// bytes kept as content: the recorded form, and the content to keep.
-    ///
-    /// # Errors
-    /// A payload that is not JSON, or that already uses the reserved key.
     pub fn with_content_parts(
         &self,
         threshold: usize,
@@ -184,10 +180,6 @@ impl EncodedAction {
 
     /// The action as it ran, with every content reference replaced by the
     /// content `read` returns for it, checked against its hash.
-    ///
-    /// # Errors
-    /// The first content that `read` does not have (or returns other bytes
-    /// for), or a payload that is not JSON.
     pub fn resolve_content(
         &self,
         read: &dyn Fn(&str) -> Option<Vec<u8>>,

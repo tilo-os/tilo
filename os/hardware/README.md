@@ -80,6 +80,37 @@ a firmware whose mssecapp refuses the TPM costs nothing at boot. Boards whose
 TPM driver is a module (an I2C or SPI TPM) still need the wait, so it stays on
 everywhere else.
 
+### Lenovo 83ED crash evidence
+
+The 83ED has reset itself with nothing in the journal: journald writes to disk
+every few minutes, so a reset loses the last of the log. The kernel keeps its
+console log, and any oops or panic dump, in a 2 MiB ramoops region at
+`0xc00000000` that its device tree reserves (`os/kernel/patches/0021`). The
+region survives a warm reset. On the next boot `systemd-pstore` moves the
+records into the journal of that boot; read them with
+`journalctl -b 0 -u systemd-pstore -o verbose`.
+`tilo-pstore-console.service` raises the console log level once userspace runs,
+because `loglevel=3` would otherwise keep everything below critical out of the
+record.
+
+A hang has to become a panic to leave stacks there. The profile's kernel
+arguments do that:
+
+- `systemd.watchdog_sec=30` makes systemd feed the SoC's SBSA watchdog.
+  Without it the watchdog is never started, and a hard hang freezes the machine
+  for good.
+- `sbsa_gwdt.action=1` panics at the watchdog's first stage, 30 s without a
+  feed. The second stage resets the machine 30 s after that.
+- `softlockup_panic=1` and `nmi_watchdog=panic` (the buddy detector, see
+  `aarch64.config`) panic on a stuck CPU, which freezes the machine anyway.
+
+A task stuck in uninterruptible sleep for two minutes is only reported, with
+its stack, in the journal and the console record. On a working machine that is
+usually slow disk or network I/O, and rebooting would lose the work.
+
+A reset that the firmware, hypervisor or PMIC triggers runs no kernel code. It
+leaves only the console log, which now has every message up to the reset.
+
 ## Local firmware input
 
 For the Lenovo profile, place these six files and `manifest.json` in

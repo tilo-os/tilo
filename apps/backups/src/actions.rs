@@ -342,7 +342,6 @@ mod tests {
         let verify = action("verify");
         assert_eq!(verify.kind, OperationKind::Effect);
         assert_eq!(verify.contract.kind, tilo_actions::ActionKind::Read);
-        // Invoking the row's action hands the handler this snapshot.
         let encoded = verify.build_json(&serde_json::Map::new()).unwrap();
         assert_eq!(encoded.type_id, BACKUPS_OPERATION_TYPE);
         assert_eq!(

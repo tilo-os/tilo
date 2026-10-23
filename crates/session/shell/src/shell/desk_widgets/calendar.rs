@@ -26,7 +26,6 @@ pub struct Month {
 }
 
 impl Month {
-    /// The month `today` falls in, its weeks starting on `week_start`.
     #[must_use]
     pub fn around(today: NaiveDate, week_start: Weekday) -> Self {
         let first = today.with_day(1).unwrap_or(today);

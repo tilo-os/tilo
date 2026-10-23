@@ -214,7 +214,6 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             }
             next += 1;
         }
-        // Each side receives the other side's publication.
         for (receiver, side) in sides.iter().enumerate() {
             while let Some(frame) = side.client.try_recv() {
                 let sender = 1 - receiver;

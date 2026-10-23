@@ -26,11 +26,6 @@ impl TryFrom<AuthorityFields> for RetentionAuthority {
     }
 }
 impl RetentionAuthority {
-    /// Pin the retention authority of `room` to `governor`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `room` is not a canonical UUID or `governor` does not verify.
     pub fn new(room: &str, governor: DeviceCert) -> Result<Self, String> {
         if uuid::Uuid::parse_str(room)
             .map_err(|e| e.to_string())?

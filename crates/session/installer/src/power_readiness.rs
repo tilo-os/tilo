@@ -49,7 +49,6 @@ mod tests {
 
     #[test]
     fn power_readiness_blocks_only_a_low_discharging_battery() {
-        // Phase `low_discharging_battery_requires_power`.
         {
             assert_eq!(
                 insufficient_battery_percent(
@@ -63,7 +62,6 @@ mod tests {
                 Some(0)
             );
         }
-        // Phase `threshold_or_connected_power_is_ready`.
         {
             assert_eq!(
                 insufficient_battery_percent(
@@ -81,7 +79,6 @@ mod tests {
                 None
             );
         }
-        // Phase `absent_or_ambiguous_hardware_does_not_block`.
         {
             assert_eq!(
                 insufficient_battery_percent(BatterySnapshot::absent(), true),

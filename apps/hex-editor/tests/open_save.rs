@@ -394,3 +394,29 @@ fn a_new_empty_file_starts_a_buffer_typing_fills() {
     ctrl(&mut fresh, "n");
     assert_eq!(fresh.state().name(), Some("Untitled.bin"));
 }
+
+/// A guest's own "Open file" goes straight to their chooser: picking a file
+/// on their own device is their decision, so the workspace asks no consent
+/// first, and the pick opens.
+#[test]
+fn a_guests_open_file_asks_no_workspace_consent() {
+    let mut app = TestApp::<HexEditorShell>::new().unwrap();
+    app.harness().relayout();
+    app.set_role(ui::permissions::Role::Editor);
+    let (_chosen_directory, chosen) = file("guest.bin", &[7, 8]);
+    let (services, recorder) = ui::host::HostServices::recording();
+    recorder.respond_to_pick(PortalOutcome::Opened(chosen.into()));
+    ui::host::scoped(&services, || {
+        app.harness()
+            .perform_named("hex.open", &A11yAction::Activate)
+            .unwrap();
+        app.settle();
+    });
+    assert!(
+        app.asking().is_none(),
+        "the chooser is the consent: {:?}",
+        app.harness().asking_why()
+    );
+    assert_eq!(recorder.pick_requests().len(), 1);
+    assert_eq!(app.state().name(), Some("guest.bin"));
+}

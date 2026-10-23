@@ -512,21 +512,18 @@ mod tests {
 
     #[test]
     fn portal_resources_are_owner_scoped_and_released_on_disconnect() {
-        // Phase `owners_cannot_close_each_others_resources`.
         {
             let lifecycle = PortalLifecycle::new();
             assert!(lifecycle.insert_request("/request/one", entry(":1.1")));
             assert!(lifecycle.close_request("/request/one", ":1.2").is_none());
             assert!(lifecycle.close_request("/request/one", ":1.1").is_some());
         }
-        // Phase `disconnect_releases_both_kinds`.
         {
             let lifecycle = PortalLifecycle::new();
             assert!(lifecycle.insert_request("/request/one", entry(":1.1")));
             assert!(lifecycle.insert_session("/session/one", entry(":1.1")));
             assert_eq!(lifecycle.close_owner(":1.1").len(), 2);
         }
-        // Phase `only_portal_object_space_is_accepted`.
         assert!(valid_portal_path(
             "/org/freedesktop/portal/desktop/request/tilo/one",
             "/request/"
@@ -539,7 +536,6 @@ mod tests {
 
     #[test]
     fn cleanup_runs_exactly_once_and_only_for_cancellation() {
-        // Phase `cleanup_runs_exactly_once_after_close`.
         {
             let lifecycle = PortalLifecycle::new();
             let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -555,7 +551,6 @@ mod tests {
             assert!(lifecycle.close_request("/request/one", ":1.1").is_none());
             assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
         }
-        // Phase `successful_completion_does_not_run_cancellation_cleanup`.
         {
             let lifecycle = PortalLifecycle::new();
             let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));

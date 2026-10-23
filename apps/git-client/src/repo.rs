@@ -223,7 +223,6 @@ fn fold_diff(diff: &git2::Diff, model: &mut RepoModel, diffs: &mut DiffMap, stag
 
     for (path, raw) in raw_by_path {
         let mut fd = parse_unified(&path, &language_for(&path), &raw);
-        // Mark new/deleted from delta status if the textual markers missed it.
         if let Some(delta) = find_delta(diff, &path) {
             match delta {
                 Delta::Added | Delta::Untracked => fd.is_new = true,
@@ -550,7 +549,6 @@ pub fn unstage_file(path: &Path, file: &str) -> anyhow::Result<()> {
     let repo = open(path)?;
     let rel = Path::new(file);
     if let Some(head_commit) = repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
-        // Reset just this path in the index to its HEAD blob.
         repo.reset_default(Some(head_commit.as_object()), [rel])
             .with_context(|| format!("git reset HEAD -- {file}"))?;
     } else {
@@ -1175,10 +1173,6 @@ pub fn list_worktrees(path: &Path) -> anyhow::Result<Vec<crate::model::Worktree>
 
 /// Create a new branch and linked checkout at an explicitly chosen revision.
 /// Never overwrite a branch or an existing path, and never switch the caller's HEAD.
-///
-/// # Errors
-/// Invalid paths, branches or revisions fail. If checkout creation fails after
-/// creating its branch, that branch is retained and the error states this.
 pub fn create_worktree(
     path: &Path,
     destination: &Path,

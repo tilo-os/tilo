@@ -1080,7 +1080,6 @@ mod tests {
 
     #[test]
     fn legacy_history_observes_commits_and_invalidates_on_replacement() {
-        // Case `legacy_history_observes_committed_state_without_closing_pending_edits`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1107,7 +1106,6 @@ mod tests {
             assert!(app.document_history_snapshot().unwrap().is_none());
         }
 
-        // Case `replacing_legacy_document_invalidates_even_with_no_record_set`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1134,7 +1132,6 @@ mod tests {
 
     #[test]
     fn native_history_surface_chrome_door_and_presentation_follow_the_surface_kind() {
-        // Case `native_system_surface_omits_document_chrome_but_keeps_its_controls`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1163,7 +1160,6 @@ mod tests {
             assert!(app.action_ui_routes(&open).is_empty());
         }
 
-        // Case `native_document_surface_keeps_shared_chrome_by_default`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1234,7 +1230,6 @@ mod tests {
             assert!(app.document_history.is_open());
         }
 
-        // Case `native_history_chrome_stays_local_while_history_is_published_gated`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1324,7 +1319,6 @@ mod tests {
             assert!(!app.document_history.is_open());
         }
 
-        // Case `native_history_narrow_presentation_excludes_app_focus_and_accessibility`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1375,7 +1369,6 @@ mod tests {
             );
         }
 
-        // Case `native_history_redraw_probe_rebuilds_after_document_revocation`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1528,16 +1521,13 @@ mod tests {
             }))
         ));
 
-        // The autosaved document reopens at the restored version.
         app.autosave().unwrap().flush();
         assert_eq!(title(&reopen(dir.path())).as_deref(), Some("v1"));
 
-        // Ctrl+Z on an app-owned document is this call in the native runner.
         let author = app.local_author().clone();
         assert!(app.state.undo_as(Some(&author), None, None, None).is_some());
         assert_eq!(title(&app).as_deref(), Some("v3"));
 
-        // A review that the live document outgrows is refused, unwritten.
         layout(&mut app, 1200);
         app.select_document_history(&[versions[0]]).unwrap();
         layout(&mut app, 1200);
@@ -1599,7 +1589,6 @@ mod tests {
 
     #[test]
     fn native_history_finalization_and_moves_preserve_pending_app_state() {
-        // Case `native_history_click_finalization_preserves_pending_app_edits`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1632,7 +1621,6 @@ mod tests {
             );
         }
 
-        // Case `native_history_tab_finalization_preserves_pending_app_edits`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1675,7 +1663,6 @@ mod tests {
             assert_eq!(app.state.doc.pending_ops(), pending);
         }
 
-        // Case `native_history_retained_widgets_survive_moving_initialized_app`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),

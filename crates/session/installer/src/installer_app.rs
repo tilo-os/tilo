@@ -517,12 +517,6 @@ pub fn prev_step(step: Step) -> Option<Step> {
 
 /// Guard for advancing out of `step`. `Ok(())` means it's valid to move
 /// forward; `Err(msg)` is a user-facing reason it isn't yet.
-///
-/// # Errors
-///
-/// Returns a user-facing message when `step` is `Disk` with no disk
-/// selected, `Account` with a blank `username`, or `Options` with a
-/// `hostname` that fails [`valid_hostname`].
 pub fn validate_step(
     step: Step,
     selected_disk: Option<usize>,
@@ -571,11 +565,6 @@ pub fn validate_step(
 /// Validate the two account password fields. Keeping this separate from
 /// [`validate_step`] avoids ever passing either secret through generic wizard
 /// summaries or status formatting.
-///
-/// # Errors
-///
-/// Returns a user-facing message when the password is blank or the confirmation
-/// does not match it.
 pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), String> {
     if password.trim().is_empty() {
         Err("Enter an account password".to_string())
@@ -1650,7 +1639,6 @@ impl InstallerApp {
         };
     }
 
-    /// The selected disk, if any.
     fn selected_disk_ref(&self) -> Option<&Disk> {
         self.selected_disk.and_then(|i| self.disks.get(i))
     }
@@ -2463,7 +2451,6 @@ impl InstallerApp {
         }
     }
 
-    /// A control running `action` on `resource` with `args`.
     fn control(&self, resource: &str, action: &str, args: Value) -> Control {
         self.presses.control(Press::new(resource, action, args))
     }
@@ -4684,7 +4671,6 @@ mod tests {
         let mut app = InstallerApp::with_disks(Vec::new());
         let mut doc = AutoCommit::new();
         app.step = Step::Accounts;
-        // Exercise the form without starting live credential custody.
         app.accounts_initialized = true;
         app.dirty_structure = true;
         app.sync(&doc, &automerge::ROOT);
@@ -4798,8 +4784,6 @@ mod tests {
             find_accessible(&app, &crate::i18n::t("installer-storage-keep-guidance")).is_some()
         );
     }
-
-    // --- pure state-machine ---------------------------------------
 
     #[test]
     fn step_navigation_walks_forward_back_and_indexes_labels() {
@@ -4978,7 +4962,6 @@ mod tests {
 
     #[test]
     fn account_step_keeps_secrets_out_of_the_crdt_and_gates_on_username() {
-        // Phase `secret_fields_never_enter_automerge_history`.
         {
             let mut app = InstallerApp::with_disks(sample());
             let doc = AutoCommit::new();
@@ -4993,7 +4976,6 @@ mod tests {
                 assert!(doc.get(&automerge::ROOT, path).unwrap().is_none(), "{path}");
             }
         }
-        // Phase `account_step_requires_username_before_advancing`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.tpm2 = false;
@@ -5016,7 +4998,6 @@ mod tests {
             assert_eq!(app.step, Step::Options);
             assert_eq!(local_text(&app.username), "ada");
         }
-        // Phase `startup_secret_threads_into_install_options`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
@@ -5031,11 +5012,8 @@ mod tests {
         }
     }
 
-    // --- app behaviour --------------------------------------------
-
     #[test]
     fn disk_step_gates_next_on_a_usable_selection() {
-        // Phase `next_on_disk_without_selection_sets_status_and_stays`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
@@ -5049,7 +5027,6 @@ mod tests {
             assert_eq!(app.step, Step::Disk, "must not advance without a disk");
             assert_eq!(app.status, "Select a disk to continue");
         }
-        // Phase `selecting_disk_then_next_advances_to_account`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
@@ -5057,16 +5034,13 @@ mod tests {
             let root = automerge::ROOT;
             app.sync(&doc, &root);
 
-            // Pick the second disk with its row.
             activate(&mut app, &mut doc, "/dev/nvme0n1");
             assert_eq!(app.selected_disk, Some(1));
 
-            // Now Next advances and requests a focus reset for the new step.
             activate(&mut app, &mut doc, "Next");
             assert_eq!(app.step, Step::Account);
             assert!(app.take_focus_reset(), "step change requests focus reset");
         }
-        // Phase `read_only_disk_cannot_advance`.
         {
             let mut disks = sample();
             disks[0].read_only = true;
@@ -5080,7 +5054,6 @@ mod tests {
                 "This disk is read-only and cannot be used for installation"
             );
         }
-        // Phase `begin_only_runs_install_from_review`.
         {
             // On the Disk step, `begin` must NOT trigger an install (would
             // shell out to a missing backend): the action is unavailable.
@@ -5095,13 +5068,11 @@ mod tests {
             assert_eq!(app.install_state, InstallState::Idle);
             assert!(!app.install_launched);
         }
-        // Phase `confirm_shows_selected_device`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(1);
             assert_eq!(app.selected_dev().as_deref(), Some("/dev/nvme0n1"));
         }
-        // Phase `step_changes_start_at_the_top_without_losing_incidental_scroll`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
@@ -5118,7 +5089,6 @@ mod tests {
 
     #[test]
     fn options_choices_thread_into_install_options() {
-        // Phase `keyboard_selection_threads_layout_into_install_options`.
         {
             let mut app = InstallerApp::with_disks(sample());
             let mut doc = AutoCommit::new();
@@ -5130,7 +5100,6 @@ mod tests {
             assert_eq!(opts.keymap, "us");
             assert!(opts.keyvariant.is_empty());
 
-            // Select Dvorak with the layout dropdown.
             perform(
                 &mut app,
                 &mut doc,
@@ -5142,7 +5111,6 @@ mod tests {
             assert_eq!(opts.keymap, "us", "Dvorak is an xkb us variant");
             assert_eq!(opts.keyvariant, "dvorak");
         }
-        // Phase `filesystem_flag_updates_selection`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
@@ -5180,7 +5148,6 @@ mod tests {
             assert!(app.fido2);
             assert!(app.install_options().fido2);
         }
-        // Phase `options_step_uses_seeded_hostname_and_timezone`.
         {
             let mut app = InstallerApp::with_disks(sample());
             let doc = AutoCommit::new();
@@ -5193,7 +5160,6 @@ mod tests {
             assert_eq!(opts.timezone, "UTC");
             assert_eq!(opts.filesystem, "btrfs");
         }
-        // Phase `install_options_bind_selected_disk_and_alongside_partition_identities`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
@@ -5303,7 +5269,6 @@ mod tests {
 
     #[test]
     fn image_filesystem_manifest_bounds_the_choice() {
-        // Phase `image_driver_manifest_filters_choices_and_rejects_stale_selection`.
         {
             assert_eq!(
                 filesystem_support_from_manifest("ext4\nxfs\n").unwrap(),
@@ -5353,7 +5318,6 @@ mod tests {
             assert!(!review.install_launched);
             assert_eq!(review.step, Step::Review);
         }
-        // Phase `unsupported_profile_filesystem_requires_repair_and_missing_manifest_blocks_install`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.apply_media_profile(crate::media_profile::MediaProfile {
@@ -5388,7 +5352,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn review_begin_is_gated_on_ack_confirmation_and_power() {
-        // Phase `recovery_ack_toggles_and_gates_begin`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
@@ -5407,7 +5370,6 @@ mod tests {
                 "blocked until the key is acknowledged"
             );
 
-            // Toggle the acknowledgement on.
             perform(
                 &mut app,
                 &mut doc,
@@ -5420,7 +5382,6 @@ mod tests {
             activate(&mut app, &mut doc, "recovery_ack");
             assert!(!app.recovery_ack, "ack flips back off");
         }
-        // Phase `review_begin_disabled_until_ack_when_encrypting`.
         {
             // Encrypting + un-acknowledged: the Begin button (nav row's primary,
             // its last child) must be disabled (non-focusable).
@@ -5450,7 +5411,6 @@ mod tests {
             let begin_enabled = find_test_id(&app2, "Begin Install").map(Widget::is_focusable);
             assert_eq!(begin_enabled, Some(true), "Begin enabled once acknowledged");
         }
-        // Phase `whole_disk_install_requires_exact_typed_device_confirmation`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
@@ -5487,7 +5447,6 @@ mod tests {
                 .expect("confirmation field");
             assert_eq!(field.value.as_deref(), Some("/dev/sda"));
         }
-        // Phase `confirmation_keeps_live_input_until_begin_gate_changes`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
@@ -5512,7 +5471,6 @@ mod tests {
                 "exact confirmation must enable Begin"
             );
         }
-        // Phase `alongside_install_requires_exact_typed_root_confirmation`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
@@ -5530,7 +5488,6 @@ mod tests {
             app.erase_confirmation.set(root);
             assert!(app.destructive_confirmation_ready());
         }
-        // Phase `low_discharging_battery_is_visible_and_blocks_launch_before_secrets_move`.
         {
             let mut app = InstallerApp::for_shot(Step::Review);
             app.power_probe = || Some(7);
@@ -5556,7 +5513,6 @@ mod tests {
 
     #[test]
     fn encryption_summary_names_the_enrolled_factors() {
-        // Phase `encryption_summary_reflects_factors`.
         {
             let mut app = InstallerApp::with_disks(sample());
             // Pin the hardware so the Review copy must describe measured-boot PIN
@@ -5579,7 +5535,6 @@ mod tests {
                 "On (LUKS — recovery key, TPM-protected startup PIN, FIDO2)"
             );
         }
-        // Phase `summary_and_description_name_the_passphrase_when_there_is_no_tpm`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.tpm2 = false;
@@ -5603,7 +5558,6 @@ mod tests {
                 "encryption no longer requires a TPM, and the copy must not claim it does"
             );
         }
-        // Phase `options_step_always_shows_encryption_factors`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
@@ -5622,7 +5576,6 @@ mod tests {
 
     #[test]
     fn encryption_readiness_follows_the_verified_boot_policy() {
-        // Phase `without_a_tpm_the_unlock_secret_is_required`.
         {
             // A machine with no TPM cannot unlock itself. Encryption still works —
             // that is the point of building the volume around a recovery key — but
@@ -5648,7 +5601,6 @@ mod tests {
                 "blank passphrase is still no passphrase"
             );
         }
-        // Phase `verified_tpm_requires_a_nontrivial_pin`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
@@ -5669,7 +5621,6 @@ mod tests {
             *app.password.lock().unwrap() = "804927".to_string();
             assert!(app.encryption_ready());
         }
-        // Phase `tpm_without_verified_boot_uses_the_passphrase_policy`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.tpm2 = true;
@@ -5706,7 +5657,6 @@ mod tests {
                     .contains("kernel lockdown is not")
             );
         }
-        // Phase `live_verified_boot_without_target_preflight_uses_a_passphrase`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.tpm2 = true;
@@ -5833,7 +5783,6 @@ mod tests {
 
     #[test]
     fn alongside_copy_explains_what_changes_before_leaving_storage() {
-        // Phase `alongside_review_describes_each_partition_it_changes`.
         {
             let guided = alongside_install_impact(true, "/dev/nvme0n1");
             assert!(guided.contains("Three new Tilo partitions (EFI, boot, and encrypted root)"));
@@ -5858,7 +5807,6 @@ mod tests {
                 "guided free-space partition plan"
             );
         }
-        // Phase `guided_alongside_explains_the_firmware_picker_before_and_after_install`.
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.install_method = InstallMethod::Alongside;
@@ -5885,7 +5833,6 @@ mod tests {
                 .is_some()
             );
         }
-        // Phase `alongside_surfaces_windows_preparation_before_leaving_storage`.
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.install_method = InstallMethod::Alongside;
@@ -5912,7 +5859,6 @@ mod tests {
             assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_BOOT_GUIDANCE)).is_some());
             assert!(find_accessible(&app, &crate::i18n::t(ALONGSIDE_FILES_GUIDANCE)).is_some());
         }
-        // Phase `alongside_explains_a_determinable_prepared_efi_failure`.
         {
             let mut disk = sample_disks().remove(0);
             disk.partitions
@@ -5940,7 +5886,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn guided_alongside_binds_exactly_the_reviewed_extent() {
-        // Phase `guided_alongside_advances_and_binds_reviewed_free_extent`.
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.step = Step::Disk;
@@ -5970,7 +5915,6 @@ mod tests {
             app.go_next();
             assert_eq!(app.step, Step::Account);
         }
-        // Phase `multiple_guided_extents_require_and_bind_an_explicit_choice`.
         {
             let disk = disk_with_two_guided_extents();
             let plans = disk.guided_alongside_plans();
@@ -6001,7 +5945,6 @@ mod tests {
             assert!(has_test_id(&app, "guided_extent_0"));
             assert!(has_test_id(&app, "guided_extent_1"));
         }
-        // Phase `disk_refresh_invalidates_every_reviewed_guided_identity`.
         {
             let disk = disk_with_two_guided_extents();
             let mut app = InstallerApp::with_disks(vec![disk.clone()]);
@@ -6034,7 +5977,6 @@ mod tests {
             assert_eq!(app.install_method, InstallMethod::Alongside);
             assert!(app.destructive_confirmation_target().is_none());
         }
-        // Phase `restarted_ui_does_not_reinitialize_an_unauthenticated_partial_pair`.
         {
             let mut disk = sample_disks().remove(1);
             let gib = 1024_u64 * 1024 * 1024;
@@ -6086,7 +6028,6 @@ mod tests {
 
     #[test]
     fn prepared_preflight_gates_leaving_storage() {
-        // Phase `prepared_preflight_ignores_stale_results_and_advances_only_on_success`.
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.install_method = InstallMethod::Alongside;
@@ -6121,7 +6062,6 @@ mod tests {
             assert_eq!(app.step, Step::Account);
             assert!(app.storage_preflight_passed);
         }
-        // Phase `prepared_preflight_fails_closed_without_an_event_channel`.
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.install_method = InstallMethod::Alongside;
@@ -6146,7 +6086,6 @@ mod tests {
 
     #[test]
     fn staged_handoff_preselects_the_plan_and_offers_a_way_back_only_when_valid() {
-        // Phase `staged_installation_preselects_the_prepared_plan_and_profile`.
         {
             use crate::internal_handoff::tests::TARGET;
             let mut app = staged_app();
@@ -6208,7 +6147,6 @@ mod tests {
                 .is_some()
             );
         }
-        // Phase `staged_handoff_that_no_longer_matches_keeps_the_disk_unavailable`.
         {
             let mut json = crate::internal_handoff::tests::lsblk_json();
             json["blockdevices"][0]["ptuuid"] = "99999999-2222-4333-8444-555555555555".into();
@@ -6224,7 +6162,6 @@ mod tests {
             let _ = build(&mut app);
             assert!(!has_test_id(&app, "return_to_host"));
         }
-        // Phase `return_to_host_is_withheld_while_installing`.
         {
             let mut app = staged_app();
             app.step = Step::Install;
@@ -6239,7 +6176,6 @@ mod tests {
 
     #[test]
     fn back_walks_in_reverse_and_a_failed_install_returns_to_storage() {
-        // Phase `back_walks_the_wizard_in_reverse`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
@@ -6277,7 +6213,6 @@ mod tests {
             run(&mut app, &doc, op::SESSION, "back", Value::Null);
             assert_eq!(app.step, Step::Keyboard);
         }
-        // Phase `failed_install_recovery_returns_to_unselected_storage_review`.
         {
             let mut app = InstallerApp::with_disks(sample());
             let old_efi_partuuid = app.guided_efi_partuuid.clone();
@@ -6303,7 +6238,6 @@ mod tests {
 
     #[test]
     fn install_events_stream_human_progress_and_set_terminal_state() {
-        // Phase `external_lines_stream_into_log_and_sentinels_set_state`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Install;
@@ -6332,7 +6266,6 @@ mod tests {
                 "completion must focus the first recovery action on the new Finish surface"
             );
         }
-        // Phase `external_fail_sentinel_marks_failed`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Install;
@@ -6356,7 +6289,6 @@ mod tests {
                 "failure must focus the first recovery action on the new error surface"
             );
         }
-        // Phase `install_progress_hides_container_noise_behind_human_milestones`.
         {
             let lines = vec![
                 "Starting install to /dev/vdb for user tilotest (btrfs).".to_string(),
@@ -6374,7 +6306,6 @@ mod tests {
                 ]
             );
         }
-        // Phase `hardware_token_touch_is_an_explicit_human_milestone`.
         {
             let lines = vec![
                 "==> Enrolling disk-encryption unlock factors".to_string(),
@@ -6392,7 +6323,6 @@ mod tests {
 
     #[test]
     fn recovery_key_stays_out_of_shared_state_and_gates_power() {
-        // Phase `recovery_key_marker_becomes_persistent_card_not_log_noise`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Install;
@@ -6411,7 +6341,6 @@ mod tests {
                 "secret marker is not a log line"
             );
         }
-        // Phase `visible_recovery_key_can_be_copied_without_entering_shared_state`.
         {
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
@@ -6468,7 +6397,6 @@ mod tests {
                 "a newly emitted key needs its own post-generation saved confirmation"
             );
         }
-        // Phase `generated_recovery_key_survives_failure_and_power_requires_saved_ack`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Install;
@@ -6509,7 +6437,6 @@ mod tests {
 
     #[test]
     fn status_and_terminal_surfaces_have_live_accessible_semantics() {
-        // Phase `terminal_states_and_recovery_actions_have_live_accessible_semantics`.
         {
             let mut done = InstallerApp::for_shot(Step::Install);
             done.shot_finished();
@@ -6540,7 +6467,6 @@ mod tests {
             assert_eq!(failure.live, Some(Politeness::Assertive));
             assert!(find_accessible(&failed, "Review storage").is_some());
         }
-        // Phase `validation_and_recovery_ack_announce_without_focus_reset`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Review;
@@ -6562,11 +6488,8 @@ mod tests {
         }
     }
 
-    // --- structural invariants (widget tree mirrors taffy) --------
-
     #[test]
     fn step_layouts_mirror_taffy_and_fit_compact_viewports() {
-        // Phase `every_step_widget_tree_mirrors_taffy`.
         {
             for step in [
                 Step::Network,
@@ -6582,7 +6505,6 @@ mod tests {
                 let (taffy, root) = build(&mut app);
                 assert_tree_mirrors(&app, &taffy, root);
             }
-            // The two terminal Install variants too.
             let mut done = InstallerApp::for_shot(Step::Install);
             done.shot_finished();
             let (t, r) = build(&mut done);
@@ -6593,7 +6515,6 @@ mod tests {
             let (t, r) = build(&mut failed);
             assert_tree_mirrors(&failed, &t, r);
         }
-        // Phase `compact_review_narrows_the_card_and_exposes_keyboard_scroll`.
         {
             let mut app = InstallerApp::for_shot(Step::Review);
             layout_at(&mut app, 320.0, 480.0);
@@ -6621,7 +6542,6 @@ mod tests {
                 "overflowing installer must expose Page Up/Down, Home/End and arrow scrolling"
             );
         }
-        // Phase `compact_review_keeps_confirmation_controls_at_full_height`.
         {
             let mut app = InstallerApp::for_shot(Step::Review);
             layout_at(&mut app, 1280.0, 768.0);
@@ -6639,8 +6559,6 @@ mod tests {
                 .next()
                 .expect("review navigation");
             let scroll = find_named(&app, "Scrollable").expect("review content viewport");
-            // Full height is the toolkit's regular control height, the
-            // height every single-line field takes.
             let full = ui::widget::ControlSize::Regular.height(&Theme::dark());
             assert!(
                 input.get_rect().height() >= full - 0.5,
@@ -6815,7 +6733,6 @@ mod tests {
 
     #[test]
     fn step_controls_are_focusable_only_when_usable() {
-        // Phase `account_step_inputs_focusable`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
@@ -6831,7 +6748,6 @@ mod tests {
                 "4 inputs and 2 nav buttons must be focusable"
             );
         }
-        // Phase `keyboard_step_has_dropdown_and_nav_and_a_preview`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
@@ -6847,14 +6763,12 @@ mod tests {
                 "layout dropdown + Next must be focusable (no Back on the first step)"
             );
 
-            // The visual preview is present as a card child.
             let card = find_named(&app, "InstallerCard").expect("keyboard card");
             assert!(
                 card.children().iter().any(|c| c.name() == "KeyboardView"),
                 "the Keyboard step renders the visual keyboard preview"
             );
         }
-        // Phase `disk_step_first_button_disabled_until_selection`.
         {
             // Build without a selection: the nav row's primary ("Next", its last
             // child after "Back") must be non-focusable (disabled). After
@@ -6884,7 +6798,6 @@ mod tests {
                 "Next enabled once a disk is selected"
             );
         }
-        // Phase `disk_step_rows_are_focusable`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
@@ -6899,7 +6812,6 @@ mod tests {
                     .any(|c| c.name() == "DiskRow" && c.is_focusable())
             );
         }
-        // Phase `running_system_disk_is_visible_but_not_focusable`.
         {
             let mut disks = sample();
             disks[0].is_system = true;
@@ -7063,7 +6975,6 @@ mod tests {
                 assert_eq!(options.purpose, "server");
             }
         }
-        // Phase `validated_media_profile_skips_already_configured_screens`.
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.apply_media_profile(crate::media_profile::MediaProfile {
@@ -7119,7 +7030,6 @@ mod tests {
             app.go_back();
             assert_eq!(app.step, Step::Network);
         }
-        // Phase `partial_media_profile_routes_to_only_the_repair_screens`.
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.apply_media_profile(crate::media_profile::MediaProfile {
@@ -7154,7 +7064,6 @@ mod tests {
             assert!(find_accessible(&app, "Filesystem").is_none());
             assert!(find_accessible(&app, "Time zone").is_none());
         }
-        // Phase `unsupported_profile_locale_gets_one_bounded_on_device_chooser`.
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.apply_media_profile(crate::media_profile::MediaProfile {
@@ -7188,7 +7097,6 @@ mod tests {
             assert!(find_accessible(&app, "Filesystem").is_none());
             assert!(find_accessible(&app, "Time zone").is_none());
         }
-        // Phase `invalid_keyboard_starts_at_keyboard_but_retains_other_profile_values`.
         {
             let mut app = InstallerApp::with_disks(sample_disks());
             app.apply_media_profile(crate::media_profile::MediaProfile {

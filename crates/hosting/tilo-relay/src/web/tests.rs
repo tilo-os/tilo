@@ -1,4 +1,3 @@
-//! Exercise the production HTTP routes and authenticated native presence dispatcher.
 #![allow(
     clippy::too_many_lines,
     reason = "one authenticated cross-carrier scenario"

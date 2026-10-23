@@ -1,4 +1,3 @@
-//! Actual signed shim/worker, native-byte Directory/File projection and DAC.
 use super::*;
 use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
 const SELECTOR: &str = "capture_service::mounted_source::signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs";

@@ -49,7 +49,6 @@ python3 tools/dev/install-git-hooks.py
   repairs is fixed for you to commit, never amended: into your working tree when you push
   `HEAD` (files you edited since are left alone), else as a patch in `.git/t-fix.patch`. Inputs
   the change doesn't touch are cached, so a push after a rebase costs little.
-  `git push --no-verify` skips the gate.
 - **CI on `main`** runs every default check on each new commit, finds the commit a failure began
   with and tells whoever is behind it (`t inbox`). `main` is sometimes red; whoever broke it fixes
   it forward. Nothing is reverted.

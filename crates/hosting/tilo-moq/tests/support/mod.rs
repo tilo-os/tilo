@@ -1,4 +1,3 @@
-//! Shared fixtures for the real localhost WebTransport tests.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

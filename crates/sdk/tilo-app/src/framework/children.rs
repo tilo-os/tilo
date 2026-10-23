@@ -40,6 +40,7 @@ use tilo_resource::children::{self as lifecycle, ChildList as _, ChildRef, Child
 use tilo_resource::{Atom, Edit, EditOp, Id, Reader, Resource, Segment};
 use ui_core::permissions::{PermissionScope, TreePath};
 use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordOpenError};
+use ui_core::widget::Edits;
 
 use super::chain::{CHAIN_ACTION_TYPE, RoomRecords};
 use super::live::Live;
@@ -109,6 +110,70 @@ pub(crate) enum Lifecycle {
     },
 }
 
+impl Lifecycle {
+    /// The published action carrying this step out on `door`, the
+    /// container's address: the resource it is on, its verb, the child it
+    /// concerns and its arguments.
+    fn invocation<C: Resource>(
+        &self,
+        door: &str,
+    ) -> (
+        String,
+        &'static str,
+        Id,
+        serde_json::Map<String, serde_json::Value>,
+    ) {
+        let text = |id: &Id| serde_json::Value::String(id.to_string());
+        let place = |group: &Option<Id>, before: &Option<Id>| {
+            let mut arguments = serde_json::Map::new();
+            if let Some(group) = group {
+                arguments.insert("group".into(), text(group));
+            }
+            if let Some(before) = before {
+                arguments.insert("before".into(), text(before));
+            }
+            arguments
+        };
+        match self {
+            Self::Create {
+                id,
+                group,
+                before,
+                fields,
+            } => {
+                let mut arguments = place(group, before);
+                arguments.insert("id".into(), text(id));
+                if !fields.is_null() {
+                    arguments.insert("fields".into(), fields.clone());
+                }
+                (door.to_owned(), lifecycle::CREATE, id.clone(), arguments)
+            }
+            Self::Delete { child } => (
+                child_resource_id::<C>(child),
+                lifecycle::DELETE,
+                child.clone(),
+                serde_json::Map::new(),
+            ),
+            Self::Restore { child } => (
+                child_resource_id::<C>(child),
+                lifecycle::RESTORE,
+                child.clone(),
+                serde_json::Map::new(),
+            ),
+            Self::Move {
+                child,
+                group,
+                before,
+            } => (
+                child_resource_id::<C>(child),
+                lifecycle::MOVE,
+                child.clone(),
+                place(group, before),
+            ),
+        }
+    }
+}
+
 /// One of a child's own actions, as the container's door carries it.
 #[derive(Serialize, Deserialize)]
 struct ChildAction {
@@ -160,6 +225,10 @@ pub(crate) struct ChildrenState<C: ChildRecord> {
     empty: Rc<C::State>,
     revision: Cell<u64>,
     published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
+    /// The door of the parent the window shows, which the lifecycle writes
+    /// through in the pass that lends it; `None` where the parent is held
+    /// in the store (a tool's, a test's).
+    parent_door: RefCell<Option<super::Dispatcher<C::Parent>>>,
 }
 
 impl<C: ChildRecord> ChildrenState<C> {
@@ -182,6 +251,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             empty,
             revision: Cell::new(0),
             published: RefCell::new(None),
+            parent_door: RefCell::new(None),
         };
         state.refresh();
         Some(state)
@@ -189,6 +259,12 @@ impl<C: ChildRecord> ChildrenState<C> {
 
     pub(crate) fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Write the parent through `door`, the window's own: the parent is the
+    /// record it shows.
+    pub(crate) fn write_parent_through(&self, door: super::Dispatcher<C::Parent>) {
+        *self.parent_door.borrow_mut() = Some(door);
     }
 
     fn record(child: &Id) -> Result<RecordId, String> {
@@ -373,17 +449,28 @@ impl<C: ChildRecord> ChildrenState<C> {
     }
 
     /// Write `edits` into the parent, as `invoker`, recorded in its
-    /// history: the container's lifecycle.
+    /// history: the container's lifecycle. The parent the window shows is
+    /// written through its own door in the pass that lends it (`live`);
+    /// one held in the store, as a tool holds it, there.
     fn edit_parent(
         &self,
         verb: &str,
         edits: Vec<Edit<C::Parent>>,
         invoker: &ActionInvoker,
+        mut live: Option<&mut Edits<'_>>,
     ) -> Result<(), ActionError> {
         let record = C::parent_record();
+        let door = self.parent_door.borrow().clone();
         for edit in edits {
             let action = <C::Parent as Resource>::edit_action(edit)
                 .ok_or_else(|| ActionError::Refused(format!("{} take no field edits", C::LABEL)))?;
+            if let Some(door) = &door {
+                let live = live.as_mut().ok_or_else(|| {
+                    ActionError::Refused(format!("the record listing {verb} is not lent here"))
+                })?;
+                door.apply_now_for(live, &action, invoker)?;
+                continue;
+            }
             let encoded = tilo_resource::encode::<C::Parent>(&action)?;
             let context = ActionContext::for_resource(&self.id, C::KIND, C::LABEL)
                 .with_app(self.room.app_id, self.room.app_title)
@@ -425,6 +512,7 @@ impl<C: ChildRecord> ChildrenState<C> {
         step: &Lifecycle,
         invoker: &ActionInvoker,
         now_ms: i64,
+        live: Option<&mut Edits<'_>>,
     ) -> Result<Id, ActionError> {
         use tilo_actions::ActionKind;
         let verb = match step {
@@ -453,14 +541,22 @@ impl<C: ChildRecord> ChildrenState<C> {
                 before.as_ref(),
                 fields,
                 invoker,
+                live,
             ),
-            Lifecycle::Delete { child } => self.delete_child(&parent, child, invoker, now_ms),
-            Lifecycle::Restore { child } => self.restore_child(&parent, child, invoker),
+            Lifecycle::Delete { child } => self.delete_child(&parent, child, invoker, now_ms, live),
+            Lifecycle::Restore { child } => self.restore_child(&parent, child, invoker, live),
             Lifecycle::Move {
                 child,
                 group,
                 before,
-            } => self.move_child(&parent, child, group.as_ref(), before.as_ref(), invoker),
+            } => self.move_child(
+                &parent,
+                child,
+                group.as_ref(),
+                before.as_ref(),
+                invoker,
+                live,
+            ),
         }
     }
 
@@ -473,6 +569,7 @@ impl<C: ChildRecord> ChildrenState<C> {
         before: Option<&Id>,
         fields: &serde_json::Value,
         invoker: &ActionInvoker,
+        live: Option<&mut Edits<'_>>,
     ) -> Result<Id, ActionError> {
         let container = C::container(parent);
         if container.contains(id) {
@@ -501,6 +598,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                 },
             )],
             invoker,
+            live,
         )?;
         Ok(id.clone())
     }
@@ -512,6 +610,7 @@ impl<C: ChildRecord> ChildrenState<C> {
         child: &Id,
         invoker: &ActionInvoker,
         now_ms: i64,
+        live: Option<&mut Edits<'_>>,
     ) -> Result<Id, ActionError> {
         if listed::<C>(parent, child)?.trashed.is_some() {
             return Ok(child.clone());
@@ -526,6 +625,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                 },
             )],
             invoker,
+            live,
         )?;
         Ok(child.clone())
     }
@@ -536,6 +636,7 @@ impl<C: ChildRecord> ChildrenState<C> {
         parent: &<C::Parent as Resource>::State,
         child: &Id,
         invoker: &ActionInvoker,
+        live: Option<&mut Edits<'_>>,
     ) -> Result<Id, ActionError> {
         let listed = listed::<C>(parent, child)?;
         if listed.trashed.is_none() {
@@ -561,7 +662,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                 },
             ));
         }
-        self.edit_parent(lifecycle::RESTORE, edits, invoker)?;
+        self.edit_parent(lifecycle::RESTORE, edits, invoker, live)?;
         Ok(child.clone())
     }
 
@@ -573,6 +674,7 @@ impl<C: ChildRecord> ChildrenState<C> {
         group: Option<&Id>,
         before: Option<&Id>,
         invoker: &ActionInvoker,
+        live: Option<&mut Edits<'_>>,
     ) -> Result<Id, ActionError> {
         listed::<C>(parent, child)?;
         check_place::<C>(parent, child, group)?;
@@ -596,7 +698,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                 },
             ),
         ];
-        self.edit_parent(lifecycle::MOVE, edits, invoker)?;
+        self.edit_parent(lifecycle::MOVE, edits, invoker, live)?;
         Ok(child.clone())
     }
 
@@ -713,9 +815,7 @@ impl<C: ChildRecord> ChildrenState<C> {
             } else {
                 let own = tilo_resource::publish::<C>(&address, &label, &state);
                 route_child(own, &self.id, &id)
-                    .with_action(
-                        self.route(step_spec(lifecycle::DELETE, "Delete", &id).destructive()),
-                    )
+                    .with_action(self.route(step_spec(lifecycle::DELETE, "Move to Trash", &id)))
                     .with_action(self.route(move_spec(&id)))
             };
             published.actions.dedup_by(|a, b| a.id == b.id);
@@ -853,6 +953,11 @@ fn create_spec<C: Resource>() -> ActionSpec {
             ActionParam::optional("fields", ParamType::Object, "Its first fields"),
             ActionParam::optional("group", ParamType::Text, "The child to list it under"),
             ActionParam::optional("before", ParamType::Text, "The child to place it before"),
+            ActionParam::optional(
+                "id",
+                ParamType::Text,
+                "The id it is made under; a new one without",
+            ),
         ],
         |args| {
             let fields = match args.get("fields") {
@@ -862,7 +967,8 @@ fn create_spec<C: Resource>() -> ActionSpec {
                 _ => serde_json::Value::Null,
             };
             encode_step(&Lifecycle::Create {
-                id: Id::from_raw(tilo_resource::fresh_uuid().to_string()),
+                id: text_arg(args, "id")
+                    .unwrap_or_else(|| Id::from_raw(tilo_resource::fresh_uuid().to_string())),
                 group: text_arg(args, "group"),
                 before: text_arg(args, "before"),
                 fields,
@@ -933,17 +1039,39 @@ impl<C: ChildRecord> RecordDoor for ChildrenState<C> {
         self.apply_answering(action, invoker).map(drop)
     }
 
+    fn apply_in(
+        &self,
+        action: &EncodedAction,
+        invoker: &ActionInvoker,
+        live: &mut Edits<'_>,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        self.answer(action, invoker, Some(live))
+    }
+
     fn apply_answering(
         &self,
         action: &EncodedAction,
         invoker: &ActionInvoker,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        self.answer(action, invoker, None)
+    }
+}
+
+impl<C: ChildRecord> ChildrenState<C> {
+    /// Carry out one published action of the container for `invoker`, the
+    /// window lending the parent it shows as `live`.
+    fn answer(
+        &self,
+        action: &EncodedAction,
+        invoker: &ActionInvoker,
+        live: Option<&mut Edits<'_>>,
     ) -> Result<tilo_actions::ActionOutput, String> {
         match action.type_id.as_str() {
             LIFECYCLE_TYPE => {
                 let step: Lifecycle = tilo_actions::decode_json(&action.payload)
                     .map_err(|error| error.to_string())?;
                 let child = self
-                    .lifecycle(&step, invoker, tilo_resource::origin_now_ms())
+                    .lifecycle(&step, invoker, tilo_resource::origin_now_ms(), live)
                     .map_err(|error| error.to_string())?;
                 Ok(tilo_actions::ActionOutput {
                     value: None,
@@ -980,6 +1108,9 @@ impl<C: ChildRecord> RecordDoor for ChildrenState<C> {
 pub struct Children<C: ChildRecord> {
     state: Rc<ChildrenState<C>>,
     me: String,
+    /// The door of the parent the view shows, which the lifecycle a view
+    /// asks for goes through.
+    dispatch: Option<super::Dispatcher<C::Parent>>,
 }
 
 impl<C: ChildRecord> Clone for Children<C> {
@@ -987,13 +1118,26 @@ impl<C: ChildRecord> Clone for Children<C> {
         Self {
             state: Rc::clone(&self.state),
             me: self.me.clone(),
+            dispatch: self.dispatch.clone(),
         }
     }
 }
 
 impl<C: ChildRecord> Children<C> {
     pub(crate) fn new(state: Rc<ChildrenState<C>>, me: String) -> Self {
-        Self { state, me }
+        Self {
+            state,
+            me,
+            dispatch: None,
+        }
+    }
+
+    /// These, submitting through `parent`'s door for the view that holds
+    /// them: the door of the parent it shows.
+    pub(crate) fn dispatching(mut self, parent: &super::Dispatcher<C::Parent>) -> Self {
+        self.state.write_parent_through(parent.clone());
+        self.dispatch = Some(parent.clone());
+        self
     }
 
     /// The address the container is published under.
@@ -1086,12 +1230,25 @@ impl<C: ChildRecord> Children<C> {
             .map(drop)
     }
 
+    /// Carry out `step` as the window's person: in a view, through the
+    /// door, which writes the parent the window shows in the pass that
+    /// lends it (a refusal is the view's dispatcher's to tell); held
+    /// outside a window, now.
     fn step(&self, step: &Lifecycle) -> Result<Id, ActionError> {
-        self.state.lifecycle(
-            step,
-            &ActionInvoker::actor(&self.me),
-            tilo_resource::origin_now_ms(),
-        )
+        let Some(parent) = &self.dispatch else {
+            return self.state.lifecycle(
+                step,
+                &ActionInvoker::actor(&self.me),
+                tilo_resource::origin_now_ms(),
+                None,
+            );
+        };
+        let (resource, verb, child, arguments) = step.invocation::<C>(self.state.id());
+        parent.invoke_at(
+            tilo_actions::door::ActionAddress::new(resource, verb),
+            arguments,
+        );
+        Ok(child)
     }
 
     /// The container published as the door publishes it, for a test.
@@ -1137,10 +1294,7 @@ impl<C: ChildRecord> Children<C> {
             app_title: app_id,
         };
         let state = Rc::new(ChildrenState::<C>::open(room, Rc::new(parent))?);
-        Some(Self {
-            state,
-            me: me.to_owned(),
-        })
+        Some(Self::new(state, me.to_owned()))
     }
 }
 
@@ -1250,7 +1404,6 @@ mod tests {
         let general = children
             .create(serde_json::json!({ "name": "general" }), None, None)
             .unwrap();
-        // Each child is its own record, under the id it was made with.
         let record = RecordId::room_default().child(ui.as_str()).unwrap();
         assert_eq!(
             store.read(&record, |doc| Reader::<Topic>::read(doc)
@@ -1281,7 +1434,6 @@ mod tests {
         );
         assert_eq!(children.child(&ui).unwrap().name, "ui");
         assert!(store.read(&record, |_| ()).is_some());
-        // Into a group again, last there.
         children.move_to(&general, Some(&design), None).unwrap();
         assert_eq!(
             order(&children)[2],
@@ -1314,7 +1466,6 @@ mod tests {
             order(&children),
             [("ui".to_owned(), Some("design".to_owned()))]
         );
-        // Its record and everything in it are kept.
         let record = RecordId::room_default().child(design.as_str()).unwrap();
         assert_eq!(
             store.read(&record, |doc| Reader::<Topic>::read(doc)
@@ -1325,7 +1476,6 @@ mod tests {
             Some("kept".to_owned())
         );
         assert_eq!(children.child(&design).unwrap().note, "kept");
-        // Its group gone, a child restored comes back at the top.
         children.delete(&ui).unwrap();
         children.restore(&ui).unwrap();
         assert_eq!(order(&children), [("ui".to_owned(), None)]);
@@ -1360,7 +1510,6 @@ mod tests {
             let encoded = spec.build_json(args.as_object().unwrap()).unwrap();
             children.invoke_published(&encoded, &agent)
         };
-        // An agent makes a child through the container's own `create`.
         let made = invoke(
             &children.published(),
             lifecycle::CREATE,
@@ -1381,7 +1530,6 @@ mod tests {
                 "{verb} on the child"
             );
         }
-        // The child's own action changes its record.
         invoke(child, "jot", serde_json::json!({ "text": "agenda" })).unwrap();
         let id = Id::from_raw(address.rsplit('/').next().unwrap());
         assert_eq!(children.child(&id).unwrap().note, "agenda");

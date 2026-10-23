@@ -327,7 +327,6 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         assert!((painted.height() - preview.height()).abs() < 1e-6);
         assert!(painted.width() < preview.width(), "so it is drawn narrower");
 
-        // A picture shorter than the cap keeps its native size.
         assert!(editor.set_viewport_height(Some(20_000.0)));
         layout_image_editor(&mut editor, 1000.0, &mut renderer);
         let preview = editor.image_preview_rects[0].unwrap();
@@ -1242,7 +1241,6 @@ fn block_typography_scales_and_bands_each_kind() {
 
         let checklist = editor.blocks[0].line.get_rect();
         let code = editor.blocks[1].line.get_rect();
-        // A row holds its text at its role's leading, scaled with the text.
         let band = |kind: BlockKind| {
             let style = crate::tokens::typography::stock().style(kind.text_role());
             let leading = f64::from(style.line_height_px() / style.size).max(1.0);
@@ -1605,7 +1603,6 @@ fn deleting_empty_blocks_shifts_focus_and_keeps_one_block() {
         assert_eq!(e.blocks().len(), 2);
         assert_eq!(e.blocks()[0].text(), "first");
         assert_eq!(e.blocks()[1].text(), "third");
-        // Focus walks back to the previous block.
         assert_eq!(e.focused_index(), Some(0));
         // ...with the caret at the end of "first".
         assert_eq!(e.blocks()[0].line.cursor_pos(), 5);

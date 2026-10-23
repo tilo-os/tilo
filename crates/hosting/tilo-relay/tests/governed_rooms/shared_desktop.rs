@@ -199,7 +199,7 @@ async fn page_client(relay: &Relay, device: &TestDevice, workspace_id: u64) -> R
 
 /// Commit `message` as a page does, and the host's answer: `Ok` with its
 /// order, or why it refused.
-async fn commit(
+pub(super) async fn commit(
     client: &RelayClient,
     device: &TestDevice,
     workspace_id: u64,

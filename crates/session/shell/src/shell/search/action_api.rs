@@ -599,11 +599,6 @@ impl SelectedAction<'_> {
     /// Begin a JSON invocation while preserving asynchronous admission.
     /// Binding happens once and a pending ticket owns the in-flight request;
     /// callers poll that ticket rather than re-resolving or restarting it.
-    ///
-    /// # Errors
-    ///
-    /// Returns argument, policy, provider, or admission failures without
-    /// falling back to a different invocation callback.
     pub fn invoke_json_disposition(
         &self,
         doc: &mut ui::widget::Edits<'_>,
@@ -877,8 +872,6 @@ mod tests {
             );
         }
 
-        // Phase `visibility_gate_hides_resources_from_enumerate_and_select`.
-        // The permission seam gates enumeration and selection uniformly.
         {
             let mut reg = registry_with_actions();
             reg.register(Rc::new(ApplicationsProvider::new()));
@@ -886,7 +879,6 @@ mod tests {
             let doc = AutoCommit::new();
             let root = automerge::ROOT;
 
-            // Deny everything the "actions" provider exports.
             let deny_actions = |r: &ResourceRef, _k: &ResourceKind| r.provider != "actions";
             let catalog = ActionCatalog::build(
                 &reg,
@@ -914,8 +906,6 @@ mod tests {
             );
         }
 
-        // Phase `active_app_scope_narrows_to_the_focused_provider`.
-        // `ActiveApp` scope narrows the survey to the focused app's provider.
         {
             let mut reg = registry_with_actions();
             reg.register(Rc::new(ApplicationsProvider::new()));
@@ -963,8 +953,6 @@ mod tests {
         }
     }
 
-    // ---- parameters -------------------------------------------------
-
     const PARAMS: &[ActionParam] = &[
         ActionParam::required("text", ParamType::Text, "what to write"),
         ActionParam::optional("at", ParamType::Integer, "where"),
@@ -980,8 +968,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn argument_binding_follows_the_declared_parameters_exactly() {
-        // Phase `binding_accepts_the_declared_parameters`.
-        // The happy path, and the shape a caller reads back out.
         {
             let args = ActionArgs::bind(
                 PARAMS,
@@ -1234,7 +1220,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn invocations_return_the_brokers_receipt_and_admission_state() {
-        // Phase `headless_invocation_returns_the_providers_broker_receipt`.
         {
             let mut registry = SearchRegistry::new();
             registry.register(std::rc::Rc::new(ReceiptProvider));
@@ -1267,7 +1252,6 @@ mod tests {
             ));
         }
 
-        // Phase `json_invocation_begins_once_and_retains_pending_admission_ticket`.
         {
             let begins = std::rc::Rc::new(std::cell::Cell::new(0));
             let polls = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -1320,7 +1304,6 @@ mod tests {
             ));
         }
 
-        // Phase `json_invocation_exposes_rejected_admission`.
         {
             let begins = std::rc::Rc::new(std::cell::Cell::new(0));
             let mut registry = SearchRegistry::new();

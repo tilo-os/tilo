@@ -777,10 +777,6 @@ impl ActionArgs {
     /// Fails on the first problem rather than accumulating: the caller has to
     /// fix them one at a time anyway, and a partial bind must never reach an
     /// action.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first missing, unknown, wrong-typed, or disallowed argument.
     pub fn bind(
         params: &[ActionParam],
         supplied: impl IntoIterator<Item = (String, ArgValue)>,
@@ -884,11 +880,6 @@ impl ActionArgs {
 
     /// Bind arguments that arrived as a JSON object — the shape a control
     /// socket delivers.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ArgError`] when a JSON value is unrepresentable or the
-    /// supplied arguments do not satisfy `params`.
     pub fn bind_json(
         params: &[ActionParam],
         supplied: &serde_json::Map<String, serde_json::Value>,
@@ -918,7 +909,6 @@ impl ActionArgs {
         Self::bind(params, pairs)
     }
 
-    /// The text bound to `name`, if any.
     pub fn text(&self, name: &str) -> Option<&str> {
         match self.values.get(name) {
             Some(
@@ -931,7 +921,6 @@ impl ActionArgs {
         }
     }
 
-    /// The integer bound to `name`, if any.
     pub fn integer(&self, name: &str) -> Option<i64> {
         match self.values.get(name) {
             Some(ArgValue::Integer(i)) => Some(*i),
@@ -939,7 +928,6 @@ impl ActionArgs {
         }
     }
 
-    /// The JSON array bound to `name`, if any.
     pub fn array(&self, name: &str) -> Option<&[serde_json::Value]> {
         match self.values.get(name) {
             Some(ArgValue::Array(values)) => Some(values),
@@ -961,7 +949,6 @@ impl ActionArgs {
         }
     }
 
-    /// The boolean bound to `name`, if any.
     pub fn boolean(&self, name: &str) -> Option<bool> {
         match self.values.get(name) {
             Some(ArgValue::Boolean(b)) => Some(*b),
@@ -1438,11 +1425,6 @@ fn validate_schema_object(
 
 /// Validate one JSON value against the deterministic JSON Schema subset used
 /// by Tilo action contracts.
-///
-/// # Errors
-///
-/// Returns a human-readable contract violation when `schema` is malformed,
-/// uses unsupported assertions, or `value` fails one of its supported assertions.
 pub fn validate_json_schema(
     value: &serde_json::Value,
     schema: &serde_json::Value,

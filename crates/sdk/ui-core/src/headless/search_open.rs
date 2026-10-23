@@ -10,9 +10,6 @@ use crate::search::SearchRequest;
 impl FrameHarness {
     /// Open search the way `request` asks: this app or one part of it, with
     /// the query already typed.
-    ///
-    /// # Errors
-    /// Returns an error while another dialog or command holds the window.
     pub fn open_search(&mut self, request: &SearchRequest) -> Result<(), String> {
         self.invalidate_local();
         if self.action_palette.is_some()

@@ -63,6 +63,7 @@ impl NativeOwnerCommitService {
         }
     }
     /// The owner, waiting for its open: for a worker thread, never the loop.
+    #[cfg(test)]
     pub(crate) fn resolve_owner(
         &self,
     ) -> Result<super::native_workspace_owner::NativeWorkspaceOwner, String> {
@@ -2578,6 +2579,7 @@ mod tests {
             mime_types: Vec::new(),
             terminal: false,
             icon: None,
+            downloaded: None,
         };
         let apps = launchable_applications(
             vec![package("so.tilo.word-processor")],

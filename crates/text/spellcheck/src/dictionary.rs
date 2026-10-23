@@ -458,7 +458,6 @@ mod tests {
 
     #[test]
     fn dictionaries_build_case_insensitively_and_accept_added_words() {
-        // Phase `from_words_is_case_insensitive`.
         {
             let d = Dictionary::from_words(["Hello", "WORLD"]);
             assert!(d.contains("hello"));
@@ -466,14 +465,12 @@ mod tests {
             assert!(d.contains("World"));
             assert!(!d.contains("goodbye"));
         }
-        // Phase `trims_and_skips_empty`.
         {
             let d = Dictionary::from_words(["  spaced  ", "", "   ", "ok"]);
             assert!(d.contains("spaced"));
             assert!(d.contains("ok"));
             assert_eq!(d.len(), 2);
         }
-        // Phase `len_range_iter_respects_bounds`.
         {
             let d = Dictionary::from_words(["a", "to", "cat", "four", "fives"]);
             let got: HashSet<&str> = d.words_in_len_range(3, 4).collect();
@@ -482,7 +479,6 @@ mod tests {
             assert!(!got.contains("to"));
             assert!(!got.contains("fives"));
         }
-        // Phase `builtin_loads`.
         {
             let d = Dictionary::builtin();
             assert!(d.len() > 10_000);
@@ -490,7 +486,6 @@ mod tests {
             assert!(d.contains("quick"));
             assert!(!d.contains("teh"));
         }
-        // Phase `add_word_makes_a_word_known_case_insensitively`.
         {
             let mut d = Dictionary::from_words(["alpha", "beta"]);
             assert!(!d.contains("tilo"), "precondition: unknown word");
@@ -507,7 +502,6 @@ mod tests {
                 "adding a built-in word records nothing"
             );
         }
-        // Phase `add_word_ignores_empty_and_whitespace`.
         {
             let mut d = Dictionary::from_words(["alpha"]);
             assert!(!d.add_word(""));

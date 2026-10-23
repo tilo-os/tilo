@@ -97,7 +97,6 @@ const REST_FACE_INSET: f64 = ui::presence::Face::GROUND_GAP;
 const REST_FACE_RING: f64 = ui::presence::Face::REACH - REST_FACE_INSET;
 /// How far left of the marks the faces at rest reach.
 pub const REST_FACES_REACH: f64 = REST_FACE + REST_FACE_GAP + REST_FACE_RING;
-/// The icon in "New strip".
 const ICON: f64 = ui::tokens::Metrics::BASE.icon_sm as f64;
 /// One wheel notch, in the pixels a touchpad reports: a strip per notch, and
 /// per a bar's height of two-finger travel.
@@ -199,7 +198,6 @@ impl SwitcherModel {
     }
 }
 
-/// "Strip N", for the strip at index `i`.
 fn default_strip_name(i: usize) -> String {
     t_args(
         "strip-switcher-unnamed",
@@ -230,7 +228,6 @@ fn strip_of(desktop: &DesktopTree, participant_id: &str) -> Option<StripId> {
         .map(|strip| strip.id)
 }
 
-/// A label of the switcher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Strip(usize),
@@ -261,7 +258,6 @@ pub enum Command {
     Remove(StripId),
 }
 
-/// The answer to a press.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Press {
     /// Not the switcher's: the press goes on to whatever is under it.
@@ -271,7 +267,6 @@ pub enum Press {
     Command(Command),
 }
 
-/// The answer to a key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KeyAnswer {
     Ignored,
@@ -690,7 +685,6 @@ impl StripSwitcher {
         zone.contains(p) || self.layout.bounds.inflate(GRACE, GRACE).contains(p)
     }
 
-    /// The pointer left the display.
     pub fn pointer_left(&mut self) -> bool {
         self.aim.clear();
         self.pointer = None;
@@ -764,7 +758,6 @@ impl StripSwitcher {
         self.layout.label_rect(Row::Strip(i))
     }
 
-    /// A left press at `p` at `now`.
     pub fn press(&mut self, p: Point, now: Instant) -> Press {
         let Some(target) = self.target_at(p) else {
             if self.open.is_some() && self.pinned() {
@@ -1633,7 +1626,6 @@ mod tests {
     fn a_pointer_passing_over_the_ribbon_does_not_open_it() {
         let (mut s, zone) = switcher(&["Lounge", "Research", "Design"]);
         let mut t = Instant::now();
-        // A fast vertical sweep along the edge, through the band and out.
         for k in 0..30 {
             t += ms(8);
             s.pointer_moved(Point::new(1590.0, 200.0 + 25.0 * f64::from(k)), t, zone);
@@ -1757,7 +1749,6 @@ mod tests {
             KeyAnswer::Command(Command::Rename(StripId(101), "Games".into()))
         );
         assert!(!s.is_naming());
-        // With the name done, hover rules again.
         s.pointer_moved(Point::new(210.0, 400.0), now + ms(60), zone);
         assert!(!s.is_open());
     }
@@ -1779,12 +1770,10 @@ mod tests {
             enter(&mut s),
             KeyAnswer::Command(Command::Rename(StripId(100), "Lounge".into()))
         );
-        // Unchanged.
         let other = s.layout().label_rect(Row::Strip(1)).unwrap().center();
         s.press(other, t0 + ms(1000));
         s.press(other, t0 + ms(1100));
         assert_eq!(enter(&mut s), KeyAnswer::Consumed);
-        // Emptied.
         s.press(other, t0 + ms(2000));
         s.press(other, t0 + ms(2100));
         s.key(&Key::Named(NamedKey::Backspace), ModifiersState::empty());
@@ -1820,7 +1809,6 @@ mod tests {
             Some(Command::Step(-1)),
             "away: the strip above"
         );
-        // Two-finger travel adds up to a step.
         let px = |y: f64| MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, y));
         let t1 = t0 + ms(1000);
         assert_eq!(s.scroll(on, px(-15.0), t1, zone), None);
@@ -1829,7 +1817,6 @@ mod tests {
             s.scroll(on, px(-15.0), t1 + ms(20), zone),
             Some(Command::Step(1))
         );
-        // Over a window, the wheel is the window's.
         assert_eq!(
             s.scroll(
                 Point::new(400.0, 400.0),
@@ -1839,7 +1826,6 @@ mod tests {
             ),
             None
         );
-        // Over an open label it moves strips too.
         s.open_at(t1, false);
         let label = s.layout().label_rect(Row::Strip(0)).unwrap();
         assert_eq!(

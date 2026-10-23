@@ -91,8 +91,6 @@ class Library:
     variables: set[str] = field(default_factory=set)
 
 
-# --- The link line ----------------------------------------------------------
-
 def parse_response(text: str) -> list[str]:
     """Arguments of a GCC response file: whitespace-separated, quotes and backslashes escape."""
     arguments: list[str] = []
@@ -188,8 +186,6 @@ def link_inputs(arguments: list[str]) -> list[pathlib.Path]:
             and pathlib.Path(argument).is_file()]
 
 
-# --- ELF facts, from binutils -----------------------------------------------
-
 def run(command: list[str], check: bool = True) -> str:
     result = subprocess.run(command, capture_output=True, text=True)
     if check and result.returncode != 0:
@@ -276,8 +272,6 @@ def undefined_references(inputs: list[pathlib.Path]) -> set[str]:
     with concurrent.futures.ThreadPoolExecutor(workers) as pool:
         return set().union(*pool.map(scan, batches)) if batches else set()
 
-
-# --- What to generate -------------------------------------------------------
 
 def plan(libraries: list[Library], referenced: set[str]) -> tuple[list[tuple[str, int]], list[str]]:
     """(symbol, library index) for each trampoline, and the references no trampoline can serve."""
@@ -539,8 +533,6 @@ HIDDEN void gst_init(int *argc, char ***argv) {
 #endif
 """
 
-
-# --- The link ---------------------------------------------------------------
 
 def check_output(path: pathlib.Path, libraries: list[Library]) -> list[str]:
     """What would make the linked runtime load a lazy library at exec, or fail to."""

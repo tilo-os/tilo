@@ -34,9 +34,7 @@ pub struct SwitchSample {
     pub first_queued_us: u128,
     /// The first frame after the chord was shown.
     pub first_shown_us: u128,
-    /// The resting frame was queued.
     pub settled_queued_us: u128,
-    /// The resting frame was shown.
     pub settled_shown_us: u128,
     /// Frames queued for the switch, the resting frame included.
     pub frames: u32,
@@ -255,8 +253,6 @@ mod tests {
             );
         }
 
-        // Phase `re_arming_before_the_first_frame_keeps_the_chord`.
-        // The keyboard chord and the content rebuild both start the frame run.
         {
             let chord = Instant::now();
             let mut tracker = SwitchLatency::default();
@@ -343,7 +339,6 @@ mod tests {
             );
         }
 
-        // Phase `a_run_that_never_settles_does_not_swallow_later_switches`.
         {
             let chord = Instant::now();
             let mut tracker = SwitchLatency::default();

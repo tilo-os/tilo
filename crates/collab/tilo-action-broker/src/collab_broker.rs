@@ -457,11 +457,6 @@ impl AppActionBroker {
     }
     /// Invoke one closed native workspace-membership command as the retained
     /// certified person. The owner still rechecks current Admin authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker, published action, or caller custody
-    /// is unavailable.
     pub fn change_workspace_membership(
         &self,
         room: &str,
@@ -561,10 +556,6 @@ impl AppActionBroker {
     }
 
     /// Reusable native broker attachment for an ordinary standalone peer.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker stopped or has no invocation host.
     pub fn peer_action_attachment(
         &self,
     ) -> Result<(crate::peer_actions::PeerActionQueue, uuid::Uuid), String> {
@@ -645,11 +636,6 @@ impl AppActionBroker {
     }
 
     /// Invoke one published application action.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the surface or action is unavailable or dispatch
-    /// to its application connection fails.
     pub fn invoke(
         &self,
         peer_id: u64,
@@ -847,10 +833,6 @@ impl AppActionBroker {
     }
 
     /// Request cooperative cancellation for an owned invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown, foreign, or non-cancellable invocation.
     pub fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
         self.state
             .while_live(|state| state.request_cancellation(id, actor))
@@ -871,21 +853,12 @@ impl AppActionBroker {
 
     /// Dispatch a task to its assigned live agent. There is intentionally no
     /// offline queue or application launch fallback in this boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no matching admitted live agent can accept the
-    /// task.
     pub fn dispatch_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
         self.state
             .while_live(|state| state.dispatch_workspace_task(room, task_id))
     }
 
     /// Prepare a one-use confirmation token for the exact invocation inputs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action disappeared or confirmation evidence is invalid.
     pub fn prepare_confirmation(
         &self,
         peer_id: u64,
@@ -901,10 +874,6 @@ impl AppActionBroker {
     }
 
     /// Start a published action using a previously prepared confirmation token.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action or token is unavailable or invalid.
     pub fn start_confirmed(
         &self,
         peer_id: u64,
@@ -954,10 +923,6 @@ impl BrokerHandle {
     }
 
     /// Connects one local host worker for `route` under `certificate`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker is unavailable or refuses the worker.
     pub fn connect_local_worker(
         &self,
         route: CrdtRoute,
@@ -970,10 +935,6 @@ impl BrokerHandle {
     }
 
     /// Connects one local host worker together with its published-invocation authorizer.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker is unavailable or refuses the worker.
     pub fn connect_local_worker_with_authorizer(
         &self,
         route: CrdtRoute,
@@ -1086,11 +1047,6 @@ impl BrokerHandle {
 
     /// Direct one invocation to the exact application connection that
     /// published the addressed operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the action broker, surface, or action is
-    /// unavailable or dispatch to its application connection fails.
     pub fn invoke_published_action(
         &self,
         peer_id: u64,

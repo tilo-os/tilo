@@ -106,7 +106,6 @@ pub(crate) enum FullSnapshot {
     },
 }
 
-/// The catalogue of one revision.
 #[derive(Debug)]
 pub(crate) struct Published {
     revision: Revision,

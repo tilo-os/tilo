@@ -177,6 +177,9 @@ enum Panel {
 pub struct SessionManager {
     config: IdleConfig,
     last_activity: Instant,
+    /// The person's last input here. Unlike `last_activity`, nothing but
+    /// input moves it, so it says when they last used this device.
+    last_input: Instant,
     /// Explicit panel wake is not input: only the display timeout restarts.
     last_display_wake: Option<Instant>,
     panel: Panel,
@@ -198,6 +201,7 @@ impl SessionManager {
         Self {
             config,
             last_activity: now,
+            last_input: now,
             last_display_wake: None,
             panel: Panel::On,
             locked: false,
@@ -258,6 +262,7 @@ impl SessionManager {
     /// never flashes the dimmed level. Does **not** unlock a locked session — input while locked wakes the display but the session stays locked until [`Self::request_unlock`].
     pub fn note_activity(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_activity = now;
+        self.last_input = now;
         // Input after a resume clears the suspend latch so a later idle episode can suspend again (no transition — resume is signalled out-of-band by logind's `PrepareForSleep`).
         self.suspended = false;
         let mut out = Vec::new();
@@ -360,6 +365,26 @@ impl SessionManager {
     /// timeout can fire until a full period has passed from here.
     pub fn defer_idle(&mut self, now: Instant) {
         self.last_activity = now;
+    }
+
+    /// The person used another of their devices nearby at `at`: idle time
+    /// here counts from then if that is later, as though it were input, but
+    /// a blanked display stays blanked.
+    pub fn note_use_elsewhere(&mut self, at: Instant) {
+        self.last_activity = self.last_activity.max(at);
+    }
+
+    /// How long since the person's last input on this device.
+    pub fn input_idle_for(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_input)
+    }
+
+    /// Whether the idle timer has not yet reached the lock timeout: the
+    /// person was using the device, here or on one nearby.
+    pub fn in_use(&self, now: Instant) -> bool {
+        self.config
+            .lock_timeout
+            .is_none_or(|timeout| self.idle_for(now) < timeout)
     }
 
     /// Whether the idle-suspend latch is currently set.
@@ -978,6 +1003,24 @@ mod tests {
     }
 
     // auto-lock
+
+    #[test]
+    fn use_of_a_device_nearby_defers_the_idle_lock_but_is_not_input_here() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg(None, Some(600)), t0);
+        s.note_use_elsewhere(t0 + Duration::from_secs(500));
+        assert!(s.tick(t0 + Duration::from_secs(600)).is_empty());
+        assert!(s.in_use(t0 + Duration::from_secs(1000)));
+        assert_eq!(
+            s.input_idle_for(t0 + Duration::from_secs(1000)),
+            Duration::from_secs(1000)
+        );
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(1100)),
+            vec![SessionTransition::Locked]
+        );
+        assert!(!s.in_use(t0 + Duration::from_secs(1100)));
+    }
 
     #[test]
     fn locking_requires_authentication_to_clear() {

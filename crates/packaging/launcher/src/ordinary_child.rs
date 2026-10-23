@@ -295,8 +295,6 @@ fn child_cancellation(cancel: ServiceCancellation) -> ServiceCancellation {
     child
 }
 impl OwnedOrdinaryChild {
-    /// # Errors
-    /// Refuses invalid credentials, command, namespace or cancellation, and returns spawn or descriptor errors.
     pub fn spawn(
         command: &ConsumerCommand,
         target: &ExecutingPeer,
@@ -388,8 +386,6 @@ impl OwnedOrdinaryChild {
         })
     }
     /// Start the actual root owner. A panic/observation error cannot mint stop.
-    /// # Errors
-    /// Returns descriptor duplication or worker creation errors.
     pub fn start_supervision(self) -> io::Result<OrdinaryChildSupervisor> {
         let launcher_pid = self.child.id();
         let launcher_pidfd = self.pidfd.try_clone()?;
@@ -426,8 +422,6 @@ impl OwnedOrdinaryChild {
         })
     }
     /// Existing authenticated bootstrap only. ACKs mean transport, not authority.
-    /// # Errors
-    /// Refuses stale custody or mismatched namespaces and returns transport errors.
     pub fn handoff(&mut self, stream: &mut UnixStream) -> io::Result<()> {
         if self.cancel.is_cancelled()
             || stopped(&self.pidfd)?
@@ -464,8 +458,6 @@ impl OwnedOrdinaryChild {
     }
     /// Run on the existing root owner worker. Reap evidence is an actual wait
     /// result. Caller still retains source and inner-namespace retirement duties.
-    /// # Errors
-    /// Returns protocol, transport, or child observation errors.
     pub fn serve(&mut self) -> io::Result<()> {
         self.control
             .set_read_timeout(Some(Duration::from_millis(50)))?;
@@ -542,8 +534,6 @@ pub struct PreparedOrdinaryChild {
     reaped: Option<ExitStatus>,
 }
 impl PreparedOrdinaryChild {
-    /// # Errors
-    /// Refuses mismatched command or root custody and returns descriptor or transport errors.
     pub fn receive(
         stream: &mut UnixStream,
         root: &ExecutingPeer,
@@ -688,8 +678,6 @@ impl PreparedOrdinaryChild {
             _ => Err(denied()),
         }
     }
-    /// # Errors
-    /// Returns custody validation, transport or child signaling errors.
     pub fn kill(&mut self) -> io::Result<()> {
         if self.reaped.is_some() {
             return Ok(());
@@ -697,8 +685,6 @@ impl PreparedOrdinaryChild {
         let _ = self.request(b'K')?;
         Ok(())
     }
-    /// # Errors
-    /// Returns custody validation, transport or child observation errors.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         if let Some(status) = self.reaped {
             return Ok(status);

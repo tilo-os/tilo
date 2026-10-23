@@ -13,7 +13,8 @@ END_MARK): a fixed square in the view's bottom-right corner, blended to differ
 from what is under it by one level, so it is invisible yet unlike the colour
 beside it on its row. Only the page's own frame at the new size has it there.
 This test holds Chromium to that, on a light page and on a dark one: every open
-yields a marked frame, and every marked frame shows the page.
+yields a marked frame, and every marked frame shows the page, whatever the
+page's own style says to remove the mark.
 """
 import argparse
 import base64
@@ -34,15 +35,20 @@ parser.add_argument('host', type=Path)
 parser.add_argument('host_args', nargs='*')
 args = parser.parse_args()
 
+END_MARK = '@layer{html::after{all:initial!important;content:""!important;display:block!important;position:fixed!important;right:0!important;bottom:0!important;width:2px!important;height:2px!important;margin:0!important;background:rgb(1,1,1)!important;mix-blend-mode:difference!important;pointer-events:none!important;z-index:2147483647!important}html{display:block!important;visibility:visible!important;opacity:1!important;transform:none!important;translate:none!important;scale:none!important;rotate:none!important;perspective:none!important;filter:none!important;backdrop-filter:none!important;contain:none!important;container-type:normal!important;content-visibility:visible!important;will-change:auto!important;clip-path:none!important;mask:none!important;zoom:1!important;isolation:auto!important;mix-blend-mode:normal!important}}'
 PAGE = ('<!doctype html><html><head><style>html,body{margin:0;background:BACKGROUND}'
         '#block{position:absolute;top:150px;left:0;width:100%;height:100px;background:#d02020}'
-        # The end mark as apps/mail/src/html_mail.rs writes it (END_MARK).
-        'html::after{content:""!important;display:block!important;'
-        'position:fixed!important;right:0!important;bottom:0!important;width:2px!important;'
-        'height:2px!important;margin:0!important;background:rgb(1,1,1)!important;'
-        'mix-blend-mode:difference!important;pointer-events:none!important;'
-        'z-index:2147483647!important}'
-        '</style></head><body><p>Hello</p><div id="block"></div></body></html>')
+        + END_MARK + '</style></head><body><p>Hello</p><div id="block"></div>'
+        '<style>HOSTILE</style></body></html>')
+# What a mail's own style may say to remove the mark, and whether the page
+# still shows its block.
+HOSTILE = (('', True),
+           ('html::after{display:none!important;content:none!important}', True),
+           ('*{display:none!important}*::after{display:none!important;content:none!important}',
+            False),
+           ('html{transform:scale(.5)!important;opacity:0!important;filter:blur(9px)!important}'
+            'html::after{position:static!important;mix-blend-mode:normal!important;'
+            'background:transparent!important;transition:all 99s!important}', True))
 SCALE = 2.0
 WIDTH = 600
 SLIVER = 4
@@ -155,9 +161,11 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-resize-') as profile:
         for opened in range(OPENS):
             send({'op': 'resize', 'width': grown[0], 'height': int(LAST * SCALE),
                   'scale_factor': SCALE})
+            hostile, shows_block = HOSTILE[opened % len(HOSTILE)]
+            background = BACKGROUNDS[opened // len(HOSTILE) % len(BACKGROUNDS)]
+            page = PAGE.replace('BACKGROUND', background).replace('HOSTILE', hostile)
             url = 'data:text/html;base64,' + base64.b64encode(
-                (PAGE.replace('BACKGROUND', BACKGROUNDS[opened % len(BACKGROUNDS)])
-                 + f'<!-- open {opened} -->').encode()).decode()
+                (page + f'<!-- open {opened} -->').encode()).decode()
             send({'op': 'navigate', 'url': url})
             send({'op': 'resize', 'width': grown[0], 'height': int(SLIVER * SCALE),
                   'scale_factor': SCALE})
@@ -183,7 +191,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-resize-') as profile:
             assert painted, f'open {opened}: no frame of the page at the grown size'
             middle = int(200 * SCALE)
             blank = [index for index, frame in enumerate(painted)
-                     if not block_shown(frame['pixels'], frame['width'], middle)]
+                     if shows_block and not block_shown(frame['pixels'], frame['width'], middle)]
             assert not blank, (f'open {opened}: marked frames {blank} of {len(painted)} at the '
                                'grown size show no page there: ' + '; '.join(
                                    describe(painted[index]) for index in blank))

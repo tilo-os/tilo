@@ -773,10 +773,15 @@ impl ChatPart {
 }
 
 /// The parts of the chat's messages a device holds, read as one timeline:
-/// every message oldest first, whichever part holds it.
+/// every message oldest first, whichever part holds it, after the messages
+/// the chat record kept from before its messages moved to parts.
 #[derive(Clone, Debug, Default)]
 pub struct Messages {
     parts: Vec<(u64, Rc<ChatPart>)>,
+    /// The messages the chat record kept in itself
+    /// ([`crate::record::kept_messages`]): the oldest of the timeline, in
+    /// no part, so no verb changes them and none of them is unread.
+    kept: Rc<tilo_resource::Collection<Message>>,
 }
 
 impl Messages {
@@ -784,7 +789,17 @@ impl Messages {
     #[must_use]
     pub fn new(mut parts: Vec<(u64, Rc<ChatPart>)>) -> Self {
         parts.sort_by_key(|(index, _)| *index);
-        Self { parts }
+        Self {
+            parts,
+            kept: Rc::default(),
+        }
+    }
+
+    /// These parts after the messages the chat record kept, `kept`.
+    #[must_use]
+    pub fn with_kept(mut self, kept: Rc<tilo_resource::Collection<Message>>) -> Self {
+        self.kept = kept;
+        self
     }
 
     /// One part, numbered 0: for a reader of a single part's document.
@@ -805,9 +820,13 @@ impl Messages {
         self.parts.last().map(|(index, _)| *index)
     }
 
-    /// Every message held, oldest first.
+    /// Every message held, oldest first: the kept ones a part does not
+    /// hold too, then the parts'.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&Id, &Message)> + '_ {
-        self.parts.iter().flat_map(|(_, part)| part.messages.iter())
+        self.kept
+            .iter()
+            .filter(|(id, _)| self.part_of(id).is_none())
+            .chain(self.parts.iter().flat_map(|(_, part)| part.messages.iter()))
     }
 
     /// Every message held, oldest first, with the part holding it.
@@ -820,7 +839,7 @@ impl Messages {
     /// How many messages are held.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.parts.iter().map(|(_, part)| part.messages.len()).sum()
+        self.iter().count()
     }
 
     /// Whether no message is held.
@@ -836,6 +855,7 @@ impl Messages {
             .iter()
             .rev()
             .find_map(|(_, part)| part.messages.get(id))
+            .or_else(|| self.kept.get(id))
     }
 
     /// Whether a held part has the message `id`.

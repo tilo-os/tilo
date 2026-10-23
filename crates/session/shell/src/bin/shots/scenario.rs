@@ -31,6 +31,7 @@ use ui::widget::GroupRow;
 use super::driver::ShellDriver;
 
 mod file_chooser;
+mod window_search;
 
 /// One tab of a window seeded for the window-bar shots.
 #[derive(Debug, Clone, Copy)]
@@ -2090,7 +2091,6 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         .collect();
     let room_activity_view = match host.room_activity().view() {
         shell::shell::room_activity::ActivityView::CatchUp => "catch_up",
-        shell::shell::room_activity::ActivityView::Tasks => "tasks",
         shell::shell::room_activity::ActivityView::Explore => "explore",
         shell::shell::room_activity::ActivityView::Replay => "replay",
     };
@@ -4192,49 +4192,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("02-back-to-start"),
             ],
         },
-        Scenario {
-            name: "notes_search_in_place",
-            description: "Search in the window bar: the control after the title expands into a field, the long note highlights every match with n of m, and Enter steps on.",
-            actions: vec![
-                Action::SeedLongNotes(0),
-                Action::Wait(2),
-                Action::Relayout,
-                Action::Snapshot("00-control-at-rest"),
-                Action::ClickNamed("window-search-open"),
-                Action::Wait(24),
-                Action::Type("capture 1"),
-                Action::Wait(8),
-                Action::Snapshot("01-search-in-place"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(8),
-                Action::Snapshot("02-third-match"),
-            ],
-        },
-        Scenario {
-            name: "own_process_notes_search",
-            description: "Notes as a window of its own, as on a device: the window bar's search opens on it over its shell-ui connection, the long note highlights every match with n of m, and Enter steps on. Notes draws no search control of its own.",
-            actions: vec![
-                Action::OwnProcessWindow {
-                    app: OwnApp::Notes,
-                    width: 700,
-                },
-                Action::Wait(4),
-                Action::Relayout,
-                Action::Snapshot("00-control-at-rest"),
-                Action::ClickNamed("window-search-open"),
-                Action::Wait(24),
-                Action::Type("capture 1"),
-                Action::Wait(8),
-                Action::Relayout,
-                Action::Snapshot("01-search-in-place"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(8),
-                Action::Relayout,
-                Action::Snapshot("02-third-match"),
-            ],
-        },
+        window_search::notes_search_in_place(),
+        window_search::notes_search_options(),
+        window_search::own_process_notes_search(),
         Scenario {
             name: "own_process_notes_history",
             description: "Notes as a window of its own: the window bar's History control opens Notes' History panel over its shell-ui connection, with the changes Ada and her agent made.",
@@ -4251,25 +4211,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("01-history-panel"),
             ],
         },
-        Scenario {
-            name: "own_process_files_search",
-            description: "Files as a window of its own: the window bar's search narrows its list over its shell-ui connection, with the count it answers.",
-            actions: vec![
-                Action::OwnProcessWindow {
-                    app: OwnApp::Files,
-                    width: 700,
-                },
-                Action::Wait(4),
-                Action::Relayout,
-                Action::Snapshot("00-control-at-rest"),
-                Action::ClickNamed("window-search-open"),
-                Action::Wait(24),
-                Action::Type("re"),
-                Action::Wait(8),
-                Action::Relayout,
-                Action::Snapshot("01-search-in-place"),
-            ],
-        },
+        window_search::own_process_files_search(),
         Scenario {
             name: "own_process_files_history",
             description: "Files as a window of its own: the window bar's History control opens its History panel over its shell-ui connection.",

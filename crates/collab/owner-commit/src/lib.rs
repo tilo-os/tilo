@@ -266,10 +266,6 @@ fn import_binding(
 }
 impl OwnerCommitReceipt {
     /// Check that this receipt answers `request` exactly.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the receipt's binding, generation or scope does not match.
     pub fn validate_for(&self, request: &OwnerCommitRequest) -> Result<(), String> {
         if self.binding != request.binding()?
             || self.generation == 0
@@ -315,10 +311,6 @@ pub trait OwnerCommitService: Send + Sync {
         self.commit(request)
     }
     /// Whether the owner can currently accept commits.
-    ///
-    /// # Errors
-    ///
-    /// Returns a diagnostic when the owner is unavailable.
     fn health(&self) -> Result<(), String>;
 }
 

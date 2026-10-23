@@ -199,7 +199,6 @@ pub(crate) trait TypedRoot {
         op: &ResourceOperation<'_>,
     ) -> Result<Option<ResourceOperationStart>, String>;
 
-    /// Poll the effect job `invocation`.
     fn poll_effect(
         &self,
         invocation: tilo_actions::InvocationId,

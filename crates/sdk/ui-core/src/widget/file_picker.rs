@@ -44,7 +44,10 @@
 //! the person can't `..` out of them, and every chosen path is checked
 //! against their real paths again before it is answered.
 
+mod reading;
 pub mod semantic;
+
+use reading::{Kind, Real};
 
 use crate::widget::ModelPath;
 use std::collections::HashMap;
@@ -111,7 +114,6 @@ struct PickerMetrics {
     search_w: f64,
     /// A footer button is never narrower than this.
     min_button_w: f64,
-    /// The Save field's label column.
     name_label_w: f64,
     /// The band under the Save field that says why a name can't be used.
     error_h: f64,
@@ -183,9 +185,15 @@ impl Place {
 }
 
 /// Recent (when there is something to show), Home, the usual folders under
-/// it, then every other accessible root (the workspace folders), each only
-/// if the caller may enter it.
-fn default_places(roots: &[PathBuf], home: Option<&Path>, recent: bool) -> Vec<Place> {
+/// it that are `present` (read off the UI thread), then every other
+/// accessible root (the workspace folders), each only if the caller may
+/// enter it.
+fn default_places(
+    roots: &[PathBuf],
+    home: Option<&Path>,
+    recent: bool,
+    present: &[PathBuf],
+) -> Vec<Place> {
     let allowed = |p: &Path| roots.iter().any(|root| p.starts_with(root));
     let mut places: Vec<Place> = Vec::new();
     if recent {
@@ -237,7 +245,7 @@ fn default_places(roots: &[PathBuf], home: Option<&Path>, recent: bool) -> Vec<P
             ),
         ];
         for (folder, key, icon, path) in well_known {
-            if folder.is_some() && !path.is_dir() {
+            if folder.is_some() && !present.contains(&path) {
                 continue;
             }
             if allowed(&path) {
@@ -398,6 +406,9 @@ pub struct FilePickerEntry {
     pub size: u64,
     /// Last change, in seconds since the Unix epoch.
     pub modified: Option<i64>,
+    /// What it really is and whether the chooser may give it, as read
+    /// with the listing; confirming reads it again.
+    real: Real,
 }
 
 /// The app that asked for the chooser, as the sheet names it: choosing a
@@ -418,21 +429,33 @@ pub struct Requester {
 /// checks a chosen one again before answering.
 pub type PickerSearch = Arc<dyn Fn(&str) -> Vec<PathBuf> + Send + Sync>;
 
-/// Paths looked up off the UI thread, each with what the filesystem says
-/// about it.
-type Found = Vec<(PathBuf, fs::Metadata)>;
-
-/// A lookup on its way: Recent's paths or a search, read on a worker
-/// thread, for the listing that asked.
+/// A listing being read on the worker, for the listing and folder that
+/// asked.
 struct Lookup {
-    listing: Listing,
-    found: std::sync::mpsc::Receiver<Found>,
+    asked: (Listing, PathBuf),
+    pending: reading::Pending<reading::Listed>,
 }
 
-/// What a lookup reads: paths already known (Recent), or a search.
-enum Source {
-    Paths(Vec<PathBuf>),
-    Search(PickerSearch, String),
+/// A path about to be given or gone to, being checked on the worker; the
+/// chooser does what `intent` says once it knows.
+struct Check {
+    intent: Intent,
+    pending: reading::Pending<Vec<Real>>,
+}
+
+/// What a check is for, with the paths it was asked about in the order
+/// they were checked.
+enum Intent {
+    /// Open the selected files.
+    Open(Vec<PathBuf>),
+    /// Choose the selected folders, or the folder in view.
+    Directory(Vec<PathBuf>),
+    /// Save over the selected file: checks the file.
+    SaveSelected(PathBuf),
+    /// Save under a typed name: checks its folder, then the file.
+    SaveName(SaveName),
+    /// Go where the typed location says: checks the path.
+    Location(PathBuf),
 }
 
 /// Most rows a search across places shows.
@@ -449,7 +472,6 @@ enum Listing {
     Search(String),
 }
 
-/// One row of the picker's file list.
 struct PickerRow {
     entry: FilePickerEntry,
     /// The folder it is in, for a row that is not in the folder in view (a
@@ -605,7 +627,18 @@ pub struct FilePicker {
     /// Wakes the host when a lookup finishes, so it shows without waiting
     /// for the next input.
     waker: Option<std::task::Waker>,
+    /// The listing being read, while it is.
     lookup: Option<Lookup>,
+    read: Vec<reading::Row>,
+    /// What the folder in view is, as last read.
+    here: Option<Real>,
+    /// What to select once the listing being read is in.
+    then_select: Option<PathBuf>,
+    /// A path being checked before the chooser acts on it.
+    check: Option<Check>,
+    /// The usual folders under home that exist, and the check reading them.
+    present: Vec<PathBuf>,
+    places_check: Option<reading::Pending<Vec<Real>>>,
 
     filters: Vec<FileFilter>,
     active_filter: usize,
@@ -623,7 +656,6 @@ pub struct FilePicker {
     crumbs: Breadcrumb,
     /// Where each trail segment goes, in trail order.
     crumb_targets: Vec<PathBuf>,
-    /// The trail segment the person clicked.
     crumb_clicked: Rc<Cell<Option<usize>>>,
     /// The person clicked the trail's empty space to type a path.
     crumb_edit: Rc<Cell<bool>>,
@@ -700,19 +732,27 @@ pub struct FilePicker {
 
 impl FilePicker {
     /// `accessible_roots` limits navigation — if empty, defaults to
-    /// `[initial_dir]`. `title` is the app's own purpose, if it gave one.
+    /// `[initial_dir]`. An `initial_dir` outside them opens at the first
+    /// root instead. `title` is the app's own purpose, if it gave one.
     pub fn new<P: AsRef<Path>>(
         title: impl Into<String>,
         initial_dir: P,
         accessible_roots: Vec<PathBuf>,
     ) -> Self {
-        let initial: PathBuf = initial_dir.as_ref().to_path_buf();
+        let asked: PathBuf = initial_dir.as_ref().to_path_buf();
         let roots = if accessible_roots.is_empty() {
-            vec![initial.clone()]
+            vec![asked.clone()]
         } else {
             accessible_roots
         };
-        let places = default_places(&roots, None, false);
+        // Nothing can be opened or saved outside the roots, so a folder
+        // there would refuse every confirmation.
+        let initial = if roots.iter().any(|root| asked.starts_with(root)) {
+            asked
+        } else {
+            roots.first().cloned().unwrap_or(asked)
+        };
+        let places = default_places(&roots, None, false, &[]);
         let metrics = PickerMetrics::default();
         let mut me = Self {
             places,
@@ -746,6 +786,12 @@ impl FilePicker {
             search: None,
             waker: None,
             lookup: None,
+            read: Vec::new(),
+            here: None,
+            then_select: None,
+            check: None,
+            present: Vec::new(),
+            places_check: None,
             filters: vec![FileFilter::all()],
             active_filter: 0,
             // A file name is not prose: no spelling marks, and never an
@@ -817,11 +863,23 @@ impl FilePicker {
         self
     }
 
-    /// What wakes the host when Recent or a search has been read on its
-    /// worker thread; without one the result shows at the next frame.
+    /// What wakes the host when the worker answers (a listing, a check,
+    /// the usual folders); without one the answer shows at the next frame.
+    /// What the chooser already asked for is asked again, so that answer
+    /// wakes this host too.
     #[must_use]
     pub fn with_waker(mut self, waker: Option<std::task::Waker>) -> Self {
         self.waker = waker;
+        if self.lookup.is_some() {
+            self.refresh_entries();
+        }
+        if self.places_check.is_some() {
+            self.places_check = reading::check(
+                self.usual_folders(),
+                self.accessible_roots.clone(),
+                self.waker.clone(),
+            );
+        }
         self
     }
 
@@ -838,7 +896,7 @@ impl FilePicker {
             }),
         )
         .handles_clicks();
-        self.refresh_entries();
+        self.relist();
         // Construction begins in Open mode so a later `.with_mode(Save)` must
         // reset the initial target from the listbox to Filename.
         self.focus = None;
@@ -853,9 +911,26 @@ impl FilePicker {
     #[must_use]
     pub fn with_home(mut self, home: Option<PathBuf>) -> Self {
         self.home = home;
+        self.present.clear();
+        self.places_check = reading::check(
+            self.usual_folders(),
+            self.accessible_roots.clone(),
+            self.waker.clone(),
+        );
         self.rebuild_places();
         self.rebuild_crumbs();
         self
+    }
+
+    /// The usual folders under home the sidebar shows when they exist.
+    fn usual_folders(&self) -> Vec<PathBuf> {
+        let Some(home) = self.home.as_deref().filter(|home| home.is_absolute()) else {
+            return Vec::new();
+        };
+        ["Documents", "Downloads", "Pictures", "Music", "Videos"]
+            .iter()
+            .map(|folder| home.join(folder))
+            .collect()
     }
 
     fn rebuild_places(&mut self) {
@@ -863,6 +938,7 @@ impl FilePicker {
             &self.accessible_roots,
             self.home.as_deref(),
             !self.recent.is_empty(),
+            &self.present,
         );
         self.place_cursor = None;
     }
@@ -897,7 +973,7 @@ impl FilePicker {
         }
         self.filters = types;
         self.active_filter = 0;
-        self.refresh_entries();
+        self.relist();
         self
     }
 
@@ -1076,13 +1152,16 @@ impl FilePicker {
         if !self.can_navigate_to(&t) {
             return;
         }
+        if self.current_dir != t {
+            self.here = None;
+        }
         self.current_dir = t;
         self.listing = Listing::Folder;
         self.leave_search();
         self.filter_open = false;
         self.selection.clear();
         self.table.reset_scroll();
-        self.refresh_entries();
+        self.list_anew();
     }
 
     pub fn go_up(&mut self) {
@@ -1101,7 +1180,7 @@ impl FilePicker {
         self.filter_open = false;
         self.selection.clear();
         self.table.reset_scroll();
-        self.refresh_entries();
+        self.list_anew();
     }
 
     /// Search every place the person can reach for `query` with the system
@@ -1117,23 +1196,28 @@ impl FilePicker {
             self.end_search();
             return;
         }
-        if self.search.is_some() {
-            self.listing = Listing::Search(query);
-        }
         self.filter_open = false;
         self.selection.clear();
         self.table.reset_scroll();
-        self.refresh_entries();
+        if self.search.is_some() {
+            self.listing = Listing::Search(query);
+            self.list_anew();
+        } else {
+            // Without a system search the folder in view narrows instead.
+            self.narrow();
+        }
     }
 
     /// Empty the search field and go back to the folder it searched from.
     fn end_search(&mut self) {
         self.leave_search();
+        self.selection.clear();
         if matches!(self.listing, Listing::Search(_)) {
             self.listing = Listing::Folder;
+            self.list_anew();
+        } else {
+            self.narrow();
         }
-        self.selection.clear();
-        self.refresh_entries();
     }
 
     /// Empty the search field, for a listing of somewhere new.
@@ -1150,7 +1234,7 @@ impl FilePicker {
         if matches!(self.listing, Listing::Search(_)) {
             // Typing again narrows the folder the search started from.
             self.listing = Listing::Folder;
-            self.refresh_entries();
+            self.list_anew();
             return;
         }
         let selected: Vec<PathBuf> = self.selected_paths();
@@ -1177,7 +1261,7 @@ impl FilePicker {
                 .unwrap_or(0);
             self.selection.clear();
             self.table.reset_scroll();
-            self.refresh_entries();
+            self.relist();
         }
     }
 
@@ -1196,8 +1280,8 @@ impl FilePicker {
                 .is_some_and(|filter| filter.matches(path))
     }
 
-    /// An entry for `path`, read from the filesystem.
-    fn entry_for(path: PathBuf, is_dir: bool, meta: Option<&fs::Metadata>) -> FilePickerEntry {
+    fn entry_for(row: &reading::Row) -> FilePickerEntry {
+        let (path, is_dir, meta) = (row.path.clone(), row.is_dir, row.meta.as_ref());
         let name = path.file_name().map_or_else(
             || path.to_string_lossy().into_owned(),
             |name| name.to_string_lossy().into_owned(),
@@ -1210,121 +1294,131 @@ impl FilePicker {
             modified: meta
                 .and_then(|m| m.modified().ok())
                 .map(|t| chrono::DateTime::<chrono::Utc>::from(t).timestamp()),
+            real: row.real,
         }
     }
 
-    /// Entries for paths looked up elsewhere (Recent, a search): each only
-    /// if it still exists, the roots allow it and the mode and filter take
-    /// it.
-    fn entries_from(&self, found: Found) -> Vec<FilePickerEntry> {
+    /// The listing from the rows last read: in a folder every row the mode
+    /// and filter take; for Recent and a search, also only rows the roots
+    /// allow, each once, at most [`SEARCH_LIMIT`].
+    fn relist(&mut self) {
+        let folder = self.listing == Listing::Folder;
         let mut seen = std::collections::HashSet::new();
-        found
-            .into_iter()
-            .filter(|(path, _)| self.can_navigate_to(path) && seen.insert(path.clone()))
-            .filter_map(|(path, meta)| {
-                let is_dir = meta.is_dir();
-                self.listable(&path, is_dir)
-                    .then(|| Self::entry_for(path, is_dir, Some(&meta)))
+        let listed: Vec<FilePickerEntry> = self
+            .read
+            .iter()
+            .filter(|row| {
+                folder || (self.can_navigate_to(&row.path) && seen.insert(row.path.clone()))
             })
-            .take(SEARCH_LIMIT)
-            .collect()
+            .filter(|row| self.listable(&row.path, row.is_dir))
+            .map(Self::entry_for)
+            .take(if folder { usize::MAX } else { SEARCH_LIMIT })
+            .collect();
+        self.listed = listed;
+        self.show_listed();
     }
 
-    /// Read `source` on a worker thread for the listing in view; its rows
-    /// arrive through [`Self::poll_lookups`]. The filesystem and the search
-    /// index are never read on the UI thread.
-    fn look_up(&mut self, source: Source) {
-        // The answer wakes the window's wake scope, and the host's own
-        // waker when it gave one (a compositor has no scope).
-        let (send, found) = crate::wake::waking_channel();
-        let roots = self.accessible_roots.clone();
-        let waker = self.waker.clone();
-        let spawned =
-            crate::background::Background::current().spawn("tilo-file-picker-lookup", move || {
-                let paths = match source {
-                    Source::Paths(paths) => paths,
-                    Source::Search(search, query) => search(&query),
-                };
-                let found: Found = paths
-                    .into_iter()
-                    .filter(|path| roots.iter().any(|root| path.starts_with(root)))
-                    .take(SEARCH_LIMIT.saturating_mul(2))
-                    .filter_map(|path| fs::metadata(&path).ok().map(|meta| (path, meta)))
-                    .collect();
-                let _ = send.send(found);
-                if let Some(waker) = waker {
-                    waker.wake();
-                }
-            });
-        self.lookup = spawned.is_ok().then(|| Lookup {
-            listing: self.listing.clone(),
-            found,
-        });
-    }
-
-    /// Whether Recent or a search is still being read.
+    /// Whether the listing in view is still being read.
     fn looking_up(&self) -> bool {
         self.lookup.is_some()
     }
 
-    /// Show what a finished lookup found. Answers whether the listing
-    /// changed; the host calls it each frame it is woken.
+    /// Whether the worker still owes the chooser an answer: a listing, a
+    /// check before it acts, the usual folders. A host that renders once
+    /// (a screenshot) waits for this to clear, polling with
+    /// [`Self::poll_lookups`].
+    pub fn reading(&self) -> bool {
+        self.lookup.is_some() || self.check.is_some() || self.places_check.is_some()
+    }
+
+    /// Take what the worker has answered: show a listing, act on a check,
+    /// show the usual folders. Answers whether anything changed; the host
+    /// calls it each frame it is woken.
     pub fn poll_lookups(&mut self) -> bool {
-        let Some(lookup) = self.lookup.as_ref() else {
-            return false;
-        };
-        let found = match lookup.found.try_recv() {
-            Ok(found) => found,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Vec::new(),
-        };
-        let asked = self.lookup.take().map(|lookup| lookup.listing);
-        if asked.as_ref() != Some(&self.listing) {
-            return false;
+        let mut changed = false;
+        if let Some(answer) = self
+            .lookup
+            .as_ref()
+            .and_then(|lookup| lookup.pending.take())
+        {
+            let asked = self.lookup.take().map(|lookup| lookup.asked);
+            if asked == Some((self.listing.clone(), self.current_dir.clone())) {
+                let listed = answer.unwrap_or(reading::Listed {
+                    rows: Vec::new(),
+                    here: None,
+                });
+                if listed.here.is_some() {
+                    self.here = listed.here;
+                }
+                self.read = listed.rows;
+                let selected = self.selected_paths();
+                self.relist();
+                self.reselect(&selected);
+                if let Some(target) = self.then_select.take()
+                    && self.select_by_path(&target)
+                    && self.mode == FilePickerMode::Save
+                {
+                    let name = target
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.set_filename(&name);
+                }
+                changed = true;
+            }
         }
-        let selected = self.selected_paths();
-        self.listed = self.entries_from(found);
-        self.show_listed();
-        self.reselect(&selected);
-        true
+        if let Some(answer) = self.places_check.as_ref().and_then(reading::Pending::take) {
+            self.places_check = None;
+            let reals = answer.unwrap_or_default();
+            self.present = self
+                .usual_folders()
+                .into_iter()
+                .zip(reals)
+                .filter(|(_, real)| real.kind == Kind::Folder)
+                .map(|(path, _)| path)
+                .collect();
+            self.rebuild_places();
+            changed = true;
+        }
+        if let Some(answer) = self.check.as_ref().and_then(|check| check.pending.take())
+            && let Some(check) = self.check.take()
+        {
+            self.act(check.intent, &answer.unwrap_or_default());
+            changed = true;
+        }
+        changed
     }
 
     /// Read the listing again: the folder in view, Recent or the search.
+    /// What was listed stays until the new rows are in.
     pub fn refresh_entries(&mut self) {
-        self.listed = match self.listing.clone() {
-            Listing::Folder => {
-                let mut listed = Vec::new();
-                if let Ok(read) = std::fs::read_dir(&self.current_dir) {
-                    for entry in read.flatten() {
-                        let path = entry.path();
-                        let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
-                        // Directory selection exposes folders only. File
-                        // modes keep directories for navigation and filter
-                        // ordinary files.
-                        if !self.listable(&path, is_dir) {
-                            continue;
-                        }
-                        let meta = entry.metadata().ok();
-                        listed.push(Self::entry_for(path, is_dir, meta.as_ref()));
-                    }
-                }
-                listed
-            }
-            Listing::Recent => {
-                self.look_up(Source::Paths(self.recent.clone()));
-                Vec::new()
-            }
-            Listing::Search(query) => {
-                if let Some(search) = self.search.clone() {
-                    self.look_up(Source::Search(search, query));
-                }
-                Vec::new()
-            }
+        let source = match self.listing.clone() {
+            Listing::Folder => Some(reading::Source::Folder(self.current_dir.clone())),
+            Listing::Recent => Some(reading::Source::Paths(self.recent.clone())),
+            Listing::Search(query) => self
+                .search
+                .clone()
+                .map(|search| reading::Source::Search(search, query)),
         };
-        if self.listing == Listing::Folder {
-            self.lookup = None;
-        }
-        self.show_listed();
+        let asked = (self.listing.clone(), self.current_dir.clone());
+        self.lookup = source
+            .and_then(|source| {
+                reading::list(
+                    source,
+                    self.accessible_roots.clone(),
+                    SEARCH_LIMIT,
+                    self.waker.clone(),
+                )
+            })
+            .map(|pending| Lookup { asked, pending });
+        self.relist();
+    }
+
+    /// List somewhere new: nothing is listed until its rows are in.
+    fn list_anew(&mut self) {
+        self.read.clear();
+        self.then_select = None;
+        self.refresh_entries();
     }
 
     /// Sort, narrow and label what is listed.
@@ -1529,10 +1623,12 @@ impl FilePicker {
         self.sync_text_focus();
     }
 
-    /// Go where the typed path says: into a folder, or, for a file, into
-    /// its folder with the file selected. A path the picker may not go to
-    /// keeps the field up, marked.
+    /// Go where the typed path says, once the worker has checked what it
+    /// really is ([`Self::go_to_location`]).
     pub fn commit_location(&mut self) {
+        if self.check.is_some() {
+            return;
+        }
         let Some(typed) = self.location.as_ref().map(|f| f.value().trim().to_owned()) else {
             return;
         };
@@ -1540,16 +1636,22 @@ impl FilePicker {
             self.location_invalid = true;
             return;
         };
-        let real = fs::canonicalize(&target).ok();
-        let allowed = real
-            .as_deref()
-            .is_some_and(|real| self.canonical_path_is_inside_roots(real))
-            && self.can_navigate_to(&target);
-        if !allowed {
+        self.ask(Intent::Location(target.clone()), vec![target]);
+    }
+
+    /// Go to the typed `target`, now that it is known what it really is:
+    /// into a folder, or, for a file, into its folder with the file
+    /// selected. A path the picker may not go to keeps the field up,
+    /// marked.
+    fn go_to_location(&mut self, target: PathBuf, real: Real) {
+        if self.location.is_none() {
+            return;
+        }
+        if !(real.exists_inside() && self.can_navigate_to(&target)) {
             self.location_invalid = true;
             return;
         }
-        if real.as_deref().is_some_and(Path::is_dir) {
+        if real.kind == Kind::Folder {
             self.stop_editing_location();
             self.navigate_to(&target);
             self.focus_control(PickerFocus::List);
@@ -1561,13 +1663,7 @@ impl FilePicker {
         };
         self.stop_editing_location();
         self.navigate_to(&folder);
-        if self.select_by_path(&target) && self.mode == FilePickerMode::Save {
-            let name = target
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            self.set_filename(&name);
-        }
+        self.then_select = Some(target);
         self.focus_control(if self.mode == FilePickerMode::Save {
             PickerFocus::Filename
         } else {
@@ -1985,7 +2081,9 @@ impl FilePicker {
         if self.has_sidebar() {
             targets.push(PickerFocus::Places);
         }
-        if !self.entries.is_empty() {
+        // The list holds focus while its rows are being read, so the
+        // chooser opens on it rather than moving there when they arrive.
+        if !self.entries.is_empty() || self.looking_up() {
             targets.push(PickerFocus::List);
         }
         if self.shows_filter() {
@@ -2221,7 +2319,7 @@ impl FilePicker {
             self.active_filter = index;
             self.selection.clear();
             self.table.reset_scroll();
-            self.refresh_entries();
+            self.relist();
         }
     }
 
@@ -2394,63 +2492,128 @@ impl FilePicker {
         }
     }
 
-    /// Resolve the mode-specific confirmation action after revalidating the
-    /// selected paths (or the typed Save filename).
+    /// Confirm: what is about to be given (the selection, or the typed
+    /// Save name's folder and file) is checked again on the worker, and
+    /// the chooser acts on the answer ([`Self::act`]).
     fn commit_open(&mut self) {
+        if self.check.is_some() {
+            return;
+        }
         match self.mode {
             FilePickerMode::Save => {
                 let name = self.filename().trim().to_owned();
                 if name.is_empty() {
                     if let Some(target) = self.first_selected_file() {
-                        self.commit_save(target);
+                        self.ask(Intent::SaveSelected(target.clone()), vec![target]);
                     }
                     return;
                 }
                 match self.resolve_save_name(&name) {
                     Ok(SaveName::Folder(folder)) => {
-                        self.navigate_to(&folder);
-                        self.set_filename("");
-                        self.focus_control(PickerFocus::Filename);
+                        let paths = vec![folder.clone()];
+                        self.ask(Intent::SaveName(SaveName::Folder(folder)), paths);
                     }
                     Ok(SaveName::File { folder, name }) => {
-                        if folder != self.current_dir {
-                            // Show where the file goes, so a replace prompt
-                            // (or the next Save) is about the folder in view.
-                            self.navigate_to(&folder);
-                            self.set_filename(&name);
-                        }
-                        self.commit_save(folder.join(&name));
+                        let paths = vec![folder.clone(), folder.join(&name)];
+                        self.ask(Intent::SaveName(SaveName::File { folder, name }), paths);
                     }
                     Err(error) => self.show_name_error(&error),
                 }
             }
             FilePickerMode::Open => {
                 if let Some(paths) = self.validated_selected_files() {
-                    self.pending_outcome = Some(FilePickerOutcome::Selected(paths));
+                    self.ask(Intent::Open(paths.clone()), paths);
                 }
             }
             FilePickerMode::Directory => {
                 if let Some(paths) = self.validated_directory_choice() {
+                    self.ask(Intent::Directory(paths.clone()), paths);
+                }
+            }
+        }
+    }
+
+    /// Check `paths` on the worker for `intent`.
+    fn ask(&mut self, intent: Intent, paths: Vec<PathBuf>) {
+        self.check = reading::check(paths, self.accessible_roots.clone(), self.waker.clone())
+            .map(|pending| Check { intent, pending });
+    }
+
+    /// Do what a check was for, now that the worker says what each path
+    /// really is. A path that vanished, changed kind or turned into a link
+    /// out of the roots since it was listed is refused.
+    fn act(&mut self, intent: Intent, reals: &[Real]) {
+        if self.pending_outcome.is_some() {
+            // Cancelled while the check was out: nothing more to do.
+            return;
+        }
+        let real = |i: usize| reals.get(i).copied().unwrap_or_default();
+        match intent {
+            Intent::Open(paths) => {
+                if (0..paths.len()).all(|i| real(i).is_file_inside()) {
                     self.pending_outcome = Some(FilePickerOutcome::Selected(paths));
                 }
             }
+            Intent::Directory(paths) => {
+                if (0..paths.len()).all(|i| real(i).is_folder_inside()) {
+                    self.pending_outcome = Some(FilePickerOutcome::Selected(paths));
+                }
+            }
+            Intent::SaveSelected(target) => self.save_to(target, real(0)),
+            Intent::SaveName(SaveName::Folder(folder)) => {
+                match self.save_folder_allowed(&folder, real(0)) {
+                    Ok(()) => {
+                        self.navigate_to(&folder);
+                        self.set_filename("");
+                        self.focus_control(PickerFocus::Filename);
+                    }
+                    Err(error) => self.show_name_error(&error),
+                }
+            }
+            Intent::SaveName(SaveName::File { folder, name }) => {
+                if let Err(error) = self.save_folder_allowed(&folder, real(0)) {
+                    self.show_name_error(&error);
+                    return;
+                }
+                if folder != self.current_dir {
+                    // Show where the file goes, so a replace prompt (or the
+                    // next Save) is about the folder in view.
+                    self.navigate_to(&folder);
+                    self.set_filename(&name);
+                }
+                self.save_to(folder.join(&name), real(1));
+            }
+            Intent::Location(target) => self.go_to_location(target, real(0)),
+        }
+    }
+
+    /// A Save name's folder must exist and really lie beneath one of the
+    /// chooser's roots, so neither `..` nor a link can take a save outside
+    /// what the caller may write.
+    fn save_folder_allowed(&self, folder: &Path, real: Real) -> Result<(), SaveNameError> {
+        if real.kind != Kind::Folder {
+            Err(SaveNameError::NoFolder(folder.to_path_buf()))
+        } else if real.inside && self.can_navigate_to(folder) {
+            Ok(())
+        } else {
+            Err(SaveNameError::NotAllowed(folder.to_path_buf()))
         }
     }
 
     /// Save to `target` — unless something is already there. A folder is
     /// opened, as typing a folder's name does in every save dialog; an
     /// existing file is replaced only once the person says so.
-    fn commit_save(&mut self, target: PathBuf) {
-        match fs::metadata(&target) {
-            Ok(meta) if meta.is_dir() => {
+    fn save_to(&mut self, target: PathBuf, real: Real) {
+        match real.kind {
+            Kind::Folder => {
                 if self.can_navigate_to(&target) {
                     self.navigate_to(&target);
                     self.set_filename("");
                     self.focus_control(PickerFocus::Filename);
                 }
             }
-            // A dangling symlink is still a name taken in this folder.
-            _ if fs::symlink_metadata(&target).is_ok() => {
+            // A dangling link is still a name taken in this folder.
+            Kind::File | Kind::Other | Kind::Dangling => {
                 self.replace_prompt = Some(target);
                 self.hover_prompt = None;
                 // Cancel holds focus: Enter on its own never destroys a file.
@@ -2459,16 +2622,17 @@ impl FilePicker {
                 self.sync_text_focus();
                 self.apply_layout_helper();
             }
-            _ => self.pending_outcome = Some(FilePickerOutcome::Selected(vec![target])),
+            Kind::Nothing => {
+                self.pending_outcome = Some(FilePickerOutcome::Selected(vec![target]));
+            }
         }
     }
 
-    /// Resolve a typed Save name: a plain name in the folder in view, or a
-    /// path to another folder — relative to this one, from home (`~/`) or
-    /// absolute — with the file's name as its last part. A name ending in
-    /// `/` is a folder to open. The folder must exist and its real path must
-    /// lie beneath one of the real chooser roots, so neither `..` nor a
-    /// symlink can take a save outside what the caller may write.
+    /// Resolve a typed Save name, lexically: a plain name in the folder in
+    /// view, or a path to another folder — relative to this one, from home
+    /// (`~/`) or absolute — with the file's name as its last part. A name
+    /// ending in `/` is a folder to open. Whether the folder exists and may
+    /// be written is checked on confirming ([`Self::save_folder_allowed`]).
     fn resolve_save_name(&self, typed: &str) -> Result<SaveName, SaveNameError> {
         use std::path::Component;
         let wants_folder = typed.ends_with('/');
@@ -2480,7 +2644,7 @@ impl FilePicker {
             _ => PathBuf::from(typed),
         };
         // Lexical, so the folder shown is the one the person named; the real
-        // path is checked against the roots below.
+        // path is checked against the roots on confirming.
         let mut path = if expanded.is_absolute() {
             PathBuf::new()
         } else {
@@ -2496,20 +2660,14 @@ impl FilePicker {
                 Component::Normal(part) => path.push(part),
             }
         }
-        let allowed = |folder: &Path| -> Result<(), SaveNameError> {
-            let real = fs::canonicalize(folder)
-                .ok()
-                .filter(|real| real.is_dir())
-                .ok_or_else(|| SaveNameError::NoFolder(folder.to_path_buf()))?;
-            if self.canonical_path_is_inside_roots(&real) && self.can_navigate_to(folder) {
-                Ok(())
-            } else {
-                Err(SaveNameError::NotAllowed(folder.to_path_buf()))
-            }
-        };
+        // A folder outside the roots is refused as typed; one inside them
+        // is checked for what it really is on confirming.
         if wants_folder {
-            allowed(&path)?;
-            return Ok(SaveName::Folder(path));
+            return if self.can_navigate_to(&path) {
+                Ok(SaveName::Folder(path))
+            } else {
+                Err(SaveNameError::NotAllowed(path))
+            };
         }
         let ends_in_name = matches!(
             expanded.components().next_back(),
@@ -2519,7 +2677,9 @@ impl FilePicker {
         else {
             return Err(SaveNameError::Invalid);
         };
-        allowed(folder)?;
+        if !self.can_navigate_to(folder) {
+            return Err(SaveNameError::NotAllowed(folder.to_path_buf()));
+        }
         Ok(SaveName::File {
             folder: folder.to_path_buf(),
             name: name.to_string_lossy().into_owned(),
@@ -2554,15 +2714,19 @@ impl FilePicker {
         self.name_error.as_deref()
     }
 
+    /// The first selected file, as listed, if the chooser may give it.
     fn first_selected_file(&self) -> Option<PathBuf> {
         self.selection
             .selected()
             .into_iter()
             .filter_map(|i| self.entries.get(i))
             .find(|e| !e.is_dir)
-            .and_then(|e| self.safe_existing_file(&e.path))
+            .filter(|e| e.real.is_file_inside())
+            .map(|e| e.path.clone())
     }
 
+    /// The selected files, as listed, if every one is a file the chooser
+    /// may give.
     fn validated_selected_files(&self) -> Option<Vec<PathBuf>> {
         let entries = self
             .selection
@@ -2575,51 +2739,36 @@ impl FilePicker {
         }
         entries
             .into_iter()
-            .map(|entry| {
-                (!entry.is_dir)
-                    .then(|| self.safe_existing_file(&entry.path))
-                    .flatten()
-            })
+            .map(|entry| (!entry.is_dir && entry.real.is_file_inside()).then(|| entry.path.clone()))
             .collect()
     }
 
+    /// The selected folders, as listed, or the folder in view when none is
+    /// selected, if each is a folder the chooser may give.
     fn validated_directory_choice(&self) -> Option<Vec<PathBuf>> {
         let selected = self.selection.selected();
         if selected.is_empty() {
             return self
-                .safe_existing_directory(&self.current_dir)
-                .map(|path| vec![path]);
+                .here
+                .is_some_and(Real::is_folder_inside)
+                .then(|| vec![self.current_dir.clone()]);
         }
         selected
             .into_iter()
             .map(|index| {
                 let entry = self.entries.get(index)?;
-                entry
-                    .is_dir
-                    .then(|| self.safe_existing_directory(&entry.path))
-                    .flatten()
+                (entry.is_dir && entry.real.is_folder_inside()).then(|| entry.path.clone())
             })
             .collect()
     }
 
-    fn safe_existing_file(&self, candidate: &Path) -> Option<PathBuf> {
-        let canonical = fs::canonicalize(candidate).ok()?;
-        (canonical.is_file() && self.canonical_path_is_inside_roots(&canonical))
-            .then(|| candidate.to_path_buf())
-    }
-
-    fn safe_existing_directory(&self, candidate: &Path) -> Option<PathBuf> {
-        let canonical = fs::canonicalize(candidate).ok()?;
-        (canonical.is_dir() && self.canonical_path_is_inside_roots(&canonical))
-            .then(|| candidate.to_path_buf())
-    }
-
-    fn canonical_path_is_inside_roots(&self, canonical: &Path) -> bool {
-        self.accessible_roots.iter().any(|root| {
-            fs::canonicalize(root).is_ok_and(|canonical_root| {
-                canonical_root.is_dir() && canonical.starts_with(canonical_root)
-            })
-        })
+    /// Whether `entry`, as listed, is something the chooser may give.
+    fn within_scope(entry: &FilePickerEntry) -> bool {
+        if entry.is_dir {
+            entry.real.is_folder_inside()
+        } else {
+            entry.real.is_file_inside()
+        }
     }
 
     /// Resolve a click on entry `i`: file modes navigate through directories;
@@ -3229,7 +3378,6 @@ impl Widget for FilePicker {
 }
 
 impl FilePicker {
-    /// The name of the file the replace prompt is about.
     fn replace_prompt_name(&self) -> Option<String> {
         let target = self.replace_prompt.as_ref()?;
         Some(target.file_name().map_or_else(

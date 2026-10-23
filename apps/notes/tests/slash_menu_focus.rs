@@ -79,7 +79,6 @@ fn slash_menu_owns_arrow_and_enter_keys() {
             "ArrowDown advances the block-menu highlight"
         );
 
-        // Escape closes the menu.
         dispatch(&mut app, &named_key(NamedKey::Escape));
         assert!(
             !surface(&mut app, |notes| notes.editor_slash_menu_visible_for_test()),
@@ -89,7 +88,6 @@ fn slash_menu_owns_arrow_and_enter_keys() {
 
     eprintln!("phase slash_menu_enter_inserts_the_chosen_block");
     {
-        // A fresh empty note gives a clean single-paragraph editor.
         let mut app = notes();
         let page = add_note(&mut app, "Empty", "");
         open(&mut app, page);

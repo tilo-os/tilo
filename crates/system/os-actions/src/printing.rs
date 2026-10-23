@@ -111,10 +111,6 @@ impl PrintJob {
 }
 
 /// List CUPS print queues, enriched with live IPP telemetry where a printer answers it.
-///
-/// # Errors
-///
-/// Returns an error message if `lpstat` is not installed or the command fails.
 pub fn queues() -> Result<Vec<PrinterQueue>, String> {
     let printers = run_capture("lpstat", &["-p", "-d"])?;
     let accepting = run_capture("lpstat", &["-a"]).unwrap_or_default();
@@ -133,10 +129,6 @@ pub fn queues() -> Result<Vec<PrinterQueue>, String> {
 }
 
 /// List CUPS print jobs, enriched with live IPP telemetry where a destination answers it.
-///
-/// # Errors
-///
-/// Returns an error message if `lpstat` is not installed or the command fails.
 pub fn jobs() -> Result<Vec<PrintJob>, String> {
     // Include completed/cancelled jobs retained by CUPS: Print Centre is a
     // recovery and audit surface, not merely a duplicate of the transient
@@ -180,10 +172,6 @@ fn query_ipp(queue: &str, test: &str) -> Result<String, String> {
 /// Discover only driverless IPP devices.  `driverless` delegates DNS-SD and
 /// IPP capability probing to cups-filters and therefore avoids a Tilo-specific
 /// discovery stack or legacy PPD downloads.
-///
-/// # Errors
-///
-/// Returns an error message if `driverless` is not installed or the command fails.
 pub fn discover_driverless() -> Result<Vec<DiscoveredPrinter>, String> {
     Ok(parse_driverless(&run_capture("driverless", &[])?))
 }
@@ -235,11 +223,6 @@ fn device_identity(uri: &str) -> String {
 }
 
 /// Add a driverless IPP printer at `uri`, naming the queue `requested_name`.
-///
-/// # Errors
-///
-/// Returns an error message if `uri` or `requested_name` fails validation, or `lpadmin` is not
-/// installed or the command fails.
 pub fn add_driverless(uri: &str, requested_name: &str) -> Result<(), String> {
     validate_uri(uri)?;
     let name = queue_name(requested_name)?;
@@ -260,33 +243,18 @@ pub fn add_driverless(uri: &str, requested_name: &str) -> Result<(), String> {
 }
 
 /// Remove the print queue `name`.
-///
-/// # Errors
-///
-/// Returns an error message if `name` fails validation, or `lpadmin` is not installed or the
-/// command fails.
 pub fn remove_queue(name: &str) -> Result<(), String> {
     let name = queue_name(name)?;
     run("lpadmin", &["-x", &name])
 }
 
 /// Make `name` the default print queue.
-///
-/// # Errors
-///
-/// Returns an error message if `name` fails validation, or `lpoptions` is not installed or the
-/// command fails.
 pub fn set_default(name: &str) -> Result<(), String> {
     let name = queue_name(name)?;
     run("lpoptions", &["-d", &name])
 }
 
 /// Enable/accept or disable/reject jobs on the print queue `name`.
-///
-/// # Errors
-///
-/// Returns an error message if `name` fails validation, or the underlying `cupsenable` /
-/// `cupsaccept` / `cupsreject` / `cupsdisable` call is not installed or fails.
 pub fn set_enabled(name: &str, enabled: bool) -> Result<(), String> {
     let name = queue_name(name)?;
     if enabled {
@@ -301,22 +269,12 @@ pub fn set_enabled(name: &str, enabled: bool) -> Result<(), String> {
 }
 
 /// Cancel the CUPS job `id`.
-///
-/// # Errors
-///
-/// Returns an error message if `id` fails validation, or `cancel` is not installed or the
-/// command fails.
 pub fn cancel_job(id: &str) -> Result<(), String> {
     validate_job_id(id)?;
     run("cancel", &[id])
 }
 
 /// Restart the CUPS job `id`.
-///
-/// # Errors
-///
-/// Returns an error message if `id` fails validation, or `lp` is not installed or the command
-/// fails.
 pub fn retry_job(id: &str) -> Result<(), String> {
     validate_job_id(id)?;
     run("lp", &["-i", id, "-H", "restart"])
@@ -646,7 +604,6 @@ mod tests {
 
     #[test]
     fn cups_queues_devices_supplies_and_identifiers_parse_bounded() {
-        // Phase `parses_queue_health_and_accepting_state`.
         {
             let q = parse_queues(
                 "printer Office is printing Office-8. enabled since now\nprinter Lab is disabled since now - media-empty\nsystem default destination: Office\n",
@@ -658,14 +615,12 @@ mod tests {
             assert_eq!(q[1].reason.as_deref(), Some("media-empty"));
             assert!(!q[1].accepting_jobs);
         }
-        // Phase `parses_driverless`.
         {
             let d =
                 parse_driverless("ipps://office.local/ipp/print \"Acme Laser 4\" \"Copy room\"\n");
             assert_eq!(d[0].name, "Acme Laser 4");
             assert_eq!(d[0].location.as_deref(), Some("Copy room"));
         }
-        // Phase `a_printer_reached_two_ways_is_found_once`.
         {
             let d = parse_driverless(
                 "ipp://Acme%20Laser._ipp._tcp.local/ \"Acme Laser 4\" \"\"\nipps://Acme%20Laser._ipps._tcp.local/ \"Acme Laser 4\" \"\"\n",
@@ -673,7 +628,6 @@ mod tests {
             assert_eq!(d.len(), 1);
             assert!(d[0].uri.starts_with("ipps://"));
         }
-        // Phase `validates_all_external_identifiers`.
         {
             assert!(validate_uri("ipps://printer.local/ipp/print").is_ok());
             assert!(validate_uri("file:///etc/shadow").is_err());
@@ -692,7 +646,6 @@ mod tests {
                 .is_err()
             );
         }
-        // Phase `parses_bounded_ipp_supplies_and_job_progress`.
         {
             let telemetry = parse_ipp_printer_attributes(
                 " marker-names (1setOf nameWithoutLanguage) = \"Black Toner\",\"Cyan\u{1b} Toner\"\n marker-colors (1setOf nameWithoutLanguage) = black,cyan\n marker-levels (1setOf integer) = 83,-1\n printer-state-reasons (1setOf keyword) = none,media-low\n",
@@ -734,13 +687,11 @@ mod tests {
             name: "Printer".into(),
             location: None,
         };
-        // The same printer, by another scheme, port or trailing slash.
         assert!(is_added(
             &found("ipp://Acme%20Laser._ipp._tcp.local/"),
             &queues
         ));
         assert!(is_added(&found("ipps://192.168.1.20/ipp/print/"), &queues));
-        // Other printers stay addable.
         let other = found("ipps://Other%20Inkjet._ipps._tcp.local/");
         assert!(!is_added(&other, &queues));
         let offered = not_added(

@@ -46,7 +46,6 @@ pub enum Request {
     AppUpdate {
         package: Option<String>,
     },
-    /// Stage the signed system image update.
     SystemUpdate,
     /// Update apps and stage the system image, matching `tilo update`.
     AllUpdates,
@@ -1948,7 +1947,6 @@ mod tests {
                 PathBuf::from("/usr/libexec/tilo/tilo-legacy")
             );
             assert!(!command.mutating);
-            // A legacy app runs for as long as the person keeps it open.
             assert_eq!(command.time_limit, None);
         }
         // phase: an untrusted directory is named but not shared
@@ -2869,7 +2867,6 @@ mod tests {
             matches!(serde_json::from_str(&line), Ok(Response::Status { .. })),
             "{line}"
         );
-        // Stopping the broker ends the connection it still holds.
         drop(broker);
     }
 
@@ -2929,7 +2926,6 @@ mod tests {
     fn allow_host_writes_a_net_grant_that_perm_list_shows_and_revoke_removes() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = state(dir.path());
-        // Without a session network the grant is recorded for the next one.
         let Response::NeedsRestart { detail } = s.handle(Request::AllowHost {
             host: "*.Crates.io".into(),
         }) else {

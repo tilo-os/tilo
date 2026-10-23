@@ -37,7 +37,6 @@ fn native_run_fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> 
     f
 }
 
-/// A native run's terminal report.
 fn native_terminal(sent: &[CollabRequest]) -> runtime_collab::TaskRunUpdate {
     legacy_terminal(sent)
 }
@@ -353,7 +352,6 @@ fn a_host_that_answers_reasks_at_once_is_paced_not_spun() {
     let mut f = native_run_fixture(
         "post the change",
         World {
-            // The child settles when the fourth re-ask reaches the host.
             settle_after: Some(tilo_test_env::hang_bound()),
             settles_at_reask: Some(4),
             reask_hold: ReaskHold::AnswerAtOnce,

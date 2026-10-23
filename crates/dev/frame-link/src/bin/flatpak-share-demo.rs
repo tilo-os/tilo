@@ -1033,10 +1033,6 @@ impl Pipeline {
     /// Encode, shim, (maybe) decode, compose and mux one source frame at
     /// `frame_index`/`t_ms`. Returns the wall-time this call actually
     /// took, for the caller's real-time pacing.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if either encoder or the muxer fails.
     fn process_frame(&mut self, t_ms: u64, frame_index: u32) -> Result<Duration, String> {
         let src = self.source_renderer.render(t_ms, frame_index);
 
@@ -1071,8 +1067,6 @@ impl Pipeline {
             );
             let _entered = span.enter();
             if let Some(frame) = self.recv_decoder.decode(&nal_blob) {
-                // Post-HDR decoder now returns typed DecodedPixels; the
-                // demo only handles SDR RGBA, so extract those bytes.
                 if let tilo_callstream::surface_decoder::DecodedPixels::Rgba8(rgba) = frame.pixels {
                     self.last_decoded = Some(rgba);
                 }
@@ -1080,7 +1074,6 @@ impl Pipeline {
             }
         }
 
-        // Update running stats.
         let shim_stats = self.shim.stats();
         self.dropped_frames = shim_stats.frames_dropped;
         let footer = format_footer(
@@ -1096,7 +1089,6 @@ impl Pipeline {
             .composite
             .compose(src, self.last_decoded.as_deref(), &footer);
 
-        // Encode the composite via the second encoder and mux it.
         let composite_units = self
             .composite_encoder
             .encode(composite_rgba)

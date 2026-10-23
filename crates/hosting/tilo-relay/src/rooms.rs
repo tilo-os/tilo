@@ -30,6 +30,7 @@ mod applications;
 mod authority;
 mod collaboration;
 mod content;
+pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
 pub(crate) use desktop_writes::writes_desktop;
@@ -77,7 +78,7 @@ use web_time::SystemTime;
 pub(crate) use actions::{GovernedPlane, HostRoomActions};
 pub use admin::RoomAdminProtocol;
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
-pub use collaboration::{CollaborationError, GovernanceCompletion, RoomJoinService};
+pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use pages::PreAdmitRequest;
 // The administration vocabulary (the actions' names and answers, and the
 // wire door's) and the device's client, under the daemon's historic paths.
@@ -1006,10 +1007,10 @@ impl Rooms {
         &self.inner.host.cert
     }
 
-    /// The join service answering invitation redemption for these rooms.
+    /// The governor answering the workspace-join exchange for these rooms.
     #[must_use]
-    pub fn join_service(&self) -> RoomJoinService {
-        RoomJoinService::new(self.clone())
+    pub fn join_service(&self) -> tilo_governor::Governor<Self> {
+        tilo_governor::Governor(self.clone())
     }
 
     /// The current role of `device` only when room Write permission is allowed,
@@ -1298,16 +1299,63 @@ impl Rooms {
         Ok(())
     }
 
-    /// Follow each record write a member makes, see [`Self::absorb`].
+    /// Follow each record write a member makes, see [`Self::absorb`], and
+    /// replay what the relay retains each time an app surface arrives: the
+    /// writes held for it, those let go past the held queue's bound
+    /// included, are taken in then rather than when the next write lands.
     fn follow(&self, room: String, mut notices: tokio::sync::mpsc::Receiver<([u8; 32], Vec<u8>)>) {
         let rooms = Arc::downgrade(&self.inner);
+        let mut arrivals = crate::surfaces::arrivals();
+        arrivals.mark_unchanged();
         tokio::spawn(async move {
-            while let Some((author, body)) = notices.recv().await {
-                let Some(inner) = rooms.upgrade() else { break };
-                if let Err(error) = (Self { inner }).absorb(&room, author, &body).await {
-                    tracing::warn!(%room, %error, "governed room did not follow a record write");
+            loop {
+                tokio::select! {
+                    notice = notices.recv() => {
+                        let Some((author, body)) = notice else { break };
+                        let Some(inner) = rooms.upgrade() else { break };
+                        if let Err(error) = (Self { inner }).absorb(&room, author, &body).await {
+                            tracing::warn!(%room, %error, "governed room did not follow a record write");
+                        }
+                    }
+                    Ok(()) = arrivals.changed() => {
+                        let Some(inner) = rooms.upgrade() else { break };
+                        (Self { inner }).replay_soon(room.clone());
+                    }
                 }
             }
+        });
+    }
+
+    /// Replay what the relay retains for `room` into the governor's copy
+    /// ([`Self::recall_retained`]), apart from whatever asked for it. The
+    /// relay's copy is read once every write the governor was handed is
+    /// durable in it, and before the room is locked: their delivery waits
+    /// for the governor to follow them.
+    fn replay_soon(&self, room: String) {
+        let rooms = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            let Some(inner) = rooms.upgrade() else {
+                return;
+            };
+            let rooms = Self { inner };
+            let Ok(state) = rooms.room(&room).await else {
+                return;
+            };
+            let workspace_id = state.lock().await.workspace_id();
+            let retained = match rooms
+                .inner
+                .host
+                .records
+                .retained_settled(workspace_id)
+                .await
+            {
+                Ok(retained) => retained,
+                Err(error) => {
+                    tracing::warn!(%room, %error, "governed room did not replay what its members wrote");
+                    return;
+                }
+            };
+            rooms.recall_retained(&mut *state.lock().await, retained);
         });
     }
 
@@ -1365,14 +1413,24 @@ impl Rooms {
     )]
     async fn absorb(&self, room: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
         let host = &self.inner.host;
-        if author == host.cert.device_public_key {
-            return Ok(());
-        }
         let Ok(message) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) else {
             return Ok(());
         };
-        let Some(message) = self.absorb_notice(room, author, message).await? else {
-            return Ok(());
+        // The relay's own device writes records through the room too: the
+        // actions it runs for members (a visitor linking their Discord
+        // account) are committed as that device, and the governor's copy,
+        // which the room's bots read, must take them in like any member's.
+        // Its notices it made itself, so it has them already.
+        let message = if author == host.cert.device_public_key {
+            if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+                return Ok(());
+            }
+            message
+        } else {
+            let Some(message) = self.absorb_notice(room, author, message).await? else {
+                return Ok(());
+            };
+            message
         };
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
@@ -1670,23 +1728,7 @@ impl Rooms {
             self.keep_soon(room);
         }
         if followed.replay_wanted {
-            // Not under this write's own delivery: recalling waits for the
-            // writes the relay is still retaining.
-            let rooms = Arc::downgrade(&self.inner);
-            let id = room.room().to_owned();
-            tokio::spawn(async move {
-                let Some(inner) = rooms.upgrade() else {
-                    return;
-                };
-                let rooms = Self { inner };
-                let Ok(room) = rooms.room(&id).await else {
-                    return;
-                };
-                let mut room = room.lock().await;
-                if let Err(error) = rooms.recall(&mut room).await {
-                    tracing::warn!(room = %id, %error, "governed room did not replay what its members wrote");
-                }
-            });
+            self.replay_soon(room.room().to_owned());
         }
         crate::timing::window("room.follow", following);
         #[cfg(any(feature = "agents", feature = "web"))]
@@ -1752,9 +1794,7 @@ impl Rooms {
     }
 
     /// Replay every record write the relay retains for `room` into the
-    /// governor's copy, and keep what it took in. A write held for an app
-    /// surface not here yet is let go; it is replayed again once something
-    /// it waited for lands ([`Followed::replay_wanted`]).
+    /// governor's copy, and keep what it took in.
     async fn recall(&self, room: &mut GovernedRoom) -> Result<(), String> {
         let retained = self
             .inner
@@ -1762,7 +1802,24 @@ impl Rooms {
             .records
             .retained(room.workspace_id())
             .await?;
-        let mut changed = false;
+        self.recall_retained(room, retained);
+        Ok(())
+    }
+
+    /// Take `retained`, the record writes the relay retains for `room`, into
+    /// the governor's copy, and keep what it took in. A write held for an
+    /// app surface not here yet may be let go past the held queue's bound,
+    /// and so is every later write of its author to its record, which
+    /// would otherwise overtake it for good. The relay still retains them
+    /// all: they are replayed again, in the order their authors wrote them,
+    /// once the surface arrives ([`Self::follow`]) or something they waited
+    /// for lands ([`Followed::replay_wanted`]).
+    fn recall_retained(
+        &self,
+        room: &mut GovernedRoom,
+        retained: Vec<crate::room_records::RetainedBody>,
+    ) {
+        let (mut changed, mut again) = (false, false);
         for retained in retained {
             if retained.author == self.inner.host.cert.device_public_key {
                 continue;
@@ -1770,13 +1827,20 @@ impl Rooms {
             if let Ok(message) = postcard::from_bytes(&retained.body)
                 && self.recalls(room, retained.author, &message)
             {
-                changed |= room.follow(retained.author, message).changed;
+                let followed = room.follow(retained.author, message);
+                changed |= followed.changed;
+                again |= followed.replay_wanted;
             }
         }
         if changed {
             room.keep_followed();
         }
-        Ok(())
+        // What a write let go waited for landed in this replay: the relay's
+        // copy is read again, with what reached it since this one was read.
+        // Each further replay needs something new to land, so it ends.
+        if again {
+            self.replay_soon(room.room().to_owned());
+        }
     }
 
     /// Bring the relay in line with the room's committed state: admit exactly

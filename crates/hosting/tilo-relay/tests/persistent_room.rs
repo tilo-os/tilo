@@ -446,7 +446,6 @@ fn spectate(room: &mut Room) -> (ed25519_dalek::SigningKey, tilo_user_identity::
     }
 }
 
-/// The names of the chat's channels in `doc`, if it holds a chat.
 fn chat_channels(doc: &automerge::AutoCommit) -> Option<Vec<String>> {
     use tilo_resource::Resource as _;
     Some(
@@ -581,7 +580,6 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
             record: tilo_relay::room_bots::room_record(&catalogue, CHAT),
         };
 
-        // The watching page is admitted and reads the room's chat.
         let watcher = page(plain, watching_key, watching_cert, &host_cert, true);
         watcher.join(workspace_id).unwrap();
         watcher.open_route(route.clone()).unwrap();
@@ -619,7 +617,6 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
             "the spectator's write was committed: {refused:?}"
         );
 
-        // The owner's root admits none of its other devices by itself.
         let other = page(plain, sibling_key, sibling_cert, &host_cert, false);
         other.join(workspace_id).unwrap();
         let refused = wait_for(

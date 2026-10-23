@@ -322,7 +322,6 @@ mod tests {
 
     #[test]
     fn shortcuts_modifiers_and_dialog_order_follow_each_platform_hig() {
-        // Case `semantic_shortcut_formats_for_each_platform`.
         {
             let shortcut = Shortcut::command("K").shift();
             assert_eq!(
@@ -343,7 +342,6 @@ mod tests {
             );
         }
 
-        // Case `command_modifier_and_dialog_order_follow_platform_hig`.
         {
             let control = winit::keyboard::ModifiersState::CONTROL;
             let command = winit::keyboard::ModifiersState::SUPER;

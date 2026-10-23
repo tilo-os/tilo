@@ -252,7 +252,6 @@ mod tests {
         assert_eq!(here.take_waves().len(), 1);
     }
 
-    /// A wave at another device of this person reaches them here too.
     #[test]
     fn a_wave_at_another_device_of_this_person_reaches_them() {
         let mut here = HereState::default();

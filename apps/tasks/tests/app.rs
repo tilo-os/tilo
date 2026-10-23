@@ -140,3 +140,131 @@ fn a_reference_as_it_reads_opens_its_issue_whose_links_are_chips() {
     );
     assert!(app.call("open", json!({ "anchor": "#9" })).is_err());
 }
+
+/// The session's door: records what it is asked and grants it.
+#[derive(Default)]
+struct Door {
+    asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+}
+
+impl ui::tilo_actions::remote::ActionHost for Door {
+    fn query(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: ui::tilo_actions::remote::CatalogueQuery,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
+    > {
+        ui::tilo_actions::remote::Pending::ready(Err(
+            ui::tilo_actions::remote::ActionHostError::NotPermitted,
+        ))
+    }
+
+    fn invoke(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        request: ui::tilo_actions::remote::InvokeRequest,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<
+            ui::tilo_actions::remote::InvocationReceipt,
+            ui::tilo_actions::remote::ActionHostError,
+        >,
+    > {
+        let invocation = request.invocation;
+        self.asked.lock().unwrap().push(request);
+        ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
+            invocation,
+            status: ui::tilo_actions::remote::ReceiptStatus::Completed {
+                output: ui::tilo_actions::ActionOutput::default(),
+            },
+        }))
+    }
+
+    fn observe(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: &ui::tilo_actions::InvocationId,
+    ) -> Option<ui::tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: &ui::tilo_actions::InvocationId,
+    ) -> Result<(), ui::tilo_actions::remote::ActionHostError> {
+        Ok(())
+    }
+}
+
+/// A link names the record of the app that keeps what it links to, and
+/// opens it there; a link made before links named a record opens the app's
+/// own record of the workspace.
+#[test]
+fn a_link_opens_in_the_record_it_names() {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    let room = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
+    env.set("TILO_WORKSPACE_ID", room);
+    let door = std::sync::Arc::new(Door::default());
+    let _served = ui::RemoteActions::enter(
+        door.clone(),
+        ui::tilo_actions::remote::Caller::local_person("ada"),
+    );
+    let mut app = open();
+    app.call("create", json!({ "title": "Plan the launch" }))
+        .expect("create");
+    let issue = only(&app);
+    for (label, record) in [("Kept", Some("/launch")), ("Old", None)] {
+        let mut link = json!({
+            "app": "so.tilo.tasks",
+            "kind": "tasks.tracker.issues",
+            "resource": format!("tasks.tracker/issues/{label}"),
+            "label": label,
+        });
+        if let Some(record) = record {
+            link["record"] = json!(record);
+        }
+        app.call_on(&issue_resource(&issue), "link", link)
+            .expect("link the issue");
+    }
+    let links: Vec<_> = app
+        .state()
+        .issues
+        .get(&issue)
+        .unwrap()
+        .links
+        .values()
+        .cloned()
+        .collect();
+    assert_eq!(links[0].record.as_deref(), Some("/launch"));
+    assert_eq!(links[1].record, None);
+    // What a link stored before it named a record reads as naming none.
+    let old = <tasks::model::Link as ui::tilo_resource::Model>::from_json(&json!({
+        "label": "Old", "app": "so.tilo.notes", "kind": "notes.page", "resource": "notes.page:1",
+    }))
+    .expect("an old link reads");
+    assert_eq!(old.record, None);
+
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    for (label, record) in [("Kept", Some("/launch")), ("Old", None)] {
+        let chip = app
+            .harness()
+            .a11y_node_named(&format!("Open {label}"))
+            .expect("the link's chip");
+        app.harness()
+            .perform_a11y_action(chip, &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
+        let asked = door.asked.lock().unwrap().pop().expect("one open");
+        let reference = ui::tilo_reference::ResourceRef::whole(
+            "tasks.tracker.issues",
+            format!("tasks.tracker/issues/{label}"),
+            label,
+        );
+        assert_eq!(
+            asked.target,
+            reference.open_target(room, "so.tilo.tasks", record)
+        );
+    }
+}

@@ -1901,6 +1901,22 @@ impl Widget for Button {
         Some(self.id.as_str())
     }
 
+    /// This button as a slot in the window's bar, sent back as `id`: its
+    /// icon in the bar's row, or an entry of the bar's menu by its label
+    /// when it has no icon. `None` for a button with no name to show.
+    fn window_slot(&self, id: String) -> Option<crate::window_toolbar::ToolbarAction> {
+        let name = self.accessibility()?.name.filter(|name| !name.is_empty())?;
+        let icon = self.icon.map_or("", crate::icons::Icon::name);
+        let action = crate::window_toolbar::ToolbarAction::new(id, icon, name)
+            .enabled(self.is_enabled())
+            .on(self.toggled == Some(true));
+        Some(if self.icon.is_some() {
+            action
+        } else {
+            action.in_menu()
+        })
+    }
+
     /// Returns the raw string (a fluent key or plain text); the host
     /// resolves i18n and renders.
     fn tooltip(&self) -> Option<&str> {

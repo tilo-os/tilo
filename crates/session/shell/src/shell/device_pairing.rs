@@ -37,8 +37,10 @@ use tilo_identity_host::device_admin::CONTROL_HELPER;
 pub(crate) use tilo_identity_host::device_admin::{
     Approval, PairRole, PersonPaths as IdentityPaths, command_error, node_id,
 };
-use tilo_identity_host::device_admin::{Candidate, ENROLL, approval_args};
+use tilo_identity_host::device_admin::{Candidate, ENROLL, KeyHolding, approval_args};
 use tilo_lock::MutexRecover as _;
+
+use crate::shell::network::ShellNetwork;
 
 const PKEXEC: &str = "/usr/bin/pkexec";
 const RELAY_CONFIG: &str = "/etc/tilo/relay.toml";
@@ -55,9 +57,11 @@ const STOP_POLL: Duration = Duration::from_millis(100);
 /// What a step answers: its result, or why it did not happen.
 pub(crate) type Answer = Result<serde_json::Value, String>;
 
-/// The resource every door offers the steps on, and its three actions.
-pub(crate) use tilo_actions::remote::device_pairing::{APPROVE, DISCOVER, REJECT, RESOURCE};
-pub(crate) const STEPS: [&str; 3] = [DISCOVER, APPROVE, REJECT];
+/// The resource every door offers the steps on, and its actions.
+pub(crate) use tilo_actions::remote::device_pairing::{
+    ANSWER, APPROVE, ASKING, DISCOVER, REJECT, RESOURCE,
+};
+pub(crate) const STEPS: [&str; 5] = [DISCOVER, APPROVE, REJECT, ASKING, ANSWER];
 
 const ROLE: ActionParam = ActionParam::required(
     "role",
@@ -91,12 +95,32 @@ pub(crate) const APPROVE_PARAMS: &[ActionParam] = &[
     ),
 ];
 pub(crate) const REJECT_PARAMS: &[ActionParam] = &[DEVICE];
+pub(crate) const ASKING_PARAMS: &[ActionParam] = &[];
+pub(crate) const ANSWER_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "ask",
+        ParamType::Text,
+        "The `ask` the asking step listed the device under, 64 hex characters.",
+    ),
+    ActionParam::required(
+        "approve",
+        ParamType::Boolean,
+        "true to let the device be you, false to decline it.",
+    ),
+    ActionParam::optional(
+        "confirm",
+        ParamType::Boolean,
+        "Explicit confirmation, needed to approve, that the new device shows the code listed with it.",
+    ),
+];
 
 /// What `step` takes.
 pub(crate) fn params(step: &str) -> &'static [ActionParam] {
     match step {
         DISCOVER => DISCOVER_PARAMS,
         APPROVE => APPROVE_PARAMS,
+        ASKING => ASKING_PARAMS,
+        ANSWER => ANSWER_PARAMS,
         _ => REJECT_PARAMS,
     }
 }
@@ -145,6 +169,50 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
                         "role": { "type": "string", "enum": ["personal-device", "home-peer"] },
                         "device": { "type": "string" },
                         "label": { "type": "string" }
+                    }
+                }),
+            },
+            ..base
+        },
+        ASKING => ActionContract {
+            kind: ActionKind::Read,
+            result: ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["asking"],
+                    "properties": {
+                        "asking": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["ask", "device", "label", "code", "via", "asked_at_ms"],
+                                "properties": {
+                                    "ask": { "type": "string" },
+                                    "device": { "type": "string" },
+                                    "label": { "type": "string" },
+                                    "code": { "type": "string" },
+                                    "via": { "type": "string" },
+                                    "asked_at_ms": { "type": "integer" }
+                                }
+                            }
+                        }
+                    }
+                }),
+            },
+            ..base
+        },
+        ANSWER => ActionContract {
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["ask", "label", "approved"],
+                    "properties": {
+                        "ask": { "type": "string" },
+                        "label": { "type": "string" },
+                        "approved": { "type": "boolean" }
                     }
                 }),
             },
@@ -203,13 +271,20 @@ struct Flights {
     approving: Option<(String, Arc<AtomicBool>)>,
 }
 
+/// What of the identity's key the device holds, read from its identity.
+pub(crate) type Holding = Arc<dyn Fn(&IdentityPaths) -> Result<KeyHolding, String> + Send + Sync>;
+
 /// The host's pairing steps and what they have found.
 pub(crate) struct Pairing {
     runner: Runner,
+    holding: Holding,
     flights: Arc<Mutex<Flights>>,
 }
 
-static SESSION: LazyLock<Pairing> = LazyLock::new(|| Pairing::with_runner(Arc::new(run_bounded)));
+static SESSION: LazyLock<Pairing> = LazyLock::new(|| {
+    Pairing::with_runner(Arc::new(run_bounded))
+        .holding(Arc::new(tilo_identity_host::device_admin::key_holding))
+});
 
 impl Pairing {
     /// This session's pairing: what every door shares, so a device one
@@ -218,12 +293,19 @@ impl Pairing {
         &SESSION
     }
 
-    /// Pairing whose commands `runner` runs.
+    /// Pairing whose commands `runner` runs, on a device holding the
+    /// identity's whole key.
     pub(crate) fn with_runner(runner: Runner) -> Self {
         Self {
             runner,
+            holding: Arc::new(|_| Ok(KeyHolding::Whole)),
             flights: Arc::default(),
         }
+    }
+
+    /// This pairing on a device whose key `holding` reads.
+    pub(crate) fn holding(self, holding: Holding) -> Self {
+        Self { holding, ..self }
     }
 
     fn flights(&self) -> MutexGuard<'_, Flights> {
@@ -272,9 +354,11 @@ impl Pairing {
     }
 
     /// Admit the device `approval` names, which discovery found here, to
-    /// the identity at `paths`. The answer arrives once the helper ends:
-    /// after the administrator authenticated and the device joined, or
-    /// with why it did not.
+    /// the identity at `paths`. A device holding the identity's key signs
+    /// its certificate through the helper, after an administrator
+    /// authenticated; any other device has the person's key holders
+    /// certify it first ([`crate::shell::device_certification`]). The
+    /// answer arrives once the device joined, or with why it did not.
     pub(crate) fn approve(
         &self,
         approval: &Approval,
@@ -287,7 +371,11 @@ impl Pairing {
                 .unwrap_or_else(|| relay_workspaces(Path::new(RELAY_CONFIG))),
             PairRole::PersonalDevice => Vec::new(),
         };
-        let (label, stop) = {
+        let holding = (self.holding)(paths)?;
+        if holding != KeyHolding::Whole && approval.role == PairRole::HomePeer {
+            return Err("a home server is added from the device you set up first".into());
+        }
+        let (label, candidate, stop) = {
             let mut flights = self.flights();
             refuse_busy(&flights)?;
             let (role, candidate) = flights.candidates.get(&approval.device).ok_or_else(|| {
@@ -297,19 +385,26 @@ impl Pairing {
                 return Err("that is not the device discovered with this key".into());
             }
             let label = candidate.label.clone();
+            let candidate = candidate.clone();
             let stop = Arc::new(AtomicBool::new(false));
             flights.approving = Some((approval.device.clone(), Arc::clone(&stop)));
             drop(flights);
-            (label, stop)
+            (label, candidate, stop)
         };
-        let command = approval_command(approval, paths, &workspace_ids);
+        let admission = Admission {
+            holding,
+            approval: approval.clone(),
+            paths: paths.clone(),
+            workspace_ids,
+            candidate,
+        };
         let (completer, answer) = pending();
         let runner = Arc::clone(&self.runner);
         let flights = Arc::clone(&self.flights);
         let device = approval.device.clone();
         let role = approval.role;
         let started = spawn_step(move || {
-            let ran = runner(&command, &stop);
+            let ran = admission.run(&runner, &stop);
             let mut flights = flights.lock_recover();
             flights.approving = None;
             let answer = if stop.load(Ordering::Acquire) {
@@ -363,6 +458,21 @@ impl Pairing {
             REJECT => self
                 .reject(args.text("device").unwrap_or_default())
                 .map(Started::Answered),
+            ASKING => {
+                let network = session_network()?;
+                Ok(Started::Answered(asking(&network)))
+            }
+            ANSWER => {
+                let approve = args.boolean("approve").unwrap_or(false);
+                if approve && args.boolean("confirm") != Some(true) {
+                    return Err("explicit confirmation is required to approve this device".into());
+                }
+                let ask = args.text("ask").unwrap_or_default().to_owned();
+                let network = session_network()?;
+                let (completer, answered) = pending();
+                spawn_step(move || completer.complete(answer(&network, &ask, approve)))?;
+                Ok(Started::Later(answered))
+            }
             _ => Err(format!("`{step}` is not a pairing step")),
         }
     }
@@ -391,7 +501,98 @@ impl Pairing {
     }
 }
 
-/// The approval `args` ask for.
+/// One approval, as its worker runs it.
+struct Admission {
+    holding: KeyHolding,
+    approval: Approval,
+    paths: IdentityPaths,
+    workspace_ids: Vec<u64>,
+    candidate: Candidate,
+}
+
+impl Admission {
+    fn run(&self, runner: &Runner, stop: &AtomicBool) -> Result<Finished, String> {
+        let KeyHolding::Part {
+            person,
+            threshold,
+            total,
+        } = self.holding
+        else {
+            return runner(
+                &approval_command(&self.approval, &self.paths, &self.workspace_ids),
+                stop,
+            );
+        };
+        let network = crate::shell::device_certification::session_network()
+            .ok_or("the network is not running, so your other devices cannot approve it")?;
+        let (proposal, service) = tilo_identity_host::device_admin::proposed_certificate(
+            person,
+            &self.candidate,
+            tilo_clock::unix_now_ns(),
+        )?;
+        let cert = crate::shell::device_certification::certify(
+            &network, proposal, service, threshold, total,
+        )?;
+        drop(network);
+        if stop.load(Ordering::Acquire) {
+            return Err("stopped".into());
+        }
+        let file = tempfile::NamedTempFile::new()
+            .map_err(|error| format!("could not keep the approved certificate: {error}"))?;
+        tilo_user_identity::persist::write_device_cert(file.path(), &cert)
+            .map_err(|error| format!("could not keep the approved certificate: {error}"))?;
+        runner(
+            &HostCommand {
+                program: PathBuf::from(ENROLL),
+                args: tilo_identity_host::device_admin::approved_args(
+                    &self.approval,
+                    &self.paths,
+                    file.path(),
+                ),
+                timeout: APPROVAL_TIMEOUT,
+            },
+            stop,
+        )
+    }
+}
+
+/// The devices another of the person's devices found, asking at
+/// `network`'s device to be the person, as the `asking` step lists them.
+pub(crate) fn asking(network: &ShellNetwork) -> serde_json::Value {
+    let asking: Vec<serde_json::Value> = crate::shell::device_certification::asking(network)
+        .into_iter()
+        .map(|asking| {
+            serde_json::json!({
+                "ask": hex::encode(asking.digest),
+                "device": hex::encode(asking.device()),
+                "label": asking.label,
+                "code": asking.code,
+                "via": asking.via,
+                "asked_at_ms": asking.asked_at_ms,
+            })
+        })
+        .collect();
+    serde_json::json!({ "asking": asking })
+}
+
+/// Approve or decline the device `ask` names at `network`'s device, as its
+/// notification does ([`crate::shell::device_certification::answer`]), and
+/// answer as the `answer` step does. Blocks on the identity store.
+pub(crate) fn answer(network: &ShellNetwork, ask: &str, approve: bool) -> Answer {
+    let digest: [u8; 32] = hex::decode(ask.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or("ask must be 64 hex characters")?;
+    let label = crate::shell::device_certification::answer(network, digest, approve)?
+        .ok_or("no device asks under that any more")?;
+    Ok(serde_json::json!({ "ask": hex::encode(digest), "label": label, "approved": approve }))
+}
+
+fn session_network() -> Result<Arc<ShellNetwork>, String> {
+    crate::shell::device_certification::session_network()
+        .ok_or_else(|| "the network is not running".into())
+}
+
 pub(crate) fn approval(args: &ActionArgs) -> Result<Approval, String> {
     let role = PairRole::parse(args.text("role").unwrap_or_default())?;
     let workspace_ids = args
@@ -515,6 +716,14 @@ fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
         APPROVE => (
             "search-action-identity-device-pair-approve",
             "search-action-identity-device-pair-approve-subtitle",
+        ),
+        ASKING => (
+            "search-action-identity-device-pair-asking",
+            "search-action-identity-device-pair-asking-subtitle",
+        ),
+        ANSWER => (
+            "search-action-identity-device-pair-answer",
+            "search-action-identity-device-pair-answer-subtitle",
         ),
         _ => (
             "search-action-identity-device-pair-reject",
@@ -677,6 +886,41 @@ mod tests {
             .ok()
             .flatten()
             .unwrap_or_else(|| Err("the step never answered".into()))
+    }
+
+    /// A device holding none of the key asks no administrator and runs no
+    /// helper: a home server waits for a device that holds the key, and a
+    /// personal device for the key holders' approval.
+    #[test]
+    fn a_device_without_the_key_never_signs_or_elevates() {
+        let (commands, recorded) = mpsc::channel();
+        let (_release, gate) = mpsc::channel();
+        let pairing = Pairing::with_runner(scripted(commands, Arc::new(Mutex::new(gate)))).holding(
+            Arc::new(|_| {
+                Ok(KeyHolding::Part {
+                    person: [7; 32],
+                    threshold: 1,
+                    total: 1,
+                })
+            }),
+        );
+        wait(pairing.discover(PairRole::HomePeer).expect("starts")).expect("found");
+        let home = Approval {
+            role: PairRole::HomePeer,
+            device: DEVICE.into(),
+            service: SERVICE.into(),
+            workspace_ids: None,
+        };
+        let error = pairing.approve(&home, &paths()).err().expect("refused");
+        assert!(error.contains("home server"), "{error}");
+        assert_eq!(
+            recorded
+                .try_iter()
+                .filter(|ran| ran.program != Path::new(ENROLL))
+                .count(),
+            0,
+            "no helper ran"
+        );
     }
 
     #[test]

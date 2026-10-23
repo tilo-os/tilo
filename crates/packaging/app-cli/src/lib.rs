@@ -531,8 +531,17 @@ pub struct InstalledApp {
     pub version: String,
     /// Where the running copy came from: `image` (the system image installed
     /// it), `user` (installed or updated since), or `held` (rolled back
-    /// below the image's version on purpose).
+    /// below the image's version on purpose). For an application Tilo did
+    /// not package: `flatpak`, `system`, or `downloaded` (a program the
+    /// person downloaded and added to their apps).
     pub from: String,
+    /// The app's name, for an application Tilo did not package (whose id is
+    /// a desktop-file id, not a name).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// A downloaded program whose file is gone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub missing: bool,
 }
 
 /// Every installed app, the system image's included, as the copy that runs.
@@ -557,8 +566,40 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, String> {
             }
             .into(),
             package_id: entry.id,
+            name: String::new(),
+            missing: false,
         })
         .collect())
+}
+
+/// The applications Tilo did not package, as the desktop's applications
+/// model has them (the same desktop entries search and the launcher list):
+/// Flatpaks, the system's own, and downloaded programs the person added.
+/// One a Tilo package answers for is left out, as the desktop leaves it out.
+pub fn host_apps(installed: &[InstalledApp]) -> Vec<InstalledApp> {
+    let packaged: std::collections::HashSet<String> = installed
+        .iter()
+        .map(|app| app.package_id.to_ascii_lowercase())
+        .collect();
+    desktop_entry::scan()
+        .entries
+        .into_iter()
+        .filter(|entry| !packaged.contains(&entry.id.to_ascii_lowercase()))
+        .map(|entry| {
+            let from = match (&entry.downloaded, &entry.source) {
+                (Some(_), _) => "downloaded",
+                (None, desktop_entry::EntrySource::Flatpak { .. }) => "flatpak",
+                (None, desktop_entry::EntrySource::Host) => "system",
+            };
+            InstalledApp {
+                missing: entry.downloaded.as_ref().is_some_and(|d| !d.present),
+                package_id: entry.id,
+                version: String::new(),
+                from: from.into(),
+                name: entry.name,
+            }
+        })
+        .collect()
 }
 
 /// The version of `package_id` the system image ships, when the user's copy

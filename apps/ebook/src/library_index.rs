@@ -490,6 +490,9 @@ pub(crate) enum Read<T> {
     Here(T),
     /// It is not here yet, and is on its way from a device that has it.
     OnItsWay,
+    /// It is not here, and no device that could hand it over is connected
+    /// right now; it comes once one is.
+    Waiting,
     /// Nothing this device can reach has it.
     Unavailable,
     /// It is here, and does not read as what its row says.
@@ -505,10 +508,13 @@ impl<T> Read<T> {
     ) -> Self {
         match store.read(hash) {
             Some(bytes) => parse(&bytes).map_or(Self::Unreadable, Self::Here),
-            None if store.state(hash) == tilo_content::ContentState::Unavailable => {
-                Self::Unavailable
-            }
-            None => Self::OnItsWay,
+            None => match store.state(hash) {
+                tilo_content::ContentState::Waiting => Self::Waiting,
+                tilo_content::ContentState::Unavailable => Self::Unavailable,
+                tilo_content::ContentState::Pending | tilo_content::ContentState::Resolved => {
+                    Self::OnItsWay
+                }
+            },
         }
     }
 }
@@ -516,10 +522,25 @@ impl<T> Read<T> {
 /// A book being fetched for a hit opened in it while its text was elsewhere.
 struct Fetch {
     entry: LibraryEntry,
-    /// When it was asked for: where its card's loading bar starts.
+    /// When it was last found on its way: where its card's loading bar
+    /// starts.
     since: ui::time::Instant,
+    /// Where it stands, as last read.
+    standing: Standing,
     /// Whether a read of it is under way.
     reading: bool,
+}
+
+/// Where the text of a book being fetched stands while it is not here. It
+/// follows the devices that could hand it over as they come and go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Standing {
+    /// On its way from a connected device.
+    Fetching,
+    /// No device that could hand it over is connected right now.
+    Waiting,
+    /// Every connected device that could hold it said it does not.
+    Unavailable,
 }
 
 /// The library's index as this device holds it: segments built here,
@@ -536,6 +557,10 @@ pub(crate) struct LibraryIndex {
     looked: u64,
     /// Books whose segment is being built here.
     building: HashSet<String>,
+    /// Books whose segment was built here and handed on to be kept: not
+    /// built again while their row still names none, which is what a row
+    /// shows while the room has not taken the index, or after it refused it.
+    built_here: HashSet<String>,
     built_send: Sender<(String, Vec<u8>)>,
     built: Receiver<(String, Vec<u8>)>,
     /// Segments being read back, by the hash their row names.
@@ -563,6 +588,7 @@ impl Default for LibraryIndex {
             store: None,
             looked: ui::collaboration::record_content::arrivals(),
             building: HashSet::new(),
+            built_here: HashSet::new(),
             built_send,
             built,
             loading: HashSet::new(),
@@ -602,7 +628,10 @@ impl LibraryIndex {
             .map(|entry| entry.id.as_str())
             .collect();
         for book in books {
-            if !unindexed.contains(book.id.as_str()) || !self.building.insert(book.id.clone()) {
+            if !unindexed.contains(book.id.as_str())
+                || self.built_here.contains(&book.id)
+                || !self.building.insert(book.id.clone())
+            {
                 continue;
             }
             let book = Arc::clone(book);
@@ -629,6 +658,7 @@ impl LibraryIndex {
         let built: Vec<(String, Vec<u8>)> = self.built.try_iter().collect();
         for (book, _) in &built {
             self.building.remove(book);
+            self.built_here.insert(book.clone());
         }
         built
     }
@@ -690,6 +720,12 @@ impl LibraryIndex {
         }
     }
 
+    /// Whether a segment is being built here.
+    #[cfg(test)]
+    pub(crate) fn building(&self) -> bool {
+        !self.building.is_empty()
+    }
+
     /// Whether segments are still being read back.
     pub(crate) fn reading(&self) -> bool {
         !self.loading.is_empty()
@@ -709,7 +745,7 @@ impl LibraryIndex {
                     tracing::debug!(%hash, "books: a segment does not read back");
                     self.segments.insert(hash, None);
                 }
-                Read::OnItsWay | Read::Unavailable => {
+                Read::OnItsWay | Read::Waiting | Read::Unavailable => {
                     self.waiting.insert(hash);
                 }
             }
@@ -739,6 +775,7 @@ impl LibraryIndex {
         self.fetching = Some(Fetch {
             entry: entry.clone(),
             since: ui::time::now(),
+            standing: Standing::Fetching,
             reading: false,
         });
         self.read_book();
@@ -767,7 +804,8 @@ impl LibraryIndex {
                     .into_iter()
                     .next()
                 }),
-                None => Read::Unavailable,
+                // A row naming no content names nothing to fetch.
+                None => Read::Unreadable,
             };
             let _ = send.send((entry.id, read));
             wake.wake();
@@ -775,32 +813,48 @@ impl LibraryIndex {
         fetch.reading = spawned.is_ok();
     }
 
-    /// Since when the text of `book` has been on its way here, while it is.
+    /// Since when the text of `book` has been on its way here from a
+    /// connected device, while it is.
     pub(crate) fn arriving(&self, book: &str) -> Option<ui::time::Instant> {
         self.fetching
             .as_ref()
-            .filter(|fetch| fetch.entry.id == book)
+            .filter(|fetch| fetch.entry.id == book && fetch.standing == Standing::Fetching)
             .map(|fetch| fetch.since)
     }
 
+    /// The book being fetched, and where its text stands.
+    pub(crate) fn fetching(&self) -> Option<(&str, Standing)> {
+        self.fetching
+            .as_ref()
+            .map(|fetch| (fetch.entry.id.as_str(), fetch.standing))
+    }
+
     /// What the fetch of a book came to since asked: its id and the book,
-    /// or why it is not coming. Nothing while it is still on its way.
+    /// or why it cannot be read. Nothing while it is still to come: on its
+    /// way, or waiting for a device that has it ([`Self::fetching`] says
+    /// which).
     pub(crate) fn take_fetched(&mut self) -> Option<(String, Read<crate::content::LoadedBook>)> {
         let (id, read) = self.fetched.try_iter().last()?;
-        let current = self
-            .fetching
-            .as_ref()
-            .is_some_and(|fetch| fetch.entry.id == id);
-        if matches!(read, Read::OnItsWay) {
-            if let Some(fetch) = self.fetching.as_mut().filter(|_| current) {
-                fetch.reading = false;
+        let fetch = self.fetching.as_mut().filter(|fetch| fetch.entry.id == id);
+        let standing = match read {
+            Read::OnItsWay => Standing::Fetching,
+            Read::Waiting => Standing::Waiting,
+            Read::Unavailable => Standing::Unavailable,
+            Read::Here(_) | Read::Unreadable => {
+                if fetch.is_some() {
+                    self.fetching = None;
+                }
+                return Some((id, read));
             }
-            return None;
+        };
+        if let Some(fetch) = fetch {
+            fetch.reading = false;
+            if standing == Standing::Fetching && fetch.standing != Standing::Fetching {
+                fetch.since = ui::time::now();
+            }
+            fetch.standing = standing;
         }
-        if current {
-            self.fetching = None;
-        }
-        Some((id, read))
+        None
     }
 
     /// What searches the books of `entries` that `local` says are not here,
@@ -952,6 +1006,25 @@ mod tests {
                 .collect(),
             ..Book::default()
         }
+    }
+
+    #[test]
+    fn a_book_whose_index_the_room_did_not_take_is_not_built_again() {
+        let pumped = ui::background::Pumped::new();
+        let mut index = LibraryIndex::default().with_background(pumped.background());
+        let books = [Arc::new(book(vec![vec!["Call me Ishmael."]]))];
+        let entries = [LibraryEntry {
+            id: "book:test".into(),
+            ..LibraryEntry::default()
+        }];
+        index.build_missing(&books, &entries);
+        pumped.run_pending();
+        assert_eq!(index.take_built().len(), 1, "built once");
+        // The row still names no index: the room refused it, or has not
+        // taken it yet. Building it again would only send it again.
+        index.build_missing(&books, &entries);
+        pumped.run_pending();
+        assert!(index.take_built().is_empty(), "not built again");
     }
 
     #[test]

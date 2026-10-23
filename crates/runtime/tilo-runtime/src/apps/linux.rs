@@ -186,7 +186,6 @@ mod tests {
         let _collab = std::os::unix::net::UnixListener::bind(&sockets.collab).unwrap();
         let _identity = std::os::unix::net::UnixListener::bind(&sockets.identity).unwrap();
         let runtime_dir = service_directory(&root, &sockets).unwrap();
-        // Idempotent across launches.
         assert_eq!(service_directory(&root, &sockets).unwrap(), runtime_dir);
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_RUNTIME_DIR", &runtime_dir);

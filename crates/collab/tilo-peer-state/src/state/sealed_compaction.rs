@@ -296,10 +296,6 @@ impl StatePeer {
     /// writes it leaves out (see [`OpenedRecord`]). A record that is not
     /// encrypted reads as [`Self::document`]. `None` for a record this state
     /// does not hold.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the history's changes are malformed.
     pub fn opened_document(
         &self,
         app: &str,

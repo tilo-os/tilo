@@ -73,7 +73,6 @@ mod tests {
             fixture.bind_read_only("/proc", "proc");
             fs::write(fixture.path("dev/null"), []).unwrap();
             fixture.bind_read_only("/dev/null", "dev/null");
-            // Fedora's merged /usr layout, including the dynamic loader.
             for name in ["lib", "lib64", "bin", "sbin"] {
                 std::os::unix::fs::symlink(format!("usr/{name}"), fixture.path(name)).unwrap();
             }

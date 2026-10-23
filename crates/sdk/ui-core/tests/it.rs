@@ -21,6 +21,8 @@
 #[path = "support/mod.rs"]
 mod support;
 
+#[path = "accessibility_geometry.rs"]
+mod accessibility_geometry;
 #[cfg(unix)]
 #[path = "agent_edit_is_its_own_undo_boundary.rs"]
 mod agent_edit_is_its_own_undo_boundary;

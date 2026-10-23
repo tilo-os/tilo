@@ -201,7 +201,6 @@ async fn only_resources_with_a_quiet_opening_action_are_indexed() {
             edits,
             disabled,
             hidden,
-            // The workspace's own rows open applications the host lists.
             row(
                 &workspace_provider(ROOM),
                 "app.so.tilo.notes",

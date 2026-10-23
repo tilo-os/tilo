@@ -295,10 +295,6 @@ impl MigrationWorker {
     /// Block until the engine's terminal channel event arrives. Progress lives
     /// in a separate slot and never wakes this wait, so a slow runner cannot
     /// fail a correct result the way a spin-plus-deadline loop can.
-    ///
-    /// # Panics
-    /// When the terminal event was already observed, a non-terminal event
-    /// arrives, or the worker does not finish within the test hang bound.
     #[cfg(any(test, feature = "test-support"))]
     #[allow(
         clippy::panic,
@@ -463,8 +459,6 @@ mod tests {
             assert!(!report.complete());
         }
 
-        // Phase `disconnected_channel_is_interrupted_once`.
-        // Catches a lost terminal sender being interpreted as a completed copy.
         {
             let (tx, rx) = mpsc::channel();
             drop(tx);

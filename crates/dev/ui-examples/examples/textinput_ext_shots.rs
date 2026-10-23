@@ -79,7 +79,6 @@ pub fn run(_args: &[String]) {
     r.render_png(&scene, theme.tokens.colors.surfaces.content, &out_ml);
     println!("wrote {}", out_ml.display());
 
-    // ---- 2. Secret field: masked, and a revealed variant ------------------
     let mut masked = TextInput::local()
         .with_secret(true)
         .with_initial_value("hunter2-s3cret");
@@ -192,7 +191,6 @@ pub fn run(_args: &[String]) {
     r3.render_png(&scene3, theme.tokens.colors.surfaces.content, &out_assisted);
     println!("wrote {}", out_assisted.display());
 
-    // ---- 4. Structured inputs inherit opt-out from semantic intent -------
     let specs = [
         ("Search", TextInputKind::Search, "kubernetez deployment"),
         (

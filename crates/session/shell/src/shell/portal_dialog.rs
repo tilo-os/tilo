@@ -110,7 +110,6 @@ pub struct LauncherReviewDecision {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticationRequest {
     pub handle: String,
-    /// polkit's message for the action.
     pub message: String,
     pub action_id: String,
     /// User names that may authorise; more than one shows a picker.
@@ -685,11 +684,6 @@ impl PortalDialogQueue {
 
     /// Queue the sheet asking whether, and how, to open a drive.
     /// Dismissing it answers [`DriveConsentDecision::NotNow`].
-    ///
-    /// # Errors
-    ///
-    /// When the request offers nothing to choose, or a sheet with the same
-    /// handle is already live.
     pub fn enqueue_drive_consent(
         &self,
         request: DriveConsentRequest,
@@ -749,10 +743,6 @@ impl PortalDialogQueue {
     /// Queue a sheet for a running shortcut's step; `reply` receives the
     /// answer exactly once, [`ShortcutStepDecision::Cancelled`] when the
     /// sheet is withdrawn.
-    ///
-    /// # Errors
-    ///
-    /// When a sheet with the same handle is already live.
     pub fn enqueue_shortcut_step(
         &self,
         request: ShortcutStepRequest,
@@ -2958,7 +2948,6 @@ mod tests {
         assert_eq!(sheet.remember_display(), Some((false, false)));
         let layout = sheet.layout(bounds).expect("layout");
         let remember = layout.remember.expect("a remember row");
-        // The two ways to open are the buttons below the row.
         assert!(layout.choices.is_empty());
         assert_eq!(layout.answers.len(), 2);
         assert!(remember.y1 <= layout.answers[0].y0, "above the buttons");

@@ -772,7 +772,6 @@ mod tests {
 
     #[test]
     fn pipewire_provisioners_are_real_or_recorded_never_synthetic() {
-        // Phase `mock_returns_incrementing_node_ids`.
         {
             let m = MockScreenCastProvisioner::new_with_node(7, "test");
             let req = PipewireStreamRequest {
@@ -792,7 +791,6 @@ mod tests {
             // source_type 1 == monitor — echoed from the request.
             assert_eq!(a.source_type, 1);
         }
-        // Phase `mock_records_requests`.
         {
             let m = Arc::new(MockScreenCastProvisioner::new_with_node(1, "test"));
             let h = ScreenCastStreamProvisionerHandle::new(m.clone());
@@ -810,7 +808,6 @@ mod tests {
             assert_eq!(seen[0].caller.app_id, "org.example");
             assert_eq!(seen[0].width, 1280);
         }
-        // Phase `mock_echoes_requested_source_type`.
         {
             let m = MockScreenCastProvisioner::new_with_node(1, "test");
             let mut req = PipewireStreamRequest {
@@ -827,7 +824,6 @@ mod tests {
             let info2 = m.provision_stream(&req).unwrap();
             assert_eq!(info2.source_type, 2);
         }
-        // Phase `unavailable_provisioner_never_returns_a_synthetic_stream`.
         {
             let p = UnavailableScreenCastProvisioner::new("capture producer missing");
             let req = PipewireStreamRequest {
@@ -849,7 +845,6 @@ mod tests {
 
     #[test]
     fn stream_info_serialises_required_keys_and_bounded_scaling() {
-        // Phase `stream_info_serialises_into_dict_with_required_keys`.
         {
             let info = PipewireStreamInfo {
                 node_id: 42,
@@ -876,7 +871,6 @@ mod tests {
             // `position` is present for monitor sources.
             assert!(props.contains_key("position"));
         }
-        // Phase `stream_info_omits_position_for_window_source`.
         {
             // Window (2) / virtual (4) sources have no compositor-space position; the spec says `position` is monitor-only.
             let info = PipewireStreamInfo {
@@ -890,7 +884,6 @@ mod tests {
             assert!(!props.contains_key("position"));
             assert!(props.contains_key("size"));
         }
-        // Phase `negotiated_buffer_scaling_is_bounded_and_preserves_corner_pixels`.
         {
             let frame = ComposedFrame {
                 width: 2,

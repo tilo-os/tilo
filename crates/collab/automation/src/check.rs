@@ -119,9 +119,6 @@ impl<F: Fn(&str) -> Option<Shortcut>> ShortcutResolver for F {
 /// less. A person's Shortcut may carry a hand-widened grant; a bot acts
 /// unattended under its own identity, so nobody may hand it more than its
 /// program shows.
-///
-/// # Errors
-/// Every structural error, then every unused and every missing rule.
 pub fn check_bot(shortcut: &Shortcut, catalog: &ActionCatalog) -> Result<(), Vec<CheckError>> {
     let mut errors = check(shortcut, catalog, &NoShortcuts)
         .err()
@@ -151,10 +148,6 @@ pub fn check_bot(shortcut: &Shortcut, catalog: &ActionCatalog) -> Result<(), Vec
 }
 
 /// Check `shortcut` against the descriptors in `catalog`.
-///
-/// # Errors
-///
-/// Returns every problem found, each with the step path it concerns.
 pub fn check(
     shortcut: &Shortcut,
     catalog: &ActionCatalog,

@@ -37,6 +37,8 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 # The device custody an enrollment presents to the issuing host.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-peer-state = { path = "../tilo-peer-state" }
+# The join exchange, answered for the rooms this device governs.
+tilo-governor = { path = "../tilo-governor" }
 # The neighbour wire messages sessions publish and receive.
 neighbour-wire = { path = "../neighbour-wire" }
 # The owner commit requests a joined replica commits through its owner.

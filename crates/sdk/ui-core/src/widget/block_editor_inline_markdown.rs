@@ -406,7 +406,6 @@ mod tests {
         let (code, _) = typed_into(Block::code_block(None, ""), "**x** `y`");
         assert_eq!(shown(&code), ("**x** `y`".to_owned(), vec![]));
 
-        // Inside inline code a delimiter is code too.
         let mut inline = Block::paragraph("a*b");
         inline.line.set_marks(vec![MarkSpan::new(0..3, Mark::Code)]);
         let (inline, _) = typed_into(inline, "*");

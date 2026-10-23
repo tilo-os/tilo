@@ -58,11 +58,6 @@ fn valid_bluetooth_address(address: &str) -> bool {
 /// A peer-provided name or object path is never accepted as evidence. Address
 /// ambiguity across adapters fails closed because `BlueZ` object paths, unlike
 /// Bluetooth addresses, are the locally authoritative operation handles.
-///
-/// # Errors
-///
-/// Returns an error when `BlueZ` is unavailable, discovery fails, the address
-/// is not observed, or more than one local adapter reports the address.
 pub fn inspect_bluetooth_handoff_target(
     address: &str,
     discovery_window: Duration,
@@ -91,11 +86,6 @@ pub fn inspect_bluetooth_handoff_target(
 ///
 /// Callers must hold their own one-shot local authorization; this helper does
 /// not interpret a remote handoff request as consent.
-///
-/// # Errors
-///
-/// Returns an error when the address is absent or ambiguous in the fresh local
-/// inventory, or `BlueZ` rejects pairing/trusting.
 pub fn pair_bluetooth_handoff(address: &str) -> Result<(), String> {
     if !valid_bluetooth_address(address) {
         return Err("invalid Bluetooth address".into());
@@ -116,20 +106,11 @@ fn connected_pair_outcome(outcome: tilo_bluez::PairOutcome) -> Result<(), String
 }
 
 /// Toggle the Bluetooth controller via `bluetoothctl power on|off`.
-///
-/// # Errors
-///
-/// Returns an error message if the `BlueZ` D-Bus connection is unavailable or the call fails.
 pub fn set_bluetooth(enabled: bool) -> Result<(), String> {
     crate::bluez::set_powered(enabled)
 }
 
 /// Connect a paired device by MAC via `bluetoothctl connect <mac>`.
-///
-/// # Errors
-///
-/// Returns an error message if `mac` does not match a device known to `BlueZ`, or the connect
-/// call fails.
 pub fn bt_connect(mac: &str) -> Result<(), String> {
     let device = crate::bluez::devices()?
         .into_iter()
@@ -139,11 +120,6 @@ pub fn bt_connect(mac: &str) -> Result<(), String> {
 }
 
 /// Disconnect a device by MAC via `bluetoothctl disconnect <mac>`.
-///
-/// # Errors
-///
-/// Returns an error message if `mac` does not match a device known to `BlueZ`, or the
-/// disconnect call fails.
 pub fn bt_disconnect(mac: &str) -> Result<(), String> {
     let device = crate::bluez::devices()?
         .into_iter()
@@ -154,10 +130,6 @@ pub fn bt_disconnect(mac: &str) -> Result<(), String> {
 
 /// Read the Bluetooth controller state by grepping `bluetoothctl show`
 /// for `Powered:`.
-///
-/// # Errors
-///
-/// Returns an error message if the `BlueZ` D-Bus connection is unavailable or the call fails.
 pub fn get_bluetooth() -> Result<bool, String> {
     crate::bluez::is_powered()
 }
@@ -177,10 +149,6 @@ fn parse_bluetoothctl_power(stdout: &str) -> Result<bool, String> {
 /// shell-out: `bluetoothctl devices Paired` lists name + MAC, then for
 /// each MAC we call `bluetoothctl info <mac>` to extract `Connected:`
 /// and `Battery Percentage:`.
-///
-/// # Errors
-///
-/// Returns an error message if the `BlueZ` D-Bus connection is unavailable or the call fails.
 pub fn list_bt_devices() -> Result<Vec<BtDeviceInfo>, String> {
     Ok(crate::bluez::paired_devices()?
         .into_iter()
@@ -248,21 +216,17 @@ mod tests {
 
     #[test]
     fn bluetoothctl_power_devices_and_info_parse_or_fail() {
-        // Phase `parse_bluetoothctl_power_yes`.
         {
             let s = "Controller AA:BB\n\tName: Foo\n\tPowered: yes\n\tDiscoverable: no";
             assert!(parse_bluetoothctl_power(s).unwrap());
         }
-        // Phase `parse_bluetoothctl_power_no`.
         {
             let s = "\tPowered: no";
             assert!(!parse_bluetoothctl_power(s).unwrap());
         }
-        // Phase `parse_bluetoothctl_power_missing`.
         {
             assert!(parse_bluetoothctl_power("no Powered line").is_err());
         }
-        // Phase `parse_bluetoothctl_devices_basic`.
         {
             let s = "\
     Device AA:BB:CC:DD:EE:01 AirPods Pro\n\
@@ -274,7 +238,6 @@ mod tests {
             assert_eq!(v[0].1, "AirPods Pro");
             assert_eq!(v[1].1, "Magic Mouse");
         }
-        // Phase `parse_bluetoothctl_info_extracts_battery_and_connected`.
         {
             let s = "\
     Device AA:BB:CC:DD:EE:01\n\
@@ -286,7 +249,6 @@ mod tests {
             assert!(connected);
             assert_eq!(battery, 80);
         }
-        // Phase `parse_bluetoothctl_info_no_battery_defaults_zero`.
         {
             let s = "\tConnected: no\n";
             let (connected, battery) = parse_bluetoothctl_info(s);
@@ -306,7 +268,6 @@ mod tests {
 
     #[test]
     fn handoff_addresses_resolve_uniquely_and_pairing_must_complete() {
-        // Phase `handoff_address_resolution_is_case_insensitive_and_unique`.
         {
             let devices = vec![device(
                 "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
@@ -320,7 +281,6 @@ mod tests {
                 Some("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
             );
         }
-        // Phase `handoff_address_resolution_rejects_cross_adapter_ambiguity`.
         {
             let devices = vec![
                 device("/org/bluez/hci0/dev_AA", "AA:BB:CC:DD:EE:FF", true),
@@ -332,7 +292,6 @@ mod tests {
                     .contains("ambiguous")
             );
         }
-        // Phase `handoff_address_validation_rejects_paths_and_partial_addresses`.
         {
             assert!(valid_bluetooth_address("AA:BB:CC:DD:EE:FF"));
             assert!(valid_bluetooth_address("aa:bb:cc:dd:ee:ff"));
@@ -340,7 +299,6 @@ mod tests {
             assert!(!valid_bluetooth_address("AA:BB:CC:DD:EE"));
             assert!(!valid_bluetooth_address("GG:BB:CC:DD:EE:FF"));
         }
-        // Phase `handoff_pairing_requires_the_connection_to_complete`.
         {
             assert_eq!(
                 connected_pair_outcome(tilo_bluez::PairOutcome::PairedAndConnected),

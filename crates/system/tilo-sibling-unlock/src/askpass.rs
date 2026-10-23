@@ -31,9 +31,6 @@ pub struct Ask {
 }
 
 /// Parses the `[Ask]` section of a request file.
-///
-/// # Errors
-/// When the file has no socket to answer.
 pub fn parse(text: &str) -> Result<Ask> {
     let mut in_ask = false;
     let (mut id, mut socket, mut pid, mut not_after) = (String::new(), None, None, 0);
@@ -128,9 +125,6 @@ pub fn pending(dir: &Path, device: &Path) -> Vec<Ask> {
 }
 
 /// Sends `passphrase` as the answer to `ask`.
-///
-/// # Errors
-/// When the request's socket is gone or refuses the datagram.
 pub fn answer(ask: &Ask, passphrase: &str) -> Result<()> {
     let mut reply = Zeroizing::new(Vec::with_capacity(passphrase.len().saturating_add(1)));
     reply.push(b'+');

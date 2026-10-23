@@ -566,7 +566,6 @@ fn every_strip_is_a_full_height_screen_and_one_fills_the_work_area() {
                 );
             }
         }
-        // Stacked top to bottom, each a screen below the last.
         for pair in rows.windows(2) {
             assert!((pair[1].y0 - pair[0].y1).abs() < 0.5, "{pair:?}");
         }

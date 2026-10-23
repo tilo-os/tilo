@@ -464,7 +464,7 @@ mod tests {
         }
         super::super::resume_nearby_transfers(
             network,
-            crate::shell::continuity_policy::ContinuityPolicySnapshot::default(),
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::OFF,
         );
     }
 }

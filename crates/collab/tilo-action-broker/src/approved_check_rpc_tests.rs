@@ -183,7 +183,6 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
     }
     tokio::task::LocalSet::new().run_until(async {
         let room = signed_worker::OriginalRoom::new(tilo_user_identity::DeviceCapabilities::primary(), None, None);
-        // Replace the broker without retaining a second writer for its journal.
         drop(room.state.journal.lock().unwrap().as_mut().unwrap().take());
         let fanout = Arc::new(FanoutState::new());
         let (state, bridge) = CapnpBrokerState::new_configured(

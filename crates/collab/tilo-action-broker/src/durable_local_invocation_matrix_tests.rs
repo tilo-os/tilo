@@ -229,7 +229,6 @@ mod durable_local_matrix {
             let _ = (&mut self.bridge_task).await;
             self.worker.server.abort();
             self.worker.client.abort();
-            // Abort completion releases the real server's state/journal references.
             let _ = (&mut self.worker.server).await;
             let _ = (&mut self.worker.client).await;
             self.state.stop();
@@ -523,7 +522,6 @@ mod durable_local_matrix {
                 let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
                 assert_eq!(delivered.actor, "agent:scribe");
 
-                // The running invocation keeps its certified caller.
                 let continued = rig
                     .state
                     .continuing_caller(903, invocation)

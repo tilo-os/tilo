@@ -175,6 +175,10 @@ impl Registry {
                 Via::Iroh => tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
                 Via::Https { http, door } => tilo_relay_session::workspace_join::WorkspaceJoinClient::https(http, door),
             };
+            // A certificate due for renewal is renewed before the host sees it.
+            if let Ok(Err(error)) = tokio::task::spawn_blocking(crate::firstboot::renew_due_device_certificates).await {
+                tracing::warn!(%error, "could not renew this device's certificate before enrolling");
+            }
             let result = if *receiver.borrow() { Err("native enrollment cancelled".into()) } else {
                 tokio::select! {
                     biased;

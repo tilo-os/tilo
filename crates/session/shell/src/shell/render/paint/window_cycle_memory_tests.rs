@@ -56,7 +56,6 @@ fn commit(id: SurfaceId, value: u8) {
     commit_sized(id, value, WINDOW);
 }
 
-/// [`commit`] of a `size` window.
 fn commit_sized(id: SurfaceId, value: u8, size: (u32, u32)) {
     let before = store().frame_seq(id);
     let pixels = [value, value, 0x40, 0xFF].repeat((size.0 * size.1) as usize);

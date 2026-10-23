@@ -182,7 +182,26 @@ fn dragging_selected_results_onto_a_playlist_adds_them_all() {
         "the selected songs go with the drag"
     );
     draw_once(&mut app, &mut doc);
-    let target = hit_center(&app, &Action::Nav(View::Playlist(playlist.clone())))
+    // The shell's sidebar, painted from the places Music declares.
+    let sidebar = ui::widget::NavShell::new()
+        .sidebar(Box::new(
+            ui::widget::NavList::new(Vec::new()).fed_by(&app.places),
+        ))
+        .content(Box::new(ui::widget::Spacer::new()));
+    let size = (1280, 800);
+    let mut shell =
+        ui::headless::FrameHarness::for_root(ui::State::new(), sidebar, size, Theme::dark());
+    shell.relayout_at(size).expect("the shell lays out");
+    let target = app
+        .places
+        .shown()
+        .and_then(|_| {
+            shell
+                .root::<ui::widget::NavShell>()
+                .sidebar_ref::<ui::widget::NavList>()?
+                .row_rect(&shell_place(&View::Playlist(playlist.clone()))?)
+        })
+        .map(|row| row.center())
         .expect("the playlist in the sidebar");
     send(&mut app, &cursor_at(target), &mut doc);
     send(&mut app, &released(MouseButton::Left), &mut doc);
@@ -288,11 +307,13 @@ fn a_kept_search_sits_beside_the_designed_views_and_survives_a_restart() {
         music.kept_views().get(&id).is_some(),
         "the kept view is still there after a restart"
     );
+    let (places, _) = music.places.shown().expect("the sidebar's places");
+    let rows: Vec<&ui::widget::NavItem> =
+        places.iter().flat_map(|section| &section.items).collect();
     assert!(
-        music
-            .hits
-            .iter()
-            .any(|hit| hit.action == Action::Nav(View::Kept(id.clone()))),
+        rows.iter()
+            .any(|row| Some(&row.id) == shell_place(&View::Kept(id.clone())).as_ref())
+            && rows.iter().any(|row| row.label == "Home"),
         "it sits in the sidebar beside the designed views"
     );
 }

@@ -198,7 +198,6 @@ pub struct Partition {
     /// above describe the filesystem inside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption: Option<Encryption>,
-    /// The partition's type GUID, when it is a partition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_type: Option<String>,
     /// What its type is called (`Microsoft reserved`).
@@ -719,7 +718,6 @@ mod tests {
 
         // --- phase: kind_from_lsblk_covers_media_and_virtual_devices ---
         {
-            // Physical media by transport / rotation.
             assert_eq!(
                 DriveKind::from_lsblk("nvme0n1", false, Some("nvme")),
                 DriveKind::Nvme
@@ -739,7 +737,6 @@ mod tests {
             // A zram swap device is non-rotational but must NOT read as an SSD.
             assert_eq!(DriveKind::from_lsblk("zram0", false, None), DriveKind::Zram);
             assert!(DriveKind::from_lsblk("zram0", false, None).is_virtual());
-            // Loop / device-mapper / MD are virtual.
             assert_eq!(
                 DriveKind::from_lsblk("loop0", false, None),
                 DriveKind::Virtual

@@ -109,6 +109,10 @@ impl ShellOverlayHost {
             self.handle_peer_sync_event(event, ctx);
             return true;
         }
+        if self.uninstall_sheet.is_some() {
+            self.handle_uninstall_event(event, ctx);
+            return true;
+        }
         // So does the directory sheet, whose search takes pasted links.
         if self.directory_sheet.is_open() && self.handle_directory_event(event, *ctx.modifiers) {
             *ctx.handled = true;

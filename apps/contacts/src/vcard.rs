@@ -169,8 +169,6 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
     doc
 }
 
-/// Build the `TYPE=` parameter. 4.0 lower-cases by convention; 3.0
-/// historically used upper-case bare types but `TYPE=` is valid in both.
 fn type_param(label: &str, version: VCardVersion) -> String {
     let label = label.trim();
     let label = if label.is_empty() { "other" } else { label };
@@ -669,7 +667,6 @@ mod tests {
                     .collect::<Vec<_>>(),
                 vec!["Work", "Favorites"]
             );
-            // Escaped punctuation + newline survives the round trip.
             assert_eq!(r.notes, "Note: with, punctuation; and a\nnewline");
         }
 

@@ -84,7 +84,6 @@ impl VerityHasher {
     }
 }
 
-/// The fs-verity digest of `bytes`.
 #[must_use]
 pub fn digest(bytes: &[u8]) -> [u8; HASH_SIZE] {
     let mut hasher = VerityHasher::new();

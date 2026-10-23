@@ -1182,7 +1182,6 @@ impl ComposeWindow {
         true
     }
 
-    /// Send from the account at `address`.
     pub fn send_from(&mut self, address: String) {
         self.sending_from = Some(address);
     }
@@ -1352,10 +1351,6 @@ impl ComposeWindow {
         Ok(())
     }
 
-    // ---- focus ----
-
-    // ---- body ----
-
     /// Start the body afresh from `seed` when the window next reaches the
     /// document; until then the body reads as the seed's text.
     fn start_body(&mut self, seed: DraftBodySeed) {
@@ -1510,7 +1505,6 @@ impl ComposeWindow {
         ui::Widget::apply_layout(&mut self.editor, &layout.taffy, node, origin);
     }
 
-    /// An event for the body editor.
     fn body_event(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
         self.start_pending_body(&mut ctx.state);
         if self.body_layout.node.is_none() {
@@ -1579,8 +1573,6 @@ impl ComposeWindow {
             _ => None,
         }
     }
-
-    // ---- layout ----
 
     /// Position the window for the current dock state within `bounds`, then
     /// lay out every interactive region. `bounds` is the app content rect.
@@ -1782,8 +1774,6 @@ impl ComposeWindow {
             .find(|(_, h)| *h == ComposeHit::Body)
             .map_or(Rect::ZERO, |(r, _)| *r)
     }
-
-    // ---- event handling ----
 
     /// Returns `true` if the event was consumed (so the host must NOT let it
     /// fall through to the mailbox behind the window). The contract that makes
@@ -2264,8 +2254,6 @@ impl ComposeWindow {
         }
     }
 
-    // ---- move / resize ----
-
     fn resize_edge_at(&self, pt: Point) -> Option<Edge> {
         if self.is_full_window_page() || self.in_pane() {
             return None;
@@ -2341,8 +2329,6 @@ impl ComposeWindow {
             }
         }
     }
-
-    // ---- drawing ----
 
     pub fn draw(
         &mut self,
@@ -2809,7 +2795,6 @@ mod tests {
 
     #[test]
     fn composer_formats_and_drafts_round_trip_content() {
-        // Phase `format_toggle_round_trips_content`.
         {
             let mut w = win();
             let mut doc = crate::resource::TestMail::doc();
@@ -2839,7 +2824,6 @@ mod tests {
             );
         }
 
-        // Phase `draft_carries_html_in_html_mode`.
         {
             let mut w = win();
             let mut doc = crate::resource::TestMail::doc();
@@ -2854,7 +2838,6 @@ mod tests {
             assert_eq!(d.to, "a@b.example");
         }
 
-        // Phase `a_saved_html_draft_reopens_with_its_formatting`.
         {
             let mut w = win();
             let mut doc = crate::resource::TestMail::doc();
@@ -2870,7 +2853,6 @@ mod tests {
             assert!(html.contains("<strong>ship</strong>"), "got: {html}");
         }
 
-        // Phase `draft_is_plain_in_text_mode`.
         {
             let mut w = ComposeWindow::new(ComposeFormat::Text);
             w.open_blank();
@@ -2967,7 +2949,6 @@ mod tests {
 
     #[test]
     fn composer_window_moves_resizes_docks_and_owns_its_input() {
-        // Phase `move_keeps_window_in_bounds`.
         {
             let mut w = win();
             let before = w.window_rect();
@@ -2982,7 +2963,6 @@ mod tests {
             assert_eq!(r.width(), before.width(), "move does not resize");
         }
 
-        // Phase `resize_respects_minimum`.
         {
             let mut w = win();
             let start = w.window_rect();
@@ -2999,7 +2979,6 @@ mod tests {
             assert!(r.height() >= w.metrics.min_h - 0.5);
         }
 
-        // Phase `attach_button_requests_the_root_portal_boundary`.
         {
             let mut w = win();
             // The compose widget never accepts a typed path; its root owns the
@@ -3014,7 +2993,6 @@ mod tests {
             );
         }
 
-        // Phase `click_outside_window_is_consumed_not_passed_through`.
         {
             let mut w = win();
             w.last_mouse = Point::new(5.0, 5.0); // outside the centred window
@@ -3088,8 +3066,6 @@ mod tests {
         }
     }
 
-    /// Beside the list the composer takes the message column, and the list
-    /// keeps its clicks and keys.
     #[test]
     fn in_the_message_column_the_list_keeps_its_clicks_and_keys() {
         let mut w = win();

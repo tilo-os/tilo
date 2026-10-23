@@ -269,10 +269,6 @@ impl CanvasSurface {
 
 /// Select `select`, an area found in `art`, as the invoker, while the
 /// artwork is still `art`: what the selection then is.
-///
-/// # Errors
-/// Returns that the artwork changed while the area was found, that the
-/// invoker may only read it, or why the selection was refused.
 pub(super) fn select_found(
     select: Select,
     art: &Artwork,

@@ -4165,7 +4165,6 @@ mod tests {
 
     #[test]
     fn accounts_pane_renders_only_real_accounts_as_removable() {
-        // Case `sample_directory_renders_read_only_without_remove_buttons`.
         {
             // The sample is illustration: one live Add button per provider kind,
             // metadata import, and no Remove buttons. A scratch root keeps whatever the runner's
@@ -4206,7 +4205,6 @@ mod tests {
             );
         }
 
-        // Case `real_directory_renders_remove_buttons`.
         {
             // Without stored passwords, real rows offer removal but do not invent
             // a reauthentication action.
@@ -4226,7 +4224,6 @@ mod tests {
             );
         }
 
-        // Case `account_removal_is_labeled_and_visibly_destructive`.
         {
             // Real accounts get an explicit Remove action rather than a lone
             // trash glyph. The confirmation flow still owns the mutation; this
@@ -4264,7 +4261,6 @@ mod tests {
             );
         }
 
-        // Case `live_pane_over_empty_store_does_not_fabricate_sample`.
         {
             let (_dir, root) = scratch_root();
             let pane = AccountsPane::in_root(root);
@@ -4306,19 +4302,16 @@ mod tests {
     /// The inline add form: local drafts, labelled fields, empty-email no-op and rejected adds.
     #[test]
     fn account_form_drafts_are_local_accessible_and_validated() {
-        // Case `add_button_opens_the_inline_form`.
         {
             let mut pane = AccountsPane::from_dir(sample_directory(), true);
             assert!(!pane.form_open());
             pane.command(AccountViewCommand::Add(AccountKind::Mail));
             assert!(pane.form_open(), "Add opens the form");
             assert!(pane.poll(), "opening the form requests a rebuild");
-            // Cancel closes it.
             pane.command(AccountViewCommand::Cancel);
             assert!(!pane.form_open(), "Cancel closes the form");
         }
 
-        // Case `form_drafts_are_local_and_every_field_has_explicit_accessibility`.
         {
             let mut pane = AccountsPane::from_dir(sample_directory(), true);
             pane.command(AccountViewCommand::Add(AccountKind::WebDav));
@@ -4355,7 +4348,6 @@ mod tests {
             );
         }
 
-        // Case `save_with_empty_email_is_a_noop`.
         {
             // Guard: saving a blank address must not create an account (and must
             // not touch disk). We assert the pure guard directly.
@@ -4376,7 +4368,6 @@ mod tests {
             assert!(root.store().is_empty());
         }
 
-        // Case `add_rejection_keeps_the_draft_open_and_persists_nothing`.
         {
             let (_dir, root) = scratch_root();
             let mut pane = AccountsPane::in_root(root.clone())
@@ -4474,7 +4465,6 @@ mod tests {
     /// Edits keep unknown config and toggles; re-authentication probes before persisting.
     #[test]
     fn account_edits_preserve_config_and_probe_before_persisting() {
-        // Case `edit_preserves_envelope_unknown_config_and_service_toggles`.
         {
             let (_dir, root) = scratch_root();
             let id = accounts::AccountId::from("nextcloud-stable-id");
@@ -4537,7 +4527,6 @@ mod tests {
             );
         }
 
-        // Case `reauthentication_probes_candidate_before_persisting`.
         {
             let (_dir, root) = scratch_root();
             let id = accounts::AccountId::from("reauth@example.test");

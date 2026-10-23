@@ -27,7 +27,7 @@ default = ["native", "broker-transport"]
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:tilo-content-device", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
+native = ["local-daemons", "tilo-host/native", "dep:tilo-appearance", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:tilo-host-search", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store/watch"]
 # X11 windows (winit's X11 backend) and the X11 clipboard, for development
 # builds on an X11 host: `cargo run -p <app> --features ui/x11` (through
 # `tilo-app`'s `x11`). Every Tilo app runs as a Wayland client in its
@@ -162,7 +162,7 @@ tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 # The `native` build takes the launcher's content-store capability at launch
 # (`launch.rs`).
-tilo-content-device = { version = "0.1.0", path = "../../system/content-device", optional = true }
+tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog", features = ["faces"] }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }

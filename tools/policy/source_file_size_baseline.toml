@@ -10,9 +10,9 @@
 "apps/calendar/src/app/tests.rs" = 4000
 "apps/camera/src/app.rs" = 5500
 "apps/canvas/src/surface.rs" = 4000
-"apps/chat/src/app.rs" = 6000
-"apps/chat/src/render_chat.rs" = 4500
-"apps/code-editor/src/app.rs" = 4000
+"apps/chat/src/app.rs" = 5500
+"apps/chat/src/render_chat.rs" = 4000
+"apps/code-editor/src/app.rs" = 3500
 "apps/code-editor/src/editor_view.rs" = 4000
 "apps/contacts/src/app/tests.rs" = 5000
 "apps/ebook/src/app.rs" = 10500
@@ -31,8 +31,8 @@
 "apps/maps/src/app.rs" = 5500
 "apps/maps/src/app/tests.rs" = 3500
 "apps/music/src/app.rs" = 6000
-"apps/music/src/app/render.rs" = 6000
-"apps/music/src/app/tests.rs" = 5500
+"apps/music/src/app/render.rs" = 5000
+"apps/music/src/app/tests.rs" = 5000
 "apps/music/src/audio.rs" = 3500
 "apps/notes/src/app.rs" = 5000
 "apps/osk/src/widget.rs" = 5500
@@ -68,7 +68,6 @@
 "crates/collab/tilo-action-broker/src/collab_broker_capnp.rs" = 21500
 "crates/collab/tilo-action-broker/src/collab_broker_capnp/action_host.rs" = 4000
 "crates/collab/tilo-peer-state/src/state.rs" = 4000
-"crates/dev/tilo-app-cli/src/android.rs" = 3500
 "crates/dev/tilo-app-cli/src/lib.rs" = 10500
 "crates/dev/tilo-app-cli/src/main.rs" = 4500
 "crates/dev/tilo-app-cli/src/tests.rs" = 6500
@@ -116,7 +115,7 @@
 "crates/sdk/ui-core/src/widget/context_menu.rs" = 3500
 "crates/sdk/ui-core/src/widget/data_table.rs" = 8000
 "crates/sdk/ui-core/src/widget/dropdown.rs" = 4000
-"crates/sdk/ui-core/src/widget/file_picker.rs" = 4500
+"crates/sdk/ui-core/src/widget/file_picker.rs" = 4435
 "crates/sdk/ui-core/src/widget/group_row.rs" = 11500
 "crates/sdk/ui-core/src/widget/list_row.rs" = 4000
 "crates/sdk/ui-core/src/widget/mod.rs" = 4000
@@ -132,8 +131,8 @@
 "crates/sdk/ui-core/src/widget/video_player.rs" = 4500
 "crates/sdk/ui-core/src/widget/virtual_list.rs" = 3500
 "crates/sdk/ui-core/src/widget/window_group.rs" = 7000
-"crates/session/desktop-surface/src/activity/pane.rs" = 10000
-"crates/session/desktop-surface/src/activity/pane_tests.rs" = 6000
+"crates/session/desktop-surface/src/activity/pane.rs" = 8000
+"crates/session/desktop-surface/src/activity/pane_tests.rs" = 4500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/desktop/src/topbar.rs" = 7500
 "crates/session/desktop/src/workspace_settings.rs" = 6500
@@ -141,7 +140,7 @@
 "crates/session/greeter/src/greeter_app.rs" = 4500
 "crates/session/installer/src/installer_app.rs" = 7500
 "crates/session/shell/examples/redraw_bench.rs" = 7000
-"crates/session/shell/src/bin/shots/driver.rs" = 4500
+"crates/session/shell/src/bin/shots/driver.rs" = 4492
 "crates/session/shell/src/bin/shots/scenario.rs" = 6400
 "crates/session/shell/src/compositor/backend/drm/mod.rs" = 5000
 "crates/session/shell/src/compositor/backend/drm/runtime.rs" = 9500
@@ -179,7 +178,7 @@
 "crates/system/fs/src/fs/tests.rs" = 4000
 "crates/system/fs/src/main.rs" = 5000
 "crates/system/fs/src/namespace.rs" = 5500
-"crates/system/fs/src/record_repository.rs" = 5000
+"crates/system/fs/src/record_repository.rs" = 4500
 "crates/system/fs/src/sync.rs" = 3500
 "crates/system/fs/src/sync/tests.rs" = 5000
-"crates/system/settings-store/src/hardware.rs" = 4500
+"crates/system/settings-store/src/hardware.rs" = 4000

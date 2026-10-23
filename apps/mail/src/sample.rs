@@ -145,7 +145,6 @@ const HOUR_MIN: i64 = 60;
 /// One day, in minutes.
 const DAY_MIN: i64 = 24 * HOUR_MIN;
 
-/// The people the sample mail is from and to.
 struct People {
     me: Addr,
     maya: Addr,
@@ -517,7 +516,6 @@ mod tests {
     #[test]
     fn sample_corpus_is_populated_threaded_and_hydrated() {
         let mb = sample_mailbox();
-        // Populated across folders.
         assert!(
             mb.count(Folder::Inbox) >= 8,
             "inbox: {}",
@@ -528,7 +526,6 @@ mod tests {
         assert!(mb.count(Folder::Junk) >= 1);
         assert!(mb.unread_count(Folder::Inbox) > 0);
 
-        // The invoice was parsed from raw MIME and carries its PDF with bytes.
         let invoice = mb
             .messages
             .values()
@@ -538,7 +535,6 @@ mod tests {
         assert_eq!(invoice.attachments[0].filename, "invoice-june.pdf");
         assert!(invoice.attachments[0].is_downloadable());
         assert!(!invoice.attachments[0].content.is_empty());
-        // The plain message was parsed too.
         assert!(
             mb.messages
                 .values()
@@ -561,7 +557,6 @@ mod tests {
             .expect("launch thread present");
         assert_eq!(launch.message_ids.len(), 3);
 
-        // Every message is in the past.
         let now = sample_now_min();
         assert!(mb.messages.values().all(|m| m.timestamp_min <= now));
     }

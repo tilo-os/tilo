@@ -161,7 +161,6 @@ fn splice_into_props(s: &str, span: &ElementSpan, cols: &str) -> String {
 
 #[derive(Clone, Copy)]
 struct ElementSpan {
-    /// Byte index of the element's opening `<`.
     open_start: usize,
     /// Byte index just past the opening tag's `>`.
     open_end: usize,

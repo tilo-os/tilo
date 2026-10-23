@@ -1269,7 +1269,7 @@ async fn paired_native_editor_views_follow_the_persons_root_and_stop_when_routes
     assert!(online[0].0.generation > offline[0].0.generation);
     pair.apply_target(&online[0].0, 70);
     pair.right.network_mut().continuity_policy_override =
-        Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::default());
+        Some(crate::shell::continuity_policy::ContinuityPolicySnapshot::OFF);
     let revoked = in_owner_registry(&pair.right_registry, || {
         pair.right.network.pump_owner_views()
     });

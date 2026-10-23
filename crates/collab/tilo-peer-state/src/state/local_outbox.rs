@@ -257,11 +257,6 @@ impl StatePeer {
 }
 impl PeerOutbox<'_> {
     /// Historical exact custody only. This never grants current send/sign permission.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] if the message is not a valid retained document of the
-    /// selected device.
     pub fn lookup_retained_local_document(
         self,
         message: &NeighbourMsg,
@@ -279,10 +274,6 @@ impl PeerOutbox<'_> {
         }
     }
     /// Only actual durable governor acknowledgement may retire retained bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the message is not a retained document of the selected device.
     pub fn retained_local_document_retired(
         self,
         message: &NeighbourMsg,
@@ -323,10 +314,6 @@ impl PeerOutbox<'_> {
     }
     /// Compare retained real history with the admitted durable governor checkpoint.
     /// A test oracle for the recovery projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `history` does not belong to this room.
     #[cfg(test)]
     pub fn retained_local_history_retired(self, history: &StatePeer) -> Result<bool, String> {
         self.peer.validate_retained_history(history)?;
@@ -346,12 +333,6 @@ impl PeerOutboxMut<'_> {
     /// original's artifact, attestation and class, is signed at `now` under
     /// the author's next sequence, and is admitted as a new local sealed
     /// write. `None` when `original` is not due; on an error nothing changes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `original` is not authentic retained custody, the
-    /// device may no longer write, `reseal` refuses, or the renewal is not
-    /// admitted.
     pub fn renew_local_sealed(
         self,
         original: &NeighbourMsg,

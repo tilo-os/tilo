@@ -362,14 +362,12 @@ mod tests {
 
     #[test]
     fn hardening_policy_entries_match_ids_and_families() {
-        // Phase `an_exact_id_matches_only_itself`.
         {
             let list = "so.tilo.browser\n";
             assert!(policy_matches(list, "so.tilo.browser"));
             assert!(!policy_matches(list, "so.tilo.browserish"));
             assert!(!policy_matches(list, "so.tilo.calculator"));
         }
-        // Phase `comments_and_blank_lines_are_not_entries`.
         {
             let list = "\n# so.tilo.calculator\n   \nso.tilo.tube  # decodes video\n";
             assert!(policy_matches(list, "so.tilo.tube"));
@@ -378,13 +376,11 @@ mod tests {
                 "a commented-out id must not match"
             );
         }
-        // Phase `a_trailing_star_matches_a_family`.
         {
             let list = "so.tilo.media.*\n";
             assert!(policy_matches(list, "so.tilo.media.player"));
             assert!(!policy_matches(list, "so.tilo.notes"));
         }
-        // Phase `an_empty_policy_hardens_nothing`.
         {
             assert!(!policy_matches("", "so.tilo.browser"));
             assert!(!policy_matches(
@@ -396,7 +392,6 @@ mod tests {
 
     #[test]
     fn hardening_policy_file_replaces_the_builtin_list() {
-        // Phase `a_policy_file_replaces_the_builtin_list`.
         {
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join("untrusted-parsers.conf");
@@ -418,7 +413,6 @@ mod tests {
                  it is in the compiled-in fallback"
             );
         }
-        // Phase `with_no_policy_file_the_builtin_set_still_applies`.
         {
             let dir = tempfile::tempdir().unwrap();
             let missing = dir.path().join("does-not-exist.conf");

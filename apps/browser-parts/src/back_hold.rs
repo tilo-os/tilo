@@ -44,10 +44,8 @@ impl NavigationHold {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Short click, hold and cancellation of the back button gesture.
     #[test]
     fn back_hold_distinguishes_click_hold_and_cancellation() {
-        // Phase `short_click_backs_but_hold_opens_once_and_suppresses_release`.
         {
             let now = ui::time::now();
             let mut hold = NavigationHold::default();
@@ -66,7 +64,6 @@ mod tests {
             assert!(!hold.waiting());
         }
 
-        // Phase `pointer_departure_or_focus_loss_cancels_without_late_back`.
         {
             let now = ui::time::now();
             let mut hold = NavigationHold::default();

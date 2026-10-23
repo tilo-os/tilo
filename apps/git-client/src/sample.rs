@@ -305,7 +305,6 @@ impl Sample<'_> {
     }
 }
 
-/// A file a commit touched.
 fn touched(path: &str, kind: ChangeKind, add: u32, del: u32) -> FileChange {
     fc(path, ChangeArea::Staged, kind, add, del)
 }
@@ -441,8 +440,6 @@ fn commit_history_older() -> Vec<Sample<'static>> {
         },
     ]
 }
-
-// === Per-file diff fixtures ==========================================
 
 fn build(path: &str, raw: &str) -> FileDiff {
     parse_unified(path, &language_for(path), raw)

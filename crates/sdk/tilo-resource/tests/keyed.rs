@@ -1,5 +1,3 @@
-//! Items keyed by the ids they carry, values stored as JSON, and the field
-//! edits between two values.
 #![allow(
     clippy::unwrap_used,
     clippy::float_cmp,
@@ -293,8 +291,6 @@ fn ordered_items_keep_the_arranged_order_and_merge_by_identity() {
     assert!(paths.path().edits(&after, &after).is_empty());
 }
 
-// --- Values stored as JSON, compared in memory first -------------------------
-
 thread_local! {
     static KEYS_SERIALISED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -460,7 +456,6 @@ fn json_values_compared_in_memory_edit_as_their_forms_do() {
                             first.0 = -first.0;
                         }
                     }
-                    // Replaced whole.
                     _ => reel.keys = Keys(vec![(0.0, 1.0)]),
                 }
             }

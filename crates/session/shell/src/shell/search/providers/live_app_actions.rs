@@ -37,7 +37,6 @@ pub const PROVIDER_ID: &str = "app-actions";
 const LOCAL_ADMISSION_TIMEOUT: Duration = Duration::from_secs(40);
 const ID_SEPARATOR: char = '\u{1f}';
 
-/// The parts of one live action result id.
 struct ResultParts<'a> {
     app: &'a str,
     kind: &'a str,

@@ -49,10 +49,6 @@ pub trait ToolStore {
 
     /// Pack `tree` into a `tool` image bound to `key.runtime`, sign it and
     /// keep it. `requested` is what the user asked for.
-    ///
-    /// # Errors
-    ///
-    /// Packing, signing or storing fails.
     fn store_tool(
         &self,
         tree: &Path,
@@ -381,7 +377,6 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
 pub struct SandboxOptions {
     /// dnf's metadata cache, kept across builds on one runtime.
     pub dnf_cache: Option<PathBuf>,
-    /// A bubblewrap other than `bwrap` on `PATH`.
     pub bwrap: Option<PathBuf>,
     /// What the sandbox may reach.
     pub network: Network,

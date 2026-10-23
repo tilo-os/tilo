@@ -223,7 +223,6 @@ mod tests {
 
     #[test]
     fn save_and_load_round_trip_bytes_parents_and_utf8() {
-        // Each phase uses its own tempdir.
         save_writes_the_bytes_and_load_reads_them_back();
         save_creates_missing_parent_directories();
         utf8_survives_a_save_load_round_trip();
@@ -252,7 +251,6 @@ mod tests {
 
     #[test]
     fn stamped_saves_refuse_to_clobber_external_changes() {
-        // Each phase uses its own tempdir.
         a_second_save_against_a_current_stamp_succeeds();
         a_file_changed_underneath_refuses_to_be_clobbered();
         an_explicit_overwrite_after_a_conflict_wins();
@@ -283,14 +281,12 @@ mod tests {
             save(&p, "my edit", Some(&stale)),
             Err(SaveError::Conflict)
         ));
-        // Crucially, the other writer's bytes are still there.
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
             "rewritten by someone else",
             "a refused save must not have written anything"
         );
 
-        // And `changed_on_disk` agrees, which is what drives the tab indicator.
         assert!(changed_on_disk(&p, &stale));
     }
 
@@ -320,7 +316,6 @@ mod tests {
 
     #[test]
     fn load_refuses_binary_and_oversized_files() {
-        // Each phase uses its own tempdir.
         binary_files_are_refused_rather_than_opened_as_text();
         oversized_files_are_refused_before_being_read();
         too_large_message_uses_si_units();

@@ -1,7 +1,3 @@
-//! Contract tests for the public descriptor, the certified device proof and
-//! the exact-package receipt. End-to-end transport tests live with the
-//! prepared-media producer, where a real package and identity exist.
-
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
 use std::path::Path;

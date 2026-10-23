@@ -274,14 +274,12 @@ mod tests {
 
     #[test]
     fn inhibitor_tokens_compose_share_state_and_release_on_drop() {
-        // Phase `empty_registry_is_not_inhibited`.
         {
             let r = InhibitRegistry::new();
             assert!(!r.is_inhibited());
             assert_eq!(r.count(), 0);
             assert!(r.active_reasons().is_empty());
         }
-        // Phase `a_held_token_inhibits_and_dropping_releases`.
         {
             let r = InhibitRegistry::new();
             {
@@ -294,7 +292,6 @@ mod tests {
             assert!(!r.is_inhibited());
             assert_eq!(r.count(), 0);
         }
-        // Phase `overlapping_holds_compose_and_release_independently`.
         {
             let r = InhibitRegistry::new();
             let a = r.acquire("media");
@@ -308,7 +305,6 @@ mod tests {
             drop(b);
             assert!(!r.is_inhibited());
         }
-        // Phase `clones_share_state`.
         {
             let r = InhibitRegistry::new();
             let r2 = r.clone();
@@ -317,7 +313,6 @@ mod tests {
             assert!(r2.is_inhibited());
             assert_eq!(r2.count(), 1);
         }
-        // Phase `operation_scopes_do_not_cross_inhibit`.
         {
             let registry = InhibitRegistry::new();
             let _logout = registry.acquire_for("unsaved work", INHIBIT_LOGOUT);
@@ -325,7 +320,6 @@ mod tests {
             assert!(!registry.is_inhibited_for(INHIBIT_POWER));
             assert!(registry.active_reasons().is_empty());
         }
-        // Phase `token_outliving_registry_is_harmless`.
         {
             let token;
             {

@@ -237,7 +237,6 @@ async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture 
         let other_child = ns
             .create_file(other, "private.md", Some(&hash), body.len() as u64, 1)
             .unwrap();
-        // Same string prefix as "/w/docs", different directory.
         let look_alike = ns.create_dir(w, "docsSECRET", 1).unwrap();
         let look_alike_child = ns
             .create_file(look_alike, "leak.md", Some(&hash), body.len() as u64, 1)
@@ -739,7 +738,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 .await
                 .expect("bind endpoint");
 
-            // Ingest real content into the local store and seed the namespace with it.
             let store = Arc::new(ContentStore::memory());
             let body = b"hello from the collaborative filesystem";
             let hash = store
@@ -954,7 +952,6 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 "unlink of a directory must fail"
             );
 
-            // Empty it, then rmdir succeeds.
             std::fs::remove_file(path.join("dir/inner.txt")).expect("unlink inner");
             std::fs::remove_dir(path.join("dir")).expect("rmdir empty dir");
             assert!(!path.join("dir").exists(), "empty dir removed");
@@ -1658,7 +1655,6 @@ async fn denied_paths_are_invisible_and_read_grants_are_read_only() {
             );
         }
 
-        // None of that probing may have touched the namespace.
         let before = f.heads();
         let _ = std::fs::write(p.join("vault/keys.txt"), b"x");
         let _ = std::fs::remove_file(p.join("vault/keys.txt"));

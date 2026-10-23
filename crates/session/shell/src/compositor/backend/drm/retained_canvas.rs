@@ -520,7 +520,6 @@ mod tests {
                 height: 32
             }]
         );
-        // Clipped to what is asked for.
         let corner = FineDamageRect {
             x: 24,
             y: 0,

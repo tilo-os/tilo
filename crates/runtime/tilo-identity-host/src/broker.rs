@@ -659,11 +659,6 @@ fn channel_keys(
 /// This machine's device key and its certificate for the identity selected
 /// in `room`, while that certificate is valid, enrolled and not revoked. For
 /// the host that governs the room with the device key; apps never get it.
-///
-/// # Errors
-///
-/// Returns an error when no identity is selected in `room` or the device is
-/// not trusted for it.
 pub fn trusted_current_device(
     room: &str,
 ) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
@@ -1466,7 +1461,6 @@ params = []
         collab_types::verify_op(&op).expect("identity service signature verifies");
         assert!(identity.sign_for("document.delete", b"no").is_err());
 
-        // The person's own room, for the record of theirs Notes declares.
         let own_room = collab_types::person_room(&identity.group_public_key()).to_string();
         let own_proof = identity
             .sign_collaboration_join(&own_room)

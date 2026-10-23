@@ -42,9 +42,7 @@ const KEY_LEFTMETA: u32 = 125;
 pub struct Held {
     /// Control.
     pub ctrl: bool,
-    /// Shift.
     pub shift: bool,
-    /// Alt.
     pub alt: bool,
     /// Super / Command.
     pub meta: bool,

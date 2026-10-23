@@ -120,7 +120,6 @@ pub trait Probe: Send {
     /// The boot time in seconds since the epoch, for run times.
     fn boot_time(&self) -> Option<u64>;
 
-    /// The account name of `uid`.
     fn user_name(&mut self, uid: u32) -> String;
 }
 

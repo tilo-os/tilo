@@ -1,5 +1,3 @@
-//! Interactive funnel and pyramid charts.
-
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "funnel projection is bounded floating-point geometry"

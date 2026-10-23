@@ -124,9 +124,6 @@ fn validate_report_custody(
     Ok(())
 }
 
-/// Called only under admission serialization. A cached report needs current
-/// caller and host custody, but no longer needs the SDK's pre-event pin or a
-/// second policy decision (which could spend another one-use grant).
 #[allow(
     clippy::significant_drop_tightening,
     reason = "`state` is a borrow of the channel's broker state, not a guard; the journal and receipt locks are taken and released in their own helpers"

@@ -77,7 +77,6 @@ store-package-local-description = Signierte lokale Anwendung. Zur Installation m
 store-package-local-source = Lokales Paket
 store-app-installed = App installiert.
 store-app-updated = App aktualisiert.
-store-app-removed = App entfernt.
 
 store-search-empty = Keine Apps gefunden
 store-search-empty-help = Versuche einen anderen Suchbegriff.
@@ -212,7 +211,7 @@ store-category-bots = Bots
 store-action-open = Öffnen
 store-action-install = Installieren
 store-action-update = Aktualisieren
-store-action-remove = Entfernen
+store-action-remove = Deinstallieren
 store-action-keep = Auf diesem Gerät behalten
 store-action-release = Aufräumen erlauben
 store-action-flatpak-setup = Zuerst Flatpak installieren

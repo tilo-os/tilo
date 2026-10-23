@@ -44,18 +44,13 @@ impl Peer {
     /// ordinary receiver run. Nothing is written over an existing identity.
     pub(crate) fn join(
         home: &Path,
+        identity_root: &Path,
         identity_dir: &Path,
         device_label: &str,
     ) -> std::io::Result<Option<Self>> {
         let Some(handoff) = tilo_handoff::read_descriptor(home)? else {
             return Ok(None);
         };
-        let paths = crate::firstboot::collaboration_identity_paths();
-        let root = paths
-            .device_cert
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| std::io::Error::other("Device identity root is unavailable"))?;
         if runtime_identity::resolve_active_identity(identity_dir).is_some()
             || match runtime_identity::list_identities(identity_dir) {
                 Ok(identities) => !identities.is_empty(),
@@ -79,7 +74,7 @@ impl Peer {
         let receiver = tilo_handoff::Receiver::join(
             handoff,
             tilo_handoff::ReceiverIdentity {
-                identity_root: root.to_path_buf(),
+                identity_root: identity_root.to_path_buf(),
                 identity_dir: join_identity,
             },
             home.join(".local/state/tilo/prepared-setup"),
@@ -90,16 +85,6 @@ impl Peer {
 
     /// Open the handoff described for `home`, if one is present. A malformed,
     /// linked or expired descriptor is an error, never silently ignored.
-    pub(crate) fn open(home: &Path, identity_dir: &Path) -> std::io::Result<Option<Self>> {
-        let paths = crate::firstboot::collaboration_identity_paths();
-        let root = paths
-            .device_cert
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| std::io::Error::other("Device identity root is unavailable"))?;
-        Self::open_at(home, root, identity_dir)
-    }
-
     pub(crate) fn open_at(
         home: &Path,
         identity_root: &Path,

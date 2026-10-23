@@ -97,10 +97,6 @@ pub struct SealPreparationRequest<'a> {
 /// A fresh preparation secret. Hex keeps the canonical carrier's 15-character
 /// policy satisfied while giving 256 bits of machine randomness; it is never
 /// shown to the person and never used as a login password.
-///
-/// # Errors
-///
-/// The operating system random source fails.
 pub fn generate_secret() -> io::Result<Zeroizing<String>> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(io::Error::other)?;

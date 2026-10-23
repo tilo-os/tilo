@@ -843,6 +843,9 @@ pub(super) fn paint_file_visual(
     rect: Rect,
     entry: &Entry,
 ) -> Rect {
+    if let Some(painted) = paint_entry_artwork(scene, transform, visual, rect, entry) {
+        return painted;
+    }
     if !entry.is_dir
         && let Some(ctx) = visual.thumbs
     {
@@ -860,15 +863,47 @@ pub(super) fn paint_file_visual(
         }
     }
     let glyph = Rect::from_center_size(rect.center(), (visual.glyph_px, visual.glyph_px));
+    let icon = if crate::applications::is_app(&entry.path) {
+        Icon::AppWindow
+    } else {
+        icon_for_path(&entry.path, entry.is_dir)
+    };
     draw_icon(
         scene,
         transform,
         glyph,
-        icon_for_path(&entry.path, entry.is_dir),
+        icon,
         visual.glyph_color,
         LUCIDE_DEFAULT_STROKE_PX * visual.scale.max(1.0),
     );
     glyph
+}
+
+/// Paint the artwork standing for `entry` (an app's icon), as large as fits
+/// `rect` and centred, once the preview service has read it off the UI
+/// thread. `None` while it has none, or none ready: the caller paints the
+/// glyph.
+fn paint_entry_artwork(
+    scene: &mut Scene,
+    transform: Affine,
+    visual: &VisualPaint<'_>,
+    rect: Rect,
+    entry: &Entry,
+) -> Option<Rect> {
+    let icon = entry.app.as_ref()?.icon.as_ref()?;
+    let ctx = visual.thumbs?;
+    let key = ThumbKey::of_path_meta(icon, 0, 0, ctx.service.edge());
+    let ThumbState::Ready(rgba) = ctx
+        .service
+        .request_file(key, FileCategory::Image, icon.clone())
+    else {
+        return None;
+    };
+    let img = FileView::thumb_peniko(ctx, key, &rgba);
+    let edge = rect.width().min(rect.height());
+    let square = Rect::from_center_size(rect.center(), (edge, edge));
+    ui::image_store::paint_image_contain(scene, transform, square, &img, 0.0);
+    Some(square)
 }
 
 /// Paint the sync-state emblem of a workspace file (cloud / downloading /
@@ -1599,6 +1634,7 @@ mod tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         }
@@ -1968,6 +2004,7 @@ mod tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         };
@@ -2050,6 +2087,7 @@ mod tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         }

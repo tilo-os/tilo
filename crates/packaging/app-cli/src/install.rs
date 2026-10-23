@@ -600,10 +600,6 @@ fn fetch_verified(
 }
 
 /// [`download_reporting`] for callers with nothing to report to.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as [`download_reporting`].
 pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
     download_reporting(url, dest, &mut |_| {})
 }
@@ -612,10 +608,6 @@ pub fn download(url: &str, dest: &Path) -> Result<u64, String> {
 /// The staged file is removed either way: on success the bytes now
 /// live in the installed payload tree; on failure a half-written
 /// download isn't worth keeping.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as [`install_app_reporting`].
 pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
     install_app_reporting(app, &mut |_| {})
 }
@@ -639,9 +631,6 @@ pub fn install_app_reporting(
 /// Install an exact runtime from a configured repository without replacing an app.
 /// The normal downloader and installer retain registry, signature, payload and
 /// runtime publisher checks; an installed version follows the normal update policy.
-///
-/// # Errors
-/// Returns registry verification or offer errors, or the normal install refusal.
 pub fn install_runtime_reporting(
     runtime: &str,
     registry: &str,
@@ -815,12 +804,6 @@ impl Drop for StagedPackage {
 
 /// Download `app`'s package into the staging directory and check it against
 /// the signed offer: its length, then its BLAKE3.
-///
-/// # Errors
-///
-/// Returns an error if the offer's metadata is out of bounds, there is
-/// nowhere writable to stage, the download fails, or the bytes are not the
-/// signed ones.
 pub fn stage(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
@@ -1034,11 +1017,6 @@ fn install_optional_runtimes(
 /// Progress includes download and installation phases; retry checks for an
 /// already verified installed bundle. A running app must be closed and relaunched
 /// through the normal launcher to receive the new read-only sandbox mount.
-///
-/// # Errors
-///
-/// Returns an error if the exact runtime is not offered, download or verification
-/// fails, or the installed runtime does not pass the launcher's verification.
 pub fn acquire_optional_runtime_reporting(
     app: &CatalogueApp,
     runtime: &str,
@@ -1055,10 +1033,6 @@ pub fn acquire_optional_runtime_reporting(
 /// Acquire an already admitted, exact runtime offer without resolving a newer offer.
 /// The host must validate the consuming app's signed optional declaration and
 /// revalidate this offer against its configured repository before calling.
-///
-/// # Errors
-/// Refuses a non-runtime offer, a different runtime, or any acquisition or
-/// post-install verification failure. No caller-selected source is admitted here.
 pub fn acquire_admitted_runtime_reporting(
     offer: &CatalogueApp,
     runtime: &str,
@@ -1101,10 +1075,6 @@ pub fn update_app_reporting(
 
 /// Download and atomically replace an installed app with an older version
 /// from a verified offer, keeping its saved state.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as [`update_app_reporting`].
 pub fn rollback_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
@@ -1113,10 +1083,6 @@ pub fn rollback_app_reporting(
 }
 
 /// Resolve `package_id` against the live catalogue, then install it.
-///
-/// # Errors
-///
-/// Returns an error under the same conditions as [`install_reporting`].
 pub fn install(package_id: &str) -> Result<CatalogueApp, InstallError> {
     install_reporting(package_id, &mut |_| {})
 }
@@ -1188,7 +1154,6 @@ mod tests {
 
     #[test]
     fn the_installer_invocation_is_fixed_and_never_relaxes_signatures() {
-        // Phase `a_release_build_runs_the_installer_from_path`.
         {
             use package_store::dev_env::dev_override_from;
             let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
@@ -1324,7 +1289,6 @@ mod tests {
 
     #[test]
     fn package_downloads_are_explicit_bounded_and_match_signed_metadata() {
-        // Phase `staged_download_must_match_the_signed_registry_metadata`.
         {
             let bytes = b"signed package bytes";
             let app = registry_app_for(bytes);
@@ -1348,7 +1312,6 @@ mod tests {
                 Err(InstallError::Integrity { detail }) if detail.contains("outside")
             ));
         }
-        // Phase `streaming_download_stops_when_body_exceeds_the_offer_limit`.
         {
             use std::io::{Read as _, Write as _};
             use std::net::TcpListener;
@@ -1381,7 +1344,6 @@ mod tests {
                 "the over-limit chunk is rejected before it reaches disk"
             );
         }
-        // Phase `package_download_origin_is_explicit_and_credential_free`.
         {
             assert!(
                 safe_download_url("https://apps.tilo.so/artifacts/app.tapp?token=signed").is_ok()
@@ -1399,7 +1361,6 @@ mod tests {
                 );
             }
         }
-        // Phase `package_download_refuses_redirect_response`.
         {
             use std::io::{Read as _, Write as _};
             use std::net::TcpListener;
@@ -1521,7 +1482,6 @@ mod tests {
             assert!(fetch_verified(&app, &dest, &mut |_| {}).is_err());
             assert!(!dest.exists());
         }
-        // Phase `a_twin_of_other_bytes_fails_the_signed_hash`.
         {
             let mut other = package.clone();
             other[0] ^= 1;
@@ -1566,7 +1526,6 @@ mod tests {
 
     #[test]
     fn installer_errors_render_one_actionable_line() {
-        // Phase `errors_render_something_a_person_can_act_on`.
         {
             let cases = [
                 InstallError::NotOffered {
@@ -1621,7 +1580,6 @@ mod tests {
             .user_message();
             assert!(msg.contains('7'), "{msg:?}");
         }
-        // Phase `the_complaint_is_the_last_line_and_nothing_else`.
         {
             let text = "reading header\n\nverifying\ntapp parse: unexpected EOF\n";
             assert_eq!(installer_complaint(text), "tapp parse: unexpected EOF");

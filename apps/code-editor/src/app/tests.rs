@@ -554,34 +554,6 @@ fn editing_routes_through_crdt() {
 }
 
 #[test]
-fn sidebar_docks_when_wide_overlays_when_narrow_and_follows_file_opens() {
-    // Each phase builds a fresh sample app.
-    toggle_sidebar_command_hides_it();
-    layout_is_docked_when_wide_overlay_when_narrow();
-    narrow_window_hides_sidebar_by_default();
-    wide_window_docks_sidebar_open_by_default();
-    opening_a_file_in_overlay_dismisses_the_flap();
-    opening_a_file_keeps_docked_sidebar_pinned();
-}
-
-fn toggle_sidebar_command_hides_it() {
-    // Default width hint is wide → docked-open; the command flips it shut.
-    let mut app = CodeApp::with_sample();
-    let mut doc = AutoCommit::new();
-    assert!(app.sidebar_open());
-    app.apply_command(
-        Command::ToggleSidebar,
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    assert!(!app.sidebar_open());
-    app.apply_command(
-        Command::ToggleSidebar,
-        &mut ui::widget::Edits::lend(&mut doc),
-    );
-    assert!(app.sidebar_open());
-}
-
-#[test]
 fn project_files_are_created_by_durable_actions_and_adopted_from_peers() {
     // Each phase builds a fresh sample app and document.
     new_file_command_dispatches_the_durable_create_file_action();
@@ -633,74 +605,97 @@ fn a_collaborative_file_is_adopted_as_a_tracked_file() {
     assert_eq!(after, before + 1);
 }
 
-fn layout_is_docked_when_wide_overlay_when_narrow() {
-    let mut app = CodeApp::with_sample();
-    app.set_width_hint(1200.0);
-    assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-    app.set_width_hint(600.0);
-    assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
-    // Boundary is inclusive at the breakpoint → docked.
-    let breakpoint = app.drawer.resolved_breakpoint();
-    app.set_width_hint(breakpoint);
-    assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-    app.set_width_hint(breakpoint - 1.0);
-    assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
+/// Where the shell puts the file tree, and whether it shows it.
+fn shell_sidebar(
+    app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>,
+) -> (ui::widget::SidebarPlacement, bool) {
+    app.with_widget::<ui::widget::NavShell, _>(|shell| {
+        (shell.geometry().sidebar, shell.is_sidebar_open())
+    })
+    .expect("the editor stands in the shell")
 }
 
-fn narrow_window_hides_sidebar_by_default() {
-    let mut app = CodeApp::with_sample();
-    app.set_width_hint(600.0);
-    assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
-    // A fresh narrow window opens straight to the editor.
-    assert!(!app.sidebar_open(), "overlay sidebar is closed by default");
-    // The hamburger summons it.
-    app.toggle_sidebar();
-    assert!(app.sidebar_open());
+/// Activate the file tree's row `name`, as a person or an assistive
+/// technology does.
+fn activate_tree_row(
+    app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>,
+    name: &str,
+) {
+    let (id, _) = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::TreeItem && node.label() == Some(name)
+        })
+        .unwrap_or_else(|| panic!("no row named {name} in the file tree"));
+    app.harness()
+        .perform_a11y_action(id, &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("activate {name}: {error:?}"));
+    app.settle();
 }
 
-fn wide_window_docks_sidebar_open_by_default() {
-    let mut app = CodeApp::with_sample();
-    app.set_width_hint(1200.0);
-    assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-    assert!(app.sidebar_open(), "docked sidebar opens by default");
+fn toggle_sidebar_command(sample: &mut crate::test_support::Sample) {
+    sample.with_doc(|app, doc| app.apply_command(Command::ToggleSidebar, doc));
+    sample.app.settle();
 }
 
-fn opening_a_file_in_overlay_dismisses_the_flap() {
-    let mut app = CodeApp::with_sample();
-    app.set_width_hint(600.0);
-    app.toggle_sidebar();
-    assert!(app.sidebar_open(), "summoned open before selecting a file");
-    // Find prime.rs and open it via the tree-event path the sidebar emits.
-    let prime = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|n| n.name == "prime.rs")
-        .unwrap()
-        .id;
-    app.apply_tree_event(ExplorerEvent::Activate(prime));
-    assert_eq!(app.session.active_buffer().unwrap().name, "prime.rs");
-    assert!(
-        !app.sidebar_open(),
-        "opening a file dismisses the overlay flap"
-    );
-}
-
-fn opening_a_file_keeps_docked_sidebar_pinned() {
-    let mut app = CodeApp::with_sample();
-    app.set_width_hint(1200.0);
-    assert!(app.sidebar_open());
-    let prime = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|n| n.name == "prime.rs")
-        .unwrap()
-        .id;
-    app.apply_tree_event(ExplorerEvent::Activate(prime));
-    assert!(app.sidebar_open(), "docked sidebar stays open after open");
+#[test]
+fn the_file_tree_is_the_shells_sidebar() {
+    use ui::widget::SidebarPlacement;
+    // Case `a_wide_window_docks_it_and_the_command_hides_it`.
+    {
+        let mut sample = crate::test_support::sample();
+        assert_eq!(
+            shell_sidebar(&mut sample.app),
+            (SidebarPlacement::Docked, true)
+        );
+        toggle_sidebar_command(&mut sample);
+        assert!(!shell_sidebar(&mut sample.app).1, "the command hides it");
+        toggle_sidebar_command(&mut sample);
+        assert!(shell_sidebar(&mut sample.app).1, "and shows it again");
+    }
+    // Case `opening_a_file_keeps_a_docked_tree_and_marks_the_file`.
+    {
+        let mut sample = crate::test_support::sample();
+        activate_tree_row(&mut sample.app, "src");
+        activate_tree_row(&mut sample.app, "prime.rs");
+        let active = sample.editor(|app| app.session.active_buffer().map(|b| b.name.clone()));
+        assert_eq!(active.as_deref(), Some("prime.rs"));
+        assert!(shell_sidebar(&mut sample.app).1, "a docked tree stays");
+        let selected = sample
+            .app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .any(|(_, node)| {
+                node.role() == ui::accesskit::Role::TreeItem
+                    && node.label() == Some("prime.rs")
+                    && node.is_selected() == Some(true)
+            });
+        assert!(selected, "the file on screen is the tree's selection");
+    }
+    // Case `a_narrow_window_floats_it_and_opening_a_file_puts_it_away`.
+    {
+        let mut sample = crate::test_support::sample();
+        sample.app.harness().resize((480, 800)).unwrap();
+        sample.app.settle();
+        assert_eq!(
+            shell_sidebar(&mut sample.app),
+            (SidebarPlacement::Drawer, false),
+            "a narrow window opens straight to the code"
+        );
+        toggle_sidebar_command(&mut sample);
+        assert!(shell_sidebar(&mut sample.app).1, "the command brings it");
+        activate_tree_row(&mut sample.app, "src");
+        activate_tree_row(&mut sample.app, "prime.rs");
+        let active = sample.editor(|app| app.session.active_buffer().map(|b| b.name.clone()));
+        assert_eq!(active.as_deref(), Some("prime.rs"));
+        assert!(
+            !shell_sidebar(&mut sample.app).1,
+            "opening a file puts the drawer away"
+        );
+    }
 }
 
 /// Overwrite a buffer's whole text through the CRDT, the way an edit does.
@@ -1079,7 +1074,6 @@ fn find_highlights_and_navigates_matches() {
             "'primes' occurs several times in main.rs, got {}",
             app.find_matches.len()
         );
-        // The matches are handed to the editor's highlight layer.
         assert_eq!(
             app.editor.find_match_count_for_test(),
             app.find_matches.len(),
@@ -1182,7 +1176,6 @@ fn toggle_comment_comments_then_uncomments() {
     let mut sample = synced_sample();
     sample.with_doc(|app, doc| {
         let node = app.session.active_buffer().unwrap().node;
-        // Replace the buffer with a content-stable single line of Rust.
         let key = app.buffer_key(node);
         let base = EditorDoc::read_buffer_key(doc, &key).unwrap();
         app.dispatch_text_action(doc, key, &base, "let x = 1;\n")
@@ -1577,4 +1570,50 @@ fn format_on_save_writes_what_the_formatter_answered() {
             .unwrap()
             .ends_with("typed\noff\n")
     );
+}
+
+#[test]
+fn the_status_and_header_say_only_what_the_person_needs() {
+    // Case `a_project_still_loading_reads_in_plain_words`.
+    {
+        let busy = |percentage| LspStatus::Busy {
+            server: "rust-analyzer".to_string(),
+            title: "Fetching cargo metadata".to_string(),
+            detail: Some("?".to_string()),
+            percentage,
+        };
+        assert_eq!(busy(None).label(), "Loading project\u{2026}");
+        assert_eq!(busy(Some(37)).label(), "Loading project 37%");
+        assert_eq!(
+            LspStatus::Starting {
+                server: "rust-analyzer".to_string()
+            }
+            .label(),
+            "Loading project\u{2026}"
+        );
+        assert_eq!(
+            LspStatus::Ready {
+                server: "rust-analyzer".to_string()
+            }
+            .label(),
+            ""
+        );
+    }
+    // Case `opening_a_folder_is_not_narrated`.
+    {
+        let mut sample = crate::test_support::sample();
+        let left = sample.editor(|app| app.status.left());
+        assert!(!left.contains("Opened"), "status: {left}");
+    }
+    // Case `the_header_row_stands_only_over_a_file`.
+    {
+        let mut sample = crate::test_support::sample();
+        let header = |sample: &mut crate::test_support::Sample| {
+            sample.editor(|app| (app.laid_out_header, app.search_button.get_rect().height()))
+        };
+        assert_eq!(header(&mut sample), (false, 0.0), "no file, no header row");
+        sample.open("src/main.rs");
+        let (shown, height) = header(&mut sample);
+        assert!(shown && height > 0.0, "a file brings the header row");
+    }
 }

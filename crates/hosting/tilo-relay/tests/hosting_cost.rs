@@ -190,7 +190,6 @@ async fn subscribe(
     (endpoint, connection, send, recv)
 }
 
-/// A delta's fields.
 #[derive(Debug, PartialEq, Eq)]
 struct DeltaFields {
     workspace_id: u64,

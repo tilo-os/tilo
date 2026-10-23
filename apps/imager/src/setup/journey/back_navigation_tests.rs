@@ -1,4 +1,3 @@
-//! Back follows visited screens, including decisions that share a page.
 use super::*;
 use crate::resource::ImagerShell;
 use ui::framework::testing::TestApp;

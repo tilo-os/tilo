@@ -1141,7 +1141,6 @@ mod tests {
             claim.exclusion_paths().unwrap(),
             vec![std::path::PathBuf::from("Documents/Private")]
         );
-        // The claim digest stays stable for claims without exclusions.
         let plain: OriginalReadClaim =
             serde_json::from_value(request["command"]["authority"].clone()).unwrap();
         assert!(plain.exclusion_paths().unwrap().is_empty());

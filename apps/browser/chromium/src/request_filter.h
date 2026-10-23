@@ -34,13 +34,13 @@ struct FilterState { std::shared_ptr<Blocker> blocker; bool enabled=true; std::s
 struct SiteDocument { std::string origin;uint64_t generation;std::atomic<uint64_t> blocked{0};SiteDocument(std::string o,uint64_t g):origin(std::move(o)),generation(g) {} };
 class FilterResource final : public CefResourceRequestHandler {
  public:
-  FilterResource(std::shared_ptr<FilterState> state,std::string source,std::function<void()> failure,std::shared_ptr<SiteDocument> document)
-    :state_(std::move(state)),source_(std::move(source)),failure_(std::move(failure)),document_(std::move(document)) {}
+  FilterResource(std::shared_ptr<FilterState> state,std::string source,std::function<void()> failure,bool fail_closed,std::shared_ptr<SiteDocument> document)
+    :state_(std::move(state)),source_(std::move(source)),failure_(std::move(failure)),fail_closed_(fail_closed),document_(std::move(document)) {}
   ReturnValue OnBeforeResourceLoad(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefRequest> request,CefRefPtr<CefCallback>) override {
     const auto url=request->GetURL().ToString();
     if(!WebURL(url)) return RV_CONTINUE;
     auto result=state_->blocker->Match(url,source_,ResourceKind(request->GetResourceType()));
-    if(!result) { failure_();return RV_CONTINUE; }
+    if(!result) { failure_();return fail_closed_?RV_CANCEL:RV_CONTINUE; }
     const auto redirect=result->GetString("redirect").ToString();
     if(document_ && (result->GetBool("blocked") || !redirect.empty())) document_->blocked.fetch_add(1,std::memory_order_relaxed);
     if(!redirect.empty()) {
@@ -72,12 +72,13 @@ class FilterResource final : public CefResourceRequestHandler {
   }
  private:
   std::shared_ptr<SiteDocument> document_;
-  std::shared_ptr<FilterState> state_;std::string source_,mime_,bytes_;std::function<void()> failure_;bool redirected_=false;
+  std::shared_ptr<FilterState> state_;std::string source_,mime_,bytes_;std::function<void()> failure_;bool fail_closed_;bool redirected_=false;
   IMPLEMENT_REFCOUNTING(FilterResource);
 };
 class RequestFilter final : public CefRequestContextHandler {
  public:
-  explicit RequestFilter(std::function<void()> failure):failure_(std::move(failure)) {
+  // A filter that fails closed refuses a request its matcher could not check.
+  RequestFilter(std::function<void()> failure,bool fail_closed):failure_(std::move(failure)),fail_closed_(fail_closed) {
     std::atomic_store(&state_,std::make_shared<FilterState>(FilterState{std::make_shared<Blocker>(""),true}));
   }
   bool Configure(const std::string& rules,bool enabled) {
@@ -106,10 +107,10 @@ class RequestFilter final : public CefRequestContextHandler {
     }
     if(!WebURL(source) && frame) source=frame->GetURL();
     if(!WebURL(source)) source=request->GetURL();
-    return new FilterResource(std::move(state),std::move(source),failure_,std::move(document));
+    return new FilterResource(std::move(state),std::move(source),failure_,fail_closed_,std::move(document));
   }
  private:
-  std::shared_ptr<FilterState> state_;std::function<void()> failure_;
+  std::shared_ptr<FilterState> state_;std::function<void()> failure_;bool fail_closed_;
   std::mutex owners_mutex_;std::map<int,std::shared_ptr<SiteDocument>> owners_;uint64_t generation_=0;
   IMPLEMENT_REFCOUNTING(RequestFilter);
 };

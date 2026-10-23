@@ -592,6 +592,21 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         });
     }
 
+    for device in &eligible {
+        actions.push(DeviceAction {
+            id: format!("window.show-on.{}", device_token(&device.id)),
+            title: t_args(
+                "search-continuity-window-to",
+                &[("device", device.label.as_str().into())],
+            ),
+            subtitle: t("search-continuity-window-to-subtitle"),
+            action: DeviceFabricUiAction::ShowWindowOn {
+                target: device.id.clone(),
+            },
+            confirm: false,
+        });
+    }
+
     for device in eligible.iter().copied().filter(|device| device.display) {
         let token = device_token(&device.id);
         let title_args = [("device", device.label.as_str().into())];

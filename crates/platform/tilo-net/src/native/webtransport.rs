@@ -53,7 +53,6 @@ fn system_trust_client() -> Result<web_transport_quinn::Client, NetError> {
     ))
 }
 
-/// Every session error means the session is over.
 fn session_error(_: web_transport_quinn::SessionError) -> NetError {
     NetError::Closed
 }

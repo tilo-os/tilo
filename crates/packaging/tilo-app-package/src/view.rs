@@ -245,7 +245,6 @@ pub struct Entrypoint {
     /// Path of the entrypoint binary, relative to the payload root. Used
     /// verbatim for `"gui"`/`"cli"`; falls back for `"both"`.
     pub bin: String,
-    /// Which flavour of entrypoint.
     pub r#type: EntrypointType,
     /// GUI-flavour binary path inside the payload. Only meaningful when
     /// `r#type = "both"`.

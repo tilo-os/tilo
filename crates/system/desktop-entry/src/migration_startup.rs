@@ -51,9 +51,6 @@ pub struct RecordBuilder {
 }
 impl RecordBuilder {
     /// Start a bounded policy record for one migration operation.
-    ///
-    /// # Errors
-    /// Returns an error for an invalid operation or failed serialization.
     pub fn new(operation: String) -> io::Result<Self> {
         if !valid_operation(&operation) {
             return Err(invalid("invalid migration startup operation"));
@@ -71,9 +68,6 @@ impl RecordBuilder {
         })
     }
     /// Add an imported identity within the consumer's count and byte limits.
-    ///
-    /// # Errors
-    /// Refuses duplicate paths, oversized entries or records, and serialization errors.
     pub fn push(&mut self, entry: Entry) -> io::Result<()> {
         if self.record.entries.len() >= MAX_ENTRIES {
             return Err(invalid("migration startup entries exceed consumer policy"));
@@ -290,10 +284,6 @@ impl Record {
 
     /// Refuse exactly a recorded imported entry; identity changes fail closed.
     /// Absolute names must lie under the pinned home directory.
-    ///
-    /// # Errors
-    /// Refuses an invalid record or a protected entry whose identity changed or
-    /// disappeared, and propagates filesystem errors while checking it.
     pub fn blocks(&self, root: &File, path: &Path) -> io::Result<bool> {
         self.validate()?;
         let home;

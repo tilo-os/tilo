@@ -14,6 +14,8 @@
 //! Ctrl+C copies it. Selection is glyph-precise horizontally and line-precise
 //! vertically.
 
+use std::sync::Arc;
+
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -28,11 +30,14 @@ use ui::text_selection::{Selection, extend_span_drag, line_boundaries, word_boun
 use ui::theme::Theme;
 use ui::tokens::{Spacing, TextRole};
 use ui::widget::{
-    Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, Image, ImageFit,
-    SmallContentAlign, ViewportState,
+    Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, SmallContentAlign,
+    ViewportState,
 };
 
-use crate::compile::{PageImage, TextRun};
+use crate::compile::TextRun;
+use crate::pages::TypstPages;
+
+mod raster;
 
 /// The preview's geometry, every length a step of the theme's spacing scale.
 #[derive(Clone, Copy, PartialEq)]
@@ -108,11 +113,14 @@ pub struct PreviewPane {
     /// Shared zoom/pan kernel; its rect is the main viewport (pane minus the
     /// thumbnail strip).
     viewport: ViewportState,
-    images: Vec<Image>,
-    /// Intrinsic page sizes in px (width, height) — for thumbnail aspect.
-    sizes_px: Vec<(u32, u32)>,
+    /// The pages' bitmaps, rendered on demand.
+    raster: raster::PageRaster,
     /// Page placement in the content-space stack (page points).
     boxes: Vec<PageBox>,
+    /// Each page's top and bottom in the stack, for finding the pages in
+    /// view by bisection.
+    tops: Vec<f64>,
+    bottoms: Vec<f64>,
     /// Content-space dimensions of the whole page stack (page points).
     content_w: f64,
     content_h: f64,
@@ -162,9 +170,10 @@ impl Default for PreviewPane {
                 .with_padding(Metrics::of(&Spacing::default()).view_pad)
                 .with_zoom_bounds(0.1, 8.0)
                 .with_alignment(SmallContentAlign::Center, SmallContentAlign::Start),
-            images: Vec::new(),
-            sizes_px: Vec::new(),
+            raster: raster::PageRaster::default(),
             boxes: Vec::new(),
+            tops: Vec::new(),
+            bottoms: Vec::new(),
             content_w: 0.0,
             content_h: 0.0,
             cells: Vec::new(),
@@ -216,20 +225,16 @@ impl PreviewPane {
         self.recompute_current();
     }
 
-    /// Install freshly compiled pages together with their extracted text layer.
-    /// `page_text` is parallel to `pages` (empty when the compile failed).
-    pub fn set_pages_with_text(&mut self, pages: &[PageImage], page_text: &[Vec<TextRun>]) {
+    /// Show a fresh compile of the document together with its extracted text
+    /// layer, one entry per page. Its pages render as they come into view.
+    pub fn set_document(&mut self, document: Arc<TypstPages>, page_text: &[Vec<TextRun>]) {
         // A reader at the top of the document stays there as the pages change
         // under them; one who scrolled keeps their place.
-        let at_top = self.images.is_empty() || self.viewport.scroll_y() <= 0.5;
-        self.images = pages
-            .iter()
-            .map(|p| Image::from_rgba(p.rgba.clone(), p.width, p.height).with_fit(ImageFit::Fill))
-            .collect();
-        self.sizes_px = pages.iter().map(|p| (p.width, p.height)).collect();
+        let at_top = self.page_pt.is_empty() || self.viewport.scroll_y() <= 0.5;
         self.empty = Empty::NoPages;
-        self.page_pt = pages.iter().map(|p| (p.width_pt, p.height_pt)).collect();
+        self.page_pt = document.sizes().to_vec();
         self.page_text = page_text.to_vec();
+        self.raster.show(document);
 
         // Fresh pages supersede any stale render.
         self.stale = false;
@@ -276,6 +281,8 @@ impl PreviewPane {
             y += h_pt + gap;
         }
         let content_h = (y - gap).max(0.0);
+        self.tops = boxes.iter().map(|b| b.top).collect();
+        self.bottoms = boxes.iter().map(|b| b.top + b.h_pt).collect();
         self.boxes = boxes;
         self.content_w = content_w;
         self.content_h = content_h;
@@ -322,8 +329,7 @@ impl PreviewPane {
     /// person writes something there is nothing to preview, and a page-sized
     /// white rectangle says nothing but glares.
     pub fn set_blank(&mut self) {
-        self.images.clear();
-        self.sizes_px.clear();
+        self.raster.clear();
         self.page_pt.clear();
         self.page_text.clear();
         self.stale = false;
@@ -334,7 +340,7 @@ impl PreviewPane {
 
     /// Whether it shows nothing because the source is empty.
     pub fn is_blank(&self) -> bool {
-        self.images.is_empty() && self.empty == Empty::Blank
+        self.page_pt.is_empty() && self.empty == Empty::Blank
     }
 
     /// Whether the pages follow the pane's width (the zoom it opens at and
@@ -346,7 +352,7 @@ impl PreviewPane {
     /// Say why there are no pages: the first compile failed rather than is
     /// still running. Ignored while pages are showing.
     pub fn set_failed(&mut self) {
-        if self.images.is_empty() {
+        if self.page_pt.is_empty() {
             self.empty = Empty::Failed;
         }
     }
@@ -364,7 +370,25 @@ impl PreviewPane {
     }
 
     pub fn page_count(&self) -> usize {
-        self.images.len()
+        self.page_pt.len()
+    }
+
+    /// Take in the pages the renderer finished. Returns whether any did, so
+    /// the window repaints them.
+    pub fn take_renders(&mut self) -> bool {
+        self.raster.pump()
+    }
+
+    /// Whether a page or thumbnail on screen is still waiting for its
+    /// sharp bitmap.
+    pub fn has_pending_renders(&self) -> bool {
+        self.raster.pending_visuals
+    }
+
+    /// Whether the renderer runs on the UI thread (no thread could start)
+    /// and has work queued, so the window must keep producing frames.
+    pub fn wants_frames(&self) -> bool {
+        self.raster.wants_frames()
     }
 
     pub fn current_page(&self) -> usize {
@@ -401,7 +425,7 @@ impl PreviewPane {
     }
 
     fn has_thumbs(&self) -> bool {
-        self.images.len() > 1
+        self.page_pt.len() > 1
     }
 
     /// The main (non-thumbnail) viewport rect: beside the thumbnail strip and
@@ -412,7 +436,7 @@ impl PreviewPane {
         } else {
             self.rect.x0
         };
-        let y0 = if self.stale && !self.images.is_empty() {
+        let y0 = if self.stale && !self.page_pt.is_empty() {
             (self.rect.y0 + self.banner_h).min(self.rect.y1)
         } else {
             self.rect.y0
@@ -437,9 +461,9 @@ impl PreviewPane {
         let tw = self.metrics.thumb_w;
         let x0 = self.rect.x0 + gap;
         let mut y = self.rect.y0 + gap;
-        let mut slots = Vec::with_capacity(self.sizes_px.len());
-        for &(pw, ph) in &self.sizes_px {
-            let th = tw * f64::from(ph.max(1)) / f64::from(pw.max(1));
+        let mut slots = Vec::with_capacity(self.page_pt.len());
+        for &(pw, ph) in &self.page_pt {
+            let th = tw * ph.max(1.0) / pw.max(1.0);
             let image = Rect::new(x0, y, x0 + tw, y + th);
             let label = Rect::new(x0, y + th, x0 + tw, y + th + line);
             slots.push((image, label));
@@ -510,7 +534,7 @@ impl PreviewPane {
         };
         let target_y = b.top * self.viewport.zoom();
         self.viewport.set_scroll(self.viewport.scroll_x(), target_y);
-        self.current = i.min(self.images.len().saturating_sub(1));
+        self.current = i.min(self.page_pt.len().saturating_sub(1));
     }
 
     /// Handle a left-press. Returns `true` when the app should route subsequent
@@ -861,6 +885,73 @@ impl PreviewPane {
         self.selection = Selection { anchor, cursor };
     }
 
+    #[cfg(test)]
+    pub(crate) fn bitmap_bytes(&self) -> usize {
+        self.raster.images.bytes() + self.raster.tiles.bytes()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pages_on_screen(&self) -> Vec<usize> {
+        let main = self.viewport.rect();
+        self.pages_between(main.y0, main.y1)
+            .filter(|i| {
+                self.page_rect(*i)
+                    .is_some_and(|r| r.y1 >= main.y0 && r.y0 <= main.y1)
+            })
+            .collect()
+    }
+
+    /// Pages on screen drawn with no pixels at all (paper only).
+    #[cfg(test)]
+    pub(crate) fn blank_pages_on_screen(&self) -> usize {
+        self.pages_on_screen()
+            .iter()
+            .filter(|i| !self.raster.images.keys().any(|(page, _)| page == *i))
+            .count()
+    }
+
+    /// The number of the chapter whose heading is on page `page`.
+    #[cfg(test)]
+    pub(crate) fn chapter_on(&self, page: usize) -> Option<usize> {
+        let words: String = self
+            .page_text
+            .get(page)?
+            .iter()
+            .flat_map(|run| run.cells.iter().map(|cell| cell.text.as_str()))
+            .collect();
+        let after = words.split("Chapter").nth(1)?;
+        let digits: String = after
+            .trim_start()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse().ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scroll_y(&self) -> f64 {
+        self.viewport.scroll_y()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pages_rendered(&self) -> u64 {
+        self.raster.rendered()
+    }
+
+    /// The pages delivered since the document shown now was set, in order.
+    #[cfg(test)]
+    pub(crate) fn delivered_pages(&self) -> Vec<usize> {
+        let generation = self.raster.delivered.last().map(|(g, _)| *g);
+        self.raster
+            .delivered
+            .iter()
+            .filter(|(g, key)| {
+                Some(*g) == generation && key.1 > tilo_page_raster::tiles::THUMB_MAX_PX
+            })
+            .map(|(_, key)| key.0)
+            .collect()
+    }
+
     /// Paint the preview on the ground of `theme`, which is the region the
     /// pane sits in: the pane fills nothing of its own.
     pub fn draw(
@@ -870,7 +961,7 @@ impl PreviewPane {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if self.images.is_empty() {
+        if self.page_pt.is_empty() {
             self.draw_empty(scene, transform, tr, theme);
             return;
         }
@@ -891,9 +982,15 @@ impl PreviewPane {
             self.refit();
         }
 
-        self.draw_main(scene, transform, tr, theme);
+        let slots = if self.has_thumbs() {
+            self.thumb_slots(self.thumb_label_h)
+        } else {
+            Vec::new()
+        };
+        let frame = self.plan_frame(&slots);
+        self.draw_main(scene, transform, tr, theme, &frame);
         if self.has_thumbs() {
-            self.draw_thumbs(scene, transform, tr, theme);
+            self.draw_thumbs(scene, transform, tr, theme, &slots, &frame);
         }
         if self.stale {
             self.draw_stale_banner(scene, transform, tr, theme);
@@ -927,30 +1024,25 @@ impl PreviewPane {
     }
 
     fn draw_main(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        frame: &raster::FramePages,
     ) {
         let c = &theme.tokens.colors;
         let main = self.viewport.rect();
-        let page_count = self.images.len();
+        let page_count = self.page_pt.len();
         let caption = theme.text(TextRole::Caption).numeric();
         let caption_gap = f64::from(theme.tokens.spacing.s2);
         let page_radius = f64::from(theme.tokens.radii.detail);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &main);
 
-        for (i, (b, image)) in self.boxes.iter().zip(self.images.iter_mut()).enumerate() {
-            let tl = self
-                .viewport
-                .content_point_to_screen(Point::new(b.x_off, b.top));
-            let br = self
-                .viewport
-                .content_point_to_screen(Point::new(b.x_off + b.w_pt, b.top + b.h_pt));
-            let page_rect = Rect::new(tl.x, tl.y, br.x, br.y);
-
-            // Cull pages outside the viewport.
+        for i in self.pages_between(main.y0, main.y1) {
+            let Some(page_rect) = self.page_rect(i) else {
+                continue;
+            };
             if page_rect.y1 < main.y0 || page_rect.y0 > main.y1 {
                 continue;
             }
@@ -963,7 +1055,13 @@ impl PreviewPane {
                 page_radius,
                 &theme.tokens.elevation.floating,
             );
-            image.paint_at(scene, transform, page_rect);
+            tilo_page_raster::paint_page(
+                scene,
+                transform,
+                page_rect,
+                frame.pages.get(&i),
+                frame.tiles.get(&i),
+            );
             ui::paint::stroke_rect(
                 scene,
                 transform,
@@ -1036,11 +1134,13 @@ impl PreviewPane {
     }
 
     fn draw_thumbs(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        slots: &[(Rect, Rect)],
+        frame: &raster::FramePages,
     ) {
         let c = &theme.tokens.colors;
         let strip = self.thumb_strip();
@@ -1058,8 +1158,10 @@ impl PreviewPane {
         let gap = self.metrics.thumb_gap;
         let current = self.current;
         let item_radius = f64::from(theme.tokens.radii.item);
-        let slots = self.thumb_slots(self.thumb_label_h);
         for (i, (image, label_rect)) in slots.iter().enumerate() {
+            if image.y0 > strip.y1 {
+                break;
+            }
             // The page the preview is on is the lifted one.
             if i == current {
                 let lift = c.lift_on(c.surfaces.content, 1.0);
@@ -1068,9 +1170,7 @@ impl PreviewPane {
                 let plate = image.union(*label_rect).inset(gap / 2.0);
                 ui::paint::fill_round(scene, transform, plate, item_radius, lift);
             }
-            if let Some(thumb) = self.images.get_mut(i) {
-                thumb.paint_at(scene, transform, *image);
-            }
+            tilo_page_raster::paint_page(scene, transform, *image, frame.thumbs.get(&i), None);
             ui::paint::stroke_rect(
                 scene,
                 transform,
@@ -1151,19 +1251,11 @@ fn wheel_px(delta: &MouseScrollDelta, scale_factor: f64) -> (f64, f64) {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
-    use crate::compile::{PageImage, TextCell, TextRun};
-    use std::sync::Arc;
+    use crate::compile::{TextCell, TextRun};
     use winit::keyboard::ModifiersState;
 
-    fn page(w_pt: f64, h_pt: f64) -> PageImage {
-        let (pw, ph) = (w_pt.max(1.0) as u32, h_pt.max(1.0) as u32);
-        PageImage {
-            rgba: Arc::from(vec![255u8; (pw * ph * 4) as usize]),
-            width: pw,
-            height: ph,
-            width_pt: w_pt,
-            height_pt: h_pt,
-        }
+    fn pages(sizes: &[(f64, f64)]) -> Arc<TypstPages> {
+        Arc::new(TypstPages::blank(sizes))
     }
 
     /// One page-point-space line of `chars` starting at `x0`, each cell `cw`
@@ -1190,9 +1282,8 @@ mod tests {
     fn pane() -> PreviewPane {
         let mut p = PreviewPane::new();
         p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-        let pages = vec![page(200.0, 800.0)];
         let runs = vec![line_run(40.0, "Hello world", 20.0, 8.0)];
-        p.set_pages_with_text(&pages, &[runs]);
+        p.set_document(pages(&[(200.0, 800.0)]), &[runs]);
         p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
         p
     }
@@ -1223,8 +1314,10 @@ mod tests {
         {
             let mut p = PreviewPane::new();
             p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-            let pages = vec![page(200.0, 260.0), page(200.0, 260.0), page(200.0, 260.0)];
-            p.set_pages_with_text(&pages, &[vec![], vec![], vec![]]);
+            p.set_document(
+                pages(&[(200.0, 260.0), (200.0, 260.0), (200.0, 260.0)]),
+                &[vec![], vec![], vec![]],
+            );
             p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
             assert!(p.has_thumbs());
             p.scroll_to_page(2);
@@ -1272,12 +1365,11 @@ mod tests {
         {
             let mut p = PreviewPane::new();
             p.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-            let pages = vec![page(200.0, 400.0)];
             let runs = vec![
                 line_run(40.0, "ab", 20.0, 8.0),
                 line_run(80.0, "cd", 20.0, 8.0),
             ];
-            p.set_pages_with_text(&pages, &[runs]);
+            p.set_document(pages(&[(200.0, 400.0)]), &[runs]);
             p.select_all();
             assert_eq!(
                 p.selected_text().as_deref(),

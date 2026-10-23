@@ -164,6 +164,11 @@ fn watch(wake: &crate::session_runtime::Wake) {
                 queue.push(notice);
                 queued = true;
             }
+            // Room to write came back: a certificate renewal that could
+            // not write tries again.
+            if *before == Level::Full && after != Level::Full {
+                tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
+            }
             *before = after;
         }
         if queued {

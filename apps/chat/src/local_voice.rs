@@ -37,7 +37,6 @@ pub(crate) struct CallVideo {
     pub(crate) wanted: Vec<Shown>,
     /// What the service was last told.
     told: Vec<Shown>,
-    /// The `Show` in flight.
     showing: Option<u64>,
     /// The collection in flight, and when it was sent.
     collecting: Option<(u64, Instant)>,
@@ -459,6 +458,16 @@ impl LocalVoice {
         self.unmute_requested = false;
     }
 
+    /// Whether this device is already in, or on its way into, the call of
+    /// `channel`: joining it again would only start over.
+    pub(crate) fn in_call_of(&self, channel: &str) -> bool {
+        self.channel.as_deref() == Some(channel)
+            && matches!(
+                self.snapshot.state,
+                State::Preparing | State::Joining | State::Live | State::Reconnecting
+            )
+    }
+
     /// Whether the call of the current channel ended for a reason the card
     /// shows, rather than because the person left.
     pub(crate) fn ended_for_a_reason(&self) -> bool {
@@ -525,6 +534,12 @@ impl crate::app::ChatApp {
         if !self.call_allows(action) {
             return Err("Call action is not permitted".into());
         }
+        // Asking for the call this device is already in shows it; it does
+        // not leave and join again.
+        if matches!(command, Command::Join { .. }) && self.native_voice.in_call_of(channel) {
+            self.project_native_voice();
+            return Ok(());
+        }
         if !matches!(
             &command,
             Command::Join { .. } | Command::Status | Command::Watch { .. }
@@ -539,6 +554,14 @@ impl crate::app::ChatApp {
         self.native_voice.submit(command)?;
         self.project_native_voice();
         Ok(())
+    }
+
+    /// The call's microphone is muted because this device has none (or it
+    /// went away): the mute control says so instead of offering to unmute.
+    pub(crate) fn microphone_missing(&self) -> bool {
+        self.call.active
+            && self.call.muted
+            && self.native_voice.snapshot.issue == Some(ui::native_media::Issue::SourceLost)
     }
 
     pub(crate) fn project_native_voice(&mut self) {
@@ -904,15 +927,12 @@ mod tests {
                 )
             })
         };
-        // The page stood still for half a minute past the watch's deadline.
         let woken = now + WATCH_LOST + Duration::from_secs(30);
         assert!(!leaves(&voice.take_requests(woken)), "the call stays");
         assert_eq!(voice.snapshot.state, State::Live);
         assert_eq!(voice.channel.as_deref(), Some("voice"));
-        // The answer that waited meanwhile is taken as any other.
         assert!(!voice.complete(request_id(&watch[0]), &Ok(live())));
         assert_eq!(voice.snapshot.state, State::Live);
-        // Running again, a watch that stays unanswered is still given up.
         let next = voice.take_requests(woken);
         assert_eq!(next.len(), 1);
         let lost = woken + WATCH_LOST;
@@ -1631,7 +1651,6 @@ mod tests {
                 },
             ]
         );
-        // A window nobody sees asks for nothing.
         app.presented = false;
         assert!(app.wanted_pictures().is_empty());
     }
@@ -1690,7 +1709,6 @@ mod tests {
                 .any(|request| command(request) == Command::Pictures { after: 5 }),
             "the next collection continues where the last ended"
         );
-        // Out of the call, nothing is collected.
         voice.submit(Command::Leave).unwrap();
         assert!(
             voice

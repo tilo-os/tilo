@@ -163,9 +163,14 @@ impl ResourceApp for SettingsShell {
     /// Every section of the person's settings Settings edits: each is a
     /// record of the person's own, published with its field edits, so the
     /// palette, agents and assistive technology change it by path. The
-    /// session keeps the system's own ([`settings_sections::declare`]) too.
+    /// session keeps and publishes the system's own
+    /// ([`settings_sections::declare`]); the panes' controls change them
+    /// through its actions.
     fn records(records: &mut ui::framework::Records<'_>) {
-        settings_sections::declare(records);
+        records.kept_by(
+            tilo_actions::remote::settings_records::PROVIDER,
+            settings_sections::declare,
+        );
         for section in &crate::area::registry().sections {
             (section.record)(records);
         }

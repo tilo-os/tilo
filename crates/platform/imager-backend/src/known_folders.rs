@@ -223,16 +223,13 @@ mod tests {
 
     use super::{KnownFolderKind, parse_lookup_path, xdg_entry_is_configured};
 
-    /// Known folder lookup output parsing.
     #[test]
     fn known_folder_lookup_preserves_paths_and_requires_explicit_config() {
-        // Phase `empty_lookup_output_is_unavailable`.
         {
             assert_eq!(parse_lookup_path(b"\n").unwrap(), None);
             assert_eq!(parse_lookup_path(b"\r\n").unwrap(), None);
         }
 
-        // Phase `redirected_lookup_path_is_preserved`.
         {
             assert_eq!(
                 parse_lookup_path(b"D:\\Redirected\\Documents\r\n").unwrap(),
@@ -240,7 +237,6 @@ mod tests {
             );
         }
 
-        // Phase `lookup_path_preserves_meaningful_whitespace`.
         {
             assert_eq!(
                 parse_lookup_path(b"/home/ada/My Documents  \n").unwrap(),
@@ -248,7 +244,6 @@ mod tests {
             );
         }
 
-        // Phase `xdg_lookup_requires_an_explicit_matching_configuration_entry`.
         {
             let configured = r#"
     # This file is written by xdg-user-dirs-update

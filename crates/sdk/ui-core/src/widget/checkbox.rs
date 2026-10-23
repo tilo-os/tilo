@@ -14,7 +14,7 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 /// tap area stays 32/48 px while the mark sits with 16 px icons and body
 /// text. Fixed rather than read from the scaled spacing tokens because
 /// the target it sits in does not follow `ui_scale` either.
-const BOX_EDGE: f64 = 18.0;
+pub(crate) const BOX_EDGE: f64 = 18.0;
 /// Space between the target's trailing edge and the label; shared by
 /// `measure` and `draw` so the label lands where it was measured. 10 px is
 /// deliberately between `s2` and `s3`: the 24 px box already leaves 4 px of
@@ -725,7 +725,6 @@ mod tests {
             OffscreenRenderer::new(40, 40).render(&scene, theme.tokens.colors.surfaces.content)
         };
         let (rest, disabled) = (render(false), render(true));
-        // The outermost pixel column of the box is its edge.
         let rest_edge = OffscreenRenderer::sample(&rest, 40, 8, 20);
         let disabled_edge = OffscreenRenderer::sample(&disabled, 40, 8, 20);
         let ground = OffscreenRenderer::sample(&rest, 40, 2, 20);
@@ -933,7 +932,6 @@ mod tests {
                 &root
             ));
             assert!(c.control.is_checked, "ToggleCheck flips to checked");
-            // Activate also toggles.
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::Activate,

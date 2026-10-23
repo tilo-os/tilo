@@ -518,6 +518,7 @@ impl TileSource for Apps {
                     .with_height(600.0)
                     .with_child(Box::new(ui::widget::Spacer::fixed(5000.0))),
             ),
+            "Greedy" => Box::new(TakesEveryWheel::default()),
             caret if caret.starts_with("Caret") => Box::new(CaretProbe::new(caret)),
             _ => {
                 return TileHost::new(ui::widget::TileContent::Notice {
@@ -527,6 +528,56 @@ impl TileSource for Apps {
             }
         };
         TileHost::new(ui::widget::TileContent::App(Box::new(Hosted(content))))
+    }
+}
+
+/// An app that takes every wheel it is handed, wherever the pointer is, as
+/// a chat's message list follows any wheel that reaches it.
+#[derive(Default)]
+struct TakesEveryWheel {
+    rect: ui::kurbo::Rect,
+}
+
+impl ui::widget::Widget for TakesEveryWheel {
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        taffy
+            .new_leaf(ui::taffy::Style {
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        if matches!(event, ui::winit::event::WindowEvent::MouseWheel { .. }) {
+            *ctx.handled = true;
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "TakesEveryWheel"
+    }
+
+    fn get_rect(&self) -> ui::kurbo::Rect {
+        self.rect
     }
 }
 
@@ -1181,25 +1232,8 @@ fn history_moves_the_windows_own_navigation_stack() {
 }
 
 #[test]
-fn the_tasks_view_opens_over_the_workspace_and_the_others_say_why_not() {
+fn an_activity_view_without_its_history_says_why_not() {
     let (mut driver, handle, _) = mount_apps(&["A"]);
-    let mut tree = handle.read(Clone::clone);
-    tree.workspaces[0]
-        .tasks
-        .push(tilo_desktop_model::WorkspaceTask {
-            id: "t1".into(),
-            title: "Review the draft".into(),
-            created_by: "tester".into(),
-            assigned_agent: None,
-            route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
-            status: tilo_desktop_model::WorkspaceTaskStatus::InProgress,
-            resource: None,
-            subject: None,
-            created_at: 1,
-            updated_at: 2,
-            audit: vec![],
-        });
-    handle.replace_tree(tree);
     driver.relayout();
     let workspace = handle.snapshot("g", vec![]).active_workspace;
 
@@ -1215,40 +1249,16 @@ fn the_tasks_view_opens_over_the_workspace_and_the_others_say_why_not() {
         );
         assert!(refused.unwrap_err().starts_with(reason), "{view}");
     }
-
-    let saved = handle.revision();
-    try_dispatch(
-        &mut driver,
-        &handle,
-        serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":workspace,"view":"tasks"}),
-    )
-    .unwrap();
-    let json = serde_json::to_value(handle.snapshot("g", vec![])).unwrap();
-    assert_eq!(json["workspaceActivity"]["view"], "tasks");
-    assert_eq!(json["workspaceActivity"]["workspace"], workspace);
-    assert_eq!(
-        json["workspaceActivity"]["tasks"][0]["title"],
-        "Review the draft"
+    // Tasks are an app, not a view of the workspace's activity.
+    assert!(
+        serde_json::from_value::<Command>(serde_json::json!({
+            "kind": "workspace-activity",
+            "generation": "g",
+            "workspace": workspace,
+            "view": "tasks",
+        }))
+        .is_err()
     );
-    assert_eq!(
-        json["workspaceActivity"]["tasks"][0]["statusLabel"],
-        "In progress"
-    );
-    assert_eq!(
-        handle.revision(),
-        saved,
-        "opening a view is not a tree change"
-    );
-
-    try_dispatch(
-        &mut driver,
-        &handle,
-        serde_json::json!({"kind":"close-workspace-activity","generation":"g","workspace":workspace}),
-    )
-    .unwrap();
-    let json = serde_json::to_value(handle.snapshot("g", vec![])).unwrap();
-    assert!(json["workspaceActivity"].is_null());
-    assert_eq!(json["workspaceActivityCloseReason"], "dismissed");
 }
 
 #[test]
@@ -1801,8 +1811,6 @@ fn published_selection_prefers_keyboard_focus_inside_the_window() {
     assert_eq!(published_selection(None, &[]), None);
 }
 
-/// A window's new-tab control asks which application to open, as the
-/// native shell's does, and the one chosen opens as a tab of that window.
 #[test]
 fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     // Mounted as its own type, so the test can find the control to press.
@@ -2210,5 +2218,47 @@ fn search_fits_a_phone_screen() {
     assert!(
         ((x + width / 2.0) - 195.0).abs() < 1.0,
         "and is centred: {x}, {width}"
+    );
+}
+
+/// A wheel goes to the window under the pointer: a window beside it whose
+/// app takes any wheel it is handed does not get it first, so the scroll
+/// view under the pointer scrolls. The browser desktop sends the wheel as
+/// it does, coalesced into its next frame.
+#[test]
+fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
+    let (mut driver, handle, _) = mount_apps(&["Greedy", "Long"]);
+    settle(&mut driver);
+    driver.set_coalesce_input_frames(true);
+    let tab = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[1].active_tab);
+    let rect = handle
+        .shown_tabs()
+        .iter()
+        .find(|(id, _)| *id == tab)
+        .map(|(_, rect)| *rect)
+        .expect("the scrolling window is shown");
+    let at = rect.center();
+    driver.send(&ui::winit::event::WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: (at.x, at.y).into(),
+    });
+    relayout(&mut driver);
+    let top = |driver: &ui::headless::FrameHarness| {
+        find(&driver.inspection().root, "Scrollable")
+            .map(|node| node.children[0].rect[1])
+            .expect("the scroll view")
+    };
+    let before = top(&driver);
+    for _ in 0..4 {
+        on_clock(EVENT, || {
+            driver.send_host_event(&pixel_wheel(0.0, -120.0));
+            driver.poll_frame().unwrap();
+        });
+    }
+    settle(&mut driver);
+    let after = top(&driver);
+    assert!(
+        after < before - 1.0,
+        "the page under the pointer moved up: its top {before} -> {after}"
     );
 }

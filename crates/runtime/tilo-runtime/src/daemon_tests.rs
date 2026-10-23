@@ -319,7 +319,6 @@ impl StartingProcess for Paced {
                     .is_ok_and(|stages| stages.lines().count() == named)
             });
             if named == self.total {
-                // Blocked for good, as a stalled start is.
                 #[cfg(target_os = "linux")]
                 {
                     let comm = format!("/proc/{}/comm", self.start.child.id());
@@ -376,9 +375,7 @@ fn named_startup_steps_are_progress_and_a_stall_names_the_last_one() {
     assert!(message.contains("wrote nothing"), "{message}");
     #[cfg(target_os = "linux")]
     {
-        // What the stalled process was blocked on.
         assert!(message.contains("threads: sleep S"), "{message}");
-        // The stalled child was killed and reaped.
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     }
     // Only Linux exposes a process tree's CPU time and thread states; elsewhere

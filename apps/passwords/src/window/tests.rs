@@ -581,6 +581,50 @@ fn the_editor_names_each_kind_in_full() {
     assert!(tree.contains("Secure note"), "{tree}");
 }
 
+fn save_button(harness: &ui::headless::FrameHarness) -> vello::kurbo::Rect {
+    harness
+        .targets()
+        .into_iter()
+        .find(|(id, _)| id.contains("passwords.save"))
+        .map(|(_, rect)| rect)
+        .expect("the editor has a Save button")
+}
+
+/// The editor is taller than a laptop window: the wheel scrolls it until
+/// its Save button is in view.
+#[test]
+fn the_wheel_scrolls_the_editor_to_its_save_button() {
+    let _settled = ui::motion::testing::settled();
+    for width in [960.0, 460.0] {
+        let mut framed = ui::headless::Framed::new(
+            ui::State::new(),
+            PasswordsSurface::demo(),
+            ui::headless::viewport((width, 560.0)),
+            ui::Theme::dark(),
+        );
+        framed.requests.borrow_mut().push(Request::NewItem);
+        framed.settle();
+        let harness = ui::headless::Framed::harness_mut(&mut framed);
+        harness.relayout();
+        harness.relayout();
+        let save = save_button(harness);
+        assert!(
+            save.y1 > 560.0,
+            "at {width} the Save button starts below the window: {save:?}"
+        );
+        harness.click_at(width - 60.0, 90.0);
+        for _ in 0..10 {
+            harness.scroll(0.0, -3.0);
+            harness.relayout();
+        }
+        let after = save_button(harness);
+        assert!(
+            after.y1 <= 560.0,
+            "at {width} the wheel brought Save into view: {after:?}"
+        );
+    }
+}
+
 /// A bare host is the https site it names, a corrected field drops its
 /// complaint at once, and a saved item is kept, with nothing left writing.
 #[test]

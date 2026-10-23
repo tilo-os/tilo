@@ -719,7 +719,7 @@ impl RasterBackend {
     /// The width bucket `render` snaps `target_w` to. Exposed so the reader
     /// keys the worker's results with the exact bucket `render` uses.
     pub(crate) fn bucket_for(target_w: u32) -> u32 {
-        ((target_w / 24).max(1) * 24).clamp(96, 4096)
+        tilo_page_raster::bucket_for(target_w)
     }
 
     fn touch_cache(&mut self, key: RasterKey) {
@@ -852,7 +852,11 @@ impl RasterBackend {
         let region = crate::tiles::tile_region(size, level, col, row)?;
         let extra = tilo_pdf::Rotation::from_degrees(rotation).unwrap_or_default();
         let source = self.sources.get(slot.source)?;
-        let tile = tilo_pdf::Tile { col, row, region };
+        let tile = tilo_pdf::Tile {
+            col,
+            row,
+            region: crate::tiles::engine_rect(region),
+        };
         let t = ui::time::now();
         let bitmap = source
             .doc
@@ -1334,6 +1338,18 @@ pub struct TileRequest {
     pub row: u32,
 }
 
+impl TileRequest {
+    /// The tile this asks for, as the reader holds it.
+    pub fn key(&self) -> crate::tiles::TileKey {
+        crate::tiles::TileKey {
+            page: self.page,
+            level: self.level,
+            col: self.col,
+            row: self.row,
+        }
+    }
+}
+
 /// The tiles a viewer wants now, most important first. A batch *replaces*
 /// the viewer's queued tiles: after a scroll or zoom, tiles that left the
 /// viewport are never rendered ahead of the ones that entered it.
@@ -1358,6 +1374,17 @@ pub struct RenderBatch {
 pub struct TextRequest {
     pub document_id: u64,
     pub page: usize,
+}
+
+/// The text layers a viewer would like ready before anyone reaches for
+/// them (the page under the pointer, the pages a selection spans), most
+/// important first. Like a [`RenderBatch`] it replaces the viewer's
+/// previous one, and it is served after every page render, tile and asked
+/// text, so reading ahead never delays pixels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextBatch {
+    pub document_id: u64,
+    pub pages: Vec<usize>,
 }
 
 /// A request for one page's link areas.
@@ -1499,6 +1526,10 @@ pub enum RasterCommand {
     /// One tile taken off a batch by the worker.
     Tile(TileRequest),
     Text(TextRequest),
+    /// Replace the session's queued read-ahead text layers with this batch.
+    Texts(TextBatch),
+    /// One read-ahead text layer taken off a batch by the worker.
+    ViewText(TextRequest),
     Links(LinksRequest),
     Reconcile(ReconcileRequest),
     Save(SaveRequest),
@@ -1704,9 +1735,11 @@ struct QueueState {
     open_order: VecDeque<u64>,
     controls: VecDeque<QueuedCommand>,
     renders: VecDeque<QueuedCommand>,
-    view_renders: SessionBatches<RenderRequest>,
-    tiles: SessionBatches<TileRequest>,
+    view_renders: tilo_page_raster::queue::BatchQueue<RenderRequest>,
+    tiles: tilo_page_raster::queue::BatchQueue<TileRequest>,
     texts: VecDeque<QueuedCommand>,
+    /// Each session's current read-ahead text batch.
+    view_texts: tilo_page_raster::queue::BatchQueue<TextRequest>,
     reconciles: HashMap<u64, ReconcileRequest>,
     reconcile_order: VecDeque<u64>,
     saves: HashMap<u64, SaveRequest>,
@@ -1907,6 +1940,17 @@ impl RasterHandle {
         self.enqueue(RasterCommand::Text(request))
     }
 
+    /// Replace this viewer's read-ahead text layers with `batch`, most
+    /// important first; an empty batch cancels them. Served after all
+    /// other page work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker has stopped or is unavailable.
+    pub fn request_texts(&self, batch: TextBatch) -> Result<(), RasterSubmitError> {
+        self.enqueue(RasterCommand::Texts(batch))
+    }
+
     /// Queue reading one page's link areas, coalescing duplicate pages. Link
     /// reads share the bounded page-work queue with text extraction.
     pub fn request_links(&self, request: LinksRequest) -> Result<(), RasterSubmitError> {
@@ -2040,6 +2084,7 @@ impl RasterHandle {
             && state.view_renders.is_empty()
             && state.tiles.is_empty()
             && state.texts.is_empty()
+            && state.view_texts.is_empty()
             && state.open_events.is_empty()
             && state.events.is_empty())
     }
@@ -2173,6 +2218,27 @@ impl RasterHandle {
                 state
                     .tiles
                     .push(self.session.id, request, crate::tiles::MAX_TILE_BATCH);
+            }
+            RasterCommand::Texts(batch) => {
+                let mut seen = HashSet::new();
+                let texts: VecDeque<TextRequest> = batch
+                    .pages
+                    .into_iter()
+                    .filter(|page| seen.insert(*page))
+                    .map(|page| TextRequest {
+                        document_id: batch.document_id,
+                        page,
+                    })
+                    .take(MAX_PENDING_PAGE_REQUESTS)
+                    .collect();
+                state.view_texts.replace(self.session.id, texts);
+            }
+            // A single read-ahead text is only ever taken off a batch by the
+            // worker.
+            RasterCommand::ViewText(request) => {
+                state
+                    .view_texts
+                    .push(self.session.id, request, MAX_PENDING_PAGE_REQUESTS);
             }
             RasterCommand::Text(request) => {
                 if !state.texts.iter().any(|queued| {
@@ -2381,87 +2447,26 @@ fn next_page_work(state: &mut QueueState) -> Option<QueuedCommand> {
             .or_else(|| pop_view_render(state))
             .or_else(|| pop_tile(state))
             .or_else(|| state.texts.pop_front())
-    };
+    }
+    // Reading ahead waits for every pixel and every text someone asked for.
+    .or_else(|| {
+        state
+            .view_texts
+            .pop()
+            .map(|(session_id, request)| QueuedCommand {
+                session_id,
+                command: RasterCommand::ViewText(request),
+            })
+    });
     if command.is_some() {
         state.prefer_text = !state.prefer_text;
     }
     command
 }
 
-/// Each session's current batch of one kind of page work, most important
-/// first, and the round-robin order sessions are served in, so one window's
-/// batch cannot starve another's.
-struct SessionBatches<T> {
-    queues: HashMap<u64, VecDeque<T>>,
-    order: VecDeque<u64>,
-}
-
-impl<T> Default for SessionBatches<T> {
-    fn default() -> Self {
-        Self {
-            queues: HashMap::new(),
-            order: VecDeque::new(),
-        }
-    }
-}
-
-impl<T: PartialEq> SessionBatches<T> {
-    /// Replace `session`'s batch; an empty one cancels it.
-    fn replace(&mut self, session: u64, items: VecDeque<T>) {
-        if items.is_empty() {
-            self.drop_session(session);
-            return;
-        }
-        if !self.queues.contains_key(&session) {
-            self.order.push_back(session);
-        }
-        self.queues.insert(session, items);
-    }
-
-    /// Queue one item behind `session`'s batch, unless it is already there
-    /// or the batch holds `cap`.
-    fn push(&mut self, session: u64, item: T, cap: usize) {
-        if !self.queues.contains_key(&session) {
-            self.order.push_back(session);
-        }
-        let queue = self.queues.entry(session).or_default();
-        if !queue.contains(&item) && queue.len() < cap {
-            queue.push_back(item);
-        }
-    }
-
-    fn drop_session(&mut self, session: u64) {
-        self.queues.remove(&session);
-        self.order.retain(|queued| *queued != session);
-    }
-
-    fn is_empty(&self) -> bool {
-        self.order.is_empty()
-    }
-
-    /// The next item, from the next session in turn.
-    fn pop(&mut self) -> Option<(u64, T)> {
-        while let Some(session) = self.order.pop_front() {
-            let Some(queue) = self.queues.get_mut(&session) else {
-                continue;
-            };
-            let Some(item) = queue.pop_front() else {
-                self.queues.remove(&session);
-                continue;
-            };
-            if queue.is_empty() {
-                self.queues.remove(&session);
-            } else {
-                self.order.push_back(session);
-            }
-            return Some((session, item));
-        }
-        None
-    }
-}
-
 fn drop_session_view_renders(state: &mut QueueState, session_id: u64) {
     state.view_renders.drop_session(session_id);
+    state.view_texts.drop_session(session_id);
 }
 
 /// The next queued page render of a viewer's batch.
@@ -2742,8 +2747,10 @@ impl SourceWorker {
                 _ => RasterEvent::TileFailed { request },
             },
             // Batches are unpacked at admission and never reach the worker.
-            RasterCommand::Tiles(_) | RasterCommand::Renders(_) => return,
-            RasterCommand::Text(request) => match active
+            RasterCommand::Tiles(_) | RasterCommand::Renders(_) | RasterCommand::Texts(_) => {
+                return;
+            }
+            RasterCommand::Text(request) | RasterCommand::ViewText(request) => match active
                 .get_mut(&session_id)
                 .and_then(|documents| documents.get_mut(&request.document_id))
             {

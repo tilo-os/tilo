@@ -120,10 +120,6 @@ impl Service {
     }
 
     /// Accepts clients until the listener fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if accepting a connection or starting its thread fails.
     pub(crate) fn run(self: &Arc<Self>, listener: &UnixListener) -> Result<(), ProjectorError> {
         for stream in listener.incoming() {
             match stream {
@@ -320,11 +316,6 @@ fn run_session(
 
 /// The listener systemd passed in, or a fresh one at `socket` (by default
 /// the control socket in the runtime directory).
-///
-/// # Errors
-///
-/// Returns an error if the systemd listener is malformed, another broker
-/// already serves `socket`, or binding and securing it fails.
 pub(crate) fn listen(
     paths: &SessionPaths,
     socket: Option<PathBuf>,

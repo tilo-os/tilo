@@ -53,9 +53,6 @@ impl DescriptorSender {
 
     /// Queue `fd` for the connection's next write and return the number the
     /// receiver knows it by.
-    ///
-    /// # Errors
-    /// Returns an error once the connection's descriptor numbers are spent.
     pub fn send(&self, fd: OwnedFd) -> io::Result<u32> {
         let mut outbound = self
             .0

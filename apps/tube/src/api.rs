@@ -171,6 +171,9 @@ pub enum Update {
     /// rather than showing its still poster as if it were about to play.
     Unplayable {
         video: String,
+        /// `YouTube`'s own words when it refused to play the video (such
+        /// as a bot check), for the page to pass on.
+        said: Option<String>,
     },
     /// Non-fatal note surfaced in the status log.
     Note(String),
@@ -874,7 +877,7 @@ impl Worker {
                         // `local=true`, which serves whole-file byte ranges),
                         // falling back to the live backend's direct URL.
                         match resolve_stream_url(live.as_deref(), youtube.as_ref(), &id) {
-                            Some((url, has_audio, quality)) => {
+                            Ok((url, has_audio, quality)) => {
                                 let _ = up_tx.send(Update::Note(format!(
                                     "stream: {quality} {} [{}]",
                                     if has_audio {
@@ -891,8 +894,8 @@ impl Worker {
                                     quality,
                                 });
                             }
-                            None => {
-                                let _ = up_tx.send(Update::Unplayable { video: id });
+                            Err(said) => {
+                                let _ = up_tx.send(Update::Unplayable { video: id, said });
                             }
                         }
                     }
@@ -949,12 +952,12 @@ fn short_host(url: &str) -> String {
 /// endpoint serves whole-file byte ranges — the reliable path for seeking and
 /// for streaming past the first minute), then falls back to the live backend's
 /// direct playback source (yt-dlp / rustypipe). Returns `(url, has_audio,
-/// quality)`, or `None` when nothing is playable.
+/// quality)`; when nothing is playable, what `YouTube` said if it refused.
 fn resolve_stream_url(
     live: Option<&dyn YtBackend>,
     youtube: Option<&crate::innertube::InnerTube>,
     id: &str,
-) -> Option<(String, bool, String)> {
+) -> Result<(String, bool, String), Option<String>> {
     // Primary: yt-dlp resolves a full, non-SABR-gated googlevideo URL (via the
     // `android_vr` client) that streams the WHOLE video+audio without the
     // ~1-minute truncation that gates raw iOS/TV URLs — so the media engine can
@@ -964,14 +967,18 @@ fn resolve_stream_url(
         && let Ok(src) = b.resolve_playback_source(id)
         && !src.url.is_empty()
     {
-        return Some((src.url, src.has_audio, src.quality));
+        return Ok((src.url, src.has_audio, src.quality));
     }
     // Then YouTube's own API: the Android client's progressive stream,
     // which serves every byte range.
+    let mut said = None;
     if let Some(youtube) = youtube
-        && let Ok(Ok(stream)) = ui::rt::block_on(youtube.stream(id))
+        && let Ok(answer) = ui::rt::block_on(youtube.stream(id))
     {
-        return Some((stream.url, true, stream.quality));
+        match answer {
+            Ok(stream) => return Ok((stream.url, true, stream.quality)),
+            Err(error) => said = crate::innertube::refusal(&error),
+        }
     }
     // Fallback: a fully-rangeable Invidious `local=true` proxy. The public
     // instance network has largely collapsed, so this is a last resort for when
@@ -980,9 +987,9 @@ fn resolve_stream_url(
         .ok()
         .flatten();
     if let Some(r) = proxied {
-        return Some((r.url, r.has_audio, r.quality));
+        return Ok((r.url, r.has_audio, r.quality));
     }
-    None
+    Err(said)
 }
 
 /// Construct the live rustypipe backend when the `live` feature is on and it
@@ -1306,21 +1313,33 @@ async fn answer(
         Request::PlaylistPage(id) => {
             post(Update::Note(format!("playlist {id}: unavailable here")));
         }
-        Request::PlayVideo(id) => {
-            let stream = match youtube.stream(&id).await {
-                Ok(stream) => Some((stream.url, stream.quality)),
-                Err(_) => invidious_stream(client, &id).await,
-            };
-            match stream {
-                Some((url, quality)) => post(Update::StreamResolved {
-                    video: id,
-                    url,
-                    has_audio: true,
-                    quality,
-                }),
-                None => post(Update::Unplayable { video: id }),
-            }
+        Request::PlayVideo(id) => post(play(client, youtube, id).await),
+    }
+}
+
+/// The stream for `id`: `YouTube`'s own, else an Invidious instance's; when
+/// neither plays it, what `YouTube` said if it refused.
+async fn play(
+    client: &tilo_net::Client,
+    youtube: &crate::innertube::InnerTube,
+    id: String,
+) -> Update {
+    let mut said = None;
+    let stream = match youtube.stream(&id).await {
+        Ok(stream) => Some((stream.url, stream.quality)),
+        Err(error) => {
+            said = crate::innertube::refusal(&error);
+            invidious_stream(client, &id).await
         }
+    };
+    match stream {
+        Some((url, quality)) => Update::StreamResolved {
+            video: id,
+            url,
+            has_audio: true,
+            quality,
+        },
+        None => Update::Unplayable { video: id, said },
     }
 }
 

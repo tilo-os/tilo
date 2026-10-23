@@ -72,7 +72,6 @@ fn chrome_state_is_shared_defaults_sensibly_and_mutates_through_chrome() {
         let tree = WorkspaceTree::bootstrap_default();
         let chrome = ChromeState::new(tree);
 
-        // Two clones stand for two chrome widgets holding the same state.
         let a = chrome.clone();
         let b = chrome;
 
@@ -896,7 +895,6 @@ fn topbar_with_workspace_pill_hit() -> (
         .expect("compute_layout");
     bar.apply_layout(&taffy, node, Point::ORIGIN);
 
-    // Draw once to place the workspace pill.
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();

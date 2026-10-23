@@ -282,8 +282,6 @@ fn checked(host: &(impl Host + ?Sized), argv: &[&str]) -> Result<String> {
     Ok(ran.stdout)
 }
 
-// --- strict handoff parsing ------------------------------------------------
-
 /// A pattern anchored with `^…$`, as Python's `re.match` reads it: `$` also
 /// matches before one final newline.
 fn dollar(text: &str, pattern: impl Fn(&str) -> bool) -> bool {
@@ -706,8 +704,6 @@ fn load_handoff_file(path: &Path) -> Result<Handoff> {
     parse_handoff(&read_bounded(path)?)
 }
 
-// --- firmware variables ------------------------------------------------------
-
 fn read_efivar(host: &dyn Host, name: &str, vendor: &str) -> Result<Option<Vec<u8>>> {
     match read_bounded(&host.efivars().join(format!("{name}-{vendor}"))) {
         Ok(data) => match data.get(4..) {
@@ -916,8 +912,6 @@ fn all_boot_entries(host: &dyn Host) -> Result<Vec<(String, Option<BootEntry>)>>
     Ok(entries)
 }
 
-// --- the live handoff ----------------------------------------------------
-
 /// The UI's copy must equal what the firmware-booted staging ESP holds.
 fn verified_live_handoff(host: &dyn Host, copy_path: &Path) -> Result<Handoff> {
     let copy = load_handoff_file(copy_path)?;
@@ -939,8 +933,6 @@ fn verified_live_handoff(host: &dyn Host, copy_path: &Path) -> Result<Handoff> {
     }
     Ok(copy)
 }
-
-// --- partition facts ---------------------------------------------------------
 
 /// `str(value or '')` for the identities lsblk and sfdisk report.
 fn or_empty(value: Option<&Value>) -> String {
@@ -1424,8 +1416,6 @@ pub fn check_mounts_command(host: &dyn Host, handoff_path: &Path, disk: &str) ->
     check_mounts(&handoff, &partitions, root)
 }
 
-// --- publishing --------------------------------------------------------------
-
 /// Replaces `path` with `data` (mode `mode`) through a synced temporary file.
 fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
     let directory = match path.parent() {
@@ -1597,8 +1587,6 @@ pub fn write_reclaim_record(
     Ok("recorded staging reclaim for the installed system\n".into())
 }
 
-// --- firmware handoff back -----------------------------------------------
-
 fn efibootmgr_run(host: &dyn Host, argv: &[&str]) -> Result<()> {
     let program = host.efibootmgr();
     let mut full = vec![program.as_str(), "-q"];
@@ -1747,8 +1735,6 @@ pub fn firmware_finalize(
     );
     Ok(if removed { 0 } else { 3 })
 }
-
-// --- entry point -------------------------------------------------------------
 
 const PROG: &str = "tilo-staging-handoff";
 const COMMANDS: [&str; 9] = [

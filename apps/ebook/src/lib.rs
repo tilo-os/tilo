@@ -32,6 +32,7 @@
 
 pub mod actions;
 pub mod app;
+mod catalogue;
 mod commands;
 mod comment_overlay;
 pub mod component;
@@ -39,6 +40,7 @@ pub mod content;
 pub mod epub;
 mod hosted_dropdown;
 mod input_controls;
+mod layout_worker;
 mod library_index;
 mod local_library;
 pub mod model;

@@ -1,6 +1,3 @@
-//! `tilo.history` through the same resolution, permission filter and dispatch
-//! every published invocation takes.
-
 use super::*;
 use crate::collaboration::CollabEvent;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};

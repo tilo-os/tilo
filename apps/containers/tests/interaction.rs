@@ -310,7 +310,6 @@ fn create_form_submits_and_cancels() {
     assert_eq!(draft(&app, CreateField::Image), "alpine");
 }
 
-/// The draft assembles the full `podman run`.
 #[test]
 fn create_draft_assembles_full_podman_run() {
     let args = CreateDraft::with(&[

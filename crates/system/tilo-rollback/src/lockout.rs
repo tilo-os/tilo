@@ -335,10 +335,6 @@ pub fn set_reset_auth(
 pub const RESET_AUTH_CHARS: usize = 32;
 
 /// A random reset authorisation.
-///
-/// # Errors
-///
-/// Returns an error if the operating system's random source fails.
 pub fn new_reset_auth() -> Result<zeroize::Zeroizing<Vec<u8>>> {
     let mut b = [0u8; RESET_AUTH_CHARS / 2];
     getrandom::fill(&mut b).map_err(|e| anyhow::anyhow!("reading OS randomness: {e}"))?;
@@ -457,7 +453,6 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
 
     #[test]
     fn lockout_parameters_parse_and_classify_against_the_target() {
-        // Phase `parses_the_swtpm_defaults`.
         {
             let p = parse_properties(SWTPM);
             assert_eq!(p.max_tries, 3);
@@ -467,7 +462,6 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
             assert!(!p.lockout_auth_set);
             assert!(!p.in_lockout);
         }
-        // Phase `parses_a_set_lockout_auth`.
         {
             let p = parse_properties(&SWTPM.replace(
                 "lockoutAuthSet:            0",
@@ -475,7 +469,6 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
             ));
             assert!(p.lockout_auth_set);
         }
-        // Phase `an_empty_reset_auth_is_critical_not_a_warning`.
         {
             let a = assess(parse_properties(SWTPM), Target::default());
             assert!(!a.pin_is_defensible());
@@ -487,7 +480,6 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
                 a.critical
             );
         }
-        // Phase `zero_max_tries_is_critical`.
         {
             let p = Params {
                 max_tries: 0,
@@ -499,7 +491,6 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
             let a = assess(p, Target::default());
             assert!(!a.pin_is_defensible());
         }
-        // Phase `zero_recovery_time_is_critical`.
         {
             let p = Params {
                 max_tries: 8,
@@ -510,9 +501,7 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
             };
             assert!(!assess(p, Target::default()).pin_is_defensible());
         }
-        // Phase `generous_vendor_defaults_warn_but_do_not_block`.
         {
-            // Typical Intel PTT shipping values.
             let p = Params {
                 max_tries: 32,
                 recovery_time: 600,
@@ -524,7 +513,6 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
             assert!(a.pin_is_defensible(), "{:?}", a.critical);
             assert_eq!(a.warnings.len(), 3, "{:?}", a.warnings);
         }
-        // Phase `a_configuration_at_target_is_clean`.
         {
             let p = Params {
                 max_tries: 8,
@@ -537,7 +525,6 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
             assert!(a.pin_is_defensible());
             assert!(a.warnings.is_empty(), "{:?}", a.warnings);
         }
-        // Phase `tighter_than_asked_for_is_not_a_warning`.
         {
             let p = Params {
                 max_tries: 4,
@@ -549,7 +536,6 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
             let a = assess(p, Target::default());
             assert!(a.warnings.is_empty(), "{:?}", a.warnings);
         }
-        // Phase `reset_auth_is_random_and_within_the_tpm_auth_size_limit`.
         {
             let a = new_reset_auth().unwrap();
             assert_eq!(a.len(), RESET_AUTH_CHARS);

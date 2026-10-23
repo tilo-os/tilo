@@ -45,8 +45,6 @@ struct SigningView<'a> {
     archive_binding_digest: [u8; 32],
 }
 impl PreparedReceipt {
-    /// # Errors
-    /// Returns canonical bounded bytes for the actual certified daemon signer.
     pub fn signing_bytes(&self) -> io::Result<Vec<u8>> {
         if self.schema != 1
             || !id(&self.operation_id)

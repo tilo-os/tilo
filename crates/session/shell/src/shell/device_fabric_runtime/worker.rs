@@ -232,8 +232,6 @@ mod tests {
         );
         recv("the first run's follow-up", &after);
 
-        // The turns that came during that run become one run, with the
-        // latest facts.
         release_tx.send(()).unwrap();
         assert_eq!(recv("the coalesced run", &runs), (4, true));
         recv("the coalesced run's follow-up", &after);

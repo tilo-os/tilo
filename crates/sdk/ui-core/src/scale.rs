@@ -199,12 +199,10 @@ mod tests {
         // fractional scaling; the buffer must stay divisible by it.
         assert_eq!((extent.width % 2, extent.height % 2), (0, 0), "{extent:?}");
 
-        // A tall window is fitted by its height.
         let tall = fit_to_texture_limit((2000, 20000), 1.0, limit);
         assert_eq!(tall.height, limit);
         assert!(tall.width <= limit && tall.width >= 800);
 
-        // A window that fits is drawn exactly as it is.
         assert_eq!(
             fit_to_texture_limit((5888, 3680), 2.0, limit),
             RenderExtent {
@@ -223,7 +221,6 @@ mod tests {
 
     #[test]
     fn scale_factors_compose_device_and_user_scale_uniformly() {
-        // Case `composite_transform_is_uniform_device_scale`.
         {
             for scale in [1.0f64, 1.25, 1.5, 1.75, 2.0] {
                 let t = composite_transform(scale);
@@ -238,7 +235,6 @@ mod tests {
             }
         }
 
-        // Case `logical_available_space_divides_by_fractional_scale`.
         {
             assert_eq!(logical_size((2560, 1600), 1.25), (2048.0, 1280.0));
             assert_eq!(logical_size((1920, 1080), 1.5), (1280.0, 720.0));
@@ -248,7 +244,6 @@ mod tests {
             assert_eq!(logical_size((800, 600), 0.0), (800.0, 600.0));
         }
 
-        // Case `physical_font_px_composes_device_and_user_scales`.
         {
             let px = physical_font_px(14.0, 1.25, 1.2, 1.5);
             assert!((px - 14.0 * 1.25 * 1.2 * 1.5).abs() < 1e-4, "got {px}");
@@ -258,7 +253,6 @@ mod tests {
             assert!((physical_font_px(10.0, 1.5, 1.0, 1.0) - 15.0).abs() < 1e-4);
         }
 
-        // Case `text_metrics_are_logical_and_physical_extent_scales`.
         {
             let mut tr = TextRenderer::new();
             let (lw, lh) = tr.measure("Fractional scaling", 16.0, None);
@@ -290,7 +284,6 @@ mod tests {
         assert!((size.0 - 411.0).abs() < 1e-9);
         assert!((size.1 - (914.0 - area.top - area.bottom)).abs() < 1e-9);
 
-        // Landscape moves the cutout to a side edge.
         let (origin, size) = SafeArea::from_physical([128, 0, 0, 63], 2.0).content((1000.0, 400.0));
         assert_eq!((origin.x, origin.y), (64.0, 0.0));
         assert_eq!(size, (936.0, 368.5));
@@ -311,7 +304,6 @@ mod tests {
 
     #[test]
     fn fractional_scale_renders_natively_at_physical_coordinates() {
-        // Case `fill_lands_at_physical_coordinates_at_fractional_scales`.
         {
             for scale in [1.25f64, 1.5, 1.75] {
                 let (lw, lh) = (100.0f64, 60.0f64);

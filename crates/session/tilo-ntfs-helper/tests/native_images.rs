@@ -48,7 +48,6 @@ fn probe(name: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
 #[test]
 fn native_probe_classifies_each_image_without_mutating_it() {
     for (name, status) in [
-        // Dirty log and volume flags refuse.
         ("dirty", 3),
         // Absent/zero hibernation file is clean; non-zero and short refuse.
         ("zero-hiber", 0),
@@ -57,9 +56,7 @@ fn native_probe_classifies_each_image_without_mutating_it() {
         ("short-hiber", 4),
         // A BitLocker signature is locked.
         ("bitlocker", 2),
-        // Oversize is bounded.
         ("oversize", 6),
-        // A valid restart pair is clean.
         ("restart-clean", 0),
     ] {
         assert_eq!(probe(name).unwrap()["status"], status, "case {name}");

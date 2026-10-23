@@ -128,7 +128,6 @@ pub struct TrustedAttestor {
     pub id: String,
     /// The attestor's Ed25519 public key, hex encoded (64 chars).
     pub pubkey_hex: String,
-    /// Scope of trust.
     pub scope: AttestorScope,
 }
 

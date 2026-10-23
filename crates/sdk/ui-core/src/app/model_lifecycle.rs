@@ -182,7 +182,6 @@ impl super::App {
             || self.needs_sync
             || wakes.is_some_and(|(pending, _)| pending)
         {
-            // Drain model notifications and advance update-driven widgets.
             report.updated = true;
             self.update_model();
             // A model-dirty wake raised while draining joins this sync.

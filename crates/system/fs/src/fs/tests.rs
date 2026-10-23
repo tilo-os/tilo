@@ -107,7 +107,6 @@ mod availability_control_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn delayed_pinned_hydration_is_cancelled_only_by_unpin() {
-        // Phase `unrelated_wakes_do_not_cancel_a_delayed_pinned_hydration`.
         {
             let dir = tempfile::tempdir().unwrap();
             let namespace = Arc::new(Mutex::new(Namespace::new("wake-test").unwrap()));
@@ -138,7 +137,6 @@ mod availability_control_tests {
             noisy_writer.await.unwrap();
             assert!(completed.is_some(), "unrelated wakes must not starve a pin");
         }
-        // Phase `unpin_wake_cancels_a_delayed_pinned_hydration`.
         {
             let dir = tempfile::tempdir().unwrap();
             let namespace = Arc::new(Mutex::new(Namespace::new("unpin-wake-test").unwrap()));
@@ -173,7 +171,6 @@ mod availability_control_tests {
             unpin.await.unwrap();
             assert!(cancelled.is_none(), "unpin must cancel an active transfer");
         }
-        // Phase `pinned_hydration_is_bounded_and_unpin_cancels_queued_retries`.
         {
             let dir = tempfile::tempdir().unwrap();
             let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -261,7 +258,6 @@ mod availability_control_tests {
 
     #[tokio::test]
     async fn pin_policy_persists_and_read_only_collaborators_manage_offline_policy() {
-        // Phase `pin_policy_persists_and_a_directory_covers_future_descendants`.
         {
             let dir = tempfile::tempdir().unwrap();
             let registry_path = dir.path().join("availability.json");
@@ -303,7 +299,6 @@ mod availability_control_tests {
                 Some(AvailabilityPolicy::Pinned)
             );
         }
-        // Phase `a_read_only_collaborator_can_manage_device_local_offline_policy`.
         {
             const READER: [u8; 32] = [0x51; 32];
             let dir = tempfile::tempdir().unwrap();
@@ -628,7 +623,6 @@ mod availability_control_tests {
         })
         .await;
 
-        // A file arrives in the pinned folder outside every FUSE callback.
         let remote = {
             let mut namespace = namespace.lock().unwrap();
             let ino = namespace
@@ -785,7 +779,6 @@ mod availability_control_tests {
 
     #[tokio::test]
     async fn transfer_retries_run_off_thread_and_report_actionable_outcomes() {
-        // Phase `retry_transfer_runs_off_thread_and_persists_completion`.
         {
             let dir = tempfile::tempdir().unwrap();
             let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -825,7 +818,6 @@ mod availability_control_tests {
             })
             .await;
         }
-        // Phase `retrying_an_empty_file_completes_without_a_blob_fetch`.
         {
             let dir = tempfile::tempdir().unwrap();
             let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -1076,7 +1068,6 @@ mod thumb_tests {
             let dir = tempfile::tempdir().unwrap();
             let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
 
-            // An image file whose content is local to the host.
             let png = solid_png(600, 400, [40, 130, 220]);
             let mh = store.write_content(&png).await.unwrap().unwrap();
             let ino = {
@@ -1088,7 +1079,6 @@ mod thumb_tests {
             // No thumbnail recorded yet.
             assert!(namespace.lock_recover().thumb_hash(ino).is_none());
 
-            // The metadata path returns a sized PNG preview.
             let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
             let decoded = thumbnail::decode_png(&thumb).expect("it is a valid PNG");
             assert!(decoded.is_valid());
@@ -1120,7 +1110,6 @@ mod thumb_tests {
                 "second request is a cache hit, identical bytes"
             );
         }
-        // Phase `signed_mount_publishes_and_installs_verified_thumbnail_metadata`.
         {
             let dir = tempfile::tempdir().unwrap();
             let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -1319,7 +1308,6 @@ mod predictive_tests {
         reason = "each fixture keeps one (ACL-filtered) namespace snapshot while asserting ordered predictive candidates"
     )]
     async fn prediction_selects_visible_siblings_of_the_same_type() {
-        // Phase `opening_an_image_selects_the_next_two_images_not_other_types`.
         {
             let (namespace, fs) = fixture().await;
             let (first, second_hash, third_hash) = {
@@ -1345,7 +1333,6 @@ mod predictive_tests {
                 vec![(second_hash, 30), (third_hash, 40)]
             );
         }
-        // Phase `prediction_never_includes_a_sibling_hidden_by_the_acl`.
         {
             const ME: [u8; 32] = [0xA1; 32];
             let (namespace, fs) = fixture().await;
@@ -1385,7 +1372,6 @@ mod predictive_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn record_catalogs_hide_acl_denied_records_and_refuse_stale_v2_pages() {
-        // Phase `record_catalog_contains_nested_records_but_not_acl_hidden_siblings`.
         {
             const ME: [u8; 32] = [0xA2; 32];
             let (namespace, fs) = fixture().await;
@@ -1795,7 +1781,6 @@ mod predictive_tests {
         assert_eq!(incremental.acl_evaluations, 2);
         assert!(incremental.by_id.contains_key(&revealed));
 
-        // Judging every row from scratch agrees row for row.
         *fs.acl_visible_record_index.lock_recover() = None;
         fs.refresh_acl_visible_record_index();
         let full = fs.acl_visible_record_index().unwrap();
@@ -1804,7 +1789,6 @@ mod predictive_tests {
         assert_eq!(full.hidden, incremental.hidden);
         assert_eq!(full.revision, incremental.revision);
 
-        // A new ACL revision judges every row again.
         let mut widened = WorkspaceAcl::new();
         widened.grant_read(ME, "/");
         handle.replace(widened);
@@ -3588,7 +3572,6 @@ mod write_stage_tests {
             "reading a {size}-byte document in {CHUNK}-byte chunks allocated {allocated} bytes"
         );
 
-        // An edit of the document itself is a new export.
         assert_eq!(fs.write_buffer(doc, 0, b"# Title\n\n"), Ok(9));
         assert_eq!(fs.flush_inode(doc), Ok(()));
         fs.settle_last_close(doc, true);

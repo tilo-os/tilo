@@ -88,7 +88,6 @@ mod tests {
 
     #[test]
     fn type_metrics_match_measurement() {
-        // Case `line_height_px_matches_what_the_renderer_measures`.
         {
             for scale in [1.0_f32, 2.0, 0.75] {
                 let mut tr = TextRenderer::new();
@@ -105,7 +104,6 @@ mod tests {
             assert_eq!(line_height_px(14.0, f32::NAN), line_height_px(14.0, 1.0));
         }
 
-        // Case `growth_and_authored_heights_keep_the_one_x_design_exact`.
         {
             assert_eq!(line_growth(14.0, 1.0), 0.0);
             assert_eq!(
@@ -124,14 +122,12 @@ mod tests {
 
     #[test]
     fn centered_text_top_centres_the_measured_line_box() {
-        // Case `centered_text_top_centres_the_measured_box_and_never_clamps`.
         {
             assert_eq!(centered_text_top(10.0, 28.0, 17.5), 10.0 + 5.25);
             // Line taller than the band: equal overhang above and below.
             assert_eq!(centered_text_top(0.0, 20.0, 35.0), -7.5);
         }
 
-        // Case `centered_text_top_agrees_with_the_renderers_measured_line_box`.
         {
             // Centring the `.1` of `measure` puts the line's centre on the band's
             // centre at every renderer scale — the rule every migrated site uses.

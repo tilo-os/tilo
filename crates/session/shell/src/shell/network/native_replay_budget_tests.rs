@@ -1,4 +1,3 @@
-//! Durable native replay yields between actual signed owner admissions.
 use super::*;
 use crate::network::actor::{HostIdentity, native_ingress};
 use ed25519_dalek::SigningKey;

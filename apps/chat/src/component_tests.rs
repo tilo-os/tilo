@@ -848,7 +848,6 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
                   resource: &str,
                   action: &str,
                   args: serde_json::Value| {
-        // The published tree follows the record on the next frame.
         let started = frame.call_on(resource, action, args).unwrap();
         started
             .completed()

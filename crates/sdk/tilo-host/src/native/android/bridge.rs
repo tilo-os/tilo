@@ -162,7 +162,6 @@ pub(super) fn start_for_result(
     }
 }
 
-/// Whether the app holds `permission`.
 pub(super) fn is_granted(permission: &str) -> Result<bool, String> {
     super::with_activity(|env, activity| {
         let results = class(env, activity, RESULTS)?;

@@ -90,6 +90,9 @@ pub struct DesktopEntry {
     pub not_show_in: Vec<String>,
     pub source: EntrySource,
     pub actions: Vec<DesktopAction>,
+    /// Set for the entry of a downloaded program ([`crate::downloaded`]):
+    /// the file it starts, and whether that file is there.
+    pub downloaded: Option<crate::downloaded::DownloadedProgram>,
 }
 
 impl DesktopEntry {
@@ -230,6 +233,11 @@ pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Optio
         not_show_in: string_list(raw("NotShowIn")),
         source,
         actions: parse_actions(&groups, locales),
+        downloaded: crate::downloaded::DownloadedProgram::from_keys(
+            raw(crate::downloaded::KEY_PROGRAM),
+            raw(crate::downloaded::KEY_KIND),
+            raw(crate::downloaded::KEY_FILE),
+        ),
     })
 }
 

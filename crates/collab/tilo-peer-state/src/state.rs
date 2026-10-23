@@ -383,6 +383,25 @@ fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
 /// once one is ([`collab_types::Surfaces`]).
 pub const HELD_FOR_SURFACE: &str = "document change held: its app surface is not here yet";
 
+/// The record `message` writes and its sequence, if it is a document write.
+fn written_route(message: &NeighbourMsg) -> Option<(Route, u64)> {
+    match message {
+        NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
+        } => Some((
+            Route {
+                app: app_id.clone(),
+                record: record_id.clone(),
+            },
+            envelope.seq,
+        )),
+        _ => None,
+    }
+}
+
 /// The app surfaces this process decides received changes against
 /// ([`decide_with_surfaces`]).
 #[must_use]
@@ -477,11 +496,6 @@ fn check_governed_snapshot(
 
 impl StatePeer {
     /// Build a replica for `room` pinned to `authority` and its certified roster.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `room` is not a UUID, a certificate fails verification at `now`,
-    /// or a certificate is revoked.
     pub fn new(
         room: &str,
         authority: DeviceCert,
@@ -505,12 +519,6 @@ impl StatePeer {
     /// on the host, and its expiry is checked whenever it is used. Building
     /// the replica at `now` refused the whole room over one expired guest,
     /// so no device could join a room anyone had watched.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `room` is not a UUID, `authority` fails
-    /// verification at `now`, a roster certificate's signature fails, or a
-    /// certificate is revoked.
     pub fn joined(
         room: &str,
         authority: DeviceCert,
@@ -849,11 +857,6 @@ impl StatePeer {
     }
     /// The current authority of the device `source`: its person, role, the
     /// room's policy and whether it is held to the foreign-device bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `source` has no current certified identity, is not a
-    /// current member, or governance is missing.
     pub fn permissions(
         &self,
         source: [u8; 32],
@@ -884,10 +887,6 @@ impl StatePeer {
 
     /// Read permission for an exact canonical record using the same governed
     /// actor/resource vocabulary as document mutation admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `device` may not read the record under current governance.
     pub fn check_document_read(
         &self,
         device: [u8; 32],
@@ -929,10 +928,6 @@ impl StatePeer {
     /// Validated data from this exact snapshot, not an authorization credential.
     /// Missing exact Chat prerequisites and unpromoted local revocations fail
     /// closed. Current device permissions/time still require separate checks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the room media policy fails validation against this snapshot.
     pub fn validated_media_policy(&self) -> Result<Option<room::media::RoomMediaV1>, String> {
         let policy = self.validate_present_media_policy()?;
         if let Some(policy) = &policy {
@@ -1310,10 +1305,6 @@ impl StatePeer {
     }
 
     /// Exact observations from the real admission path, not a durability receipt.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] when the message is refused.
     pub fn receive_from_report(
         &mut self,
         origin: TransportOrigin,
@@ -1332,9 +1323,11 @@ impl StatePeer {
             return Ok(report);
         }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
+        let written = written_route(&message);
         let mut candidate = self.clone();
-        let mut report =
-            candidate.receive_with_context(source, message, now, retained_replay, true)?;
+        let mut report = candidate
+            .receive_with_context(source, message, now, retained_replay, true)
+            .inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
         let landed = report.summary.changed || report.summary.metadata_changed;
         report.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
@@ -1343,9 +1336,6 @@ impl StatePeer {
 
     /// Authenticate an already recorded document without copying mutable state.
     /// The report observes the existing admission, never a new commit barrier.
-    ///
-    /// # Errors
-    /// Current publisher authority, transport, route or signature is invalid.
     pub fn lookup_exact_document_report(
         &self,
         origin: TransportOrigin,
@@ -1378,11 +1368,6 @@ impl StatePeer {
 
     /// A read-only exact retry lookup. Current authority and signature/route still
     /// apply; only a recorded envelope bypasses new-write timestamp freshness.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] if the message is not a valid document envelope for
-    /// this room or its author is not currently authorized.
     pub fn lookup_exact_document(
         &self,
         origin: TransportOrigin,
@@ -1437,11 +1422,6 @@ impl StatePeer {
 
     /// Exact new candidate admissions for local multi-record owner commits.
     /// Also refuses replacement that discards prior exact evidence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] if this candidate discards exact evidence that
-    /// `before` recorded.
     pub fn admissions_since(
         &self,
         before: &StatePeer,
@@ -1504,10 +1484,6 @@ impl StatePeer {
     }
 
     /// Admit a message from `origin`, queuing it while prerequisites are missing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the message is refused.
     pub fn receive_from(
         &mut self,
         origin: TransportOrigin,
@@ -1521,10 +1497,14 @@ impl StatePeer {
                 .map_err(err);
         }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now).map_err(err)?;
+        let written = written_route(&message);
         let mut candidate = self.clone();
         let mut outcome = candidate
             .receive_with_context(source, message, now, retained_replay, false)
-            .map_err(err)?;
+            .map_err(|error| {
+                self.forget_refused(source, written.as_ref());
+                err(error)
+            })?;
         let landed = outcome.summary.changed || outcome.summary.metadata_changed;
         outcome.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
@@ -1778,8 +1758,10 @@ impl StatePeer {
         retained_replay: bool,
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
-        let mut outcome =
-            self.admit_document(source, message, now, None, retained_replay, strict_report)?;
+        let written = written_route(&message);
+        let mut outcome = self
+            .admit_document(source, message, now, None, retained_replay, strict_report)
+            .inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
         if outcome.deferred || self.core.pending.is_empty() {
             return Ok(outcome);
         }
@@ -1809,11 +1791,6 @@ impl StatePeer {
     /// No wire message can select this door. Unlike a retained checkpoint, an
     /// SDK snapshot is an authored mutation of an already-owned exact record.
     /// Certificate, current policy, signature, replay and route checks are shared.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the envelope fails certificate, policy, signature, replay or
-    /// route checks.
     pub fn admit_local_app_document(
         &mut self,
         app: &str,
@@ -1902,9 +1879,35 @@ impl StatePeer {
                 },
             ));
         }
-        // Only legacy retained replay may validate a first admission historically.
-        // Strict exact retries returned above; an index miss is a live new write,
-        // including when this call drains a retained pending entry.
+        let route = Route {
+            app: app_id.clone(),
+            record: record_id.clone(),
+        };
+        if !local_app
+            && self
+                .overtakes_let_go(&route, source, envelope.seq)
+                .is_some()
+        {
+            // Let go too: the room's host retains it and replays it after
+            // the earlier write, in the order its author wrote them.
+            let waiting = MissingPrerequisite::EarlierWrite;
+            let input = DroppedInput {
+                author: source,
+                app: app_id,
+                record: record_id,
+                sequence: envelope.seq,
+                waiting_for: Some(waiting.clone()),
+                reason: crate::admission::DropReason::Superseded,
+            };
+            self.remember_missed(&input);
+            return Ok(AdmissionReport::new(
+                InputDisposition::RetryLater(waiting),
+                ReceiveOutcome {
+                    dropped: vec![input],
+                    ..Default::default()
+                },
+            ));
+        }
         let historical_validation = retained_replay && !strict_report;
         let authorization_time = if historical_validation {
             envelope.timestamp
@@ -2350,10 +2353,6 @@ impl StatePeer {
         }
     }
     /// Install the governed seed room and documents as the authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the room authority or the seed is invalid.
     pub fn install_seed(
         &mut self,
         seed: SeedState,
@@ -2383,10 +2382,6 @@ impl StatePeer {
         Ok(())
     }
     /// Sign and admit a snapshot of `record`, returning the message to publish.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the local device may not write the record or admission fails.
     pub fn publish_document(
         &mut self,
         app: &str,
@@ -2398,10 +2393,6 @@ impl StatePeer {
         self.signed_mutation(app, record, DocumentMutation::Snapshot(bytes), key, now)
     }
     /// Sign and admit incremental changes to `record`, returning the message to publish.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the local device may not write the record or admission fails.
     pub fn publish_incremental(
         &mut self,
         app: &str,
@@ -2413,10 +2404,6 @@ impl StatePeer {
         self.signed_mutation(app, record, DocumentMutation::Incremental(bytes), key, now)
     }
     /// Sign and admit `mutation` of `record`, returning the message to publish.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the local device may not write the record or admission fails.
     pub fn signed_mutation(
         &mut self,
         app: &str,
@@ -2816,12 +2803,6 @@ impl StatePeer {
     /// `SyncResp` here contains only room changes since `before` and MUST be retained
     /// as a delta. Application messages remain exact covered snapshots. The caller
     /// must durably commit the candidate and its baseline plus this tail before send.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if this candidate discards evidence `before` recorded, the
-    /// local device lacks the pinned authority or permission, or encryption state is
-    /// incomplete.
     #[expect(
         clippy::too_many_lines,
         reason = "one candidate publication built against a single committed baseline"
@@ -2950,10 +2931,6 @@ impl StatePeer {
         Ok(messages)
     }
     /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the governed coverage does not match the accepted checkpoint.
     pub fn durable_coverage(
         &self,
         app: &str,
@@ -3037,10 +3014,6 @@ impl StatePeer {
     }
     /// Validate the receipt and current-head coverage against one decoded checkpoint.
     /// All authority, route, payload and watermark checks remain fresh per query.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the receipt or checkpoint fails validation.
     #[cfg(test)]
     pub fn durable_coverage_with_current(
         &self,
@@ -3066,10 +3039,6 @@ impl StatePeer {
         Ok(Some((receipt, current)))
     }
     /// Whether the durable receipt for the record covers its current heads.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the receipt or checkpoint fails validation.
     #[cfg(test)]
     pub fn durable_covers_current(&self, app: &str, record: &str) -> Result<bool, String> {
         Ok(self
@@ -3289,11 +3258,6 @@ impl StatePeer {
     }
 
     /// Restore a peer from durable state produced by [`StatePeer::durable`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the bytes are malformed, the room or authority does not match,
-    /// or restored state fails admission.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "public API: callers hand over the pinned revocation list"

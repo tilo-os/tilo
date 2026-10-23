@@ -171,7 +171,6 @@ impl Tree {
         out
     }
 
-    /// The child of `folder` projected as `name`.
     pub fn child(&self, folder: &ItemId, name: &str) -> Option<&Item> {
         self.children(folder)
             .into_iter()

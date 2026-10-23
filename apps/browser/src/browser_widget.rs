@@ -557,7 +557,6 @@ pub struct BrowserWidget {
     /// Whether the window is narrow enough for the compact toolbar; see
     /// [`is_compact_chrome`].
     compact_chrome: bool,
-    /// The theme's compact breakpoint at the last layout pass.
     compact_breakpoint: f32,
     /// The theme's text scale at the last layout pass. The compact tier is
     /// judged on the width the text leaves, so a 1200px window at 2× lays
@@ -2207,7 +2206,7 @@ impl BrowserWidget {
         value.insert("url".into(), url.into());
         value.insert("title".into(), self.title.as_str().into());
         value.insert("message".into(), message.into());
-        value.insert("navigated".into(), reply.navigated.into());
+        value.insert("navigation".into(), reply.navigation.as_str().into());
         if let Some(outline) = &reply.outline {
             value.insert("outline".into(), outline.as_str().into());
         }
@@ -3563,7 +3562,7 @@ impl BrowserWidget {
     }
     fn set_adblock(&self, enabled: bool) {
         if enabled {
-            crate::blocker::spawn_filter_loader(self.engine.clone());
+            crate::blocker::spawn_filter_loader(self.engine.clone(), None);
             self.install_blocking_scripts();
         } else {
             if self.engine.supports_native_filtering() {
@@ -4209,7 +4208,7 @@ pub(crate) enum EngineProblem {
 /// installed Browser root and reviews its exact declared optional component;
 /// opening this handoff never consents to a payload download.
 pub(crate) const ENGINE_INSTALL_URI: &str =
-    "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.22-chromium";
+    "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.23-chromium";
 
 /// Live browsing runs the Chromium engine runtime
 /// ([`ui::webview::chromium::runtime`]); there is no other engine and no
@@ -5832,18 +5831,19 @@ impl BrowserWidget {
             if !self.headless {
                 self.engine
                     .send(WebViewCommand::SetClearOnExit(self.settings.clear_on_exit));
+                let first = (!self.explicit_navigation_requested)
+                    .then(|| WebViewCommand::Navigate(self.initial_url.clone()));
                 if self.settings.adblock_enabled {
-                    crate::blocker::spawn_filter_loader(self.engine.clone());
                     // Scriptlet-style blocking (YouTube ad-skip etc.) the
                     // declarative content filter can't express.
                     self.install_blocking_scripts();
-                }
-                if !self.settings.adblock_enabled {
+                    // The first page loads once the cached rules are in.
+                    crate::blocker::spawn_filter_loader(self.engine.clone(), first);
+                } else {
                     self.set_adblock(false);
-                }
-                if !self.explicit_navigation_requested {
-                    self.engine
-                        .send(WebViewCommand::Navigate(self.initial_url.clone()));
+                    if let Some(first) = first {
+                        self.engine.send(first);
+                    }
                 }
             }
             self.bootstrap_done = true;
@@ -6313,14 +6313,12 @@ mod architecture_tests {
         );
     }
 
-    /// Find-in-page focus handoff, DPI through find reflow and the daily shortcut capture set.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn find_and_daily_shortcuts_route_focus_keys_and_dpi() {
-        // Phase `find_focus_moves_to_search_then_returns_to_page_and_survives_rebuild`.
         {
             let mut widget = BrowserWidget::new_headless();
             compose(&mut widget);
@@ -6339,7 +6337,6 @@ mod architecture_tests {
             assert!(widget.control_focused("browser.surface"));
         }
 
-        // Phase `rebuilt_web_content_keeps_window_dpi_through_find_reflow`.
         {
             let engine = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
@@ -6380,7 +6377,6 @@ mod architecture_tests {
             assert_eq!(sizes.first(), sizes.last());
         }
 
-        // Phase `find_handoff_restores_focus_before_first_character_dispatch`.
         {
             let capture = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(capture.clone(), true);
@@ -6420,7 +6416,6 @@ mod architecture_tests {
             );
         }
 
-        // Phase `daily_shortcuts_capture_find_zoom_bookmark_but_leave_plain_typing`.
         {
             let mut widget = BrowserWidget::new_headless();
             for letter in ["f", "+", "-", "0", "d"] {
@@ -6573,7 +6568,6 @@ mod architecture_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn loading_state_starts_stops_and_animates_only_while_live() {
-        // Phase `stop_contract_completes_and_queued_progress_cannot_restart_loading`.
         {
             struct QueuedEngine {
                 events: std::sync::Mutex<Vec<WebViewEvent>>,
@@ -6712,7 +6706,6 @@ mod architecture_tests {
             assert_eq!(capture.commands().last(), Some(&WebViewCommand::Reload));
         }
 
-        // Phase `stopped_and_reduced_motion_loading_do_not_schedule_animation`.
         {
             let engine = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
@@ -6735,7 +6728,6 @@ mod architecture_tests {
             assert!(widget.take_structure_dirty());
         }
 
-        // Phase `navigation_starts_loading_before_engine_callbacks`.
         {
             let engine = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(engine, true);
@@ -6763,7 +6755,6 @@ mod architecture_tests {
             assert!(!widget.needs_animation_frame());
         }
 
-        // Phase `fresh_live_surface_starts_loading_and_failure_stops_it`.
         {
             let engine = ui::webview::chromium::UnavailableEngine::new("offline".into());
             let mut widget = BrowserWidget::with_engine(engine, false);
@@ -6791,7 +6782,6 @@ mod architecture_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn hosted_browser_affordances_are_canonical_peer_local_actions() {
-        // Phase `composed_download_save_action_reaches_native_callback`.
         {
             let capture = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(capture.clone(), true);
@@ -6820,7 +6810,6 @@ mod architecture_tests {
             );
         }
 
-        // Phase `presentation_operations_are_peer_local_and_do_not_mutate_the_document`.
         {
             let mut left = BrowserWidget::new_headless();
             let right = BrowserWidget::new_headless();
@@ -6839,7 +6828,6 @@ mod architecture_tests {
             );
         }
 
-        // Phase `every_hosted_browser_affordance_uses_a_canonical_action`.
         {
             let mut page = BrowserWidget::new_headless();
             compose(&mut page);
@@ -6917,14 +6905,12 @@ mod architecture_tests {
         }
     }
 
-    /// Back/forward history menus request real session history, split entries and drop stale replies.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn session_history_menus_request_real_entries_and_ignore_stale_replies() {
-        // Phase `hold_back_requests_real_session_history_and_release_does_not_navigate`.
         {
             let engine = TestEngine::new();
             for url in ["https://a.test", "https://b.test", "https://c.test"] {
@@ -6965,7 +6951,6 @@ mod architecture_tests {
             assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
         }
 
-        // Phase `compact_forward_button_exposes_directional_history`.
         {
             let engine = TestEngine::new();
             for url in ["https://a.test", "https://b.test"] {
@@ -6997,7 +6982,6 @@ mod architecture_tests {
             );
         }
 
-        // Phase `current_entry_splits_nearest_back_and_forward_history_and_forward_hold_opens_once`.
         {
             let engine = TestEngine::new();
             for url in ["https://a.test", "https://b.test", "https://c.test"] {
@@ -7066,7 +7050,6 @@ mod architecture_tests {
             assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
         }
 
-        // Phase `stale_history_reply_after_direction_or_page_change_is_ignored`.
         {
             struct DelayedEngine {
                 events: std::sync::Mutex<Vec<WebViewEvent>>,
@@ -7132,14 +7115,12 @@ mod architecture_tests {
         }
     }
 
-    /// Media generation, fullscreen and renderer-loss events.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn media_fullscreen_and_renderer_events_drive_tab_state() {
-        // Phase `stale_media_event_from_same_url_reload_is_ignored_by_generation`.
         {
             struct EventEngine {
                 events: std::sync::Mutex<Vec<WebViewEvent>>,
@@ -7178,7 +7159,6 @@ mod architecture_tests {
             assert_eq!(widget.media_document_generation, Some(8));
         }
 
-        // Phase `fullscreen_events_and_renderer_loss_drive_tab_state`.
         {
             struct FullscreenEngine {
                 events: std::sync::Mutex<Vec<WebViewEvent>>,
@@ -7223,7 +7203,6 @@ mod architecture_tests {
             assert!(!widget.content_fullscreen());
         }
 
-        // Phase `exiting_content_fullscreen_is_idempotent_and_routes_native_command_once`.
         {
             let engine = TestEngine::new();
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
@@ -7250,7 +7229,6 @@ mod architecture_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn back_forward_controls_open_session_entries_without_accidental_navigation() {
-        // Phase `back_click_and_cancel_route_without_accidental_navigation`.
         {
             let engine = TestEngine::new();
             engine.send(WebViewCommand::Navigate("https://a.test".into()));
@@ -7305,7 +7283,6 @@ mod architecture_tests {
             assert!(!widget.back_menu.is_open());
         }
 
-        // Phase `history_keyboard_open_and_accessible_activation_use_session_entry`.
         {
             fn focus_back(widget: &mut dyn Widget) {
                 widget.set_focus(widget.test_id() == Some("browser.back"));
@@ -7342,7 +7319,6 @@ mod architecture_tests {
             ));
         }
 
-        // Phase `forward_history_keyboard_open_and_accessible_activation_use_session_entry`.
         {
             fn focus_forward(widget: &mut dyn Widget) {
                 widget.set_focus(widget.test_id() == Some("browser.forward"));
@@ -7377,7 +7353,6 @@ mod architecture_tests {
             assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
         }
 
-        // Phase `missing_release_after_window_exit_does_not_capture_the_next_click`.
         {
             let engine = TestEngine::new();
             engine.send(WebViewCommand::Navigate("https://a.test".into()));
@@ -7398,10 +7373,8 @@ mod architecture_tests {
         }
     }
 
-    /// Library open and filter controls.
     #[test]
     fn library_controls_are_bound_canonical_actions_with_stable_addresses() {
-        // Phase `library_open_controls_keep_stable_resource_addresses_after_reorder`.
         {
             let mut widget = BrowserWidget::new_headless();
             widget
@@ -7426,7 +7399,6 @@ mod architecture_tests {
             }
         }
 
-        // Phase `library_search_is_the_platform_search_scoped_to_the_section`.
         {
             let mut widget = BrowserWidget::new_headless();
             widget.debug_show_library("bookmarks");
@@ -7987,7 +7959,7 @@ mod tests {
                 message: "Clicked button \"Checkout\"".into(),
                 outline: None,
                 data: None,
-                navigated: true,
+                navigation: ui::webview::PageNavigation::Started,
                 loading: true,
             }));
             let click = start(
@@ -8026,7 +7998,7 @@ mod tests {
             let value = output.value.unwrap();
             assert_eq!(value["url"], "https://shop.test/checkout");
             assert_eq!(value["message"], "Clicked button \"Checkout\"");
-            assert_eq!(value["navigated"], true);
+            assert_eq!(value["navigation"], "started");
         }
 
         // Phase `engine_refusals_become_typed_invocation_failures`.
@@ -8239,8 +8211,6 @@ mod tests {
         release_handled
     }
 
-    /// Panels open beside the control that opened them, and a dismissed
-    /// question is a declined one.
     #[test]
     fn panels_open_below_their_control_and_dismissing_a_question_declines_it() {
         // Phase `the_site_panel_opens_below_the_toolbar_at_the_site_button`.
@@ -8311,7 +8281,6 @@ mod tests {
         }
     }
 
-    /// The library lists show progress as a bar and search where it is a scope.
     #[test]
     fn library_downloads_show_a_progress_bar_and_search_is_offered_only_where_it_scopes() {
         fn count(widget: &dyn Widget, matches: &dyn Fn(&dyn Widget) -> bool) -> usize {
@@ -8352,7 +8321,6 @@ mod tests {
         );
     }
 
-    /// Engine navigation, gestures and canonical operations update the address bar and history buttons.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -8586,7 +8554,6 @@ mod tests {
         assert_eq!(w.suggestions.items().len(), rows.len());
     }
 
-    /// Address input focus, selection and draft preservation.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -8709,7 +8676,6 @@ mod tests {
         }
     }
 
-    /// Library rows stay readable across widths and text sizes.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -8906,7 +8872,6 @@ mod tests {
         }
     }
 
-    /// Address validation errors and modal suggestions.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -9024,7 +8989,6 @@ mod tests {
         }
     }
 
-    /// Settings, toolbar and page viewport at narrow widths.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -10093,7 +10057,6 @@ mod tests {
         });
     }
 
-    /// Engine selection, resource surface binding and session restore identity.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -10148,7 +10111,7 @@ mod tests {
         {
             assert_eq!(
                 ENGINE_INSTALL_URI,
-                "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.22-chromium",
+                "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.23-chromium",
                 "repair names the consuming app and exact declaration, not a catalogue alias"
             );
             let engine = unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled);
@@ -10421,7 +10384,6 @@ mod tests {
         }
     }
 
-    /// History pause, clear and sensitive local effects.
     #[test]
     #[allow(
         clippy::too_many_lines,

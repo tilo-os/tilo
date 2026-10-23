@@ -383,14 +383,11 @@ impl FakeDiscord {
         format!("ws://{}", self.gateway)
     }
 
-    // ----- acting as Discord users -------------------------------------
-
     /// `author` posts `content` in `channel`; returns the message id.
     pub fn post(&self, channel: &str, author: &User, content: &str) -> String {
         self.post_message(channel, author, content, None, true)
     }
 
-    /// `author` answers `reply_to` in `channel`.
     pub fn reply(&self, channel: &str, author: &User, content: &str, reply_to: &str) -> String {
         self.post_message(channel, author, content, Some(reply_to), true)
     }
@@ -479,7 +476,6 @@ impl FakeDiscord {
         url
     }
 
-    /// The message's author edits it.
     pub fn edit(&self, message: &str, content: &str) {
         let mut state = self.shared.lock();
         let Some(stored) = state.message_mut(message) else {
@@ -584,7 +580,6 @@ impl FakeDiscord {
         drop(state);
     }
 
-    /// A Discord moderator bans `user`.
     pub fn ban(&self, user: &User) {
         let event = json!({"guild_id": GUILD, "user": user.json()});
         let mut state = self.shared.lock();
@@ -597,8 +592,6 @@ impl FakeDiscord {
     pub fn dispatch(&self, kind: &str, data: Value) {
         self.shared.lock().dispatch(kind, data);
     }
-
-    // ----- scripting failures ------------------------------------------
 
     /// The next `times` requests whose method is `method` and whose path
     /// (after `/api/v10`) starts with `path_prefix` get a 429.
@@ -691,8 +684,6 @@ impl FakeDiscord {
             let _ = live.send(Outgoing::Close(4004, "Authentication failed.".into()));
         }
     }
-
-    // ----- reading what happened ----------------------------------------
 
     /// Every REST request so far, oldest first.
     #[must_use]

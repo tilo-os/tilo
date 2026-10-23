@@ -297,7 +297,6 @@ pub struct Message {
     /// Minutes since the Unix epoch — coarse, but enough for relative
     /// "2h ago" style rendering without pulling `chrono`.
     pub timestamp_min: i64,
-    // ---- mutable flags (mirrored to the CRDT) ----
     pub read: bool,
     pub starred: bool,
     pub folder: Folder,
@@ -876,8 +875,6 @@ impl Mailbox {
         }
     }
 
-    // ---- mutating actions (the reader/list issue these) ----
-
     pub fn mark_read(&mut self, id: MessageId, read: bool) {
         if let Some(m) = self.messages.get_mut(&id)
             && m.read != read
@@ -978,7 +975,6 @@ mod tests {
 
     #[test]
     fn threads_follow_rfc_links_and_stay_stable() {
-        // Phase `normalize_strips_reply_prefixes`.
         {
             assert_eq!(normalize_subject("Re: Re: Hello"), "Hello");
             assert_eq!(normalize_subject("FWD: Fw: Plan"), "Plan");
@@ -1008,7 +1004,6 @@ mod tests {
             assert_eq!(threads[1].id, "unrelated@example.test");
         }
 
-        // Phase `references_root_keeps_a_multihop_thread_stable_during_hydration`.
         {
             let mut mb = Mailbox::default();
             // C's raw mail held `References: <launch-root> <launch-middle>`;
@@ -1041,7 +1036,6 @@ mod tests {
 
     #[test]
     fn folder_flags_track_unread_star_and_trash() {
-        // Phase `unread_count_and_mark_read`.
         {
             let mut mb = Mailbox::default();
             let m = msg("Hi", 10, Folder::Inbox);
@@ -1052,7 +1046,6 @@ mod tests {
             assert_eq!(mb.unread_count(Folder::Inbox), 0);
         }
 
-        // Phase `star_makes_message_appear_in_virtual_folder`.
         {
             let mut mb = Mailbox::default();
             let m = msg("Hi", 10, Folder::Inbox);
@@ -1063,7 +1056,6 @@ mod tests {
             assert_eq!(mb.count(Folder::Starred), 1);
         }
 
-        // Phase `delete_moves_to_trash_then_purges`.
         {
             let mut mb = Mailbox::default();
             let m = msg("Hi", 10, Folder::Inbox);
@@ -1078,7 +1070,6 @@ mod tests {
 
     #[test]
     fn mailbox_search_is_bounded_and_case_insensitive() {
-        // Phase `search_page_enforces_work_and_result_bounds_without_losing_newest_order`.
         {
             let mut mb = Mailbox::default();
             for ts in 0..6 {
@@ -1103,7 +1094,6 @@ mod tests {
             assert!(body_page.truncated);
         }
 
-        // Phase `search_matches_subject_and_body_case_insensitively`.
         {
             let mut mb = Mailbox::default();
             mb.insert(msg("Launch Plan", 10, Folder::Inbox));

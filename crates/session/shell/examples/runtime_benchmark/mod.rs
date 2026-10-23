@@ -63,7 +63,6 @@ pub(super) fn run(
                 (WRITER, "place-image", Some(hash)),
             ] {
                 children.live()?;
-                // Resolve the current resource surface outside the timed action.
                 let discovery = Instant::now();
                 let (surface, operation) = wait_action(session, children, app, action)?;
                 let discovery_ns = discovery.elapsed().as_nanos();

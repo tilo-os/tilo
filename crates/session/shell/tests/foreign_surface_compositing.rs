@@ -222,7 +222,6 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
              (centre rgba{px:?} at ({cx}, {cy}), samples {samples:?}, rect {rect:?})"
         );
 
-        // A point well outside the tile keeps the shell's own chrome.
         let outside_y = u32_of_f64(rect.y0).saturating_sub(30).max(1);
         let out = OffscreenRenderer::sample(&after, W, cx, outside_y);
         assert!(

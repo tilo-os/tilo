@@ -649,7 +649,6 @@ async fn a_revisionless_invoke_an_owner_cannot_bind_is_refused() {
                 fixture.take_invocation_identity().is_none(),
                 "an unbound admission never reaches the owner"
             );
-            // The same owner admits the action at a revision the caller names.
             let named = directory_request(&fixture, Some("directory-r1"), None);
             admit_directory_invoke(&fixture, &named)
                 .await

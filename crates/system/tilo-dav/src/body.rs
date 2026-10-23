@@ -104,7 +104,6 @@ impl Namespaces {
     }
 }
 
-/// A PROPFIND body requesting `props`.
 pub fn propfind_body(props: &[PropName]) -> String {
     let mut ns = Namespaces::new(&[], props);
     let prop = ns.prop_element(props);
@@ -154,7 +153,6 @@ mod tests {
 
     #[test]
     fn request_bodies_are_well_formed_escaped_xml() {
-        // Phase `sync_collection_escapes_the_token_and_declares_used_namespaces`.
         {
             let body = sync_collection_body("a<&\"'>", &[props::GETETAG, props::CALENDAR_DATA]);
             assert_eq!(
@@ -164,7 +162,6 @@ mod tests {
     <D:sync-level>1</D:sync-level><D:prop><D:getetag/><C:calendar-data/></D:prop></D:sync-collection>"
             );
         }
-        // Phase `calendar_query_lists_the_whole_calendar_by_default`.
         {
             let body = calendar_query_body(&[props::GETETAG, props::CALENDAR_DATA], None);
             assert_eq!(
@@ -178,7 +175,6 @@ mod tests {
                     .contains("<C:comp-filter name=\"VCALENDAR\"><C:comp-filter name=\"VTODO\"/>")
             );
         }
-        // Phase `propfind_bodies_are_well_formed_xml`.
         {
             let propfind = propfind_body(&[
                 props::RESOURCETYPE,

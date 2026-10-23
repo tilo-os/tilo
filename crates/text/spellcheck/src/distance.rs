@@ -259,7 +259,6 @@ mod tests {
             ("empty_strings", "", "ab", 2, Some(2)),
             ("empty_strings", "ab", "", 2, Some(2)),
             ("empty_strings", "", "abc", 2, None),
-            // Distance exactly equal to the bound is accepted.
             ("bound_inclusive", "abc", "abd", 1, Some(1)),
             ("bound_inclusive", "abc", "xyz", 3, Some(3)),
             ("bound_inclusive", "abc", "xyz", 2, None),

@@ -196,7 +196,6 @@ pub struct TextLayer {
     lines: Vec<TextLine>,
     blocks: Vec<TextBlock>,
     text: String,
-    /// `byte_offsets[i]` is the byte offset of `chars[i]` in `text`.
     byte_offsets: Vec<usize>,
     /// Character and line boxes in layout space: the page before its own
     /// rotation, where lines run horizontally. Analysis and hit-testing
@@ -446,7 +445,6 @@ impl TextLayer {
         start..end
     }
 
-    /// The line containing position `pos`.
     #[must_use]
     pub fn line_range(&self, pos: usize) -> Range<usize> {
         self.chars

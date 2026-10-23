@@ -450,8 +450,6 @@ def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: l
     return status, lines, stats
 
 
-# --- The published runtime -------------------------------------------------
-
 Fetch = Callable[[str], bytes]
 
 
@@ -562,8 +560,6 @@ def published(entries: dict[str, Any], budget: Budget, base: str = REGISTRY,
                           **stats.metrics()}
     return status, lines, measured
 
-
-# --- The change -------------------------------------------------------------
 
 def shape_problems(budget: Budget) -> list[str]:
     problems = []

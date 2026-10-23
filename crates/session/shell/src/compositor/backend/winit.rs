@@ -122,11 +122,6 @@ struct RenderState {
 impl WinitBackend {
     /// Build the event loop + initial state; the window is created lazily
     /// on the first `resumed` callback.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if winit fails to create the platform event loop
-    /// (e.g. no display connection available).
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let event_loop = EventLoop::new()?;
         let outputs = vec![Output::new(OutputId(0), initial_size(), 1.0)];
@@ -693,7 +688,6 @@ mod tests {
 
     #[test]
     fn scale_factor_change_reaches_the_output_once_and_rejects_invalid_values() {
-        // Phase `scale_factor_change_updates_output_without_a_pixel_resize`.
         {
             let mut output = Output::new(OutputId(7), (1920, 1080), 1.0);
 
@@ -710,7 +704,6 @@ mod tests {
                 }
             ));
         }
-        // Phase `duplicate_or_invalid_scale_changes_are_ignored`.
         {
             let mut output = Output::new(OutputId(0), (1280, 720), 1.25);
             assert!(apply_scale_factor_changed(&mut output, 1.25).is_none());

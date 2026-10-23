@@ -409,7 +409,6 @@ mod tests {
     use super::*;
     #[test]
     fn treemap_layout_covers_positive_items_once_and_omits_invalid() {
-        // Case `layout_covers_each_positive_item_once`.
         {
             let mut map = Treemap::new(vec![
                 ChartItem::new("a", "A", 3.0),
@@ -420,7 +419,6 @@ mod tests {
             assert_eq!(map.layout().len(), 3);
         }
 
-        // Case `invalid_values_are_omitted`.
         {
             let map = Treemap::new(vec![
                 ChartItem::new("a", "A", f64::NAN),

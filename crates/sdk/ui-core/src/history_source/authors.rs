@@ -585,7 +585,6 @@ impl DeviceActors {
         }
     }
 
-    /// Whether the actor `actor_hex` wrote from this device.
     pub fn wrote(&self, actor_hex: &str) -> bool {
         actor_hex == self.writer
             || hex::decode(actor_hex).is_ok_and(|bytes| bytes.ends_with(&self.suffix))
@@ -858,7 +857,6 @@ mod tests {
         {
             let (bytes, public_key) = firstboot_identity_bytes("ada", [0, 255, 0]);
 
-            // The reader accepts what the writer produced, field for field.
             let id = runtime_identity::load_from_bytes(&bytes).expect("firstboot shape parses");
             assert_eq!(id.display_name(), "ada");
             assert_eq!(id.avatar_color(), [0, 255, 0]);
@@ -868,8 +866,6 @@ mod tests {
                 "the record must carry the key its own secret derives"
             );
 
-            // The production entry point turns the file into the row the timeline
-            // renders.
             let dir = tempfile::tempdir().expect("temp dir");
             let path = dir.path().join("primary.json");
             std::fs::write(&path, &bytes).expect("write identity");

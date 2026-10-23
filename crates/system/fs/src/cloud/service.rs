@@ -513,7 +513,6 @@ impl CloudService {
         mounts
     }
 
-    /// Send `message` to `account`'s mount.
     fn send_to(&mut self, account: &str, message: &ToMount) -> Result<(), String> {
         if self.import_holds.contains_key(account)
             && !matches!(message, ToMount::PrepareImport { .. })
@@ -1068,8 +1067,6 @@ fn prepare_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-// ---- mounts as child processes ---------------------------------------------
-
 /// Runs each mount as `fs mount-cloud` with a FUSE mount.
 pub struct ProcessLauncher {
     pub executable: PathBuf,
@@ -1218,8 +1215,6 @@ impl RunningMount for ChildMount {
     }
 }
 
-// ---- mounts in this process ------------------------------------------------
-
 /// Runs volumes in this process without a kernel mount. The volumes are
 /// reachable through [`InProcessLauncher::volume`].
 #[derive(Default, Clone)]
@@ -1334,8 +1329,6 @@ impl RunningMount for InProcessMount {
         Ok(())
     }
 }
-
-// ---- the mount process ------------------------------------------------------
 
 /// `fs mount-cloud`: read the spec and credential from stdin, mount the
 /// account at `mount_point` and serve until stdin closes.
