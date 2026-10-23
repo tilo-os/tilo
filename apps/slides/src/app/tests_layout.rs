@@ -1,5 +1,4 @@
-//! The editor's chrome at every width and text size: the toolbar, the
-//! slide rail and the inspector docking or folding into flaps, the inspector
+//! The editor's chrome at every width and text size: the slide rail and the inspector docking or folding into flaps, the inspector
 //! scrolling when it overflows, and wheels and scrollbars over the rail and
 //! the overview. View state only: nothing here edits the deck.
 //!
@@ -16,7 +15,7 @@ use super::bench::{Bench, deck_of};
 use super::editor_chrome::UiButton;
 use super::*;
 use ui::TextRole;
-use ui::widget::{ButtonFace, ControlSize};
+use ui::widget::ControlSize;
 
 /// The editor over one slide with a text box, for the chrome around it.
 fn layout_bench() -> Bench {
@@ -68,78 +67,21 @@ fn measure(app: &mut SlidesApp, w: f64, text_scale: f32) -> TextRenderer {
     tr
 }
 
-/// Toolbar controls other than the rail hamburger, left to right.
-fn toolbar_controls(chrome: &Chrome) -> Vec<&UiButton> {
-    let mut controls: Vec<&UiButton> = chrome
-        .buttons
-        .iter()
-        .enumerate()
-        .filter(|(index, button)| {
-            chrome.button_zone(*index) == super::editor_chrome::Zone::Content
-                && !matches!(button.hit, Hit::ToggleRail)
-                && button.rect.center().y < chrome.toolbar.y1
-        })
-        .map(|(_, button)| button)
-        .collect();
-    controls.sort_by(|a, b| a.rect.x0.total_cmp(&b.rect.x0));
-    controls
-}
-
-/// Toolbar/rail/inspector chrome density at 1x and 2x, narrow titles, large text and fitting pills/segments.
+/// Rail/inspector chrome density at 1x and 2x, narrow titles, large text and fitting pills/segments.
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "cases merged from separate tests; each case stays self-contained"
 )]
 fn chrome_density_follows_measured_text_at_every_width() {
-    // Case `title_yields_to_the_leftmost_placed_toolbar_control_at_480`.
-    // At 480 px the insert tools all move behind the overflow button, which
-    // is then pulled left of the nominal tool slot. The title must yield to
-    // that placed control, not to the slot — otherwise the ellipsis paints
-    // under the "⋯" button.
-    {
-        let mut bench = layout_bench();
-        bench.with(|app| {
-            let _tr = measure(app, 480.0, 1.0);
-            let chrome = app.compute_chrome();
-            let first = toolbar_controls(&chrome)
-                .first()
-                .map(|b| b.rect.x0)
-                .expect("toolbar controls");
-            assert!(
-                chrome.title_rect.x1 <= first + 0.01,
-                "title slot ends at {:.1} but a control starts at {first:.1}",
-                chrome.title_rect.x1
-            );
-            let title = chrome
-                .labels
-                .iter()
-                .find(|l| l.pos == chrome.title_pos)
-                .expect("title label");
-            let max_w = title.max_w.expect("title is elided at paint time");
-            assert!(max_w > 0.0, "480 px still shows a title fragment");
-            assert!(chrome.title_pos.x + max_w <= first - app.chrome_metrics.s3 + 0.01);
-        });
-    }
-
     // Case `one_x_chrome_density_is_unchanged`.
     // At 1× the measured chrome reproduces the classic density exactly:
-    // 56 px toolbar, 34 px pills, 30 px rail controls, 28 px inspector pills.
+    // regular rail controls and inspector pills.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
             let _tr = measure(app, NARROW_BREAKPOINT + 400.0, 1.0);
             let chrome = app.compute_chrome();
-            assert!((chrome.toolbar.height() - 56.0).abs() < 0.01, "toolbar");
-            let present = chrome
-                .buttons
-                .iter()
-                .find(|b| matches!(b.hit, Hit::Present))
-                .expect("Present");
-            assert!(
-                (present.rect.height() - ControlSize::Regular.height(&Theme::dark())).abs() < 0.01,
-                "toolbar pill"
-            );
             let add = chrome
                 .buttons
                 .iter()
@@ -166,8 +108,7 @@ fn chrome_density_follows_measured_text_at_every_width() {
     }
 
     // Case `two_x_chrome_rows_follow_measured_text`.
-    // At 2× every toolbar pill, rail control and inspector row follows the
-    // measured text: labels fit their slots, pills share one centre line,
+    // At 2× every rail control and inspector row follows the measured text: labels fit their slots, pills share one centre line,
     // and no section caption is painted under the control below it.
     {
         let mut bench = layout_bench();
@@ -180,55 +121,6 @@ fn chrome_density_follows_measured_text_at_every_width() {
             let chrome = app.compute_chrome();
             let m = app.chrome_metrics.clone();
             assert!(m.lh_label > 30.0, "2x control line box {}", m.lh_label);
-            assert!(
-                chrome.toolbar.height() >= m.lh_heading + 2.0 * m.s2 - 0.01
-                    && chrome.toolbar.height() > 56.0,
-                "toolbar grew to its two-line title block"
-            );
-
-            let controls = toolbar_controls(&chrome);
-            let centre = controls[0].rect.center().y;
-            for b in &controls {
-                assert!((b.rect.center().y - centre).abs() < 0.01, "one centre line");
-                let theme = Theme::dark().with_text_scale(2.0);
-                let size = if matches!(b.kind, ButtonKind::Tool { .. }) {
-                    ControlSize::Small
-                } else {
-                    ControlSize::Regular
-                };
-                assert!(
-                    b.rect.height() >= size.height(&theme) - 0.01,
-                    "the shared control fits its measured line and vertical padding"
-                );
-                assert!(
-                    b.rect.height()
-                        >= f64::from(size.label_style(&theme).line_height_px())
-                            + 2.0 * f64::from(theme.tokens.spacing.s1)
-                            - 0.01,
-                    "no control clips its label at 2x text size"
-                );
-                if let ButtonKind::Command { label, icon, .. } | ButtonKind::Tool { label, icon } =
-                    &b.kind
-                {
-                    let face = ButtonFace::new(Rect::ZERO, label).control_size(size);
-                    let face = match icon {
-                        Some(icon) => face.icon(*icon),
-                        None => face,
-                    };
-                    let width = face.intrinsic_width(&mut tr, &theme);
-                    assert!(
-                        b.rect.width() >= width - 0.01,
-                        "'{label}' needs {width:.1} for its full shared face, pill is {:.1}",
-                        b.rect.width()
-                    );
-                }
-            }
-            for pair in controls.windows(2) {
-                assert!(
-                    pair[0].rect.x1 <= pair[1].rect.x0 + 0.01,
-                    "toolbar controls never overlap"
-                );
-            }
 
             // Inspector: captions keep clear of the control that follows them,
             // and every text control is at least its line box tall.
@@ -335,29 +227,6 @@ fn chrome_density_follows_measured_text_at_every_width() {
         });
     }
 
-    // Case `phone_toolbar_elides_title_before_compact_controls`.
-    {
-        let mut bench = layout_bench();
-        bench.with(|app| {
-            size(app, 390.0, 800.0);
-            let chrome = app.compute_chrome();
-            let first_right_control = chrome
-                .buttons
-                .iter()
-                .filter(|button| {
-                    !matches!(button.hit, Hit::ToggleRail)
-                        && button.rect.center().y < chrome.toolbar.y1
-                })
-                .map(|button| button.rect.x0)
-                .min_by(f64::total_cmp)
-                .unwrap();
-            assert!(
-                chrome.title_rect.x1 <= first_right_control,
-                "the two-line title must not paint under compact toolbar controls"
-            );
-        });
-    }
-
     // Case `large_text_chrome_keeps_hidden_tools_on_discoverable_routes`.
     {
         let mut bench = Bench::sample();
@@ -365,24 +234,22 @@ fn chrome_density_follows_measured_text_at_every_width() {
             size(app, 1440.0, 960.0);
             app.text_scale = 2.0;
             let chrome = app.compute_chrome();
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|button| matches!(button.hit, Hit::ToggleToolbarMenu))
-            );
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|button| matches!(button.hit, Hit::ToggleInspector))
-            );
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|button| matches!(button.hit, Hit::Present))
-            );
+            let actions: Vec<String> = app
+                .window_toolbar()
+                .actions
+                .into_iter()
+                .map(|action| action.id)
+                .collect();
+            for id in [
+                window_bar::INSERT,
+                window_bar::PROPERTIES,
+                window_bar::PRESENT,
+            ] {
+                assert!(
+                    actions.iter().any(|action| action == id),
+                    "{id} stays in the window bar: {actions:?}"
+                );
+            }
             assert!(
                 chrome.slide_dest.width() > 600.0,
                 "large type keeps a practical authored-slide canvas"
@@ -498,13 +365,10 @@ fn rail_docks_wide_and_overlays_narrow() {
                 "canvas sits to the right of the docked rail"
             );
             assert_eq!(chrome.scrim.width(), 0.0, "no scrim while docked");
-            // No hamburger when the rail is docked + fully open.
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|b| matches!(b.hit, Hit::ToggleRail)),
-                "the docked rail retains its shared hide-sidebar control"
+            assert_eq!(
+                app.window_toolbar().sidebar,
+                Some(true),
+                "the window bar's sidebar toggle shows the docked rail open"
             );
         });
     }
@@ -534,13 +398,10 @@ fn rail_docks_wide_and_overlays_narrow() {
                 0.0,
                 "no scrim while the flap is closed"
             );
-            // A hamburger is offered to summon it.
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|b| matches!(b.hit, Hit::ToggleRail)),
-                "narrow layout offers a hamburger to summon the rail"
+            assert_eq!(
+                app.window_toolbar().sidebar,
+                Some(false),
+                "the window bar's sidebar toggle summons the rail"
             );
         });
     }
@@ -570,27 +431,24 @@ fn rail_docks_wide_and_overlays_narrow() {
                 chrome.scrim.width() > 0.0,
                 "an open overlay flap dims the body"
             );
-            assert!(
-                chrome.buttons.iter().any(|button| {
-                    matches!(&button.kind, ButtonKind::Icon { name, .. } if name == &tr("slides-hide-slides"))
-                        && matches!(button.hit, Hit::ToggleRail)
-                }),
-                "the open overlay has a named Hide slides control in its own header"
+            assert_eq!(
+                app.window_toolbar().sidebar,
+                Some(true),
+                "the window bar's sidebar toggle shows the open drawer"
             );
         });
     }
 
-    // Case `hamburger_hit_toggles_the_overlay_flap`.
+    // Case `the_slide_list_toggle_opens_and_closes_the_overlay_flap`.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
             size(app, NARROW_BREAKPOINT - 200.0, 800.0);
             assert!(!app.rail_open());
-            // Drive the real action dispatcher, not a private setter.
-            app.apply_hit(Hit::ToggleRail);
-            assert!(app.rail_open(), "ToggleRail opens the collapsed flap");
-            app.apply_hit(Hit::ToggleRail);
-            assert!(!app.rail_open(), "ToggleRail closes it again");
+            app.toggle_rail_flap();
+            assert!(app.rail_open(), "the toggle opens the collapsed flap");
+            app.toggle_rail_flap();
+            assert!(!app.rail_open(), "the toggle closes it again");
         });
     }
 }
@@ -636,14 +494,13 @@ fn inspector_docks_wide_and_overlays_narrow() {
                 chrome.inspector.area() == 0.0,
                 "closed inspector has no exposed panel geometry"
             );
-            // A toggle is offered to summon it.
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|b| matches!(b.hit, Hit::ToggleInspector)),
-                "narrow layout offers an inspector toggle"
-            );
+            let properties = app
+                .window_toolbar()
+                .actions
+                .into_iter()
+                .find(|action| action.id == window_bar::PROPERTIES)
+                .expect("the window bar offers the properties' toggle");
+            assert!(!properties.on, "the toggle shows the properties closed");
         });
     }
 
@@ -653,14 +510,10 @@ fn inspector_docks_wide_and_overlays_narrow() {
         bench.with(|app| {
             size(app, INSPECTOR_BREAKPOINT - 120.0, 800.0);
             assert!(!app.inspector_open());
-            // Drive the real action dispatcher, not a private setter.
-            app.apply_hit(Hit::ToggleInspector);
-            assert!(
-                app.inspector_open(),
-                "ToggleInspector opens the collapsed flap"
-            );
-            app.apply_hit(Hit::ToggleInspector);
-            assert!(!app.inspector_open(), "ToggleInspector closes it again");
+            app.toggle_inspector_flap();
+            assert!(app.inspector_open(), "the toggle opens the collapsed flap");
+            app.toggle_inspector_flap();
+            assert!(!app.inspector_open(), "the toggle closes it again");
         });
     }
 }
@@ -679,16 +532,18 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
                 chrome.slide_dest.width() > 700.0,
                 "closed drawers leave a useful slide canvas at compact laptop widths"
             );
+            let toolbar = app.window_toolbar();
+            assert_eq!(
+                toolbar.sidebar,
+                Some(false),
+                "the slide list has its toggle"
+            );
             assert!(
-                chrome
-                    .buttons
+                toolbar
+                    .actions
                     .iter()
-                    .any(|button| matches!(button.hit, Hit::ToggleRail))
-                    && chrome
-                        .buttons
-                        .iter()
-                        .any(|button| matches!(button.hit, Hit::ToggleInspector)),
-                "both drawers retain explicit toolbar controls"
+                    .any(|action| action.id == window_bar::PROPERTIES),
+                "the properties have their toggle"
             );
         });
     }
@@ -698,10 +553,10 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
         let mut bench = layout_bench();
         bench.with(|app| {
             size(app, 820.0, 800.0);
-            app.apply_hit(Hit::ToggleRail);
+            app.toggle_rail_flap();
             assert!(app.rail_open());
             assert!(!app.inspector_open());
-            app.apply_hit(Hit::ToggleInspector);
+            app.toggle_inspector_flap();
             assert!(app.inspector_open(), "properties drawer opens");
             assert!(
                 !app.rail_open(),
@@ -717,7 +572,7 @@ fn compact_editor_drawers_and_breakpoint_reflow() {
             size(app, NARROW_BREAKPOINT - 200.0, 800.0);
             // User opens the flap while narrow.
             app.rail_drawer.resolve(app.rect);
-            app.apply_hit(Hit::ToggleRail);
+            app.toggle_rail_flap();
             assert!(app.rail_open());
             // Widen past the breakpoint: the stale preference drops and the rail
             // adopts the docked default (open). Then narrow again → closed default.
@@ -893,7 +748,7 @@ fn inspector_scrolls_only_when_it_overflows() {
     // The inspector in the 2× narrow-inspector scenario overflows, and every
     // control the pointer can see is inside the panel; scrolling to the end
     // brings the last section and the notes box into the viewport, while what
-    // scrolled off the top is culled rather than painted over the toolbar.
+    // scrolled off the top is culled rather than painted over the heading.
     {
         let mut bench = layout_bench();
         bench.with(|app| {
@@ -957,30 +812,19 @@ fn inspector_scrolls_only_when_it_overflows() {
             "arrange row {:?} inside {inspector:?}",
             arrange.rect
         );
-        // The FILL swatches scrolled off the top and were culled: no panel item
-        // has its centre above the panel, so none can be painted over the toolbar
-        // by the base-chrome pass (which paints everything `in_inspector` rejects).
+        // The FILL swatches scrolled off the top and were culled: every panel
+        // item kept has its centre inside the panel.
         for b in scrolled
             .buttons
             .iter()
             .filter(|b| in_span(b.rect.center().x))
         {
-            let toolbar_control = b.rect.center().y < scrolled.toolbar.y1;
             assert!(
-                toolbar_control || SlidesApp::in_inspector(&scrolled, b.rect.center()),
-                "{} at {:?} is neither toolbar chrome nor inside the panel",
+                SlidesApp::in_inspector(&scrolled, b.rect.center()),
+                "{} at {:?} is outside the panel",
                 app.semantic_target(&b.hit),
                 b.rect
             );
-            if toolbar_control {
-                assert!(
-                    b.rect.y0 >= scrolled.toolbar.y0 - 0.01
-                        && b.rect.y1 <= scrolled.toolbar.y1 + 0.01,
-                    "a scrolled-off panel control {} at {:?} leaked into the toolbar band",
-                    app.semantic_target(&b.hit),
-                    b.rect
-                );
-            }
         }
         assert!(
             !scrolled
@@ -992,7 +836,7 @@ fn inspector_scrolls_only_when_it_overflows() {
         // The embedded font-size field follows the same rule as the buttons: it
         // had a slot unscrolled, and once its TYPE row leaves the panel it has
         // none — so `position_inspector_widgets` parks it instead of leaving a
-        // stale rect in the toolbar band.
+        // stale rect over the panel's heading.
         assert!(
             chrome.font_input_rect.is_some(),
             "TYPE row is present unscrolled"
@@ -1004,18 +848,22 @@ fn inspector_scrolls_only_when_it_overflows() {
             ),
             None => {
                 app.position_inspector_widgets(&scrolled);
+                let heading = Rect::new(
+                    inspector.x0,
+                    inspector.y0,
+                    inspector.x1,
+                    scrolled.inspector_body.y0,
+                );
                 assert!(
-                    !app.font_input
-                        .get_rect()
-                        .contains(scrolled.toolbar.center()),
-                    "a culled field must not keep a rect under the toolbar"
+                    !app.font_input.get_rect().contains(heading.center()),
+                    "a culled field must not keep a rect over the panel's heading"
                 );
             }
         }
         for l in scrolled
             .labels
             .iter()
-            .filter(|l| in_span(l.pos.x) && l.pos.y >= scrolled.toolbar.y1)
+            .filter(|l| in_span(l.pos.x))
         {
             assert!(
                 l.pos.y >= inspector.y0 - 0.01,
@@ -1087,7 +935,7 @@ fn inspector_scrolls_only_when_it_overflows() {
 }
 
 /// Every chrome label the app lays out resolves through the fluent bundle:
-/// the measured label set carries real text, not keys, and the toolbar's
+/// the measured label set carries real text, not keys, and the window bar's
 /// insert tools read as words.
 #[test]
 fn chrome_labels_are_fluent_resolved_text() {
@@ -1105,15 +953,19 @@ fn chrome_labels_are_fluent_resolved_text() {
             .buttons
             .iter()
             .filter_map(|b| match &b.kind {
-                ButtonKind::Command { label, .. } | ButtonKind::Tool { label, .. } => {
-                    Some(label.clone())
-                }
+                ButtonKind::Command { label, .. } => Some(label.clone()),
                 _ => None,
             })
             .collect();
-        assert!(faces.iter().any(|f| f == "Present"), "{faces:?}");
-        assert!(faces.iter().any(|f| f == "Rectangle"), "{faces:?}");
         assert!(faces.iter().all(|f| !f.starts_with("slides-")), "{faces:?}");
+        let insert = app
+            .window_toolbar()
+            .actions
+            .into_iter()
+            .find(|action| action.id == window_bar::INSERT)
+            .expect("the window bar's Insert menu");
+        let tools: Vec<String> = insert.items.into_iter().map(|item| item.name).collect();
+        assert_eq!(tools, ["Text", "Rectangle", "Ellipse", "Line", "Image"]);
         for l in &chrome.labels {
             assert!(
                 !l.text.starts_with("slides-"),
