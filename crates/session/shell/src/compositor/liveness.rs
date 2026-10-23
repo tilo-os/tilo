@@ -138,6 +138,11 @@ pub enum Answer {
         ticks: u64,
         /// How long it took this one.
         latency_ms: f64,
+        /// The main thread halfway through the budget, when it had not
+        /// acknowledged by then and had used almost no CPU: a loop that
+        /// blocked for a while and came back, with where it waited.
+        #[serde(default)]
+        halfway: Option<ThreadReport>,
     },
     Stalled {
         /// What the request allowed.
@@ -156,6 +161,12 @@ pub enum Answer {
         #[serde(default)]
         main_thread_starved_ms: u64,
         threads: Vec<ThreadReport>,
+        /// The main thread halfway through the budget, while it was still
+        /// not acknowledging and had used almost no CPU: where a blocked loop
+        /// waits. The dump in `threads` comes after the budget, by when a
+        /// loop that was blocked for a while may be back in its poll.
+        #[serde(default)]
+        halfway: Option<ThreadReport>,
     },
     Threads(Vec<ThreadReport>),
     /// The main-thread file audit is armed.
@@ -220,8 +231,15 @@ impl Beat {
         self.wake.notify_all();
     }
 
-    /// Ask the loop to acknowledge and wait up to `budget` for it.
-    fn heartbeat(&self, ping: &calloop::ping::Ping, budget: Duration) -> Option<Duration> {
+    /// Ask the loop to acknowledge and wait up to `budget` for it. `halfway`
+    /// runs once, without the lock held, if it has not acknowledged by half
+    /// the budget.
+    fn heartbeat(
+        &self,
+        ping: &calloop::ping::Ping,
+        budget: Duration,
+        mut halfway: impl FnMut(),
+    ) -> Option<Duration> {
         let started = Instant::now();
         let want = self
             .requested
@@ -232,9 +250,18 @@ impl Beat {
         self.sent.fetch_max(want, Ordering::SeqCst);
         trace_wake("ping-returned", want);
         let deadline = started.checked_add(budget)?;
+        let mut half = budget
+            .checked_div(2)
+            .and_then(|half| started.checked_add(half));
         let mut acked = self.acked.lock();
         while *acked < want {
-            if self.wake.wait_until(&mut acked, deadline).timed_out() && *acked < want {
+            let until = half.unwrap_or(deadline);
+            if self.wake.wait_until(&mut acked, until).timed_out() && *acked < want {
+                if half.take().is_some() {
+                    trace_wake("heartbeat-halfway", want);
+                    parking_lot::MutexGuard::unlocked(&mut acked, &mut halfway);
+                    continue;
+                }
                 trace_wake("heartbeat-timeout", want);
                 return None;
             }
@@ -340,7 +367,7 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
             Ok(Request::ForbidMainThreadFiles) => {
                 beat.arm_requested.store(true, Ordering::SeqCst);
                 // The loop arms the audit before it acknowledges this beat.
-                match beat.heartbeat(ping, MAX_BUDGET) {
+                match beat.heartbeat(ping, MAX_BUDGET, || {}) {
                     Some(_) => match main_thread_files::report() {
                         Ok(_) => Answer::Armed,
                         Err(error) => Answer::Err(error),
@@ -370,11 +397,32 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
 fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -> Answer {
     let cpu_before = main_thread_cpu_ms();
     let starved_before = main_thread_starved_ms();
-    if let Some(latency) = beat.heartbeat(ping, budget) {
-        return Answer::Alive {
+    let mut halfway = None;
+    let sample_halfway = || {
+        // A loop that computed through half the budget is slow, not
+        // blocked, and may be inside the allocator: leave it alone.
+        let computed = main_thread_cpu_ms().saturating_sub(cpu_before);
+        let quarter_of_half = u64::try_from(budget.as_millis() / 8).unwrap_or(u64::MAX);
+        if computed < quarter_of_half {
+            halfway = Some(sample_main_thread());
+        }
+    };
+    if let Some(latency) = beat.heartbeat(ping, budget, sample_halfway) {
+        let answer = Answer::Alive {
             ticks: beat.ticks(),
             latency_ms: latency.as_secs_f64() * 1000.0,
+            halfway,
         };
+        if let Answer::Alive {
+            halfway: Some(_), ..
+        } = &answer
+        {
+            eprintln!(
+                "tilo compositor: main loop came back late\n{}",
+                render(&answer)
+            );
+        }
+        return answer;
     }
     // Before the dump: it takes time of its own.
     let main_thread_cpu_ms = main_thread_cpu_ms().saturating_sub(cpu_before);
@@ -388,6 +436,7 @@ fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -
         main_thread_cpu_ms,
         main_thread_starved_ms,
         threads: Vec::new(),
+        halfway,
     };
     // A loop still working is slow and will be asked again; interrupting it
     // could stop it inside the allocator for good (see the module docs).
@@ -420,6 +469,7 @@ pub fn render(answer: &Answer) -> String {
             main_thread_cpu_ms,
             main_thread_starved_ms,
             threads,
+            halfway: _,
         } => (
             format!(
                 "main loop did not acknowledge a wake within {budget_ms} ms (acknowledged {ticks} \
@@ -436,8 +486,22 @@ pub fn render(answer: &Answer) -> String {
             threads,
         ),
         Answer::Threads(threads) => ("threads".to_string(), threads),
-        Answer::Alive { ticks, latency_ms } => {
-            return format!("main loop alive: {ticks} ticks, last wake took {latency_ms:.1} ms");
+        Answer::Alive {
+            ticks,
+            latency_ms,
+            halfway,
+        } => {
+            let mut out =
+                format!("main loop alive: {ticks} ticks, last wake took {latency_ms:.1} ms");
+            if let Some(thread) = halfway {
+                let _ = write!(
+                    out,
+                    "; halfway through the budget the main thread {} \"{}\" was in state {} \
+                     waiting in {}\n{}",
+                    thread.tid, thread.name, thread.state, thread.wait, thread.backtrace
+                );
+            }
+            return out;
         }
         Answer::Err(message) => return message.clone(),
         Answer::Armed => return "main-thread file audit armed".to_string(),
@@ -454,6 +518,18 @@ pub fn render(answer: &Answer) -> String {
         }
     };
     let mut out = head;
+    if let Answer::Stalled {
+        halfway: Some(thread),
+        ..
+    } = answer
+    {
+        let _ = write!(
+            out,
+            "\n\nhalfway through the budget, the main thread {} \"{}\" was in state {} \
+             waiting in {}\n{}",
+            thread.tid, thread.name, thread.state, thread.wait, thread.backtrace
+        );
+    }
     for thread in threads {
         let _ = write!(
             out,
@@ -759,6 +835,31 @@ fn capture_thread(tid: i32) -> Option<Backtrace> {
     None
 }
 
+/// The main thread's state and, where it may be interrupted
+/// ([`not_interruptible`]), its backtrace, under the system call it is in.
+fn sample_main_thread() -> ThreadReport {
+    // SAFETY: `getpid` takes no arguments and cannot fail.
+    let main = unsafe { libc::getpid() };
+    let syscall = std::fs::read_to_string(format!("/proc/self/task/{main}/syscall"));
+    let why = match &syscall {
+        Ok(syscall) => not_interruptible(syscall),
+        Err(_) => not_interruptible_waiting_in(
+            std::fs::read_to_string(format!("/proc/self/task/{main}/wchan"))
+                .unwrap_or_default()
+                .trim(),
+        ),
+    };
+    let frames = match why {
+        Some(why) => format!("not interrupted: {why}"),
+        None => capture_thread(main).map_or_else(
+            || "no backtrace: the main thread did not answer the capture signal".into(),
+            |backtrace| frames_of(&backtrace),
+        ),
+    };
+    let syscall = syscall.map_or_else(|_| "unreadable".to_string(), |line| line.trim().to_string());
+    report(main, format!("system call: {syscall}\n{frames}"))
+}
+
 /// Revisit a main thread initially observed running while other threads were
 /// being signalled. It can already be asleep by the time their stacks arrive.
 /// Keep the same allocator exclusions and the existing overall dump deadline.
@@ -840,7 +941,41 @@ mod tests {
             main_thread_cpu_ms: cpu,
             main_thread_starved_ms: starved,
             threads: Vec::new(),
+            halfway: None,
         }
+    }
+
+    #[test]
+    fn a_blocked_loop_is_sampled_halfway_through_the_budget() {
+        install_capture_handler();
+        // Nothing acknowledges: the loop is as blocked as it can be. The
+        // process's main thread meanwhile waits for this test, in a system
+        // call it may be interrupted in.
+        let beat = Beat {
+            requested: AtomicU64::new(0),
+            sent: AtomicU64::new(0),
+            acked: Mutex::new(0),
+            wake: Condvar::new(),
+            arm_requested: std::sync::atomic::AtomicBool::new(false),
+        };
+        let (ping, _source) = calloop::ping::make_ping().unwrap();
+        let answer = heartbeat_answer(&beat, &ping, Duration::from_millis(200));
+        let Answer::Stalled {
+            halfway: Some(halfway),
+            ..
+        } = &answer
+        else {
+            panic!("a stall without its halfway sample: {answer:?}");
+        };
+        // SAFETY: `getpid` takes no arguments and cannot fail.
+        assert_eq!(halfway.tid, unsafe { libc::getpid() });
+        assert!(
+            halfway.backtrace.starts_with("system call: ")
+                && !halfway.backtrace.contains("not interrupted")
+                && !halfway.backtrace.contains("no backtrace"),
+            "the waiting main thread's stack: {halfway:#?}"
+        );
+        assert!(render(&answer).contains("halfway through the budget"));
     }
 
     #[test]
@@ -993,7 +1128,7 @@ mod tests {
                 .unwrap();
         });
         let request = |beat: Arc<Beat>, ping: calloop::ping::Ping| {
-            std::thread::spawn(move || beat.heartbeat(&ping, DEFAULT_BUDGET))
+            std::thread::spawn(move || beat.heartbeat(&ping, DEFAULT_BUDGET, || {}))
         };
         let first = request(Arc::clone(&beat), ping.clone());
         tilo_test_env::recv("the first heartbeat's acknowledgement", &acked_rx);
