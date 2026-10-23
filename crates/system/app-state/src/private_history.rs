@@ -183,9 +183,14 @@ impl PrivateHistory {
         if self.revision.is_none() && self.entries.is_empty() {
             return Ok(());
         }
-        self.store
-            .flush(Some(&self.key))
-            .map_err(|error| error.to_string())
+        match self.store.flush_where_allowed(&self.key) {
+            Ok(()) => Ok(()),
+            // Started on a thread that must not wait; `durability` follows it.
+            Err(durable_store::StoreError::Pending(_)) if durable_store::waiting::forbidden() => {
+                Ok(())
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
     pub(crate) fn durability(&self) -> Durability {
         if let Some(error) = &self.error {

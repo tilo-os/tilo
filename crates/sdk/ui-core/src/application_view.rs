@@ -279,7 +279,9 @@ impl InstanceViewStore {
         self.store
             .write(&key, WriteOp::Replace(bytes), None)
             .map_err(storage_error)?;
-        match self.store.flush(Some(&key)) {
+        // Never waits on the frame loop: there the store commits on its own
+        // thread, and a later read already sees the saved View.
+        match self.store.flush_where_allowed(&key) {
             Ok(()) | Err(StoreError::Pending(_)) => Ok(()),
             Err(error) => Err(storage_error(error)),
         }

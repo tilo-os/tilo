@@ -751,13 +751,14 @@ impl DocStore {
         Ok(self.owner.stored()?.is_some())
     }
 
-    /// Submit one write through the owner and wait for its outcome.
+    /// Submit one write through the owner and, where this thread may wait on
+    /// storage, wait for its outcome.
     fn commit(&self, op: WriteOp) -> Result<(), StoreError> {
         let store = self.owner.store();
         let key = self.owner.key();
         let writer = self.owner.unstored_writer();
         let revision = store.write(key, op, writer.as_deref())?;
-        match store.flush(Some(key)) {
+        match store.flush_where_allowed(key) {
             Ok(()) | Err(durable_store::StoreError::Pending(_)) => {}
             Err(error) => return Err(error.into()),
         }
