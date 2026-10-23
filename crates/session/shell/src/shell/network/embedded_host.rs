@@ -105,6 +105,39 @@ fn waiting(
 }
 
 impl ShellNetwork {
+    /// This device's room host, while it is open.
+    pub(crate) fn room_host(&self) -> Option<Arc<RoomHost>> {
+        self.embedded_host.host.as_ref()?.get()
+    }
+
+    /// Whether a room hosted here has a member device other than this one:
+    /// then others dial this device, and it stays reachable. A host whose
+    /// rooms only this device holds stays dark.
+    pub(super) fn hosts_other_members(&self) -> bool {
+        if self.room_host().is_none() {
+            return false;
+        }
+        let Some(owner) = self.opened_native_owner() else {
+            return false;
+        };
+        let own = *self.local_peer_id.as_bytes();
+        owner.rooms().into_iter().any(|room| {
+            owner
+                .with_current(room, |view| {
+                    let hosted_here = view
+                        .transport_hint()
+                        .is_ok_and(|hint| tilo_joined_room::session::hosted_by(hint, &own));
+                    Ok(hosted_here
+                        && view
+                            .peer()
+                            .certificates()
+                            .iter()
+                            .any(|cert| cert.device_public_key != own))
+                })
+                .unwrap_or(false)
+        })
+    }
+
     /// Where this device's host keeps its rooms.
     fn host_state_root(&self) -> Result<PathBuf, String> {
         let replica = self
