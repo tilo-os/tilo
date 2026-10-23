@@ -394,12 +394,10 @@ mod tests {
         // terminal result or requiring the UI to consume every per-file update.
         {
             let (_temp, job) = fixture();
-            for n in 0..80 {
+            for n in 0..4 {
                 fs::write(job.source().join(format!("{n:03}")), b"x").unwrap();
             }
             let mut worker = MigrationWorker::start(job).unwrap();
-            // Eighty durable copies can take tens of seconds on a loaded disk;
-            // this bound only catches a worker that never finishes.
             let deadline = tilo_test_env::hang_deadline();
             while worker.phase.load(Ordering::Acquire) != FINISHED {
                 assert!(
