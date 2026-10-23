@@ -937,3 +937,40 @@ fn a_muted_microphone_on_a_device_without_one_says_so() {
         "and its tooltip says so"
     );
 }
+
+#[test]
+fn the_docked_call_shows_the_other_person_large_and_follows_who_speaks() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    render_frame(&mut app, 1280.0, 800.0);
+    let me = app.me.id.clone();
+    assert_eq!(app.huddle_people(), vec![me.clone()], "alone: yourself");
+    assert!(app.huddle_features_me());
+
+    service_streams(&mut app, "c_huddle", 2);
+    render_frame(&mut app, 1280.0, 800.0);
+    let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
+    let people = app.huddle_people();
+    assert_eq!(people[0], first, "with company: someone else is large");
+    assert!(people[1..].contains(&me), "yourself goes small");
+    assert!(!app.huddle_features_me());
+
+    app.native_voice.snapshot.speaking = vec![second.clone()];
+    app.refresh_native_streams();
+    render_frame(&mut app, 1280.0, 800.0);
+    assert_eq!(app.huddle_people()[0], second, "who speaks is large");
+
+    app.native_voice.snapshot.speaking.clear();
+    app.refresh_native_streams();
+    render_frame(&mut app, 1280.0, 800.0);
+    assert_eq!(app.huddle_people()[0], second, "a pause keeps them large");
+
+    app.native_voice.snapshot.speaking = vec![me.clone()];
+    app.refresh_native_streams();
+    render_frame(&mut app, 1280.0, 800.0);
+    assert_eq!(
+        app.huddle_people()[0],
+        second,
+        "speaking yourself changes nothing"
+    );
+}
