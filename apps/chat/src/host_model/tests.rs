@@ -115,7 +115,11 @@ fn mounted_reply(
 #[test]
 fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuation() {
     for final_only in [false, true] {
-        let oversized = format!("a{}", "🦀".repeat(crate::record::MAX_MESSAGE_TEXT_BYTES));
+        // Two-byte characters after a one-byte lead put the byte limit in the
+        // middle of a character, which is what the truncation must respect.
+        // Emoji would too, but laying out sixteen thousand of them made this
+        // the slowest test in the app without testing anything more.
+        let oversized = format!("a{}", "é".repeat(crate::record::MAX_MESSAGE_TEXT_BYTES));
         let backend = backend(if final_only { "" } else { &oversized });
         if final_only {
             *backend.final_text.borrow_mut() = Some(oversized.clone());
