@@ -8,6 +8,7 @@ use agent_provider_config::{
     protocol::Conversation,
 };
 use std::os::fd::AsFd as _;
+use tilo_test_env::within;
 
 struct Grant(Caller, bool);
 impl Session for Grant {
@@ -193,13 +194,20 @@ async fn lists_models_with_the_stored_key(
 
 async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<T>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let first = configure(
-        admin,
-        format!("http://{}/v1", listener.local_addr().unwrap()),
+    let first = within(
+        "configuring the provider and its key",
+        configure(
+            admin,
+            format!("http://{}/v1", listener.local_addr().unwrap()),
+        ),
     )
     .await;
     let profile = first.config.profiles[0].clone();
-    lists_models_with_the_stored_key(admin, &listener, &profile).await;
+    within(
+        "listing the provider's models",
+        lists_models_with_the_stored_key(admin, &listener, &profile),
+    )
+    .await;
     let (began, mut started) = tokio::sync::mpsc::channel(1);
     let (release, released) = tokio::sync::oneshot::channel();
     let provider = tokio::spawn(async move {
@@ -246,29 +254,50 @@ async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<
         release.send(()).unwrap();
         updated
     };
-    let (answer, updated) = tokio::join!(model.complete_once(&request), update);
+    let (answer, updated) = within("a turn across an edit of the default model", async {
+        tokio::join!(model.complete_once(&request), update)
+    })
+    .await;
     answer.unwrap();
-    model.complete_once(&request).await.unwrap();
-    provider.await.unwrap();
-    admin.remove_api_key(profile.id.clone()).await.unwrap();
-    assert_eq!(
-        admin.credential_status(profile.id.clone()).await.unwrap(),
-        CredentialStatus::Missing
-    );
-    assert_eq!(
-        model.complete_once(&request).await.unwrap_err().kind,
-        ErrorKind::Authentication
-    );
-    assert_eq!(
-        admin
-            .list_models(profile.id.clone())
-            .await
-            .unwrap_err()
-            .kind,
-        ErrorKind::Authentication
-    );
-    cleanup(admin, &profile, updated).await;
-    signed_metadata_stays_owned_by_provisioner(admin).await;
+    within(
+        "a turn on the edited default",
+        model.complete_once(&request),
+    )
+    .await
+    .unwrap();
+    within("the provider's second answer", provider)
+        .await
+        .unwrap();
+    within("removing the key", async {
+        admin.remove_api_key(profile.id.clone()).await.unwrap();
+        assert_eq!(
+            admin.credential_status(profile.id.clone()).await.unwrap(),
+            CredentialStatus::Missing
+        );
+        assert_eq!(
+            model.complete_once(&request).await.unwrap_err().kind,
+            ErrorKind::Authentication
+        );
+        assert_eq!(
+            admin
+                .list_models(profile.id.clone())
+                .await
+                .unwrap_err()
+                .kind,
+            ErrorKind::Authentication
+        );
+    })
+    .await;
+    within(
+        "the legacy key and refused edits",
+        cleanup(admin, &profile, updated),
+    )
+    .await;
+    within(
+        "signed metadata staying the provisioner's",
+        signed_metadata_stays_owned_by_provisioner(admin),
+    )
+    .await;
 }
 
 async fn cleanup(
@@ -490,38 +519,41 @@ async fn child(http: bool) {
             }
         });
         for token in ["agent", "chat", "settings"] {
-            let denied = AdministrationClient::new(Http {
-                url: url.clone(),
-                token,
-            });
-            assert_eq!(
-                denied.get_config().await.unwrap_err().kind,
-                ErrorKind::PermissionDenied
-            );
-            assert_eq!(
-                denied
-                    .set_config("stale".into(), ProviderConfig::default())
-                    .await
-                    .unwrap_err()
-                    .kind,
-                ErrorKind::PermissionDenied
-            );
-            assert_eq!(
-                denied
-                    .set_api_key("test-provider".into(), "write-only-test-key".into())
-                    .await
-                    .unwrap_err()
-                    .kind,
-                ErrorKind::PermissionDenied
-            );
-            assert_eq!(
-                denied
-                    .list_models("test-provider".into())
-                    .await
-                    .unwrap_err()
-                    .kind,
-                ErrorKind::PermissionDenied
-            );
+            within(format!("{token} being refused administration"), async {
+                let denied = AdministrationClient::new(Http {
+                    url: url.clone(),
+                    token,
+                });
+                assert_eq!(
+                    denied.get_config().await.unwrap_err().kind,
+                    ErrorKind::PermissionDenied
+                );
+                assert_eq!(
+                    denied
+                        .set_config("stale".into(), ProviderConfig::default())
+                        .await
+                        .unwrap_err()
+                        .kind,
+                    ErrorKind::PermissionDenied
+                );
+                assert_eq!(
+                    denied
+                        .set_api_key("test-provider".into(), "write-only-test-key".into())
+                        .await
+                        .unwrap_err()
+                        .kind,
+                    ErrorKind::PermissionDenied
+                );
+                assert_eq!(
+                    denied
+                        .list_models("test-provider".into())
+                        .await
+                        .unwrap_err()
+                        .kind,
+                    ErrorKind::PermissionDenied
+                );
+            })
+            .await;
         }
         lifecycle(
             &AdministrationClient::new(Http {
@@ -540,21 +572,24 @@ async fn child(http: bool) {
         server.abort();
     } else {
         for app in [AGENT_APP, CHAT_APP] {
-            let (transport, server) = fd(app);
-            let denied = AdministrationClient::new(transport);
-            assert_eq!(
-                denied.get_config().await.unwrap_err().kind,
-                ErrorKind::PermissionDenied
-            );
-            assert_eq!(
-                denied
-                    .set_config("stale".into(), ProviderConfig::default())
-                    .await
-                    .unwrap_err()
-                    .kind,
-                ErrorKind::PermissionDenied
-            );
-            server.abort();
+            within(format!("{app} being refused administration"), async {
+                let (transport, server) = fd(app);
+                let denied = AdministrationClient::new(transport);
+                assert_eq!(
+                    denied.get_config().await.unwrap_err().kind,
+                    ErrorKind::PermissionDenied
+                );
+                assert_eq!(
+                    denied
+                        .set_config("stale".into(), ProviderConfig::default())
+                        .await
+                        .unwrap_err()
+                        .kind,
+                    ErrorKind::PermissionDenied
+                );
+                server.abort();
+            })
+            .await;
         }
         let (management, server) = fd(SETTINGS_APP);
         let (inference, infer_server) = fd(AGENT_APP);
@@ -565,45 +600,58 @@ async fn child(http: bool) {
         .await;
         server.abort();
         infer_server.abort();
-        mutation_stop_waits_for_commit().await;
+        within(
+            "a stopped edit waiting for its commit",
+            mutation_stop_waits_for_commit(),
+        )
+        .await;
     }
 }
 
-#[test]
-fn provider_administration_http_and_fd_end_to_end() {
+/// Run the end-to-end administration test `name` over `kind` (`http` or
+/// `fd`) in a process of its own, with disposable configuration. Each step
+/// of it is bounded as a hang on its own ([`within`]): the run is a long
+/// chain of durable settings and vault writes, each syncing its directories,
+/// and on a contended disk the chain as a whole takes minutes while every
+/// step still moves.
+fn administration_end_to_end(name: &str, kind: &str) {
     const MARKER: &str = "PROVIDER_ADMIN_TEST_CHILD";
-    if let Ok(kind) = std::env::var(MARKER) {
+    if std::env::var_os(MARKER).is_some() {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
-            .block_on(async {
-                tokio::time::timeout(Duration::from_secs(120), child(kind == "http"))
-                    .await
-                    .unwrap();
-            });
+            .block_on(child(kind == "http"));
         return;
     }
-    for kind in ["http", "fd"] {
-        let root = tempfile::tempdir().unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "service::administration_tests::provider_administration_http_and_fd_end_to_end",
-                "--nocapture",
-            ])
-            .env_clear()
-            .env("PATH", root.path())
-            .env("XDG_CONFIG_HOME", root.path())
-            .env(MARKER, kind)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{kind}: {}: {} {}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let root = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("service::administration_tests::{name}"),
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("PATH", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env(MARKER, kind)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{kind}: {}: {} {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn provider_administration_over_http_end_to_end() {
+    administration_end_to_end("provider_administration_over_http_end_to_end", "http");
+}
+
+#[test]
+fn provider_administration_over_fd_end_to_end() {
+    administration_end_to_end("provider_administration_over_fd_end_to_end", "fd");
 }
