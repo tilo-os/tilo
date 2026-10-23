@@ -142,9 +142,97 @@ impl Instruction {
 /// The answer that means "no exported action does what was asked".
 pub const NOTHING_FITS: &str = "none";
 
+/// What a plan writes for content a step before it in the same task
+/// produces (a picture an export makes), whose address no plan can know
+/// before that step has run.
+pub const LATEST_CONTENT: &str = "tilo.content:latest";
+
+/// The length of a content hash: BLAKE3 in lower-case hex, as the content
+/// store derives every address.
+const CONTENT_HASH_CHARS: usize = 64;
+
+/// Bind every content placeholder among `arguments` to `latest`, the
+/// address of the content the task's latest content-producing step made:
+/// [`LATEST_CONTENT`], or any `tilo.content:` address whose hash is not one
+/// (`tilo.content:<export>`, a name the model made up). An address naming
+/// real content is kept. Returns how many it bound.
+pub fn bind_latest_content(
+    arguments: &mut serde_json::Map<String, serde_json::Value>,
+    latest: &str,
+) -> usize {
+    arguments
+        .values_mut()
+        .map(|value| bind_placeholders(value, latest))
+        .sum()
+}
+
+/// [`bind_latest_content`] within one value, however deep.
+fn bind_placeholders(value: &mut serde_json::Value, latest: &str) -> usize {
+    match value {
+        serde_json::Value::String(text) if is_content_placeholder(text) => {
+            latest.clone_into(text);
+            1
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .map(|item| bind_placeholders(item, latest))
+            .sum(),
+        serde_json::Value::Object(fields) => fields
+            .values_mut()
+            .map(|field| bind_placeholders(field, latest))
+            .sum(),
+        _ => 0,
+    }
+}
+
+/// Whether `text` stands for content rather than naming it: a
+/// `tilo.content:` address without a well-formed hash.
+fn is_content_placeholder(text: &str) -> bool {
+    text.trim()
+        .strip_prefix("tilo.content:")
+        .is_some_and(|hash| {
+            !(hash.len() == CONTENT_HASH_CHARS
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plan names content an earlier step makes by placeholder; the
+    /// placeholder, however the model wrote it, becomes that content, and
+    /// an address that names content outright is kept.
+    #[test]
+    fn content_placeholders_bind_to_the_latest_content() {
+        let latest = format!("tilo.content:{}", "a".repeat(64));
+        let kept = format!("tilo.content:{}", "b".repeat(64));
+        let mut arguments = serde_json::json!({
+            "src": LATEST_CONTENT,
+            "images": ["tilo.content:<export-result>", kept],
+            "style": {"background": " tilo.content:hero "},
+            "upper": format!("tilo.content:{}", "C".repeat(64)),
+            "title": "Meet Lumo",
+            "count": 3,
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        assert_eq!(bind_latest_content(&mut arguments, &latest), 4);
+        assert_eq!(arguments["src"], latest.as_str());
+        assert_eq!(arguments["images"][0], latest.as_str());
+        assert_eq!(arguments["images"][1], kept.as_str());
+        assert_eq!(arguments["style"]["background"], latest.as_str());
+        assert_eq!(
+            arguments["upper"],
+            latest.as_str(),
+            "upper-case hex is no address the store derives"
+        );
+        assert_eq!(arguments["title"], "Meet Lumo");
+        assert_eq!(arguments["count"], 3);
+    }
 
     // -- Instruction::Perform, and the floor that reaches it -------------
 

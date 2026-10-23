@@ -43,7 +43,7 @@ impl Driveable for Held {
                 .invoke(address, arguments, false)
                 .map(|_| ())
                 .map_err(|error| format!("{}: {error}", error.code())),
-            StepAction::Open | StepAction::Continue(_) => Ok(()),
+            StepAction::Open | StepAction::Continue(_) | StepAction::Wait(_) => Ok(()),
         }
     }
 }
