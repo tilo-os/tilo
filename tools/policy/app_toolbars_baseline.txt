@@ -7,9 +7,6 @@ history-in-row 2 apps/typst-editor/src/chrome.rs
 nav-header-leading 1 apps/canvas/src/lib.rs
 # Search and find entries of an app's own, and a subpage Back of its own; the
 # window bar's search and navigation take them over batch by batch.
-own-search 1 apps/browser/src/browser_widget/library.rs
-own-search 1 apps/browser/src/browser_widget/toolbar.rs
-own-search 1 apps/browser/src/daily_controls.rs
 own-search 1 apps/maps/src/offline_panel.rs
 # The composer's formatting strip, inside the New message sheet over the mailbox.
 toolbar-row 1 apps/mail/src/compose.rs
@@ -19,7 +16,6 @@ toolbar-row 1 apps/typst-editor/src/chrome.rs
 toolbar-band 1 apps/ebook/src/app.rs
 toolbar-band 1 apps/typst-editor/src/app.rs
 # The browser's address row; the hairline under it is the page's edge.
-toolbar-band 1 apps/browser/src/browser_widget.rs
 # Not a toolbar row, only the band's hairline borrowed: Writer's ruler wants
 # a divider of its own instead.
 window-header 1 apps/maps/src/app.rs

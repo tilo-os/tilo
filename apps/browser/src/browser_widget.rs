@@ -41,7 +41,8 @@ use ui::webview::{
 };
 use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
-    FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, WebView, Widget,
+    FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, RuleEdge, WebView, Widget,
+    paint_rule,
 };
 
 use crate::actions::history_resource_id;
@@ -66,6 +67,7 @@ mod http_fallback;
 mod library;
 mod load_failure;
 mod page_clipboard;
+mod page_find;
 pub(crate) mod personal;
 #[cfg(test)]
 mod regression_tests;
@@ -3164,6 +3166,7 @@ impl BrowserWidget {
                     if !self.forced_loading {
                         self.set_loading_progress(1.0);
                     }
+                    self.daily.page_loaded();
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
                     if self.browsing_mode.persists_personal_state()
@@ -4405,12 +4408,13 @@ impl Widget for BrowserWidget {
                 .is_some_and(Widget::has_pending_visual_work)
     }
 
-    ui::provides!(
-        dyn ui::widget::Continuable,
-        dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::content_zoom::ContentZoom
-    );
+    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
+        self.provide_capabilities(request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
+        self.provide_capabilities_mut(request);
+    }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.sync_frame(state, path);
@@ -4559,7 +4563,7 @@ impl Widget for BrowserWidget {
         // One hairline under the toolbar row separates it from the page;
         // while the page loads, the loading line takes its place.
         if let Some(rect) = self.find_rect("browser.toolbar") {
-            ui::widget::toolbar::paint_band(scene, transform, theme, rect);
+            paint_rule(scene, transform, theme, rect, RuleEdge::Bottom, None);
             if let Some(face) = self.loading_face() {
                 let height = f64::from(theme.tokens.metrics.chrome_rule_px.max(1.0)) * 2.0;
                 face.paint(
