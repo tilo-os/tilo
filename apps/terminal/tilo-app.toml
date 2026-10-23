@@ -74,8 +74,8 @@ open-uri = "via-host"
 ush    = "required@3"
 # Authenticated permission prompt for the device shell.
 shell-ui = "optional@13"
-collab = "optional@4"
-tilo-fs = "optional@4"
+collab = "optional@5"
+tilo-fs = "optional@5"
 
 [entrypoint]
 bin             = "bin/terminal"

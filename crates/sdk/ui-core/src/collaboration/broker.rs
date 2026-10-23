@@ -19,6 +19,7 @@
 
 #[cfg(test)]
 use super::channel_key;
+use super::route_keys::Arrived;
 use super::{
     ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionSurface, CollabEvent,
     CollabRequest, CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
@@ -26,6 +27,7 @@ use super::{
     PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, SignedOp, TransportCommand,
     TransportError, TransportStatus, Uuid, auto_hello_env, mpsc, presence_handle_env,
 };
+use runtime_collab::OpAdmission;
 use tilo_sort::CompactSort as _;
 
 // Worker-owned Cloud facilities: committed-document reads, the paged
@@ -5466,7 +5468,12 @@ async fn spawn_op_stream(
                 let translated = match postcard::from_bytes::<SignedOp>(&event.op) {
                     Ok(envelope) => {
                         let (author, seq) = (envelope.author, envelope.seq);
-                        match signed_document_event(envelope, event.from_user_id, &encryption) {
+                        let arrived = Arrived {
+                            envelope,
+                            from_user_id: event.from_user_id,
+                            admission: event.admission,
+                        };
+                        match signed_document_event(arrived, &encryption) {
                             Ok(event) => event,
                             Err(UndeliveredDocument::Held) => {
                                 // Sealed under an epoch the held keys lack:
@@ -6838,8 +6845,8 @@ async fn deliver_waiting(
             tracing::warn!("collab: an edit that waited for channel access was not sent");
         }
     }
-    for (envelope, from_user_id) in inbound {
-        let Ok(event) = signed_document_event(envelope, from_user_id, &route.encryption) else {
+    for arrived in inbound {
+        let Ok(event) = signed_document_event(arrived, &route.encryption) else {
             continue;
         };
         if let Some(complete) = complete_document_event(event, &inbound_tx.reassembly.live)
@@ -7217,7 +7224,8 @@ async fn dispatch_sdk_request(
                     let oldest_seq = decoded.iter().map(|op| op.seq).min();
                     let ops = decoded
                         .into_iter()
-                        .filter_map(|op| match decrypt_document_payload(&op, &route.encryption, false) {
+                        // The local broker pages what it admitted.
+                        .filter_map(|op| match decrypt_document_payload(&op, &route.encryption, OpAdmission::CleartextAdmitted) {
                             // History pages arrive newest first, so a
                             // transfer split across pages completes when its
                             // oldest segment arrives.
@@ -7887,19 +7895,18 @@ impl std::fmt::Display for UndeliveredDocument {
 /// Open a live envelope into a document event, or hold it on the route
 /// while this device waits for the channel's keys.
 fn signed_document_event(
-    envelope: SignedOp,
-    from_user_id: String,
+    arrived: Arrived,
     encryption: &SharedRouteKeys,
 ) -> Result<CollabEvent, UndeliveredDocument> {
-    match decrypt_document_payload(&envelope, encryption, true) {
+    match decrypt_document_payload(&arrived.envelope, encryption, arrived.admission) {
         Ok(decrypted_payload) => Ok(CollabEvent::Document {
-            envelope: Box::new(envelope),
-            from_user_id,
+            envelope: Box::new(arrived.envelope),
+            from_user_id: arrived.from_user_id,
             decrypted_payload,
         }),
         Err(DecryptFailure::Later) => {
             if let Ok(mut keys) = encryption.lock() {
-                keys.hold_inbound(envelope, from_user_id);
+                keys.hold_inbound(arrived);
             }
             Err(UndeliveredDocument::Held)
         }
@@ -7939,20 +7946,18 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// Open an envelope's typed payload. `live` envelopes on an encrypted
-/// route must be ciphertext; history pages may still carry plaintext the
-/// broker admitted before the channel was encrypted.
+/// Open an envelope's typed payload under the broker's `admission` for it.
 fn decrypt_document_payload(
     envelope: &SignedOp,
     encryption: &SharedRouteKeys,
-    live: bool,
+    admission: OpAdmission,
 ) -> Result<Option<Vec<u8>>, DecryptFailure> {
     let refused = DecryptFailure::Refused;
     let malformed = |error| DecryptFailure::Refused(Refusal::Malformed(error));
     let opened = encryption
         .lock()
         .map_err(|_| refused(Refusal::KeysPoisoned))?
-        .open(envelope, live);
+        .open(envelope, admission);
     match opened {
         Ok(Some(plaintext)) => {
             let plaintext = plaintext.to_vec();
@@ -8510,8 +8515,8 @@ mod tests {
         }
     }
 
-    /// `(op bytes, author)` pairs captured by a fake op/stream mock.
-    type OpBacklog = Rc<RefCell<Vec<(Vec<u8>, String)>>>;
+    /// `(op bytes, author, verdict)` a fake op/stream mock delivers.
+    type OpBacklog = Rc<RefCell<Vec<(Vec<u8>, String, OpAdmission)>>>;
 
     struct FakeOpStream {
         backlog: OpBacklog,
@@ -8528,7 +8533,7 @@ mod tests {
             if backlog.is_empty() {
                 return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
             }
-            let (op, from) = backlog.remove(0);
+            let (op, from, admission) = backlog.remove(0);
             let delay = self.captures.lock().unwrap().op_stream_delay;
             Promise::from_future(async move {
                 if let Some(delay) = delay {
@@ -8537,6 +8542,7 @@ mod tests {
                 let mut r = results.get();
                 r.set_op(&op);
                 r.set_from_user_id(&from);
+                r.set_admission(admission.into());
                 Ok(())
             })
         }
@@ -9178,7 +9184,7 @@ mod tests {
     #[derive(Default)]
     struct FakeBroker {
         captures: SharedCaptures,
-        op_backlog: Vec<(Vec<u8>, String)>,
+        op_backlog: Vec<(Vec<u8>, String, OpAdmission)>,
         presence_backlog: Vec<SeedPresence>,
         context_backlog: Vec<SeedContext>,
         terminate_context_stream: bool,
@@ -10447,6 +10453,76 @@ mod tests {
         thread.join().unwrap();
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn a_member_waiting_for_keys_shows_the_cleartext_the_broker_admitted() {
+        let app_id = "so.tilo.test";
+        let cluster = Uuid::new_v4();
+        let artifact = collab_types::document_artifact_id(app_id, &cluster.to_string(), "");
+        let op = |seq, text: &[u8], admission| {
+            let op = SignedOp::new_unsigned(
+                DocumentMutation::Incremental(text.to_vec())
+                    .encode()
+                    .unwrap(),
+                artifact,
+                collab_types::Ed25519PublicKey::from_bytes([3; 32]),
+                collab_types::AttestationId::new(),
+                collab_types::OpKind::Change,
+                crate::time::SystemTime::UNIX_EPOCH,
+                seq,
+            );
+            (
+                postcard::to_stdvec(&op).unwrap(),
+                "host".to_owned(),
+                admission,
+            )
+        };
+        let broker = FakeBroker {
+            op_backlog: vec![
+                op(1, b"general", OpAdmission::CleartextAdmitted),
+                op(2, b"must be sealed", OpAdmission::EncryptionRequired),
+                op(3, b"random", OpAdmission::CleartextAdmitted),
+            ],
+            ..FakeBroker::default()
+        };
+        let (fd, _captures, thread) = stand_up_fake_broker(broker);
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: SdkDocumentSigner::Certified(Arc::new(AnsweringIdentity {
+                    asked: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    access: Some(runtime_identity::wire::ChannelAccess::Waiting),
+                })),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::disabled();
+        manager.backend = Backend::Transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: app_id.into(),
+            cluster_id: cluster,
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        manager.await_primary_route().unwrap();
+        let shown = |events: &[CollabEvent]| -> Vec<Vec<u8>> {
+            events
+                .iter()
+                .filter_map(|event| match event.document_mutation() {
+                    Some(Ok(DocumentMutation::Incremental(text))) => Some(text),
+                    _ => None,
+                })
+                .collect()
+        };
+        let events = poll_until(&mut manager, |events| shown(events).len() == 2);
+        assert_eq!(shown(&events), [b"general".to_vec(), b"random".to_vec()]);
+        drop(manager);
+        thread.join().unwrap();
+    }
+
     /// A route the channel service answered as waiting, or as unavailable
     /// (no steward known yet), is told when that changes: it is not asked
     /// about on a timer while the broker pushes, and a pushed change asks.
@@ -10637,7 +10713,11 @@ mod tests {
                 op_stream_delay: Some(ARRIVES),
                 ..Captures::default()
             })),
-            op_backlog: vec![(postcard::to_stdvec(&op).unwrap(), "peer".to_owned())],
+            op_backlog: vec![(
+                postcard::to_stdvec(&op).unwrap(),
+                "peer".to_owned(),
+                OpAdmission::EncryptionRequired,
+            )],
             ..FakeBroker::default()
         };
         let (fd, _captures, thread) = stand_up_fake_broker(broker);
@@ -13169,8 +13249,15 @@ mod tests {
                 crate::time::SystemTime::UNIX_EPOCH,
                 43,
             );
-            let event =
-                signed_document_event(op, "peer-alice".into(), &plain_route_keys()).unwrap();
+            let event = signed_document_event(
+                Arrived {
+                    envelope: op,
+                    from_user_id: "peer-alice".into(),
+                    admission: OpAdmission::CleartextAdmitted,
+                },
+                &plain_route_keys(),
+            )
+            .unwrap();
             assert!(matches!(
                 &event,
                 CollabEvent::Document { from_user_id, .. } if from_user_id == "peer-alice"
@@ -13227,7 +13314,15 @@ mod tests {
             let endpoint = group_route_keys(bob);
             for _ in 0..2 {
                 // Live delivery and a later scrollback read of the same op.
-                let event = signed_document_event(op.clone(), "alice".into(), &endpoint).unwrap();
+                let event = signed_document_event(
+                    Arrived {
+                        envelope: op.clone(),
+                        from_user_id: "alice".into(),
+                        admission: OpAdmission::EncryptionRequired,
+                    },
+                    &endpoint,
+                )
+                .unwrap();
                 assert!(matches!(
                     event.document_mutation(),
                     Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
@@ -13242,7 +13337,14 @@ mod tests {
                 crate::time::SystemTime::UNIX_EPOCH,
                 2,
             );
-            let refusal = |op| match signed_document_event(op, "alice".into(), &endpoint) {
+            let refusal = |op| match signed_document_event(
+                Arrived {
+                    envelope: op,
+                    from_user_id: "alice".into(),
+                    admission: OpAdmission::EncryptionRequired,
+                },
+                &endpoint,
+            ) {
                 Err(UndeliveredDocument::Refused(refusal)) => refusal,
                 _ => panic!("refused"),
             };
@@ -13252,9 +13354,12 @@ mod tests {
                     downgrade,
                     Refusal::Unopened(crate::collaboration::route_keys::Never::Downgrade)
                 ),
-                "a provisioned MLS route must reject plaintext downgrade, and say so"
+                "cleartext the broker says must be sealed is refused, and says so"
             );
-            assert_eq!(downgrade.to_string(), "cleartext on an encrypted route");
+            assert_eq!(
+                downgrade.to_string(),
+                "cleartext the broker says must be sealed"
+            );
             assert!(
                 matches!(
                     refusal(build(
@@ -13296,7 +13401,15 @@ mod tests {
             )
             .unwrap();
             let carol_endpoint = group_route_keys(carol);
-            let event = signed_document_event(op, "alice".into(), &carol_endpoint).unwrap();
+            let event = signed_document_event(
+                Arrived {
+                    envelope: op,
+                    from_user_id: "alice".into(),
+                    admission: OpAdmission::EncryptionRequired,
+                },
+                &carol_endpoint,
+            )
+            .unwrap();
             assert!(matches!(
                 event.document_mutation(),
                 Some(Ok(DocumentMutation::Incremental(data))) if data == b"secret change"
@@ -13464,7 +13577,7 @@ mod tests {
             let op_bytes = postcard::to_stdvec(&op).unwrap();
 
             let broker = FakeBroker {
-                op_backlog: vec![(op_bytes, "peer-bob".to_owned())],
+                op_backlog: vec![(op_bytes, "peer-bob".to_owned(), OpAdmission::Unstated)],
                 ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);

@@ -62,7 +62,7 @@ hosts = [
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@4"
+collab = "optional@5"
 
 [entrypoint]
 bin             = "bin/discord"

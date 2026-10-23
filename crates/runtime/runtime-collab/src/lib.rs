@@ -2606,6 +2606,40 @@ impl WorkspaceControlHandle {
 pub struct OpEvent {
     pub op: Vec<u8>,
     pub from_user_id: String,
+    /// The broker's verdict for the op on its channel.
+    pub admission: OpAdmission,
+}
+
+/// The broker's verdict for one op on its channel: the broker alone decides
+/// whether cleartext is admitted there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpAdmission {
+    /// A broker that predates the verdict said nothing.
+    Unstated,
+    /// The channel admits cleartext for this op.
+    CleartextAdmitted,
+    /// The channel requires this op sealed.
+    EncryptionRequired,
+}
+
+impl From<collab_capnp::OpAdmission> for OpAdmission {
+    fn from(admission: collab_capnp::OpAdmission) -> Self {
+        match admission {
+            collab_capnp::OpAdmission::Unstated => Self::Unstated,
+            collab_capnp::OpAdmission::CleartextAdmitted => Self::CleartextAdmitted,
+            collab_capnp::OpAdmission::EncryptionRequired => Self::EncryptionRequired,
+        }
+    }
+}
+
+impl From<OpAdmission> for collab_capnp::OpAdmission {
+    fn from(admission: OpAdmission) -> Self {
+        match admission {
+            OpAdmission::Unstated => Self::Unstated,
+            OpAdmission::CleartextAdmitted => Self::CleartextAdmitted,
+            OpAdmission::EncryptionRequired => Self::EncryptionRequired,
+        }
+    }
 }
 
 /// Client-pulled op stream. Each `.read()` is a single RPC.
@@ -2641,7 +2675,16 @@ impl OpStream {
                 "collaboration stream carried a retired unsigned frame",
             )));
         }
-        Ok(OpEvent { op, from_user_id })
+        // An enumerant this client does not know is a newer broker's: it
+        // says nothing this client can apply.
+        let admission = r
+            .get_admission()
+            .map_or(OpAdmission::Unstated, OpAdmission::from);
+        Ok(OpEvent {
+            op,
+            from_user_id,
+            admission,
+        })
     }
 }
 

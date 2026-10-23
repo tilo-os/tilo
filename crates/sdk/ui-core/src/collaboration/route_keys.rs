@@ -19,6 +19,7 @@
 use std::collections::VecDeque;
 
 use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
+use runtime_collab::OpAdmission;
 use zeroize::Zeroizing;
 
 use super::ChannelAccessState;
@@ -69,7 +70,8 @@ pub(super) enum Never {
     WrongChannel,
     /// Its ciphertext is malformed, or the route's keys reject it.
     Undecryptable,
-    /// Cleartext, live, on a route that is encrypted.
+    /// Cleartext the broker says must be sealed: a broker that fanned out
+    /// what its own gate refuses.
     Downgrade,
     /// Sealed, on a route that is cleartext.
     SealedOnPlain,
@@ -80,7 +82,7 @@ impl std::fmt::Display for Never {
         f.write_str(match self {
             Self::WrongChannel => "sealed for another channel",
             Self::Undecryptable => "ciphertext the route's keys reject",
-            Self::Downgrade => "cleartext on an encrypted route",
+            Self::Downgrade => "cleartext the broker says must be sealed",
             Self::SealedOnPlain => "sealed on a cleartext route",
         })
     }
@@ -89,12 +91,20 @@ impl std::fmt::Display for Never {
 /// A frame waiting for keys, with the claims its op will carry.
 pub(super) type HeldFrame = (Vec<u8>, Vec<collab_types::ChangeClaim>);
 
+/// An inbound op as the broker delivered it, with its verdict.
+#[derive(Debug, Clone)]
+pub(super) struct Arrived {
+    pub(super) envelope: SignedOp,
+    pub(super) from_user_id: String,
+    pub(super) admission: OpAdmission,
+}
+
 /// A route's keys plus what waits on them.
 pub(super) struct RouteKeys {
     pub(super) keys: Keys,
     held_outbound: VecDeque<HeldFrame>,
     held_outbound_bytes: usize,
-    held_inbound: VecDeque<(SignedOp, String)>,
+    held_inbound: VecDeque<Arrived>,
     reported: Option<ChannelAccessState>,
     /// The generation of the keys that last failed to open held ciphertext
     /// and asked for newer ones: asked once per generation.
@@ -252,20 +262,24 @@ impl RouteKeys {
         }
     }
 
-    /// Open an encrypted envelope's payload. `live` refuses plaintext on an
-    /// encrypted route (a downgrade); history pages from the local broker
-    /// may still carry plaintext from before the channel was encrypted,
-    /// which the broker admitted when plaintext was allowed.
+    /// Open an envelope's payload under the broker's `admission` for it.
+    /// Whether cleartext belongs on the channel is the broker's call alone:
+    /// cleartext it admitted applies whatever this route's keys, and
+    /// cleartext it says must be sealed is refused. A broker that states no
+    /// verdict admits cleartext only on a cleartext route.
     pub(super) fn open(
         &mut self,
         envelope: &SignedOp,
-        live: bool,
+        admission: OpAdmission,
     ) -> Result<Option<Zeroizing<Vec<u8>>>, Unopened> {
         let Some(metadata) = envelope.encryption else {
-            return match &self.keys {
-                Keys::Plain => Ok(None),
-                _ if live => Err(Unopened::Never(Never::Downgrade)),
-                _ => Ok(None),
+            return match (admission, &self.keys) {
+                (OpAdmission::CleartextAdmitted, _) | (OpAdmission::Unstated, Keys::Plain) => {
+                    Ok(None)
+                }
+                (OpAdmission::EncryptionRequired | OpAdmission::Unstated, _) => {
+                    Err(Unopened::Never(Never::Downgrade))
+                }
             };
         };
         let ciphertext = collab_types::sealed_ciphertext(envelope)
@@ -322,15 +336,15 @@ impl RouteKeys {
 
     /// Keep an envelope that could not be opened yet. The oldest is dropped
     /// when the hold is full; history paging recovers it once keys arrive.
-    pub(super) fn hold_inbound(&mut self, envelope: SignedOp, from_user_id: String) {
+    pub(super) fn hold_inbound(&mut self, arrived: Arrived) {
         if self.held_inbound.len() >= MAX_HELD_INBOUND {
             self.held_inbound.pop_front();
         }
-        self.held_inbound.push_back((envelope, from_user_id));
+        self.held_inbound.push_back(arrived);
     }
 
     /// Take every held envelope, oldest first, once keys are held.
-    pub(super) fn take_held_inbound(&mut self) -> Vec<(SignedOp, String)> {
+    pub(super) fn take_held_inbound(&mut self) -> Vec<Arrived> {
         if !self.state().is_open() {
             return Vec::new();
         }
@@ -352,6 +366,14 @@ mod tests {
         .unwrap();
         let bytes = group.content_keys().unwrap().to_bytes().unwrap().to_vec();
         (group, bytes)
+    }
+
+    fn held(envelope: SignedOp) -> Arrived {
+        Arrived {
+            envelope,
+            from_user_id: "peer".into(),
+            admission: OpAdmission::EncryptionRequired,
+        }
     }
 
     fn envelope(payload: Vec<u8>, metadata: Option<EncryptionMetadata>) -> SignedOp {
@@ -400,8 +422,11 @@ mod tests {
         assert!(route.hold_outbound(b"first".to_vec(), Vec::new()));
         assert!(route.hold_outbound(b"second".to_vec(), Vec::new()));
         let arrived = envelope(sealed, Some(metadata));
-        assert!(matches!(route.open(&arrived, true), Err(Unopened::Later)));
-        route.hold_inbound(arrived, "peer".into());
+        assert!(matches!(
+            route.open(&arrived, OpAdmission::EncryptionRequired),
+            Err(Unopened::Later)
+        ));
+        route.hold_inbound(held(arrived));
         assert!(
             route.take_held_outbound().is_empty(),
             "nothing leaves while waiting"
@@ -422,9 +447,12 @@ mod tests {
         );
         let held = route.take_held_inbound();
         assert_eq!(held.len(), 1);
-        let (arrived, _) = &held[0];
         assert_eq!(
-            route.open(arrived, true).unwrap().unwrap().as_slice(),
+            route
+                .open(&held[0].envelope, held[0].admission)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
             b"from a peer"
         );
         let Sealed::Ready(ciphertext, Some(metadata)) =
@@ -464,40 +492,60 @@ mod tests {
         let mut route = RouteKeys::requested();
         route.update(Wire::Ready, 1, Some(&encoded));
         assert_eq!(
-            route.open(&compaction, true).unwrap().unwrap().as_slice(),
+            route
+                .open(&compaction, OpAdmission::EncryptionRequired)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
             b"merged record"
         );
         let mut grouped = RouteKeys::plain();
         grouped.install_group(group);
         assert_eq!(
-            grouped.open(&compaction, true).unwrap().unwrap().as_slice(),
+            grouped
+                .open(&compaction, OpAdmission::EncryptionRequired)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
             b"merged record"
         );
         compaction.payload.push(0);
         assert!(matches!(
-            route.open(&compaction, true),
+            route.open(&compaction, OpAdmission::EncryptionRequired),
             Err(Unopened::Never(_))
         ));
     }
 
     #[test]
-    fn plaintext_is_a_downgrade_live_but_readable_from_history() {
+    fn cleartext_opens_exactly_when_the_broker_admits_it() {
         let channel = ChannelId::new();
         let (_, encoded) = keys(channel);
         let mut route = RouteKeys::requested();
-        route.update(Wire::Ready, 1, Some(&encoded));
         let old = envelope(b"from before encryption".to_vec(), None);
         assert!(matches!(
-            route.open(&old, true),
-            Err(Unopened::Never(Never::Downgrade))
+            route.open(&old, OpAdmission::CleartextAdmitted),
+            Ok(None)
         ));
-        assert!(matches!(route.open(&old, false), Ok(None)));
+        route.update(Wire::Ready, 1, Some(&encoded));
+        assert!(matches!(
+            route.open(&old, OpAdmission::CleartextAdmitted),
+            Ok(None)
+        ));
+        for refused in [OpAdmission::EncryptionRequired, OpAdmission::Unstated] {
+            assert!(matches!(
+                route.open(&old, refused),
+                Err(Unopened::Never(Never::Downgrade))
+            ));
+        }
         let other = keys(ChannelId::new()).0;
         let (metadata, sealed) = other
             .seal_content(old.artifact, ContentRetention::Delta, b"x")
             .unwrap();
         assert!(matches!(
-            route.open(&envelope(sealed, Some(metadata)), true),
+            route.open(
+                &envelope(sealed, Some(metadata)),
+                OpAdmission::EncryptionRequired
+            ),
             Err(Unopened::Never(Never::WrongChannel))
         ));
     }
@@ -512,7 +560,7 @@ mod tests {
         let artifact = ArtifactId(uuid::Uuid::from_bytes([1; 16]));
         let mut route = RouteKeys::requested();
         assert!(route.awaiting_keys());
-        route.hold_inbound(envelope(vec![1], None), "peer".into());
+        route.hold_inbound(held(envelope(vec![1], None)));
         assert!(
             !route.wants_keys_for_held(),
             "a waiting route is asked anyway"
@@ -529,7 +577,7 @@ mod tests {
         let (metadata, sealed) = newer
             .seal_content(artifact, ContentRetention::Delta, b"from a newer epoch")
             .unwrap();
-        route.hold_inbound(envelope(sealed, Some(metadata)), "peer".into());
+        route.hold_inbound(held(envelope(sealed, Some(metadata))));
         assert!(route.wants_keys_for_held());
         assert!(
             !route.wants_keys_for_held(),
@@ -562,7 +610,7 @@ mod tests {
             Sealed::Ready(_, None)
         ));
         assert!(matches!(
-            plain.open(&envelope(vec![1], None), true),
+            plain.open(&envelope(vec![1], None), OpAdmission::Unstated),
             Ok(None)
         ));
     }
