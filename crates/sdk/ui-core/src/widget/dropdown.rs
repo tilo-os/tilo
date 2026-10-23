@@ -931,7 +931,7 @@ impl Dropdown {
     /// The open list as assistive technology and agents read it: each
     /// option the filter shows, where it is drawn (rows scrolled out of
     /// the list have no geometry), the chosen one selected and the
-    /// highlighted one focused, each choosable through
+    /// highlighted one the combobox's active descendant, each choosable through
     /// [`Widget::perform_action`] by its key.
     fn options_access(&self) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
@@ -952,10 +952,12 @@ impl Dropdown {
                     .with_key(Self::option_key(value))
                     .with_position(row.saturating_add(1), total)
                     // The keyboard stays on the combobox while its list is
-                    // open: an option marked focused would take the tree's
-                    // focus from it.
+                    // open: the highlighted option is its active descendant,
+                    // announced without taking the tree's focus from it.
                     .with_state(
-                        AccessState::new().selected(self.menu.is_none() && *value == self.selected),
+                        AccessState::new()
+                            .selected(self.menu.is_none() && *value == self.selected)
+                            .active_descendant(self.is_focused() && row == self.highlight),
                     );
                 if drawn.height() > 0.0 {
                     option = option.with_bounds(drawn);

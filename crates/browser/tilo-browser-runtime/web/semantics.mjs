@@ -31,6 +31,9 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
   const bridgeId=++bridgeSequence;
   let elementSequence=0;
   let activeDescendantHost;
+  // The focused control whose own aria-activedescendant names the item the
+  // keyboard is on inside it (an open combobox's highlighted option).
+  let ownedActiveHost;
   let previousActiveDescendant;
   let previousOwns;
   let pendingFocus;
@@ -281,6 +284,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     const activeBeforeUpdate=document.activeElement;
     let canonicalFocus;
     const focusedCandidates=[];
+    const activeCandidates=[];
     // A test ID is a convenient alias only when it names one current widget.
     // Keep DOM identity separate from the route, which changes with layout paths.
     const testIds=new Map(),semanticOwners=new Map();
@@ -314,6 +318,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       element.tiloState.disabled=disabled;
       element.tiloState.readOnly=readOnly;
       if(node.state?.focused&&!disabled)focusedCandidates.push(element);
+      if(node.state?.active_descendant&&!disabled)activeCandidates.push(element);
       if(element.parentNode!==parent)parent.append(element);
       // A node without bounds of its own stands for the area it is drawn in.
       const bounds=node.bounds;
@@ -395,11 +400,17 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       else pendingFocus=undefined;
     }
     for(const element of elements.values())element.dataset.tiloFocused=String(element===canonicalFocus);
+    // Focus stays on the control; the item the keyboard is on inside it is
+    // its active descendant, announced without moving focus.
+    const activeItem=canonicalFocus&&activeCandidates.find(candidate=>candidate.tiloAncestors.includes(canonicalFocus.tiloState.key));
+    if(ownedActiveHost&&(ownedActiveHost!==canonicalFocus||!activeItem))ownedActiveHost.removeAttribute('aria-activedescendant');
+    ownedActiveHost=undefined;
+    if(activeItem){canonicalFocus.setAttribute('aria-activedescendant',activeItem.id);ownedActiveHost=canonicalFocus;}
     const focusWasManaged=ownedBeforeUpdate.has(activeBeforeUpdate);
     const focusInMount=Boolean(root.parentNode?.contains?.(active));
     const focusInRecovery=[...recoverySurfaces].some(surface=>surface.contains?.(active));
     if(canonicalFocus&&active!==canonicalFocus&&focusInMount&&!focusWasManaged&&!focusInRecovery){
-      setActiveDescendant(active,canonicalFocus);
+      setActiveDescendant(active,activeItem??canonicalFocus);
     }else if(canonicalFocus&&active!==canonicalFocus&&(!active||active===document.body||focusWasManaged)){
       clearActiveDescendant();
       canonicalFocus.tiloState.reconcilingFocus=true;
@@ -410,5 +421,5 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     }
     root.dataset.nodeCount=String(elements.size);
   }
-  return {update,layout,revokeInput,close(){pendingFocus=undefined;clearActiveDescendant();for(const element of elements.values()){shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
+  return {update,layout,revokeInput,close(){pendingFocus=undefined;clearActiveDescendant();ownedActiveHost?.removeAttribute('aria-activedescendant');ownedActiveHost=undefined;for(const element of elements.values()){shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
 }

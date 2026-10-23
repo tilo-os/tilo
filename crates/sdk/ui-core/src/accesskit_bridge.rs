@@ -711,6 +711,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
         child_description: None,
         nodes: Vec::new(),
         active_descendant: None,
+        owned_active_descendant: None,
     };
 
     // The synthetic window root gathers the top-level accessible nodes.
@@ -837,6 +838,10 @@ struct TreeWalk<'m> {
     /// Set when the *focused* widget marks one of its synthetic descendants
     /// focused — the active-descendant target (see the module docs).
     active_descendant: Option<AkNodeId>,
+    /// Set when a synthetic descendant of the focused widget is marked
+    /// [`active_descendant`](crate::a11y::AccessState::active_descendant):
+    /// the focused widget's node points at it, keeping the focus itself.
+    owned_active_descendant: Option<AkNodeId>,
 }
 
 /// Where a synthetic node sits under its parent: the parent's id, the widget
@@ -903,6 +908,7 @@ impl TreeWalk<'_> {
             // timeline's clips. Only the widget that actually holds keyboard focus
             // may nominate an active descendant.
             let owns_focus = (taffy_id.is_some() && taffy_id == self.focused) || represents_focus;
+            let outer_active = self.owned_active_descendant.take();
             for (ordinal, synth) in access_node.children.iter().enumerate() {
                 self.visit_synthetic::<BOUND>(
                     synth,
@@ -915,6 +921,10 @@ impl TreeWalk<'_> {
                     hosted.remove(&ordinal).unwrap_or_default(),
                     &mut my_children,
                 );
+            }
+            if let Some(active) = std::mem::replace(&mut self.owned_active_descendant, outer_active)
+            {
+                ak.set_active_descendant(active);
             }
             let run_id = text_run_node_id(id);
             if let Some(run) = text_run_for(
@@ -975,6 +985,12 @@ impl TreeWalk<'_> {
 
         if in_focused_widget && access.state.focused && self.active_descendant.is_none() {
             self.active_descendant = Some(id);
+        }
+        if in_focused_widget
+            && access.state.active_descendant
+            && self.owned_active_descendant.is_none()
+        {
+            self.owned_active_descendant = Some(id);
         }
 
         let mut my_children: Vec<AkNodeId> = Vec::new();

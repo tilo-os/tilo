@@ -257,9 +257,15 @@ pub fn describe(node: &AccessNode) -> String {
 
 /// Value + state, without name or role — confirms the result of
 /// activating or adjusting a control (e.g. "checked") without
-/// re-reading the whole label.
+/// re-reading the whole label. The item the keyboard is on inside it (its
+/// [`active_descendant`](crate::a11y::AccessState::active_descendant),
+/// such as an open combo box's highlighted option) is read first, so
+/// moving through a list reads each item while focus stays put.
 pub fn describe_state(node: &AccessNode) -> String {
     let mut parts: Vec<String> = Vec::new();
+    if let Some(active) = active_descendant(node) {
+        parts.push(describe(active));
+    }
     if node.state.protected {
         parts.push(phrase::protected());
     } else if let Some(value) = node.value.as_deref()
@@ -269,6 +275,17 @@ pub fn describe_state(node: &AccessNode) -> String {
     }
     push_state_words(node, &mut parts);
     parts.join(", ")
+}
+
+/// The first node below `node` marked as its active descendant.
+fn active_descendant(node: &AccessNode) -> Option<&AccessNode> {
+    node.children.iter().find_map(|child| {
+        if child.state.active_descendant {
+            Some(child)
+        } else {
+            active_descendant(child)
+        }
+    })
 }
 
 /// Switches / toggle buttons read on/off; checkboxes / radios read
