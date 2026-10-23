@@ -1287,6 +1287,9 @@ mod tests {
             )
             .unwrap();
         let worker = audio.capture_stop_handle().unwrap();
+        tilo_test_env::wait_until("the capture's Playing transition to begin", || {
+            observed.current_state() != gst::State::Null
+        });
         assert!(
             !audio.capture_active(),
             "requested Playing is not observed microphone audio"

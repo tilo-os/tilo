@@ -40,7 +40,9 @@ struct State {
     ready: AtomicBool,
     finished: AtomicBool,
     failure: AtomicU8,
-    started: Instant,
+    /// When the worker began the Playing transition: the startup deadline
+    /// measures the device from there, not the wait for the worker to run.
+    started: OnceLock<Instant>,
     startup_deadline: Option<Duration>,
     remote_fd: Option<OwnedFd>,
     guard: Option<Guard>,
@@ -75,6 +77,12 @@ impl CaptureStop {
         self.0.failure.store(1, Ordering::Release);
         self.stop();
     }
+    fn startup_deadline_passed(&self, now: Instant) -> bool {
+        self.0
+            .startup_deadline
+            .zip(self.0.started.get())
+            .is_some_and(|(deadline, started)| now.saturating_duration_since(*started) >= deadline)
+    }
     fn allowed(&self) -> bool {
         self.current() && self.0.guard.as_ref().is_none_or(|guard| guard())
     }
@@ -104,9 +112,7 @@ fn registry() -> Result<&'static Registry, AudioError> {
                                 if !stop.allowed() {
                                     stop.stop();
                                 } else if !stop.0.ready.load(Ordering::Acquire)
-                                    && stop.0.startup_deadline.is_some_and(|deadline| {
-                                        stop.0.started.elapsed() >= deadline
-                                    })
+                                    && stop.startup_deadline_passed(Instant::now())
                                 {
                                     stop.fail();
                                 }
@@ -145,7 +151,7 @@ impl DevicePipeline {
             ready: AtomicBool::new(false),
             finished: AtomicBool::new(false),
             failure: AtomicU8::new(0),
-            started: Instant::now(),
+            started: OnceLock::new(),
             startup_deadline,
             remote_fd,
             guard,
@@ -169,6 +175,7 @@ impl DevicePipeline {
             .spawn(move || {
                 let pipeline = RunningPipeline(worker_pipeline);
                 if worker_stop.allowed() {
+                    let _ = worker_stop.0.started.set(Instant::now());
                     tracing::debug!(
                         capture = needs_sample,
                         "native voice device transition started"
@@ -235,10 +242,7 @@ impl DevicePipeline {
     /// Whether the startup deadline had passed at `now` without the device
     /// becoming ready.
     pub(super) fn startup_expired(&self, now: Instant) -> bool {
-        !self.ready()
-            && self.stop.0.startup_deadline.is_some_and(|deadline| {
-                now.saturating_duration_since(self.stop.0.started) >= deadline
-            })
+        !self.ready() && self.stop.startup_deadline_passed(now)
     }
     pub(super) fn stop(&self) {
         self.stop.stop();
