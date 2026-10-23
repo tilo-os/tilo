@@ -169,11 +169,12 @@ pub use path::{Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, NoAction, Place, Resource,
-    ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText,
-    SearchWeight, SharedRecord, bind_declaration, build_action, child_by_id, declaration_spec,
-    default_search, encode, need_of, origin_now_ms, publish, publish_head, reset_type_schemas,
-    scope_contains, spec_kind, with_origin_clock,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, HeadInputs, NoAction,
+    Place, Resource, ScopeDecl, SearchBody, SearchEntry, SearchPiece, SearchRow, SearchRowShape,
+    SearchText, SearchWeight, SharedRecord, bind_declaration, build_action, child_by_id,
+    declaration_spec, default_search, encode, head_inputs, need_of, origin_now_ms, publish,
+    publish_head, publish_head_of, reset_type_schemas, scope_contains, spec_kind,
+    with_origin_clock,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text};

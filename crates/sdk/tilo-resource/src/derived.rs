@@ -18,7 +18,11 @@
 //! }
 //! ```
 
+use std::any::{Any, TypeId};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::rc::Rc;
 
 use serde::Serialize;
 
@@ -41,6 +45,12 @@ impl<R> Clone for Bound<R> {
             values: self.values.clone(),
             marker: PhantomData,
         }
+    }
+}
+
+impl<R> PartialEq for Bound<R> {
+    fn eq(&self, other: &Self) -> bool {
+        self.action == other.action && self.values == other.values
     }
 }
 
@@ -198,7 +208,60 @@ pub struct Derived<R> {
     kind: Option<String>,
     actions: Vec<Bound<R>>,
     effects: Vec<tilo_actions::ActionSpec>,
-    children: Vec<Derived<R>>,
+    /// What each of `effects` was made from, in order.
+    offers: Vec<Offer>,
+    /// Shared between copies, so a copy is as cheap as the resource alone
+    /// and is told equal to its original without comparing its children.
+    children: Rc<Vec<Derived<R>>>,
+}
+
+/// What an offered effect or edit of a [`Derived`] was made from: two equal
+/// offers publish the same action.
+#[derive(Clone, Debug, PartialEq)]
+enum Offer {
+    Effect {
+        operation: &'static str,
+        id: &'static str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        asking: Vec<String>,
+    },
+    Edit {
+        id: &'static str,
+        label: String,
+        path: Vec<Segment>,
+        op: crate::EditOp,
+    },
+    /// Made by a function of its caller's value, which cannot be compared:
+    /// equal to no other.
+    Asking,
+}
+
+impl<R> Clone for Derived<R> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            field: self.field.clone(),
+            label: self.label.clone(),
+            kind: self.kind.clone(),
+            actions: self.actions.clone(),
+            effects: self.effects.clone(),
+            offers: self.offers.clone(),
+            children: self.children.clone(),
+        }
+    }
+}
+
+impl<R> PartialEq for Derived<R> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.field == other.field
+            && self.label == other.label
+            && self.kind == other.kind
+            && self.actions == other.actions
+            && self.offers == other.offers
+            && !self.offers.contains(&Offer::Asking)
+            && (Rc::ptr_eq(&self.children, &other.children) || self.children == other.children)
+    }
 }
 
 impl<R> Derived<R> {
@@ -213,14 +276,15 @@ impl<R> Derived<R> {
             kind: None,
             actions: Vec::new(),
             effects: Vec::new(),
-            children: Vec::new(),
+            offers: Vec::new(),
+            children: Rc::default(),
         }
     }
 
     /// Nest `child` beneath it (a table's cells), identified within it.
     #[must_use]
     pub fn with_child(mut self, child: Self) -> Self {
-        self.children.push(child);
+        Rc::make_mut(&mut self.children).push(child);
         self
     }
 
@@ -237,6 +301,12 @@ impl<R> Derived<R> {
     #[must_use]
     pub fn with_effect<E: crate::Effect>(mut self, effect: &E) -> Self {
         self.effects.push(effect.bound());
+        self.offers.push(Offer::Effect {
+            operation: E::OPERATION,
+            id: effect.id(),
+            arguments: effect.arguments(),
+            asking: Vec::new(),
+        });
         self
     }
 
@@ -246,6 +316,12 @@ impl<R> Derived<R> {
     #[must_use]
     pub fn with_effect_asking<E: crate::Effect>(mut self, effect: &E, asking: &[&str]) -> Self {
         self.effects.push(effect.bound_asking(asking));
+        self.offers.push(Offer::Effect {
+            operation: E::OPERATION,
+            id: effect.id(),
+            arguments: effect.arguments(),
+            asking: asking.iter().map(|name| (*name).to_owned()).collect(),
+        });
         self
     }
 
@@ -299,6 +375,13 @@ impl<R: Resource> Derived<R> {
     where
         crate::Edit<R>: Send + Sync,
     {
+        let label = label.into();
+        self.offers.push(Offer::Edit {
+            id,
+            label: label.clone(),
+            path: edit.path().to_vec(),
+            op: edit.op().clone(),
+        });
         let decl = ActionDecl::<R>::edit(id, label, edit);
         self.effects.push(crate::resource::declaration_spec(&decl));
         self
@@ -320,6 +403,7 @@ impl<R: Resource> Derived<R> {
     {
         let decl = ActionDecl::<R>::edit_asking(id, label, param, description, make);
         self.effects.push(crate::resource::declaration_spec(&decl));
+        self.offers.push(Offer::Asking);
         self
     }
 
@@ -369,5 +453,154 @@ impl<R: Resource> Derived<R> {
             child = child.with_action(effect.clone());
         }
         child.with_children(self.children.iter().map(|nested| nested.publish_under(&id)))
+    }
+}
+
+/// A record's nested resources ([`crate::child::record_nested_children`])
+/// and derived ones ([`Derived`]) as published, with the declarations they
+/// offer with arguments bound.
+#[derive(Default)]
+pub struct PublishedDerived {
+    resources: Rc<[Rc<tilo_actions::Resource>]>,
+    /// Each action id they offer, with the fewest parameters it takes on
+    /// one of them.
+    offered: HashMap<String, usize>,
+}
+
+impl PublishedDerived {
+    /// The published resources, in order: each the very one published last
+    /// while the derived resource it publishes is unchanged.
+    #[must_use]
+    pub fn resources(&self) -> &Rc<[Rc<tilo_actions::Resource>]> {
+        &self.resources
+    }
+
+    /// Whether some resource offers the declaration `id` with `params`
+    /// parameters with some of its arguments bound.
+    #[must_use]
+    pub fn offers_bound(&self, id: &str, params: usize) -> bool {
+        self.offered.get(id).is_some_and(|&taken| taken < params)
+    }
+
+    /// The published resource `id` among them and their children.
+    #[must_use]
+    pub fn find(&self, id: &str) -> Option<tilo_actions::Resource> {
+        fn walk<'a>(
+            resource: &'a tilo_actions::Resource,
+            id: &str,
+        ) -> Option<&'a tilo_actions::Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource);
+            }
+            resource.children.iter().find_map(|child| walk(child, id))
+        }
+        self.resources
+            .iter()
+            .find_map(|resource| walk(resource, id))
+            .cloned()
+    }
+}
+
+/// The derived resources a record published last, by resource type.
+struct Kept<R> {
+    epoch: u64,
+    derived: Rc<[Derived<R>]>,
+    published: Rc<PublishedDerived>,
+}
+
+thread_local! {
+    static PUBLISHED: RefCell<HashMap<TypeId, Rc<dyn Any>>> = RefCell::new(HashMap::new());
+}
+
+/// The nested resources of the record `R` followed by `derived`, published:
+/// the very publication of the last ones of the same resource type when
+/// `derived` are the same ones or equal to them, so a change that leaves a
+/// record's derived resources as they were publishes nothing again and hands
+/// its publisher what it already holds. Otherwise each derived resource
+/// equal to one published last is that very resource again, and only the
+/// others are published. The nested resources depend on the type alone.
+#[must_use]
+pub fn published<R: Resource>(derived: impl Into<Rc<[Derived<R>]>>) -> Rc<PublishedDerived> {
+    let derived = derived.into();
+    let epoch = crate::resource::type_epoch();
+    let kept = PUBLISHED
+        .with_borrow(|kept| kept.get(&TypeId::of::<R>()).cloned())
+        .and_then(|kept| kept.downcast::<Kept<R>>().ok())
+        .filter(|kept| kept.epoch == epoch);
+    if let Some(kept) = kept
+        .as_ref()
+        .filter(|kept| Rc::ptr_eq(&kept.derived, &derived) || kept.derived == derived)
+    {
+        return Rc::clone(&kept.published);
+    }
+    let resources: Rc<[Rc<tilo_actions::Resource>]> = match &kept {
+        Some(kept) => {
+            let nested = kept
+                .published
+                .resources
+                .len()
+                .saturating_sub(kept.derived.len());
+            let at: HashMap<&str, usize> = kept
+                .derived
+                .iter()
+                .enumerate()
+                .map(|(index, last)| (last.id(), index))
+                .collect();
+            let published = |index: usize| {
+                kept.published
+                    .resources
+                    .get(nested.saturating_add(index))
+                    .cloned()
+            };
+            kept.published
+                .resources
+                .iter()
+                .take(nested)
+                .cloned()
+                .chain(derived.iter().enumerate().map(|(index, next)| {
+                    let last = if kept.derived.get(index) == Some(next) {
+                        Some(index)
+                    } else {
+                        at.get(next.id())
+                            .copied()
+                            .filter(|&last| kept.derived.get(last) == Some(next))
+                    };
+                    last.and_then(published)
+                        .unwrap_or_else(|| Rc::new(next.publish()))
+                }))
+                .collect()
+        }
+        None => crate::child::record_nested_children::<R>()
+            .into_iter()
+            .map(Rc::new)
+            .chain(derived.iter().map(|next| Rc::new(next.publish())))
+            .collect(),
+    };
+    let mut offered = HashMap::new();
+    for resource in resources.iter() {
+        offered_on(resource, &mut offered);
+    }
+    let published = Rc::new(PublishedDerived { resources, offered });
+    let kept: Rc<dyn Any> = Rc::new(Kept {
+        epoch,
+        derived,
+        published: Rc::clone(&published),
+    });
+    PUBLISHED.with_borrow_mut(|all| all.insert(TypeId::of::<R>(), kept));
+    published
+}
+
+/// Note each action `resource` and its children offer in `offered`, with
+/// the fewest parameters it takes on one of them.
+fn offered_on(resource: &tilo_actions::Resource, offered: &mut HashMap<String, usize>) {
+    for spec in &resource.actions {
+        let taken = spec.params().len();
+        offered
+            .entry(spec.id.clone())
+            .and_modify(|fewest| *fewest = (*fewest).min(taken))
+            .or_insert(taken);
+    }
+    for child in &resource.children {
+        offered_on(child, offered);
     }
 }

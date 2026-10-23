@@ -91,6 +91,9 @@ struct Following {
     tracker: Tracker,
     demand: Demand,
     revision: u64,
+    /// How many times a demand read more of the document: what the state
+    /// holds of it, not what it says.
+    loads: u64,
     /// The last refresh failed part-way; the next sync reads everything.
     stale: bool,
     /// The open transaction last read: its base heads and length.
@@ -107,6 +110,7 @@ impl Following {
             tracker,
             demand: Demand::none(),
             revision: 0,
+            loads: 0,
             stale: false,
             uncommitted: None,
             last: Delta::everything(),
@@ -237,9 +241,17 @@ impl<R: Resource> Reader<R> {
         self.core.unreadable.as_ref()
     }
 
-    /// Increases whenever the state changes.
+    /// Increases whenever what the state says changes: the document moved,
+    /// or the state is presented again. Reading more of the same document
+    /// ([`Self::demand`]) is not a new revision.
     pub fn revision(&self) -> u64 {
         self.core.revision
+    }
+
+    /// Increases whenever a demand read parts of the document the state did
+    /// not hold yet ([`Self::demand`]).
+    pub fn loads(&self) -> u64 {
+        self.core.loads
     }
 
     /// Whether the state is `doc` as it stands: no change arrived since the
@@ -284,7 +296,7 @@ impl<R: Resource> Reader<R> {
         }
         self.core.demand = demand;
         R::load(Rc::make_mut(&mut self.state), doc, &self.core.demand)?;
-        self.core.revision = self.core.revision.wrapping_add(1);
+        self.core.loads = self.core.loads.wrapping_add(1);
         Ok(true)
     }
 }

@@ -868,6 +868,59 @@ fn a_place_not_loaded_still_resolves_by_id() {
     assert_eq!(child.label, "Chapter one");
 }
 
+fn three_pages() -> Replica<Pages> {
+    let mut pages = Replica::<Pages>::new();
+    for title in ["Cover", "Contents", "Chapter one"] {
+        pages.apply(Pages::ADD_PAGE.with(title.to_owned())).unwrap();
+    }
+    pages
+}
+
+#[test]
+fn places_as_they_were_are_the_publication_they_were() {
+    let pages = three_pages();
+    let mut state = Pages::read(pages.doc()).unwrap();
+    state.loaded = vec![0, 1];
+    let first = tilo_resource::derived::published::<Pages>(state.places());
+    let again = tilo_resource::derived::published::<Pages>(state.places());
+    assert!(std::rc::Rc::ptr_eq(&first, &again));
+
+    state.loaded = vec![0, 1, 2];
+    let more = tilo_resource::derived::published::<Pages>(state.places());
+    assert!(!std::rc::Rc::ptr_eq(&first, &more));
+    let labels: Vec<&str> = more
+        .resources()
+        .iter()
+        .map(|place| place.label.as_str())
+        .collect();
+    assert_eq!(labels, ["Cover", "Contents", "Chapter one"]);
+    for (was, now) in first.resources().iter().zip(more.resources().iter()) {
+        assert!(
+            std::rc::Rc::ptr_eq(was, now),
+            "{} is published again",
+            was.label
+        );
+    }
+}
+
+#[test]
+fn reading_more_of_a_document_is_no_revision() {
+    let mut pages = three_pages();
+    let mut reader = tilo_resource::Reader::<Pages>::open(pages.doc_mut()).unwrap();
+    let revision = reader.revision();
+    let demand = tilo_resource::Demand::none().with_keys(["p0", "p2"]);
+    assert!(reader.demand(pages.doc(), demand).unwrap());
+    assert_eq!(reader.state().loaded, [0, 2]);
+    assert_eq!(reader.revision(), revision);
+    assert_eq!(reader.loads(), 1);
+
+    pages
+        .apply(Pages::ADD_PAGE.with("Index".to_owned()))
+        .unwrap();
+    assert!(reader.sync(pages.doc()).unwrap());
+    assert_ne!(reader.revision(), revision);
+}
+
 /// An absent option given positionally is left out, as a parameter not
 /// given, rather than sent as `null` the door refuses.
 #[test]
