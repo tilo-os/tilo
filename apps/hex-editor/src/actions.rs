@@ -46,7 +46,7 @@ pub enum HexEffect {
         #[param("save destination")]
         path: String,
     },
-    /// Show the byte search bar.
+    /// Find in the bytes, in the window's search.
     #[effect(view, idempotent, label = "Search bytes")]
     Search,
     /// Show the go-to-offset prompt.
@@ -54,7 +54,8 @@ pub enum HexEffect {
     GotoOffset,
 }
 
-/// A view of the editor a caller opens: the search bar, the go-to prompt.
+/// A view of the editor a caller opens: the window's search, the go-to
+/// prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HexPanel {
     Search,

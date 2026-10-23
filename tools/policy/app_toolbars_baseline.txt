@@ -4,7 +4,6 @@ header-row 1 apps/code-editor/src/app/chrome.rs
 header-row 1 apps/git-client/src/app.rs
 header-row 1 apps/video-editor/src/app/layout.rs
 history-in-row 4 apps/git-client/src/app.rs
-history-in-row 2 apps/hex-editor/src/view.rs
 history-in-row 2 apps/maps/src/app.rs
 history-in-row 2 apps/pdf-viewer/src/app.rs
 history-in-row 2 apps/typst-editor/src/chrome.rs
@@ -40,7 +39,6 @@ own-search 1 apps/code-editor/src/app/find_workflow.rs
 own-search 2 apps/containers/src/view.rs
 own-search 2 apps/db-client/src/app.rs
 own-search 1 apps/feeds/src/app.rs
-own-search 1 apps/hex-editor/src/view/find.rs
 own-search 1 apps/logs/src/app.rs
 own-search 1 apps/maps/src/offline_panel.rs
 own-search 1 apps/monitor/src/view.rs
@@ -77,7 +75,6 @@ toolbar-band 1 apps/notes/src/main_panel.rs
 toolbar-band 1 apps/photos/src/app/chrome.rs
 toolbar-band 1 apps/word-processor/src/ruler.rs
 window-header 1 apps/git-client/src/app.rs
-window-header 1 apps/hex-editor/src/view.rs
 window-header 1 apps/maps/src/app.rs
 window-header 1 apps/pdf-viewer/src/app.rs
 window-header 1 apps/typst-editor/src/app.rs
