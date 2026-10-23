@@ -4724,8 +4724,11 @@ async fn drive_shovel(
                         link_live_activity(&route.channel, &inbound_tx),
                     );
                     settings_link = settings;
+                    // Writes made before the route joined go out on the
+                    // link's own task: the route is ready without waiting
+                    // for the shell to store them.
                     if let Some(link) = settings_link.as_ref() {
-                        link.flush(&inbound_tx).await;
+                        link.flush();
                     }
                     tilo_startup_metrics::startup_mark("collab-settings-linked");
                     live_activity_link = live_activity;
@@ -5053,7 +5056,7 @@ async fn drive_shovel(
             }
             SdkCommand::FlushSettings => {
                 if let Some(link) = settings_link.as_ref() {
-                    link.flush(&inbound_tx).await;
+                    link.flush();
                 }
             }
             SdkCommand::FlushLiveActivity => {
@@ -5915,16 +5918,26 @@ async fn link_live_activity(
     Some(LiveActivityLink { handle, follower })
 }
 
-/// The primary route's settings capability and the task following it.
+/// The primary route's settings capability, the task following it, and the
+/// task sending the app's writes.
 struct SettingsLink {
     handle: runtime_collab::AppSettingsHandle,
     settings: Arc<super::channel_settings::ChannelSettings>,
     follower: tokio::task::JoinHandle<()>,
+    /// Sends the app's unsent writes, oldest first, each once the shell
+    /// answered the one before it. The shell answers a write once it is
+    /// stored, so the worker never waits on it: one task, woken by
+    /// [`Self::flush`], keeps the writes in order.
+    sender: tokio::task::JoinHandle<()>,
+    send_wanted: Arc<tokio::sync::Notify>,
 }
 
 impl Drop for SettingsLink {
     fn drop(&mut self) {
         self.follower.abort();
+        // A write it sent and the shell has not answered counts as refused
+        // (`Unanswered`); the ones it has not sent yet are answered the same.
+        self.sender.abort();
         self.settings.disconnected();
     }
 }
@@ -5939,18 +5952,37 @@ fn settings_view(
 }
 
 impl SettingsLink {
-    /// Send the app's unsent writes, oldest first, and show the shell's
-    /// answers.
-    #[allow(
-        clippy::future_not_send,
-        reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
-    )]
-    async fn flush(&self, inbound_tx: &InboundBridge) {
-        for (section, values, action) in self.settings.take_outbox() {
-            let unanswered = super::channel_settings::Unanswered::new(&self.settings);
+    /// Have the link's sender send the app's unsent writes.
+    fn flush(&self) {
+        self.send_wanted.notify_one();
+    }
+}
+
+/// Send `settings`' unsent writes over `handle`, oldest first, until none is
+/// left, and show the shell's answers.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn send_settings(
+    handle: &runtime_collab::AppSettingsHandle,
+    settings: &super::channel_settings::ChannelSettings,
+    wake: &crate::wake::WakeHandle,
+) {
+    loop {
+        // Every taken write is answered, by the shell or as refused when
+        // this task stops first.
+        let outbox: Vec<_> = settings
+            .take_outbox()
+            .into_iter()
+            .map(|write| (write, super::channel_settings::Unanswered::new(settings)))
+            .collect();
+        if outbox.is_empty() {
+            return;
+        }
+        for ((section, values, action), unanswered) in outbox {
             let answer = match serde_json::to_vec(&values) {
-                Ok(values) => self
-                    .handle
+                Ok(values) => handle
                     .update(&section, &values, action.as_deref())
                     .await
                     .map_err(|error| error.to_string())
@@ -5958,7 +5990,7 @@ impl SettingsLink {
                 Err(error) => Err(error.to_string()),
             };
             if unanswered.answer(answer) {
-                inbound_tx.state.owner_wake.wake();
+                wake.wake();
             }
         }
     }
@@ -6010,10 +6042,25 @@ async fn link_settings(
             }
         })
     };
+    let send_wanted = Arc::new(tokio::sync::Notify::new());
+    let sender = {
+        let handle = handle.clone();
+        let settings = Arc::clone(&settings);
+        let wake = inbound_tx.state.owner_wake.clone();
+        let send_wanted = Arc::clone(&send_wanted);
+        tokio::task::spawn_local(async move {
+            loop {
+                send_wanted.notified().await;
+                send_settings(&handle, &settings, &wake).await;
+            }
+        })
+    };
     Some(SettingsLink {
         handle,
         settings,
         follower,
+        sender,
+        send_wanted,
     })
 }
 
