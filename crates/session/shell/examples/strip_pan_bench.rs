@@ -109,7 +109,6 @@ struct Args {
 #[derive(Clone, Copy)]
 struct Case {
     size_name: &'static str,
-    /// The panel, in device pixels.
     size: (u32, u32),
     windows: usize,
     /// Device pixels per layout pixel.
@@ -711,7 +710,6 @@ fn pan(
     Ok(samples)
 }
 
-/// One frame, measured on its own.
 fn single_frame(
     fixture: &mut Fixture,
     target: &mut RetainedGpuTarget,
