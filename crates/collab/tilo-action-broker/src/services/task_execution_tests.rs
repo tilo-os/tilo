@@ -479,6 +479,64 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
     }
 }
 
+/// A grant naming the issue decides for its runs as the agent's own do: an
+/// outside action the agent's delegation asks about runs once the issue is
+/// allowed it in that app, in that issue's runs alone.
+#[test]
+fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
+    let room = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    let (mut peer, starter, key, now) = admitted_fixture(
+        room,
+        collab_types::Role::Editor,
+        Some(AgentPreset::Operator),
+    );
+    let notes = TreePath::room(room).app("so.tilo.notes");
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "starter-sends-notes",
+                Subject::person(hex::encode(starter.user_public_key)),
+                notes.clone(),
+                KindSet::OUTSIDE,
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    let mut outside = approve_task(&starter);
+    outside.need.kind = tilo_action_policy::ActionKind::Outside;
+    let asks = outside.check_run(&peer, room, now).unwrap_err();
+    assert!(asks.contains("agent's grants"), "{asks}");
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "issue-allows-notes",
+                Subject::task(ISSUE),
+                notes,
+                KindSet::OUTSIDE,
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    outside.check_run(&peer, room, now).unwrap();
+    let mut other = outside;
+    other.binding.task_id = "tasks.tracker/issues/2".into();
+    let asks = other.check_run(&peer, room, now).unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
+}
+
 /// The starter's own rights bound the run, whatever the agent was admitted
 /// with: a person who may not change a note starts no run that changes it,
 /// and one who may not change the room starts no run at all.

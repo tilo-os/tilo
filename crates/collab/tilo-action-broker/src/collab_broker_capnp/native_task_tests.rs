@@ -701,24 +701,32 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
             let run = delivered(&agent).await;
             let (_target, _stream) = notes_target(&f).await;
             grant_notes(&f);
-            put_grant(
-                &f,
-                Grant::new(
-                    "task-other-resource-only",
-                    Subject::Task(f.task.clone()),
-                    tilo_actions::action_node(
-                        &TreePath::room(room().to_string()),
-                        "so.tilo.notes",
-                        "document",
-                        "notes:other",
-                        None,
-                        "append",
+            let append = |resource: &str| {
+                tilo_actions::action_node(
+                    &TreePath::room(room().to_string()),
+                    "so.tilo.notes",
+                    "document",
+                    resource,
+                    None,
+                    "append",
+                )
+            };
+            for (id, resource, answer) in [
+                ("task-other-resource-only", "notes:other", Answer::Allow),
+                ("task-not-release", "notes:release", Answer::Deny),
+            ] {
+                put_grant(
+                    &f,
+                    Grant::new(
+                        id,
+                        Subject::Task(f.task.clone()),
+                        append(resource),
+                        KindSet::UNDOABLE,
+                        answer,
+                        Subject::person(hex::encode(f.native.certificate.user_public_key)),
                     ),
-                    KindSet::UNDOABLE,
-                    Answer::Allow,
-                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
-                ),
-            );
+                );
+            }
             assert!(invoke(&agent, &run, uuid::Uuid::new_v4()).await.is_err());
             assert!(
                 ordinary_invoke(&agent)
@@ -826,10 +834,10 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
         .await;
 }
 
-/// The agent may append to the notes, but the task it runs only reads:
-/// the run is held to its task's grant set.
+/// The agent may append to the notes, but a grant naming the issue denies
+/// it at the same node: Deny wins, and the run may not.
 #[tokio::test(flavor = "current_thread")]
-async fn a_native_run_is_held_to_its_tasks_grant_set() {
+async fn a_native_run_is_held_to_its_issues_grants() {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -842,11 +850,18 @@ async fn a_native_run_is_held_to_its_tasks_grant_set() {
             put_grant(
                 &f,
                 Grant::new(
-                    "task-reads-only",
+                    "task-no-append",
                     Subject::Task(f.task.clone()),
-                    TreePath::room(room().to_string()),
-                    KindSet::READ,
-                    Answer::Allow,
+                    tilo_actions::action_node(
+                        &TreePath::room(room().to_string()),
+                        "so.tilo.notes",
+                        "document",
+                        "notes:release",
+                        None,
+                        "append",
+                    ),
+                    KindSet::UNDOABLE,
+                    Answer::Deny,
                     Subject::person(hex::encode(f.native.certificate.user_public_key)),
                 ),
             );

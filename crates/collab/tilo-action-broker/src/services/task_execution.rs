@@ -21,10 +21,10 @@ pub struct NativeTaskBinding {
 impl NativeTaskBinding {
     /// Who the run's actions are admitted as in the broker: the agent acting
     /// for its starter, carrying the delegation a person's device gives its
-    /// agents. It may do what the starter may, held to the answers the room
-    /// keeps for the agent, never to the preset it was admitted with, which
-    /// bounds only what it does on its own. Effects stay attributed to the
-    /// agent.
+    /// agents, working on the issue. It may do what the starter may, held to
+    /// the answers the room keeps for the agent and the issue, never to the
+    /// preset it was admitted with, which bounds only what it does on its
+    /// own. Effects stay attributed to the agent.
     ///
     /// # Errors
     /// The binding does not name its starter.
@@ -33,7 +33,8 @@ impl NativeTaskBinding {
         Ok(
             crate::collab_broker_capnp::BrokerActor::agent(format!("agent:{}", self.agent_id))
                 .for_person(starter)
-                .session_delegated(),
+                .session_delegated()
+                .working_on(&self.task_id),
         )
     }
 }
@@ -64,10 +65,11 @@ pub struct NativeTaskActionRequirement {
 
 impl NativeTaskActionRequirement {
     /// Apply the room's grants to `requirement` for a run of the Tasks app's
-    /// tracker: as [`Self::check`], the agent acting for the run's starter
-    /// on the starter's live grants, held to the issue's own grant set.
-    /// The tracker freezes no scope: the starter's live grants and the
-    /// agent's bound it.
+    /// tracker: the agent working on the issue, acting for the run's starter
+    /// on the starter's live grants. Grants naming the issue decide for the
+    /// run as the agent's own do, the most specific first. The tracker
+    /// freezes no scope: the starter's live grants and the agent's and
+    /// issue's bound it.
     pub fn check_tracker(
         &self,
         peer: &tilo_peer_state::StatePeer,
@@ -97,8 +99,12 @@ impl NativeTaskActionRequirement {
             return Err("this run has ended or was replaced".into());
         }
         let delegation = roles::agent_delegation(room, &run.agent, &run.starter);
-        let verdict =
-            Authority::person(delegation.party(&policy.grants)).decide(&node, self.need.kind, &cx);
+        let verdict = Authority::person(
+            delegation
+                .party(&policy.grants)
+                .also_as(tilo_action_policy::Subject::Task(run.issue.clone())),
+        )
+        .decide(&node, self.need.kind, &cx);
         let foreign = roles::foreign_device_bound();
         let starter = policy
             .person_on_device(&run.starter, false, &foreign)
@@ -107,30 +113,17 @@ impl NativeTaskActionRequirement {
         if !policy.is_member(&run.starter) || starter == Answer::Deny {
             return Err("this run's action is no longer authorized by its starter".into());
         }
-        self.answer(
-            &policy,
-            (&node, &cx),
-            &run.issue,
-            (verdict, [starter, Answer::Allow]),
-        )
+        self.answer(&verdict, starter)
     }
 
-    /// The answer of every party to the action: the agent's grants (as
-    /// `verdict` decided them), the starter's and the run's frozen bound
-    /// (`bounds`), and the task's own grant set. Deny refuses; Ask pauses
-    /// for the person unless this invocation is [`Self::confirmed`].
+    /// The answer of every party to the action: the agent's and the issue's
+    /// grants (as `verdict` decided them) and the starter's (`starter`).
+    /// Deny refuses; Ask pauses for the person unless this invocation is
+    /// [`Self::confirmed`].
     fn answer(
         &self,
-        policy: &tilo_action_policy::RoomPolicy,
-        (node, cx): (
-            &tilo_action_policy::TreePath,
-            &tilo_action_policy::Context<'_>,
-        ),
-        task_id: &str,
-        (verdict, bounds): (
-            tilo_action_policy::Verdict<'_>,
-            [tilo_action_policy::Answer; 2],
-        ),
+        verdict: &tilo_action_policy::Verdict<'_>,
+        starter: tilo_action_policy::Answer,
     ) -> Result<(), String> {
         use tilo_action_policy::{Answer, agent_answers};
         let agent_answer = verdict.parts.first().map_or(Answer::Deny, |decision| {
@@ -141,21 +134,13 @@ impl NativeTaskActionRequirement {
         } else {
             agent_answer
         };
-        let task = policy
-            .task_answer(task_id, node, self.need.kind, cx)
-            .unwrap_or(Answer::Allow);
         if agent_answer == Answer::Deny {
-            return Err(not_allowed(self.need.kind, &agent_basis(&verdict)));
+            return Err(not_allowed(self.need.kind, &agent_basis(verdict)));
         }
-        if task == Answer::Deny {
-            return Err(not_allowed(self.need.kind, "this task's own grants"));
-        }
-        let answer = [agent_answer, bounds[0], bounds[1], task]
-            .into_iter()
-            .fold(Answer::Allow, Answer::min);
+        let answer = agent_answer.min(starter);
         if answer == Answer::Ask && !self.confirmed {
             let whose = if agent_answer == Answer::Ask {
-                agent_basis(&verdict)
+                agent_basis(verdict)
             } else {
                 "the person's own grants".to_owned()
             };

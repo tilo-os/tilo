@@ -107,12 +107,14 @@ Every change the run makes carries the run's own group
 as one run of its agent and undoes it whole.
 
 Each of the agent's actions, the tracker's included, is admitted as the agent
-acting for the run's approver: bounded by the approver's live grants, the
-agent's grants and the issue's own grant set (the room's grants naming the
-issue, [permissions.md](permissions.md) §4), with every message to the run
-read first. An action that asks first waits for the person's answer on the
-issue, and a confirmation admits only the arguments asked about, when the
-draft the person saw is the one those arguments render.
+working on the issue, acting for the run's approver: the room's grants
+naming the agent or the issue decide, the most specific first, bounded by
+the approver's live grants ([permissions.md](permissions.md) §4), with
+every message to the run read first. An action that asks first waits for
+the person's answer on the issue, and a confirmation admits only the
+arguments asked about, when the draft the person saw is the one those
+arguments render. It grants nothing: what lets a run act without asking is
+a grant naming the issue, given through the room's `grant` action.
 
 A run may act in an application nobody has open: the broker launches it
 through the workspace launcher under the run's own durable custody, bound to

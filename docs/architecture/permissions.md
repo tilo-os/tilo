@@ -127,11 +127,13 @@ it, and a person's restriction always reaches their agents.
 - **Agent default.** A new agent delegation grants Read and Undoable within the
   scope the person gives it (rooms, apps, a task), and Ask for Outside. People
   are not discouraged from granting more.
-- **Issues.** The runs of an issue in the Tasks app are bounded by the room's
-  grants naming the issue (`Subject::Task` with the issue's address), given
-  and revoked like any other grant. They only narrow what the run's agent and
-  approver hold, so they need no lifetime of their own: they bound nothing
-  while no run is going.
+- **Issues.** An agent's run of an issue in the Tasks app is the agent and
+  the issue: the room's grants naming the issue (`Subject::Task` with the
+  issue's address) decide for the run as the agent's own do, the most
+  specific node first, and the approver's grants bound both. "Allow for this
+  issue" is such a grant, given, shown and revoked like any other; it needs
+  no lifetime of its own, as it decides nothing while no run is going. A
+  confirmation of one action grants nothing.
 - **Shortcuts.** A Shortcut's grant set is stored with it and shown on import.
   An unattended run turns Ask into a refusal unless the set holds a matching
   Allow.

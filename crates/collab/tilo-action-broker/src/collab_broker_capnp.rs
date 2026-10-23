@@ -120,7 +120,7 @@ use runtime_collab::raw::{
     presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, KindSet, RoomPolicy, Subject, TreePath, roles,
+    ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -661,6 +661,9 @@ pub struct BrokerActor {
     /// carries the delegation a device gives its agents (read and undoable
     /// actions, outside ones asking first, no governance).
     session_delegated: bool,
+    /// The issue whose run the agent works in, by its address: grants
+    /// naming the issue decide for the run as the agent's own do.
+    issue: Option<String>,
 }
 
 impl BrokerActor {
@@ -672,6 +675,7 @@ impl BrokerActor {
             capped: false,
             for_person: None,
             session_delegated: false,
+            issue: None,
         }
     }
 
@@ -683,6 +687,7 @@ impl BrokerActor {
             capped: false,
             for_person: None,
             session_delegated: false,
+            issue: None,
         }
     }
 
@@ -696,6 +701,7 @@ impl BrokerActor {
             capped: false,
             for_person: Some(installer.into()),
             session_delegated: false,
+            issue: None,
         }
     }
 
@@ -719,6 +725,13 @@ impl BrokerActor {
     #[must_use]
     pub fn session_delegated(mut self) -> Self {
         self.session_delegated = true;
+        self
+    }
+
+    /// The same agent, working in a run of the issue at `issue`.
+    #[must_use]
+    pub fn working_on(mut self, issue: impl Into<String>) -> Self {
+        self.issue = Some(issue.into());
         self
     }
 
@@ -766,37 +779,36 @@ impl BrokerActor {
                 decide(
                     &workspace
                         .person_authority_on(person, self.capped, foreign_bound)
-                        .bounded_by(workspace.policy.party_of(delegate).with_grants(&carried)),
+                        .bounded_by(self.party(&workspace.policy.grants, delegate, &carried)),
                 )
             }
             (Some(delegate), None) => decide(&workspace.subject_authority(delegate)),
         }
     }
 
+    /// The delegate `delegate` this actor is, over `grants` and what it
+    /// `carried`, and the issue it works on.
+    fn party<'g>(
+        &self,
+        grants: &'g [Grant],
+        delegate: Subject,
+        carried: &'g [Grant],
+    ) -> tilo_action_policy::Party<'g> {
+        let party = tilo_action_policy::Party::new(vec![delegate], grants).with_grants(carried);
+        match &self.issue {
+            Some(issue) => party.also_as(Subject::Task(issue.clone())),
+            None => party,
+        }
+    }
+
     /// The delegation a session-delegated agent carries in `room`, given by
-    /// `person`, with what that person allowed it for its task
-    /// ([`allow_for_task`]); nothing for any other actor.
+    /// `person`; nothing for any other actor.
     fn session_grants(&self, room: &str, person: &str) -> Vec<Grant> {
         if !self.session_delegated {
             return Vec::new();
         }
         let agent = self.id.strip_prefix("agent:").unwrap_or(&self.id);
-        let mut grants =
-            roles::AgentPreset::Operator.grants(room, agent, &Subject::Person(person.to_owned()));
-        if let Ok(tasks) = task_grants().lock()
-            && let Some((_, allowed)) = tasks.get(agent)
-        {
-            grants.extend(
-                allowed
-                    .iter()
-                    .filter(|grant| {
-                        grant.granted_by == Subject::Person(person.to_owned())
-                            && TreePath::room(room).covers(&grant.node)
-                    })
-                    .cloned(),
-            );
-        }
-        grants
+        roles::AgentPreset::Operator.grants(room, agent, &Subject::Person(person.to_owned()))
     }
 
     /// Whether this actor is a person acting from their own device: the one
@@ -864,14 +876,14 @@ impl BrokerActor {
     /// whether the room's grants ask first (`true`), when the invocation
     /// then needs the confirmation of the person it is made for, and the
     /// `Once` grants admitting it spends. Decided on one sample: the action
-    /// where it is published; the run of an issue the call works in
-    /// (`run`), bounded by that issue's grants; and, for a person, a change of the route record it acts on, so a
-    /// person restricted on one record cannot act on it through an action
-    /// they may otherwise use.
+    /// where it is published, by the run's agent working on its issue when
+    /// the call is a run's (`run`); and, for a person, a change of the
+    /// route record it acts on, so a person restricted on one record cannot
+    /// act on it through an action they may otherwise use.
     ///
     /// # Errors
-    /// The refusal: a reserved or malformed route record, or grants that
-    /// refuse the action, the task's work or the record.
+    /// The refusal: a reserved or malformed route record, another agent
+    /// than the run's, or grants that refuse the action or the record.
     pub(crate) fn admit_published_in(
         &self,
         workspace: &tilo_desktop_model::Workspace,
@@ -890,20 +902,20 @@ impl BrokerActor {
         };
         let need = action.contract.need();
         let node = published_node(workspace, &surface.app_id, action);
-        let (answer, spent) = self.verdict_in(workspace, &node, need.kind, need.privileged, now);
-        let agent = self
-            .is_agent
-            .then(|| self.id.strip_prefix("agent:").unwrap_or(&self.id));
-        // The run's agent alone acts in it, within the issue's grants.
-        let task = run.and_then(|run| {
-            if agent != Some(run.agent_id.as_str()) {
-                return Some(Answer::Deny);
+        // The run's agent alone acts in it, as the agent working on the issue.
+        let working;
+        let actor = match run {
+            Some(run)
+                if self.is_agent
+                    && self.id.strip_prefix("agent:").unwrap_or(&self.id) == run.agent_id =>
+            {
+                working = self.clone().working_on(&run.task_id);
+                &working
             }
-            let cx = tilo_desktop_model::context_at(now);
-            workspace
-                .policy
-                .task_answer(&run.task_id, &node, need.kind, &cx)
-        });
+            Some(_) => return Err("only the run's agent acts in it".into()),
+            None => self,
+        };
+        let (answer, spent) = actor.verdict_in(workspace, &node, need.kind, need.privileged, now);
         let record = record.map(|record| {
             let node = collab_types::validator::document_node(
                 &workspace.policy.room,
@@ -917,7 +929,6 @@ impl BrokerActor {
             tilo_action_policy::Invoked {
                 answer,
                 attended: action.contract.is_attended(),
-                task,
                 record,
             },
             tilo_action_policy::Asker {
@@ -926,7 +937,6 @@ impl BrokerActor {
             },
         ) {
             Ok(admission) => admission == tilo_action_policy::Admission::AsksFirst,
-            Err(Refused::Task) => return Err("the task's grants do not cover this action".into()),
             Err(Refused::Action | Refused::Record) => return Err(refused()),
         };
         Ok((asks, spent))
@@ -988,58 +998,6 @@ pub(crate) fn published_node(
 
 /// The node of opening the application `app` in `workspace`: launching it is
 /// an action of the app itself.
-/// What people allowed session-delegated agents for the task each runs, by
-/// agent id, with the run they end with. Process-wide: a [`BrokerActor`] is
-/// a value rebuilt for every call, and these extend the delegation it
-/// carries ([`BrokerActor::session_grants`]).
-type TaskGrants = HashMap<String, (uuid::Uuid, Vec<Grant>)>;
-
-fn task_grants() -> &'static Mutex<TaskGrants> {
-    static GRANTS: std::sync::OnceLock<Mutex<TaskGrants>> = std::sync::OnceLock::new();
-    GRANTS.get_or_init(Mutex::default)
-}
-
-/// `person` allowed the session-delegated `agent` its outside actions in
-/// `app` of `room` until its run `execution` ends ("Allow for this task"):
-/// it then takes them without asking first. An action whose own contract
-/// asks for confirmation still asks every time.
-pub(crate) fn allow_for_task(
-    agent: &str,
-    execution: uuid::Uuid,
-    (room, app): (&str, &str),
-    person: &str,
-) {
-    let agent = agent.strip_prefix("agent:").unwrap_or(agent);
-    let grant = Grant::new(
-        format!("agent-task:{agent}:{room}:{app}"),
-        Subject::agent(agent),
-        TreePath::room(room).app(app),
-        KindSet::OUTSIDE,
-        Answer::Allow,
-        Subject::Person(person.to_owned()),
-    );
-    let Ok(mut tasks) = task_grants().lock() else {
-        return;
-    };
-    let entry = tasks
-        .entry(agent.to_owned())
-        .or_insert_with(|| (execution, Vec::new()));
-    if entry.0 != execution {
-        // Another run of the same agent id keeps nothing of this one.
-        *entry = (execution, Vec::new());
-    }
-    if !entry.1.iter().any(|held| held.id == grant.id) {
-        entry.1.push(grant);
-    }
-}
-
-/// The run `execution` ended: what it was allowed for its task ends too.
-fn end_task_grants(execution: uuid::Uuid) {
-    if let Ok(mut tasks) = task_grants().lock() {
-        tasks.retain(|_, (run, _)| *run != execution);
-    }
-}
-
 pub(crate) fn app_node(workspace: &tilo_desktop_model::Workspace, app: &str) -> TreePath {
     workspace.node().app(app)
 }
@@ -1141,9 +1099,7 @@ impl AdmittedJoinIdentity {
             let actor = self.broker_actor();
             let carried = actor.session_grants(room, &self.principal_id);
             let authority = match actor.delegate() {
-                Some(delegate) => {
-                    authority.bounded_by(tilo_action_policy::Party::new(vec![delegate], &carried))
-                }
+                Some(delegate) => authority.bounded_by(actor.party(&[], delegate, &carried)),
                 None => authority,
             };
             return Ok(decide(&authority));
@@ -6418,9 +6374,6 @@ impl CapnpBrokerState {
     /// Retire only this run's transient presence, preserving its pending jobs.
     pub fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
         caller.retire_execution();
-        if let Some(execution) = caller.execution_id() {
-            end_task_grants(execution);
-        }
         if let Ok(mut pending) = self.pending_invocations.lock() {
             for invocation in pending.values_mut() {
                 if invocation
