@@ -141,9 +141,9 @@ inputs = ["crates/session/**/*.rs", "apps/**/*.rs", "tools/policy/primitives_bas
 
 [[step]]
 name = "app-toolbars"
-label = "Apps put their controls in the window bar's slots, not a toolbar row"
+label = "Apps put their controls, search included, in the window bar's slots"
 run = "python3 tools/policy/check_app_toolbars.py"
-inputs = ["apps/**/*.rs", "tools/policy/app_toolbars_baseline.txt"]
+inputs = ["apps/**/*.rs", "apps/*/locales/en-US.ftl", "tools/policy/app_toolbars_baseline.txt"]
 
 [[step]]
 name = "app-resource-action-contract"
@@ -210,12 +210,6 @@ name = "ui-clock-contract"
 label = "UI clock contract"
 run = "python3 tools/policy/check_ui_clock_contract.py"
 inputs = ["crates/sdk/ui-core/**", "crates/sdk/tilo-host/**", "clippy.toml"]
-
-[[step]]
-name = "app-search-fields"
-label = "Apps draw no search field of their own"
-run = "python3 tools/policy/check_app_search_fields.py"
-inputs = ["apps/**/*.rs", "tools/policy/app_search_fields_baseline.toml"]
 
 [[step]]
 name = "motion-library"

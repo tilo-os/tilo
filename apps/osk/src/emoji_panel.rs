@@ -153,6 +153,7 @@ impl EmojiPanel {
             mode: PanelMode::Closed,
             group: 0,
             scroll: 0.0,
+            // window-bar: service, the on-screen keyboard has no window bar
             search: SearchField::new().with_placeholder(&i18n::t("osk-emoji-search")),
             tones: None,
             bands: PanelBands::default(),

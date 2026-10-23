@@ -1109,6 +1109,7 @@ impl ChatApp {
             emoji_open: false,
             emoji_target: None,
             emoji_anchor: Point::ZERO,
+            // window-bar: picker, type-ahead in the emoji popover
             emoji_search: SearchField::new().with_placeholder(&crate::i18n::t("chat-emoji-search")),
             emoji_group: 0,
             nav_scroll: 0.0,

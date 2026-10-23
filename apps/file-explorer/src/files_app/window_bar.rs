@@ -92,6 +92,7 @@ impl FileExplorerWidget {
             self.toolbar = toolbar;
             self.nav
                 .set_content_header("", vec![Box::new(actions_widget)]);
+            // window-bar: fallback, the bar shows the path while it hosts the window
             self.nav
                 .set_content_header_leading(Some(Box::new(path_widget)));
             ui::window_toolbar::declare(None);
