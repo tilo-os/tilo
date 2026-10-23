@@ -322,7 +322,10 @@ impl Slider {
         }
         let value = value.clamp(min, max);
         match self.step {
-            Some(step) => (min + ((value - min) / step).round() * step).clamp(min, max),
+            Some(step) => {
+                crate::num::snap_decimal(min + ((value - min) / step).round() * step, &[min, step])
+                    .clamp(min, max)
+            }
             None => value,
         }
     }
@@ -1645,6 +1648,22 @@ mod tests {
             51.0,
             "fine movement still honors the step grid"
         );
+    }
+
+    #[test]
+    fn decimal_steps_land_on_the_grid_they_name() {
+        let state = crate::LocalState::new(0.0);
+        let mut slider = Slider::from_state(&state).step(0.1);
+        slider.set_focus(true);
+        let right = crate::synthetic_input::named_key(NamedKey::ArrowRight);
+        for _ in 0..3 {
+            dispatch(&mut slider, &right);
+        }
+        assert_eq!(state.get(), 0.3, "three tenths is 0.3");
+        for _ in 0..4 {
+            dispatch(&mut slider, &right);
+        }
+        assert_eq!(state.get(), 0.7, "seven tenths is 0.7");
     }
 
     #[test]
