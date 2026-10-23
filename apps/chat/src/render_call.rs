@@ -603,7 +603,11 @@ impl ChatApp {
             .map_or_else(|| "Call".into(), |c| c.name.clone());
         ui::surface::floating_drag_grip(scene, tf, panel, local.text_dim);
         let sp = &theme.tokens.spacing;
-        let n = self.call_participants().len();
+        // A call that ended for a reason counts only who is still in it.
+        let n = self
+            .call_participants()
+            .len()
+            .saturating_sub(usize::from(!self.in_call()));
         let count = format!("{n} in call");
         let count_style = local.text(TextRole::Caption).numeric();
         let count_w = width_of(tr, &count, &count_style);
