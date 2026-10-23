@@ -1364,6 +1364,8 @@ impl FilePicker {
                         .unwrap_or_default();
                     self.set_filename(&name);
                 }
+                // The rows came after the last layout; place them where they hit-test.
+                self.apply_layout_helper();
                 changed = true;
             }
         }
