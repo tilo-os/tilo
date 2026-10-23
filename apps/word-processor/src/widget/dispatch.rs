@@ -402,12 +402,24 @@ impl WordProcessorWidget {
 
     /// Bring the kept state up to date with `state` in the middle of an edit;
     /// the next refresh still copies what changed into the views.
-    fn sync_source(&mut self, state: &AutoCommit) {
+    pub(super) fn sync_source(&mut self, state: &AutoCommit) {
         self.source_unseen |= self.refresh_live(state);
     }
 
+    /// Run a caret motion with the body order brought up to date with
+    /// `state`, so it finds the caret's neighbours without listing the body.
+    pub(super) fn with_kept_body<T>(
+        &mut self,
+        state: &AutoCommit,
+        motion: impl FnOnce(&mut crate::word_processor::WordProcessor) -> T,
+    ) -> T {
+        self.sync_source(state);
+        let body = self.kept_body();
+        self.inner.with_kept_body(body, motion)
+    }
+
     /// The kept body order, once there is kept state.
-    fn kept_body(&self) -> Option<std::rc::Rc<tilo_document::BodyOrder>> {
+    pub(super) fn kept_body(&self) -> Option<std::rc::Rc<tilo_document::BodyOrder>> {
         self.with_live(|s| std::rc::Rc::clone(s.body()))
     }
 
