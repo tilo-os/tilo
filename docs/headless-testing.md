@@ -772,6 +772,26 @@ frame as a PNG through the offscreen renderer `--shots` uses:
              {"path": "out/week-light-compact.png", "theme": "light", "viewport": [420, 800]}]}
 ```
 
+With `"window_bar": true` the capture shows the app under the desktop's
+window bar, and `perform` on a `window-search-*` target drives the bar's
+search as an agent drives it on the desktop, so a capture can show it open:
+`window-search-open` (`activate`), `window-search-query` and
+`window-search-replacement` (`set_value`), `window-search-next` and
+`-previous`, `window-search-options` (`expand`), the options
+(`window-search-match-case`, `-whole-word`, `-regex`, `-text`, `-hex`),
+`window-search-replace`, `-replace-all` and `-close`. A part the search does
+not offer now (hex mode on plain text, the desktop's search) fails the step.
+
+```json
+{"window_bar": true,
+ "actions": [{"perform": {"target": "window-search-open", "action": "activate"}},
+             {"perform": {"target": "window-search-options", "action": "expand"}},
+             {"perform": {"target": "window-search-hex", "action": "activate"}},
+             {"perform": {"target": "window-search-query", "action": "set_value", "value": "89 50"}},
+             {"perform": {"target": "window-search-replacement", "action": "set_value", "value": "FF D8"}}],
+ "capture": [{"path": "out/search-hex-dark.png", "theme": "dark"}]}
+```
+
 `resources` writes the published resource tree after the actions ran: each
 resource's id, kind and label, its actions with their parameters (and why one
 is unavailable), and its children. It is what a scenario can `invoke`:
