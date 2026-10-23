@@ -350,7 +350,7 @@ fn staged_counters_stay_in_the_same_directory() {
 }
 
 #[test]
-fn staging_counts_incoming_and_preserves_booted_identity() {
+fn staging_counts_every_entry_and_keeps_spent_tries() {
     let f = Fixture::new();
     f.make_uki("old.efi", &"a".repeat(128));
     f.make_uki("new.efi", &"b".repeat(128));
@@ -359,10 +359,16 @@ fn staging_counts_incoming_and_preserves_booted_identity() {
     f.bootc_entry("entries.staged", "bootc_fedora-44-1.conf", "new.efi");
     let out = f.run_entries(None, false);
     assert_ok(&out);
-    assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
+    // The booted deployment is on trial too, in both sets: a deployment that
+    // has booted before can still stop booting.
     assert!(
         f.esp
-            .join("loader/entries.staged/bootc_fedora-44-0.conf")
+            .join("loader/entries/bootc_fedora-44-1+3.conf")
+            .exists()
+    );
+    assert!(
+        f.esp
+            .join("loader/entries.staged/bootc_fedora-44-0+3.conf")
             .exists()
     );
     let counted = f.esp.join("loader/entries.staged/bootc_fedora-44-1+3.conf");
@@ -376,18 +382,16 @@ fn staging_counts_incoming_and_preserves_booted_identity() {
 }
 
 #[test]
-fn finalized_filename_collision_does_not_count_old_fallback() {
+fn finalized_filename_collision_counts_both_deployments() {
     let f = Fixture::new();
     f.make_uki("old.efi", &"a".repeat(128));
     f.make_uki("new.efi", &"b".repeat(128));
     f.bootc_entry("entries", "bootc_fedora-44-0.conf", "old.efi");
     f.bootc_entry("entries", "bootc_fedora-44-1.conf", "new.efi");
     assert_ok(&f.run_entries(None, false));
-    assert!(f.esp.join("loader/entries/bootc_fedora-44-0.conf").exists());
-    assert!(
-        f.esp
-            .join("loader/entries/bootc_fedora-44-1+3.conf")
-            .exists()
+    assert_eq!(
+        f.entries_in("entries"),
+        ["bootc_fedora-44-0+3.conf", "bootc_fedora-44-1+3.conf"]
     );
 }
 
@@ -437,11 +441,15 @@ fn counter_writer_failure_is_fatal() {
 }
 
 #[test]
-fn non_composefs_keeps_bootloader_selected_entry() {
+fn non_composefs_proves_the_boot_by_the_selected_entry() {
     let f = Fixture::new();
     f.bootc_entry("entries", "bootc_fedora-43-1.conf", "other.efi");
     assert_ok(&f.run_entries(Some("/dev/mapper/root"), false));
-    assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());
+    assert!(
+        f.esp
+            .join("loader/entries/bootc_fedora-44-1+3.conf")
+            .exists()
+    );
     assert!(
         f.esp
             .join("loader/entries/bootc_fedora-43-1+3.conf")
@@ -476,10 +484,10 @@ fn dev_kernel_initrd_entries_are_counted_by_their_composefs_identity() {
     );
     let out = f.run_entries(None, false);
     assert_ok(&out);
-    assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
+    assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1+3.conf"]);
     assert_eq!(
         f.entries_in("entries.staged"),
-        ["bootc_fedora-44-0+3.conf", "bootc_fedora-44-1.conf"]
+        ["bootc_fedora-44-0+3.conf", "bootc_fedora-44-1+3.conf"]
     );
     // A repeated pass leaves the counted entry and the tries it has spent.
     let counted = f.esp.join("loader/entries.staged/bootc_fedora-44-0+3.conf");
@@ -488,7 +496,7 @@ fn dev_kernel_initrd_entries_are_counted_by_their_composefs_identity() {
     assert_ok(&f.run_entries(None, false));
     assert_eq!(
         f.entries_in("entries.staged"),
-        ["bootc_fedora-44-0+2-1.conf", "bootc_fedora-44-1.conf"]
+        ["bootc_fedora-44-0+2-1.conf", "bootc_fedora-44-1+3.conf"]
     );
 }
 
@@ -625,7 +633,7 @@ fn repair_entry_skips_a_deployment_without_a_uki() {
     assert!(stdout.contains("is not a UKI entry"), "{stdout}");
     assert!(!f.esp.join("EFI/Linux/tilo-repair.efi").exists());
     assert!(!f.esp.join("EFI/tilo/repair.source").exists());
-    assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1.conf"]);
+    assert_eq!(f.entries_in("entries"), ["bootc_fedora-44-1+3.conf"]);
 }
 
 #[test]

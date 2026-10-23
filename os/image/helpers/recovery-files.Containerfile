@@ -18,6 +18,7 @@ COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-esp-generator /usr/l
 COPY \
     os/usr/lib/systemd/system/tilo-boot-entries.service \
     os/usr/lib/systemd/system/tilo-boot-entries.timer \
+    os/usr/lib/systemd/system/tilo-boot-rearm.service \
     os/usr/lib/systemd/system/tilo-esp-write@.service \
     os/usr/lib/systemd/system/tilo-boot-health.service \
     os/usr/lib/systemd/system/tilo-repair.target \

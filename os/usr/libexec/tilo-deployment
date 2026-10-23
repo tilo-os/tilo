@@ -40,11 +40,12 @@ log()  { printf 'tilo-deployment: %s\n' "$*"; }
 warn() { printf 'tilo-deployment: WARNING: %s\n' "$*" >&2; }
 die()  { printf 'tilo-deployment: %s\n' "$*" >&2; exit 1; }
 
-# How many times a never-yet-confirmed deployment may be tried before the boot
-# loader stops offering it first. Three is the smallest number that survives one
-# unlucky boot (a power cut mid-boot spends a try) while still reaching the
-# fallback in under a minute of the user's patience.
-BOOT_TRIES="${TILO_BOOT_TRIES:-3}"
+# How many boots in a row an entry may fail before the boot loader stops
+# offering it first and starts the previous deployment. Every boot is counted,
+# so this is consecutive failures of a deployment, whether it is new or has
+# booted a hundred times: two lets one unlucky boot (a power cut mid-boot)
+# pass, and the second failure in a row already reaches the previous version.
+BOOT_TRIES="${TILO_BOOT_TRIES:-2}"
 
 # The repair entry's sort key. It has to sort AFTER every bootc entry so that a
 # healthy deployment always wins, and BEFORE the exhausted ones so that a machine
@@ -212,6 +213,16 @@ entry_id_of() {
   local base="${1##*/}"
   base="${base%.conf}"
   printf '%s.conf\n' "${base%%+*}"
+}
+
+# The file of entry ID in DIR: the id carries no boot counter, its file does
+# while it is on trial.
+entry_file() {  # DIR ID
+  local f
+  for f in "$1/$2" "$1/${2%.conf}"+*.conf; do
+    [ -f "$f" ] && [ ! -L "$f" ] && { printf '%s\n' "$f"; return 0; }
+  done
+  return 1
 }
 
 # The composefs identity a dev image's kernel/initrd (Type #1) entry boots, or
@@ -420,15 +431,11 @@ tilo_running_generation() {
   # available to the boot-entry maintenance service under ProcSubset=pid, while
   # preserving the trust property of the former /proc/cmdline source: the value
   # comes from the signed UKI's sealed .cmdline section.
-  local esp entry conf="" f uki_rel cmdline
+  local esp entry conf uki_rel cmdline
   esp="$(esp_path)" || return 0
   entry="$(current_entry)"
   [ -n "$entry" ] || return 0
-  # The entry's id carries no boot counter; its file does while it is on trial.
-  for f in "$esp/loader/entries/$entry" "$esp/loader/entries/${entry%.conf}"+*.conf; do
-    [ -f "$f" ] && [ ! -L "$f" ] && { conf="$f"; break; }
-  done
-  [ -n "$conf" ] || return 0
+  conf="$(entry_file "$esp/loader/entries" "$entry")" || return 0
   uki_rel="$(sed -n 's/^uki *//p' "$conf" | head -1)"
   [ -n "$uki_rel" ] || return 0
   cmdline="$($UKI_CMDLINE show "$esp/${uki_rel#/}" 2>/dev/null || true)"
@@ -764,10 +771,15 @@ cmd_entries() {
         digest="$(printf '%s\n' "$cmd" | tr ' \t' '\n\n' | sed -n 's/^composefs=//p')"
         [[ "$digest" =~ ^[[:xdigit:]]{128}$ ]] || die "invalid entry composefs identity: $f"
       fi
-      if [ "$digest" = "$booted_digest" ]; then proven=1; continue; fi
+      [ "$digest" != "$booted_digest" ] || proven=1
     elif [ "$id" = "$cur" ]; then
-      proven=1; continue
+      proven=1
     fi
+    # Every entry is on trial, the booted one included: a deployment that has
+    # booted before can still stop booting, and only a counter lets the boot
+    # loader notice. An entry this boot is being counted on keeps its counter
+    # until systemd-bless-boot removes it, and tilo-boot-rearm.service, after
+    # the blessing, comes back here to put it on trial for the next boot.
     case "$name" in *+*) continue ;; esac
     directory="${f%/*}"; directory="${directory#"$esp"/}"
     esp_plan_op rename src "$directory/$name" dst "$directory/${name%.conf}+${BOOT_TRIES}.conf"
@@ -822,9 +834,10 @@ cmd_repair_entry() {
   local cur; cur="$(current_entry)"
 
   local src_conf=""
-  if [ -n "$cur" ] && [ -e "$entries/$cur" ]; then
-    src_conf="$entries/$cur"
+  if [ -n "$cur" ] && src_conf="$(entry_file "$entries" "$cur")"; then
+    :
   else
+    src_conf=""
     local f
     for f in "$entries"/*.conf; do
       [ -e "$f" ] || continue
