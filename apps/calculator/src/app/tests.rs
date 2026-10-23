@@ -54,6 +54,54 @@ fn calculator_mathfield_edits_fractions_roots_and_continues_results() {
     assert!(app.model.expr.is_empty());
 }
 
+/// Continuing a result with a power, a factorial or a fraction works on the
+/// whole result, its sign and exponent included: (2 - 7) squared is 25, and
+/// a tiny result halves rather than splitting at its exponent's sign.
+#[test]
+fn a_power_or_fraction_after_equals_takes_the_whole_signed_result() {
+    let mut app = CalculatorApp::new();
+    let mut state = ui::State::new();
+    app.set_focus(true);
+    send(
+        &mut app,
+        &mut state,
+        &keyboard(WKey::Character("2-7".into())),
+    );
+    app.commit_equals(&mut Edits::lend(&mut state.doc));
+    assert_eq!(app.model.expr, "-5");
+    app.apply_calc_key(&model::Key::Ins("^"));
+    app.apply_calc_key(&model::Key::Digit('2'));
+    app.commit_equals(&mut Edits::lend(&mut state.doc));
+    assert_eq!(app.model.ans, 25.0, "{}", app.model.expr);
+
+    app.apply_calc_key(&model::Key::Clear);
+    send(
+        &mut app,
+        &mut state,
+        &keyboard(WKey::Character("1/4000000".into())),
+    );
+    send(
+        &mut app,
+        &mut state,
+        &keyboard(WKey::Named(NamedKey::Enter)),
+    );
+    assert_eq!(app.model.expr, "2.5e-7");
+    // Typed, as from the keyboard, not only from the pad.
+    send(&mut app, &mut state, &keyboard(WKey::Character("/".into())));
+    send(&mut app, &mut state, &keyboard(WKey::Character("2".into())));
+    send(
+        &mut app,
+        &mut state,
+        &keyboard(WKey::Named(NamedKey::Enter)),
+    );
+    assert!(
+        (app.model.ans - 1.25e-7).abs() < 1e-20,
+        "{} = {}",
+        app.model.expr,
+        app.model.ans
+    );
+}
+
 /// A hosted calculator: the framework's live app with its resource.
 fn hosted() -> TestApp<CalculatorShell> {
     let mut app = TestApp::<CalculatorShell>::new().unwrap();

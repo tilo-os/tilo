@@ -727,9 +727,17 @@ impl CalculatorApp {
             && let WKey::Character(s) = key
             && !modifiers.state().control_key()
             && !modifiers.state().super_key()
-            && s.chars().next().is_some_and(|c| !"+-*/^!%)".contains(c))
         {
-            self.model.expr.clear();
+            match s.chars().next() {
+                Some(c) if !"+-*/^!%)".contains(c) => self.model.expr.clear(),
+                // A result is one value. A power, factorial or fraction takes
+                // only the operand to its left, which for `-5` or `2.5e-7`
+                // is the digits after the sign: `-5^2` is -25, not 25.
+                Some('^' | '!' | '/') if self.model.expr.contains('-') => {
+                    self.model.expr = format!("({})", self.model.expr);
+                }
+                _ => {}
+            }
         }
         self.calc.field.set_source(&self.model.expr);
         if matches!(
