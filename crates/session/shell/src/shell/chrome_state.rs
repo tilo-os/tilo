@@ -1157,15 +1157,9 @@ enum IdentitySource {
 }
 
 impl IdentitySource {
-    fn local_user_for_room(&self, room: &crate::shell::state::RoomId) -> String {
-        match self {
-            Self::SessionRegistry => crate::shell::state::local_user_id_for_room(room),
-            Self::Explicit(principal) => principal.clone(),
-        }
-    }
-
-    /// [`Self::local_user_for_room`] for callers on the input and frame loop,
-    /// which ask on every key and frame: it never waits for the identity
+    /// The identity this session acts as in `room`, for callers on the
+    /// input and frame loop, which ask on every key and frame: it never
+    /// waits for the identity
     /// directory after the first answer, and a room with no identity of its
     /// own presents `session_user`, the session's identity chrome holds,
     /// rather than reading it from the disk again. Whoever records

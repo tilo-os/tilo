@@ -16,7 +16,7 @@
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
-use crate::shell::state::{RoomId, UserId, Workspace, WorkspaceTree, person_id_of};
+use crate::shell::state::{RoomId, UserId, Workspace, person_id_of};
 
 /// May the local user invite into the workspace on screen: an invitation
 /// submitted now would be issued here. The one answer every door (the

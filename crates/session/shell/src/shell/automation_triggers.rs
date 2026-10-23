@@ -1408,19 +1408,14 @@ mod tests {
         }
     }
 
-    /// Carry `from`'s copy of the personal room to `to`.
+    /// Carry `from`'s copy of the personal room to `to`: its shortcuts and
+    /// schedule claims, as the room's host serves them to every member.
     fn sync(from: &mut Device, to: &mut Device) {
-        let changes = from
-            .tree
-            .export_room_changes_since(personal_room(), &[])
-            .expect("the device is in the room");
-        to.tree
-            .apply_room_changes(
-                personal_room(),
-                &changes,
-                &crate::shell::state::PeerOrigin::hub(1),
-            )
-            .expect("the room's changes apply");
+        let source = &from.tree.desktop.workspaces[0];
+        let (shortcuts, claims) = (source.shortcuts.clone(), source.schedule_claims.clone());
+        let target = &mut to.tree.desktop.workspaces[0];
+        target.shortcuts = shortcuts;
+        target.schedule_claims = claims;
     }
 
     fn laptop_and_desktop(clock: &Arc<ManualClock>) -> (Device, Device) {

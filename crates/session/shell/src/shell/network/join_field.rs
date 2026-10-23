@@ -219,8 +219,7 @@ impl ShellNetwork {
             .unwrap_or_else(std::time::Instant::now);
         loop {
             let held = {
-                replica
-                    .tree
+                self.tree
                     .read()
                     .desktop
                     .workspaces

@@ -79,7 +79,7 @@ fn deliver_as(
     to.publish_local(to_tree, person);
     to.merge(&update, &from_device.cert, 20)
         .expect("same person");
-    to.adopt_into(to_tree, &person.to_string())
+    to.adopt_into(to_tree)
 }
 
 fn room_named(tree: &WorkspaceTree, name: &str) -> RoomId {
@@ -793,7 +793,7 @@ fn an_unchanged_tree_is_not_compared_against_the_directory_again() {
     assert_eq!(laptop_list.publish_passes, passes + 3);
 
     // As does bringing the directory into the tree.
-    laptop_list.adopt_into(&mut laptop, &PERSON.to_string());
+    laptop_list.adopt_into(&mut laptop);
     laptop_list.publish_local(&laptop, PERSON);
     assert_eq!(laptop_list.publish_passes, passes + 4);
 }

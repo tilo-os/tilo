@@ -803,7 +803,7 @@ fn launch_resolved_installed_app(
     // the capability list now, so the grant has to be in that copy.
     let launched = {
         let st = chrome.borrow();
-        let mut tree = st.tree_mut();
+        let tree = st.tree();
         let room = tree
             .desktop
             .active_workspace()
