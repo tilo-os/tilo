@@ -326,6 +326,17 @@ impl Site {
     /// does: the door pre-admits its person and the device redeems the
     /// invitation as itself.
     pub(super) fn admit_device(&self, cert: &DeviceCert, device: &SigningKey, name: &str) {
+        let reply = self.join_device(cert, device, name);
+        assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    }
+
+    /// [`Self::admit_device`], answering how the room replied.
+    pub(super) fn join_device(
+        &self,
+        cert: &DeviceCert,
+        device: &SigningKey,
+        name: &str,
+    ) -> JoinReply {
         let workspace = hosted_sites::SiteWorkspace {
             entry: self.entry.clone(),
             name: "Lounge".into(),
@@ -343,8 +354,7 @@ impl Site {
             &answer.invitation,
         )
         .unwrap();
-        let reply = self
-            .runtime
+        self.runtime
             .block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
                 self.http().as_ref(),
                 &invitation,
@@ -354,8 +364,7 @@ impl Site {
                 name,
                 answer.admission_token.as_bytes(),
             ))
-            .unwrap();
-        assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+            .unwrap()
     }
 
     /// Whether `user` is a member of the room by its governance.
@@ -619,18 +628,35 @@ fn a_computer_joins_a_sites_workspace_whose_roster_holds_an_expired_guest() {
     let site = Site::start(dir.path());
     let room = RoomId::parse(&site.room).unwrap();
 
+    // The page's certificate must outlive its own admission and expire
+    // soon after. A loaded machine can take longer to admit it than it
+    // lives; such a page is refused as expired, so a fresh page tries again
+    // with a certificate that lives twice as long, within the hang bound.
     let grace = key(2);
-    let page = key(3);
-    let expires = tilo_clock::unix_now_ns() + 1_500_000_000;
-    let mut cert = certify(
-        &grace,
-        &page,
-        "Watching visitor",
-        DeviceCapabilities::member(),
-    );
-    cert.expires_at_ns = Some(expires);
-    sign_device_cert(&mut cert, &grace).unwrap();
-    site.admit_device(&cert, &page, "Grace");
+    let deadline = tilo_test_env::hang_deadline();
+    let mut lifetime_ns: u64 = 1_500_000_000;
+    let mut seed = 3;
+    let expires = loop {
+        let page = key(seed);
+        let expires = tilo_clock::unix_now_ns() + lifetime_ns;
+        let mut cert = certify(
+            &grace,
+            &page,
+            "Watching visitor",
+            DeviceCapabilities::member(),
+        );
+        cert.expires_at_ns = Some(expires);
+        sign_device_cert(&mut cert, &grace).unwrap();
+        match site.join_device(&cert, &page, "Grace") {
+            JoinReply::Admitted { .. } => break expires,
+            refused => assert!(
+                tilo_clock::unix_now_ns() > expires && Instant::now() < deadline,
+                "the page is let in while its certificate lives: {refused:?}"
+            ),
+        }
+        lifetime_ns = lifetime_ns.saturating_mul(2);
+        seed += 1;
+    };
     until("the page's certificate to expire", || {
         (tilo_clock::unix_now_ns() > expires).then_some(())
     });
