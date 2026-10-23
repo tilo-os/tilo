@@ -203,6 +203,24 @@ pub async fn prepare_and_complete(
     current(&identity, identity_topic, &device)?;
     active(&owner, &intent, &id)?;
     match response {
+        // Admitted with the certificate the proof was made with, which
+        // custody has renewed since: the room takes the renewal through the
+        // membership exchange before the device takes the room in, so the
+        // host holds the certificate this device presents from now on.
+        JoinTransportResponse::Complete(bootstrap) if bootstrap.device_cert != device => {
+            let grant = intent.verified_join().grant();
+            let bootstrap = prove_membership(
+                &client,
+                &host.endpoint_addr,
+                (grant.room.clone(), grant.workspace_id),
+                &device,
+                &identity,
+            )
+            .await?;
+            current(&identity, identity_topic, &device)?;
+            active(&owner, &intent, &id)?;
+            VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
+        }
         JoinTransportResponse::Complete(bootstrap) => {
             VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
         }
@@ -232,6 +250,19 @@ pub async fn prepare_and_complete(
         // at all, through a new challenge.
         JoinTransportResponse::Error { code, message } if lapsed(code, &message) => {
             owner.drop_lapsed_enrollment(intent.room(), &id)?;
+            // The proof carried the certificate custody has renewed since:
+            // the invitation is asked for again at once, with the renewal.
+            if intent.local_device() != &device {
+                return Box::pin(prepare_and_complete(
+                    client,
+                    identity,
+                    identity_topic,
+                    local,
+                    invitation,
+                    owner,
+                ))
+                .await;
+            }
             Err(format!(
                 "{}; the host never admitted this join, so it is asked for again",
                 refused(&message)
