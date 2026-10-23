@@ -115,7 +115,7 @@
 "crates/sdk/ui-core/src/widget/context_menu.rs" = 3500
 "crates/sdk/ui-core/src/widget/data_table.rs" = 8000
 "crates/sdk/ui-core/src/widget/dropdown.rs" = 4000
-"crates/sdk/ui-core/src/widget/file_picker.rs" = 4500
+"crates/sdk/ui-core/src/widget/file_picker.rs" = 4435
 "crates/sdk/ui-core/src/widget/group_row.rs" = 11500
 "crates/sdk/ui-core/src/widget/list_row.rs" = 4000
 "crates/sdk/ui-core/src/widget/mod.rs" = 4000
