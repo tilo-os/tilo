@@ -1805,6 +1805,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         reason = "keeps child, scrollbar, reorder, scroll, selection, and keyboard precedence explicit"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.momentum.set_device_scale(ctx.scale_factor);
         if self.handle_scrollbar_event(event, ctx.scale_factor) {
             *ctx.handled = true;
             return;

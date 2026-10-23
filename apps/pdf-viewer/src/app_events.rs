@@ -653,6 +653,7 @@ impl PdfApp {
         handled: &mut bool,
     ) {
         self.shift_down = modifiers.state().shift_key();
+        self.glide.set_device_scale(scale_factor);
         if let Some(file) = self.file_open.handle_event(event) {
             self.take_file(file);
             *handled = true;

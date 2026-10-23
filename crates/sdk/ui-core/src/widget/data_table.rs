@@ -3975,6 +3975,7 @@ impl Widget for DataTableCore {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.momentum.set_device_scale(ctx.scale_factor);
         // The row under the pointer, before a control in it takes the move.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
