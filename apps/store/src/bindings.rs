@@ -52,12 +52,12 @@ pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>
     if action == ActionKind::AddBot {
         return add_bot(item);
     }
-    let effect = StoreEffect::package(action, item);
+    let Some(effect) = StoreEffect::package(action, item) else {
+        return Some(uninstall(item));
+    };
     if let Some((code, reason)) = item.unavailable_action(action) {
         let spec = effect.bound().unavailable(code, reason);
         ActionBinding::static_json(&DOOR, &spec, effect.arguments()).ok()
-    } else if matches!(action, ActionKind::Remove | ActionKind::FlatpakRemove) {
-        Some(uninstall(item))
     } else {
         self::effect(&effect)
     }

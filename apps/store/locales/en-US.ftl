@@ -77,7 +77,6 @@ store-package-local-description = Signed local application. Installation require
 store-package-local-source = Local package
 store-app-installed = App installed.
 store-app-updated = App updated.
-store-app-removed = App removed.
 
 store-search-empty = No apps found
 store-search-empty-help = Try a different search or category.

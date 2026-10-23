@@ -360,7 +360,10 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
         .chain(item.pin_action())
         .chain(item.remove_action());
     for action in actions {
-        let spec = StoreEffect::package(action, item).bound();
+        let Some(effect) = StoreEffect::package(action, item) else {
+            continue;
+        };
+        let spec = effect.bound();
         let spec = if action == ActionKind::AddBot {
             // A bot is added by the workspace it runs in: the workspace's
             // Add a bot is the door, which the Store's button prepares.
@@ -2258,13 +2261,11 @@ impl StoreApp {
             StoreEffect::InstallRuntime { .. }
             | StoreEffect::OpenApp { .. }
             | StoreEffect::Update { .. }
-            | StoreEffect::Remove { .. }
             | StoreEffect::Pin { .. }
             | StoreEffect::Unpin { .. }
             | StoreEffect::FlatpakInstall { .. }
             | StoreEffect::FlatpakUpdate { .. }
             | StoreEffect::FlatpakOpen { .. }
-            | StoreEffect::FlatpakRemove { .. }
             | StoreEffect::FlatpakSetup { .. }
             | StoreEffect::AddBot { .. } => {}
         }
@@ -2283,11 +2284,8 @@ impl StoreApp {
             .chain(&self.remote_results)
             .find(|item| item.id == app)
             .ok_or_else(|| "app is no longer present in the catalog".to_string())?;
-        // A blocked app is opened, installed or updated from nowhere; it can
-        // still be removed.
-        if self.blocks.is_blocked(app)
-            && !matches!(action, ActionKind::Remove | ActionKind::FlatpakRemove)
-        {
+        // A blocked app is opened, installed or updated from nowhere.
+        if self.blocks.is_blocked(app) {
             return Err(ui::i18n!("store-blocked-refused"));
         }
         if action.requires_flatpak_host() && !self.flatpak_available {
@@ -2729,7 +2727,6 @@ impl StoreApp {
                     StoreEffect::FLATPAK_INSTALL,
                     StoreEffect::FLATPAK_UPDATE,
                     StoreEffect::FLATPAK_OPEN,
-                    StoreEffect::FLATPAK_REMOVE,
                     StoreEffect::FLATPAK_SETUP,
                     StoreEffect::ENABLE_REMOTE,
                     StoreEffect::DISABLE_REMOTE,
@@ -3123,7 +3120,7 @@ mod tests {
         item.id = "so.tilo.runtime.chromium".into();
         item.versions[0].root_hash_hex = Some("11".repeat(32));
         item.versions[0].runtime = Some("tilo-runtime/2026.10.4-chromium".into());
-        let action = StoreEffect::package(ActionKind::RuntimeInstall, &item);
+        let action = StoreEffect::package(ActionKind::RuntimeInstall, &item).unwrap();
         let mut app = StoreApp::new();
         app.set_items(vec![item.clone()]);
         assert_eq!(
@@ -5501,7 +5498,9 @@ mod tests {
                     } else {
                         assert_eq!(
                             invoked.unwrap().address.action,
-                            crate::resource::StoreEffect::package(action, item).id()
+                            crate::resource::StoreEffect::package(action, item)
+                                .expect("a primary action is the Store's")
+                                .id()
                         );
                     }
                 }
@@ -5958,11 +5957,11 @@ mod tests {
         {
             let mut app = seeded_app();
             assert!(
-                app.admit(StoreEffect::Remove {
+                app.admit(StoreEffect::Update {
                     app: "id.notes".into()
                 })
                 .is_err(),
-                "an uninstalled app offers Open, not an arbitrary stale Remove"
+                "an uninstalled app offers Open, not an arbitrary stale Update"
             );
             assert!(app.active_operation.is_none());
         }
@@ -5984,57 +5983,74 @@ mod tests {
                 .live_row("app:id.chess")
                 .expect("an app row resolves")
                 .into_resource();
-            for id in ["flatpak-setup", "flatpak-remove"] {
-                let action = chess.actions.iter().find(|action| action.id == id).unwrap();
-                assert!(matches!(
-                    action.contract.availability,
-                    ui::tilo_actions::Availability::Unavailable { ref code, .. }
-                        if code == "flatpak_host_unavailable"
-                ));
-            }
+            let setup = chess
+                .actions
+                .iter()
+                .find(|action| action.id == "flatpak-setup")
+                .unwrap();
+            assert!(matches!(
+                setup.contract.availability,
+                ui::tilo_actions::Availability::Unavailable { ref code, .. }
+                    if code == "flatpak_host_unavailable"
+            ));
             assert!(
                 app.effect_statuses()
                     .iter()
                     .any(|status| *status
                         == EffectStatus::unavailable(
-                            StoreEffect::FLATPAK_REMOVE,
+                            StoreEffect::FLATPAK_UPDATE,
                             "flatpak_host_unavailable",
                             "Flatpak is not installed on this host; install it before using Flatpak catalog actions",
                         ))
             );
             assert!(
-                app.admit(StoreEffect::FlatpakRemove {
+                app.admit(StoreEffect::FlatpakUpdate {
                     app: "id.chess".into()
                 })
                 .is_err(),
                 "a direct invocation cannot bypass the unavailable operation"
             );
         }
+    }
 
-        {
-            let mut app = seeded_app();
-            app.items
-                .iter_mut()
-                .find(|item| item.id == "id.chess")
-                .unwrap()
-                .installed = InstalledState::Installed {
-                version: "1".into(),
-                available: "1".into(),
-                pinned: false,
-                user_managed: true,
-            };
-            let chess = app.live_row("app:id.chess").unwrap().into_resource();
-            let remove = chess
-                .actions
-                .iter()
-                .find(|action| action.id == "flatpak-remove")
-                .expect("Flatpak remove is offered at its concrete address");
-            assert_eq!(
-                remove.contract.confirmation,
-                ui::tilo_actions::ConfirmationPolicy::Confirm
+    #[test]
+    fn uninstalling_is_the_systems_one_action_not_a_store_effect() {
+        let mut app = seeded_app();
+        for item in &mut app.items {
+            if item.id == "id.chess" || item.id == "id.notes" {
+                item.installed = InstalledState::Installed {
+                    version: "1".into(),
+                    available: "1".into(),
+                    pinned: false,
+                    user_managed: true,
+                };
+            }
+        }
+        for (row, remove) in [
+            ("app:id.chess", ActionKind::FlatpakRemove),
+            ("app:id.notes", ActionKind::Remove),
+        ] {
+            let resource = app.live_row(row).unwrap().into_resource();
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .all(|action| action.id != "remove" && action.id != "flatpak-remove")
             );
-            let item = app.items.iter().find(|item| item.id == "id.chess").unwrap();
-            assert!(bindings::package(item, ActionKind::FlatpakRemove).is_some());
+            let item = app
+                .items
+                .iter()
+                .find(|item| row.ends_with(&item.id))
+                .unwrap();
+            assert_eq!(item.remove_action(), Some(remove));
+            assert!(StoreEffect::package(remove, item).is_none());
+            let binding = bindings::package(item, remove).unwrap();
+            let uninstall = bindings::uninstall(item);
+            assert_eq!(binding.address(), uninstall.address());
+            assert_eq!(
+                binding.invoke(()).unwrap().arguments,
+                uninstall.invoke(()).unwrap().arguments
+            );
         }
     }
 
