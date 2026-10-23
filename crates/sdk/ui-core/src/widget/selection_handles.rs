@@ -493,8 +493,6 @@ mod tests {
             frame.handle_at(Point::new(201.0, 151.0), 1.0),
             Some(Handle::BottomRight)
         );
-        // The target is the theme's minimum pointer target, and grows with
-        // its UI scale.
         let edge = Point::new(
             200.0 + f64::from(Metrics::BASE.min_pointer_target) * 0.7,
             150.0,
@@ -512,7 +510,6 @@ mod tests {
             frame.handle_at(Point::new(150.0, 72.0), 1.0),
             Some(Handle::Rotate)
         );
-        // Edge handles show once the frame is big enough on screen.
         assert_eq!(frame.handle_at(Point::new(200.0, 125.0), 1.0), None);
         assert_eq!(
             frame.handle_at(Point::new(200.0, 125.0), 4.0),
@@ -566,7 +563,6 @@ mod tests {
         let quarter = std::f64::consts::FRAC_PI_2;
         let frame = SelectionHandles::new(Rect::new(-50.0, -10.0, 50.0, 10.0), &Metrics::BASE)
             .turned(quarter);
-        // Turned a quarter, the frame's right edge points down.
         let right = frame.position(Handle::Right, 1.0);
         assert!(close(right, Point::new(0.0, 50.0)), "{right:?}");
         let stretch =

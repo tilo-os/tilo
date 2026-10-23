@@ -263,7 +263,6 @@ mod tests {
         Rect::new(0.0, top, 100.0, top + 20.0)
     }
 
-    /// A placed part painting its row.
     fn placed(key: &str, top: f64) -> PaintPart {
         PaintPart::placed(key.into(), row(top), filled(row(top)), vec![row(top)])
     }
@@ -330,12 +329,10 @@ mod tests {
 
     #[test]
     fn parts_that_are_not_placed_still_repaint_whole_when_they_move_come_or_go() {
-        // Moved.
         assert_eq!(
             damage(vec![unplaced("a", 0.0)], vec![unplaced("a", 20.0)]),
             vec![BOUNDS]
         );
-        // Came.
         assert_eq!(
             damage(
                 vec![unplaced("a", 0.0)],
@@ -343,7 +340,6 @@ mod tests {
             ),
             vec![BOUNDS]
         );
-        // Went.
         assert_eq!(
             damage(
                 vec![unplaced("a", 0.0), unplaced("b", 20.0)],

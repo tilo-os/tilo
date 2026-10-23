@@ -207,7 +207,6 @@ pub(crate) enum Kind {
     Undo(Vec<String>),
     /// A redo: the changes whose undo it reverted.
     Redo(Vec<String>),
-    /// An edit of the content.
     Edit,
     /// Nothing a person did to the content: a checkpoint, a schema genesis,
     /// housekeeping, content from outside.
@@ -465,7 +464,6 @@ struct Step {
     shared: Option<std::rc::Rc<Shared>>,
     kind: Option<tilo_actions::ActionKind>,
     change: tilo_actions::ChangeKind,
-    /// Whether the change has an entry.
     entry: bool,
 }
 

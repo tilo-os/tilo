@@ -36,7 +36,6 @@ const RECEIPT_HEIGHT: f64 = RECEIPT_BUTTON_H + 2.0 * RECEIPT_INSET;
 const RECEIPT_TEXT_GAP: f64 = crate::tokens::Spacing::BASE.s3 as f64;
 const RECEIPT_EDGE_MARGIN: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
-/// A labelled action on a receipt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReceiptAction {
     /// Copy the saved screenshot, offered when copying it did not succeed.
@@ -132,8 +131,6 @@ impl Default for ReceiptWidths {
 }
 
 impl CaptureStudio {
-    // ----- Receipts -----
-
     pub(super) fn screenshot_receipt_motion(receipt: &ScreenshotReceipt) -> f64 {
         if let Some(progress) = receipt.progress_override {
             return progress;

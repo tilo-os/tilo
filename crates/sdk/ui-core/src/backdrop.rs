@@ -664,7 +664,6 @@ fn fs_blur(in: VertexOut) -> @location(0) vec4<f32> {
 }
 ";
 
-/// Bytes of the shader's `Pass`.
 const PASS_BYTES: u64 = 32;
 
 /// What [`BackdropBlur::prepare`] did, for frame profiling.

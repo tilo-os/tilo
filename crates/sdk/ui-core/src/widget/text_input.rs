@@ -528,7 +528,6 @@ pub struct TextInput {
     /// A plain field inside a toolkit document view keeps the document's own
     /// text inset instead of the zero inset of a plain app field.
     document_inset: bool,
-    /// Called with the text on a submitting Enter.
     on_submit: Option<TextChangeCallback>,
     /// Route a submitting Enter through an exported resource action.
     submit_action: Option<ActionEmitter<String>>,
@@ -3906,7 +3905,6 @@ impl TextInput {
         })
     }
 
-    /// The room the accessory takes from the text.
     fn accessory_room(&self) -> f64 {
         self.accessory_rect().map_or(0.0, |rect| rect.width())
     }
@@ -4105,7 +4103,6 @@ impl TextInput {
         self.control_size.height(theme).max(grown)
     }
 
-    /// Adopt the theme's field geometry.
     fn adopt_field_theme(&mut self, theme: &Theme) {
         let role_size = (
             self.text_role,
@@ -5233,7 +5230,6 @@ pub struct FieldFace<'a> {
 }
 
 impl<'a> FieldFace<'a> {
-    /// A field at `rect` showing `text`.
     #[must_use]
     pub fn new(rect: Rect, text: &'a str) -> Self {
         Self {
@@ -6441,7 +6437,6 @@ impl TextInput {
         }
     }
 
-    /// The binding of the field's own value.
     fn field_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("text_input");
         let mut bindings = self.value_bindings(control_id);

@@ -15,7 +15,6 @@ use crate::widget::{ChipFace, ChipLead, Widget};
 
 /// Prefix of the context menu's semantic targets inside the tree.
 const MENU_TARGET: &str = "menu:";
-/// Semantic target of the heading action.
 pub(super) const HEADING_ACTION_TARGET: &str = "heading-action";
 
 /// A compact action shown at the trailing edge of the hovered row (a "new
@@ -348,7 +347,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
             .collect()
     }
 
-    /// Whether the row actions of `key`'s row are showing.
     pub(super) fn row_actions_visible(&self, key: TreeRowKey) -> bool {
         !self.row_actions.is_empty()
             && matches!(key, TreeRowKey::Node(id) if self.model.shows_row_actions(id))

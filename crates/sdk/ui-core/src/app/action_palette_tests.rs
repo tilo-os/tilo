@@ -201,7 +201,6 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         ));
         app.refresh_control_action_availability();
         assert!(app.actions.last_control_availability.is_none());
-        // Discovery still sees the complete surface on demand.
         assert!(
             app.collect_resources()
                 .iter()

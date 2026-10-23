@@ -548,12 +548,10 @@ mod tests {
         assert!(stopped.has_changed().is_ok());
         close("another-peer");
         assert!(read("peer").is_ok());
-        // Floating clones the selected view, then its parent leaves the route.
         assert!(retain("peer"));
         close("peer");
         assert!(stopped.has_changed().is_ok());
         assert!(read("peer").is_ok());
-        // Reopening this peer and dropping a returned float is balanced too.
         start_subscription("peer", None).unwrap();
         close("peer");
         assert!(stopped.has_changed().is_ok());
@@ -561,7 +559,6 @@ mod tests {
         close("peer");
         assert!(stopped.has_changed().is_err());
         assert!(read("peer").is_err());
-        // A context change also drops a blocked lane and clears its bodies.
         let (cancel, stopped) = tokio::sync::watch::channel(());
         cache().lock().unwrap().active.insert(
             "peer".into(),

@@ -184,7 +184,6 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
         let disabled_ink = colors
             .on_surface_at(ground, SMALL_TEXT_MIN_CONTRAST)
             .ink_dim;
-        // How far each backdrop moved the material off its opaque ground.
         let mut shifts = Vec::new();
         for backdrop_name in ["white", "black", "busy"] {
             let case = format!("{theme_name} over {backdrop_name}");
@@ -197,7 +196,6 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
                 &with_text,
             );
             let panel = Widget::modal_capture(&shown).expect("the menu is open");
-            // The same material in the same place, with nothing on it.
             let material = render(&theme, backdrop_name, |scene, _| {
                 tilo_ui::widget::floating_surface::paint_rounded(
                     scene,
@@ -208,7 +206,6 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
                 );
             });
 
-            // Every pixel of the material keeps both inks legible.
             let (mut lightest, mut darkest) = (0.0_f64, 1.0_f64);
             let radius = tilo_ui::widget::floating_surface::radius(&theme);
             for (x, y) in body_pixels(panel, radius, 2.0) {
@@ -230,7 +227,6 @@ fn a_menus_text_keeps_its_contrast_over_any_backdrop() {
             let ground_luminance = tilo_ui::color::relative_luminance(ground);
             shifts.push((lightest - ground_luminance).max(ground_luminance - darkest));
 
-            // Each row's label stands off the material under it.
             let mut enabled_ratios = Vec::new();
             for (index, (label, enabled)) in ROWS.iter().enumerate() {
                 let row = shown.item_rect(index).expect("an action row");

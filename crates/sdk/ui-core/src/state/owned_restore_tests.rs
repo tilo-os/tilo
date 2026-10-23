@@ -151,7 +151,6 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
             Err(OwnedRestoreError::UnfinishedActionBoundary)
         ));
         assert_eq!(snapshot(&state), before);
-        // Its original owner completes the precommitted ordinary action explicitly.
         let baseline = state.undo.last_heads.clone();
         state
             .undo
@@ -216,7 +215,6 @@ fn owned_legacy_restores_are_exact_guarded_and_roll_back_only_owned_writes() {
         ));
         VALIDATION_MODE.set(0);
         assert_eq!(snapshot(&state), before);
-        // A later real restore succeeds, proving rollback kept actor/patch state usable.
         assert!(
             state
                 .restore_prepared_owned(&admission(&authority), &plan)

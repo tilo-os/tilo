@@ -1872,7 +1872,6 @@ mod tests {
             let (mut w, _e) = laid_out(true);
             let start = w.window_rect();
 
-            // Fling the window far past the bottom-right corner.
             let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab));
             dispatch(&mut w, &mouse_press());
@@ -2093,7 +2092,6 @@ mod tests {
 
         fn outside_click_is_swallowed_not_passed_through() {
             let (mut w, events) = laid_out(true);
-            // Click far outside the window.
             dispatch(&mut w, &cursor_at(Point::new(5.0, 5.0)));
             let handled = dispatch(&mut w, &mouse_press());
             assert!(handled, "outside click must be swallowed");

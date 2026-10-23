@@ -44,7 +44,6 @@ pub enum Role {
     Focus,
     /// What is switched on: a switch's track, a checked box.
     OnState,
-    /// The knob or mark on the on state.
     OnStateMark,
     /// Each of the twelve presence colours: a collaborator's caret, cursor
     /// and pill. A floor on it holds for every slot.

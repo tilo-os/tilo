@@ -33,7 +33,6 @@ pub fn stage(progress: f64, from: f64, to: f64) -> f64 {
     ((progress - from) / (to - from)).clamp(0.0, 1.0)
 }
 
-/// A scale of `scale` about `origin`.
 fn scale_about(origin: Point, scale: f64) -> Affine {
     Affine::scale_about(scale, origin)
 }
@@ -216,7 +215,6 @@ impl DrillDepth {
         self.depth.release(level_f64(level), velocity, timing, now);
     }
 
-    /// The drawn depth at `now`.
     #[track_caller]
     pub fn get(&self, now: Instant) -> f64 {
         self.depth.get(now)
@@ -573,7 +571,6 @@ impl Snap {
         position + velocity * coast
     }
 
-    /// The detent nearest `position`.
     #[must_use]
     pub fn nearest(detents: impl IntoIterator<Item = f64>, position: f64) -> Option<f64> {
         detents

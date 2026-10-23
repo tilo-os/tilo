@@ -307,7 +307,6 @@ pub fn draw_pill(
 pub enum SaveState {
     /// Nothing to report (memory only, or nothing changed yet).
     Idle,
-    /// A save is in flight.
     Saving,
     /// The last change is stored.
     Saved,
@@ -1158,7 +1157,6 @@ mod tests {
 
     #[test]
     fn status_bubble_geometry_reveal_linger_and_fade_follow_pokes_and_hover() {
-        // Case `pill_reservation_matches_the_renderer_line_box_at_supported_scales`.
         {
             for scale in [1.0, 1.5, 2.0, 4.0] {
                 let theme = Theme::dark().with_text_scale(scale);
@@ -1176,7 +1174,6 @@ mod tests {
             assert!(pill_height(&Theme::dark().with_text_scale(2.0)) > pill_height(&Theme::dark()));
         }
 
-        // Case `show_reveals_on_a_change_only_and_floats_in_the_trailing_corner`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -1211,7 +1208,6 @@ mod tests {
             );
         }
 
-        // Case `poke_reveals_then_fades_after_linger`.
         {
             let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
             let t0 = crate::time::now();
@@ -1242,7 +1238,6 @@ mod tests {
             assert!(b.alpha_in(&Theme::dark(), tail) < 1.0);
         }
 
-        // Case `hover_pins_open_then_lingers_after_leave`.
         {
             let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
             let t0 = crate::time::now();
@@ -1256,7 +1251,6 @@ mod tests {
                 !b.needs_frame(t0 + Duration::from_secs(60)),
                 "a pinned bubble needs no frames"
             );
-            // Leaving starts a fresh linger.
             b.set_hover(false, t0 + Duration::from_secs(60));
             assert!(
                 b.is_visible(t0 + Duration::from_secs(60)),
@@ -1268,12 +1262,10 @@ mod tests {
             );
         }
 
-        // Case `a_fresh_poke_restarts_the_countdown`.
         {
             let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
             let t0 = crate::time::now();
             b.poke(t0);
-            // Almost expired…
             assert!(b.is_visible(t0 + Duration::from_millis(900)));
             // …then a new poke restarts the full linger.
             b.poke(t0 + Duration::from_millis(950));

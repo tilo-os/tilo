@@ -403,11 +403,6 @@ impl BindingSet {
     /// Replace one binding after checking the whole application for a
     /// collision. Passing `allow_conflict` is an explicit UX choice; silent
     /// shadowing is never the default.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BindingConflict`] when another action already uses `binding`
-    /// and `allow_conflict` is false.
     pub fn rebind(
         &mut self,
         action_id: &str,
@@ -442,7 +437,6 @@ mod tests {
 
     #[test]
     fn input_legends_follow_the_device_and_rebinding_reports_conflicts() {
-        // Case `mac_legends_use_the_symbols_printed_on_apple_keyboards`.
         {
             let binding = KeyboardBinding::new(
                 [
@@ -469,7 +463,6 @@ mod tests {
             );
         }
 
-        // Case `face_button_labels_follow_the_connected_controller`.
         {
             assert_eq!(ControllerButton::South.label(ControllerFamily::Xbox), "A");
             assert_eq!(
@@ -486,7 +479,6 @@ mod tests {
             );
         }
 
-        // Case `rebinding_reports_the_action_that_already_owns_a_chord`.
         {
             let chord = InputBinding::Keyboard(KeyboardBinding::command("k"));
             let mut set = BindingSet::default();

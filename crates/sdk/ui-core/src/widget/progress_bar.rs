@@ -94,7 +94,6 @@ impl ProgressBarFace {
         self
     }
 
-    /// The track's height in `theme`.
     #[must_use]
     pub fn height(theme: &Theme) -> f64 {
         f64::from(theme.tokens.spacing.s2)
@@ -652,7 +651,6 @@ mod tests {
             assert!(node.state.busy, "an indeterminate bar is busy");
         }
 
-        // Case `determinate_bar_redraws_only_after_a_visible_value_change`.
         {
             let mut bar = bar_at(0.5);
             assert!(bar.needs_redraw(), "a new bar needs its initial paint");
@@ -690,7 +688,6 @@ mod tests {
             );
         }
 
-        // Case `indeterminate_damage_tracks_only_the_moving_segment`.
         {
             let mut bar = ProgressBar::indeterminate();
             bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
@@ -713,7 +710,6 @@ mod tests {
             }));
         }
 
-        // Case `indeterminate_wrap_damage_is_available_immediately_after_draw`.
         {
             use crate::time::Duration;
 
@@ -742,7 +738,6 @@ mod tests {
             assert!(regions.iter().all(|damage| damage.width() <= 61.0));
         }
 
-        // Case `reduced_motion_stops_indeterminate_frame_requests_after_paint`.
         {
             let mut bar = ProgressBar::indeterminate();
             bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);

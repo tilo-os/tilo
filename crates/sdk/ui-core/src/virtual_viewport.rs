@@ -1280,7 +1280,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn wheel_and_drag_scrolling_preserve_clicks_and_settle() {
-        // Case `kinetic_release_averages_the_recent_window`.
         {
             let start = crate::time::now();
             let mut sampler = KineticSampler::new();
@@ -1296,7 +1295,6 @@ mod tests {
             assert_eq!(sampler.release(start + Duration::from_millis(96)), None);
         }
 
-        // Case `kinetic_release_after_a_pause_is_at_rest`.
         {
             let start = crate::time::now();
             let mut sampler = KineticSampler::new();
@@ -1304,7 +1302,6 @@ mod tests {
             assert_eq!(sampler.release(start + Duration::from_millis(150)), None);
         }
 
-        // Case `kinetic_release_bounds_a_burst_of_simultaneous_samples`.
         {
             let start = crate::time::now();
             let mut sampler = KineticSampler::new();
@@ -1316,7 +1313,6 @@ mod tests {
             assert!((vy - 2_500.0).abs() < 1.0, "{vy}");
         }
 
-        // Case `pixel_wheel_gesture_flings_on_end_unless_motion_is_reduced`.
         {
             use winit::dpi::PhysicalPosition;
             use winit::event::{MouseScrollDelta, TouchPhase};
@@ -1340,7 +1336,6 @@ mod tests {
             }
         }
 
-        // Case `pixel_wheel_refused_at_an_edge_does_not_fling`.
         {
             use winit::dpi::PhysicalPosition;
             use winit::event::{MouseScrollDelta, TouchPhase};
@@ -1354,9 +1349,7 @@ mod tests {
             assert_eq!(end, WheelStep::Ignored);
         }
 
-        // Case `a_fling_travels_the_same_at_any_frame_rate`.
         {
-            // Half a second at each rate.
             let travel = |hz: u32| {
                 let mut momentum = ScrollMomentum::new();
                 momentum.fling(3_000.0);
@@ -1383,7 +1376,6 @@ mod tests {
             );
         }
 
-        // Case `a_glide_starts_its_clock_when_it_starts_not_at_the_last_frame`.
         {
             let mut momentum = ScrollMomentum::new();
             momentum.fling(3_000.0);
@@ -1394,7 +1386,6 @@ mod tests {
             assert!((first - expected).abs() < 1e-6, "{first} vs {expected}");
         }
 
-        // Case `scroll_momentum_accelerates_repeated_wheel_input_and_settles`.
         {
             let mut momentum = ScrollMomentum::new();
             assert_eq!(momentum.push(60.0), 60.0);
@@ -1410,7 +1401,6 @@ mod tests {
             assert_eq!(momentum.tick(Duration::from_millis(16)), 0.0);
         }
 
-        // Case `drag_scroller_preserves_clicks_then_reports_content_offset_and_velocity`.
         {
             let start = crate::time::now();
             let mut drag = DragScroller::new();
@@ -1441,7 +1431,6 @@ mod tests {
             assert!(drag.finish(start + Duration::from_millis(30)).is_none());
         }
 
-        // Case `drag_scroller_release_before_threshold_is_an_ordinary_click`.
         {
             let now = crate::time::now();
             let mut drag = DragScroller::new();
@@ -1456,7 +1445,6 @@ mod tests {
             );
         }
 
-        // Case `drag_scroller_does_not_fling_after_the_pointer_has_stopped`.
         {
             let start = crate::time::now();
             let mut drag = DragScroller::new();
@@ -1480,7 +1468,6 @@ mod tests {
 
     #[test]
     fn dense_placement_hit_testing_and_reveal_use_variable_heights() {
-        // Case `visible_range_uses_variable_heights_and_pixel_overscan`.
         {
             let mut view = viewport();
             assert!(view.measure(&"a", 10.0));
@@ -1492,7 +1479,6 @@ mod tests {
             assert_eq!(view.visible_range(), 1..4);
         }
 
-        // Case `hit_testing_is_the_inverse_of_variable_row_placement`.
         {
             let mut view = viewport();
             view.measure(&"a", 10.0);
@@ -1506,7 +1492,6 @@ mod tests {
             assert_eq!(view.hit_test(40.0), None, "bottom edge is outside");
         }
 
-        // Case `nearest_scrolling_only_moves_for_clipped_items`.
         {
             let mut view = viewport();
             assert!(!view.scroll_to_index(0, ScrollAlignment::Nearest));
@@ -1515,7 +1500,6 @@ mod tests {
             assert!(!view.scroll_to_index(2, ScrollAlignment::Nearest));
         }
 
-        // Case `nearest_reveal_preserves_the_visible_section_of_a_tall_row`.
         {
             let mut view = viewport();
             view.measure(&"a", 120.0);
@@ -1525,7 +1509,6 @@ mod tests {
             assert_eq!(view.offset(), 40.0);
         }
 
-        // Case `large_model_keeps_a_small_visible_window`.
         {
             let mut view = VirtualViewport::new(24.0);
             view.reconcile(0_u64..1_000_000).expect("unique keys");
@@ -1543,7 +1526,6 @@ mod tests {
 
     #[test]
     fn dense_anchor_and_measurements_follow_keys_through_edits() {
-        // Case `insertion_above_viewport_preserves_stable_anchor`.
         {
             let mut view = viewport();
             view.set_offset(45.0); // c, five pixels below its top
@@ -1556,7 +1538,6 @@ mod tests {
             assert!((top + 5.0).abs() < 0.001);
         }
 
-        // Case `measuring_above_viewport_does_not_jump_content`.
         {
             let mut view = viewport();
             view.set_offset(45.0); // c at -5
@@ -1566,7 +1547,6 @@ mod tests {
             assert_eq!(before, after);
         }
 
-        // Case `measurements_follow_keys_across_reorder`.
         {
             let mut view = viewport();
             view.measure(&"b", 77.0);
@@ -1578,7 +1558,6 @@ mod tests {
             );
         }
 
-        // Case `deleting_anchor_uses_next_surviving_item`.
         {
             let mut view = viewport();
             view.set_offset(45.0); // c
@@ -1591,7 +1570,6 @@ mod tests {
             );
         }
 
-        // Case `duplicate_keys_are_rejected_without_mutation`.
         {
             let mut view = viewport();
             let before = view.content_extent();
@@ -1606,7 +1584,6 @@ mod tests {
 
     #[test]
     fn sparse_viewport_pages_places_and_hits_at_huge_row_counts() {
-        // Case `sparse_viewport_represents_a_hundred_million_rows_without_resident_keys`.
         {
             let mut view = SparseVirtualViewport::<u64>::new(24.0);
             view.reconcile(100_000_000, |_| None, None);
@@ -1620,7 +1597,6 @@ mod tests {
             assert_eq!(view.content_extent(), 2_400_000_000.0);
         }
 
-        // Case `sparse_paging_is_constant_space_at_hundred_million_rows`.
         {
             let mut view = SparseVirtualViewport::<u64>::new(24.0);
             view.reconcile(100_000_000, |_| None, None);
@@ -1639,7 +1615,6 @@ mod tests {
             assert_eq!(view.resident_measurements(), 0);
         }
 
-        // Case `sparse_measurements_drive_placement_and_hit_testing`.
         {
             let mut view = SparseVirtualViewport::new(20.0);
             view.reconcile(6, |_| None::<usize>, None);
@@ -1655,7 +1630,6 @@ mod tests {
             assert_eq!(view.hit_test(25.0), Some(2));
         }
 
-        // Case `sparse_minimum_height_is_reversible_for_estimates_and_measurements`.
         {
             let mut view = SparseVirtualViewport::new(20.0);
             view.reconcile(3, |_| None::<usize>, None);
@@ -1677,7 +1651,6 @@ mod tests {
 
     #[test]
     fn sparse_anchor_and_measurements_follow_keys_through_edits() {
-        // Case `sparse_reconciliation_preserves_a_stable_anchor_across_insertions`.
         {
             let mut view = SparseVirtualViewport::new(20.0);
             view.reconcile(100, |_| None::<usize>, None);
@@ -1695,7 +1668,6 @@ mod tests {
             assert_eq!(view.item_view_top(60), before);
         }
 
-        // Case `sparse_measurements_follow_keys_across_moves`.
         {
             let mut view = SparseVirtualViewport::new(20.0);
             view.reconcile(10, |_| None::<usize>, None);
@@ -1707,7 +1679,6 @@ mod tests {
             assert_eq!(view.resident_measurements(), 1);
         }
 
-        // Case `sparse_measurement_can_move_from_placeholder_to_loaded_key`.
         {
             let mut view = SparseVirtualViewport::new(20.0);
             view.reconcile(10, |_| None::<usize>, None);
@@ -1720,7 +1691,6 @@ mod tests {
             assert!(!view.remap_key(&"missing", "unused"));
         }
 
-        // Case `sparse_deleted_anchor_falls_back_to_the_same_logical_position`.
         {
             let mut view = SparseVirtualViewport::new(20.0);
             view.reconcile(100, |_| None::<usize>, None);

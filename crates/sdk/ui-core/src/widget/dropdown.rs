@@ -169,7 +169,6 @@ pub struct Dropdown {
     /// The label and caption styles of the latest layout, for measuring.
     label_style: TextStyle,
     caption_style: TextStyle,
-    /// The theme's caption height from the latest layout or paint.
     theme_caption_height: f64,
     /// The width measured for the options in the latest layout.
     measured: f64,
@@ -2253,7 +2252,6 @@ impl<'a> DropdownFace<'a> {
         self
     }
 
-    /// The field's height at `size` in `theme`.
     #[must_use]
     pub fn height(size: crate::widget::ControlSize, theme: &Theme) -> f64 {
         size.height(theme)
@@ -2323,7 +2321,6 @@ impl<'a> DropdownFace<'a> {
         field.inflate(0.0, grow_y).contains(point)
     }
 
-    /// Paint the face.
     pub fn paint(
         &self,
         scene: &mut Scene,
@@ -2792,7 +2789,6 @@ mod tests {
                 &root
             ));
             assert!(dd.is_open());
-            // Highlight lands on the currently-selected option.
             assert_eq!(dd.highlight_index(), 0);
         }
 
@@ -2955,7 +2951,6 @@ mod tests {
             );
             assert_eq!(dd.filter_query(), "ame");
             assert_eq!(dd.visible_count(), 1);
-            // Enter selects the sole filtered match.
             feed_key(
                 &mut dd,
                 &key_press(Key::Named(NamedKey::Enter), None),
@@ -3368,7 +3363,6 @@ mod tests {
         let mut document = AutoCommit::new();
         let root = automerge::ROOT;
 
-        // The list hangs from the icon's trailing edge, wide enough to read.
         let list = menu.list_rect(opts().len());
         assert!((list.x1 - menu.rect.x1).abs() < 1e-6, "{list:?}");
         assert!(list.width() >= menu_min_width());

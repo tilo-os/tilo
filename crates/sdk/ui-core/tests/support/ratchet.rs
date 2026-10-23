@@ -582,7 +582,6 @@ pub fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
         while j < lines.len() && j != i && lines[j].trim_start().starts_with("#[") {
             j = j.saturating_add(1);
         }
-        // Walk a multi-line signature to the line that decides the shape.
         while j < lines.len() && !lines[j].contains('{') && !lines[j].contains(';') {
             j = j.saturating_add(1);
         }

@@ -212,7 +212,6 @@ mod outgoing_tests {
             );
         }
 
-        // Case `several_paths_are_one_entry_per_line`.
         {
             assert_eq!(
                 uri_list(&[PathBuf::from("/a.png"), PathBuf::from("/b.png")]),

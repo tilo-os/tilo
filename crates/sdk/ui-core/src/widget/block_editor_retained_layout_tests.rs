@@ -501,7 +501,6 @@ fn retained_wrapping_delete_clears_previous_taller_paint_bounds() {
             let old_row = fixture.editor.blocks[0].line.get_rect();
             fixture.key(Key::Named(NamedKey::Backspace), Modifiers::default());
             if fixture.editor.get_rect().height() < old_bounds.height() {
-                // The paragraph repaints where it painted, the taller row.
                 assert!(
                     fixture
                         .damage
@@ -1343,7 +1342,6 @@ fn drag_handles_show_on_pointer_motion_and_go_on_typing_or_rest() {
         );
     });
     with_monotonic_time(gone, || {
-        // That wake's frame takes the faint handles away.
         fixture.frame();
         assert_eq!(fixture.editor.handle_opacity_drawn_for_test(), 0.0);
         assert!(quiet(&fixture), "faded handles need no frame or wake");

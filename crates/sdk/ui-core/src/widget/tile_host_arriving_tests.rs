@@ -1,6 +1,3 @@
-//! A window whose app's code is still on its way holds the app's place
-//! with the opening card, and the app built there takes the card over.
-
 use super::tests::{paint, starting_host};
 use super::*;
 use vello::kurbo::Rect;

@@ -167,7 +167,6 @@ pub fn stamp_retired(doc: &mut AutoCommit, why: &Retirement) -> Result<(), Trans
 /// What a transfer takes out of the source room.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
-    /// One of the app's records.
     Record(RecordCheckout),
     /// The document an app keeps for itself in a room through
     /// [`crate::persist`]. It has no record identity of its own there, and
@@ -187,9 +186,6 @@ impl Origin {
     }
 
     /// Refuse anything but this origin's live document in `room`.
-    ///
-    /// # Errors
-    /// A document that is not this origin's live document there.
     pub fn validate(&self, doc: &AutoCommit, room: &str) -> Result<(), TransferError> {
         match self {
             Self::Record(checkout) => Ok(validate_identity(doc, checkout, room)?),
@@ -397,10 +393,6 @@ pub fn read_until(
 /// its whole history, one more change giving it `target`'s id and
 /// `to_room`'s scope, and a record's origin id kept as provenance. `source`
 /// is not changed.
-///
-/// # Errors
-/// A source that is not `origin`'s live document, or a transfer into the
-/// room it is already in.
 pub fn rehome(
     source: &AutoCommit,
     origin: &Origin,
@@ -524,10 +516,6 @@ pub fn install(
 
 /// [`install`] a document that arrived for `checkout`, including the room's
 /// package-primary record, whose identity the document does not carry.
-///
-/// # Errors
-/// A document that is not `checkout` in `room`, an occupied id, or storage
-/// failure.
 pub fn install_as(
     store: &Rc<dyn DurableStore>,
     package: &str,

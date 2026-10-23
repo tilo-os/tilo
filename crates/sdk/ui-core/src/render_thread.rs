@@ -1846,7 +1846,6 @@ mod admission_tests {
 
     #[test]
     fn occlusion_admission_keeps_payloads_probes_and_sibling_projections() {
-        // Case `occluded_primary_keeps_visible_sibling_projection_fresh_through_real_admission`.
         {
             use crate::widget::Widget;
             use automerge::transaction::Transactable;
@@ -1974,7 +1973,6 @@ mod admission_tests {
             );
         }
 
-        // Case `occlusion_admission_preserves_dirty_payload_and_probe_until_buffers_return`.
         {
             let now = crate::time::now();
             let mut retry = retry::RenderRetryState::default();
@@ -2010,7 +2008,6 @@ mod admission_tests {
             assert_eq!(retry.deadline(), Some(now + retry::FRAME_INTERVAL));
         }
 
-        // Case `admission_defers_without_consuming_partial_state_and_retains_reservation`.
         {
             let (tx, rx) = mpsc::sync_channel(2);
             let waiting = Arc::new(AtomicBool::new(false));
@@ -2020,7 +2017,6 @@ mod admission_tests {
             tx.send(41).unwrap();
             assert!(pool.prepare().unwrap());
             assert!(!waiting.load(Ordering::SeqCst));
-            // An aborted layout keeps the reservation for the next redraw.
             assert!(pool.prepare().unwrap());
             assert_eq!(pool.recv().unwrap(), 41);
             assert!(!pool.prepare().unwrap());
@@ -2031,7 +2027,6 @@ mod admission_tests {
 
     #[test]
     fn completion_and_failure_wake_deferred_work_without_losing_buffers() {
-        // Case `failed_outcomes_wake_even_without_deferred_work`.
         {
             use std::cell::Cell;
             let waiting = AtomicBool::new(false);
@@ -2054,7 +2049,6 @@ mod admission_tests {
             assert!(!waiting.load(Ordering::SeqCst));
         }
 
-        // Case `completion_wakes_only_deferred_work_and_cannot_lose_ready_buffers`.
         {
             use std::cell::Cell;
             let (tx, rx) = mpsc::sync_channel(2);
@@ -2163,7 +2157,6 @@ mod retained_damage_tests {
     }
 
     fn target(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
-        // The same usage the native surface target carries.
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("retained-damage-test-target"),
             size: wgpu::Extent3d {
@@ -2515,7 +2508,6 @@ mod retained_damage_tests {
             renderer.enable_canonical_segment_order(device).unwrap();
             renderer
         };
-        // What a renderer that already knows this scene presents.
         let mut oracle = renderer_for();
         let (oracle_texture, oracle_view) = target(device);
         let mut oracle_cache = DamageCache::default();

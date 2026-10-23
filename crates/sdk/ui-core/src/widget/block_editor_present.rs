@@ -35,7 +35,6 @@ pub struct BlockContent {
 }
 
 impl BlockContent {
-    /// A paragraph of plain text.
     #[must_use]
     pub fn paragraph(id: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
@@ -62,7 +61,6 @@ fn shows_authors(content: &BlockContent, line: &RichTextLine) -> bool {
             })
 }
 
-/// Whether `block` shows `content` as it is.
 fn shows(block: &Block, content: &BlockContent) -> bool {
     block.id == content.id
         && block.kind == content.kind
@@ -481,7 +479,6 @@ impl BlockEditor {
         self.presence_key = Some(key);
     }
 
-    /// The presence key of the block with id `block`.
     pub(super) fn presence_key_for(&self, block: &str) -> PresenceKey {
         match &self.presence_key {
             Some(key) => key(block),
@@ -489,7 +486,6 @@ impl BlockEditor {
         }
     }
 
-    /// Whether presence is keyed by the owning model's keys.
     pub(super) fn presence_keyed_by_model(&self) -> bool {
         self.presence_key.is_some()
     }

@@ -53,7 +53,6 @@ pub struct EmbeddedApp {
     /// Focus state represented by `painted`. A hidden app can lose and regain
     /// focus without changing the frame its host last showed.
     painted_focus: bool,
-    /// The control that had focus when focus last left the app.
     restore_focus: Option<NodeId>,
     /// Shift was held as focus last moved, so focus entering the app lands
     /// on its last control.
@@ -112,9 +111,6 @@ static NEXT_SOURCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 impl EmbeddedApp {
     /// Show `app` in a region of a host's scene. `wake` is told when the
     /// app's background work wants it to run again.
-    ///
-    /// # Errors
-    /// The app's wake scope is already bound to another host.
     pub fn new(
         mut app: App,
         wake: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
@@ -567,7 +563,6 @@ impl Widget for EmbeddedApp {
         Some(self)
     }
 
-    /// The id of the app shown.
     fn test_id(&self) -> Option<&str> {
         self.app
             .root_widget
@@ -1016,7 +1011,6 @@ mod theme_repaint_tests {
         }
         let region = KurboRect::new(40.0, 20.0, 340.0, 120.0);
         let button = tile.app.root_widget.get_rect();
-        // The pointer arrives over the button and its hover is painted.
         let at = button.center();
         let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
         tile.app.surface_input(&tile.region, moved, false);

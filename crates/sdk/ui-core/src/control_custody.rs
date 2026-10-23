@@ -648,9 +648,6 @@ impl RawControlSlot {
     }
 
     /// Own a complete invocation at emission time.
-    ///
-    /// # Errors
-    /// Returns the registered producer's closed or identity-exhaustion error.
     pub fn emit(&mut self, invocation: ControlInvocation) -> Result<RawControlEmission, EmitError> {
         self.holder.emit_detailed(invocation)
     }

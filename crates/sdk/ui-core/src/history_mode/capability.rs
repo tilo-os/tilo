@@ -26,9 +26,6 @@ pub trait DocumentHistory {
     /// Additional read-only veto for uncommitted app-local drafts in this
     /// scope. This does not confer authority or recursively consult
     /// independent owners.
-    ///
-    /// # Errors
-    /// Returns a reason when this exact root is not ready to restore the scope.
     fn history_restore_readiness(&self, _scope: &str) -> Result<(), String> {
         Ok(())
     }
@@ -86,9 +83,6 @@ pub trait FrameworkHistoryTopology {
 }
 
 /// `widget`'s History registration (none unless it owns History).
-///
-/// # Errors
-/// Returns the widget's registration error.
 pub fn history_registration(
     widget: &(impl Widget + ?Sized),
 ) -> Result<Option<super::HistoryRegistration>, super::HistoryRegistrationError> {
@@ -97,9 +91,6 @@ pub fn history_registration(
 }
 
 /// `widget`'s own restore veto for `scope`.
-///
-/// # Errors
-/// Returns the widget's reason it is not ready.
 pub fn history_restore_readiness(
     widget: &(impl Widget + ?Sized),
     scope: &str,
@@ -135,7 +126,6 @@ pub fn document_action_applied(
     }
 }
 
-/// Visit every framework History surface under `widget`.
 pub fn visit_framework_history(
     widget: &dyn Widget,
     visitor: &mut dyn FnMut(&super::FrameworkHistorySurface, &dyn Widget),

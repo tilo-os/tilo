@@ -217,7 +217,6 @@ pub type UndoBandCallback = Box<dyn FnMut(&BandUndoRequest)>;
 /// nesting depth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VisualRow {
-    /// Index into `row_groups`.
     Group(usize),
     /// Index into `entries`, plus the depth it renders at.
     Entry(usize, usize),
@@ -895,8 +894,6 @@ impl ActivityTimeline {
         }
     }
 
-    // ---------- groups: expansion, naming, selection ----------
-
     pub fn row_count(&self) -> usize {
         self.rows.len()
     }
@@ -1083,7 +1080,6 @@ impl ActivityTimeline {
         }
     }
 
-    /// Activate the currently focused row.
     pub fn activate_focused_row(&mut self) -> bool {
         self.focused_row().is_some_and(|row| self.activate_row(row))
     }
@@ -1184,8 +1180,6 @@ impl ActivityTimeline {
         self.selection_anchor = None;
         true
     }
-
-    // ---------- geometry ----------
 
     /// The author cluster's width: the face alone, whatever the pane.
     fn author_slot_w(&self) -> f64 {
@@ -4462,7 +4456,6 @@ mod tests {
                     theme.name
                 );
 
-                // Band backdrop against the pane beside its inset.
                 let band_row = (0..t.row_count())
                     .find(|i| t.group_at_row(*i).is_some())
                     .expect("two authors' runs produce a band");
@@ -5292,7 +5285,6 @@ mod tests {
                     "the bottom edge of row {i} still belongs to it"
                 );
             }
-            // Left of the row list's inset, and below the last row.
             let r0 = t.row_rect(0).unwrap();
             assert_eq!(t.row_at(Point::new(r0.x0 - 4.0, r0.center().y)), None);
             assert_eq!(t.row_at(Point::new(250.0, 499.9)), None);
@@ -6324,7 +6316,6 @@ mod group_tests {
             // work, so bands sort by their newest change and stay contiguous.
             let day = 86_400u64;
             let mut entries: Vec<HistoryEntry> = Vec::new();
-            // Local session, recent.
             for i in 0..4 {
                 entries.push(entry(EntryKind::Text, "Alice", NOW - 60 + u64::from(i), i));
             }

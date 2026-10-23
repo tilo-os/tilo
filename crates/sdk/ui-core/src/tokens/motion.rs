@@ -428,7 +428,6 @@ mod tests {
                 "heavy must carry more mass than snappy, not just more stiffness"
             );
 
-            // A full-scale move on the production engine.
             let heavy =
                 crate::motion::Timing::Spring(crate::motion::SpringSpec::from_params(p.heavy));
             let start = crate::time::now();

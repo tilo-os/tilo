@@ -32,7 +32,6 @@ use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::{TaffyTreeExt, Widget};
 
-/// One of the five surface levels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SurfaceLevel {
     /// The desktop behind the windows.
@@ -50,7 +49,6 @@ pub enum SurfaceLevel {
 }
 
 impl SurfaceLevel {
-    /// The level's fill in `theme`.
     #[must_use]
     pub fn color(self, theme: &Theme) -> Color {
         let s = &theme.tokens.colors.surfaces;
@@ -63,7 +61,6 @@ impl SurfaceLevel {
         }
     }
 
-    /// The level's corner radius in `theme`.
     #[must_use]
     pub fn radius(self, theme: &Theme) -> f64 {
         let r = &theme.tokens.radii;
@@ -249,7 +246,6 @@ pub struct Surface {
 }
 
 impl Surface {
-    /// A surface of `level` around `child`.
     #[must_use]
     pub fn new(level: SurfaceLevel, child: Box<dyn Widget>) -> Self {
         Self {
@@ -475,13 +471,11 @@ pub struct DensityRegion {
 }
 
 impl DensityRegion {
-    /// `child` at `density`.
     #[must_use]
     pub fn new(density: crate::tokens::Density, child: Box<dyn Widget>) -> Self {
         Self { density, child }
     }
 
-    /// `child` at compact density.
     #[must_use]
     pub fn compact(child: Box<dyn Widget>) -> Self {
         Self::new(crate::tokens::Density::Compact, child)

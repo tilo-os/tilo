@@ -230,7 +230,6 @@ mod tests {
     use super::*;
     #[test]
     fn close_admission_keeps_deadlines_and_refuses_stale_session_closes() {
-        // Case `pending_save_deadline_survives_an_otherwise_idle_host`.
         {
             let now = crate::time::now();
             let close = now + crate::time::Duration::from_millis(100);
@@ -240,7 +239,6 @@ mod tests {
             assert_eq!(wake_deadline(None, false, now), None);
         }
 
-        // Case `stale_discard_and_late_save_cannot_close_a_new_session`.
         {
             let mut admission = Admission::default();
             admission.show(

@@ -127,7 +127,6 @@ enum Boundary {
 pub struct DamageHint {
     /// Who painted the content. A hint follows on only within one source.
     pub source: u64,
-    /// The generation the damage is measured from.
     pub from: u64,
     /// The generation painted.
     pub to: u64,
@@ -686,7 +685,6 @@ pub fn drawn_bounds(
     }
 }
 
-/// The index of the event that ends the part `begin` begins.
 #[cfg(feature = "native")]
 fn end_of(events: &[Event], begin: usize) -> Option<usize> {
     let mut depth = 0_usize;
@@ -799,7 +797,6 @@ fn compare(
                 }
             }
         }
-        // Advance past the boundary that ends this piece.
         match new_events.get(piece).map(|event| &event.boundary) {
             Some(Boundary::Begin(_)) => open.push(piece),
             Some(Boundary::End(_) | Boundary::EndHinted(_)) => {

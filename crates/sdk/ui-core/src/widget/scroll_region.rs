@@ -100,7 +100,6 @@ impl ScrollRegion {
         Self::new(ScrollAxis::Vertical)
     }
 
-    /// A region that scrolls sideways.
     #[must_use]
     pub fn horizontal() -> Self {
         Self::new(ScrollAxis::Horizontal)

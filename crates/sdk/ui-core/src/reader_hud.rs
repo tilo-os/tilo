@@ -90,7 +90,6 @@ pub enum HudSide {
 pub struct HudPlacement {
     pub anchor: Point,
     pub bounds: Rect,
-    /// The side the bar prefers.
     pub side: HudSide,
     /// The bottom y of the selection's last band, for a bar placed below.
     /// `None` uses the anchor.
@@ -444,7 +443,6 @@ mod tests {
 
     #[test]
     fn hud_layout_places_every_control_inside_bounds() {
-        // Case `hud_lays_out_copy_and_every_swatch`.
         {
             let hud = draw_hud(
                 true,
@@ -453,7 +451,6 @@ mod tests {
                 Rect::new(0.0, 0.0, 800.0, 600.0),
             );
             assert!(hud.is_shown());
-            // Every swatch + Copy + Note is a hittable button.
             let highlights: Vec<usize> = hud
                 .buttons()
                 .iter()
@@ -480,7 +477,6 @@ mod tests {
             );
         }
 
-        // Case `delete_appears_only_when_asked`.
         {
             let hud = draw_hud(
                 true,
@@ -491,7 +487,6 @@ mod tests {
             assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete));
         }
 
-        // Case `hud_stays_inside_bounds_when_anchor_is_at_an_edge`.
         {
             let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
             // Anchor jammed into the top-left corner: the bar must not spill out.
@@ -506,7 +501,6 @@ mod tests {
             );
         }
 
-        // Case `hud_floats_below_when_there_is_no_room_above`.
         {
             let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
             // Anchor near the top → the bar drops below it rather than off-screen.
@@ -549,7 +543,6 @@ mod tests {
             "the bar steps off the rect it must not cover: {:?}",
             aside.rect()
         );
-        // Every control is a Small control inside the panel's inset.
         let inset = crate::widget::floating_surface::control_inset(&theme);
         for (rect, _) in above.buttons() {
             assert!(rect.y0 >= above.rect().y0 + inset - 0.01);
@@ -559,7 +552,6 @@ mod tests {
 
     #[test]
     fn hud_hits_controls_and_latches_marker_drags() {
-        // Case `hit_returns_the_control_under_the_point`.
         {
             let hud = draw_hud(
                 true,
@@ -577,7 +569,6 @@ mod tests {
             assert_eq!(hud.hit(Point::new(5.0, 5.0)), None);
         }
 
-        // Case `marker_drag_latches_moved_past_threshold`.
         {
             let mut d = MarkerDrag::begin("n1", (100.0, 100.0), (90.0, 95.0));
             // A grab keeps the offset so the first tiny move doesn't jump.

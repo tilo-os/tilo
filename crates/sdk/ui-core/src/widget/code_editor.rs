@@ -432,8 +432,6 @@ impl CodeEditor {
         self.inner.scroll_by(dy);
     }
 
-    // ---- geometry for host overlays (diagnostics, markers) -----------------
-
     /// A host uses this to align a gutter marker with a source line
     /// (`caret_rect(theme, line_start)`).
     pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
@@ -1236,7 +1234,6 @@ mod tests {
             ));
             drive(&mut ed, &mut doc, &char_key("x"), mods(false, false));
             assert_eq!(ed.value(), "    x", "Tab inserts four spaces");
-            // Shift+Tab removes one indent level.
             assert!(drive(
                 &mut ed,
                 &mut doc,
@@ -1573,7 +1570,6 @@ mod document_tests {
         let node = Widget::accessibility(&editor).unwrap();
         assert!(node.state.read_only);
         assert_eq!(node.name.as_deref(), Some("Response body"));
-        // JSON is highlighted.
         let spans = Language::Json
             .highlighter()
             .expect("JSON has a grammar")

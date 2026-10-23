@@ -3229,14 +3229,12 @@ mod tests {
 
     #[test]
     fn transport_keys_and_surface_clicks_drive_the_engine() {
-        // Case `video_player_starts_paused`.
         {
             let vp = VideoPlayer::new();
             assert_eq!(vp.state(), PlaybackState::Paused);
             assert!(!vp.is_playing());
         }
 
-        // Case `engine_mode_sync_pulls_a_frame_and_metadata`.
         {
             let mut engine = media::MediaEngine::new_synthesized();
             engine.open(media::Source::Remote {
@@ -3253,7 +3251,6 @@ mod tests {
             assert!(vp.duration_ms() > 0, "duration mirrored from the engine");
         }
 
-        // Case `space_toggles_play_on_focused_engine_player`.
         {
             let mut engine = media::MediaEngine::new_synthesized();
             engine.open(media::Source::Remote {
@@ -3268,7 +3265,6 @@ mod tests {
             assert!(!vp.is_playing(), "Space paused it again");
         }
 
-        // Case `arrow_keys_seek_the_engine_playhead`.
         {
             let mut engine = media::MediaEngine::new_synthesized();
             engine.open(media::Source::Remote {
@@ -3285,7 +3281,6 @@ mod tests {
             assert_eq!(vp.engine().unwrap().position_ms(), 20_000);
         }
 
-        // Case `clicking_the_video_surface_toggles_play_pause`.
         {
             let mut engine = media::MediaEngine::new_synthesized();
             engine.open(media::Source::Remote {
@@ -3311,7 +3306,6 @@ mod tests {
 
     #[test]
     fn scrub_track_seeks_where_it_is_painted_and_shows_sponsor_bands() {
-        // Case `scrub_click_seeks_to_the_track_fraction`.
         {
             let mut engine = media::MediaEngine::new_synthesized();
             engine.open(media::Source::Remote {
@@ -3336,7 +3330,6 @@ mod tests {
             assert!((45_000..=55_000).contains(&pos), "seeked to ~50%: {pos}ms");
         }
 
-        // Case `dragging_the_scrub_track_seeks_continuously`.
         {
             let mut engine = media::MediaEngine::new_synthesized();
             engine.open(media::Source::Remote {
@@ -3371,7 +3364,6 @@ mod tests {
             assert!((85_000..=95_000).contains(&far), "drag to ~90%: {far}ms");
         }
 
-        // Case `a_widened_scrub_target_still_seeks_where_the_track_is_painted`.
         {
             let mut vp = VideoPlayer::new();
             vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
@@ -3395,7 +3387,6 @@ mod tests {
             );
         }
 
-        // Case `sponsor_marks_emit_bands_on_the_single_timeline`.
         {
             let mut vp = VideoPlayer::new();
             vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
@@ -3428,7 +3419,6 @@ mod tests {
 
     #[test]
     fn fullscreen_intent_toggles_and_requests_the_largest_output() {
-        // Case `f_key_toggles_fullscreen_intent`.
         {
             let mut vp = VideoPlayer::new();
             vp.set_focus(true);
@@ -3443,7 +3433,6 @@ mod tests {
             assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(false));
         }
 
-        // Case `fullscreen_toggle_drives_a_largest_output_mirror_request`.
         {
             use crate::fullscreen::{FullscreenTarget, FullscreenView};
             let mut vp = VideoPlayer::new();
@@ -3479,7 +3468,6 @@ mod tests {
 
     #[test]
     fn media_session_and_engine_events_reach_the_right_side_once() {
-        // Case `mpris_snapshot_reflects_metadata_and_controls_on_play`.
         {
             let mut vp = VideoPlayer::new();
             vp.duration_ms = 240_000;
@@ -3506,7 +3494,6 @@ mod tests {
             );
         }
 
-        // Case `external_media_command_pause_reaches_the_player`.
         {
             let mut engine = media::MediaEngine::new_synthesized();
             engine.open(media::Source::Remote {
@@ -3521,7 +3508,6 @@ mod tests {
             assert!(vp.is_playing(), "external PlayPause resumed it");
         }
 
-        // Case `engine_lifecycle_events_are_forwarded_once_to_the_embedding_app`.
         {
             let mut vp = VideoPlayer::new();
             vp.record_terminal_media_events([
@@ -3541,7 +3527,6 @@ mod tests {
             );
         }
 
-        // Case `nonterminal_engine_events_never_accumulate_for_an_unattended_embedder`.
         {
             let mut vp = VideoPlayer::new();
             for position in 0..1_000 {
@@ -3579,13 +3564,11 @@ mod tests {
         use crate::a11y::{contrast_ratio, relative_luminance};
         for theme in [Theme::dark(), Theme::light()] {
             let name = theme.name.clone();
-            // The letterbox stays the media's near-black in a light theme.
             let letterbox = theme.tokens.colors.media.letterbox;
             assert!(
                 relative_luminance(letterbox) < 0.02,
                 "{name}: the letterbox turned grey"
             );
-            // Controls ink is measured against the Panel they sit on.
             let panel = crate::chrome::panel_ground(&theme);
             let on_panel = theme.on_ground(panel);
             assert!(
@@ -3611,7 +3594,6 @@ mod tests {
 
     #[test]
     fn controls_bar_lays_out_reachable_aligned_targets_at_every_size() {
-        // Case `large_text_controls_use_two_reachable_rows_while_one_x_is_unchanged`.
         {
             let mut regular = VideoPlayer::new();
             regular.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -3657,7 +3639,6 @@ mod tests {
             assert!(accessible.setting_in_gear("captions"));
         }
 
-        // Case `every_bar_control_meets_the_minimum_pointer_target`.
         {
             let mut vp = VideoPlayer::new();
             vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
@@ -3686,7 +3667,6 @@ mod tests {
             }
         }
 
-        // Case `bar_controls_share_one_centre_line_and_never_overlap`.
         {
             let mut vp = VideoPlayer::new();
             vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
@@ -3782,7 +3762,6 @@ mod tests {
             );
         }
 
-        // Case `player_embeds_flush_with_no_forced_internal_padding`.
         {
             let mut vp = VideoPlayer::new();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -3807,7 +3786,6 @@ mod tests {
 
     #[test]
     fn settings_surface_by_priority_and_round_trip_through_the_gear() {
-        // Case `mixed_priority_settings_surface_as_icons_and_under_the_gear`.
         {
             let mut vp = VideoPlayer::new();
             vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
@@ -3843,7 +3821,6 @@ mod tests {
             );
         }
 
-        // Case `higher_priority_wins_limited_space_and_overflow_falls_into_the_gear`.
         {
             let mut vp = VideoPlayer::new();
             // Narrow bar + many priority settings ⇒ only the top few fit as icons.
@@ -3881,7 +3858,6 @@ mod tests {
             );
         }
 
-        // Case `resolution_setting_round_trips_through_the_player`.
         {
             let mut vp = VideoPlayer::new();
             vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
@@ -3929,7 +3905,6 @@ mod tests {
             assert!(!vp.menu_open(), "picking an option closes the popover");
         }
 
-        // Case `gear_toggle_setting_flips_and_emits`.
         {
             let mut vp = VideoPlayer::new();
             vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
@@ -3971,7 +3946,6 @@ mod tests {
 
     #[test]
     fn accessibility_exposes_transport_state_and_truthful_controls() {
-        // Case `accessibility_reports_group_role_and_busy_while_playing`.
         {
             use crate::a11y::Role;
             let mut vp = VideoPlayer::new();
@@ -3983,7 +3957,6 @@ mod tests {
             assert!(Widget::accessibility(&vp).unwrap().state.busy);
         }
 
-        // Case `accessibility_exposes_every_painted_transport_control_and_drives_it`.
         {
             use crate::a11y::{Action, Role};
             let mut engine = media::MediaEngine::new_synthesized();
@@ -4027,7 +4000,6 @@ mod tests {
             assert!((vp.volume() - 0.25).abs() < 1e-6);
         }
 
-        // Case `follower_transport_is_truthfully_disabled_but_local_audio_still_works`.
         {
             let mut engine = media::MediaEngine::new_synthesized();
             engine.open(media::Source::Remote {
@@ -4070,14 +4042,12 @@ mod tests {
 
     #[test]
     fn surface_paints_pushed_frames_or_a_placeholder() {
-        // Case `push_mode_ignores_empty_units`.
         {
             let mut vp = VideoPlayer::new();
             assert!(!vp.feed_frame(&[]));
             assert!(vp.latest_frame().is_none());
         }
 
-        // Case `empty_surface_paints_a_placeholder_and_no_image`.
         {
             use vello_encoding::DrawTag;
             let mut vp = VideoPlayer::new();
@@ -4107,7 +4077,6 @@ mod tests {
             );
         }
 
-        // Case `paint_with_image_uses_image_draw_command`.
         {
             use vello_encoding::DrawTag;
             let mut vp = VideoPlayer::new();
@@ -4163,7 +4132,6 @@ mod tests {
 
     #[test]
     fn controls_ink_and_edges_read_on_both_presets() {
-        // Case `controls_ink_reads_over_the_scrim_in_the_light_theme`.
         {
             use crate::offscreen::OffscreenRenderer;
             let theme = Theme::light();

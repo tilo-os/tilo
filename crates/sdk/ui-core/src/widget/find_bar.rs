@@ -48,7 +48,6 @@ pub enum FindMode {
     Regex,
 }
 
-/// The options the bar's chips set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FindOptions {
     pub match_case: bool,
@@ -1292,7 +1291,6 @@ impl FindScope {
         &mut self.bar
     }
 
-    /// The content the scope wraps.
     #[must_use]
     pub fn content(&self) -> &dyn Widget {
         self.content.as_ref()
@@ -1743,7 +1741,6 @@ mod tests {
         let _ = send(&mut scope, &ctrl_f(), ctrl);
         assert!(scope.is_open());
         assert!(scope.take_structure_dirty(), "the band joins the layout");
-        // Lay out again with the band, then check it sits above the content.
         let focus = send(&mut scope, &WindowEvent::Focused(true), plain);
         assert!(focus.is_none());
         assert!(scope.bar.get_rect().height() > 0.0);
@@ -2127,9 +2124,7 @@ mod host_driven_tests {
             Rect::ZERO,
             "the field has no X of its own"
         );
-        // The band follows the host's content edge.
         assert!((bar.field.get_rect().x0 - 40.0).abs() < 1e-9);
-        // Text and Hex share one strip.
         let text_rect = bar.parts.iter().find(|(p, _)| *p == Part::Text).unwrap().1;
         let hex_rect = bar.parts.iter().find(|(p, _)| *p == Part::Hex).unwrap().1;
         assert!(

@@ -55,7 +55,6 @@ pub fn card_radius(rect: Rect, theme: &Theme) -> f64 {
     radius(theme).min(rect.height() / 2.0)
 }
 
-/// The shadow a floating card casts.
 #[must_use]
 pub fn card_shadow(theme: &Theme) -> crate::tokens::Shadow {
     theme.tokens.elevation.floating
@@ -489,7 +488,6 @@ impl ControlBar {
         Self::default()
     }
 
-    /// The size of a bar of `count` controls.
     #[must_use]
     pub fn size(count: usize, theme: &Theme) -> (f64, f64) {
         let control = crate::widget::ControlSize::Regular.height(theme);
@@ -565,7 +563,6 @@ impl ControlBar {
         self.controls.get(index).copied()
     }
 
-    /// The control under `point`, if any.
     #[must_use]
     pub fn hit(&self, point: Point) -> Option<usize> {
         self.controls.iter().position(|r| r.contains(point))
@@ -753,7 +750,6 @@ mod tests {
 
     #[test]
     fn an_anchored_panel_opens_at_its_trigger_and_flips_and_shifts_at_the_edges() {
-        // Below the trigger, leading edges aligned.
         let button = Rect::new(200.0, 16.0, 232.0, 48.0);
         let (rect, side) = place_anchored(button, (160.0, 240.0), PopoverSide::Below, 4.0, WINDOW);
         assert_eq!(side, PopoverSide::Below);

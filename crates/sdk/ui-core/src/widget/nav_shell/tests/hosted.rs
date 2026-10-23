@@ -1,7 +1,3 @@
-//! An app that paints its own window inside the shell's content column
-//! keeps the shell's sidebar through a [`NavFeed`] and puts the shell's own
-//! buttons in the window's bar through a [`WindowBarLink`].
-
 use super::*;
 use crate::widget::{NavFeed, NavItem, NavList, NavSection};
 use crate::window_toolbar::ToolbarEvent;

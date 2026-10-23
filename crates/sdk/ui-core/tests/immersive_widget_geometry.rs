@@ -224,7 +224,6 @@ fn immersive_widgets_render_reachable_geometry_at_every_size() {
                     chat: None,
                     reaction: None,
                 },
-                // Above the top edge.
                 PeerCursor {
                     pos: (300.0, -300.0),
                     label: "Bob".into(),

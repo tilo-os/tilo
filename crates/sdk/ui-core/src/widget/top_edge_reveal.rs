@@ -122,7 +122,6 @@ pub struct EdgeGeometry<'a> {
 }
 
 impl EdgeGeometry<'_> {
-    /// The reveal band at the top of the window.
     #[must_use]
     pub fn band(&self) -> Rect {
         Rect::new(
@@ -518,7 +517,6 @@ mod tests {
         r.on_motion(Point::new(600.0, 38.0), &geo(), t);
         assert!(!r.shown());
         assert_eq!(r.deadline(), Some(t + DWELL));
-        // Moving within the band keeps the dwell counted from entry.
         r.on_motion(Point::new(640.0, 37.0), &geo(), ms(t, 100));
         assert_eq!(r.deadline(), Some(t + DWELL));
         assert!(!r.settle(ms(t, 149)));
@@ -542,7 +540,6 @@ mod tests {
             !r.shown(),
             "still flying: it may be bound for the desktop's bar"
         );
-        // It brakes at the edge.
         r.on_motion(Point::new(992.0, 38.0), &geo(), ms(t, 12));
         assert!(r.shown(), "a fast climb that brakes in the band is a push");
     }
@@ -574,7 +571,6 @@ mod tests {
     fn a_fast_pass_through_the_band_is_transit() {
         let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
-        // Straight up through the band into the desktop's bar at full speed.
         let t = path(
             &mut r,
             Point::new(600.0, 400.0),
@@ -687,7 +683,6 @@ mod tests {
         r.on_motion(Point::new(201.0, 38.0), &geo(), ms(t0, 50));
         r.settle(ms(t0, 1000));
         assert!(!r.shown(), "still in the band after the click");
-        // Leaving and coming back arms it again.
         r.on_motion(Point::new(201.0, 80.0), &geo(), ms(t0, 1100));
         r.on_motion(Point::new(201.0, 38.0), &geo(), ms(t0, 1600));
         assert!(r.elapse());

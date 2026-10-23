@@ -17,7 +17,6 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{AvatarFace, ChipFace, ChipLead};
 
-/// Who an item is by.
 #[derive(Clone, Copy, Debug)]
 pub enum Author<'a> {
     /// A person, by name and identity (which picks their colour), with the
@@ -155,7 +154,6 @@ pub fn service_label(service: &str) -> String {
 }
 
 impl<'a> Author<'a> {
-    /// The name the author is shown under.
     #[must_use]
     pub fn shown_name(&self) -> &'a str {
         match *self {
@@ -431,13 +429,11 @@ mod tests {
         let alice = alice();
         assert_eq!(bridge(Some(&alice)).label(&["Bo"]), "alice");
         assert_eq!(bridge(Some(&alice)).label(&["Alice"]), "alice · Discord");
-        // Cyrillic "а" is a confusable of Latin "a".
         let cyrillic = Appearance::new("\u{430}lice", None, alice.persona.clone()).unwrap();
         assert_eq!(
             bridge(Some(&cyrillic)).label(&["alice"]),
             "\u{430}lice · Discord"
         );
-        // Without a persona, the bot's own name is the suffix.
         let bare = Appearance::new("alice", None, None).unwrap();
         assert_eq!(
             bridge(Some(&bare)).label(&["Alice"]),

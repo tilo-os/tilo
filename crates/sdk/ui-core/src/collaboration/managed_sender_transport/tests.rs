@@ -566,8 +566,6 @@ async fn managed_sender_transport_real_physical_sender_dispatch_and_result_custo
                     panic!("original managed result")
                 };
                 let retained = result.clone();
-                // Real result retains the original funded attempt independently
-                // of the inbound queue's reservation.
                 fixture.queue_result(result.clone());
                 drop(queued);
                 assert_eq!(state.event_bytes.0.load(Ordering::Acquire), 0);

@@ -258,7 +258,6 @@ fn seen_by(text: &str) -> Option<String> {
     SEEN.with_borrow(|seen| seen.get(text).cloned())
 }
 
-/// Put `body` into the record `id`.
 fn write_body(store: &RecordStore, id: &RecordId, body: &str) {
     use automerge::transaction::Transactable;
     store
@@ -1507,7 +1506,6 @@ fn spawn_animation_is_in_flight_only_for_its_duration() {
     // Fresh curves are read in the instant they start: a descheduled
     // runner cannot age them.
     crate::time::testing::with_monotonic_time(crate::time::now(), || {
-        // Case `start_spawn_animation_records_timestamp`.
         {
             let mut h = stub_host();
             assert!(h.spawned_at.is_none(), "fresh host has no spawn timestamp");
@@ -1518,7 +1516,6 @@ fn spawn_animation_is_in_flight_only_for_its_duration() {
             );
         }
 
-        // Case `spawn_in_flight_returns_true_within_duration`.
         {
             let mut h = stub_host();
             h.start_spawn_animation();
@@ -1533,7 +1530,6 @@ fn spawn_animation_is_in_flight_only_for_its_duration() {
             );
         }
 
-        // Case `spawn_in_flight_returns_false_after_duration`.
         {
             let mut h = stub_host();
             h.start_spawn_animation();
@@ -1548,7 +1544,6 @@ fn spawn_animation_is_in_flight_only_for_its_duration() {
             );
         }
 
-        // Case `draw_without_spawn_animation_does_not_push_extra_layer`.
         {
             // Indirect: no direct hook to check the draw path skips the
             // wrapper layer, so this pins spawn_in_flight/spawn_alpha instead
@@ -1562,7 +1557,6 @@ fn spawn_animation_is_in_flight_only_for_its_duration() {
             );
         }
 
-        // Case `needs_animation_frame_reflects_spawn_anim_state`.
         {
             let mut h = stub_host();
             assert!(

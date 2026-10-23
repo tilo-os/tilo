@@ -278,7 +278,6 @@ struct RowGeometry {
     leading: Rect,
     /// Where the title starts (the separator starts here too).
     text_x: f64,
-    /// Where every text line ends.
     text_right: f64,
     /// Where the title's line ends: the meta narrows only that line.
     title_right: f64,
@@ -290,7 +289,6 @@ struct RowGeometry {
     value_right: f64,
     /// The status dot's centre x.
     dot_x: Option<f64>,
-    /// The check's slot.
     check: Option<Rect>,
     /// The disclosure chevron's slot.
     disclosure: Option<Rect>,
@@ -1010,7 +1008,6 @@ impl<'a> ListRowFace<'a> {
         self.geometry(rect, m, text, theme).text_x
     }
 
-    /// Paint the row into `rect`, its outer rect.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -1749,7 +1746,6 @@ struct Trailing {
     /// accessibility tree) must meet the control at the control's node.
     band_slot: crate::widget::Absent,
     element: Element,
-    /// The text band's node, then the control's.
     band: Option<NodeId>,
     node: Option<NodeId>,
     /// The text band's height, settled from measured line boxes.
@@ -2289,7 +2285,6 @@ impl ListRow {
         }
     }
 
-    /// The row's leading badge, if it has one.
     pub(crate) fn badge_label(&self) -> Option<&str> {
         match &self.leading {
             Some(Leading::Badge(badge)) => Some(badge),

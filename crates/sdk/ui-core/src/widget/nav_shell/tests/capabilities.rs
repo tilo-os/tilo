@@ -1,5 +1,3 @@
-//! The header row as a capability, Back, drawers and typed access.
-
 use super::*;
 use crate::widget::{FilterCount, Filterable};
 

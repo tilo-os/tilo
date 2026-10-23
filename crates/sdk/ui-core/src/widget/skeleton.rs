@@ -84,7 +84,6 @@ impl SkeletonFace {
         }
     }
 
-    /// Paint the bars into `rect`.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -206,7 +205,6 @@ impl Skeleton {
         }
     }
 
-    /// `lines` lines of body text.
     #[must_use]
     pub fn text(lines: u8) -> Self {
         Self::new(SkeletonShape::Text { lines })

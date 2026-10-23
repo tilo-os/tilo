@@ -605,7 +605,6 @@ mod tests {
         assert_eq!(chord(us, &["Alt"], "f4"), "Alt+F4");
         assert_eq!(chord(us, &["Super"], "/"), "Super+/");
         assert_eq!(us.modifier(KeyboardModifier::AltGr), "AltGr");
-        // Layouts without their own table read as US English.
         assert_eq!(Keycaps::from_xkb("ru", ""), us);
         assert_eq!(Keycaps::from_xkb("gb", "extd"), us);
     }
@@ -686,7 +685,6 @@ mod tests {
             assert_eq!(keycaps.key("delete"), "Delete", "{layout}");
             assert_eq!(keycaps.modifier(KeyboardModifier::AltGr), "Alt Gr");
         }
-        // Swiss French and Swiss German keyboards carry the same legends.
         assert_eq!(Keycaps::from_xkb("ch", "fr"), Keycaps::from_xkb("ch", ""));
     }
 
@@ -707,7 +705,6 @@ mod tests {
         assert_eq!(mac.language, KeycapLanguage::German);
         assert_eq!(mac.key("pageup"), "⇞");
         assert_eq!(mac.key("left"), "←");
-        // A German layout on an Apple keyboard spells what Apple leaves as a word.
         assert_eq!(mac.key("insert"), "Einfg");
         assert_eq!(
             Keycaps::from_xkb("de", "").on_family(KeyboardFamily::Apple),

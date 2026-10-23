@@ -73,7 +73,6 @@ mod tests {
     #[test]
     fn encode_component_keeps_only_the_unreserved_set_and_round_trips() {
         for (raw, want) in [
-            // Unreserved characters pass through.
             ("AZaz09-._~", "AZaz09-._~"),
             (
                 "a b+c/d?e=f&g%h:i@j#k",
@@ -87,7 +86,6 @@ mod tests {
             assert_eq!(encode_component(raw), want, "encode {raw:?}");
         }
 
-        // Encoded components round-trip through both decoders.
         let raw = "C++ & friends: 100% café/π?";
         let encoded = encode_component(raw);
         assert_eq!(decode(&encoded), raw);
@@ -103,7 +101,6 @@ mod tests {
             ("Google+", "Google+"),
             ("C++", "C++"),
             ("%2B1%20555", "+1 555"),
-            // Escapes decode.
             ("audio%2Fmp4", "audio/mp4"),
             ("Acme%20Corp", "Acme Corp"),
             ("AT%26T", "AT&T"),

@@ -498,7 +498,6 @@ struct Builder {
 }
 
 impl Builder {
-    /// The kind a block started now takes.
     fn kind_here(&self) -> BlockKind {
         if let Some(level) = self.heading {
             return BlockKind::Heading(level);
@@ -1003,7 +1002,6 @@ mod tests {
         );
     }
 
-    /// A table copies as an HTML table and pastes back as one.
     #[test]
     fn a_table_round_trips_through_html() {
         let table = BlockContent::paragraph("", "| a | b |\n| --- | --- |\n| 1 | 2 |")

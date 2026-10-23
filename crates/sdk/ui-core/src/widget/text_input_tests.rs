@@ -1024,7 +1024,6 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
             "disabled input must not be focusable"
         );
 
-        // The setter path agrees with the builder.
         let mut later = TextInput::new(Vec::new());
         later.set_disabled(true);
         assert!(!Widget::is_focusable(&later));
@@ -1043,7 +1042,6 @@ fn disabled_input_is_inert_to_focus_keys_pointer_and_accessibility() {
         assert_eq!(ti.value(), "", "disabled input must not insert text");
         assert!(ti.take_dirty().is_none(), "no edit should be recorded");
 
-        // The SAME event DOES edit an enabled input, proving the bail-out suppressed it.
         let mut on = TextInput::local();
         on.set_focus(true);
         on.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
@@ -1193,7 +1191,6 @@ fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
         assert_eq!(ti.selected_str(), Some("hello"), "clicked word is selected");
         assert!(ti.context_menu.is_open(), "menu opened");
 
-        // Empty clipboard in the headless test env omits Paste.
         let labels = ti.context_menu_labels();
         assert!(labels.contains(&"Cut".to_string()), "got {labels:?}");
         assert!(labels.contains(&"Copy".to_string()), "got {labels:?}");
@@ -1989,7 +1986,6 @@ fn a_secret_never_reaches_the_clipboard() {
     let clipboard = || crate::text_selection::clipboard_paste();
 
     for revealed in [false, true] {
-        // Case `copy_and_cut_leave_the_clipboard_alone`.
         {
             crate::text_selection::clipboard_copy("before");
             let mut ti = TextInput::local()
@@ -2019,7 +2015,6 @@ fn a_secret_never_reaches_the_clipboard() {
             assert_eq!(ti.selected_str(), Some("s3cr3t"), "and the selection");
         }
 
-        // Case `the_menu_offers_neither_copy_nor_cut_nor_text_actions`.
         {
             crate::text_selection::clipboard_copy("pasted");
             let mut ti = TextInput::local()
@@ -2040,7 +2035,6 @@ fn a_secret_never_reaches_the_clipboard() {
             assert!(labels.contains(&"Select All".to_string()), "got {labels:?}");
         }
 
-        // Case `paste_still_fills_a_secret`.
         {
             crate::text_selection::clipboard_copy("hunter2");
             let mut ti = TextInput::local().with_secret(true);
@@ -4137,7 +4131,6 @@ fn insertion_collapses_an_empty_drag_selection() {
     for (text, caret, expected) in [("", 0, "Nx"), ("ab", 1, "aNxb")] {
         let mut ti = TextInput::new(Vec::new());
         ti.set_text(text);
-        // A real same-position drag may retain an anchor at its caret.
         ti.core.set_selection(caret, caret);
         ti.insert_str("N");
         assert_eq!(ti.selection_range_public(), None);

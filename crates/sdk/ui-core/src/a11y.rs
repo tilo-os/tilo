@@ -658,7 +658,6 @@ mod tests {
         );
         assert_eq!(AccessState::new().expanded(false).expanded, Some(false));
 
-        // Settings default to all off and round-trip through JSON.
         let s = A11ySettings::default();
         assert!(!s.high_contrast);
         assert!(!s.reduce_motion);
@@ -706,7 +705,6 @@ mod tests {
         let row = AccessNode::new(Role::TreeItem).with_level(3);
         assert_eq!(row.level, Some(3));
 
-        // Optional helpers.
         let named = AccessNode::new(Role::StaticText).with_optional_name(Some("Hi".into()));
         assert_eq!(named.name.as_deref(), Some("Hi"));
         let anon = AccessNode::new(Role::Image).with_optional_name(None);
@@ -714,7 +712,6 @@ mod tests {
         let masked = AccessNode::new(Role::TextInput).with_optional_value(None);
         assert_eq!(masked.value, None);
 
-        // The heading role carries its level.
         let h2 = Role::Heading { level: 2 };
         assert_eq!(h2, Role::Heading { level: 2 });
         assert_ne!(h2, Role::Heading { level: 3 });

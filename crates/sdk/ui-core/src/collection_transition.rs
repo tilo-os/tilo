@@ -283,7 +283,6 @@ mod tests {
 
     #[test]
     fn collection_transitions_move_fade_and_honour_reduced_motion() {
-        // Case `surviving_key_moves_between_old_and_new_geometry`.
         {
             let now = crate::time::now();
             let mut set = KeyedTransitionSet::new();
@@ -303,7 +302,6 @@ mod tests {
             assert_eq!(visual.opacity, 1.0);
         }
 
-        // Case `arrivals_fade_in_and_departures_retain_payload`.
         {
             let now = crate::time::now();
             let mut set = KeyedTransitionSet::new();
@@ -324,8 +322,6 @@ mod tests {
             assert!(ghosts[0].2.opacity > 0.0 && ghosts[0].2.opacity < 1.0);
         }
 
-        // Case `reduced_motion_has_no_active_or_ghost_state`, and the same
-        // for a change a shortcut made.
         for (reduced, source) in [
             (true, MotionSource::Pointer),
             (false, MotionSource::Keyboard),

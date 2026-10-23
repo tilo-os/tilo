@@ -183,7 +183,6 @@ impl DisclosureGroup {
         self.opened(Member::Key(key.to_owned()), &state, motion);
     }
 
-    /// Close the row keyed `key`, if it is open.
     pub fn close(&self, key: &str) {
         let member = Member::Key(key.to_owned());
         self.state(key)
@@ -191,7 +190,6 @@ impl DisclosureGroup {
         self.closed(&member);
     }
 
-    /// The key of the open keyed row, if one is.
     #[must_use]
     pub fn open_key(&self) -> Option<String> {
         match &*self.open.borrow() {
@@ -222,7 +220,6 @@ impl DisclosureGroup {
         }
     }
 
-    /// `member` closed.
     fn closed(&self, member: &Member) {
         let mut open = self.open.borrow_mut();
         if open.as_ref() == Some(member) {
@@ -255,7 +252,6 @@ pub struct DisclosureRow {
     separator: bool,
     rect: Rect,
     header: Rect,
-    /// The header's height, from the last layout.
     header_px: f64,
     dirty: bool,
     /// The motion the person allows, from the last layout.

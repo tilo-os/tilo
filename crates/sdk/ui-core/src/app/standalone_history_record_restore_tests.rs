@@ -157,7 +157,6 @@ fn standalone_history_restores_a_record_as_one_undoable_change() {
             assert_eq!(entry.before, reviewed);
             assert_eq!(entry.author, Some(binding.author.clone()));
             assert_eq!(entry.instance_id, Some(binding.instance_id));
-            // Later changes stay in history, like a revert.
             for version in &versions {
                 assert!(doc.get_change_by_hash(version).is_some());
             }
@@ -235,7 +234,6 @@ fn standalone_history_record_restore_requires_write() {
         assert_eq!(record_heads(&fixture), heads);
     }
 
-    // Write revoked between review and confirmation is refused at confirmation.
     {
         let (mut fixture, versions) = record_history_fixture();
         review_record_restore(&mut fixture.app, versions[0]).unwrap();

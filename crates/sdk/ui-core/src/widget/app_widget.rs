@@ -245,8 +245,6 @@ pub trait AppWidget: Widget {
     }
 
     /// Capture app-owned local presentation alongside the ordinary View.
-    /// # Errors
-    /// Rejects an invalid application contribution before either contribution is saved.
     fn capture_application_view(
         &self,
     ) -> Result<Option<crate::application_view::ApplicationLocalView>, crate::view::ThawError> {

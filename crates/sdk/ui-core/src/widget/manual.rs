@@ -275,8 +275,6 @@ impl ManualContext<'_> {
         Ok(())
     }
     /// Measure current retained topology without applying hypothetical geometry.
-    /// # Errors
-    /// Rejects invalid indices/proposals and propagates bounded layout errors.
     pub fn measure(
         &mut self,
         index: usize,
@@ -286,8 +284,6 @@ impl ManualContext<'_> {
     }
 
     /// Measure a retained child using layout constraints, without changing geometry.
-    /// # Errors
-    /// Rejects invalid indices/proposals and propagates bounded layout errors.
     pub fn measure_child(
         &mut self,
         index: usize,

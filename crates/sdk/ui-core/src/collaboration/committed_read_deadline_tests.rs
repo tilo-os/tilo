@@ -393,7 +393,6 @@ impl ReadyReader {
         {
             let mut captures = self.captures.lock().unwrap();
             captures.committed_recheck_gate = Some(gate);
-            // A waiting reader Opens when its wait ends.
             captures.committed_await_stale = true;
         }
         self.wake_waits();

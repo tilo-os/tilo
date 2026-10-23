@@ -53,7 +53,6 @@ pub fn schema_operations_since(doc: &AutoCommit, heads: &[ChangeHash]) -> Vec<Sc
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaChange {
     pub timestamp: Option<i64>,
-    /// The objects the change made, in the order it made them.
     pub created: Vec<SchemaCreation>,
     /// Every object the change wrote into (set, inserted into, deleted
     /// from, or made an object in), each once.

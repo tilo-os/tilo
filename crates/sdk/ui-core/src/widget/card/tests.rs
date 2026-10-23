@@ -5,8 +5,6 @@ use crate::widget::{Column, Container, Scrollable};
 use std::cell::Cell;
 use std::rc::Rc;
 
-// ---- pure reflow geometry ----
-
 #[test]
 fn card_columns_reflow_fill_and_align_by_width() {
     assert_eq!(card_columns(200.0, 260.0, 16.0), 1, "too narrow → 1 col");
@@ -20,8 +18,6 @@ fn card_columns_reflow_fill_and_align_by_width() {
     assert!((3.0 * w + 2.0 * 16.0 - 820.0).abs() < 0.01);
     assert!((card_column_width(500.0, 1, 16.0) - 500.0).abs() < 0.01);
 }
-
-// ---- fixtures ----
 
 fn rect(node: &InspectionNode) -> Rect {
     let [x, y, w, h] = node.rect;
@@ -138,8 +134,6 @@ fn lay_out_grid(mut g: CardGrid, w: f64, h: f64) -> CardGrid {
     g.apply_layout(&taffy, node, Point::ZERO);
     g
 }
-
-// ---- CardGrid ----
 
 #[test]
 fn card_grid_resolves_columns_from_semantic_width_and_content_rows() {

@@ -106,11 +106,6 @@ mod transport {
 
     /// Write `request` on the shell's end of `door`, with the connections it
     /// says it carries.
-    ///
-    /// # Errors
-    ///
-    /// The door's error, or a request whose flags disagree with what is
-    /// attached.
     pub fn send(
         door: &Descriptor,
         request: &WindowRequest,
@@ -129,11 +124,6 @@ mod transport {
 
     /// The next request on the app's end of `door`; `None` once the shell
     /// closed it.
-    ///
-    /// # Errors
-    ///
-    /// The door's error, or a request that is malformed or does not carry
-    /// what it says.
     pub fn receive(door: &Descriptor) -> std::io::Result<Option<WindowOpening>> {
         let Some((encoded, fds)) = runtime_portal::windows::receive_open(door)? else {
             return Ok(None);

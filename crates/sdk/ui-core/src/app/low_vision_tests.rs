@@ -98,8 +98,6 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         a.set_theme(Theme::light());
         assert!(a.theme.reduce_motion);
         assert_eq!(a.text_scale(), 1.25);
-        // High contrast still wins over the freshly-set light base, in the
-        // base's polarity.
         assert_eq!(a.theme.name, "High contrast light");
     }
 

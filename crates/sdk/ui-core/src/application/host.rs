@@ -652,8 +652,6 @@ impl ApplicationHost {
     /// Keep a host-owned profile resource (such as a temporary capture directory)
     /// alive through record writers and failed record or presentation save retries.
     /// The resource must own the supplied profile root for its entire lifetime.
-    /// # Errors
-    /// Rejects the same explicit namespace and identity errors as `new`.
     pub fn new_with_profile_lifetime(
         profile_root: PathBuf,
         device_id: String,
@@ -705,8 +703,6 @@ impl ApplicationHost {
     }
 
     /// A host persisting records and local views through `store`.
-    /// # Errors
-    /// Rejects invalid identity inputs. Nothing is read or written.
     pub fn with_store(
         store: Rc<dyn durable_store::DurableStore>,
         device_id: String,
@@ -1278,7 +1274,6 @@ mod native_process_tests {
             .unwrap();
         drop(created);
         drop(first);
-        // A later, different window opens that same record.
         let mut second = launch(&per_room, 44);
         let reopened = second
             .prepare_launch(&per_room, None, probe::runner_inputs())
@@ -1499,7 +1494,6 @@ mod native_process_tests {
 
     #[test]
     fn native_host_identity_authority_and_inputs_are_explicit() {
-        // Case `standalone_native_host_has_durable_device_and_app_unique_view_identity`.
         {
             let temp = tempfile::tempdir().unwrap();
             let author = UserId("person-a".into());
@@ -1537,7 +1531,6 @@ mod native_process_tests {
             assert_ne!(reopened.instance_id(), other.instance_id());
         }
 
-        // Case `workspace_participation_is_host_authority_and_missing_policy_is_viewer`.
         {
             let temp = tempfile::tempdir().unwrap();
             let room = "3f2b1c00-0000-4000-8000-000000000001";
@@ -1563,7 +1556,6 @@ mod native_process_tests {
             }
         }
 
-        // Case `malformed_native_host_inputs_are_refused_without_fallback_storage`.
         {
             let temp = tempfile::tempdir().unwrap();
             let author = UserId("person-a".into());
