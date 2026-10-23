@@ -696,6 +696,20 @@ impl Core {
         self.perform(doc, Library::NEW_FOLDER.with(name));
     }
 
+    /// Why refreshing every subscription is not possible now, as a code and
+    /// the reason a person reads: nothing is subscribed, or a refresh is
+    /// already running. The Refresh effect and its header button both follow
+    /// it.
+    pub(crate) fn refresh_unavailable(&self) -> Option<(&'static str, &'static str)> {
+        if self.store.feeds.is_empty() {
+            Some(("no_subscriptions", "There are no subscriptions to refresh"))
+        } else if self.refresh.in_progress() {
+            Some(("refreshing", "A refresh is already running"))
+        } else {
+            None
+        }
+    }
+
     /// Start a refresh of every subscription. Only enqueues on the worker:
     /// no network I/O on the UI thread. Results drain every frame.
     pub(crate) fn refresh_all(&mut self) {
@@ -1527,7 +1541,12 @@ impl HeaderActions<'_> {
                     "Refresh all feeds",
                     Request::Refresh,
                 )
-                .enabled_when(|core| !core.store.feeds.is_empty() && !core.refresh.in_progress()),
+                .enabled_when(|core| core.refresh_unavailable().is_none())
+                // Disabled, it says why on hover and to a screen reader.
+                .named_by(|core| {
+                    core.refresh_unavailable()
+                        .map_or("Refresh all feeds", |(_, reason)| reason)
+                }),
             ),
             Box::new(self.button(
                 "feeds.new-folder",
@@ -2164,8 +2183,18 @@ impl ui::widget::Decorator for FeedsApp {
         }
     }
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
-        for child in Widget::children_mut(self) {
-            child.settle(edits, path);
+        // The shell settles itself, not only its children: that is where it
+        // runs what the person pressed in the window's bar (Show sidebar, a
+        // header button). Without an overlay the root's children are the
+        // shell's own, so the overlays settle on their own after it.
+        Widget::settle(&mut self.shell, edits, path);
+        if let Some(mount) = self.mount {
+            if let (Some(modal), Some(_)) = (self.modal.as_mut(), mount.dialog) {
+                Widget::settle(&mut modal.dialog, edits, path);
+            }
+            if let (Some(panel), Some(_)) = (self.settings_panel.as_mut(), mount.panel) {
+                Widget::settle(panel, edits, path);
+            }
         }
         self.core.borrow_mut().flush_doc_writes(edits);
         self.core.borrow_mut().drain_import(edits);
@@ -2633,14 +2662,7 @@ impl FeedsApp {
         core.refresh_reply = Some(reply);
     }
     pub(crate) fn refresh_unavailable(&self) -> Option<(&'static str, &'static str)> {
-        let core = self.core.borrow();
-        if core.store.feeds.is_empty() {
-            Some(("no_subscriptions", "There are no subscriptions to refresh"))
-        } else if core.refresh.in_progress() {
-            Some(("refreshing", "A refresh is already running"))
-        } else {
-            None
-        }
+        self.core.borrow().refresh_unavailable()
     }
     pub(crate) fn request_import(&self) {
         self.core.borrow_mut().request_import();
