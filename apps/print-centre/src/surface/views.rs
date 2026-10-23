@@ -2,7 +2,9 @@
 //!
 //! Every page is a column inside one vertical `Scrollable` that spans the
 //! window, so the scroll bar sits on the window edge; the column is bounded to
-//! the readable measure and centred. Nothing here picks a colour, size, radius
+//! the readable measure and centred. A page's title, the way back and the
+//! page's actions are the window bar's ([`super::window_bar`]): no page draws
+//! them. Nothing here picks a colour, size, radius
 //! or padding: text names its role, buttons their role, and the toolkit
 //! spaces what it composes.
 
@@ -23,14 +25,6 @@ use super::{
 
 fn text(s: &str, role: TextRole) -> El {
     Box::new(Text::new(s).with_role(role))
-}
-
-fn page_title(s: &str) -> El {
-    Box::new(
-        Text::new(s)
-            .with_role(TextRole::LargeTitle)
-            .with_heading_level(1),
-    )
 }
 
 fn copy(s: &str) -> El {
@@ -58,10 +52,6 @@ fn primary(button: Button) -> Button {
 
 fn destructive(button: Button) -> Button {
     button.role(ButtonRole::Destructive)
-}
-
-fn plain(button: Button) -> Button {
-    button.role(ButtonRole::Plain)
 }
 
 /// Trailing action group: the last button leads, the others come before it.
@@ -101,13 +91,6 @@ fn group_break() -> El {
 /// The groups of a page, one group rhythm apart.
 fn groups(items: Vec<El>) -> Column {
     stack_of(column(), items)
-}
-
-/// A page of a subpage's kind: the way back and the title, then the groups of
-/// the page. The first group sits one sibling step under the title on every
-/// page; later groups are a group rhythm apart.
-fn subpage(title: &str, tx: &Door, items: Vec<El>) -> Column {
-    stack_of(column().push(subpage_header(title, tx)), items)
 }
 
 /// `items` appended to `body`, a group rhythm between neighbours.
@@ -226,18 +209,6 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &Door) -> Option<El> {
                 .with_icon(Icon::Refresh),
             ),
     ))
-}
-
-/// A page's way back to the dashboard, then its title.
-fn subpage_header(title: &str, tx: &Door) -> El {
-    Box::new(
-        bare_column()
-            .push(Box::new(plain(
-                command_button("print-centre.back", "Back", tx, UiCommand::Dashboard)
-                    .with_icon(Icon::ArrowLeft),
-            )))
-            .push(page_title(title)),
-    )
 }
 
 pub(super) fn loading_view() -> El {
@@ -410,23 +381,6 @@ pub(super) fn live_view(snapshot: &Snapshot, tx: &Door, notice: Option<&Operatio
     let active: Vec<_> = jobs.iter().filter(|job| is_active(job)).collect();
 
     let mut items: Vec<El> = Vec::new();
-    // Adding a printer and printing both need printers: with none, or with
-    // printers that could not be read, the page offers only what applies.
-    if !queues.is_empty() {
-        items.push(button_row(vec![
-            command_button("print-centre.add", "Add printer", tx, UiCommand::Discover)
-                .with_icon(Icon::Plus),
-            primary(
-                command_button(
-                    "print-centre.print",
-                    "Print a document",
-                    tx,
-                    UiCommand::ChooseDocument,
-                )
-                .with_icon(Icon::Printer),
-            ),
-        ]));
-    }
     if let Some(notice) = notice {
         items.push(notice_banner(notice));
     }
@@ -451,14 +405,13 @@ pub(super) fn live_view(snapshot: &Snapshot, tx: &Door, notice: Option<&Operatio
                 ),
             ])
         } else {
-            let refresh = command_button("print-centre.refresh", "Refresh", tx, UiCommand::Refresh)
-                .with_icon(Icon::Refresh);
             Box::new(
                 bare_column()
                     .with_rhythm(ui::tokens::Rhythm::Section)
-                    .push(Box::new(Section::new(Vec::new()).with_header(
-                        SectionHeader::heading("Your printers").action(refresh),
-                    )))
+                    .push(Box::new(
+                        Section::new(Vec::new())
+                            .with_header(SectionHeader::heading("Your printers")),
+                    ))
                     .push(Box::new(
                         CardGrid::new(queues.iter().map(|queue| printer_card(queue, tx)).collect())
                             .with_card_width(CardWidth::Wide),
@@ -595,7 +548,7 @@ pub(super) fn history_view(snapshot: &Snapshot, tx: &Door) -> El {
             )],
         ));
     }
-    page(subpage("Print history", tx, items))
+    page(groups(items))
 }
 
 fn device_summary(
@@ -646,17 +599,7 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
         ),
         Property::new("Scanners available", scanners.len().to_string()),
     ]))])
-    .with_header(
-        SectionHeader::heading("Connection check").action(
-            command_button(
-                "print-centre.diagnostics.refresh",
-                "Check again",
-                tx,
-                UiCommand::Refresh,
-            )
-            .with_icon(Icon::Refresh),
-        ),
-    );
+    .with_header(SectionHeader::heading("Connection check"));
     let mut items: Vec<El> = Vec::new();
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, true, false, true), tx) {
         items.push(issue);
@@ -666,7 +609,7 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &Door) -> El {
         items.push(printer_check(queue, tx));
     }
     items.push(scanner_check(scanners.is_empty(), tx));
-    page(subpage("Device help", tx, items))
+    page(groups(items))
 }
 
 /// What one printer answered to the status check, in plain words.
@@ -702,15 +645,9 @@ fn printer_check(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
 
 fn scanner_check(none_found: bool, tx: &Door) -> El {
     let items: Vec<El> = if none_found {
-        vec![
-            copy("No scanner was found. Check its cable or network connection, then refresh."),
-            Box::new(command_button(
-                "print-centre.diagnostics.refresh",
-                "Check again",
-                tx,
-                UiCommand::Refresh,
-            )),
-        ]
+        vec![copy(
+            "No scanner was found. Check its cable or network connection, then check again.",
+        )]
     } else {
         vec![
             copy("Your scanner is available for a new document."),
@@ -832,7 +769,7 @@ pub(super) fn queue_view(
             )],
         ));
     }
-    page(subpage("Print queue", tx, items))
+    page(groups(items))
 }
 
 pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door) -> El {
@@ -887,18 +824,14 @@ pub(super) fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &Door)
             "Available to your apps"
         },
     );
-    page(subpage(
-        &display_name(&queue.name),
-        tx,
-        vec![
-            titled_section(
-                "Details",
-                vec![Box::new(PropertyList::new(vec![status, availability]))],
-            ),
-            titled_section("Ink and toner", supplies),
-            titled_section("Printer controls", vec![button_row(buttons)]),
-        ],
-    ))
+    page(groups(vec![
+        titled_section(
+            "Details",
+            vec![Box::new(PropertyList::new(vec![status, availability]))],
+        ),
+        titled_section("Ink and toner", supplies),
+        titled_section("Printer controls", vec![button_row(buttons)]),
+    ]))
 }
 
 pub(super) fn discovery_view(
@@ -960,7 +893,7 @@ pub(super) fn discovery_view(
             )),
         ]),
     };
-    page(subpage("Add a printer", tx, vec![body]))
+    page(groups(vec![body]))
 }
 
 fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Dropdown {
@@ -1100,7 +1033,7 @@ pub(super) fn print_setup_view(
         items.push(issue);
     }
     items.push(Box::new(layout));
-    let body = subpage("Print a document", tx, items);
+    let body = groups(items);
 
     let mut buttons = vec![command_button(
         "print-centre.print.cancel",
@@ -1323,7 +1256,7 @@ fn scan_review_view(
             button_row(page_navigation(selected_page, page_count, tx)),
         ],
     ));
-    let body = subpage("Scanned document", tx, items);
+    let body = groups(items);
     let footer = actions(vec![
         command_button(
             "print-centre.scan.new-document",
@@ -1470,7 +1403,7 @@ pub(super) fn scan_setup_view(
         scanner_choices(snapshot, selected, tx),
     ));
     items.push(titled_section("Page settings", scan_settings(scan, tx)));
-    let body = subpage("Scan a document", tx, items);
+    let body = groups(items);
 
     let mut buttons = vec![
         command_button(

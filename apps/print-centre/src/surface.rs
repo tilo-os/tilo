@@ -10,6 +10,7 @@ use ui::widget::{AppModel, ModelPath};
 use ui::widget::{CropSelection, Widget};
 
 mod views;
+mod window_bar;
 use views::{
     device_view, diagnostics_view, discovery_view, history_view, live_view, loading_view,
     print_setup_view, queue_view, scan_setup_view,
@@ -1964,7 +1965,20 @@ impl ui::widget::Decorator for PrintCentre {
     fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
         self.inner.as_mut()
     }
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.take_window_toolbar_events();
+        self.declare_window_toolbar();
+        self.inner.sync(state, path);
+    }
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // The window bar's slots are pressed between events: send what they
+        // asked through the page's own door.
+        let asked = self.take_window_toolbar_events();
+        self.declare_window_toolbar();
+        if asked {
+            self.inner.update(state, path);
+            return true;
+        }
         if self.poll_picker() {
             self.inner.sync(state, path);
             return true;
@@ -2018,7 +2032,7 @@ mod tests {
 
     /// A live Print Centre whose refresh found the studio printer, its
     /// documents and its scanner.
-    fn live_with_studio() -> TestApp<PrintCentreShell> {
+    pub(super) fn live_with_studio() -> TestApp<PrintCentreShell> {
         INSTALLED.with(|installed| *installed.borrow_mut() = Some(demo_snapshot()));
         let mut app = TestApp::<PrintCentreShell>::new().expect("launch");
         tilo_test_env::wait_until("the refresh to report the studio printer", || {
@@ -2360,7 +2374,7 @@ mod tests {
                 let mut buttons = Vec::new();
                 collect_buttons(surface, &mut buttons);
                 buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
-                let footer_buttons = buttons.iter().skip(1).collect::<Vec<_>>();
+                let footer_buttons = buttons.iter().collect::<Vec<_>>();
                 assert_eq!(
                     footer_buttons.len(),
                     2,
@@ -2418,11 +2432,8 @@ mod tests {
             }
 
             let ids = [
-                "print-centre.add",
-                "print-centre.print",
                 "print-centre.queue",
                 "print-centre.job.cancel",
-                "print-centre.refresh",
                 "print-centre.device.open.Studio_printer",
                 "print-centre.scan.open",
                 "print-centre.history.open",
@@ -2451,19 +2462,13 @@ mod tests {
                     );
                     rect
                 });
-                assert!(
-                    controls[1].y1 <= 900.5,
-                    "the primary Print action must remain in the captured viewport: {:?}",
-                    controls[1]
-                );
-
-                for (index, pair) in controls[3..].windows(2).enumerate() {
+                for (index, pair) in controls[1..].windows(2).enumerate() {
                     let (before, after) = (pair[0], pair[1]);
                     assert!(
                         before.y1 + 16.0 <= after.y0,
                         "{} and {} overlap at {text_scale}x text: {before:?} {after:?}",
-                        ids[index + 3],
-                        ids[index + 4],
+                        ids[index + 1],
+                        ids[index + 2],
                     );
                 }
 
