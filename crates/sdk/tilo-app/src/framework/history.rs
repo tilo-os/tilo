@@ -644,9 +644,6 @@ pub struct HistoryVersion {
     pub housekeeping: bool,
 }
 
-/// The kind of work unit an agent's run groups its actions under.
-const AGENT_RUN: &str = "agent-run";
-
 /// The last `last` versions, oldest first, as [`HistoryVersion`]s.
 pub(crate) fn recent(doc: &AutoCommit, last: usize) -> Vec<HistoryVersion> {
     let versions = tilo_resource::history::committed_versions(doc);
@@ -661,7 +658,7 @@ pub(crate) fn recent(doc: &AutoCommit, last: usize) -> Vec<HistoryVersion> {
             let context = version.context.as_ref();
             let run = context
                 .and_then(|context| context.group.as_ref())
-                .filter(|group| group.kind == AGENT_RUN);
+                .filter(|group| steps::names_a_run(&group.kind));
             HistoryVersion {
                 change: steps::short(&version.hash),
                 action: sentence(version),

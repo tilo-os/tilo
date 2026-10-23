@@ -152,7 +152,7 @@ fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String
     let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
         .map_err(|_| "The task has an invalid action context".to_string())?;
     let valid_group = context.group.as_ref().is_some_and(|group| {
-        group.id == run.task_id && group.label == run.title && group.kind == "task"
+        group.id == run.group() && group.label == run.title && group.kind == "task"
     });
     if context.purpose.as_deref() != Some(run.title.as_str()) || !valid_group {
         return Err("The task action context does not bind this task title and id".into());
@@ -1331,7 +1331,11 @@ mod tests {
             execution_budget: None,
             action_context: serde_json::json!({
                 "purpose": "Review draft",
-                "group": {"id": "task:review", "label": "Review draft", "kind": "task"}
+                "group": {
+                    "id": runtime_collab::task_run_group("task:review", 7),
+                    "label": "Review draft",
+                    "kind": "task"
+                }
             }),
         }
     }

@@ -239,7 +239,11 @@ impl CapnpBrokerState {
         );
         let context = tilo_actions::ActionContext::default()
             .with_purpose(run.title.clone())
-            .with_group(run.issue.clone(), run.title.clone(), "task");
+            .with_group(
+                runtime_collab::task_run_group(&run.issue, run_id),
+                run.title.clone(),
+                "task",
+            );
         self.offer_native_run(
             room,
             NativeTaskBinding {
@@ -303,7 +307,7 @@ impl CapnpBrokerState {
 
     /// An agent's report on its run of an issue. The tracker is told by the
     /// agent itself, through the tracker's actions; here a run that ends
-    /// stops its children.
+    /// stops its children and goes to history, as one run to undo whole.
     ///
     /// # Errors
     /// The run's children cannot be stopped.
@@ -312,13 +316,30 @@ impl CapnpBrokerState {
         run: &PendingTaskRun,
         update: &runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
-        if matches!(
-            update,
-            runtime_collab::TaskRunUpdate::Failed { .. }
-                | runtime_collab::TaskRunUpdate::Cancelled { .. }
-        ) {
+        let outcome = match update {
+            runtime_collab::TaskRunUpdate::Succeeded { .. } => "completed",
+            runtime_collab::TaskRunUpdate::Failed { .. } => "stopped",
+            runtime_collab::TaskRunUpdate::Cancelled { .. } => "cancelled",
+            _ => return Ok(()),
+        };
+        if outcome != "completed" {
             self.cancel_native_children(run)?;
         }
+        let ended = self.tracker_run_of(run).ok();
+        let group = run.action_context.group.as_ref();
+        self.ended_runs.tasks.push(crate::task_runs::EndedTaskRun {
+            room: run.cluster_id.clone(),
+            group: group.map_or_else(|| run.task_id.clone(), |group| group.id.clone()),
+            title: group.map_or_else(|| run.task_id.clone(), |group| group.label.clone()),
+            agent: format!("agent:{}", run.agent_id),
+            person: run
+                .native
+                .as_ref()
+                .and_then(|binding| binding.starter.clone())
+                .unwrap_or_default(),
+            instruction: ended.map(|ended| ended.instruction),
+            outcome: outcome.to_owned(),
+        });
         Ok(())
     }
 

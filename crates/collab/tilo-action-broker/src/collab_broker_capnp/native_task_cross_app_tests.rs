@@ -70,7 +70,7 @@ impl<R: Resource> Worker<R> {
 
     // Resolve the broker-delivered address and arguments against the app's fresh
     // publication, decode in its real registry and execute with task provenance.
-    async fn settle(&mut self, wire_id: u64, invocation: uuid::Uuid, task: &str) {
+    async fn settle(&mut self, wire_id: u64, invocation: uuid::Uuid, group: &str) {
         let response = tilo_test_env::within(
             "the worker delivery",
             self.stream.read_request().send().promise,
@@ -84,7 +84,7 @@ impl<R: Resource> Worker<R> {
         assert_eq!(actor, "agent:scribe");
         let context: tilo_actions::ActionContext =
             serde_json::from_str(wire.get_context_json().unwrap().to_str().unwrap()).unwrap();
-        assert_eq!(context.group.as_ref().unwrap().id, task);
+        assert_eq!(context.group.as_ref().unwrap().id, group);
         let address = tilo_actions::ActionAddress::new(
             wire.get_resource().unwrap().to_str().unwrap(),
             wire.get_action().unwrap().to_str().unwrap(),
@@ -118,7 +118,7 @@ impl<R: Resource> Worker<R> {
                 .as_ref()
                 .unwrap()
                 .id,
-            task
+            group
         );
         assert!(dispatched.mutated_local());
         let after = self.doc.get_heads();
@@ -308,7 +308,7 @@ async fn writer_journey(
     let accepted = plan_step(agent, run, writer, first, first_args)
         .await
         .unwrap();
-    writer.settle(accepted.0, first, &f.task).await;
+    writer.settle(accepted.0, first, &run.group()).await;
     assert!(matches!(
         plan_step(agent, run, writer, first, first_args)
             .await
@@ -348,7 +348,7 @@ async fn steering_journey(
     let accepted = plan_step(agent, run, settings, second, settings_args)
         .await
         .unwrap();
-    settings.settle(accepted.0, second, &f.task).await;
+    settings.settle(accepted.0, second, &run.group()).await;
     assert!(matches!(
         plan_step(agent, run, settings, second, settings_args)
             .await

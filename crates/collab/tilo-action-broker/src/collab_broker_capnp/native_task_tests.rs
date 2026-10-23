@@ -1083,7 +1083,7 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
             assert_eq!(wire.get_invocation_uuid().unwrap(), id.as_bytes());
             let context: tilo_actions::ActionContext =
                 serde_json::from_str(wire.get_context_json().unwrap().to_str().unwrap()).unwrap();
-            assert_eq!(context.group.as_ref().unwrap().id, f.task);
+            assert_eq!(context.group.as_ref().unwrap().id, run.group());
             let duplicate = invoke(&agent, &run, id).await.unwrap();
             assert_eq!(duplicate, first);
             assert_eq!(
@@ -1118,6 +1118,19 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
             )
             .await
             .unwrap();
+            // The run goes to history once, as one run to undo whole.
+            let ended = f.state.take_ended_task_runs();
+            assert_eq!(
+                ended
+                    .iter()
+                    .map(|ended| (
+                        ended.group.as_str(),
+                        ended.agent.as_str(),
+                        ended.outcome.as_str()
+                    ))
+                    .collect::<Vec<_>>(),
+                [(run.group().as_str(), "agent:scribe", "completed")]
+            );
             f.native
                 .owner
                 .with_current(room(), |view| {
@@ -1126,7 +1139,7 @@ async fn native_task_tool_effect_is_attributed_and_duplicate_reconnect_does_not_
                     );
                     assert_eq!(effects.len(), 1);
                     assert_eq!(effects[0].actor, "agent:scribe");
-                    assert_eq!(effects[0].context.group.as_ref().unwrap().id, f.task);
+                    assert_eq!(effects[0].context.group.as_ref().unwrap().id, run.group());
                     Ok(())
                 })
                 .unwrap();

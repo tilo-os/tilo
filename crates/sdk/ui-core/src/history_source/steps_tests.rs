@@ -497,11 +497,11 @@ fn classifying_a_change_costs_the_same_however_large_the_document() {
     );
 }
 
-/// An agent working a native workspace task stamps its steps with the task
-/// group, so undo naming that task finds them, while the person's own scope
-/// still counts them as theirs only when no agent run holds them.
+/// An agent running an issue stamps its steps with the run's group, so undo
+/// naming that run finds them, and the agent's own undo inside the run is
+/// scoped to it; the person's own scope never counts a run's steps as theirs.
 #[test]
-fn a_named_run_owns_the_steps_of_an_agent_run_or_a_workspace_task() {
+fn a_named_run_owns_the_steps_of_an_agent_run_or_a_task_run() {
     let version = |group: Option<(&str, &str)>| Version {
         hash: ChangeHash([0; 32]),
         actor: ActorId::from(ALICE).to_hex_string(),
@@ -517,5 +517,10 @@ fn a_named_run_owns_the_steps_of_an_agent_run_or_a_workspace_task() {
     assert!(!Scope::Run("task:8".into()).owns(&task));
     assert!(!Scope::Run("issue:7".into()).owns(&issue));
     assert!(!scope(ALICE).owns(&agent));
+    assert!(!scope(ALICE).owns(&task));
     assert!(scope(ALICE).owns(&issue));
+    assert_eq!(
+        Scope::of(task.context.as_ref(), "alice"),
+        Scope::Run("task:7".into())
+    );
 }

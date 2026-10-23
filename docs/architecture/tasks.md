@@ -98,6 +98,9 @@ model is the one the run captured from the issue (the agent's own without),
 the steering is the thread's messages to the run, and a run the tracker no
 longer holds as going is cancelled. The agent writes the run's reports, questions and
 end itself, through the tracker's actions above, as children of its run.
+Every change the run makes carries the run's own group
+(`runtime_collab::task_run_group`), so history lists each run of an issue
+as one run of its agent and undoes it whole.
 
 Each of the agent's actions, the tracker's included, is admitted as the agent
 acting for the run's approver: bounded by the approver's live grants, the
