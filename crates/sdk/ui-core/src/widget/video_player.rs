@@ -269,6 +269,9 @@ pub struct VideoPlayer {
     time_label_rect: Rect,
     /// `None` means hidden.
     controls_visible_until: Option<Instant>,
+    /// The played part of the progress line the last paint drew; zero
+    /// while the controls showed instead.
+    progress_line_painted: Rect,
     scrubbing: bool,
     last_cursor: Point,
     focused: bool,
@@ -393,6 +396,7 @@ impl VideoPlayer {
             fullscreen_button_rect: Rect::ZERO,
             time_label_rect: Rect::ZERO,
             controls_visible_until: None,
+            progress_line_painted: Rect::ZERO,
             scrubbing: false,
             last_cursor: Point::ZERO,
             focused: false,
@@ -911,7 +915,19 @@ impl VideoPlayer {
         self.dirty = true;
     }
 
+    /// A loaded video that is not playing keeps its controls up: nothing
+    /// moves on it, so there is nothing to hide them for.
+    fn controls_pinned(&self) -> bool {
+        self.has_media() && !self.is_playing()
+    }
+
     fn controls_visible_now(&self) -> bool {
+        self.controls_pinned() || self.controls_shown_for_a_while()
+    }
+
+    /// Shown by the pointer, a key or playback starting, until the
+    /// auto-hide deadline.
+    fn controls_shown_for_a_while(&self) -> bool {
         match self.controls_visible_until {
             Some(deadline) => crate::time::now() < deadline,
             None => false,
@@ -921,7 +937,7 @@ impl VideoPlayer {
     /// Opacity for the shared control/host-overlay fade. Reduced motion keeps
     /// the exact same visibility timing but snaps between endpoints.
     pub fn controls_opacity(&self) -> f32 {
-        if self.open_menu.is_some() {
+        if self.open_menu.is_some() || self.controls_pinned() {
             return 1.0;
         }
         let Some(deadline) = self.controls_visible_until else {
@@ -970,6 +986,37 @@ impl VideoPlayer {
             (y1 - height).max(self.rect.y0),
             (self.rect.x1 - inset).max(self.rect.x0 + inset),
             y1,
+        )
+    }
+
+    /// The scrub track's progress as a line along the picture's bottom
+    /// edge, as thick as the track, painted while the controls are hidden:
+    /// the played part in media ink over a scrim, so it reads on a bright
+    /// picture and a dark one alike.
+    fn paint_progress_line(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        self.progress_line_painted = Rect::ZERO;
+        if self.duration_ms == 0 || !self.has_media() || self.rect.width() <= 0.0 {
+            return;
+        }
+        let media = &theme.tokens.colors.media;
+        let line = self.progress_line_rect();
+        scene.fill(Fill::NonZero, transform, media.scrim, None, &line);
+        let played = Rect::new(
+            line.x0,
+            line.y0,
+            line.x0 + line.width() * self.playhead_fraction(),
+            line.y1,
+        );
+        scene.fill(Fill::NonZero, transform, media.ink, None, &played);
+        self.progress_line_painted = played;
+    }
+
+    fn progress_line_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            (self.rect.y1 - SCRUB_TRACK_HEIGHT).max(self.rect.y0),
+            self.rect.x1,
+            self.rect.y1,
         )
     }
 
@@ -1035,6 +1082,11 @@ impl VideoPlayer {
             PlaybackState::Paused
         };
         if self.state != new_state {
+            // Playback starting shows the controls before they hide, so
+            // a video that begins on its own shows how to stop it.
+            if new_state == PlaybackState::Playing {
+                self.show_controls();
+            }
             self.state = new_state;
             self.dirty = true;
         }
@@ -1157,8 +1209,10 @@ impl VideoPlayer {
             self.gear_button_rect = Rect::ZERO;
             self.setting_icon_rects.clear();
             self.menu_hit_rects.clear();
+            self.paint_progress_line(scene, transform, theme);
             return;
         }
+        self.progress_line_painted = Rect::ZERO;
         let opacity = self.controls_opacity();
         if opacity <= 0.0 {
             return;
@@ -2503,7 +2557,9 @@ impl Widget for VideoPlayer {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.is_playing() || self.controls_visible_now()
+        // A paused player's pinned controls are still: only a deadline
+        // that ends a fade needs frames.
+        self.is_playing() || self.controls_shown_for_a_while()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -3224,6 +3280,51 @@ mod tests {
         assert!(
             engine.volume().abs() < 1e-6,
             "a muted player's engine is silent"
+        );
+    }
+
+    #[test]
+    fn a_playing_video_shows_its_controls_then_a_progress_line_and_a_paused_one_keeps_them() {
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote {
+            url: "v.mp4".into(),
+        });
+        let mut vp = VideoPlayer::new().with_engine(engine);
+        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+        let doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        vp.sync(&doc, &root);
+        draw_once(&mut vp);
+        assert!(
+            vp.play_button_rect.width() > 0.0,
+            "a loaded video that is not playing keeps its controls up"
+        );
+        assert!(
+            !vp.needs_animation_frame(),
+            "pinned controls on a paused video ask for no frames"
+        );
+
+        vp.engine_mut().unwrap().play();
+        vp.sync(&doc, &root);
+        draw_once(&mut vp);
+        assert!(
+            vp.play_button_rect.width() > 0.0,
+            "playback starting shows the controls"
+        );
+        assert_eq!(vp.progress_line_painted, Rect::ZERO);
+
+        vp.seek_to_ms(vp.duration_ms() / 2);
+        vp.controls_visible_until = None;
+        draw_once(&mut vp);
+        assert_eq!(vp.play_button_rect, Rect::ZERO, "the controls hid");
+        let line = vp.progress_line_painted;
+        assert!(
+            (line.y1 - vp.rect.y1).abs() < 1e-9 && line.height() > 0.0,
+            "the progress line runs along the picture's bottom edge: {line:?}"
+        );
+        assert!(
+            (line.width() - vp.rect.width() / 2.0).abs() < 2.0,
+            "it is filled as far as the video has played: {line:?}"
         );
     }
 
