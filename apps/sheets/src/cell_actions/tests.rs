@@ -22,8 +22,10 @@ fn workbook(rows: &[&[&str]]) -> Replica<Workbook> {
         sheets: vec![crate::resource::ImportedSheet {
             name: "Data".into(),
             cells,
+            hidden: false,
         }],
         source: None,
+        title: None,
     }))
     .unwrap();
     book
@@ -312,8 +314,8 @@ fn cell_edits_answer_with_the_range_they_changed() {
     let set = answer(&mut book, "set-cells", invoke);
     assert_eq!(
         set,
-        json!({"sheet": "Data", "range": "A4:B4", "rows": [["Total", 210.0]],
-            "formulas": {"B4": "=SUM(B2:B3)"}, "bold": []})
+        json!({"sheet": "Data", "item": sheet(&book).as_str(), "range": "A4:B4",
+            "rows": [["Total", 210.0]], "formulas": {"B4": "=SUM(B2:B3)"}, "bold": []})
     );
     let invoke = Workbook::FORMAT_CELLS.with(verbs::FormatCells {
         sheet: sheet(&book),
@@ -472,8 +474,10 @@ fn an_import_into_a_blank_workbook_replaces_its_empty_sheet() {
             sheets: vec![crate::resource::ImportedSheet {
                 name: "sales".into(),
                 cells: vec![cell("A1", "Region")],
+                hidden: false,
             }],
             source: None,
+            title: None,
         }))
         .unwrap();
     };

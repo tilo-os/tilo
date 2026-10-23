@@ -13,6 +13,7 @@
 pub(crate) mod continuation;
 /// Pure editor input primitives shared by keyboard, palette and agents.
 pub mod editing;
+pub(crate) mod image_place;
 /// Per-participant view state and its pure resource-context projection.
 pub mod participant;
 /// Per-participant view operations (caret, selection, Find) and their

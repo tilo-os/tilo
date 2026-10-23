@@ -109,6 +109,30 @@ impl Document {
         Ok(())
     }
 
+    /// Find and replace.
+    ///
+    /// Replace a phrase where it is in the document, the first occurrence
+    /// or every one, keeping the rest of each paragraph, its marks and the
+    /// other paragraphs. Refused, saying so, when the text is not there.
+    #[action(answers, audience = "agents")]
+    pub fn replace_text(
+        &mut self,
+        #[param("The exact text to find, within one paragraph, as read-text shows it")]
+        find: String,
+        #[param("The text that takes its place; empty deletes it")] replace: String,
+        #[param("Replace every occurrence; only the first when left out")] all: Option<bool>,
+    ) -> Result<(), Refusal> {
+        if find.is_empty() {
+            return Err(Refusal::new("name the text to find"));
+        }
+        self.body.perform(RichTextAction::ReplaceText {
+            find,
+            replace,
+            all: all.unwrap_or(false),
+        });
+        Ok(())
+    }
+
     /// Insert a table.
     ///
     /// An empty table of `rows` by `columns` after the paragraph `after`.

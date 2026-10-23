@@ -3366,6 +3366,10 @@ impl SlidesApp {
             SlidesEffect::ReadDeck => {
                 return Ok(Effected::value(crate::outline::of_deck(&self.deck)));
             }
+            SlidesEffect::ImportPptxContent { content } => {
+                return self.import_pptx_content(&content, cx);
+            }
+            SlidesEffect::ExportPptxContent => return self.export_pptx_content(cx),
         }
         Ok(Effected::done())
     }
@@ -4725,6 +4729,9 @@ impl SlidesApp {
 fn custom_colour_hex(hex: &str) -> String {
     tr_args("slides-custom-colour-hex", &[("hex", ArgValue::from(hex))])
 }
+
+#[path = "app/content_files.rs"]
+mod content_files;
 
 #[cfg(test)]
 #[path = "app/bench.rs"]

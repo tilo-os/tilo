@@ -64,6 +64,7 @@ pub mod infer;
 mod interchange_tests;
 pub mod model;
 pub mod ods;
+pub mod records;
 pub mod resource;
 pub mod sample;
 pub mod settings;

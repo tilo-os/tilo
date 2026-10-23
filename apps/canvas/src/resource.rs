@@ -709,6 +709,16 @@ impl Artwork {
         shapes.apply(self, &art)
     }
 
+    /// Draw chart.
+    ///
+    /// Bar chart from numbers; use it, not hand-computed rects. Equal bars,
+    /// one baseline, lengths exactly value/max of box.
+    #[action(answers)]
+    pub fn chart(&mut self, #[param(flatten)] chart: crate::chart::Chart) -> Result<(), Refusal> {
+        let art = self.as_read();
+        chart.apply(self, &art)
+    }
+
     /// Edit marks.
     ///
     /// Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale,
@@ -1022,5 +1032,42 @@ impl Artwork {
     fn as_read(&mut self) -> Self {
         self.settle();
         self.clone()
+    }
+}
+
+#[cfg(test)]
+mod export_reads {
+    use ui::tilo_actions::ActionKind;
+    use ui::tilo_resource::Effect as _;
+
+    /// Looking at the artwork and keeping a picture, an SVG or the artwork
+    /// file of it as content only read it, so whoever may read the artwork,
+    /// an agent among them, may run them; told a path to write, an export
+    /// reaches outside and asks first.
+    #[test]
+    fn looks_and_exports_kept_as_content_are_reads_and_a_path_reaches_outside() {
+        let specs = super::ViewOp::specs();
+        let spec = |id: &str| {
+            specs
+                .iter()
+                .find(|spec| spec.id == id)
+                .unwrap_or_else(|| panic!("`{id}` is published"))
+        };
+        assert_eq!(spec("look").contract.kind, ActionKind::Read);
+        for id in ["export", "export-svg", "save-artwork"] {
+            let export = spec(id);
+            assert_eq!(export.contract.kind, ActionKind::Read, "{id}");
+            let need = |arguments: serde_json::Value| {
+                export
+                    .need_for(Some(arguments.as_object().expect("an object")), None)
+                    .kind
+            };
+            assert_eq!(need(serde_json::json!({})), ActionKind::Read, "{id}");
+            assert_eq!(
+                need(serde_json::json!({ "path": "/tmp/artwork.out" })),
+                ActionKind::Outside,
+                "{id}"
+            );
+        }
     }
 }

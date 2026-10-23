@@ -30,6 +30,8 @@
 )]
 
 pub mod actions;
+#[cfg(test)]
+mod agent_tests;
 mod compact_swatch_palette;
 pub mod effects;
 pub mod file_convert;

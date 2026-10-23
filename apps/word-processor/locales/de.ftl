@@ -255,6 +255,7 @@ word-processor-document-body = { $op ->
    *[other] Text bearbeitet
 }
 word-processor-append-paragraph = Absatz hinzugefügt
+word-processor-replace-text = { $find } durch { $replace } ersetzt
 word-processor-insert-table = Tabelle mit { $rows } × { $columns } eingefügt
 word-processor-add-row = Tabellenzeile hinzugefügt
 word-processor-add-column = Tabellenspalte hinzugefügt

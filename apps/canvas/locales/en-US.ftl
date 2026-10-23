@@ -450,6 +450,7 @@ canvas-mark-clip = Clipped { $item }
 canvas-mark-area = Changed what { $item } fills
 canvas-paint = Painted
 canvas-draw = Drew
+canvas-chart = Drew a chart
 canvas-edit-marks = Edited marks
 canvas-remove-marks = Removed marks
 canvas-arrange = Restacked marks
