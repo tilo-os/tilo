@@ -493,7 +493,7 @@ fn ensure_primary_identity_in_context(
     let record = IdentityRecord::from_threshold_identity(
         &identity,
         &display_name,
-        [128, 128, 128],
+        runtime_identity::DEFAULT_AVATAR_COLOR,
         std::time::SystemTime::now(),
     )
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
