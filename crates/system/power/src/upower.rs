@@ -277,10 +277,10 @@ mod tests {
 
     #[test]
     fn a_charge_that_cannot_be_read_is_no_reading_and_never_a_critical_battery() {
-        let policy = crate::policy::PowerPolicy::default();
         fn failed<T>() -> zbus::Result<T> {
             Err(zbus::Error::Failure("UPower did not answer".into()))
         }
+        let policy = crate::policy::PowerPolicy::default();
         let discharging = 2;
         assert!(battery_reading(failed(), Ok(discharging)).is_err());
         assert!(battery_reading(Ok(50.0), failed()).is_err());
