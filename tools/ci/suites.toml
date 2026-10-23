@@ -792,6 +792,12 @@ suites = [
 # A change to an input tests the whole package, unless every changed input is
 # listed in the entry's optional `scope`: then only the scope's `filter`
 # (a nextest filterset) within its `test` target runs for that package.
+# `dependencies_of` names directories whose packages' normal local dependencies
+# the package reads too; tools/ci/t_toml.py adds those packages' directories to
+# its inputs from the workspace's metadata, so a crate an app comes to depend on
+# is counted without listing it here. `tools/ci/suites.py check` holds each
+# entry's inputs to what its code reads where literals say: includes, and paths
+# built from CARGO_MANIFEST_DIR, including every entry of a directory it lists.
 
 
 [[cargo]]
@@ -810,6 +816,8 @@ inputs = [
   "crates/browser/tilo-browser-runtime/src/background_work.rs",
   "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
   "tools/test-assets.py",
+  # The ratchets find the checkout by its workspace manifest.
+  "Cargo.toml",
 ]
 readers = [
   "crates/sdk/ui-core/src/headless.rs",
@@ -916,8 +924,9 @@ readers = ["crates/system/tilo-crypto/src/release_bundle.rs"]
 
 [[cargo]]
 package = "tilo-firstboot-files"
-# The first-boot cases run the shipped tilo-firstboot-user with this helper.
-inputs = ["os/usr/libexec/tilo-firstboot-user"]
+# The first-boot cases run the shipped tilo-firstboot-user with this helper, which
+# publishes through the compatibility oracle.
+inputs = ["os/usr/libexec/tilo-firstboot-user", "os/tests/oracles/tilo-firstboot-home-seeds.py"]
 readers = ["crates/system/firstboot-files/tests/firstboot_user.rs"]
 
 [[cargo]]
@@ -1070,7 +1079,8 @@ readers = ["crates/runtime/egress/src/policy.rs"]
 
 [[cargo]]
 package = "tilo-vm"
-inputs = ["apps/*/tilo-app.toml", "os/dev/vm.sh"]
+# Its build plan comes from the image's component manifest.
+inputs = ["apps/*/tilo-app.toml", "os/dev/vm.sh", "os/components.toml"]
 readers = ["crates/dev/tilo-vm/src/build.rs", "crates/dev/tilo-vm/src/hypervisor.rs"]
 
 [[cargo]]
@@ -1087,6 +1097,8 @@ inputs = [
   "os/usr/libexec/tilo-seat-session", "os/usr/libexec/tilo-session",
   "os/usr/share/tilo/system-interfaces.toml", "tools/font-catalog.py",
   "crates/sdk/ui-core/assets/fonts/**",
+  # The session file must start the login wrapper.
+  "os/usr/share/wayland-sessions/shell.desktop",
 ]
 readers = [
   "crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs",
@@ -1116,73 +1128,23 @@ inputs = [
   # Standalone apps take the SDK's toolchain and lock file.
   "rust-toolchain.toml", "Cargo.lock",
   "tools/ci/rustc-sdk-consumer.sh", "os/dev/export-sdk-compiler.py",
-  "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh", "apps/*/Cargo.toml",
+  "os/dev/assemble-app-runtime.py", "tools/ci/rustc-thin-app-wrapper.sh",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
-  # Canonical worker builder sources and the real packaging manifest fixture.
-  "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
-  # Workspace certification tells a windowless service from a window by its manifest.
-  "apps/agent/tilo-app.toml", "apps/thumbnails/tilo-app.toml", "apps/web-search/tilo-app.toml", "apps/osk/tilo-app.toml",
+  # Canonical worker builder sources.
+  "crates/browser/tilo-browser-compute/",
+  # Tests over every app of the workspace read each one's manifests and sources: the
+  # capability and portability lints, the record kinds each manifest must declare, the
+  # SDK graph of every app, workspace certification and the packaging fixtures.
+  "apps/",
   # A new app's services speak the runtime interface version the image serves.
   "os/usr/share/tilo/system-interfaces.toml",
-  # The production resource regression reads Music and its whole normal local
-  # dependency closure. SDK/platform/vendor roots above already cover theirs;
-  # keep the remaining source roots explicit when the Music graph changes.
-  "apps/music/", "crates/doc/tilo-doc/", "crates/system/accounts/",
-  "crates/browser/paint-stream/",
-  "crates/collab/actions/",
-  "crates/collab/automation/",
-  "crates/collab/channel-crypto/",
-  "crates/collab/collab-types/",
-  "crates/collab/threshold-identity/",
-  "crates/collab/tilo-user-identity/",
-  "crates/dev/headless-schema/",
-  "crates/dev/test-env/",
-  "crates/dev/test-http/",
-  "crates/dev/ui-graph/",
-  "crates/doc/bounded-zip/",
-  "crates/doc/tilo-automerge/",
-  "crates/doc/tilo-doc-codecs/",
-  "crates/media/thumbnail/",
-  "crates/packaging/package-store/",
-  "crates/packaging/registry-types/",
-  "crates/packaging/tilo-app-package/",
-  "crates/runtime/cli/",
-  "crates/runtime/runtime-collab/",
-  "crates/runtime/runtime-fs/",
-  "crates/runtime/runtime-identity/",
-  "crates/runtime/runtime-portal/",
-  "crates/session/desktop-model/",
-  "crates/system/account-custody/",
-  "crates/system/advisory-lock/",
-  "crates/system/app-state/",
-  "crates/system/bounded-command/",
-  "crates/system/cloud-source-dav/",
-  "crates/system/cloud-source-dropbox/",
-  "crates/system/cloud-source-gdrive/",
-  "crates/system/cloud-source-icloud/",
-  "crates/system/cloud-source-onedrive/",
-  "crates/system/cloud-source/",
-  "crates/system/content/",
-  "crates/system/desktop-policy/",
-  "crates/system/durable-store/",
-  "crates/system/fs-content/",
-  "crates/system/fs-native/",
-  "crates/system/fs/",
-  "crates/system/power/",
-  "crates/system/sandbox-core/",
-  "crates/system/secret-vault/",
-  "crates/system/settings-store/",
-  "crates/system/tilo-dav/",
-  "crates/system/tilo-native-certs/",
-  "crates/system/tilo-oauth/",
-  "crates/system/tilo-seal/",
-  "crates/system/tilo-startup-metrics/",
-  "crates/system/tts/",
-  "crates/system/wire-frame/",
-  "crates/text/spellcheck/",
-  "crates/workspace-hack/",
+  # A check runs inside the test environment, as cargo's runner starts every test.
+  "tools/with-test-environment.sh",
 ]
+# The record-kinds tests read the sources of the local crates the apps depend on, the
+# production resource regression Music's whole normal local dependency closure.
+dependencies_of = ["apps/"]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   # The SDK's current interfaces are the image's declaration from the same commit.
