@@ -432,6 +432,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(loading) { navigation_busy_=true; main_navigation_finished_=false; failed_main_navigation_.reset(); return; }
     // OnLoadEnd excludes same-document history; overall loading settles it.
     CompleteMainNavigation(browser->GetMainFrame()->GetURL().ToString(),0);
+    // Not at OnLoadEnd: the browser still counts as loading there, and an
+    // action's reply waiting on the load would say it is still loading.
+    if(page_automation_)page_automation_->NavigationFinished();
     if(!navigation_dispatched_ || navigation_started_ || navigation_aborting_) {
       const auto uri=browser->GetMainFrame()->GetURL().ToString();
       if(navigation_owner_) NavigationOutcome(*navigation_owner_,uri,navigation_error_);
@@ -452,14 +455,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     OfferCredentialContext(frame);pending_main_media_token_.reset();PublishZoom();
     CompleteMainNavigation(frame->GetURL().ToString(),status);SendScripts();
     if(service_session_import_)service_session_import_->Loaded(frame,status);
-    if(page_automation_)page_automation_->NavigationFinished();
   }
   void OnLoadError(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,ErrorCode code,const CefString& text,const CefString& url) override {
     if(frame->IsMain()) { failed_main_navigation_=url.ToString(); InvalidateCredentials(); }
     if(!frame->IsMain()) return;
     if(navigation_owner_ && navigation_started_ && navigation_urls_.count(url.ToString())) navigation_error_=text.ToString();
     if(code!=ERR_ABORTED) {auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetString("message",text);Event("error",d);}
-    if(page_automation_)page_automation_->NavigationFinished();
   }
   void OnPopupShow(CefRefPtr<CefBrowser>,bool show) override { popup_visible_=show;if(!show) { popup_.clear(); EmitFrame(); } }
   void OnPopupSize(CefRefPtr<CefBrowser>,const CefRect& rect) override { popup_rect_=rect; }
