@@ -126,6 +126,19 @@ pub struct ProfileModel {
     /// The host keeps the person's status, colour and what people see:
     /// the card offers them.
     pub offers_presence: bool,
+    /// Whether the people here see them at all: a spectator only watches,
+    /// and the card says so in place of how they are seen.
+    pub seen: Seen,
+}
+
+/// Whether the people here see the person.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Seen {
+    /// They are here: everyone sees them as the card shows.
+    #[default]
+    Here,
+    /// They only watch, as the room's spectator: nobody here sees them.
+    Watching,
 }
 
 /// What the people in one workspace see of the person.
@@ -254,11 +267,12 @@ impl ProfileCard {
                 t("profile-add-your-name"),
             ))
         } else {
-            Box::new(
-                Text::new(&t("profile-name-hint"))
-                    .with_role(TextRole::Caption)
-                    .dimmed(),
-            )
+            let hint = if model.seen == Seen::Watching {
+                "profile-watching-hint"
+            } else {
+                "profile-name-hint"
+            };
+            Box::new(Text::new(&t(hint)).with_role(TextRole::Caption).dimmed())
         };
         let who = Column::new()
             .with_no_padding()
@@ -876,6 +890,31 @@ mod tests {
         let said = says(&mut named);
         assert!(!said.contains("Add your name"), "{said}");
         assert!(said.contains(&t("profile-name-hint")));
+    }
+
+    /// A spectator's card says nobody here sees them, and asks nothing
+    /// about what they share.
+    #[test]
+    fn a_spectators_card_says_nobody_sees_them() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ProfileModel {
+                name: "Spectator".into(),
+                can_rename: false,
+                seen: Seen::Watching,
+                sharing: None,
+                ..model()
+            },
+            Rect::new(1200.0, 2.0, 1220.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let mut card =
+            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
+        let said = says(&mut card);
+        assert!(said.contains(&t("profile-watching-hint")), "{said}");
+        assert!(!said.contains(&t("profile-name-hint")), "{said}");
+        assert!(!said.contains(&t("profile-sharing")), "{said}");
     }
 
     /// Of the host's ways to keep who you are, the card offers one: the

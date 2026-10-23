@@ -99,6 +99,7 @@ profile-card = Dein Profil
 profile-name = Dein Name
 profile-name-placeholder = Dein Name
 profile-name-hint = So sehen dich alle hier
+profile-watching-hint = Du schaust zu. Niemand hier sieht dich
 profile-add-your-name = Deinen Namen hinzufügen
 profile-section-identity = Deine Identität
 profile-section-devices = Geräte
@@ -948,6 +949,11 @@ people-panel-here-watching = { $count ->
     [one] Du und 1 weitere Person
    *[other] Du und { $count } weitere
 }, { $watching } schauen zu
+people-panel-here-spectating = { $count ->
+    [0] Niemand hier
+    [one] 1 Person hier
+   *[other] { $count } Personen hier
+}, { $watching } schauen zu, du auch
 people-panel-section-people = Personen
 people-panel-section-agents = Agenten
 people-panel-section-devices = Deine Geräte

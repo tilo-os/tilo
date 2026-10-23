@@ -1749,6 +1749,14 @@ impl WasmPeer {
         self.handle.fetch_proxy_session()
     }
 
+    /// The token of the host session this page runs now, `undefined`
+    /// between sessions: the page sends it to the host's session end as it
+    /// leaves, so the room stops counting it then, not when its polls stop.
+    #[wasm_bindgen(js_name = sessionToken)]
+    pub fn session_token(&self) -> Option<String> {
+        self.handle.session_token()
+    }
+
     /// Pre-admit whoever redeems the invitation this issues and presents
     /// the token whose SHA-256 the grant names: `options` is JSON
     /// `{requestId, room, role, tokenSha256, label, expiresInSeconds,

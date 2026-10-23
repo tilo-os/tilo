@@ -2231,6 +2231,12 @@ impl WindowGroup {
         self.bar.set_holder(id, holder)
     }
 
+    /// Offer the new-tab control, or not, for someone who opens nothing
+    /// here. `true` when that changed what the window offers.
+    pub fn set_new_tab(&mut self, on: bool) -> bool {
+        self.bar.set_new_tab(on)
+    }
+
     /// Mark tab `id` as a window whose app may control the desktop, or
     /// clear the mark: while it is in front the bar says "Controls your
     /// desktop". `true` when that changed what the window shows.

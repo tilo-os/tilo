@@ -192,6 +192,7 @@ impl Widget for Stage {
                     expanded_id: None,
                     watching: 0,
                     waved: &[],
+                    spectating: false,
                 },
                 None,
             );

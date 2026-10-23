@@ -163,11 +163,13 @@ impl StripFrame {
 }
 
 /// Who is looking: the person the desktop acts for and their id on this
-/// device, with which strips they may name and remove.
+/// device, with which strips they may name and remove, and whether they
+/// may add one.
 pub struct Viewer<'a> {
     pub local_user: &'a str,
     pub own_id: &'a str,
     pub may_rename: &'a dyn Fn(StripId) -> bool,
+    pub may_add: bool,
 }
 
 /// The ribbon, the rail and the switcher between frames.
@@ -199,7 +201,10 @@ impl StripNavigator {
 
     /// The labels' model for `tree` as `viewer` sees it.
     pub fn model_of(tree: &DesktopTree, viewer: &Viewer<'_>) -> SwitcherModel {
-        SwitcherModel::of(tree, viewer.local_user, viewer.own_id, viewer.may_rename)
+        SwitcherModel {
+            can_add: viewer.may_add,
+            ..SwitcherModel::of(tree, viewer.local_user, viewer.own_id, viewer.may_rename)
+        }
     }
 
     /// Read `frame` at `now`: a change from what was last read is
@@ -756,6 +761,7 @@ mod tests {
             local_user: "me",
             own_id: "me",
             may_rename: may,
+            may_add: true,
         }
     }
 

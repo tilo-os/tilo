@@ -360,6 +360,8 @@ impl ShellOverlayHost {
                     visibility: self.presence_visibility(room),
                 })
             }),
+            // A native desktop is always its person's own, never a spectator's.
+            seen: tilo_desktop::profile_card::Seen::Here,
         }
     }
 

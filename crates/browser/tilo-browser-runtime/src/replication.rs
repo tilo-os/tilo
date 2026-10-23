@@ -343,6 +343,7 @@ pub(crate) fn attach(id: u32, mount: u64, attachment: Attachment) -> bool {
         }
         if let Some((_, shared)) = &attachment.desktop {
             shared.own_layout.set(room.own_layout);
+            shared.watching.set(room.peer.watching());
             shared.members.replace(room.members.clone());
             room.moderates = Arc::clone(&shared.moderates);
             room.standing.share(&shared.standing);

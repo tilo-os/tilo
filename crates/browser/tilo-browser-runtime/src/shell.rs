@@ -139,8 +139,8 @@ struct PageChrome {
     notifications: tilo_desktop_surface::DesktopNotifications,
     intents: RefCell<Vec<ChromeIntent>>,
     /// `(tree revision, minute, who-is-here revision, notifications
-    /// revision)` the snapshot revision was last bumped for.
-    seen: Cell<(u64, i64, u64, u64)>,
+    /// revision, standing)` the snapshot revision was last bumped for.
+    seen: Cell<(u64, i64, u64, u64, u8)>,
     revision: Cell<u64>,
     wake: Arc<dyn Fn() + Send + Sync>,
     /// The page takes invitations ([`HostOffers::invite`]): the bar keeps
@@ -156,6 +156,7 @@ impl DesktopChromeSource for PageChrome {
             clock.unix_seconds.div_euclid(60),
             self.here.borrow().revision(),
             self.notifications.revision(),
+            self.shared.standing.code(),
         );
         if self.seen.get() != seen {
             self.seen.set(seen);
@@ -178,7 +179,7 @@ impl DesktopChromeSource for PageChrome {
             // notification centre, so it is that centre's bell.
             notifications_only: true,
             notification_badge: u32::try_from(self.notifications.unread()).unwrap_or(u32::MAX),
-            invite: tilo_desktop::chrome::Invite::when(self.invite),
+            invite: tilo_desktop::chrome::Invite::when(self.may_invite()),
             waved: self.here.borrow().wave_notice(),
             ..DesktopChromeSnapshot::default()
         }
@@ -212,6 +213,19 @@ impl DesktopChromeSource for PageChrome {
 }
 
 impl PageChrome {
+    /// Whether the bar offers its invite button: the page takes invitations
+    /// and the room lets this person write in it. Someone it lets only look,
+    /// a spectator among them, brings nobody in; until the room answered,
+    /// the button stands, as for everyone it lets in.
+    fn may_invite(&self) -> bool {
+        self.invite
+            && self
+                .shared
+                .standing
+                .role()
+                .is_none_or(|role| role.includes(tilo_action_policy::Role::Editor))
+    }
+
     fn may(&self, command: &DesktopCommand) -> Result<(), String> {
         let members = self.shared.members.borrow();
         let standing = self.shared.standing_of(&self.room.author, members.as_ref());
@@ -530,7 +544,7 @@ impl BrowserShell {
             room,
             notifications,
             intents: RefCell::default(),
-            seen: Cell::new((u64::MAX, 0, 0, 0)),
+            seen: Cell::new((u64::MAX, 0, 0, 0, u8::MAX)),
             revision: Cell::new(0),
             wake,
             invite: offers.invite,
@@ -620,12 +634,13 @@ impl BrowserShell {
                 rows: &rows,
                 unavailable: None,
                 exposure: None,
-                may_invite: self.offers.invite,
+                may_invite: self.chrome.may_invite(),
                 followed_id: None,
                 following_pairs: &[],
                 expanded_id: self.expanded.as_deref(),
                 watching,
                 waved: &self.chrome.here.borrow().waved(now_ms()),
+                spectating: self.chrome.shared.watching.get(),
             },
             self.cursor,
         );
@@ -988,6 +1003,7 @@ impl BrowserShell {
             .borrow()
             .own_label()
             .map_or_else(tilo_desktop::here::guest_label, str::to_owned);
+        let watching = self.chrome.shared.watching.get();
         ProfileModel {
             identity: ui::collaboration::local_user_id().0,
             name,
@@ -997,8 +1013,14 @@ impl BrowserShell {
             actions,
             linked: self.chrome.shared.linked.accounts(),
             // What the page shares of what the person is doing is theirs to
-            // choose here, beside their name.
-            sharing: Some(self.chrome.here.borrow().sharing()),
+            // choose here, beside their name; a spectator shares nothing,
+            // since nobody here sees them.
+            sharing: (!watching).then(|| self.chrome.here.borrow().sharing()),
+            seen: if watching {
+                tilo_desktop::profile_card::Seen::Watching
+            } else {
+                tilo_desktop::profile_card::Seen::Here
+            },
             // Status, colour and what people see are the desktop's to keep;
             // a page shows the person as their host names them.
             ..ProfileModel::default()
@@ -1314,6 +1336,9 @@ impl BrowserShell {
                 local_user: &author,
                 own_id: &author,
                 may_rename: &may_rename,
+                // The new strip label is offered as the workspace menu's
+                // is: to whom the policy lets add one.
+                may_add: self.chrome.offered_edits().add_desk,
             },
         ));
         self.navigator_frame = StripFrame::of_tree(&tree, content, (&shown, scroll), covered);

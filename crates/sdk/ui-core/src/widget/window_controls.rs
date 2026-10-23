@@ -69,6 +69,25 @@ impl WindowControls {
         }
     }
 
+    /// The controls of a window this person may not close (someone else's,
+    /// or one they only watch): no close, the others moved out into its
+    /// place.
+    #[must_use]
+    pub fn without_close(self) -> Self {
+        if self.close.area() <= 0.0 {
+            return self;
+        }
+        let mut kept = Self {
+            close: Rect::ZERO,
+            ..self
+        };
+        kept.offset(vello::kurbo::Vec2::new(
+            self.close.x1 - self.maximize.x1,
+            0.0,
+        ));
+        kept
+    }
+
     /// Where the controls begin, less the gap anything before them keeps;
     /// the row's trailing edge for none.
     #[must_use]
@@ -184,6 +203,20 @@ mod tests {
         assert_eq!(without.iter().count(), 2);
         assert_eq!(without.close, c.close);
         assert_eq!(without.maximize, c.maximize);
+    }
+
+    #[test]
+    fn a_window_that_is_not_ones_to_close_offers_no_close() {
+        let row = Rect::new(0.0, 0.0, 800.0, 44.0);
+        let c = WindowControls::lay_out(row, true);
+        let held = c.without_close();
+        assert_eq!(held.iter().count(), 2);
+        assert_eq!(held.hit(c.close.center()), Some(WindowControl::Maximize));
+        assert_eq!(
+            held.maximize, c.close,
+            "the outermost control stays outermost"
+        );
+        assert!(held.content_limit(row) > c.content_limit(row));
     }
 
     #[test]

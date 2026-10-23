@@ -1037,6 +1037,31 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
             .publisher_user(room.workspace_id, guest.device_public_key, 9)
             .is_none()
     );
+    // A page that leaves ends its session by beacon, the token its body and
+    // no header: it is no longer counted here, and the token reads nothing
+    // more. A body that names no session ends nothing.
+    for body in [b"not a token".to_vec(), hex::encode([7; 32]).into_bytes()] {
+        assert_eq!(
+            post(addr, protocol::SESSION_END_PATH, None, body).await.0,
+            204
+        );
+    }
+    assert_eq!(online_sessions.online_users().len(), 2);
+    let (code, _) = post(
+        addr,
+        protocol::SESSION_END_PATH,
+        None,
+        hex::encode(guest_token).into_bytes(),
+    )
+    .await;
+    assert_eq!(code, 204);
+    let online = online_sessions.online_users();
+    assert_eq!(online.len(), 1, "{online:?}");
+    assert!(online.contains_key(&owner.user_public_key));
+    assert_eq!(
+        post(addr, "/node", Some(guest_token), Vec::new()).await.0,
+        401
+    );
     maintaining.abort();
     serving.abort();
     owner_native.close().await;

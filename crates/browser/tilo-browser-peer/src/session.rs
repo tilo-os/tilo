@@ -561,6 +561,9 @@ struct Shared {
     /// The current session's token while its host serves the fetch proxy;
     /// kept apart from [`PeerStatus`], which diagnostics show.
     fetch_proxy: Option<String>,
+    /// The current HTTPS session's token, for the page to end it as it
+    /// leaves ([`PeerHandle::session_token`]).
+    session: Option<String>,
 }
 
 /// A cheap handle on a running session.
@@ -569,6 +572,8 @@ pub struct PeerHandle {
     commands: mpsc::UnboundedSender<Command>,
     shared: Arc<Mutex<Shared>>,
     events: Queue,
+    /// [`PeerConfig::watching`].
+    watching: bool,
 }
 
 /// One consumer's view of the session's events: every event produced after
@@ -664,10 +669,12 @@ impl PeerHandle {
             queues: Vec::new(),
             wakes: Vec::new(),
             fetch_proxy: None,
+            session: None,
         }));
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
         let record = store.load().unwrap_or_default();
+        let watching = config.watching;
         let mut channels = crate::channels::Channels::new(
             config.cert.device_public_key,
             config.cert.user_public_key,
@@ -734,7 +741,14 @@ impl PeerHandle {
             commands,
             shared,
             events,
+            watching,
         }
+    }
+
+    /// Whether the page only watches its rooms, as a public room's
+    /// spectator: nobody there sees it, and it writes nothing.
+    pub fn watching(&self) -> bool {
+        self.watching
     }
 
     fn send(&self, command: Command) -> Result<(), String> {
@@ -1150,6 +1164,13 @@ impl PeerHandle {
     /// reconnect, so callers read it for each request.
     pub fn fetch_proxy_session(&self) -> Option<String> {
         lock(&self.shared).fetch_proxy.clone()
+    }
+
+    /// The token of the HTTPS session the peer runs now, `None` between
+    /// sessions and over iroh: what a page leaving sends the host
+    /// (`/peer/v1/session/end`) so the room stops counting it at once.
+    pub fn session_token(&self) -> Option<String> {
+        lock(&self.shared).session.clone()
     }
 
     /// Take every event produced since the last call on this handle's own
@@ -1636,9 +1657,15 @@ impl Task {
         client: Link,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Exit {
-        lock(&self.shared).fetch_proxy = client.fetch_proxy_session();
+        {
+            let mut shared = lock(&self.shared);
+            shared.fetch_proxy = client.fetch_proxy_session();
+            shared.session = client.session_token();
+        }
         let exit = self.serve(client, commands).await;
-        lock(&self.shared).fetch_proxy = None;
+        let mut shared = lock(&self.shared);
+        shared.fetch_proxy = None;
+        shared.session = None;
         exit
     }
 
@@ -3355,6 +3382,21 @@ impl Link {
     fn fetch_proxy_session(&self) -> Option<String> {
         match self {
             Self::Https(link) => link.fetch_proxy().then(|| link.session().to_owned()),
+            #[cfg(feature = "iroh")]
+            Self::Iroh(_) => None,
+        }
+    }
+
+    #[cfg_attr(
+        not(feature = "iroh"),
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "an iroh link has no session token"
+        )
+    )]
+    fn session_token(&self) -> Option<String> {
+        match self {
+            Self::Https(link) => Some(link.session().to_owned()),
             #[cfg(feature = "iroh")]
             Self::Iroh(_) => None,
         }
