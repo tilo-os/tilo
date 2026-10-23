@@ -21,12 +21,21 @@
 //! The path is read with `process_vm_readv`, and backtraces are symbolized
 //! only when the record is read, on the liveness thread, so the supervisor
 //! itself walks no path and never keeps the main thread waiting on the disk.
+//!
+//! A store asked to wait for its writer thread on the main loop (a flush:
+//! the loop asleep until an fsync elsewhere finishes) is recorded the same
+//! way, as the system call [`STORAGE_WAIT`] with what it waited for: no path
+//! is walked, but the desktop freezes just as long.
 
 use std::backtrace::Backtrace;
 use std::sync::OnceLock;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+
+/// The [`FileWalk::syscall`] of a store waiting for its writer thread on the
+/// main thread.
+pub const STORAGE_WAIT: &str = "storage-wait";
 
 /// One path system call of the main thread after the audit was armed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,9 +60,10 @@ impl FileWalk {
     #[must_use]
     pub fn site(&self) -> String {
         let frames = self.frames();
+        let storage_wait = self.syscall == STORAGE_WAIT;
         frames
             .iter()
-            .find(|frame| !is_runtime_frame(frame))
+            .find(|frame| !is_runtime_frame(frame) && (!storage_wait || !is_storage_frame(frame)))
             .cloned()
             .unwrap_or_else(|| "?".into())
     }
@@ -131,6 +141,19 @@ fn is_runtime_frame(frame: &str) -> bool {
         "dlopen",
     ];
     RUNTIME.iter().any(|prefix| frame.starts_with(prefix)) || LIBC.contains(&frame)
+}
+
+/// The audit and the store itself: frames that say how a storage wait was
+/// reported, never which code asked for it.
+fn is_storage_frame(frame: &str) -> bool {
+    const STORAGE: &[&str] = &[
+        "shell::compositor::liveness::",
+        "durable_store::",
+        "<durable_store::",
+        "app_state::fs_store::",
+        "<app_state::fs_store::",
+    ];
+    STORAGE.iter().any(|prefix| frame.starts_with(prefix))
 }
 
 /// `frame` without generic arguments, closure numbers or a symbol hash.
@@ -260,6 +283,31 @@ pub(super) fn report() -> Result<Vec<FileWalk>, String> {
             ),
         })
         .collect())
+}
+
+/// A store is about to wait for its writer thread on this thread (the
+/// [`durable_store::waiting`] observer). Recorded as a [`STORAGE_WAIT`]
+/// while the audit is armed and this is the main thread.
+pub(super) fn record_storage_wait(what: &str) {
+    // SAFETY: `getpid` takes no arguments and cannot fail.
+    if !matches!(ARMED.get(), Some(Ok(()))) || super::gettid() != unsafe { libc::getpid() } {
+        return;
+    }
+    let backtrace = Backtrace::force_capture();
+    let mut record = RECORD.lock();
+    if let Some(seen) = record
+        .iter_mut()
+        .find(|walk| walk.syscall == STORAGE_WAIT && walk.path == what)
+    {
+        seen.count = seen.count.saturating_add(1);
+        return;
+    }
+    record.push(Recorded {
+        syscall: STORAGE_WAIT,
+        path: what.to_owned(),
+        count: 1,
+        backtrace: Some(backtrace),
+    });
 }
 
 fn install() -> Result<(), String> {

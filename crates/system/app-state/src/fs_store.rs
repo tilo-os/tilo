@@ -44,8 +44,9 @@ use tilo_lock::MutexRecover as _;
 pub const INSTANCE_VIEWS_DIR: &str = "instance-views";
 
 /// A [`DurableStore`] rooted at one profile directory. See the module docs
-/// for the layout. Reads observe accepted writes by committing them first; a
-/// write whose commit failed is not visible to later reads.
+/// for the layout. Reads observe accepted writes at once, from memory while
+/// they commit, and never wait for the writer thread; a write whose commit
+/// failed is not visible to later reads.
 pub struct FsStore {
     root: PathBuf,
     namespace: String,
@@ -72,13 +73,19 @@ pub(crate) struct Faults {
     /// Holds the next preparation, on the writer thread, until a value
     /// arrives: a disk that takes its time.
     pub(crate) prepare_hold: Option<std::sync::mpsc::Receiver<()>>,
+    /// Holds the next append, on the writer thread, after its base length
+    /// is noted and before any byte is written: says so on the sender, then
+    /// waits for a value on the receiver.
+    pub(crate) append_hold: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
 #[derive(Default)]
 struct State {
     issued: u64,
     queue: BTreeMap<StorageKey, Batch>,
-    writing: BTreeMap<StorageKey, (u64, u64)>,
+    /// Commits the writer thread has taken, with what they write: a read
+    /// meanwhile is answered from them, never by waiting for the disk.
+    writing: BTreeMap<StorageKey, Writing>,
     keys: BTreeMap<StorageKey, KeyStatus>,
     owners: BTreeMap<StorageKey, Vec<Arc<Owner>>>,
     view_leases: BTreeMap<StorageKey, Arc<advisory_lock::FileLock>>,
@@ -100,6 +107,17 @@ impl State {
     fn busy(&self, key: &StorageKey) -> bool {
         self.queue.contains_key(key) || self.writing.contains_key(key)
     }
+}
+
+/// A commit under way on the writer thread.
+struct Writing {
+    first: u64,
+    last: u64,
+    op: Arc<WriteOp>,
+    writer: Option<Arc<[u8]>>,
+    /// For an append: the file's length before the writer thread started
+    /// appending, noted before its first byte is written. `None` until then.
+    base_len: Option<u64>,
 }
 
 enum Preparation {
@@ -395,6 +413,94 @@ fn sync_existing_in(shared: &Shared, key: &StorageKey) -> Result<(), StoreError>
     sync_ancestors(shared, &directory)
 }
 
+/// What was accepted for a key and is not in its file yet, in order: the
+/// commit the writer thread has taken, then the batch still queued.
+struct Unwritten {
+    writing: Option<WritingCopy>,
+    queued: Option<QueuedCopy>,
+}
+
+struct QueuedCopy {
+    first: u64,
+    last: u64,
+    op: WriteOp,
+    writer: Option<Vec<u8>>,
+}
+
+struct WritingCopy {
+    first: u64,
+    last: u64,
+    op: Arc<WriteOp>,
+    writer: Option<Arc<[u8]>>,
+}
+
+impl Unwritten {
+    fn of(state: &State, key: &StorageKey) -> Self {
+        Self {
+            writing: state.writing.get(key).map(|writing| WritingCopy {
+                first: writing.first,
+                last: writing.last,
+                op: Arc::clone(&writing.op),
+                writer: writing.writer.clone(),
+            }),
+            queued: state.queue.get(key).map(|batch| QueuedCopy {
+                first: batch.first,
+                last: batch.last,
+                op: batch.op.clone(),
+                writer: batch.writer.clone(),
+            }),
+        }
+    }
+
+    /// Whether `state` still holds exactly these unwritten writes: none
+    /// was taken, committed or extended since they were copied.
+    fn still_unwritten(&self, state: &State, key: &StorageKey) -> bool {
+        let writing = state
+            .writing
+            .get(key)
+            .map(|writing| (writing.first, writing.last));
+        let queued = state.queue.get(key).map(|batch| (batch.first, batch.last));
+        writing == self.writing.as_ref().map(|copy| (copy.first, copy.last))
+            && queued == self.queued.as_ref().map(|copy| (copy.first, copy.last))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.writing.is_none() && self.queued.is_none()
+    }
+
+    /// Whether the file's bytes do not matter: a replacement is unwritten.
+    fn replaces(&self) -> bool {
+        self.writing
+            .as_ref()
+            .is_some_and(|writing| writing.op.is_replace())
+            || self
+                .queued
+                .as_ref()
+                .is_some_and(|copy| copy.op.is_replace())
+    }
+
+    fn apply(&self, bytes: &mut Vec<u8>) {
+        if let Some(writing) = &self.writing {
+            writing.op.apply(bytes);
+        }
+        if let Some(copy) = &self.queued {
+            copy.op.apply(bytes);
+        }
+    }
+
+    /// The writer identity stored with the latest unwritten write, if any.
+    fn writer(&self) -> Option<Vec<u8>> {
+        self.queued
+            .as_ref()
+            .and_then(|copy| copy.writer.clone())
+            .or_else(|| {
+                self.writing
+                    .as_ref()
+                    .and_then(|writing| writing.writer.as_deref().map(<[u8]>::to_vec))
+            })
+    }
+}
+
 fn seam_to_store(error: SeamError) -> StoreError {
     StoreError::from(error)
 }
@@ -406,27 +512,61 @@ impl DurableStore for FsStore {
 
     fn read(&self, key: &StorageKey) -> Result<Option<Stored>, SeamError> {
         let target = self.target(key)?;
-        if lock(&self.shared.state).busy(key) {
-            // Read-your-writes: commit what was accepted before reading it back.
-            let _ = self.flush(Some(key));
-        }
-        let (path, writer) = match target {
+        let (path, sidecar) = match target {
             Target::Document(directory) => (
                 directory.join(DOCUMENT_FILE),
                 Some(directory.join(ACTOR_FILE)),
             ),
             Target::View(path) => (path, None),
         };
-        let bytes = match fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(io_err(format!("reading {}", path.display()), error).into()),
-        };
-        let writer = match writer {
-            Some(sidecar) => read_writer(&sidecar)?,
-            None => None,
-        };
-        Ok(Some(Stored { bytes, writer }))
+        // Read-your-writes without waiting for the writer thread: what it
+        // has not committed yet is applied from memory over what the file
+        // holds. A commit that finishes while the file is read changes what
+        // the file means, so the read starts over; each retry follows a
+        // finished commit, so this ends.
+        loop {
+            let unwritten = Unwritten::of(&lock(&self.shared.state), key);
+            let mut bytes = if unwritten.replaces() {
+                Some(Vec::new())
+            } else {
+                match fs::read(&path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                    Err(error) => {
+                        return Err(io_err(format!("reading {}", path.display()), error).into());
+                    }
+                }
+            };
+            if !unwritten.replaces() && !unwritten.is_empty() {
+                let state = lock(&self.shared.state);
+                if !unwritten.still_unwritten(&state, key) {
+                    continue;
+                }
+                // An append under way: the file may already hold part of it,
+                // and holds all it did before from the noted length down.
+                if let (Some(base), Some(read)) = (
+                    state.writing.get(key).and_then(|now| now.base_len),
+                    bytes.as_mut(),
+                ) {
+                    let base = usize::try_from(base).unwrap_or(usize::MAX);
+                    if read.len() < base {
+                        continue;
+                    }
+                    read.truncate(base);
+                }
+            }
+            if unwritten.is_empty() && bytes.is_none() {
+                return Ok(None);
+            }
+            let mut bytes = bytes.unwrap_or_default();
+            unwritten.apply(&mut bytes);
+            let writer = match (unwritten.writer(), sidecar) {
+                (Some(writer), _) => Some(writer),
+                (None, Some(sidecar)) => read_writer(&sidecar)?,
+                (None, None) => None,
+            };
+            return Ok(Some(Stored { bytes, writer }));
+        }
     }
 
     fn write(
@@ -518,6 +658,7 @@ impl DurableStore for FsStore {
             self.shared.changed.notify_all();
         }
         let mut state = lock(&self.shared.state);
+        let mut told = false;
         while state
             .queue
             .keys()
@@ -526,6 +667,13 @@ impl DurableStore for FsStore {
             .chain(state.syncing.iter())
             .any(&matches)
         {
+            if !told {
+                told = true;
+                durable_store::waiting::refused(&format!(
+                    "FsStore::flush waiting for the writer thread to commit {}",
+                    key.map_or_else(|| "every key".to_owned(), ToString::to_string)
+                ));
+            }
             if !state.running {
                 // The writer exited unexpectedly with work still queued.
                 drop(state);
@@ -559,6 +707,7 @@ impl DurableStore for FsStore {
             return Err(failure);
         }
         if let Some(key) = unsynced {
+            durable_store::waiting::refused(&format!("FsStore::flush syncing {key}"));
             self.sync_existing(&key)?;
             lock(&self.shared.state).keys.entry(key).or_default().synced = true;
         }
@@ -828,6 +977,14 @@ impl FsStore {
 
 impl Drop for FsStore {
     fn drop(&mut self) {
+        if durable_store::waiting::forbidden() {
+            // Dropped on a thread that must not wait: the writer thread
+            // commits everything queued as it stops, and ends by itself.
+            lock(&self.shared.state).stopping = true;
+            self.shared.changed.notify_all();
+            drop(lock(&self.worker).take());
+            return;
+        }
         if let Err(error) = self.flush(None) {
             tracing::error!(%error, "storage writes failed before shutdown");
         }
@@ -862,7 +1019,10 @@ fn durability_in(state: &State, key: &StorageKey, revision: Revision) -> Durabil
         .queue
         .get(key)
         .is_some_and(|batch| covers((batch.first, batch.last)))
-        || state.writing.get(key).is_some_and(|range| covers(*range))
+        || state
+            .writing
+            .get(key)
+            .is_some_and(|writing| covers((writing.first, writing.last)))
     {
         return Durability::Pending;
     }
@@ -1015,7 +1175,11 @@ enum Work {
 
 struct Taken {
     key: StorageKey,
+    /// The batch's bookkeeping; its write is `op`, shared with
+    /// [`State::writing`] so reads see it while it commits.
     batch: Batch,
+    op: Arc<WriteOp>,
+    writer: Option<Arc<[u8]>>,
     owner: Option<Arc<Owner>>,
     poisoned: bool,
 }
@@ -1049,12 +1213,13 @@ fn writer_loop(shared: &Shared) {
         let Taken {
             key,
             mut batch,
+            op,
             owner,
             ..
         } = taken;
         drop(owner);
         drop(batch.view_gate.take());
-        finish(shared, &key, &batch, result, started);
+        finish(shared, &key, &batch, &op, result, started);
     }
     guard.finished = true;
 }
@@ -1074,9 +1239,23 @@ fn next_work(shared: &Shared) -> Option<Work> {
             .find(|(_, batch)| stopping || batch.urgent || batch.due <= now)
             .map(|(key, _)| key.clone());
         if let Some(key) = due
-            && let Some(batch) = state.queue.remove(&key)
+            && let Some(mut batch) = state.queue.remove(&key)
         {
-            state.writing.insert(key.clone(), (batch.first, batch.last));
+            let op = Arc::new(std::mem::replace(
+                &mut batch.op,
+                WriteOp::Append(Vec::new()),
+            ));
+            let writer: Option<Arc<[u8]>> = batch.writer.take().map(Arc::from);
+            state.writing.insert(
+                key.clone(),
+                Writing {
+                    first: batch.first,
+                    last: batch.last,
+                    op: Arc::clone(&op),
+                    writer: writer.clone(),
+                    base_len: None,
+                },
+            );
             let owner = state
                 .owners
                 .get(&key)
@@ -1086,6 +1265,8 @@ fn next_work(shared: &Shared) -> Option<Work> {
             return Some(Work::Commit(Taken {
                 key,
                 batch,
+                op,
+                writer,
                 owner,
                 poisoned,
             }));
@@ -1191,6 +1372,7 @@ fn finish(
     shared: &Shared,
     key: &StorageKey,
     batch: &Batch,
+    op: &WriteOp,
     result: Result<(), StoreError>,
     started: Instant,
 ) {
@@ -1202,14 +1384,14 @@ fn finish(
             tracing::debug!(
                 target: "tilo.state",
                 event = "document_persist",
-                kind = if batch.op.is_replace() { "full" } else { "append" },
-                bytes = batch.op.bytes().len(),
+                kind = if op.is_replace() { "full" } else { "append" },
+                bytes = op.bytes().len(),
                 elapsed_us = started.elapsed().as_micros(),
                 "persisted application document"
             );
             status.durable = status.durable.max(batch.last);
             status.synced = true;
-            if batch.op.is_replace() {
+            if op.is_replace() {
                 status.poisoned = false;
                 status.failed.retain(|(_, last, _)| *last > batch.last);
             }
@@ -1228,7 +1410,7 @@ fn finish(
 
 fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
     let batch = &taken.batch;
-    if taken.poisoned && !batch.op.is_replace() {
+    if taken.poisoned && !taken.op.is_replace() {
         return Err(io_err(
             format!("appending to {}", taken.key),
             io::Error::other("an earlier write failed; a full replacement is required"),
@@ -1242,20 +1424,23 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
             )
         })?;
         owner.check()?;
-        if let Some(writer) = &batch.writer {
+        if let Some(writer) = &taken.writer {
             let sidecar = owner.directory.join(ACTOR_FILE);
             tilo_files::native::atomic::write(&sidecar, hex::encode(writer).as_bytes())
                 .map_err(|e| io_err(format!("writing {}", sidecar.display()), e))?;
         }
         let document = owner.directory.join(DOCUMENT_FILE);
-        return match &batch.op {
+        return match &*taken.op {
             WriteOp::Replace(bytes) => {
                 tilo_files::native::atomic::write(&document, bytes)
                     .map_err(|e| io_err(format!("writing {}", document.display()), e))?;
                 sync_ancestors(shared, &owner.directory)?;
                 owner.check()
             }
-            WriteOp::Append(bytes) => append_synced(shared, &document, bytes, false),
+            WriteOp::Append(bytes) => {
+                note_append_base(shared, &taken.key, &document);
+                append_synced(shared, &document, bytes, false)
+            }
         };
     };
     // Atomic replacement syncs the immediate parent, not the new directories
@@ -1270,7 +1455,7 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
         fs::create_dir_all(parent)
             .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
     }
-    match &batch.op {
+    match &*taken.op {
         WriteOp::Replace(bytes) => {
             // atomic::write requires a durably provisioned parent.
             if !ancestors_synced && let Some(parent) = view.parent() {
@@ -1280,6 +1465,7 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
                 .map_err(|e| io_err(format!("writing {}", view.display()), e))?;
         }
         WriteOp::Append(bytes) => {
+            note_append_base(shared, &taken.key, view);
             append_synced(shared, view, bytes, true)?;
             // Unlike replacement, append does not sync its new file's entry.
             if !ancestors_synced && let Some(parent) = view.parent() {
@@ -1288,6 +1474,24 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
         }
     }
     Ok(())
+}
+
+/// Before appending to `path` for `key`, note its length, so a reader
+/// meanwhile takes only the bytes before the append from the file and the
+/// rest from memory. On the writer thread: the stat may wait on the disk.
+fn note_append_base(shared: &Shared, key: &StorageKey, path: &Path) {
+    let len = fs::metadata(path).map_or(0, |metadata| metadata.len());
+    if let Some(writing) = lock(&shared.state).writing.get_mut(key) {
+        writing.base_len = Some(len);
+    }
+    #[cfg(test)]
+    {
+        let hold = lock(&shared.faults).append_hold.take();
+        if let Some((reached, release)) = hold {
+            let _ = reached.send(());
+            let _ = release.recv();
+        }
+    }
 }
 
 fn append_synced(
@@ -1383,6 +1587,80 @@ mod tests {
         // again needs no work.
         assert!(lock(&fs.shared.state).prepared.is_empty());
         fs.prepare_shared(&key, &wake).unwrap();
+    }
+
+    /// A frame loop reads back what it just wrote while the store's thread
+    /// has yet to commit it, and while it commits: from memory, never by
+    /// waiting for that thread. The strict guard fails the test on a wait.
+    #[test]
+    fn a_read_on_a_thread_that_must_not_wait_sees_unwritten_writes() {
+        let tmp = TempDir::new().unwrap();
+        // A long debounce: nothing commits unless asked to.
+        let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
+        let key = record("typed");
+        let _lease = fs.lease(&key).unwrap();
+        fs.write(&key, WriteOp::Replace(b"ab".to_vec()), Some(b"me"))
+            .unwrap();
+        {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            let stored = fs.read(&key).unwrap().unwrap();
+            assert_eq!(stored.bytes, b"ab", "a queued replacement");
+            assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]));
+        }
+        fs.flush(Some(&key)).unwrap();
+
+        // An append the writer thread holds after noting where it starts.
+        let (reached_tx, reached) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        fs.faults().append_hold = Some((reached_tx, held));
+        fs.write(&key, WriteOp::Append(b"cd".to_vec()), None)
+            .unwrap();
+        {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            assert!(matches!(
+                fs.flush_where_allowed(&key),
+                Err(SeamError::Pending(_))
+            ));
+            tilo_test_env::recv("the writer thread to take the append", &reached);
+            fs.write(&key, WriteOp::Append(b"ef".to_vec()), None)
+                .unwrap();
+            let stored = fs.read(&key).unwrap().unwrap();
+            assert_eq!(
+                stored.bytes, b"abcdef",
+                "the file, the append under way and the queued one, once each"
+            );
+            assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]), "from the file");
+        }
+        release.send(()).unwrap();
+        fs.flush(Some(&key)).unwrap();
+        assert_eq!(fs.read(&key).unwrap().unwrap().bytes, b"abcdef");
+        let Target::Document(directory) = fs.target(&key).unwrap() else {
+            panic!("a record is a document");
+        };
+        assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"abcdef");
+    }
+
+    /// A blocking flush on a thread that must not wait is reported: a test
+    /// that forbids waits strictly fails, naming the flush.
+    #[test]
+    fn a_blocking_flush_on_a_thread_that_must_not_wait_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
+        let key = record("waited");
+        let _lease = fs.lease(&key).unwrap();
+        fs.write(&key, WriteOp::Replace(b"x".to_vec()), None)
+            .unwrap();
+        let refused = {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fs.flush(Some(&key))))
+        };
+        let message = refused.expect_err("the flush waited on a loop thread");
+        let message = message
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(message.contains("FsStore::flush"), "{message}");
+        fs.flush(Some(&key)).unwrap();
     }
 
     #[test]

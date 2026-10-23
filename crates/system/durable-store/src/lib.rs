@@ -18,6 +18,7 @@ use std::path::PathBuf;
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 mod memory;
+pub mod waiting;
 
 pub use memory::{MemoryStore, PendingWrite};
 
@@ -269,6 +270,22 @@ pub trait DurableStore {
     /// The latest failed write, or [`StoreError::Pending`].
     fn flush_without_waiting(&self, key: &StorageKey) -> Result<(), StoreError> {
         self.flush(Some(key))
+    }
+
+    /// [`Self::flush`] where this thread may wait on storage; on a thread
+    /// that must not ([`waiting::forbid_on_this_thread`]: a frame loop),
+    /// [`Self::flush_without_waiting`], whose [`StoreError::Pending`] means
+    /// the store's own thread is committing and [`Self::durability`] tells
+    /// how it went.
+    ///
+    /// # Errors
+    /// As the call it makes.
+    fn flush_where_allowed(&self, key: &StorageKey) -> Result<(), StoreError> {
+        if waiting::forbidden() {
+            self.flush_without_waiting(key)
+        } else {
+            self.flush(Some(key))
+        }
     }
 
     /// Whether everything read from or accepted for `key` is on stable

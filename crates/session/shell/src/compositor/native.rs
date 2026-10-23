@@ -10957,6 +10957,11 @@ pub fn run() {
     )
     .map_err(|error| eprintln!("tilo compositor: the main-loop watchdog did not start: {error}"))
     .ok();
+    // Nor does a turn wait on storage: apps running in-process ask their
+    // stores to commit, and the stores' own threads do the waiting. A store
+    // still asked to wait here is reported to the main-thread audit.
+    super::liveness::audit_storage_waits();
+    let no_storage_waits = durable_store::waiting::forbid_on_this_thread();
     while !close_requested {
         dictation_vocabulary.refresh(&mut state);
         if termination.requested() {
@@ -15296,6 +15301,8 @@ pub fn run() {
             tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
         }
     }
+    // Teardown may wait for the stores' last commits: the loop is over.
+    drop(no_storage_waits);
 
     // The session is ending (logout, a close request, a run deadline): every
     // layout change queued for the state writer reaches the disk before the

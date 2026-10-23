@@ -511,20 +511,34 @@ fn desktop_smoke_keeps_the_main_loop_turning() {
 // `main_thread_walks.txt` lists the sites that still do, by `FileWalk::site`.
 // It only shrinks: a site moved off the loop leaves it, and a walk from any
 // site not on it fails here.
+//
+// A store waiting for its writer thread (a flush: the loop asleep until an
+// fsync on another thread finishes) is just as frozen, and is held to
+// `main_thread_storage_waits.txt` the same way.
 #[test]
 fn the_main_loop_walks_no_path_after_startup() {
-    let known: std::collections::BTreeSet<&str> = include_str!("main_thread_walks.txt")
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .collect();
+    let sites = |text: &'static str| -> std::collections::BTreeSet<&'static str> {
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect()
+    };
+    let known_walks = sites(include_str!("main_thread_walks.txt"));
+    let known_waits = sites(include_str!("main_thread_storage_waits.txt"));
     let desktop = Desktop::start(SCREEN, &smoke_tree());
     desktop.forbid_main_thread_files();
     run(&desktop, None);
     let walks = desktop.main_thread_files();
     let new: Vec<_> = walks
         .iter()
-        .filter(|walk| !known.contains(walk.site().as_str()))
+        .filter(|walk| {
+            let known = if walk.syscall == shell::compositor::liveness::STORAGE_WAIT {
+                &known_waits
+            } else {
+                &known_walks
+            };
+            !known.contains(walk.site().as_str())
+        })
         .collect();
     let mut listed = String::new();
     for walk in &new {
@@ -541,9 +555,10 @@ fn the_main_loop_walks_no_path_after_startup() {
     }
     assert!(
         new.is_empty(),
-        "the compositor's main thread walked {} path(s) after startup from sites not in \
-         main_thread_walks.txt; each can wait on the disk and freeze the desktop. Move the \
-         work to a worker or to startup:\n{listed}",
+        "the compositor's main thread walked {} path(s) or waited on storage after startup \
+         from sites not in main_thread_walks.txt or main_thread_storage_waits.txt; each can \
+         wait on the disk and freeze the desktop. Move the work to a worker or to startup, \
+         and flush through DurableStore::flush_where_allowed:\n{listed}",
         new.len(),
     );
 }

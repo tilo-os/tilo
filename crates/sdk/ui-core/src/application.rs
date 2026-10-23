@@ -2673,6 +2673,45 @@ mod portable_tests {
         assert_eq!(reopened.callback_binding().host_person, probe::author());
     }
 
+    /// The compositor runs apps on its frame loop: checkpointing and closing
+    /// one there must never wait for a store's writer thread (an fsync),
+    /// and the document and View still reach the disk.
+    #[test]
+    fn checkpointing_and_closing_on_the_frame_loop_never_wait_on_storage() {
+        let host = probe::ProbeHost::new();
+        let root = host.root();
+        let checkout = {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            let mut component =
+                probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
+            let checkout = component.record().clone();
+            assert_eq!(component.checkpoint_for_close(), Vec::<String>::new());
+            let report = component.close();
+            assert_eq!(report.record_error, None);
+            assert_eq!(report.view_error, None);
+            checkout
+        };
+        // Off the loop the stores may wait for their last commits.
+        let probe::ProbeHost {
+            owners,
+            records,
+            views,
+            temp,
+        } = host;
+        drop((records, owners, views));
+        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let records = owners.open(probe::APP, probe::ROOM).unwrap();
+        assert!(records.open_record(&checkout), "the record was saved");
+        assert_eq!(probe::body(&records, &checkout), "initialized");
+        let saved = InstanceViewStore::new(root, probe::DEVICE, probe::ROOM)
+            .unwrap()
+            .load(7)
+            .unwrap()
+            .expect("the View was saved");
+        assert_eq!(saved.record_id, checkout.id.as_str());
+        drop((records, owners, temp));
+    }
+
     #[test]
     fn portable_host_checks_namespaces_authority_and_persists_real_component() {
         let cache =

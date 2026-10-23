@@ -74,12 +74,19 @@ use smithay::reexports::calloop::{self, LoopHandle};
 mod main_thread_files;
 mod wake_trace;
 
-pub use main_thread_files::FileWalk;
+pub use main_thread_files::{FileWalk, STORAGE_WAIT};
 
 pub(super) use wake_trace::record as trace_wake;
 
 use super::native::UnlinkOnDrop;
 use super::state::State;
+
+/// Record every storage wait the main loop is still asked for (see
+/// [`durable_store::waiting`]) in the main-thread audit, beside the paths it
+/// walks: each is the loop asleep until another thread's fsync finishes.
+pub(super) fn audit_storage_waits() {
+    let _ = durable_store::waiting::observe(main_thread_files::record_storage_wait);
+}
 
 /// The suffix that turns the control socket's path into the liveness socket's.
 pub const SOCKET_SUFFIX: &str = ".live";
