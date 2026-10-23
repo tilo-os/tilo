@@ -8,15 +8,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use taffy::{Dimension, NodeId, TaffyTree};
-use ui::Shortcut;
 use ui::TextRole;
 use ui::framework::TextControl;
 use ui::theme::Theme;
 use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
-    Button, ButtonRole, CodeEditor, Column, Dropdown, Element, EventCtx, Language, ResizableSplit,
-    Row, Text, Widget,
+    CodeEditor, Column, Dropdown, Element, EventCtx, Language, ResizableSplit, Row, Text, Widget,
 };
 use winit::event::WindowEvent;
 
@@ -107,51 +105,6 @@ impl ui::widget::Decorator for EditorPane {
     }
 }
 
-/// Run, which waits for a connection that is not busy.
-struct RunButton {
-    link: Link,
-    button: Button,
-}
-
-impl RunButton {
-    fn new(link: &Link) -> Self {
-        let run_link = link.clone();
-        let button = Button::new("db.query.run", "Run")
-            .role(ButtonRole::Primary)
-            .shortcut_hint(Shortcut::command("Enter"))
-            .on_effect(move || {
-                let sql = run_link.sql();
-                run_link.ask(Intent::Run(sql));
-            });
-        Self {
-            link: link.clone(),
-            button,
-        }
-    }
-}
-
-impl ui::widget::Decorator for RunButton {
-    type Inner = Button;
-
-    fn inner(&self) -> &Button {
-        &self.button
-    }
-
-    fn inner_mut(&mut self) -> &mut Button {
-        &mut self.button
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let enabled = self.link.read(|model| model.connected && !model.busy);
-        self.button.set_enabled(enabled);
-        Widget::sync(&mut self.button, state, path);
-    }
-
-    fn name(&self) -> &'static str {
-        "RunButton"
-    }
-}
-
 /// The starter queries: choosing one loads it into the editor, and the
 /// dropdown goes back to its label.
 struct StarterQueries {
@@ -222,11 +175,10 @@ impl ui::widget::Decorator for StarterQueries {
     }
 }
 
-/// Run and the starter queries.
+/// The starter queries. Run is the window bar's.
 fn toolbar(link: &Link) -> Row {
     Row::new()
         .no_wrap()
-        .push(Box::new(RunButton::new(link)))
         .push(Box::new(StarterQueries::new(link)))
 }
 
