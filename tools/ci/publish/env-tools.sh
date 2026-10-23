@@ -8,25 +8,32 @@
 # (env-tools-release.sh, beside this script, which also publishes the catalog). The heavy checks
 # read only this script, so a change to the publishing steps rebuilds no tools.
 #
-#   env-tools.sh binaries OUT            tilo-env-tools and the packer into OUT (CI builder, native)
+#   env-tools.sh binaries OUT PLAN       tilo-env-tools and the packer into OUT (CI builder, native)
 #   env-tools.sh build BINARIES OUT PLAN build the catalog into OUT as root in the CI builder: the
 #                                        build sandbox makes a user namespace and mounts overlays
-#                                        (a micro-VM step). PLAN is env-tools-plan's directory on
-#                                        stable: the runtime to build on, or that the catalog is
-#                                        published already and nothing is built. A working tree
-#                                        has none and resolves the runtime itself
+#                                        (a micro-VM step)
+#
+# PLAN is env-tools-plan's directory on stable: the runtime to build on, or that the catalog is
+# published already and nothing is built. A working tree has none and resolves the runtime itself.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
 
-# A package's id or publisher, from `tilo-app-package inspect`.
 inspect_field() {
   "$1" inspect "$3" | sed -n "s/^$2: //p"
 }
 
+published_already() {
+  if [[ -s $1/published ]]; then
+    printf 'registry.tilo.so/tilo/env-tools:%s is published already: nothing to build\n' "$(cat "$1/published")"
+    exit 0
+  fi
+}
+
 case ${1:-} in
   binaries)
-    out=${2:?usage: env-tools.sh binaries OUT}
+    out=${2:?usage: env-tools.sh binaries OUT PLAN}
+    published_already "${3:?}"
     cargo build --release --locked -p env-tools --bin tilo-env-tools \
       -p tilo-app-package-cli --bin tilo-app-package
     mkdir -p "$out"
@@ -36,10 +43,7 @@ case ${1:-} in
     binaries=${2:?usage: env-tools.sh build BINARIES OUT PLAN}
     out=${3:?}
     plan=${4:?}
-    if [[ -s $plan/published ]]; then
-      printf 'registry.tilo.so/tilo/env-tools:%s is published already: nothing to build\n' "$(cat "$plan/published")"
-      exit 0
-    fi
+    published_already "$plan"
     mkdir -p "$out"
     arch=$(uname -m)
     dnf install -y --setopt=install_weak_deps=False bubblewrap skopeo e2fsprogs >/dev/null

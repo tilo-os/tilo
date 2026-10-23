@@ -5599,8 +5599,9 @@ default = false
 # only.
 [[check]]
 name = "env-tools-binaries-{arch}"
-run = "bash tools/ci/publish/env-tools.sh binaries /target/publish/env-tools/{arch}/bin"
+run = "bash tools/ci/publish/env-tools.sh binaries /target/publish/env-tools/{arch}/bin /target/publish/env-tools/plan"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+optional_needs = ["env-tools-plan"]
 outputs = ["/target/publish/env-tools/{arch}/bin/*"]
 requires = ["arch={arch}"]
 cost = "heavy"

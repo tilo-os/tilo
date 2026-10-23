@@ -938,14 +938,13 @@ fields = { default = false }
 
 [[matrix.check]]
 name = "env-tools-binaries-{arch}"
-run = "bash tools/ci/publish/env-tools.sh binaries /target/publish/env-tools/{arch}/bin"
+run = "bash tools/ci/publish/env-tools.sh binaries /target/publish/env-tools/{arch}/bin /target/publish/env-tools/plan"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+optional_needs = ["env-tools-plan"]
 outputs = ["/target/publish/env-tools/{arch}/bin/*"]
 requires = ["arch={arch}"]
 cost = "heavy"
 
-# On stable the plan is a need: the builds take its runtime, or build nothing where the catalog
-# is published already. A working tree's builds resolve the runtime themselves.
 [[matrix.check]]
 name = "env-tools-{arch}"
 run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog /target/publish/env-tools/plan"
