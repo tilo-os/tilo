@@ -1,0 +1,43 @@
+[Unit]
+Description=Remove OS image data no deployment uses
+Documentation=file:///usr/share/doc/tilo/recovery.md
+ConditionKernelCommandLine=!tilo.install
+ConditionKernelCommandLine=!tilo.mode=repair
+# Only bootc's composefs backend keeps a repository to collect.
+ConditionPathIsDirectory=/sysroot/composefs
+RequiresMountsFor=/boot /sysroot
+After=local-fs.target bootc-fetch-apply-updates.service tilo-deployment-update.service
+
+[Service]
+Type=oneshot
+# `bootc internals composefs-gc --prune-repo` under the update lock and the
+# ESP's lock: what goes is what no boot entry names (an update cancelled
+# half-way, a generation an update superseded); the running, staged and
+# rollback deployments stay. Started after every update, daily by
+# tilo-cache-gc.timer, and at once while the disk is low on space
+# (tilo-cache-gc-pressure.timer). The record `tilo os status` reads goes to
+# /var/lib/tilo-cache-gc/os-images.json.
+ExecStart=/usr/bin/tilo os clean --only os-images
+StateDirectory=tilo-cache-gc
+StateDirectoryMode=0755
+# Background work: it yields to the session.
+Nice=19
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+UMask=0022
+# bootc writes the physical root and the ESP, so the file system is not
+# sandboxed; everything else is.
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native

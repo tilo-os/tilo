@@ -194,6 +194,10 @@ containerfile="$repo/os/Containerfile"
 # The cache cleanup's policy (/etc/tilo/cache-gc.toml, beside desktop.toml) and
 # its system and user tilo-cache-gc.service/.timer units ride existing COPY
 # instructions; they are the intentional payload rows.
+# The OS image collection's tilo-os-image-gc.service, the disk-pressure
+# tilo-cache-gc-pressure.service/.timer and the update service drop-in that
+# starts the collection after an update ride existing COPY instructions; they
+# are the intentional payload rows.
 # The background app update's user tilo-app-update.service/.timer ride the
 # existing user-unit COPY instruction; they are the intentional payload rows.
 # systemd-bless-boot's drop-in, which lets blessing rename the booted entry on
