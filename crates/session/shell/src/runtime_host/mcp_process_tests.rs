@@ -277,7 +277,12 @@ fn mcp_process_owns_and_reaps_its_children() {
                 executable: PathBuf::from("/bin/sh"),
                 args: vec![
                     "-c".into(),
-                    format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+                    // Renamed into place, so the file exists only once it
+                    // holds the whole pid: the input waits for it to exist.
+                    format!(
+                        "echo $$ > '{0}.partial' && mv '{0}.partial' '{0}'; exec sleep 30",
+                        pid_file.display()
+                    ),
                 ],
             }],
         })
@@ -344,7 +349,12 @@ fn mcp_process_owns_and_reaps_its_children() {
                 executable: PathBuf::from("/bin/sh"),
                 args: vec![
                     "-c".into(),
-                    format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+                    // Renamed into place, so the file exists only once it
+                    // holds the whole pid: the input waits for it to exist.
+                    format!(
+                        "echo $$ > '{0}.partial' && mv '{0}.partial' '{0}'; exec sleep 30",
+                        pid_file.display()
+                    ),
                 ],
             }],
         })
