@@ -61,7 +61,8 @@ async function fixture({boot, remembered = []} = {}) {
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, IdentityError, MAX_DISPLAY_NAME_BYTES} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
-  const {startEntryPage} = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}#${Math.random()}`);
+  // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
+  const {startEntryPage} = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
   // A page that cannot get in throws its cause on, to the console.
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error);
   await tick();
