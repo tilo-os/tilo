@@ -2236,7 +2236,7 @@ impl BooksApp {
             Action::SetQuery(query) => self.on_set_query(&query),
             Action::OpenFacet(key) => self.open_facet(&key),
             Action::CloseSearch => self.close_query(),
-            Action::Back => self.on_back(),
+            Action::Back => self.show(crate::resource::BooksEffect::ShowLibrary),
             Action::NextPage => self.on_next_page(),
             Action::PrevPage => self.on_prev_page(),
             Action::SeekProgress => self.on_seek_progress(self.progress_fraction_at(self.cursor)),
@@ -2300,7 +2300,7 @@ impl BooksApp {
             Action::ToggleHideFinished => self.on_toggle_hide_read(doc),
 
             // --- settings screen: navigation -----------------------------
-            Action::OpenSettings => self.on_open_settings(),
+            Action::OpenSettings => self.show(crate::resource::BooksEffect::Settings),
             Action::CloseSettings => self.on_close_settings(doc),
             Action::SetSettingsTab(tab) => self.on_set_settings_tab(tab, doc),
             Action::BeginShortcutCapture(shortcut) => {
@@ -2356,7 +2356,28 @@ impl BooksApp {
         }
     }
 
-    fn on_back(&mut self) {
+    /// Run the view action `effect` as the library's resource publishes
+    /// it: a press shows the page an agent's or a script's call shows.
+    fn show(&mut self, effect: crate::resource::BooksEffect) {
+        if let Err(error) = self.begin_effect(tilo_actions::InvocationId::new(), effect, &[]) {
+            tracing::debug!(%error, "books: a page did not show");
+        }
+    }
+
+    /// Show the shelf from wherever the window is: the reader, the
+    /// settings page (an unfinished rename or picker is dropped) or the
+    /// search page.
+    fn on_show_library(&mut self) {
+        if self.view == View::Search {
+            self.close_query();
+        }
+        self.font_picker = false;
+        self.color_picker.cancel();
+        self.font_dropdown.close();
+        self.editing_scheme = None;
+        self.renaming = None;
+        self.shortcut_capture = None;
+        self.shortcut_capture_error = None;
         self.view = View::Library;
         self.composing = None;
         self.note_composer.close();
@@ -5329,6 +5350,7 @@ impl BooksApp {
             BooksEffect::Contents => self.on_toggle_toc(),
             BooksEffect::Notes => self.on_toggle_notes(),
             BooksEffect::Settings => self.on_open_settings(),
+            BooksEffect::ShowLibrary => self.on_show_library(),
             BooksEffect::Open {
                 book,
                 chapter,
