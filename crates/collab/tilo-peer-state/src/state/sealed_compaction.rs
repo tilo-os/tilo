@@ -328,18 +328,19 @@ impl StatePeer {
         })
     }
 
-    /// Sign `changes`, Automerge changes to the encrypted `record` of `app`,
-    /// as `key`'s own write, sealed by the channel's key holder with `seal`,
-    /// and admit it like any sealed write: it joins the record's sealed
-    /// history, and the next durable publication carries it as itself.
-    /// Members open it as they open each other's writes.
+    /// Sign `changes`, Automerge changes to `record` of `app`, as `key`'s
+    /// own write, sealed by the channel's key holder with `seal`, and admit
+    /// it like any sealed write: it joins the record's sealed history, and
+    /// the next durable publication carries it as itself. Members open it
+    /// as they open each other's writes. A record held in the clear is
+    /// encrypted from it on: the key holder decides that its channel's
+    /// writes are sealed.
     ///
     /// # Errors
     ///
-    /// Returns an error for a record that is not encrypted (it is written in
-    /// the clear), when sealing fails or yields anything but a delta of the
-    /// record's channel, or when admission refuses the write; this peer is
-    /// unchanged then.
+    /// Returns an error for a record this state does not hold, when sealing
+    /// fails or yields anything but a delta of the record's channel, or when
+    /// admission refuses the write; this peer is unchanged then.
     pub fn publish_sealed_incremental(
         &mut self,
         app: &str,
@@ -358,9 +359,6 @@ impl StatePeer {
             .documents
             .get(&route)
             .ok_or("sealed write to a record this state does not hold")?;
-        if !document.encryption_required {
-            return Err("the record is not encrypted: write it in the clear".into());
-        }
         let mutation = DocumentMutation::Incremental(changes);
         // Readers without the key decide a sealed write by the claims of
         // its changes, as a member's page names them: each naming the units

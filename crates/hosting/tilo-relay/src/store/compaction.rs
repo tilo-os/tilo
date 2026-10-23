@@ -128,6 +128,36 @@ impl WorkspaceStore {
         Ok(lineages)
     }
 
+    /// Every channel this store retains entries of.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained lineages cannot be listed.
+    #[cfg(feature = "agents")]
+    pub(crate) fn retained_channels(
+        &self,
+    ) -> Result<std::collections::BTreeSet<[u8; 32]>, StoreError> {
+        let v2 = self.root.join(RETAINED_DIR).join("v2");
+        let mut channels = std::collections::BTreeSet::new();
+        let entries = match fs::read_dir(&v2) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(channels),
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
+            let name = entry?.file_name();
+            if let Some(channel) = name
+                .to_str()
+                .and_then(|name| name.split_once('-'))
+                .and_then(|(_, channel)| hex::decode(channel).ok())
+                .and_then(|channel| <[u8; 32]>::try_from(channel).ok())
+            {
+                channels.insert(channel);
+            }
+        }
+        Ok(channels)
+    }
+
     /// Every entry retained for `channel`, over all its authors. Reads only
     /// immutable files and needs no owner; a generation that disappears
     /// under the read fails it.

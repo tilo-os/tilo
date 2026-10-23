@@ -752,6 +752,10 @@ struct RoomsInner {
     /// Each room's layout scope, as its governance says
     /// ([`layout_scope`]).
     layouts: layout_scope::Layouts,
+    /// Whether the records its rooms hold in the clear are sealed: only once
+    /// the host's operator decided it ([`crate::reseal`]).
+    #[cfg(feature = "agents")]
+    resealing: std::sync::atomic::AtomicBool,
 }
 
 /// What a member sent a room's channel steward.
@@ -875,6 +879,8 @@ impl Rooms {
                 queued_writes: std::sync::Mutex::default(),
                 listings,
                 layouts: layout_scope::Layouts::default(),
+                #[cfg(feature = "agents")]
+                resealing: std::sync::atomic::AtomicBool::new(false),
             }),
         };
         this.learn_layouts().await;

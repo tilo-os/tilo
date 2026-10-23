@@ -1140,6 +1140,25 @@ cost = "minutes"
 on = ["stable", "dispatch", "idle"]
 default = false
 
+# The relay's tests of what only its `agents` build does (the room service's): a
+# stewarded room's records sealed from their first write, history written in the
+# clear sealed whole by the steward, and the re-seal of a room the earlier relay
+# kept in the clear (tests/fixtures/legacy-lounge). `test/tilo-relay` builds the
+# relay without `agents`.
+[[check]]
+name = "relay-agents"
+requires = ["arch=any"]
+requirement = { cores = 8, memory = "12GiB" }
+run = """
+bash tools/test-env.sh cargo nextest run --locked --profile ci --no-tests=fail -p tilo-relay \
+  --features agents --lib -E 'test(reseal::) | test(rooms::sealed_records::) | test(compaction::)'
+"""
+cargo_packages = ["tilo-relay"]
+inputs = ["tools/test-env.sh", "tools/with-test-environment.sh", "tools/with-headless-audio.sh"]
+# nextest's ci profile keeps its store and JUnit report under the source tree's target/.
+writable_sources = true
+cost = "minutes"
+
 # The shell's own binaries (the `shots` renderer, the UX bench, the load and
 # click clients) under the features their builds use: no test builds them, so
 # a feature combination only they select broke them silently.

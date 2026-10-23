@@ -230,6 +230,8 @@ pub struct HostedRelay {
     pub relay: Relay,
     #[cfg(feature = "agents")]
     agents: Option<tilo_agent_participant::AgentHost>,
+    /// Its state's lock, released once it stopped.
+    _lock: tilo_relay::state_lock::StateLock,
 }
 
 impl HostedRelay {
@@ -270,6 +272,8 @@ pub async fn start_relay(
         cfg.max_room_grants = Some(max);
     }
     announce_web_entry(&mut cfg, args);
+    let lock =
+        tilo_relay::state_lock::StateLock::acquire(&cfg.state_root).map_err(anyhow::Error::msg)?;
     #[cfg(feature = "agents")]
     let options = args.agents.options(state_root.join("agents"))?;
     #[cfg(feature = "agents")]
@@ -280,6 +284,7 @@ pub async fn start_relay(
         return Ok(HostedRelay {
             relay,
             agents: Some(agents),
+            _lock: lock,
         });
     }
     #[cfg(feature = "agents")]
@@ -290,6 +295,7 @@ pub async fn start_relay(
         return Ok(HostedRelay {
             relay,
             agents: None,
+            _lock: lock,
         });
     }
     let relay = Relay::start(cfg, identity)
@@ -299,6 +305,7 @@ pub async fn start_relay(
         relay,
         #[cfg(feature = "agents")]
         agents: None,
+        _lock: lock,
     })
 }
 
