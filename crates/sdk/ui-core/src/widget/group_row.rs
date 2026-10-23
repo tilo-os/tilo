@@ -10207,7 +10207,7 @@ mod tests {
     /// A strip of three 400 px windows (a third of the 1200 px display
     /// each) on a 2000 px viewport, with window `focused` the one in use.
     /// `middle`, when given, stands in for the middle window.
-    fn edge_strip(
+    pub(super) fn edge_strip(
         focused: Option<usize>,
         middle: Option<WindowGroup>,
     ) -> (GroupRow, TaffyTree<()>, NodeId) {
@@ -10254,7 +10254,7 @@ mod tests {
         (group, anchor)
     }
 
-    fn edge_event(
+    pub(super) fn edge_event(
         row: &mut GroupRow,
         taffy: &TaffyTree<()>,
         root: NodeId,
@@ -10273,7 +10273,7 @@ mod tests {
             .handled
     }
 
-    fn move_to(p: Point) -> WindowEvent {
+    pub(super) fn move_to(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
@@ -10288,7 +10288,7 @@ mod tests {
         }
     }
 
-    fn rects(row: &GroupRow) -> Vec<Rect> {
+    pub(super) fn rects(row: &GroupRow) -> Vec<Rect> {
         row.groups.iter().map(WindowGroup::get_rect).collect()
     }
 
@@ -10296,7 +10296,7 @@ mod tests {
     /// `from`), laying the strip out after every move as the frame loop
     /// does, and return the row (still pressed) and the rects after each
     /// step, the press's own frame first.
-    fn drag_edge(
+    pub(super) fn drag_edge(
         row: GroupRow,
         taffy: &TaffyTree<()>,
         root: NodeId,
@@ -10322,7 +10322,7 @@ mod tests {
         (row, taffy, root, frames)
     }
 
-    fn widths(frame: &[Rect]) -> Vec<f64> {
+    pub(super) fn widths(frame: &[Rect]) -> Vec<f64> {
         frame.iter().map(|r| r.width()).collect()
     }
 
@@ -11536,6 +11536,9 @@ mod tests {
         assert_eq!(row.groups[0].active_tab_id(), 1);
     }
 }
+#[cfg(test)]
+#[path = "group_row_edge_tests.rs"]
+mod edge_tests;
 #[cfg(test)]
 #[path = "group_row_keyboard_tests.rs"]
 mod keyboard_tests;
