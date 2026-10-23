@@ -526,10 +526,15 @@ impl DurableStore for FsStore {
     fn read(&self, key: &StorageKey) -> Result<Option<Stored>, SeamError> {
         let target = self.target(key)?;
         if let Some(wake) = self.shared.declined_here() {
+            // What this store holds answers without the disk; anything else
+            // is read by the store's thread while the caller is told to ask
+            // again.
+            if let Some(stored) = self.replaced_in_memory(key, &target) {
+                return Ok(Some(stored));
+            }
             self.ensure_worker()?;
             return self.shared.read_without_waiting(key, &wake);
         }
-        durable_store::waiting::refused("reading stored state");
         let (path, sidecar) = match target {
             Target::Document(directory) => (
                 directory.join(DOCUMENT_FILE),
@@ -777,7 +782,6 @@ impl DurableStore for FsStore {
                 .lease_without_waiting(key, &target, Access::Exclusive, &wake)
                 .map(|(lease, _)| lease);
         }
-        durable_store::waiting::refused("opening stored state");
         match target {
             Target::Document(directory) => {
                 if lock(&self.shared.state).owners.contains_key(key) {
@@ -816,7 +820,6 @@ impl DurableStore for FsStore {
                 self.lease_without_waiting(key, &target, Access::Shared, &wake)?;
             return Ok(SharedLease { lease, primary });
         }
-        durable_store::waiting::refused("opening stored state");
         match target {
             Target::Document(directory) => {
                 if lock(&self.shared.state)
@@ -953,6 +956,23 @@ impl DurableStore for FsStore {
 }
 
 impl FsStore {
+    /// A read answered from memory alone: a replacement this store accepted
+    /// and has not written yet holds the whole value, and its writer where a
+    /// document keeps one.
+    fn replaced_in_memory(&self, key: &StorageKey, target: &Target) -> Option<Stored> {
+        let unwritten = Unwritten::of(&lock(&self.shared.state), key);
+        if !unwritten.replaces() {
+            return None;
+        }
+        let writer = unwritten.writer();
+        if writer.is_none() && matches!(target, Target::Document(_)) {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        unwritten.apply(&mut bytes);
+        Some(Stored { bytes, writer })
+    }
+
     /// [`DurableStore::lease`] or [`DurableStore::lease_shared`] on the
     /// thread that declined waiting: lock what the store's thread opened for
     /// it, or have that thread open it ([`prepared`]). With whether the
@@ -1811,14 +1831,32 @@ mod tests {
             tilo_test_env::recv("the writer thread to take the append", &reached);
             fs.write(&key, WriteOp::Append(b"ef".to_vec()), None)
                 .unwrap();
-            let stored = fs.read(&key).unwrap().unwrap();
+            assert!(
+                matches!(fs.read(&key), Err(SeamError::Opening(_))),
+                "what only the file holds is the store's thread to read"
+            );
+        }
+        let stored = fs.read(&key).unwrap().unwrap();
+        assert_eq!(
+            stored.bytes, b"abcdef",
+            "the file, the append under way and the queued one, once each"
+        );
+        assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]), "from the file");
+        release.send(()).unwrap();
+        {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            let mut read = None;
+            tilo_test_env::wait_until("the store's thread to read the file", || {
+                read = fs.read(&key).ok().flatten();
+                read.is_some()
+            });
+            let stored = read.unwrap();
             assert_eq!(
                 stored.bytes, b"abcdef",
-                "the file, the append under way and the queued one, once each"
+                "read for it: the file with the queued append, once"
             );
             assert_eq!(stored.writer.as_deref(), Some(&b"me"[..]), "from the file");
         }
-        release.send(()).unwrap();
         fs.flush(Some(&key)).unwrap();
         assert_eq!(fs.read(&key).unwrap().unwrap().bytes, b"abcdef");
         let Target::Document(directory) = fs.target(&key).unwrap() else {
