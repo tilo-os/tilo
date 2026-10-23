@@ -1840,11 +1840,15 @@ impl GpuStep {
     }
 }
 
-/// How long a mount may be visible without presenting its first frame
-/// before it fails, naming the step graphics start-up is stuck on, so the
-/// page says it stopped and offers to try again instead of waiting in
-/// silence. A first frame takes about 2 s on a GPU and 15-35 s under a
-/// software rasteriser (`SwiftShader` in CI).
+/// How long a mount may stay visible on one step of graphics start-up
+/// (device, pipelines, surface, first frame) before it fails, naming that
+/// step, so the page says it stopped and offers to try again instead of
+/// waiting in silence. Bounded per step, not from the mount: a start that
+/// keeps moving on is slow, not stuck. On a busy machine with a software
+/// rasteriser (`SwiftShader` in CI) the device alone took 28 s and the
+/// pipelines 10 s, leaving a first frame that takes 15-35 s there too
+/// little of one bound from the mount; on a GPU the whole start takes
+/// about 2 s.
 const FIRST_FRAME_BOUND_MS: u32 = 60_000;
 /// How often [`watch_first_frame`] looks.
 const FIRST_FRAME_TICK_MS: u32 = 1_000;
@@ -1864,8 +1868,9 @@ pub(crate) async fn sleep_ms(ms: u32) {
 
 /// Watch mount `id` until its first frame is out: say each step graphics
 /// start-up moves to (`gpuStep`), and fail the mount with that step as its
-/// error once it has been visible for [`FIRST_FRAME_BOUND_MS`] without a
-/// frame. Time hidden (a background tab draws nothing) does not count.
+/// error once it has been visible for [`FIRST_FRAME_BOUND_MS`] on that step
+/// without a frame. Time hidden (a background tab draws nothing) does not
+/// count.
 async fn watch_first_frame(id: u64) {
     let mut visible_ms: u32 = 0;
     let mut said = None;
@@ -1885,6 +1890,7 @@ async fn watch_first_frame(id: u64) {
             };
             if said != Some(step) {
                 said = Some(step);
+                visible_ms = 0;
                 emit(
                     &m.status,
                     &serde_json::json!({"phase":"gpu-pending","id":id,"gpuStep":step.name()}),
@@ -1898,7 +1904,7 @@ async fn watch_first_frame(id: u64) {
                 return Ok(true);
             }
             m.error = Some(format!(
-                "WebGPU presented no first frame in {} s, {}",
+                "WebGPU presented no first frame after {} s on one step, {}",
                 FIRST_FRAME_BOUND_MS / 1000,
                 step.waiting_on()
             ));

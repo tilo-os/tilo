@@ -238,7 +238,7 @@ test('a person let in whose desktop never drew is told they got in', () => {
   assert.equal(stoppedInside(peer, 'draw'), true);
   assert.equal(stoppedInside(peer, 'done'), false);
   assert.equal(stoppedInside(null, 'stopped'), false);
-  const firstFrame = new Error('WebGPU presented no first frame in 60 s, waiting for the first frame to present');
+  const firstFrame = new Error('WebGPU presented no first frame after 60 s on one step, waiting for the first frame to present');
   assert.equal(failureMessage(firstFrame, {workspace: 'Auth', admitted: stoppedInside(peer, 'stopped')}),
     'You got into Auth, but its desktop did not start in this tab. Try again.');
 });
