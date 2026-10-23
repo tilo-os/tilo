@@ -188,6 +188,8 @@ pub struct ColumnDef<Row: ?Sized> {
     pub width: ColumnWidth,
     /// Smallest readable width before optional columns hide or the table scrolls.
     pub min_width: f32,
+    /// Widest a flexible column grows; the other flexible columns take the rest.
+    pub max_width: f32,
     pub sortable: bool,
     /// `None` renders an empty cell.
     pub text_render: Option<CellTextRender<Row>>,
@@ -241,6 +243,7 @@ impl<Row: 'static> ColumnDef<Row> {
             header: self.header,
             width: self.width,
             min_width: self.min_width,
+            max_width: self.max_width,
             sortable: self.sortable,
             text_render: self.text_render.map(|render| -> CellTextRender<AnyRow> {
                 Box::new(move |row, scene, transform, text, rect, theme, state| {
@@ -301,6 +304,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
             header: header.into(),
             width,
             min_width: 0.0,
+            max_width: f32::INFINITY,
             sortable: false,
             text_render: None,
             render_cell: Box::new(|_, _, _, _, _, _| {}),
@@ -364,6 +368,18 @@ impl<Row: ?Sized> ColumnDef<Row> {
             width.max(0.0)
         } else {
             0.0
+        };
+        self
+    }
+
+    /// Keep a flexible column from growing past `width` (a key beside its
+    /// value); the room it leaves goes to the other flexible columns.
+    #[must_use]
+    pub fn max_width(mut self, width: f32) -> Self {
+        self.max_width = if width.is_nan() {
+            f32::INFINITY
+        } else {
+            width.max(0.0)
         };
         self
     }
@@ -4692,10 +4708,14 @@ fn flexible_column_widths<Row: ?Sized>(
                 0.0
             }
         };
-        let constrained: Vec<usize> = pending
+        let bounds = |i: usize| {
+            let floor = f64::from(floors[i].0);
+            (floor, f64::from(columns[i].max_width).max(floor))
+        };
+        let constrained: Vec<(usize, f64)> = pending
             .iter()
-            .copied()
-            .filter(|&i| share(i) < f64::from(floors[i].0))
+            .map(|&i| (i, share(i).clamp(bounds(i).0, bounds(i).1)))
+            .filter(|&(i, width)| width.total_cmp(&share(i)).is_ne())
             .collect();
         if constrained.is_empty() {
             for i in pending {
@@ -4703,8 +4723,8 @@ fn flexible_column_widths<Row: ?Sized>(
             }
             break;
         }
-        for i in constrained {
-            widths[i] = f64::from(floors[i].0);
+        for (i, width) in constrained {
+            widths[i] = width;
             available = (available - widths[i]).max(0.0);
             pending.retain(|&candidate| candidate != i);
         }
@@ -7443,6 +7463,30 @@ mod content_edge_tests {
         assert!(send(&mut table, &tree, node, &wheel, true));
         assert!(table.scroll_x() > before);
         assert!(table.h_track().is_some());
+    }
+
+    #[test]
+    fn a_capped_flexible_column_leaves_its_room_to_the_others() {
+        let mut table = DataTable::new(vec![
+            name_col().max_width(120.0),
+            ColumnDef::new("detail", "Detail", ColumnWidth::Flex(2.0))
+                .with_text(|_: &Item| "detail".to_owned()),
+        ]);
+        table.set_rows(items(3));
+        let _ = settle(&mut table, 900.0, 400.0);
+        assert!(table.col_rects[0].width().total_cmp(&120.0).is_eq());
+        assert!(
+            table.col_rects[1]
+                .x1
+                .total_cmp(&table.columns_band().x1)
+                .is_eq(),
+            "the uncapped column reaches the table's edge"
+        );
+        let _ = settle(&mut table, 240.0, 400.0);
+        assert!(
+            table.col_rects[0].width() < 120.0,
+            "under the cap it shares"
+        );
     }
 
     #[test]
