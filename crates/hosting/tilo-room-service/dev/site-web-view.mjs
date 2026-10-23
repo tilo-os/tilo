@@ -9,13 +9,15 @@
 // usage: node crates/hosting/tilo-room-service/dev/site-web-view.mjs
 //          --site URL [--expect TEXT] [--out DIR] [--timeout S]
 //
-// The report: {"entry", "room", "shows"} ("shows" only with --expect). Exits
+// The report: {"entry", "room", "shows"} ("shows" only with --expect; when it
+// is false, also "why": the step at which the page's Chat found no channel,
+// or the channel it read). Exits
 // 1 when the page did not open, 2 when Chrome cannot draw here.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {chromeFlags} from '../../../../scripts/perf/browser_qualification.mjs';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
-import {CHAT_CHANNEL, chatShows, open, page} from './auth-e2e.mjs';
+import {CHAT_CHANNEL, CHAT_WHY, chatShows, open, page} from './auth-e2e.mjs';
 
 function parse(argv) {
   const options = {timeout: 120};
@@ -75,6 +77,9 @@ async function main() {
       const channel = await until(() => tab.evaluate(CHAT_CHANNEL), timeout);
       report.shows = Boolean(channel)
         && Boolean(await until(() => chatShows(tab, channel.channel, options.expect), timeout));
+      if (!report.shows) {
+        report.why = channel ?? await tab.evaluate(CHAT_WHY).catch(error => String(error?.message ?? error));
+      }
     }
     if (options.out) {
       const shot = await tab.screenshot().catch(() => null);
