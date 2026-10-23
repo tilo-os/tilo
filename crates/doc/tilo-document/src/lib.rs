@@ -406,6 +406,12 @@ impl RichTextState {
             .collect()
     }
 
+    /// Every heading, image and table cell by id: the same `Rc` until one
+    /// of them changes, so what is made of them can be kept until then.
+    pub fn featured_blocks(&self) -> &Rc<HashMap<String, Rc<BlockView>>> {
+        &self.featured
+    }
+
     pub fn header(&self) -> &Rc<Vec<BlockView>> {
         &self.header
     }
