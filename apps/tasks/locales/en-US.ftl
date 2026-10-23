@@ -1,4 +1,5 @@
 tasks-title = Tasks
+tasks-places = Task views
 tasks-place-list = Issues
 tasks-place-board = Board
 tasks-back = Back

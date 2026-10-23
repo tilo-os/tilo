@@ -1230,6 +1230,14 @@ impl NavList {
         self
     }
 
+    /// The list's stable identity for assistive technology
+    /// ([`TreeView::with_semantic_key`]).
+    #[must_use]
+    pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
+        self.tree = self.tree.with_semantic_key(key);
+        self
+    }
+
     /// Choose `id` and bring its row into view. Does not report through
     /// [`Self::on_select`].
     #[must_use]
