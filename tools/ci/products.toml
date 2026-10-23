@@ -914,11 +914,20 @@ dispatch_inputs = { proof = "full" }
 [[matrix]]
 family = "env-tools"
 about = """
-The env tool catalog's build half (tools/ci/publish/env-tools.sh): every tool of
-os/env-tools-catalog.txt built natively against the published env-runtime, sealed with a
-throwaway key, as root in the CI builder in a micro-VM step (the build sandbox makes user
-namespaces and mounts overlays). It proves the catalog builds; build-env-tools.yml still
-publishes it, sealed with the publisher identity."""
+The env tool catalog (tools/ci/publish/env-tools.sh): every tool of os/env-tools-catalog.txt
+built natively against the published env-runtime, as root in the CI builder in a micro-VM step
+(the build sandbox makes user namespaces and mounts overlays). The build runs package
+scriptlets, so it holds no key: it seals each tool for the runtime's publisher with a
+placeholder signature. `t test env-tools-x86_64` builds the catalog from a working tree (on an
+unpublished preview of the runtime while none is published), `t test image-env-tools-preview`
+the image of both architectures. On stable, env-tools-plan names the tag the catalog publishes
+as, `<runtime tag>-<catalog fingerprint>`; where that is published already nothing is built,
+else it fetches the runtime release-env-runtime published for the builds. seal-env-tools, which
+builds nothing, checks the tools and signs them with the publisher identity, rewriting each
+catalog to name the signed ids; image-env-tools puts both architectures in one image for both
+platforms, sign-env-tools signs its digest with a transparency log entry and publish-env-tools
+pushes it once under the tag. Main publishes nothing: the publisher identity reaches stable
+only."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 fields = { default = false }
 
@@ -930,15 +939,93 @@ outputs = ["/target/publish/env-tools/{arch}/bin/*"]
 requires = ["arch={arch}"]
 cost = "heavy"
 
+# On stable the plan is a need: the builds take its runtime, or build nothing where the catalog
+# is published already. A working tree's builds resolve the runtime themselves.
 [[matrix.check]]
 name = "env-tools-{arch}"
-run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog"
+run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog /target/publish/env-tools/plan"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "os/dev/build-env-tools.sh", "os/dev/preview-env-runtime.sh", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "crates/packaging/registry-types/src/lib.rs", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["env-tools-binaries-{arch}"]
+optional_needs = ["env-tools-plan"]
+outputs = ["/target/publish/env-tools/{arch}/catalog/**"]
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 9000
+
+[[matrix.check]]
+name = "env-tools-plan"
+comment = """
+It holds the registry audience only so that it runs in trusted runs alone (an optional need
+holding no credential would apply to a working tree's builds too); it reads the registry
+anonymously, as devices do, and runs nothing a build made. What it finds depends on the
+registry, so it is never cached, and the builds after it are keyed by what it found."""
+run = "bash tools/ci/publish/env-tools-release.sh plan /target/publish/env-tools/plan"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "crates/runtime/env-tools/src/key.rs", "crates/runtime/env-tools/src/seal.rs", "crates/runtime/env-tools/src/sandbox.rs", "crates/runtime/env-tools/src/builder.rs", "crates/runtime/env-tools/src/image.rs", "crates/runtime/env-tools/src/resolve.rs", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "crates/packaging/registry-types/src/lib.rs", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+optional_needs = ["release-env-runtime"]
+outputs = ["/target/publish/env-tools/plan/**"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+isolation = "vm"
+cache = false
+cost = "minutes"
+on = ["stable"]
+
+[[matrix.check]]
+name = "seal-env-tools"
+run = "bash tools/ci/publish/env-tools-release.sh seal /target/publish/env-tools/plan /target/publish/env-tools /target/publish/env-tools/x86_64/bin /target/publish/env-tools/sealed"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh"]
+needs = ["env-tools-plan", "env-tools-x86_64", "env-tools-aarch64", "env-tools-binaries-x86_64"]
+outputs = ["/target/publish/env-tools/sealed/**"]
+secrets = ["TAPP_PUBLISHER_IDENTITY"]
+requires = ["arch=x86_64"]
+requirement = { cores = 2, memory = "8GiB" }
+cost = "minutes"
+on = ["stable"]
+
+[[matrix.check]]
+name = "image-env-tools"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/env-tools-release.sh image /target/publish/env-tools/sealed /target/publish/env-tools/image /target/publish/env-tools/plan"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/Containerfile.env-tools"]
+needs = ["env-tools-plan", "seal-env-tools"]
+outputs = ["/target/publish/env-tools/image/image.oci.tar", "/target/publish/env-tools/image/digest"]
+isolation = "vm"
+requirement = { cores = 2, memory = "8GiB" }
+cost = "minutes"
+
+[[matrix.check]]
+name = "image-env-tools-preview"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/env-tools-release.sh preview /target/publish/env-tools /target/publish/env-tools/preview-image"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/Containerfile.env-tools"]
+needs = ["env-tools-x86_64", "env-tools-aarch64"]
+isolation = "vm"
+requirement = { cores = 2, memory = "8GiB" }
+cost = "minutes"
+
+[[matrix.check]]
+name = "sign-env-tools"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/env-tools-release.sh sign /target/publish/env-tools/plan /target/publish/env-tools/image"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["env-tools-plan", "image-env-tools"]
+outputs = ["/target/publish/env-tools/image/payload.json", "/target/publish/env-tools/image/signature", "/target/publish/env-tools/image/bundle.json"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+requires = ["arch=any"]
+on = ["stable"]
+
+[[matrix.check]]
+name = "publish-env-tools"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/env-tools-release.sh release /target/publish/env-tools/plan /target/publish/env-tools/image"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["env-tools-plan", "image-env-tools", "sign-env-tools"]
+outputs = ["/target/publish/env-tools/image/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["stable"]
 
 [[matrix]]
 family = "os-base"

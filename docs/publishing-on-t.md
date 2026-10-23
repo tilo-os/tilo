@@ -270,6 +270,7 @@ serves it. To move one forward, put the new digest in that file and in the pins 
 | registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | `sign-registry-server` | `publish-registry-server` (dispatch): `dev-<commit>` | `publish-registry-server`: `sha-<commit>`, signed, receipt for GitOps |
 | relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `publish-relay` (`v*` tags): `<version>`, `sha-<commit>`, and `latest` for a final version, signed |
 | env-runtime | `rpm-snapshot`, `image-env-runtime-tree-x86_64`, `-aarch64`, `env-runtime-packer`; `env-runtime-preview`, `image-env-runtime-preview` (sealed with a throwaway key) | `seal-env-runtime` (publisher identity), `sign-env-runtime` (`image-env-runtime` between them) | | `release-env-runtime`: `set-<fingerprint>` once, signed |
+| env tools | `env-tools-binaries-x86_64`, `-aarch64`, `env-tools-x86_64`, `-aarch64` (every tool sealed for the runtime's publisher with a placeholder signature); `image-env-tools-preview` (the image of the unsigned builds); on stable `env-tools-plan` first, after `release-env-runtime`: the tag, and nothing built where it is published | `seal-env-tools` (publisher identity over the built tools, compiling nothing; the catalogs rewritten to name the signed ids), `sign-env-tools` (with a transparency log entry; `image-env-tools` between them) | | `publish-env-tools`: `<runtime tag>-<catalog fingerprint>` once, signed |
 | RPM snapshot | `image-rpms-x86_64`, `-aarch64`, `image-rpms` (their index), `provenance-rpms` (frozen-rpm-index/v1, the fingerprint) | `sign-rpms`: the index and both images, the index's provenance, with transparency log entries | `mirror-base`: the pinned Fedora bootc base copied into registry.tilo.so while upstream serves it, before the builds | `publish-rpms`: `set-<fingerprint>` once, signed and attested |
 | kernel | `image-kernel-x86_64`, `-aarch64`, `kernel-acceptance-<arch>`, `provenance-kernel` (kernel-rpm/v1, binding the buildroot) | `sign-kernel`: both, with provenance and transparency log entries | | `publish-kernel`: `sha-<commit>-<arch>`, the `kernel` pointer; `pin-kernel` commits it to `os/kernel-snapshot.env` on main |
 | kernel buildroot | `image-kernel-buildroot-x86_64`, `-aarch64` (built and audited natively) | `sign-kernel-buildroot` (both) | | `publish-kernel-buildroot`: `sha-<commit>-<arch>`, signed, the `kernel-buildroot` pointer |
@@ -349,12 +350,12 @@ Deleted:
 | `release-imager-winget.yml` | `imager-winget-acceptance` (every six hours and dispatch, `cache = false`), with the site token as the secret `TILO_SITE_TOKEN` instead of a broker lease | fails until the server config has `TILO_SITE_TOKEN` |
 | `ci-filesystem.yml` | `real-fuse`, `real-fuse-privileged`, `files-ux`, `native-tier1`; the cloud-source conformance suite's server layers as `cloud-conformance-build`, `cloud-servers` (containers in a micro-VM step) and `cloud-live` (live accounts, nightly) | `cloud-servers` r0e79c3d184 (38 tests against real WebDAV and Nextcloud); `cloud-live` dispatched on main r24d0e7c476 (38 tests against the live accounts) |
 | `ci-legacy-apps.yml` | `legacy-apps-build`, `legacy-apps` (nightly and dispatched, micro-VM step) | r0e79c3d184: GNOME Text Editor, Qt 6 and LibreOffice Writer passed |
+| `build-env-tools.yml` | `env-tools-binaries-<arch>`, `env-tools-<arch>`, `env-tools-plan`, `seal-env-tools`, `image-env-tools`, `image-env-tools-preview`, `sign-env-tools`, `publish-env-tools` | binaries and catalogs on both architectures (r8673ba882c), sealed for the publisher and imaged from a working tree (r26f07821f0); checks in t.toml; Forgejo Actions no longer runs |
 
 Still here, with what is missing:
 
 | workflow | checks on t | passed on t | missing |
 |---|---|---|---|
-| `build-env-tools.yml` | `env-tools-binaries-*`, `env-tools-*` | binaries and catalogs on both architectures (r8673ba882c) | publication: the tools are sealed inside the build, so publishing re-signs them with the publisher identity and rewrites the catalog |
 | `resolve-builder.yml` | none needed | | a reusable workflow other workflows call; retires with its callers |
 
 ## Inventory
@@ -379,7 +380,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 | ~~`build-kernel.yml`~~ | push main and `v*`, PR, dispatch | Cosign via OIDC, `RELEASE_TOKEN` | `disk-100g` x86_64 and arm64, KVM to boot the kernel and probe Secure Boot | `tilo/tilo-kernel` tags per arch, signed with provenance, pin pull request | moved to t (above) |
 | ~~`build-legacy-guest.yml`~~ | push main (paths), PR, dispatch | Cosign via OIDC, `RELEASE_TOKEN` | `disk-100g` x86_64, root podman, loop devices, KVM | `tilo/legacy-guest` signed, pin pull request | moved to t (above) |
 | ~~`build-env-runtime.yml`~~ | every 4 hours, push main (paths), dispatch | Cosign via OIDC, `GITHUB_TOKEN`, `TAPP_PUBLISHER_IDENTITY` (raw Ed25519 identity) | x86_64 and arm64, Docker daemon | `tilo/env-runtime:set-<fp>`, sealed with the tapp publisher identity, signed | moved to t (above) |
-| `build-env-tools.yml` | every 6 hours, push main (paths), dispatch | as env-runtime | privileged container, loop-mounted ext4 | `tilo/env-tools:<runtime>-<catalog>` signed | `privileged = true` build, sign, publish |
+| ~~`build-env-tools.yml`~~ | every 6 hours, push main (paths), dispatch | as env-runtime | privileged container, loop-mounted ext4 | `tilo/env-tools:<runtime>-<catalog>` signed | moved to t (above) |
 | ~~`build-windows-compat.yml`~~ | dispatch | Cosign via OIDC, `GITHUB_TOKEN` | Docker daemon, `disk-100g` Windows guest, arm64 FEX | `wine-tools`, `wine-paired`, `tilo-fex-*-candidate`, signed FEX payload | moved to t (above) |
 
 ### The OS
