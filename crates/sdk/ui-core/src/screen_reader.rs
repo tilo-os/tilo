@@ -57,6 +57,8 @@ mod phrase {
             Role::TreeItem => ("sr-role-tree-item", "tree item"),
             Role::Menu => ("sr-role-menu", "menu"),
             Role::MenuItem => ("sr-role-menu-item", "menu item"),
+            Role::ListBox => ("sr-role-list-box", "list box"),
+            Role::ListBoxOption => ("sr-role-option", "option"),
 
             Role::Button => ("sr-role-button", "button"),
             Role::ToggleButton => ("sr-role-toggle-button", "toggle button"),

@@ -646,15 +646,30 @@ impl AccountList {
         face.paint(ctx, ring);
     }
 
-    fn paint_empty(&mut self, ctx: &mut PaintCtx<'_>) {
-        let content = EmptyStateContent {
+    fn empty_content() -> EmptyStateContent<'static> {
+        EmptyStateContent {
             icon: Some(Icon::Shield),
             message: Some("Scan a QR code or paste a setup link to see its one-time codes here."),
             action_label: Some("Add account"),
             ..EmptyStateContent::new("No accounts yet")
-        };
-        let action = EmptyState::paint(ctx, self.rect, &content, self.last_mouse);
+        }
+    }
+
+    fn paint_empty(&mut self, ctx: &mut PaintCtx<'_>) {
+        let action = EmptyState::paint(ctx, self.rect, &Self::empty_content(), self.last_mouse);
         self.empty_action = action.unwrap_or(Rect::ZERO);
+    }
+
+    /// The empty list's state as drawn, its "Add account" answering
+    /// `action_target`; `None` while there are accounts.
+    pub fn empty_access(&self, action_target: &str) -> Option<ui::a11y::AccessNode> {
+        self.accounts.is_empty().then(|| {
+            Self::empty_content().access_node(
+                self.rect,
+                (self.empty_action.area() > 0.0).then_some(self.empty_action),
+                action_target,
+            )
+        })
     }
 
     /// Whether the scroll bar's fade needs frames now.

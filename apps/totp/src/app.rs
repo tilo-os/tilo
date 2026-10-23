@@ -26,6 +26,8 @@ use ui::time::{Duration, Instant};
 /// How long a copied code stays on the clipboard: one code period, after
 /// which it is useless anyway.
 const CODE_ON_CLIPBOARD_FOR: Duration = Duration::from_secs(30);
+/// The empty list's "Add account", which opens the add sheet as its press does.
+const ADD_ACCOUNT_TARGET: &str = "totp.add";
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -551,6 +553,13 @@ impl AuthenticatorApp {
     /// Keeping this beside `apply_list_event` ensures assistive activation
     /// cannot acquire a separate mutation path from pointer input.
     fn perform_a11y_target(&mut self, target: &str, action: &A11yAction) -> bool {
+        if target == ADD_ACCOUNT_TARGET {
+            if !matches!(action, A11yAction::Activate) {
+                return false;
+            }
+            self.apply_list_event(ListEvent::Add);
+            return true;
+        }
         let Some((verb, raw_id)) = target.rsplit_once(':') else {
             return false;
         };
@@ -1194,6 +1203,7 @@ impl Widget for AuthenticatorApp {
                 )
             })
             .collect();
+        children.extend(self.list.empty_access(ADD_ACCOUNT_TARGET));
         children.push(
             AccessNode::new(Role::List)
                 .with_name("Authenticator accounts")

@@ -4248,7 +4248,14 @@ impl Widget for TabBar {
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                let node = AccessNode::new(Role::Tab)
+                // Each node reports the rect its control is drawn in, so a
+                // pointer sent to its centre lands on it; a control not
+                // drawn (a chip the pill hides) has no geometry to report.
+                let drawn = |rects: &[Rect], node: AccessNode| match rects.get(i) {
+                    Some(rect) if rect.area() > 0.0 => node.with_bounds(*rect),
+                    _ => node,
+                };
+                let node = drawn(&self.tab_rects, AccessNode::new(Role::Tab))
                     .with_action_target(format!("tab:{}", t.id))
                     .with_name(t.title.clone())
                     .with_state(AccessState {
@@ -4264,7 +4271,7 @@ impl Widget for TabBar {
                     node
                 } else {
                     node.with_children(vec![
-                        AccessNode::new(Role::Button)
+                        drawn(&self.close_rects, AccessNode::new(Role::Button))
                             .with_name(format!("Close {}", t.title))
                             .with_action_target(format!("tab-close:{}", t.id))
                             .with_state(AccessState {
@@ -4283,7 +4290,7 @@ impl Widget for TabBar {
                 let chips = self.closable && self.show_maximize && !self.pinned_ids.contains(&t.id);
                 if chips {
                     node.children.push(
-                        AccessNode::new(Role::Button)
+                        drawn(&self.search_rects, AccessNode::new(Role::Button))
                             .with_name(crate::i18n::widget_format(
                                 "tab-search-in",
                                 &[("title", t.title.clone().into())],
@@ -4297,7 +4304,7 @@ impl Widget for TabBar {
                 }
                 if let Some(control) = self.history.get(&t.id).filter(|_| chips) {
                     node.children.push(
-                        AccessNode::new(Role::ToggleButton)
+                        drawn(&self.history_rects, AccessNode::new(Role::ToggleButton))
                             .with_name(crate::i18n::I18nManager::lookup_plain(
                                 "standalone-history-title",
                             ))
@@ -4331,9 +4338,14 @@ impl Widget for TabBar {
             .collect();
         tab_children.extend(self.desktop_control_access());
         if self.new_tab {
+            let new_tab = AccessNode::new(Role::Button).with_name("New tab");
+            let new_tab = if self.new_tab_rect.area() > 0.0 {
+                new_tab.with_bounds(self.new_tab_rect)
+            } else {
+                new_tab
+            };
             tab_children.push(
-                AccessNode::new(Role::Button)
-                    .with_name("New tab")
+                new_tab
                     .with_action_target("tab-new")
                     .with_state(AccessState {
                         focusable: true,
@@ -4343,10 +4355,14 @@ impl Widget for TabBar {
         }
         // The window's own controls, acting on the active tab.
         if self.window_controls {
-            let button = |role: Role, name: String, target: &str| {
+            // Each control reports the rect it is drawn in: a node without
+            // bounds would report the whole bar, and a pointer sent to its
+            // centre would miss it.
+            let button = |role: Role, name: String, target: &str, rect: Rect| {
                 AccessNode::new(role)
                     .with_name(name)
                     .with_action_target(target)
+                    .with_bounds(rect)
                     .with_state(AccessState {
                         focusable: true,
                         ..Default::default()
@@ -4357,6 +4373,7 @@ impl Widget for TabBar {
                     Role::ToggleButton,
                     crate::i18n::I18nManager::lookup_plain("standalone-history-title"),
                     WINDOW_HISTORY_TARGET,
+                    self.controls.history,
                 );
                 history.state.checked = Some(control.is_open());
                 tab_children.push(history);
@@ -4369,11 +4386,13 @@ impl Widget for TabBar {
                     "host-window-maximize"
                 }),
                 WINDOW_MAXIMIZE_TARGET,
+                self.controls.maximize,
             ));
             tab_children.push(button(
                 Role::Button,
                 crate::i18n::I18nManager::lookup_plain("host-window-close"),
                 WINDOW_CLOSE_TARGET,
+                self.controls.close,
             ));
             // The active tab's slots, before the window's controls in
             // reading order.
@@ -8558,6 +8577,59 @@ mod tests {
             ElementState::Pressed,
         ));
         Dispatch::new().layout(&taffy, node).send(b, &event).handled
+    }
+
+    /// A pointer sent to the centre of a window control's accessibility
+    /// node lands on the control, not somewhere in the bar.
+    #[test]
+    fn each_window_control_reports_the_rect_it_is_drawn_in() {
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
+        b.set_window_controls(true);
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let node = Widget::accessibility(&b).expect("the bar is described");
+        fn find<'a>(
+            node: &'a crate::a11y::AccessNode,
+            target: &str,
+        ) -> Option<&'a crate::a11y::AccessNode> {
+            if node.action_target.as_deref() == Some(target) {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| find(child, target))
+        }
+        let controls = b.window_controls();
+        for (target, drawn) in [
+            ("tab:1", b.tab_rects()[0]),
+            (WINDOW_MAXIMIZE_TARGET, controls.maximize),
+            (WINDOW_CLOSE_TARGET, controls.close),
+        ] {
+            let bounds = find(&node, target)
+                .and_then(|control| control.bounds)
+                .unwrap_or_else(|| panic!("{target} reports where it is"));
+            assert!(drawn.area() > 0.0, "{target} is drawn");
+            assert_eq!(bounds.to_rect(), drawn, "{target}");
+        }
+        // A pill's close chip, drawn or not, reports exactly what is drawn.
+        let mut b = TabBar::new(
+            "g2",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "Chat"),
+            ],
+            1,
+        );
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let node = Widget::accessibility(&b).expect("the bar is described");
+        for (index, id) in [(0, 1), (1, 2)] {
+            let close = find(&node, &format!("tab-close:{id}")).expect("a pill can be closed");
+            let drawn = b.close_rects[index];
+            assert_eq!(
+                close.bounds.map(crate::a11y::AccessBounds::to_rect),
+                (drawn.area() > 0.0).then_some(drawn),
+                "tab-close:{id}"
+            );
+        }
     }
 
     #[test]

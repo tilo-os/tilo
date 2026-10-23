@@ -808,6 +808,51 @@ mod tests {
             .collect()
     }
 
+    /// The empty vault's drawn "Add account" is in the tree, where it is
+    /// drawn, and opens the add sheet as a click on it does.
+    #[test]
+    fn the_empty_vaults_add_account_is_described_and_opens_the_sheet() {
+        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
+            if node.action_target.as_deref() == Some("totp.add") {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        fn walk(node: &ui::headless::InspectionNode) -> Option<&ui::a11y::AccessNode> {
+            node.semantics
+                .as_ref()
+                .and_then(find)
+                .or_else(|| node.children.iter().find_map(walk))
+        }
+        let (mut app, _host) = open(ui::secrets::memory_backend());
+        settle(&mut app);
+        let add = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                format!("{:?}", node.role()) == "Button" && node.label() == Some("Add account")
+            })
+            .map(|(id, _)| id)
+            .expect("the empty state's action is in the tree");
+        let snapshot = app.harness().inspection();
+        let bounds = walk(&snapshot.root)
+            .and_then(|node| node.bounds)
+            .expect("it reports where it is drawn")
+            .to_rect();
+        assert!(bounds.area() > 0.0 && bounds.width() < 600.0, "{bounds:?}");
+        app.harness()
+            .perform_a11y_action(add, &ui::a11y::Action::Activate)
+            .unwrap();
+        settle(&mut app);
+        assert!(
+            names(&mut app)
+                .iter()
+                .any(|(role, name)| role == "Dialog" && name == "Add account"),
+            "it opens the add sheet"
+        );
+    }
+
     #[test]
     fn the_header_opens_the_sheet_and_enter_copies_the_selected_code() {
         let (mut app, _host) = open(ui::secrets::memory_backend());

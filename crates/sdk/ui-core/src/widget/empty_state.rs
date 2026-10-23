@@ -121,6 +121,37 @@ impl<'a> EmptyStateContent<'a> {
         }
     }
 
+    /// The accessibility of a state painted with [`EmptyState::paint`]: a
+    /// group over `rect` named by the title and described by the message,
+    /// and its action as a button where it was drawn (`action`, the rect
+    /// `paint` returned), answering `action_target`. A widget that paints
+    /// an empty state itself adds this node, so what is drawn is also there
+    /// for assistive technology and agents.
+    pub fn access_node(
+        &self,
+        rect: Rect,
+        action: Option<Rect>,
+        action_target: &str,
+    ) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let mut node = AccessNode::new(Role::Group)
+            .with_name(self.title)
+            .with_bounds(rect);
+        if let Some(message) = self.message {
+            node = node.with_description(message);
+        }
+        if let (Some(label), Some(action)) = (self.action_label, action) {
+            node = node.with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name(label)
+                    .with_bounds(action)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_action_target(action_target),
+            ]);
+        }
+        node
+    }
+
     fn parts(&self) -> Parts {
         Parts {
             icon: self.icon.is_some() || self.illustration.is_some(),

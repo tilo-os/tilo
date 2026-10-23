@@ -1,5 +1,5 @@
-const roles={Window:'group',Group:'group',Generic:'group',Toolbar:'toolbar',TabBar:'tablist',Tab:'tab',TabPanel:'tabpanel',List:'list',ListItem:'listitem',Table:'table',Row:'row',Cell:'cell',Tree:'tree',TreeItem:'treeitem',Menu:'menu',MenuItem:'menuitem',Button:'button',ToggleButton:'button',Checkbox:'checkbox',RadioButton:'radio',Switch:'switch',Slider:'slider',SpinButton:'spinbutton',ComboBox:'combobox',TextInput:'textbox',MultilineTextInput:'textbox',Link:'link',ProgressBar:'progressbar',Spinner:'status',Tooltip:'tooltip',Image:'img',Document:'document',Paragraph:'paragraph',Dialog:'dialog'};
-const keyboardActivatable=new Set(['Tab','TreeItem','MenuItem','ToggleButton','Checkbox','RadioButton','Switch','Link','ListItem']);
+const roles={Window:'group',Group:'group',Generic:'group',Toolbar:'toolbar',TabBar:'tablist',Tab:'tab',TabPanel:'tabpanel',List:'list',ListItem:'listitem',Table:'table',Row:'row',Cell:'cell',Tree:'tree',TreeItem:'treeitem',Menu:'menu',MenuItem:'menuitem',ListBox:'listbox',ListBoxOption:'option',Button:'button',ToggleButton:'button',Checkbox:'checkbox',RadioButton:'radio',Switch:'switch',Slider:'slider',SpinButton:'spinbutton',ComboBox:'combobox',TextInput:'textbox',MultilineTextInput:'textbox',Link:'link',ProgressBar:'progressbar',Spinner:'status',Tooltip:'tooltip',Image:'img',Document:'document',Paragraph:'paragraph',Dialog:'dialog'};
+const keyboardActivatable=new Set(['Tab','TreeItem','MenuItem','ToggleButton','Checkbox','RadioButton','Switch','Link','ListItem','ListBoxOption']);
 const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'});
 const utf8=new TextEncoder();
 let bridgeSequence=0;
@@ -269,6 +269,9 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     }
     countOwners(snapshot.root);
     function semantic(node,owner,parent,index,identity,ancestry,ownerPath){
+      // A hidden node (a closed dialog) is not there for assistive
+      // technology, and neither is anything inside it.
+      if(node.state?.hidden)return;
       const key=JSON.stringify([identity,node.semantic_key??node.action_target??index]);live.add(key);
       let element=elements.get(key);
       if(element?.tiloEditable&&!currentComposition(element))element=elements.get(key);
@@ -325,6 +328,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       (node.children??[]).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`,identity,[...ancestry,key],ownerPath));
     }
     function walk(node,parent,ancestry=[]){
+      if(node.semantics?.state?.hidden)return;
       if(node.semantics){
         const uniqueTestId=node.test_id&&testIds.get(node.test_id)===1;
         const semanticKey=node.semantics.semantic_key;
