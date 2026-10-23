@@ -183,6 +183,10 @@ pub struct ProfileCard {
     /// changes, and the anchor and viewport it opened at.
     model: Option<ProfileModel>,
     placed: (Rect, Rect),
+    /// The card's widgets were built again (it opened, or a linked account
+    /// changed while open): a layout that still maps the ones they replaced
+    /// must be built again before it reaches them.
+    replaced: bool,
 }
 
 impl Default for ProfileCard {
@@ -196,6 +200,7 @@ impl Default for ProfileCard {
             focus_reset: false,
             model: None,
             placed: (Rect::ZERO, Rect::ZERO),
+            replaced: false,
         }
     }
 }
@@ -593,6 +598,7 @@ impl ProfileCard {
         self.popover.set_viewport(viewport);
         self.popover.set_anchor(anchor);
         self.popover.set_open(true);
+        self.replaced = true;
     }
 
     /// Open the card for `model` under `anchor` (the own avatar) within
@@ -633,6 +639,7 @@ impl ProfileCard {
             // where it is and the pointer it is tracking.
             let body = Box::new(self.body(&model));
             self.popover.content_mut().set_child(body);
+            self.replaced = true;
             // The control chosen is gone; focus goes back into the card.
             self.focus_reset = true;
         }
@@ -741,6 +748,10 @@ impl Widget for ProfileCard {
 
     fn take_focus_reset(&mut self) -> bool {
         std::mem::take(&mut self.focus_reset) | self.popover.take_focus_reset()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.replaced) | self.popover.take_structure_dirty()
     }
 
     fn traps_focus(&self) -> bool {
@@ -949,6 +960,93 @@ mod tests {
         assert!(frame.is_open());
         frame.set_linked(vec![discord(LinkState::Unlinked)]);
         assert_eq!(frame.linked(), [discord(LinkState::Unlinked)]);
+    }
+
+    /// Hosts the card as a shell does: the linked accounts change during a
+    /// frame's update, not through the harness's own access to its root
+    /// (which lays out from scratch).
+    struct Shell {
+        card: ProfileCard,
+        next: Rc<RefCell<Option<Vec<LinkedAccount>>>>,
+    }
+
+    impl Widget for Shell {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.card.build_layout(taffy, theme, map)
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.card.apply_layout(taffy, node, origin);
+        }
+
+        fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+            let linked = self.next.borrow_mut().take();
+            let changed = linked.is_some();
+            if let Some(linked) = linked {
+                self.card.set_linked(linked);
+            }
+            self.card.update(state, path) | changed
+        }
+
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![&self.card]
+        }
+
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            vec![&mut self.card]
+        }
+
+        fn needs_redraw(&self) -> bool {
+            self.next.borrow().is_some() || self.card.needs_redraw()
+        }
+
+        fn name(&self) -> &'static str {
+            "Shell"
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.card.get_rect()
+        }
+    }
+
+    /// The card builds its widgets again when a linked account changes.
+    /// A layout kept from before would still point at the ones they
+    /// replaced, freed: the page read them as garbage once their memory was
+    /// reused (after an app's code loaded), and trapped in an indirect call.
+    #[test]
+    fn a_rebuilt_card_is_laid_out_again_before_a_frame_reaches_it() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ProfileModel {
+                linked: vec![discord(LinkState::Unlinked)],
+                ..model()
+            },
+            Rect::new(1200.0, 2.0, 1220.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let next = Rc::new(RefCell::new(None));
+        let shell = Shell {
+            card,
+            next: Rc::clone(&next),
+        };
+        let mut frame =
+            ui::headless::Framed::new(ui::State::new(), shell, (1280, 720), Theme::dark());
+        let harness = ui::headless::Framed::harness_mut(&mut frame);
+        harness.poll_frame().unwrap();
+        let before = harness.rebuilt_frames();
+        *next.borrow_mut() = Some(vec![discord(LinkState::Linking(code()))]);
+        assert!(harness.poll_frame().unwrap(), "the change is drawn");
+        assert!(
+            harness.rebuilt_frames() > before,
+            "the frame lays the rebuilt card out again instead of keeping the old layout"
+        );
+        assert!(harness.inspection_json().unwrap().contains("ABCDEFGHJKLM"));
     }
 
     fn opened() -> ProfileCard {
