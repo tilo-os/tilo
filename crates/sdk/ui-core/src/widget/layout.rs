@@ -176,8 +176,13 @@ pub fn with_layout_clip<T>(clip: vello::kurbo::Rect, place: impl FnOnce() -> T) 
 pub enum WidgetLayoutError {
     #[error(transparent)]
     Taffy(#[from] taffy::TaffyError),
-    #[error("widget layout styles did not settle after eight adjustments")]
-    DidNotSettle,
+    /// `still_changing` names the widgets whose style or manual placement
+    /// still changed in the last pass, so the one that oscillates is known.
+    #[error(
+        "widget layout styles did not settle after eight adjustments; still changing: {}",
+        still_changing.join(", ")
+    )]
+    DidNotSettle { still_changing: Vec<&'static str> },
     #[error("widget composition did not settle after eight layout passes")]
     CompositionDidNotSettle,
     #[error("manual layout nesting exceeds 32 levels")]
@@ -297,7 +302,9 @@ pub(super) unsafe fn compute_widget_layout_depth(
     for (node, policy) in &policies {
         super::manual::reset_region(policy, taffy, *node)?;
     }
+    let mut still_changing = Vec::new();
     for _ in 0..8 {
+        still_changing.clear();
         solve_layout(taffy, root, available, &mut |known, available, node| {
             // SAFETY: caller owns the stable matching tree, each callback is
             // exclusive, and bound dispatch checks admission and lifetime.
@@ -320,25 +327,54 @@ pub(super) unsafe fn compute_widget_layout_depth(
             else {
                 continue;
             };
-            changed |= unsafe {
+            let placed = unsafe {
                 super::manual::run_policy(policy, taffy, *node, nodes, bindings, text, depth)?
             };
+            if placed {
+                still_changing.push(*node);
+            }
+            changed |= placed;
         }
         for &node in nodes.keys() {
             // SAFETY: same contract as measurement; no topology mutation is
             // permitted by adjust_layout_style.
-            changed |= unsafe {
+            let adjusted = unsafe {
                 layout_bound_node(bindings, nodes, node, |widget| {
                     widget.adjust_layout_style(taffy, node, text)
                 })
             }
             .unwrap_or(false);
+            if adjusted {
+                still_changing.push(node);
+            }
+            changed |= adjusted;
         }
         if !changed {
             return Ok(());
         }
     }
-    Err(WidgetLayoutError::DidNotSettle)
+    // Named once it gave up, outside every owner's lease.
+    let mut still_changing: Vec<&'static str> = still_changing
+        .into_iter()
+        .map(|node| unsafe { widget_name(bindings, nodes, node) })
+        .collect();
+    still_changing.sort_unstable();
+    still_changing.dedup();
+    Err(WidgetLayoutError::DidNotSettle { still_changing })
+}
+
+/// The concrete type of the widget at `node`, for naming it in an error.
+///
+/// # Safety
+/// The same live-tree contract as [`compute_widget_layout`].
+unsafe fn widget_name(
+    bindings: &BoundNodeMap,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    node: NodeId,
+) -> &'static str {
+    // SAFETY: forwards the caller's exact live-tree ownership contract.
+    unsafe { layout_bound_node(bindings, nodes, node, |widget| widget.concrete_type_name()) }
+        .unwrap_or("an unbound widget")
 }
 
 /// Whether any widget under `root` composes from its allocation (see
@@ -1085,7 +1121,13 @@ mod tests {
             let result = unsafe {
                 compute_widget_layout(&mut tree, root, available, &nodes, &bindings, &mut text)
             };
-            assert!(matches!(result, Err(WidgetLayoutError::DidNotSettle)));
+            // The error names the widget that kept changing.
+            match result {
+                Err(WidgetLayoutError::DidNotSettle { still_changing }) => {
+                    assert_eq!(still_changing, [std::any::type_name::<UnsettledStyles>()])
+                }
+                other => panic!("an oscillating style must not settle: {other:?}"),
+            }
             assert_eq!(widget.adjustments, 8);
             assert!(widget.measures > 0);
         }
