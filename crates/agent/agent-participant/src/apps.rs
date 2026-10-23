@@ -257,6 +257,21 @@ pub fn offered_to_agents(descriptor: &ActionDescriptor) -> bool {
         && answers(&descriptor.contract)
 }
 
+/// Whether `descriptor` is an effect an agent is offered when its host
+/// renders ([`tilo_actions::HOST_RENDER_TAG`]): one [`offered_to_agents`]
+/// would offer but for the tag. A worker lists it in an agent's survey; the
+/// host keeps it only when it runs a render service
+/// ([`crate::render::offered`]) and answers it there, never in the worker.
+#[must_use]
+pub fn offered_when_host_renders(descriptor: &ActionDescriptor) -> bool {
+    descriptor.kind != tilo_actions::OperationKind::Document
+        && tagged(descriptor, tilo_actions::HOST_RENDER_TAG)
+        && descriptor.contract.reaches_agents()
+        && !tagged(descriptor, tilo_actions::OWN_DEVICE_SCOPE)
+        && !tagged(descriptor, tilo_actions::ATTENDED_TAG)
+        && answers(&descriptor.contract)
+}
+
 /// Whether an agent may run `descriptor` while it plans a task, to learn
 /// what an edit needs before it makes it (an artwork's size, a PDF's text,
 /// a look at a page): a view or an effect declared `kind = "read"`, which
@@ -514,7 +529,10 @@ impl Replica {
             // An action for people only (copying a link to the clipboard)
             // means nothing to an agent.
             .filter(|descriptor| descriptor.contract.reaches_agents())
-            .filter(|descriptor| self.offers(descriptor, &in_chains))
+            .filter(|descriptor| {
+                self.offers(descriptor, &in_chains)
+                    || (self.runs_effects && offered_when_host_renders(descriptor))
+            })
             .map(|mut descriptor| {
                 if self.runs_effects && descriptor.kind != tilo_actions::OperationKind::Document {
                     descriptor.params.retain(|param| param.name != PATH_PARAM);
