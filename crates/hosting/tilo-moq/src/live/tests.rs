@@ -1164,6 +1164,48 @@ async fn member_presence_follows_a_withdrawn_host_fed_member_to_its_new_broadcas
     drop(viewer);
 }
 
+/// An ops reader follows a member through withdrawal as a page's
+/// `subscribeOps` does: the subscription to the withdrawn broadcast ends,
+/// and [`super::peer::MemberOps`] subscribes to the re-announced one and
+/// reads on, never handing its reader the relay's empty seal frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn member_ops_follows_a_withdrawn_host_fed_member_to_its_new_broadcast() {
+    let f = fixture();
+    let viewer = connect(&f, b"grant-b", B).await;
+    let track = format!("{OPS_PREFIX}{RECORD}");
+    let mut ops = super::peer::MemberOps::follow(&viewer, &path(C), &track);
+    hear_injected_ops(&f, &mut ops, b"before").await;
+
+    let slot = f.live.relay.0.slot(&path(C), false).unwrap();
+    slot.state.lock_recover().host_active = None;
+    drop(slot);
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&path(C), false).is_none(),
+        "the idle host-fed namespace is withdrawn"
+    );
+
+    hear_injected_ops(&f, &mut ops, b"after").await;
+    drop(viewer);
+}
+
+/// Inject `frame` into the host-fed member C's ops track until `ops` hears
+/// it; every frame heard on the way is a non-empty injected one.
+async fn hear_injected_ops(f: &Fixture, ops: &mut super::peer::MemberOps, frame: &[u8]) {
+    tilo_test_env::within("the member's ops frame", async {
+        loop {
+            f.live.relay.inject_ops(ROOM, C, RECORD, frame);
+            while let Some(heard) = ops.next(Duration::from_millis(50)).await {
+                assert!(!heard.is_empty(), "the seal frame never reaches the reader");
+                if heard == frame {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+}
+
 /// Inject the host-fed member C's presence until `member` hears this frame.
 async fn hear_injected(
     f: &Fixture,
