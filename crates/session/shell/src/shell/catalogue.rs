@@ -356,6 +356,8 @@ struct SharedState {
     flathub_read: Option<(u64, String)>,
     blocks_stamp: Option<u64>,
     checked_at: Option<Instant>,
+    /// Staged by a capture: the files on disk never replace it.
+    staged: bool,
 }
 
 static SHARED: Mutex<Option<SharedState>> = Mutex::new(None);
@@ -390,11 +392,12 @@ pub fn shared_generation() -> u64 {
 /// Look again at the files behind the shared catalogue when that is due,
 /// on a worker, and read whichever changed.
 pub fn refresh_shared() {
-    let due = SHARED
-        .lock_recover()
-        .as_ref()
-        .and_then(|state| state.checked_at)
-        .is_none_or(|at| at.elapsed() >= SHARED_RECHECK);
+    let due = SHARED.lock_recover().as_ref().is_none_or(|state| {
+        !state.staged
+            && state
+                .checked_at
+                .is_none_or(|at| at.elapsed() >= SHARED_RECHECK)
+    });
     if !due || SHARED_CHECKING.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -422,24 +425,30 @@ pub fn refresh_shared() {
             let blocks_now = app_catalogue::block::current_stamp();
             let blocks = (blocks_stamp != Some(blocks_now))
                 .then(|| std::sync::Arc::new(app_catalogue::BlockList::load()));
-            let changed = flathub.is_some() || blocks.is_some();
+            let mut changed = flathub.is_some() || blocks.is_some();
             {
                 let mut guard = SHARED.lock_recover();
-                let state = guard.get_or_insert_with(|| SharedState {
-                    catalogue: SharedCatalogue::default(),
-                    flathub_read: None,
-                    blocks_stamp: None,
-                    checked_at: None,
-                });
-                if let Some(flathub) = flathub {
-                    state.catalogue.flathub = flathub;
-                    state.flathub_read = Some(read);
+                // A capture staged its catalogue while this read was under way.
+                if guard.as_ref().is_some_and(|state| state.staged) {
+                    changed = false;
+                } else {
+                    let state = guard.get_or_insert_with(|| SharedState {
+                        catalogue: SharedCatalogue::default(),
+                        flathub_read: None,
+                        blocks_stamp: None,
+                        checked_at: None,
+                        staged: false,
+                    });
+                    if let Some(flathub) = flathub {
+                        state.catalogue.flathub = flathub;
+                        state.flathub_read = Some(read);
+                    }
+                    if let Some(blocks) = blocks {
+                        state.catalogue.blocks = blocks;
+                        state.blocks_stamp = Some(blocks_now);
+                    }
+                    state.checked_at = Some(Instant::now());
                 }
-                if let Some(blocks) = blocks {
-                    state.catalogue.blocks = blocks;
-                    state.blocks_stamp = Some(blocks_now);
-                }
-                state.checked_at = Some(Instant::now());
                 drop(guard);
             }
             if changed {
@@ -507,9 +516,10 @@ pub fn stage_for_shots(apps: Vec<CatalogueApp>, flathub: Vec<app_catalogue::Cata
             flathub: std::sync::Arc::new(flathub),
             blocks: std::sync::Arc::default(),
         },
-        flathub_read: Some((u64::MAX, String::new())),
-        blocks_stamp: Some(u64::MAX),
+        flathub_read: None,
+        blocks_stamp: None,
         checked_at: Some(Instant::now()),
+        staged: true,
     });
     SHARED_REVISION.fetch_add(1, Ordering::Release);
 }
