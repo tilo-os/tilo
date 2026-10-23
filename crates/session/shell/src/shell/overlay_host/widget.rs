@@ -1122,6 +1122,7 @@ impl Widget for ShellOverlayHost {
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.bar_popovers.structure_stale()
+            | self.bar_popovers.profile.take_structure_dirty()
     }
 
     fn needs_animation_frame(&self) -> bool {
