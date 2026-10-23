@@ -68,14 +68,6 @@ save_image() {
   printf 'built %s of %s\n' "$(cat "$out/digest")" "$revision"
 }
 
-# A value of os/publication.env, the public configuration of OS publication.
-publication() {
-  local value
-  value=$(sed -n "s/^$1=//p" "$repo_root/os/publication.env")
-  [[ -n $value ]] || die "os/publication.env sets no $1"
-  printf '%s' "$value"
-}
-
 # The board's firmware, into os/hardware/firmware/BOARD (writable_sources), where
 # os/Containerfile.board takes it from: the Lenovo's from its pinned artifact, the Orange Pi's
 # Wi-Fi files from their pinned public copies.

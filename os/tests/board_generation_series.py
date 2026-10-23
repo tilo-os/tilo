@@ -23,7 +23,7 @@ class BoardSeries(unittest.TestCase):
         (self.path / "manifest").write_bytes(self.manifest)
         (self.path / "registry.json").write_text(json.dumps({"gen9": self.digest}))
         (self.path / "key").write_text("fixture key")
-        self.predicate = {"runDetails": {"builder": {"id": "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"},
+        self.predicate = {"runDetails": {"builder": {"id": "https://code.tilo.so/tilo/t/os-release-v1"},
             "byproducts": [{"name": "independent-rebuild", "uri": "urn:tilo:verification:manifest-digest-equal"}]},
             "buildDefinition": {"buildType": "https://tilo.sh/buildtypes/bootc-os/v1",
             "internalParameters": {"expectedReleaseDigest": self.digest},
