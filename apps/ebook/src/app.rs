@@ -4788,7 +4788,7 @@ impl Widget for BooksApp {
         // The empty shelf says what failed in its own empty state. Every
         // other view needs an honest loading/result surface: parsing happens
         // off-thread, so the previous book stays interactive.
-        if self.view != View::Library || !self.library.is_empty() {
+        if self.view != View::Library || !self.library.is_empty() || !self.elsewhere.is_empty() {
             self.draw_load_toast(&mut ctx);
         }
         // The open list of a dropdown lies over everything.
@@ -4943,6 +4943,21 @@ impl Widget for BooksApp {
                     .with_state(state)
                     .with_bounds(hit.rect)
                     .with_action_target(target);
+                // A book's tile carries where its text stands while it is
+                // neither here nor on its way.
+                let status = match &hit.action {
+                    Action::OpenBook(index) => self
+                        .shelf_book(*index)
+                        .and_then(|book| self.shelf_status(&book.id)),
+                    _ => None,
+                };
+                if let Some((label, detail)) = status {
+                    let node = node.with_value(label);
+                    return Some(match detail {
+                        Some(detail) => node.with_description(detail),
+                        None => node,
+                    });
+                }
                 Some(if matches!(hit.action, Action::SeekProgress) {
                     node.with_value(format!(
                         "{}%",
@@ -6945,6 +6960,7 @@ impl BooksApp {
                         self.shared_in_workspace(&book.id)
                     },
                     arriving: self.arriving(&book.id),
+                    status: self.shelf_status(&book.id),
                     progress: self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0),
                     notes: match notes {
                         0 => None,

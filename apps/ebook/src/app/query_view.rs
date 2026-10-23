@@ -33,7 +33,7 @@ use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use super::{Action, BooksApp, ShelfCard, ShelfGrid, View, paint_scroll_thumb};
-use crate::library_index::{LibraryIndex, Read};
+use crate::library_index::{LibraryIndex, Read, Standing};
 use crate::model::Book;
 use crate::search_provider::{
     ANNOTATION_KIND, AUTHOR_FACET, BOOK_FACET, BOOK_KIND, BookSearch, CHAPTER_KIND, LOCATION_KIND,
@@ -140,6 +140,13 @@ pub(super) struct BookQuery {
     /// When it was opened.
     reveal_since: ui::time::Instant,
 }
+
+/// What a book's tile says while its text waits for a device that has it.
+const WAITING_STATUS: &str = "Waiting for a device that has it";
+/// What it adds for a screen reader.
+const WAITING_DETAIL: &str = "Opens when a device that has it is online.";
+/// What a book's tile says when none of the connected devices has its text.
+const UNAVAILABLE_STATUS: &str = "None of your online devices has this book.";
 
 /// One result as laid out: where it is, what opening it does, and what it
 /// is called.
@@ -308,6 +315,25 @@ impl BooksApp {
         self.reveal_arrived();
     }
 
+    /// What `book`'s tile says of its text while it is being opened and is
+    /// neither here nor on its way, and what a screen reader hears besides.
+    /// It follows the devices as they come and go.
+    pub(super) fn shelf_status(&self, book: &str) -> Option<(&'static str, Option<&'static str>)> {
+        let opening = self.query.reveal_on_arrival.as_ref()?;
+        if opening.0 != book {
+            return None;
+        }
+        let (fetching, standing) = self.query.index.fetching()?;
+        if fetching != book {
+            return None;
+        }
+        match standing {
+            Standing::Fetching => None,
+            Standing::Waiting => Some((WAITING_STATUS, Some(WAITING_DETAIL))),
+            Standing::Unavailable => Some((UNAVAILABLE_STATUS, None)),
+        }
+    }
+
     /// Take in what fetching the book `id` came to: the book on the shelf,
     /// or why it is not coming, said plainly with what will bring it.
     fn take_fetched_book(&mut self, id: &str, read: Read<crate::content::LoadedBook>) {
@@ -320,10 +346,8 @@ impl BooksApp {
                 }
                 None
             }
-            Read::OnItsWay => None,
-            Read::Unavailable => Some(
-                "This book's text is on another device. It opens here once a device that has it is online.",
-            ),
+            // Still to come: where it stands is followed, not ended.
+            Read::OnItsWay | Read::Waiting | Read::Unavailable => None,
             Read::Unreadable => Some("This book's text could not be read."),
         };
         if let Some(message) = message {
@@ -372,20 +396,31 @@ impl BooksApp {
             .any(|entry| entry.id == book && entry.shared)
     }
 
-    /// Since when the text of `book` has been on its way here, while it is.
+    /// Since when the text of `book` has been on its way here, while it is:
+    /// fetched from a connected device, or downloaded from the workspace.
     pub(super) fn arriving(&self, book: &str) -> Option<ui::time::Instant> {
-        self.query.index.arriving(book).or_else(|| {
-            self.query
-                .reveal_on_arrival
-                .as_ref()
-                .filter(|(waiting, ..)| waiting == book)
-                .map(|_| self.query.reveal_since)
-        })
+        if self
+            .query
+            .index
+            .fetching()
+            .is_some_and(|(fetching, _)| fetching == book)
+        {
+            return self.query.index.arriving(book);
+        }
+        self.query
+            .reveal_on_arrival
+            .as_ref()
+            .filter(|(waiting, ..)| waiting == book)
+            .map(|_| self.query.reveal_since)
     }
 
-    /// Whether a book's text is on its way, its card's bar moving.
+    /// Whether a book's text is on its way, its card's bar moving. Not
+    /// while it waits for a device that has it: nothing moves then.
     pub(super) fn awaiting_arrival(&self) -> bool {
-        self.query.reveal_on_arrival.is_some()
+        self.query
+            .reveal_on_arrival
+            .as_ref()
+            .is_some_and(|(book, ..)| self.arriving(book).is_some())
     }
 
     /// Open the passage a hit named once its book is here.
@@ -851,6 +886,7 @@ impl BooksApp {
                         here: false,
                         shared: self.shared_in_workspace(&book.id),
                         arriving: self.arriving(&book.id),
+                        status: self.shelf_status(&book.id),
                         progress: self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0),
                         notes: None,
                         focused: false,
@@ -863,6 +899,7 @@ impl BooksApp {
                     open: Action::OpenBook(index),
                     here: true,
                     arriving: None,
+                    status: None,
                     shared: self
                         .library_paths
                         .get(&book.id)

@@ -2141,10 +2141,16 @@ impl PdfApp {
                 .copied();
             if needs_reconcile && let Some(missing) = missing {
                 self.status_note = Some(
-                    if missing == ContentState::Pending {
-                        "Imported page content is arriving from collaborators"
-                    } else {
-                        "Imported page content is unavailable on this device"
+                    match missing {
+                        ContentState::Pending => {
+                            "Imported page content is arriving from collaborators"
+                        }
+                        ContentState::Waiting => {
+                            "Imported page content arrives once a collaborator who has it is online"
+                        }
+                        ContentState::Resolved | ContentState::Unavailable => {
+                            "Imported page content is unavailable on this device"
+                        }
                     }
                     .into(),
                 );

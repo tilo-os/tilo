@@ -888,6 +888,16 @@ pub enum CollabEvent {
         hash: String,
         bytes: Vec<u8>,
     },
+    /// Where a [`CollabRequest::WantContent`] of `hash` on `route` has got
+    /// to while the content is not here: fetched from a connected device
+    /// ([`ContentState::Pending`](tilo_content::ContentState::Pending)),
+    /// waiting for one that could hand it over to connect, or unavailable
+    /// from every connected one. It changes as devices come and go.
+    RecordContentState {
+        route: RouteSpec,
+        hash: String,
+        state: tilo_content::ContentState,
+    },
     RealtimeCommandResult {
         request_id: u64,
         result: Result<crate::realtime_continuity::RealtimeReply, String>,

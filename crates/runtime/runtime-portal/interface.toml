@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 3
+version = 4
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -257,8 +257,13 @@ capnp = [
 "capnp:collab.capnp:AppSettings.update" = "@1 (section:Text,valuesJson:Data,action:Text)->(revision:UInt64,documentJson:Data)"
 "capnp:collab.capnp:ApprovedCheckReportedProgressStream" = "interface"
 "capnp:collab.capnp:ApprovedCheckReportedProgressStream.read" = "@0 ()->(report:Data,receipt:Data,error:Text)"
+"capnp:collab.capnp:BlobState" = "enum"
+"capnp:collab.capnp:BlobState.arrived" = "@0"
+"capnp:collab.capnp:BlobState.fetching" = "@1"
+"capnp:collab.capnp:BlobState.unavailable" = "@3"
+"capnp:collab.capnp:BlobState.waiting" = "@2"
 "capnp:collab.capnp:BlobStream" = "interface"
-"capnp:collab.capnp:BlobStream.read" = "@0 ()->(hash:Text,bytes:Data)"
+"capnp:collab.capnp:BlobStream.read" = "@0 ()->(hash:Text,bytes:Data,state:BlobState)"
 "capnp:collab.capnp:ChannelContext" = "struct"
 "capnp:collab.capnp:ChannelContext.collaborators" = "@0 :List(Collaborator)"
 "capnp:collab.capnp:ChannelContext.followChanged" = "@3 :Bool"

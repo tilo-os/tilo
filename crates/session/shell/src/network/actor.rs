@@ -236,6 +236,12 @@ pub enum PersonalFabricPayload {
         stamp: crate::shell::device_fabric::FabricStamp,
         outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
     },
+    /// Word to the device that asked ([`Self::RecordContentWant`]) that this
+    /// one keeps none of that content.
+    RecordContentLacks {
+        app_id: String,
+        hash: String,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -506,6 +512,14 @@ pub enum NetEvent {
     NotAdmitted {
         ws: WorkspaceId,
     },
+    /// A member of `ws` this device reaches through the workspace host
+    /// `host` joined (`active`) or left the host's live plane.
+    HostMember {
+        ws: WorkspaceId,
+        host: PeerId,
+        device: PeerId,
+        active: bool,
+    },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
@@ -714,6 +728,11 @@ enum HostEvent {
         from: [u8; 32],
         frame: Vec<u8>,
     },
+    /// A member joined or left the host's live plane.
+    Member {
+        device: [u8; 32],
+        active: bool,
+    },
     Message {
         author: EndpointId,
         fingerprint: [u8; 32],
@@ -842,6 +861,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                         | NeighbourMsg::SurfaceViewRequest { .. }
                         | NeighbourMsg::RemoteAction { .. }
                         | NeighbourMsg::RecordContentPiece { .. }
+                        | NeighbourMsg::RecordContentLacks { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -889,6 +909,7 @@ async fn enqueue_surface_event(
                 | NeighbourMsg::SurfaceViewRequest { .. }
                 | NeighbourMsg::RemoteAction { .. }
                 | NeighbourMsg::RecordContentPiece { .. }
+                | NeighbourMsg::RecordContentLacks { .. }
                 | NeighbourMsg::SurfaceStreamStart { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
                 | NeighbourMsg::PermissionGrant { .. },
@@ -2438,7 +2459,10 @@ impl ActorState {
 
     async fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
         let RecordContentDelivery { ws, target, msg } = delivery;
-        if !matches!(msg, NeighbourMsg::RecordContentPiece { .. }) {
+        if !matches!(
+            msg,
+            NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
+        ) {
             tracing::warn!(
                 ws,
                 "refused a non-content message on the record-content route"
@@ -2497,7 +2521,9 @@ impl ActorState {
         // an action frame (up to a catalogue page) is worth waiting for.
         let budget = if matches!(
             msg,
-            NeighbourMsg::RemoteAction { .. } | NeighbourMsg::RecordContentPiece { .. }
+            NeighbourMsg::RemoteAction { .. }
+                | NeighbourMsg::RecordContentPiece { .. }
+                | NeighbourMsg::RecordContentLacks { .. }
         ) {
             Duration::from_secs(2)
         } else {
@@ -3256,6 +3282,26 @@ impl ActorState {
         }
     }
 
+    /// The host `host` of `ws` reports another member device joined
+    /// (`active`) or left its live plane; `None` for this device itself.
+    fn host_member(
+        &self,
+        ws: WorkspaceId,
+        host: EndpointId,
+        device: [u8; 32],
+        active: bool,
+    ) -> Option<NetEvent> {
+        EndpointId::from_bytes(&device)
+            .ok()
+            .filter(|device| !self.is_own_device(device))
+            .map(|device| NetEvent::HostMember {
+                ws,
+                host,
+                device,
+                active,
+            })
+    }
+
     /// [`InternalEvent::Host`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
@@ -3264,6 +3310,7 @@ impl ActorState {
             HostEvent::NativeInput(_) => "HostNativeInput",
             HostEvent::Ready => "HostReady",
             HostEvent::Live { .. } => "HostLive",
+            HostEvent::Member { .. } => "HostMember",
             HostEvent::Voice(_) => "HostVoice",
             HostEvent::Closed => "HostClosed",
         });
@@ -3272,6 +3319,7 @@ impl ActorState {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
+            HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
             HostEvent::Voice(event) => {
                 let session = self
                     .host_sessions
@@ -4854,6 +4902,7 @@ fn spawn_host_pump(
                     HostEvent::Ready
                 }
                 HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
+                HostInbound::Member { device, active } => HostEvent::Member { device, active },
                 HostInbound::Voice(event) => HostEvent::Voice(event),
                 // The shell opens no on-demand record yet.
                 HostInbound::RecordOpened { .. } => continue,
@@ -4932,12 +4981,16 @@ fn spawn_host_pump(
     })
 }
 
-/// A piece of a record's content a workspace host handed this device from
-/// `from`; `None` for anything else.
+/// A piece of a record's content, or word that a device keeps none, a
+/// workspace host handed this device from `from`; `None` for anything else.
 fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     let author = EndpointId::from_bytes(from).ok()?;
     let msg = postcard::from_bytes(frame).ok()?;
-    matches!(msg, NeighbourMsg::RecordContentPiece { .. }).then(|| HostEvent::Message {
+    matches!(
+        msg,
+        NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
+    )
+    .then(|| HostEvent::Message {
         author,
         fingerprint: message_fingerprint(frame),
         replayed: false,

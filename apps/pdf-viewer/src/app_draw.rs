@@ -1385,6 +1385,9 @@ impl PdfApp {
         let label = match self.content.state(&imported.hash) {
             ContentState::Resolved => return,
             ContentState::Pending => "Imported page is loading…",
+            ContentState::Waiting => {
+                "Imported page arrives once a collaborator who has it is online"
+            }
             ContentState::Unavailable => "Imported page is unavailable",
         };
         let page_rect = Rect::new(

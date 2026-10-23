@@ -199,6 +199,15 @@ pub enum Inbound {
         /// The canonical `tilo_relay_protocol::live::SealedLiveFrame` bytes.
         frame: Vec<u8>,
     },
+    /// A device of the workspace joined (`active`) or left the host's live
+    /// plane: a member this device reaches through the host, which may
+    /// hand over the content the workspace's records reference.
+    Member {
+        /// The device's public key.
+        device: [u8; 32],
+        /// Whether it is now connected.
+        active: bool,
+    },
     /// The host's reply to the initial subscribe: how many queued
     /// deltas it is about to flush from this device's offline queue.
     Ready {

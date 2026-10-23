@@ -2247,6 +2247,7 @@ impl ChatApp {
                 } else {
                     Some(match self.content.state(blob) {
                         tilo_content::ContentState::Pending => "Loading",
+                        tilo_content::ContentState::Waiting => "Waiting for a device that has it",
                         tilo_content::ContentState::Unavailable => "Unavailable",
                         tilo_content::ContentState::Resolved => "Opening",
                     })

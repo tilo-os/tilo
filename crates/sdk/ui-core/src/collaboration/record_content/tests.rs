@@ -112,3 +112,32 @@ fn a_package_primary_window_asks_on_its_route_without_a_record() {
     assert_eq!(store.read(&hash), None);
     assert_eq!(ContentLane::of(app, "").take_requests().wants, vec![hash]);
 }
+
+#[test]
+fn missing_content_reads_where_its_host_says_the_want_stands() {
+    let (store, lane) = record_store("standing");
+    let bytes = b"bytes on a device that is offline".to_vec();
+    let hash = tilo_content::hash_bytes(&bytes);
+    assert_eq!(store.read(&hash), None);
+    let looked = arrivals();
+
+    lane.stands(hash.clone(), ContentState::Waiting);
+    assert_eq!(store.state(&hash), ContentState::Waiting);
+    assert_ne!(arrivals(), looked, "a window waiting for it looks again");
+
+    lane.stands(hash.clone(), ContentState::Pending);
+    assert_eq!(
+        store.state(&hash),
+        ContentState::Pending,
+        "a holder connected"
+    );
+
+    lane.arrive(hash.clone(), bytes.clone());
+    assert_eq!(store.read(&hash), Some(bytes));
+    assert_eq!(store.state(&hash), ContentState::Resolved);
+
+    // Content nobody here asked for has no standing.
+    let other = tilo_content::hash_bytes(b"never asked");
+    lane.stands(other.clone(), ContentState::Unavailable);
+    assert_eq!(lane.standing(&other), None);
+}

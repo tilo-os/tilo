@@ -1086,12 +1086,11 @@ fn opened(rooms: &Rooms, room: &str, device: [u8; 32], bytes: &[u8]) -> Option<V
     .unwrap();
     let mut whole = Vec::new();
     for frame in rooms.content_answer(room, &want) {
-        let neighbour_wire::NeighbourMsg::RecordContentPiece { bytes, .. } =
-            postcard::from_bytes(&frame).unwrap()
-        else {
-            panic!("a piece of content")
-        };
-        whole.extend(bytes);
+        match postcard::from_bytes(&frame).unwrap() {
+            neighbour_wire::NeighbourMsg::RecordContentPiece { bytes, .. } => whole.extend(bytes),
+            neighbour_wire::NeighbourMsg::RecordContentLacks { .. } => return None,
+            _ => panic!("a piece of content, or word that the host keeps none"),
+        }
     }
     (!whole.is_empty()).then_some(whole)
 }

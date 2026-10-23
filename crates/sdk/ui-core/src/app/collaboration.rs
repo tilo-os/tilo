@@ -854,6 +854,13 @@ impl App {
                 )
                 .arrive(hash, bytes);
             }
+            CollabEvent::RecordContentState { route, hash, state } => {
+                crate::collaboration::record_content::ContentLane::of(
+                    &route.app_id,
+                    route.record.as_deref().unwrap_or(""),
+                )
+                .stands(hash, state);
+            }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 self.presence_ctx
                     .upsert_remote_cursor(user_id, [x, y], None);

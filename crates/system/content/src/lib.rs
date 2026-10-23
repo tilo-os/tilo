@@ -82,7 +82,11 @@ pub enum ContentState {
     Resolved,
     /// Not here yet, and the backend is fetching it from somewhere that has it.
     Pending,
-    /// Not here, and nothing this store can reach is going to provide it.
+    /// Not here, and none of the devices that could hand it over is connected right now. It is
+    /// fetched the moment one connects; nothing waits on a timer.
+    Waiting,
+    /// Not here, and nothing this store can reach is going to provide it: every device that could
+    /// hold it said it does not.
     Unavailable,
 }
 

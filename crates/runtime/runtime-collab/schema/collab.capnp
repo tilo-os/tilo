@@ -836,15 +836,31 @@ interface ContextStream {
 }
 
 interface BlobStream {
-  # Pull the next piece of arrived content. Promise resolves when the
-  # broker has content for this channel.
+  # Pull the next news of content for this channel. Promise resolves when
+  # the broker has some.
   #
   # `hash` is the blake3 hex the content is addressed by in every store
-  # on every machine. A reader MUST verify the bytes against it before
-  # storing them: the key *is* the content, so bytes that hash to
-  # something else are not what was asked for, and taking them on trust
-  # would let one peer poison every replica that later reads that hash.
-  read @0 () -> (hash :Text, bytes :Data);
+  # on every machine. With `state` `arrived`, `bytes` are the content. A
+  # reader MUST verify the bytes against it before storing them: the key
+  # *is* the content, so bytes that hash to something else are not what
+  # was asked for, and taking them on trust would let one peer poison
+  # every replica that later reads that hash.
+  #
+  # Any other `state` says where a `wantBlob` of `hash` has got to, and
+  # `bytes` are empty. It changes as devices that could hand the content
+  # over connect and leave, never on a timer.
+  read @0 () -> (hash :Text, bytes :Data, state :BlobState);
+}
+
+enum BlobState {
+  # The content is here: `bytes` carry it.
+  arrived @0;
+  # A connected device that could hand it over is being asked for it.
+  fetching @1;
+  # No device that could hand it over is connected right now.
+  waiting @2;
+  # Every connected device that could hold it said it does not.
+  unavailable @3;
 }
 
 # Presence update as delivered on `PresenceStream`. `userId` is the
