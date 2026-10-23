@@ -2092,6 +2092,14 @@ impl DeviceFabric {
                 if snapshot == *current {
                     Ok(false)
                 } else if snapshot.presence.stamp == current.presence.stamp {
+                    // The device itself sending its last revision again, after
+                    // this side marked it gone ([`Self::mark_departed`]): back.
+                    let mut present = current.clone();
+                    present.presence.online = true;
+                    if !current.presence.online && snapshot == present {
+                        self.snapshots.insert(snapshot.owner.clone(), snapshot);
+                        return Ok(true);
+                    }
                     Err(FabricError::ConflictingRevision)
                 } else {
                     Ok(false)
@@ -2242,6 +2250,26 @@ impl DeviceFabric {
                     .collect(),
             })
             .collect()
+    }
+
+    /// Mark `device` offline because it went away: what a device says of
+    /// itself holds only while it can still say it, so once its route is
+    /// gone it shows offline, keeps its place and published displays, and
+    /// is back with its next snapshot. Returns whether it was online.
+    pub fn mark_departed(&mut self, device: &DeviceId) -> bool {
+        self.snapshots
+            .get_mut(device)
+            .is_some_and(|snapshot| std::mem::replace(&mut snapshot.presence.online, false))
+    }
+
+    /// Every device but `local` offline, as after a restart: a checkpoint
+    /// keeps what the devices said, not that they are still here.
+    #[must_use]
+    pub fn restored(mut self, local: Option<&DeviceId>) -> Self {
+        for (device, snapshot) in &mut self.snapshots {
+            snapshot.presence.online &= Some(device) == local;
+        }
+        self
     }
 
     /// Forget everything a device published, e.g. once it left the fleet.
@@ -3752,6 +3780,37 @@ mod tests {
         wifi_secrets_must_be_sealed();
         typed_wifi_security_decodes_the_legacy_string_postcard_shape();
         legacy_enterprise_record_is_retained_but_cannot_supply_a_password();
+    }
+
+    #[test]
+    fn a_device_that_went_away_keeps_its_place_but_takes_no_edge_until_back() {
+        let caps = FabricCapabilities {
+            display: true,
+            pointer: true,
+            ..FabricCapabilities::default()
+        };
+        let tablet = snapshot("tablet", 1, 1000, caps);
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(snapshot("laptop", 1, 0, caps)).unwrap();
+        fabric.upsert(tablet.clone()).unwrap();
+        assert!(fabric.mark_departed(&id("tablet")));
+        assert!(fabric.cross_right_edge(&id("laptop"), 417).is_none());
+        let gone = &fabric.snapshots()[&id("tablet")];
+        assert!(!gone.presence.online && gone.display.is_some());
+        // Its last revision again, from itself: it is back.
+        assert_eq!(fabric.upsert(tablet), Ok(true));
+        assert_eq!(
+            fabric.cross_right_edge(&id("laptop"), 417).unwrap().to,
+            id("tablet")
+        );
+        // A restart keeps only this device online.
+        let restored = fabric.restored(Some(&id("laptop")));
+        let online: Vec<_> = restored
+            .online_devices()
+            .map(|p| p.device.clone())
+            .collect();
+        assert_eq!(online, vec![id("laptop")]);
+        assert!(restored.snapshots().contains_key(&id("tablet")));
     }
 
     #[test]

@@ -2245,7 +2245,8 @@ impl ShellNetwork {
             }
         };
         let device_fabric_path = device_fabric_path(state_dir);
-        let device_fabric = load_device_fabric(&device_fabric_path);
+        let device_fabric =
+            load_device_fabric(&device_fabric_path).restored(personal_continuity_device.as_ref());
         let now = tilo_clock::unix_now();
         let pending_identity_admissions: std::collections::HashMap<_, _> =
             load_pending_invitations(&pending_invitations_path)
@@ -6361,6 +6362,20 @@ impl ShellNetwork {
         })
     }
 
+    /// The person's `device` has no route here any more: it shows offline
+    /// until it is back.
+    fn device_departed(&self, device: &crate::shell::personal_continuity::DeviceId) {
+        let Ok(mut fabric) = self.device_fabric.lock() else {
+            return;
+        };
+        if fabric.mark_departed(device)
+            && let Some(path) = self.device_fabric_path.as_deref()
+            && let Err(error) = self.persist_device_fabric(path, &fabric)
+        {
+            tracing::warn!(%error, "device fabric persistence failed");
+        }
+    }
+
     /// Edit this device's own fabric snapshot and publish it under the next
     /// stamp. The read, the edit and the write happen under one hold of the
     /// fabric, so an edit never builds on a snapshot another thread (the
@@ -7318,8 +7333,11 @@ impl ShellNetwork {
                     && routes
                         .get(&(ws, peer))
                         .is_some_and(|route| route.membership_epoch == epoch)
+                    && let Some(route) = routes.remove(&(ws, peer))
+                    && !routes.values().any(|other| other.device == route.device)
                 {
-                    routes.remove(&(ws, peer));
+                    drop(routes);
+                    self.device_departed(&route.device);
                 }
                 self.record_content_sources_changed();
                 let has_live_route =
@@ -11869,6 +11887,10 @@ mod tests {
             membership_epoch: Some(crate::network::actor::MembershipEpoch::for_test(1)),
         });
         assert!(!net.person_display_devices(&local)[0].online);
+        assert!(
+            !net.online_device_ids().contains(&owner),
+            "a device that left takes no screen edge and no input until it is back"
+        );
         assert_eq!(net.person_display_devices(&local)[0].outputs.len(), 1);
         net.forget_device_fabric(&owner);
         assert!(net.person_display_devices(&local).is_empty());
