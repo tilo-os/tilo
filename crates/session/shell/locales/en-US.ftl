@@ -2720,39 +2720,20 @@ device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Re
 
 device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.
 
-search-provider-system-settings = System settings
 setting-never = Never
 setting-minutes = { $minutes ->
         [one] 1 minute
        *[other] { $minutes } minutes
     }
-setting-on = On
-setting-off = Off
 setting-mode-dark = Dark
 setting-mode-light = Light
 setting-mode-automatic = Automatic
 setting-mode-unset = Follows the theme
 setting-get = { $name }: { $value }
 setting-get-detail = Read the current value and the values that are allowed
-setting-power-blank-after = Turn screen off after
-setting-power-blank-after-words = screen off blank display dark bildschirm ausschalten abschalten dunkel
-setting-power-lock-after = Lock screen after
-setting-power-lock-after-words = lock screen automatically sperren sperrzeit
 setting-confirm-weaker = Make it less safe
 setting-suspend-plugged-in = While plugged in
 setting-suspend-on-battery = On battery
-setting-power-suspend-after = Suspend after
-setting-power-suspend-after-words = sleep standby energy saving bereitschaft ruhezustand energiesparen
-setting-power-auto-suspend = Suspend when idle
-setting-power-auto-suspend-words = automatic sleep standby inactivity automatisch inaktiv
-setting-display-scale = Display scale
-setting-display-scale-words = scaling zoom size bildschirm skalierung groesse
-setting-display-refresh-rate = Display refresh rate
-setting-display-refresh-rate-words = hertz frequency frames bildwiederholrate bildfrequenz
-setting-keyboard-layout = Keyboard layout
-setting-keyboard-layout-words = language input source keymap tastatur sprache belegung
-setting-appearance-mode = Appearance mode
-setting-appearance-mode-words = dark light night theme design dunkel hell nacht
 display-remote-heading = Your other screens
 display-remote-title = Display { $number }: { $name } on { $device }
 display-remote-row = { $title }, { $status }

@@ -307,6 +307,11 @@ pub const SETTINGS: &[Setting] = &[
     ),
     s("display.scale", "displays", "display.output.*.scale"),
     s("display.resolution", "displays", "display.output.*.mode"),
+    s(
+        "display.refresh_rate",
+        "displays",
+        "display.output.*.refresh",
+    ),
     s("display.rotation", "displays", "display.output.*.rotation"),
     s("display.hdr", "displays", "display.output.*.hdr"),
     s("display.vrr", "displays", "display.output.*.vrr"),

@@ -359,6 +359,7 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_value!("display.night_light_warmth" => known display::values::night_light_warmth),
     crate::setting::setting_value!("display.scale" => display::values::scale),
     crate::setting::setting_value!("display.resolution" => display::values::resolution),
+    crate::setting::setting_value!("display.refresh_rate" => display::values::refresh_rate),
     crate::setting::setting_value!("display.rotation" => display::values::rotation),
     crate::setting::setting_value!("display.hdr" => display::values::hdr),
     crate::setting::setting_value!("display.vrr" => display::values::vrr),
