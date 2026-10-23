@@ -1718,6 +1718,20 @@ pub fn room_layout_choice(doc: &AutoCommit) -> Option<RoomLayout> {
     }
 }
 
+/// The people the room `doc` governs lists as its members, by person id:
+/// who still holds what they made on its desktop
+/// ([`crate::ownership::released`]). `None` when `doc` lists nobody (not
+/// heard yet), so nothing is taken as released before the list arrives.
+#[must_use]
+pub fn room_members(doc: &AutoCommit) -> Option<std::collections::BTreeSet<String>> {
+    let people: std::collections::BTreeSet<String> =
+        blob_map_of::<serde_json::Value>(doc, ROOM_MEMBERS_KEY)
+            .into_iter()
+            .map(|(person, _)| person)
+            .collect();
+    (!people.is_empty()).then_some(people)
+}
+
 /// The layout scope of the room `doc` governs: its governor's choice, else
 /// [`RoomLayout::Shared`], an invite-only room's default.
 #[must_use]

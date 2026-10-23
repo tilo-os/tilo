@@ -53,13 +53,15 @@ impl DesktopGuard {
     }
 
     /// Decide `mutation`, a write by `writer` (a person id): each act of
-    /// each of its changes on what `writer` did not make must be one
-    /// `allows` lets them do. Takes the write in when it is admitted, and
+    /// each of its changes on what `writer` did not make, and that is not
+    /// released by its maker leaving the room (`members`: the room's
+    /// current members), must be one `allows` lets them do. Takes the write in when it is admitted, and
     /// leaves the desktop as it was when it is refused.
     pub(crate) fn decide(
         &mut self,
         mutation: &DocumentMutation,
         writer: &str,
+        members: Option<&std::collections::BTreeSet<String>>,
         allows: &dyn Fn(&Touched) -> bool,
     ) -> Result<(), DesktopRefusal> {
         let bytes = match mutation {
@@ -73,7 +75,7 @@ impl DesktopGuard {
             let seen = shared_record::read(&next, Some(change.deps())).unwrap_or_default();
             let left = shared_record::read(&next, Some(&[change.hash()]))
                 .unwrap_or_else(SharedDesktop::default);
-            if let Some(act) = foreign_acts(&seen, &left, writer)
+            if let Some(act) = foreign_acts(&seen, &left, writer, members)
                 .into_iter()
                 .find(|act| !allows(act))
             {
