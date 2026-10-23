@@ -199,22 +199,31 @@ impl WorkspaceTreeHandle {
 
     /// Shared read access. A wait of [`SLOW_TREE_WAIT`] or more is reported
     /// with the writer that held the tree.
+    ///
+    /// Reads are recursive: a thread already reading the tree reads it again
+    /// even while a writer on another thread waits for it. The compositor
+    /// holds the tree across helpers that read it themselves, and the peer
+    /// sync worker writes it from its own thread; a plain read queues behind
+    /// that waiting writer, which waits for the first read to end, and the
+    /// compositor freezes. A writer still gets the tree as soon as no read
+    /// is held.
     #[track_caller]
     pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, WorkspaceTree> {
-        if let Some(guard) = self.0.lock.try_read() {
+        if let Some(guard) = self.0.lock.try_read_recursive() {
             return guard;
         }
         let waiter = Location::caller();
         let holder = self.holder_now();
         let started = Instant::now();
-        let guard = self.0.lock.read();
+        let guard = self.0.lock.read_recursive();
         Self::report_wait("read", waiter, started.elapsed(), holder);
         guard
     }
 
-    /// Shared read access, if no writer holds the tree.
+    /// Shared read access, if no writer holds the tree; recursive like
+    /// [`Self::read`].
     pub fn try_read(&self) -> Option<parking_lot::RwLockReadGuard<'_, WorkspaceTree>> {
-        self.0.lock.try_read()
+        self.0.lock.try_read_recursive()
     }
 
     /// Exclusive access. The generation advances when the guard is dropped,
@@ -468,6 +477,36 @@ mod tests {
         assert!(line.contains(&format!("writer {held_at}")), "{line}");
         let queued = slow_wait_report("write", waiter, SLOW_TREE_WAIT, None).unwrap();
         assert!(queued.ends_with("held_by=readers"), "{queued}");
+    }
+
+    #[test]
+    fn a_thread_reading_the_tree_reads_it_again_while_a_writer_waits() {
+        let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
+        let (done, finished) = std::sync::mpsc::channel();
+        let reader = handle.clone();
+        std::thread::spawn(move || {
+            let held = reader.read();
+            let writer = {
+                let handle = reader.clone();
+                std::thread::spawn(move || handle.write().desktop.external_revision = 3)
+            };
+            let started = Instant::now();
+            while !reader.0.lock.is_locked_exclusive() {
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "the writer never queued"
+                );
+                std::thread::yield_now();
+            }
+            drop(reader.read());
+            drop(held);
+            writer.join().unwrap();
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a second read on the reading thread waited for the queued writer");
+        assert_eq!(handle.read().desktop.external_revision, 3);
     }
 
     #[test]
