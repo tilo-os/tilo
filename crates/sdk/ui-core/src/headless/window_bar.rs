@@ -236,6 +236,25 @@ impl FrameHarness {
         self.window_search.position()
     }
 
+    /// One frame ([`FrameHarness::try_relayout`]), then the open search
+    /// carried to the app's widgets, as the live window carries it once a
+    /// frame, so what the app shows after the query was typed (a program's
+    /// output, a page that loaded) is found too; the frame lays out again
+    /// when that changed what it shows.
+    pub(super) fn try_relayout_following_search(
+        &mut self,
+    ) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.try_relayout()?;
+        if self.window_bar
+            && self.window_search.wants_drive()
+            && self.window_search.drive(self.root.as_mut())
+        {
+            self.invalidate_local();
+            return self.try_relayout();
+        }
+        Ok(())
+    }
+
     /// Press one of the app's own slots in the window's bar (a mode, an
     /// action, the sidebar toggle), as the desktop hands the press to the
     /// app. The press is a press on the app: it hands the app the keyboard
@@ -727,6 +746,9 @@ mod tests {
         fn name(&self) -> &str {
             "Draft"
         }
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
@@ -772,6 +794,9 @@ mod tests {
         fn supports_replace(&self) -> bool {
             true
         }
+        fn content_revision(&self) -> u64 {
+            u64::try_from(self.text.len()).unwrap_or(u64::MAX)
+        }
     }
 
     // A scenario drives the window bar's search through its parts, as an
@@ -815,6 +840,42 @@ mod tests {
         assert_eq!(harness.window_search_position(), Some((2, 3)));
         assert!(harness.window_search.options_open());
         assert_eq!(harness.window_search.replacement(), "the");
+    }
+
+    // What the app shows after the query was typed is found on the next
+    // frame, as the live window drives its search once a frame.
+    #[test]
+    fn text_that_arrives_after_the_query_is_found_on_the_next_frame() {
+        use crate::a11y::Action;
+        let _hosted = HostedReset;
+        let mut harness = FrameHarness::for_app(
+            crate::State::new(),
+            Draft {
+                text: "an apple".into(),
+                found: Vec::new(),
+            },
+            (800, 600),
+            crate::theme::Theme::dark(),
+        );
+        harness.present_in_window_bar();
+        harness
+            .perform_semantic_named("window-search-open", None, &Action::Activate)
+            .unwrap();
+        harness
+            .perform_semantic_named("window-search-query", None, &Action::SetValue("an".into()))
+            .unwrap();
+        assert_eq!(harness.window_search_position(), Some((1, 1)));
+        harness
+            .widget_mut::<Draft>()
+            .expect("the app is a draft")
+            .text
+            .push_str(" and an end");
+        harness.relayout();
+        assert_eq!(
+            harness.window_search_position(),
+            Some((1, 3)),
+            "the count follows the new text"
+        );
     }
 
     /// A list the window's search narrows.

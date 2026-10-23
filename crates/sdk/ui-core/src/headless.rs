@@ -3188,7 +3188,7 @@ impl FrameHarness {
     /// [`Self::relayout`], which a caller asks for after changing anything.
     fn run_frame(&mut self) {
         self.poll_touch_hold(crate::time::now());
-        if let Err(error) = self.try_relayout() {
+        if let Err(error) = self.try_relayout_following_search() {
             tracing::error!(
                 ?error,
                 "headless: widget layout did not settle; skipping frame"
