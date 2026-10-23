@@ -1,13 +1,15 @@
 use super::*;
-use std::io::Write;
-use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, ImportReadState};
 
+// Cloud import stages through descriptor-relative paths only Linux provides.
+#[cfg(target_os = "linux")]
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one sequential action, portal and protocol scenario keeps the observable transfer lifecycle together"
 )]
 fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
+    use std::io::Write;
+    use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, ImportReadState};
     let mut env = tilo_test_env::ScopedEnv::new();
     let root = tempfile::tempdir().unwrap();
     let runtime = tilo_test_env::runtime_tempdir().unwrap();
