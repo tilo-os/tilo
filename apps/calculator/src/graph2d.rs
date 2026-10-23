@@ -61,7 +61,6 @@ struct CurvePath {
 struct CurveKey {
     /// `(expr, visible)` for every function, in order.
     funcs: Vec<(String, bool)>,
-    deg: bool,
     cx: u64,
     cy: u64,
     scale: u64,
@@ -89,7 +88,6 @@ impl CurveKey {
                 .iter()
                 .map(|f| (f.expr.clone(), f.visible))
                 .collect(),
-            deg: model.deg,
             cx: bits(model.view2d.cx),
             cy: bits(model.view2d.cy),
             scale: bits(model.view2d.scale),
@@ -262,7 +260,7 @@ impl Graph2dScreen {
             if !f.visible || f.expr.trim().is_empty() {
                 continue;
             }
-            let Ok(comp) = engine::compile(&f.expr, model.deg, false) else {
+            let Ok(comp) = engine::compile(&f.expr, engine::PLOT_IN_DEGREES, false) else {
                 continue;
             };
             let mut path = BezPath::new();
@@ -393,7 +391,7 @@ impl Graph2dScreen {
         if !active.visible {
             return None;
         }
-        let curve = engine::compile(&active.expr, model.deg, false).ok()?;
+        let curve = engine::compile(&active.expr, engine::PLOT_IN_DEGREES, false).ok()?;
         let x = self.to_world(pointer, view).x;
         let mut point = Point::new(x, curve.eval1(x));
         let mut snapped = false;
@@ -402,7 +400,7 @@ impl Graph2dScreen {
             if index == model.active_fn || !row.visible {
                 continue;
             }
-            let Ok(other) = engine::compile(&row.expr, model.deg, false) else {
+            let Ok(other) = engine::compile(&row.expr, engine::PLOT_IN_DEGREES, false) else {
                 continue;
             };
             if let Some(crossing) = crossing_near(&curve, &other, x, radius / view.scale) {
