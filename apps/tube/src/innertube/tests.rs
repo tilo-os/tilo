@@ -101,6 +101,15 @@ fn the_player_names_its_progressive_stream_or_says_why_not() {
 
     let refused = super::stream(&fixture(PLAYER_BOT_CHECK)).expect_err("a bot check");
     assert!(refused.starts_with("LOGIN_REQUIRED"), "{refused}");
+
+    // What YouTube said is kept, for the watch page to pass on.
+    assert_eq!(refusal(&fixture(PLAYER)), None);
+    assert_eq!(
+        refusal(&fixture(PLAYER_BOT_CHECK)).as_deref(),
+        Some("Sign in to confirm you\u{2019}re not a bot")
+    );
+    let error: anyhow::Error = super::super::Refused("no".into()).into();
+    assert_eq!(super::super::refusal(&error).as_deref(), Some("no"));
 }
 
 #[test]

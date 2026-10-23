@@ -31,6 +31,8 @@ pub enum Action {
     /// Fraction of the current video's duration, in `[0, 1]`.
     Seek(f64),
     TogglePlay,
+    /// Ask for the open video's stream again after no source played it.
+    RetryPlayback,
     /// Skip to `to` seconds, offered for a `Show`-mode segment the playhead
     /// is currently inside.
     SkipSegment(f64),
