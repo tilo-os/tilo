@@ -34,7 +34,7 @@ pub const ANSWER_PREFIX: &str = "answer-request:";
 pub enum Notice {
     Post {
         handle: String,
-        notice: Notification,
+        notice: Box<Notification>,
     },
     Withdraw {
         handle: String,
@@ -183,7 +183,10 @@ pub(crate) fn notify_on(
         notified
             .answers
             .insert(handle.clone(), (queue.clone(), request, answer));
-        notified.notices.push(Notice::Post { handle, notice });
+        notified.notices.push(Notice::Post {
+            handle,
+            notice: Box::new(notice),
+        });
     });
     crate::shell::wake_compositor();
 }

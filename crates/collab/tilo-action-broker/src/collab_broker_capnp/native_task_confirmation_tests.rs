@@ -328,7 +328,7 @@ async fn a_runs_question_reaches_its_person_as_a_notice_once() {
             f.state.refresh_tracker_runs(&rooms);
             f.state.refresh_tracker_runs(&rooms);
             let handle = format!("run-question:{}", asked.id);
-            assert_eq!(*notices.told.lock().unwrap(), [handle.clone()]);
+            assert_eq!(*notices.told.lock().unwrap(), [handle.as_str()]);
             assert!(notices.withdrawn.lock().unwrap().is_empty());
 
             confirm_as(&f, "Draft line");

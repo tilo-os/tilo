@@ -480,26 +480,22 @@ impl ShellOverlayHost {
             return Vec::new();
         };
         let state = chrome.borrow();
-        let tree = state.tree();
-        let Some(workspace) = tree.desktop.active_workspace() else {
-            return Vec::new();
-        };
-        let directory = super::ws_settings::SettingsDirectory {
-            room: workspace.room().to_string(),
-        };
-        tilo_desktop::workspace_settings::picks(
-            workspace,
-            &state.active_local_user(),
-            &directory,
-            pick,
-        )
-        .into_iter()
-        .map(|picked| palette_flow::Choice {
-            value: picked.value,
-            label: picked.label,
-            person: picked.person,
-        })
-        .collect()
+        let user = state.active_local_user();
+        let picked = state.tree().desktop.active_workspace().map(|workspace| {
+            let directory = super::ws_settings::SettingsDirectory {
+                room: workspace.room().to_string(),
+            };
+            tilo_desktop::workspace_settings::picks(workspace, &user, &directory, pick)
+        });
+        picked
+            .into_iter()
+            .flatten()
+            .map(|picked| palette_flow::Choice {
+                value: picked.value,
+                label: picked.label,
+                person: picked.person,
+            })
+            .collect()
     }
 
     /// The step on screen was answered with the value of its row `index`.
