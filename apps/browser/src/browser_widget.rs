@@ -8216,7 +8216,7 @@ mod tests {
     }
 
     #[test]
-    fn panels_open_below_their_control_and_dismissing_a_question_declines_it() {
+    fn panels_open_below_their_control_and_dismissing_a_question_sets_it_aside() {
         // Phase `the_site_panel_opens_below_the_toolbar_at_the_site_button`.
         {
             let mut widget = BrowserWidget::new_headless();
@@ -8274,13 +8274,11 @@ mod tests {
             assert!(within(popover.as_ref(), "browser.decision.true.1.false"));
             click_at(&mut widget, &tree, node, Point::new(900.0, 650.0));
             layout_at(&mut widget, 1000.0, 700.0);
+            // Set aside, not refused: the site may ask again.
             assert!(
                 capture
                     .commands()
-                    .contains(&WebViewCommand::PermissionDecision {
-                        id: 1,
-                        allow: false
-                    })
+                    .contains(&WebViewCommand::PermissionDismissed { id: 1 })
             );
         }
     }
@@ -9360,6 +9358,7 @@ mod tests {
                             .into_iter()
                             .map(|name| (name.into(), "ask".into()))
                             .collect(),
+                        can_reset: true,
                     }))
             );
             let theme = Theme::dark();
@@ -9543,6 +9542,7 @@ mod tests {
                     issuer: String::new(),
                     expires: 0.0,
                     permissions: Vec::new(),
+                    can_reset: true,
                 }));
             widget.apply_engine_events();
             layout_at(&mut widget, 1000.0, 700.0);

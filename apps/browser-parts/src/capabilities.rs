@@ -335,10 +335,11 @@ impl Capabilities {
     pub fn prompt_is_permission(&self) -> bool {
         !self.permissions.is_empty()
     }
-    /// Answer the question on offer with no: the person dismissed it.
+    /// The person dismissed the question on offer: a permission is set aside
+    /// unanswered, so the site may ask again; a download is declined.
     pub fn decline_prompt(&self, engine: &SharedEngine) {
         if let Some((&id, _)) = self.permissions.first_key_value() {
-            engine.send(WebViewCommand::PermissionDecision { id, allow: false });
+            engine.send(WebViewCommand::PermissionDismissed { id });
         } else if let Some((&id, _)) = self.downloads.borrow().prompts.first_key_value() {
             engine.send(WebViewCommand::DownloadDecision { id, allow: false });
         }
