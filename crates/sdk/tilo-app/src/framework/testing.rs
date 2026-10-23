@@ -2245,15 +2245,8 @@ fn report_surface(
         Err(error) => (Vec::new(), Vec::new(), Some(error.to_string())),
     };
     let (unbound, opened) = collecting.finish();
-    // Children of the app's own kind (an issue kept in a tracker of its own)
-    // are decided against the app's own surface.
-    let (kind, person) = (surface.kind.clone(), surface.person);
     let mut resources = vec![surface];
-    resources.extend(
-        opened
-            .into_iter()
-            .filter(|other| other.kind != kind || other.person != person),
-    );
+    resources.extend(opened);
     serde_json::json!({
         "resources": resources,
         "unbound": unbound,

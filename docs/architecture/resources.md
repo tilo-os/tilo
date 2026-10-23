@@ -327,27 +327,6 @@ fields, `delete` to the trash (record and id kept), `restore`, and `move` to
 another group or place. All of it is checked against the room's roles and
 recorded in history like the app's own actions.
 
-A child type that says how one of the parent's items becomes a child
-(`ChildRecord::split`, with its `TAKE_LABEL`) also gets `take`: the item
-leaves the parent and starts a child of its own under its id, in one step,
-so every reference to it stays. A child type the room keeps to some readers
-(`KEPT_TO_READERS`, one Deny for everyone but them on its record) is made
-only once the room keeps its record so; `take` naming the readers asks the
-room for that first, with the room's own `grant`, and takes the item when
-the policy here shows it kept. A refusal changes nothing and is told
-(`Children::refused`). `Children::readers_chooser` is the control every app
-with such children shows: the room's members by name, agents by id, and the
-`take` button.
-
-A view shows the children it reads beside the parent with the code that
-shows the parent: `cx.value_with_children(&children, read)` keeps a value of
-the parent and every child this device reads current with both (a child kept
-from this person never arrives, so it is not among them), and
-`cx.record(&children.record(id), part)` builds a part of the view over one
-child, its controls bound to the child's fields and verbs and carried out on
-its record through the container's door. Search finds what the children this
-device reads hold, beside the parent's own entries.
-
 ### 2.7 References to actions
 
 `Snippets::NEW_SNIPPET` is an `ActionRef<Snippets, snippets::NewSnippet>`. It

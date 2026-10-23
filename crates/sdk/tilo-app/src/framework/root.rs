@@ -1960,7 +1960,7 @@ impl RootModel for ResourceRoot {
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
         self.typed.apply_settlements(edits);
         self.content.settle(edits, path);
-        self.storage.settle(edits);
+        self.storage.settle();
     }
 
     fn draw(
@@ -2186,7 +2186,6 @@ impl ResourceRoot {
             shown.extend(surface.search_entries());
             queries.push(surface.search_queries());
         });
-        shown.extend(self.storage.room_search());
         let state = SearchState {
             revision: self.typed.revision(),
             shown,
@@ -2342,11 +2341,6 @@ impl ui_core::widget::Collaborative for ResourceRoot {
                 &mut door,
             ));
         }
-        for mut door in self.storage.room_remotes() {
-            requests.extend(ui_core::widget::Collaborative::take_collab_requests(
-                &mut door,
-            ));
-        }
         if let Some(content) =
             capability_mut::<dyn ui_core::widget::Collaborative>(self.content.as_mut())
         {
@@ -2358,9 +2352,6 @@ impl ui_core::widget::Collaborative for ResourceRoot {
     fn handle_collab_event(&mut self, event: &ui_core::collaboration::CollabEvent) {
         ui_core::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
         if let Some(mut door) = self.dispatch.opener.door() {
-            ui_core::widget::Collaborative::handle_collab_event(&mut door, event);
-        }
-        for mut door in self.storage.room_remotes() {
             ui_core::widget::Collaborative::handle_collab_event(&mut door, event);
         }
         if let Some(content) =
@@ -2436,7 +2427,6 @@ impl RootSearch for ResourceRoot {
                 entries.extend(surface.search_entries());
             }
         });
-        entries.extend(self.storage.room_search());
         entries.iter().filter_map(index_entry).collect()
     }
 

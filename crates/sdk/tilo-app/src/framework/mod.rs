@@ -360,7 +360,7 @@ pub use app::run;
 pub use app::{FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_helper};
 pub use attached::{AttachedView, OpenView};
 pub use chain::{Chain, Chained};
-pub use children::{ChildOf, ChildRecord, Children, child_resource_id};
+pub use children::{ChildRecord, Children, child_resource_id};
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;
 pub use dispatch::{DispatchGroup, Dispatcher, Landed, Refused, Submit};
