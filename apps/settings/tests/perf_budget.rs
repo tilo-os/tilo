@@ -232,7 +232,13 @@ fn keystroke_in_window_search() {
         query.push(ch);
         let t = Instant::now();
         let settings: &mut SettingsApp = &mut app;
-        search.drive(settings, &query, None, false);
+        search.drive(
+            settings,
+            &query,
+            ui::widget::FindOptions::default(),
+            None,
+            false,
+        );
         Framed::harness_mut(&mut app).relayout();
         samples.push(t.elapsed().as_micros() as u64);
     }

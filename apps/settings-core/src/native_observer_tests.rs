@@ -60,7 +60,7 @@ fn bar_search(h: &mut Framed<SettingsApp>, search: &mut ui::widget::SearchDriver
         search.open(ui::window_toolbar::SearchOffer::of(app).into());
     }
     assert!(
-        search.drive(app, query, None, false),
+        search.drive(app, query, ui::widget::FindOptions::default(), None, false),
         "the bar's search reached the sidebar"
     );
     rebuild(h);
