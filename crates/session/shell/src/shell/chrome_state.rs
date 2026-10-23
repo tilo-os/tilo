@@ -2705,15 +2705,16 @@ impl ChromeState {
         if !self.device_asking_seen.insert(device.digest) {
             return None;
         }
-        let from = device
-            .country
-            .as_deref()
-            .map_or_else(String::new, |country| {
-                crate::shell::i18n::t_args(
-                    "pairing-asks-from",
-                    &[("country", country.to_owned().into())],
-                )
-            });
+        let from = match (&device.via, &device.country) {
+            (Some(via), _) => {
+                crate::shell::i18n::t_args("pairing-asks-via", &[("device", via.clone().into())])
+            }
+            (None, Some(country)) => crate::shell::i18n::t_args(
+                "pairing-asks-from",
+                &[("country", country.clone().into())],
+            ),
+            (None, None) => String::new(),
+        };
         let secs_ago = tilo_clock::unix_now_ms().saturating_sub(device.requested_at_ms) / 1000;
         let when = ui::format::relative(i64::try_from(secs_ago).unwrap_or(i64::MAX));
         let body = crate::shell::i18n::t_args(

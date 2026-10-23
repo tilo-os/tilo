@@ -189,7 +189,11 @@ impl ContinuityPolicySnapshot {
             PersonalFabricAction::WakeDevice { .. }
             | PersonalFabricAction::WakeReport { .. }
             | PersonalFabricAction::WakeProbe { .. }
-            | PersonalFabricAction::WakeProbeReply { .. } => return None,
+            | PersonalFabricAction::WakeProbeReply { .. }
+            // So is adding a device to the person, which each key holder
+            // asks them about.
+            | PersonalFabricAction::CertifyAsk { .. }
+            | PersonalFabricAction::CertifyAnswer { .. } => return None,
         })
     }
 

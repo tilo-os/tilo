@@ -234,6 +234,9 @@ pub struct DeviceAskingSummary {
     pub requested_at_ms: u64,
     /// Where it came from, when the host can say (ISO 3166-1 alpha-2).
     pub country: Option<String>,
+    /// The person's device that found it, when another of their devices
+    /// asks this one to approve it.
+    pub via: Option<String>,
 }
 
 impl From<String> for PeerSyncResponse {

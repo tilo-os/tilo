@@ -28,11 +28,12 @@ fn host_record_approval_keeps_admission_and_revocation_checks() {
         kind: EnrollmentKind::HomePeer,
         port: 0,
         ready: None,
+        approved: None,
     };
     let identity = load_approval_identity(&options).unwrap();
     let mut cert = payload(&ed25519_dalek::SigningKey::from_bytes(&[74; 32])).cert;
     cert.user_public_key = identity.user_public_key;
-    sign_root_cert(&mut cert, identity.root.as_ref()).unwrap();
+    sign_root_cert(&mut cert, identity.root.as_deref().unwrap()).unwrap();
     verify_device_cert(&cert).unwrap();
     let mut revocation = RevocationEntry {
         user_public_key: identity.user_public_key,
@@ -43,6 +44,8 @@ fn host_record_approval_keeps_admission_and_revocation_checks() {
     };
     revocation.signature = identity
         .root
+        .as_ref()
+        .unwrap()
         .sign_message(&tilo_user_identity::revocation_signing_digest(&revocation).unwrap())
         .unwrap();
     let path = fleet_path(&identities, identity.user_public_key);
@@ -56,7 +59,7 @@ fn host_record_approval_keeps_admission_and_revocation_checks() {
     std::fs::write(&path, serde_json::to_vec(&fleet).unwrap()).unwrap();
     let mut issuer = tilo_user_identity::persist::read_device_cert(&paths.device_cert).unwrap();
     issuer.capabilities = DeviceCapabilities::member();
-    sign_root_cert(&mut issuer, identity.root.as_ref()).unwrap();
+    sign_root_cert(&mut issuer, identity.root.as_deref().unwrap()).unwrap();
     tilo_user_identity::persist::write_device_cert(
         &paths.device_cert_for_user(&identity.user_public_key),
         &issuer,
@@ -67,7 +70,7 @@ fn host_record_approval_keeps_admission_and_revocation_checks() {
     issuer.capabilities = DeviceCapabilities::primary();
     issuer.issued_at_ns = 1;
     issuer.expires_at_ns = Some(2);
-    sign_root_cert(&mut issuer, identity.root.as_ref()).unwrap();
+    sign_root_cert(&mut issuer, identity.root.as_deref().unwrap()).unwrap();
     tilo_user_identity::persist::write_device_cert(
         &paths.device_cert_for_user(&identity.user_public_key),
         &issuer,
@@ -319,6 +322,25 @@ fn personal_payload(
     }
 }
 
+/// The approving device `root` holds, certified by it to admit devices, and
+/// a token it minted: the issuer a joining device checks a response against.
+fn approver(root: &ed25519_dalek::SigningKey) -> (DeviceCert, tilo_user_identity::EnrollmentToken) {
+    let user = root.verifying_key().to_bytes();
+    let mut issuer = DeviceCert {
+        user_public_key: user,
+        device_public_key: user,
+        device_label: "Approver".into(),
+        capabilities: DeviceCapabilities::primary(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut issuer, root).unwrap();
+    let token =
+        mint_enrollment_token(user, DeviceCapabilities::host(), 10, 1_000, [3; 16], root).unwrap();
+    (issuer, token)
+}
+
 fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
     let user_public_key = root.verifying_key().to_bytes();
     let mut cert = DeviceCert {
@@ -405,15 +427,15 @@ fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
     // Phase `signed_response_rejects_bundle_tampering`.
     {
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let mut response = sign_response(payload(&root), &root).unwrap();
-        verify_response(&response, root.verifying_key().to_bytes()).unwrap();
+        let mut response = sign_response(payload(&root), &root, &approver(&root).0).unwrap();
+        verify_response(&response, &approver(&root).1).unwrap();
         response
             .payload
             .home_peer_toml
             .as_mut()
             .unwrap()
             .push_str("\n# changed");
-        assert!(verify_response(&response, root.verifying_key().to_bytes()).is_err());
+        assert!(verify_response(&response, &approver(&root).1).is_err());
     }
     // Phase `approval_target_requires_a_complete_pair_of_bounded_ids`.
     {
@@ -429,6 +451,7 @@ fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
             kind: EnrollmentKind::HomePeer,
             port: 0,
             ready: None,
+            approved: None,
         };
         assert_eq!(expected_pair(&options).unwrap(), None);
 
@@ -451,7 +474,7 @@ fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
         let request_public = request_ephemeral.public_key().unwrap().to_bytes();
         let mut payload = payload(&root);
         payload.home_peer_toml = Some("ticket = 'secret-ticket-material'".into());
-        let signed = sign_response(payload, &root).unwrap();
+        let signed = sign_response(payload, &root, &approver(&root).0).unwrap();
         let encrypted = encrypt_response(
             &signed,
             [3; 16],
@@ -474,7 +497,7 @@ fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
             &request_ephemeral,
         )
         .unwrap();
-        verify_response(&decrypted, root.verifying_key().to_bytes()).unwrap();
+        verify_response(&decrypted, &approver(&root).1).unwrap();
         let wrong = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         assert!(
             decrypt_response(
@@ -1001,6 +1024,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
             // listeners and off the well-known port.
             port: 0,
             ready: Some(&ready_tx),
+            approved: None,
         })
     });
     let port = match ready_rx.recv_timeout(tilo_test_env::hang_bound()) {
@@ -1087,6 +1111,195 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         vec![approver_key.clone(), new_key.clone()]
     );
     assert_eq!(personal(new_root.path()), vec![new_key, approver_key]);
+}
+
+/// Three devices of one person: a member that holds none of the identity's
+/// key and may not admit devices finds a new laptop nearby; the device
+/// holding the whole key approves the certificate it proposes
+/// (`certification_ceremony`); the member then pairs the laptop with it.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one auditable scenario across the three devices"
+)]
+fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
+    use tilo_identity_host::certification_ceremony::{Gathering, Progress, Signer, check_proposal};
+
+    let seed = [31; 32];
+    let root = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let user = root.verifying_key().to_bytes();
+    let key_holder = runtime_identity::load_from_bytes(
+        &serde_json::to_vec(&serde_json::json!({
+            "display_name": "Key holder", "avatar_color": [1, 2, 3],
+            "created_at": "2026-10-22T00:00:00Z", "schema_version": 1,
+            "threshold_identity": {
+                "single_device": true, "group_public_key": user, "threshold": 1,
+                "total_shares": 1, "share_index": 1, "secret_bytes": seed,
+            },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    // The member: its own certified key, the person's public record and
+    // fleet, no root.
+    let member_root = tempfile::tempdir().unwrap();
+    let member_identities = tempfile::tempdir().unwrap();
+    let paths = IdentityPaths::under(member_root.path());
+    paths.ensure_directories().unwrap();
+    let member = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
+    tilo_user_identity::persist::write_public_key(&paths.user_pubkey, &user).unwrap();
+    tilo_user_identity::persist::write_device_key(&paths.device_privkey, &member).unwrap();
+    let mut member_cert = DeviceCert {
+        user_public_key: user,
+        device_public_key: member.verifying_key().to_bytes(),
+        device_label: "Orange Pi".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut member_cert, &root).unwrap();
+    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &member_cert).unwrap();
+    tilo_user_identity::persist::write_device_cert(
+        &paths.device_cert_for_user(&user),
+        &member_cert,
+    )
+    .unwrap();
+    tilo_files::native::atomic::write_creating_parent(
+        &fleet_path(member_identities.path(), user),
+        &serde_json::to_vec_pretty(&FleetProjection {
+            schema_version: 1,
+            identity_id: hex::encode(user),
+            certificates: vec![member_cert],
+            revocations: Vec::new(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        load_approval_root(member_root.path(), Some(member_identities.path())).is_err(),
+        "the member holds none of the key"
+    );
+
+    let new_root = tempfile::tempdir().unwrap();
+    let new_identities = tempfile::tempdir().unwrap();
+    let new_device = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+    let new_paths = IdentityPaths::under(new_root.path());
+    new_paths.ensure_directories().unwrap();
+    tilo_user_identity::persist::write_device_key(&new_paths.device_privkey, &new_device).unwrap();
+    let service = tilo_relay::daemon::relay_service_node_id(&new_device);
+
+    // What the member found nearby, proposed to the key holder, who asks
+    // its person and signs.
+    let now = now_ns().unwrap();
+    let mut gathering = Gathering::new(
+        [5; 16],
+        DeviceCert {
+            user_public_key: user,
+            device_public_key: new_device.verifying_key().to_bytes(),
+            device_label: "New laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: validity_start_ns(now),
+            expires_at_ns: None,
+            signature: [0; 64],
+        },
+        service,
+        1,
+        1,
+    );
+    let ask = gathering.ask().clone();
+    check_proposal(&ask, user, &|_| false, now).unwrap();
+    assert_eq!(
+        ask.code(),
+        pairing_code(new_device.verifying_key().to_bytes(), service)
+    );
+    let reply = Signer::default().approve(&key_holder, &ask, true, now);
+    let Progress::Certified(approved) = gathering.answer(
+        [1; 32],
+        tilo_identity_host::certification_ceremony::Answer {
+            session: ask.session,
+            reply,
+        },
+    ) else {
+        panic!("the whole key certifies with one approval");
+    };
+
+    // A member without the approval may not admit at all.
+    let refused = load_approval_identity(&ApprovalOptions {
+        identity_root: member_root.path(),
+        identity_dir: Some(member_identities.path()),
+        timeout: 1,
+        workspace_cache: std::path::Path::new(""),
+        acl: std::path::Path::new(""),
+        relay_workspace_ids: &[],
+        expected_device: None,
+        expected_service: None,
+        kind: EnrollmentKind::PersonalDevice,
+        port: 0,
+        ready: None,
+        approved: None,
+    });
+    assert!(refused.is_err());
+
+    let expected_device = hex::encode(new_device.verifying_key().to_bytes());
+    let expected_service = hex::encode(service);
+    let server_root = member_root.path().to_path_buf();
+    let server_identities = member_identities.path().to_path_buf();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let approval = std::thread::spawn(move || {
+        approve(&ApprovalOptions {
+            identity_root: &server_root,
+            identity_dir: Some(&server_identities),
+            timeout: 60,
+            workspace_cache: std::path::Path::new(""),
+            acl: std::path::Path::new(""),
+            relay_workspace_ids: &[],
+            expected_device: Some(&expected_device),
+            expected_service: Some(&expected_service),
+            kind: EnrollmentKind::PersonalDevice,
+            port: 0,
+            ready: Some(&ready_tx),
+            approved: Some(&approved),
+        })
+    });
+    let port = match ready_rx.recv_timeout(tilo_test_env::hang_bound()) {
+        Ok(port) => port,
+        Err(error) => panic!("the member did not listen ({error}): {:?}", approval.join()),
+    };
+    pair(
+        JoinOptions {
+            identity_root: new_root.path(),
+            label: "New laptop",
+            timeout: 60,
+            kind: EnrollmentKind::PersonalDevice,
+            home_peer_output: None,
+            identity_dir: Some(new_identities.path()),
+            requester_lease: Some(tilo_relay::ProcessLease::capture(std::process::id()).unwrap()),
+            port,
+        },
+        None,
+    )
+    .unwrap();
+    approval.join().unwrap().unwrap();
+
+    let cert = tilo_user_identity::persist::read_device_cert(
+        &IdentityPaths::under(new_root.path()).device_cert,
+    )
+    .unwrap();
+    assert_eq!(cert.user_public_key, user);
+    assert_eq!(cert.device_label, "New laptop");
+    verify_device_cert(&cert).unwrap();
+    let fleet: FleetProjection =
+        serde_json::from_slice(&std::fs::read(fleet_path(member_identities.path(), user)).unwrap())
+            .unwrap();
+    assert!(
+        fleet
+            .certificates
+            .iter()
+            .any(|listed| listed.device_public_key == cert.device_public_key),
+        "the member lists the device it introduced"
+    );
 }
 
 /// A name planted in the shared staging area, as a link to somewhere
@@ -1352,7 +1565,9 @@ fn pairing_exchange_is_private_single_use_and_resumable() {
     {
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let response = postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
+        let response =
+            postcard::to_stdvec(&sign_response(payload(&root), &root, &approver(&root).0).unwrap())
+                .unwrap();
         // The first datagram is modeled as dropped. Retransmission uses the
         // exact same signed bytes, and the recipient ACK binds their key,
         // nonce, and that response digest.
@@ -1366,7 +1581,9 @@ fn pairing_exchange_is_private_single_use_and_resumable() {
         let dir = tempfile::tempdir().unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let response = postcard::to_stdvec(&sign_response(payload(&root), &root).unwrap()).unwrap();
+        let response =
+            postcard::to_stdvec(&sign_response(payload(&root), &root, &approver(&root).0).unwrap())
+                .unwrap();
 
         // The approver spent the nonce for this device when it redeemed
         // the token, before the response first left. However many ACKs
@@ -1428,9 +1645,9 @@ fn pairing_crypto_matches_known_answers() {
     // Phase `known_answer_response_signature_verifies`.
     {
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let signed = sign_response(payload(&root), &root).unwrap();
+        let signed = sign_response(payload(&root), &root, &approver(&root).0).unwrap();
         assert_eq!(hex::encode(&signed.signature), KAT_RESPONSE_SIGNATURE);
-        verify_response(&signed, root.verifying_key().to_bytes()).unwrap();
+        verify_response(&signed, &approver(&root).1).unwrap();
     }
     // Phase `known_answer_ack_signature`.
     {
@@ -1475,7 +1692,7 @@ fn pairing_envelopes_are_step_bound() {
         assert_eq!(&bytes[..8], b"TLOENRL\x02");
         let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
         assert_eq!(request.token, "bearer");
-        let signed = sign_response(payload(&root), &root).unwrap();
+        let signed = sign_response(payload(&root), &root, &approver(&root).0).unwrap();
         let response =
             encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route).unwrap();
         assert!(v2_body(&response).is_some());
@@ -1486,7 +1703,7 @@ fn pairing_envelopes_are_step_bound() {
             &response_secret,
         )
         .unwrap();
-        verify_response(&opened, root.verifying_key().to_bytes()).unwrap();
+        verify_response(&opened, &approver(&root).1).unwrap();
         let other = tilo_seal::SecretKey::generate().unwrap();
         assert!(
             decrypt_response(

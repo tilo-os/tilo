@@ -23,6 +23,8 @@ mod room_window_carriers;
 mod room_window_views;
 pub use room_window_views::RoomWindowViewer;
 #[cfg(test)]
+mod device_certification_tests;
+#[cfg(test)]
 mod hostless_live_tests;
 #[cfg(test)]
 mod idle_quiet_tests;
@@ -5995,6 +5997,25 @@ impl ShellNetwork {
         let sent = self.send_personal_fabric_action(&route.device, action);
         drop(routes);
         sent
+    }
+
+    /// The person's other devices with a current route here, each once.
+    pub(crate) fn personal_route_devices(
+        &self,
+    ) -> Vec<crate::shell::personal_continuity::DeviceId> {
+        let mut devices: Vec<_> = self
+            .authenticated_personal_routes
+            .lock()
+            .map(|routes| routes.values().map(|route| route.device.clone()).collect())
+            .unwrap_or_default();
+        devices.sort();
+        devices.dedup();
+        devices
+    }
+
+    /// This device, as the person's fabric names it.
+    pub(crate) fn personal_device_id(&self) -> Option<crate::shell::personal_continuity::DeviceId> {
+        self.personal_continuity_device.clone()
     }
 
     /// Whether any of the person's other devices has a current route here.

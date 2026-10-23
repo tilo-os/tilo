@@ -3162,6 +3162,7 @@ pairing-done = { $device } is now one of your devices.
 pairing-asks-title = A device asks to be you
 pairing-asks-body = { $device }{ $from }, { $when }. Approving lets it act as you. Only approve if it shows { $code }.
 pairing-asks-from = {" "}({ $country })
+pairing-asks-via = {" "}(found by your { $device })
 pairing-approve = Approve { $code }
 pairing-decline = Decline
 pairing-answer-failed = The device was not answered: { $error }

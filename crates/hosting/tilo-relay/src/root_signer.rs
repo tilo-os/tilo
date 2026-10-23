@@ -64,7 +64,10 @@ pub fn load_root(
         )
     })?;
     if !identity.is_single_device() {
-        bail!("threshold identity requires the multi-device certificate ceremony");
+        bail!(
+            "{}",
+            tilo_identity_host::certification_ceremony::cannot_sign_alone()
+        );
     }
     Ok(Box::new(identity))
 }

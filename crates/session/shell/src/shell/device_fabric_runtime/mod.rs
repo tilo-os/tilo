@@ -2289,6 +2289,7 @@ impl DeviceFabricRuntime {
     fn handle_fabric_actions(&mut self, network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
         prune_spatial_leases(network);
         self.remote_capture.drain_pending_actions(network);
+        crate::shell::device_certification::pump(network);
         for received in network.take_personal_fabric_actions() {
             let crate::shell::network::ReceivedPersonalFabricAction {
                 envelope,
@@ -2310,6 +2311,9 @@ impl DeviceFabricRuntime {
                 continue;
             }
             if crate::shell::device_wake::handle_action(network, &envelope) {
+                continue;
+            }
+            if crate::shell::device_certification::handle_action(network, &envelope) {
                 continue;
             }
             if handle_fabric_clock_action(network, &envelope, received_monotonic_us) {
@@ -4277,6 +4281,8 @@ fn apply_spatial_action(
         | PersonalFabricAction::SpeakerHeard { .. }
         | PersonalFabricAction::WindowViews { .. }
         | PersonalFabricAction::ShowTab { .. }
+        | PersonalFabricAction::CertifyAsk { .. }
+        | PersonalFabricAction::CertifyAnswer { .. }
         | PersonalFabricAction::WakeDevice { .. }
         | PersonalFabricAction::WakeReport { .. }
         | PersonalFabricAction::WakeProbe { .. }

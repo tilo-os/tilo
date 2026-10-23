@@ -13,8 +13,9 @@ use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_clock::try_unix_now_ns;
+use tilo_identity_host::certification_ceremony::pairing_code;
 use tilo_identity_host::device_fleet::DeviceFleetStore;
-use tilo_identity_host::enrollment::{EnrollmentRole, NonceStore, Redemption};
+use tilo_identity_host::enrollment::{Certifier, EnrollmentRole, NonceStore, Redemption};
 use tilo_relay::HomePeerRegistration;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, decode_enrollment_token,
@@ -154,6 +155,12 @@ enum Command {
         expected_device: Option<String>,
         #[arg(long)]
         expected_service: Option<String>,
+        /// The expected device's certificate, canonically encoded, already
+        /// signed by the person's devices that hold the identity's key, each
+        /// after asking the person. This device then needs none of the key,
+        /// nor the right to admit devices: it only introduces the device.
+        #[arg(long, requires = "expected_device")]
+        approved_cert: Option<PathBuf>,
     },
     #[command(flatten)]
     OutOfBand(OutOfBand),
@@ -289,9 +296,13 @@ struct ResponsePayload {
     home_peers_json: Option<Vec<u8>>,
 }
 
+/// The approving device's answer, signed by its certified device key: the
+/// device the token named as its issuer, certified by the identity the
+/// certificate inside names.
 #[derive(Serialize, Deserialize)]
 struct Response {
     payload: ResponsePayload,
+    issuer: DeviceCert,
     signature: Vec<u8>,
 }
 
@@ -1281,34 +1292,45 @@ fn sign_root_cert(cert: &mut DeviceCert, root: &(impl RootSigner + ?Sized)) -> a
 
 fn sign_response(
     payload: ResponsePayload,
-    root: &(impl RootSigner + ?Sized),
+    device: &ed25519_dalek::SigningKey,
+    issuer: &DeviceCert,
 ) -> anyhow::Result<Response> {
-    let signature = root.sign_message(&response_preimage(&payload)?)?.to_vec();
-    Ok(Response { payload, signature })
+    let signature = device
+        .sign(&response_preimage(&payload)?)
+        .to_bytes()
+        .to_vec();
+    Ok(Response {
+        payload,
+        issuer: issuer.clone(),
+        signature,
+    })
 }
 
-fn verify_response(response: &Response, user_public_key: [u8; 32]) -> anyhow::Result<()> {
+/// Check that `response` comes from the device that minted `token`, a device
+/// of the token's identity when it minted it.
+fn verify_response(
+    response: &Response,
+    token: &tilo_user_identity::EnrollmentToken,
+) -> anyhow::Result<()> {
+    let issuer = &response.issuer;
+    if issuer.device_public_key != token.issuer_device_public_key
+        || issuer.user_public_key != token.user_public_key
+    {
+        bail!("enrollment response comes from another device than the token's");
+    }
+    verify_device_cert_at(issuer, token.issued_at_ns)
+        .context("the approving device is not certified by the identity")?;
     let signature: [u8; 64] = response
         .signature
         .as_slice()
         .try_into()
         .map_err(|_| anyhow::anyhow!("enrollment response signature has the wrong length"))?;
-    VerifyingKey::from_bytes(&user_public_key)?
+    VerifyingKey::from_bytes(&issuer.device_public_key)?
         .verify(
             &response_preimage(&response.payload)?,
             &Signature::from_bytes(&signature),
         )
         .context("enrollment response was changed in transit")
-}
-
-fn pairing_code(device_public_key: [u8; 32], relay_service_node_id: [u8; 32]) -> String {
-    let mut input = PAIR_DOMAIN.to_vec();
-    input.extend(device_public_key);
-    input.extend(relay_service_node_id);
-    let digest = blake3::hash(&input);
-    let [first, second, third, fourth, ..] = *digest.as_bytes();
-    let number = u32::from_le_bytes([first, second, third, fourth]);
-    format!("{:06}", number % 1_000_000)
 }
 
 fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
@@ -1583,7 +1605,7 @@ fn make_finalized(
     response_bytes: &[u8],
     nonce: [u8; 16],
     device_public_key: [u8; 32],
-    root: &(impl RootSigner + ?Sized),
+    approver: &ed25519_dalek::SigningKey,
 ) -> anyhow::Result<Vec<u8>> {
     let payload = FinalizedPayload {
         nonce,
@@ -1593,7 +1615,7 @@ fn make_finalized(
     let encoded = postcard::to_stdvec(&payload)?;
     Ok(postcard::to_stdvec(&Finalized {
         payload,
-        signature: root.sign_message(&encoded)?.to_vec(),
+        signature: approver.sign(&encoded).to_bytes().to_vec(),
     })?)
 }
 
@@ -1602,7 +1624,7 @@ fn verify_finalized(
     response_bytes: &[u8],
     nonce: [u8; 16],
     device_public_key: [u8; 32],
-    user_public_key: [u8; 32],
+    approver_public_key: [u8; 32],
 ) -> anyhow::Result<()> {
     let finalized: Finalized = postcard::from_bytes(bytes)?;
     if finalized.payload.nonce != nonce
@@ -1616,7 +1638,7 @@ fn verify_finalized(
         .as_slice()
         .try_into()
         .map_err(|_| anyhow::anyhow!("completion signature has the wrong length"))?;
-    VerifyingKey::from_bytes(&user_public_key)?.verify(
+    VerifyingKey::from_bytes(&approver_public_key)?.verify(
         &postcard::to_stdvec(&finalized.payload)?,
         &Signature::from_bytes(&signature),
     )?;
@@ -1770,7 +1792,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                 ) else {
                     continue;
                 };
-                if verify_response(&response, token.user_public_key).is_err() {
+                if verify_response(&response, &token).is_err() {
                     continue;
                 }
                 if response.payload.nonce != token.nonce
@@ -1828,7 +1850,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                 &response_bytes,
                                 token.nonce,
                                 device.verifying_key().to_bytes(),
-                                token.user_public_key,
+                                token.issuer_device_public_key,
                             )
                             .is_ok()
                             {
@@ -2139,10 +2161,14 @@ struct ApprovalOptions<'a> {
     port: u16,
     /// Receives the bound listener port once the approver is listening.
     ready: Option<&'a std::sync::mpsc::Sender<u16>>,
+    /// The expected device's certificate, signed by the person's devices
+    /// that hold the identity's key; `None` signs with the root held here.
+    approved: Option<&'a DeviceCert>,
 }
 
 struct ApprovalIdentity {
-    root: Box<dyn RootSigner>,
+    /// The identity's root when this device holds it and signs itself.
+    root: Option<Box<dyn RootSigner>>,
     device: ed25519_dalek::SigningKey,
     /// This device's certificate, the issuer of the tokens it mints.
     issuer_cert: DeviceCert,
@@ -2189,12 +2215,31 @@ fn expected_pair(options: &ApprovalOptions<'_>) -> anyhow::Result<Option<([u8; 3
     }
 }
 
-/// Load the signer and verify that this device remains authorised to admit peers.
+/// Load the signer and verify that this device remains authorised to admit
+/// peers: with the root it holds, or as the introducer of a device whose
+/// certificate the person's key holders approved.
 fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<ApprovalIdentity> {
     let paths = IdentityPaths::under(options.identity_root);
-    let root = load_approval_root(options.identity_root, options.identity_dir)?;
+    let (root, user_public_key) = match options.approved {
+        Some(approved) => {
+            if options.kind != EnrollmentKind::PersonalDevice {
+                bail!("a home server is added from the device you set up first");
+            }
+            verify_device_cert(approved).context("the approved certificate does not verify")?;
+            if expected_pair(options)?
+                .is_some_and(|(device, _)| device != approved.device_public_key)
+            {
+                bail!("the approved certificate is for another device");
+            }
+            (None, approved.user_public_key)
+        }
+        None => {
+            let root = load_approval_root(options.identity_root, options.identity_dir)?;
+            let user_public_key = root.public_key();
+            (Some(root), user_public_key)
+        }
+    };
     let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
-    let user_public_key = root.public_key();
     let issuer_cert = tilo_user_identity::persist::read_device_cert(
         &paths.device_cert_for_user(&user_public_key),
     )
@@ -2203,7 +2248,7 @@ fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<Appro
         .context("verify approving device certificate validity")?;
     if issuer_cert.user_public_key != user_public_key
         || issuer_cert.device_public_key != device.verifying_key().to_bytes()
-        || !issuer_cert.capabilities.can_admit_devices
+        || (root.is_some() && !issuer_cert.capabilities.can_admit_devices)
     {
         bail!("this device is not authorised to approve enrollment");
     }
@@ -2401,7 +2446,13 @@ fn approval_projection(
                 capabilities,
                 false,
                 identity.user_public_key,
-                |payload| identity.root.sign_message(payload),
+                |payload| {
+                    identity
+                        .root
+                        .as_ref()
+                        .context("this device holds no identity root")?
+                        .sign_message(payload)
+                },
             )?;
             let mut relay_workspace_ids = identity.relay_workspace_ids.clone();
             relay_workspace_ids.sort_unstable();
@@ -2470,7 +2521,8 @@ fn prepare_approval(
             fleet_json: projection.fleet_json,
             home_peers_json: projection.home_peers_json,
         },
-        identity.root.as_ref(),
+        &identity.device,
+        &identity.issuer_cert,
     )?;
     let encrypted = encrypt_response(
         &signed,
@@ -2494,6 +2546,14 @@ fn redeem_pending(
     let fleet = options
         .identity_dir
         .map(|identity_dir| fleet_store(options.identity_root, identity_dir));
+    let sign_here = |digest: &[u8]| {
+        identity
+            .root
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("this device holds no identity root"))?
+            .sign_message(digest)
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    };
     tilo_identity_host::enrollment::redeem(
         fleet.as_ref(),
         &NonceStore::under(options.identity_root),
@@ -2506,12 +2566,9 @@ fn redeem_pending(
             valid_from_ns: validity_start_ns(now),
             local_issuer: Some(&identity.issuer_cert),
         },
-        &|digest| {
-            identity
-                .root
-                .sign_message(digest)
-                .map_err(|error| std::io::Error::other(error.to_string()))
-        },
+        options
+            .approved
+            .map_or(Certifier::Root(&sign_here), Certifier::Approved),
     )
     .context("redeem the enrollment token")
 }
@@ -2589,7 +2646,7 @@ fn commit_approval(
         &prepared.encrypted,
         pending.token.nonce,
         pending.request.device_public_key,
-        identity.root.as_ref(),
+        &identity.device,
     )?;
     for _ in 0..8 {
         socket.send_to(&finalized, pending.sender)?;
@@ -2991,6 +3048,7 @@ fn run() -> anyhow::Result<()> {
             kind: EnrollmentKind::HomePeer,
             port: NEARBY_PORT,
             ready: None,
+            approved: None,
         }),
         Command::ApproveDevice {
             identity_root,
@@ -2998,6 +3056,7 @@ fn run() -> anyhow::Result<()> {
             timeout,
             expected_device,
             expected_service,
+            approved_cert,
         } => approve(&ApprovalOptions {
             identity_root: &identity_root,
             identity_dir: Some(&identity_dir),
@@ -3010,6 +3069,11 @@ fn run() -> anyhow::Result<()> {
             kind: EnrollmentKind::PersonalDevice,
             port: NEARBY_PORT,
             ready: None,
+            approved: approved_cert
+                .map(|path| tilo_user_identity::persist::read_device_cert(&path))
+                .transpose()
+                .context("read the approved certificate")?
+                .as_ref(),
         }),
         Command::OutOfBand(command) => out_of_band(command),
     }

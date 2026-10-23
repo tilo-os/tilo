@@ -488,6 +488,7 @@ impl ShellOverlayHost {
             peer_sync: peer_sync_dispatch::PeerSyncDispatch::default(),
             pairing_until_ms: 0,
             pairing_polled_at: None,
+            certification_seen: 0,
             site_rooms_for_shots: None,
             device_labels: std::collections::HashMap::new(),
             clipboard_manager_bridge: None,

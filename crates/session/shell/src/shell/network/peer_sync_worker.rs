@@ -143,9 +143,16 @@ impl ShellNetwork {
                     })
             }
             PeerSyncRequest::DevicesAsking => self.devices_asking_response(),
-            PeerSyncRequest::AnswerDevice { digest, approve } => self
-                .answer_device(digest, approve)
-                .map(|()| PeerSyncResponse::Message(String::new())),
+            PeerSyncRequest::AnswerDevice { digest, approve } => {
+                // A device another of the person's devices found, or one
+                // asking at a host under this computer's pairing link.
+                match crate::shell::device_certification::answer(self, digest, approve)? {
+                    Some(_) => Ok(PeerSyncResponse::Message(String::new())),
+                    None => self
+                        .answer_device(digest, approve)
+                        .map(|()| PeerSyncResponse::Message(String::new())),
+                }
+            }
             PeerSyncRequest::PollEnrollment(id) => self.poll_enrollment(id),
             PeerSyncRequest::CancelEnrollment(id) => self.cancel_enrollment(id),
             PeerSyncRequest::ListPendingInvitations => self.pending_invitations_response(workspace),
@@ -193,24 +200,43 @@ impl ShellNetwork {
         }
     }
 
-    /// The devices asking to join this person, as the sheet lists them.
+    /// The devices asking to join this person, as the sheet lists them:
+    /// those another of the person's devices found, and those asking at a
+    /// host under this computer's pairing links.
     fn devices_asking_response(&self) -> Result<PeerSyncResponse, String> {
-        self.devices_asking().map(|asking| {
-            PeerSyncResponse::DevicesAsking(
-                asking
-                    .into_iter()
-                    .map(
-                        |device| crate::shell::peer_sync_overlay::DeviceAskingSummary {
-                            digest: device.digest,
-                            label: device.label,
-                            code: device.code,
-                            requested_at_ms: device.requested_at_ms,
-                            country: device.country,
-                        },
-                    )
-                    .collect(),
-            )
-        })
+        use crate::shell::peer_sync_overlay::DeviceAskingSummary;
+        let found: Vec<DeviceAskingSummary> = crate::shell::device_certification::asking(self)
+            .into_iter()
+            .map(|device| DeviceAskingSummary {
+                digest: device.digest,
+                label: device.label,
+                code: device.code,
+                requested_at_ms: device.asked_at_ms,
+                country: None,
+                via: Some(device.via),
+            })
+            .collect();
+        let hosted = match self.devices_asking() {
+            Ok(hosted) => hosted,
+            Err(error) if !found.is_empty() => {
+                tracing::debug!(%error, "the hosts' devices asking could not be read");
+                Vec::new()
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(PeerSyncResponse::DevicesAsking(
+            found
+                .into_iter()
+                .chain(hosted.into_iter().map(|device| DeviceAskingSummary {
+                    digest: device.digest,
+                    label: device.label,
+                    code: device.code,
+                    requested_at_ms: device.requested_at_ms,
+                    country: device.country,
+                    via: None,
+                }))
+                .collect(),
+        ))
     }
 
     /// The invitations of `workspace`'s room still waiting for an answer.
