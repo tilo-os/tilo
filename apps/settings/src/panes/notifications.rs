@@ -934,14 +934,26 @@ mod tests {
             settings.get().per_app["so.tilo.chat"].muted_until,
             Some(unix_now_i64() + 60 * 60)
         );
-        let surface = app.agent_surface().to_string();
+        // The rows' operations are the session's actions on the section it
+        // keeps: the window offers them, and the session alone publishes.
+        let offered = ui::tilo_actions::door::survey(&app.harness().resources());
         assert!(
-            surface.contains("settings.notification-app:so.tilo.mail"),
-            "{surface}"
+            offered.iter().any(
+                |row| row.address.resource.as_str() == "settings.notification-app:so.tilo.mail"
+            ),
+            "{offered:?}"
         );
         assert!(
-            surface.contains("Turn on notification banners"),
-            "{surface}"
+            offered
+                .iter()
+                .any(|row| row.action_label == "Turn on notification banners"),
+            "{offered:?}"
+        );
+        assert!(
+            !app.agent_surface()
+                .to_string()
+                .contains("settings.notification-app:so.tilo.mail"),
+            "Settings publishes none of the session's actions"
         );
     }
 

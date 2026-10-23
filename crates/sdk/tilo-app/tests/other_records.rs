@@ -659,3 +659,67 @@ fn a_section_is_published_and_changed_without_a_window() {
         "judged against the value stored now"
     );
 }
+
+/// Settings sections the host keeps: the window shows them and binds its
+/// controls to them, but each change is the host's action.
+struct KeptApp;
+
+impl ResourceApp for KeptApp {
+    type Resource = Board;
+    const ID: &'static str = "so.tilo.test-kept";
+    const TITLE: &'static str = "Kept";
+
+    fn view(cx: &mut ViewCx<Board>) -> Element {
+        let display = cx.settings::<Display>();
+        cx.record(&display, |cx| {
+            Box::new(Column::new().push(Box::new(
+                cx.checkbox("High contrast", Display::paths().high_contrast),
+            )))
+        })
+        .unwrap_or_else(|| Box::new(Column::new()))
+    }
+
+    fn records(records: &mut Records<'_>) {
+        records.kept_by("test.host", |records| {
+            records.settings::<Display>().settings::<Lock>();
+        });
+    }
+}
+
+#[test]
+fn sections_the_host_keeps_are_its_actions_bound_here_and_published_only_there() {
+    let mut app = TestApp::<KeptApp>::new().unwrap();
+    let control = app
+        .harness()
+        .targets()
+        .keys()
+        .find(|name| name.as_str() == "high_contrast")
+        .cloned()
+        .expect("the field's control");
+    app.harness().click_named(&control).unwrap();
+    app.settle();
+    assert!(
+        app.settings::<Display>().get().high_contrast,
+        "the click ran the host's field edit"
+    );
+    for kept in ["settings:test.display", "settings:test.lock"] {
+        assert_eq!(published(&mut app, kept), Vec::<String>::new(), "{kept}");
+    }
+
+    app.call_on("settings:test.lock", "field-edit", edit(1).into())
+        .unwrap();
+    assert_eq!(app.settings::<Lock>().get().minutes, 1);
+    assert_eq!(
+        app.call_on("settings:test.lock", "field-edit", edit(0).into()),
+        Err(tilo_app::tilo_actions::DoorError::ConfirmationRequired),
+        "never locking asks first, here as at the host"
+    );
+    app.call_confirmed_on("settings:test.lock", "field-edit", edit(0).into())
+        .unwrap();
+    assert_eq!(app.settings::<Lock>().get().minutes, 0);
+    assert!(
+        app.call_confirmed_on("settings:test.lock", "field-edit", edit(90).into())
+            .is_err(),
+        "the host's model refuses"
+    );
+}

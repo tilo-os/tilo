@@ -640,7 +640,11 @@ impl App {
                 continue;
             }
             let binding = component.binding.clone();
-            for resource in component.into_resources() {
+            for resource in component
+                .into_resources()
+                .into_iter()
+                .filter_map(crate::bound_dispatch::published_here)
+            {
                 if let Ok(resource) = self.actions.bound_publication.project(&binding, resource) {
                     resources.push(resource);
                 }
@@ -1288,6 +1292,7 @@ impl App {
                                 .filter_map(|resource| {
                                     crate::bound_dispatch::filter_resource(&binding, resource)
                                 })
+                                .filter_map(crate::bound_dispatch::published_here)
                                 .filter_map(|resource| {
                                     self.actions
                                         .bound_publication
@@ -1551,7 +1556,8 @@ impl App {
                             crate::bound_dispatch::filter_resource(binding, resource)
                         })
                     });
-                let Some(mut resource) = resource else {
+                let Some(mut resource) = resource.and_then(crate::bound_dispatch::published_here)
+                else {
                     continue;
                 };
                 if let Some(binding) = providers[provider_index].callback_binding() {
@@ -2498,12 +2504,20 @@ impl App {
                 route: Some(&route),
             },
         );
-        if matches!(
-            started,
-            Err(crate::bound_dispatch::BoundActionError::Rerouted)
-        ) {
-            return self.route_resolved_invocation_to_broker(target, request, broker_delivery);
-        }
+        let started = match started {
+            Err(crate::bound_dispatch::BoundActionError::Rerouted) => {
+                return self.route_resolved_invocation_to_broker(target, request, broker_delivery);
+            }
+            // The broker delivers only what this app publishes, never
+            // another provider's action.
+            Err(crate::bound_dispatch::BoundActionError::Hosted(hosted)) if broker_admitted => {
+                return Err(tilo_actions::DoorError::Unknown(hosted.address));
+            }
+            Err(crate::bound_dispatch::BoundActionError::Hosted(hosted)) => {
+                return self.invoke_hosted(hosted);
+            }
+            started => started,
+        };
         let started = started.map_err(crate::bound_dispatch::BoundActionError::into_door);
         // Refused before the door resolved the action: nothing ran, as when
         // an unknown or unconfirmed action is refused before delivery.
@@ -3841,6 +3855,75 @@ impl App {
             }
         }
         dispatched
+    }
+
+    /// Invoke, as the person here, another provider's action a control of
+    /// this window is bound to ([`crate::bound_dispatch::BoundActionError::Hosted`]):
+    /// the provider admits and runs it as any caller's, through the broker.
+    fn invoke_hosted(
+        &mut self,
+        hosted: crate::bound_dispatch::HostedInvocation,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        if !self.collaboration.manager.is_connected() {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: "authoritative_host_unavailable".into(),
+                reason: format!(
+                    "`{}` runs this, and the workspace action broker is offline",
+                    hosted.provider
+                ),
+            });
+        }
+        let request_id = self.take_broker_request_id()?;
+        let request = tilo_actions::remote::InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: hosted.provider,
+                address: hosted.address,
+            },
+            argument: hosted.argument,
+            context: None,
+            confirmation: hosted
+                .confirmed
+                .then_some(tilo_actions::remote::Confirmation::Confirmed),
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        self.actions
+            .broker_requests
+            .insert(BrokerReply::Receipt(request.invocation), request_id);
+        self.actions.hosted_requests.insert(request_id);
+        self.collaboration
+            .manager
+            .send(CollabRequest::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+            });
+        Ok(crate::widget::ResourceOperationStart::Accepted)
+    }
+
+    /// The provider answered the hosted invocation `request_id`
+    /// ([`Self::invoke_hosted`]): what it refused is said over the window,
+    /// as a refusal here is. Whether it was one.
+    pub(super) fn settle_hosted(
+        &mut self,
+        request_id: u64,
+        result: &Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
+    ) -> bool {
+        if !self.actions.hosted_requests.remove(&request_id) {
+            return false;
+        }
+        let refused = match result {
+            Err(reason) => Some(reason.clone()),
+            Ok((_, tilo_actions::InvocationUpdate::Failed { error, .. })) => {
+                Some(error.message.clone())
+            }
+            Ok(_) => None,
+        };
+        if let Some(reason) = refused {
+            self.refuse_visibly(&tilo_actions::DoorError::Failed(reason));
+        }
+        true
     }
 
     /// Ask the broker to admit an edit the effect invocation `running`

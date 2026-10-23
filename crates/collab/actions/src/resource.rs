@@ -878,6 +878,25 @@ pub struct ActionSpec {
     /// applies as, for a nested resource's action. See
     /// [`ActionSpec::applied_as`].
     applied_as: Option<(String, String)>,
+    /// The provider that publishes and runs the action, when it is not the
+    /// resource's publisher, and the resource it publishes it on there when
+    /// another than the one it is offered on here: a view binds its
+    /// controls to another provider's action ([`ActionSpec::run_by`]).
+    provider: Option<Arc<RunBy>>,
+}
+
+/// Where another provider runs an action a view offers
+/// ([`ActionSpec::run_by`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunBy {
+    /// The provider that publishes and runs it.
+    pub provider: String,
+    /// The resource it publishes it on, when another than the one it is
+    /// offered on here (a row's operation on a record the provider keeps).
+    pub resource: Option<String>,
+    /// The action it publishes and the arguments this one fixes of it,
+    /// when it is offered here as another (a bound edit of its field edit).
+    pub invokes: Option<(String, serde_json::Map<String, serde_json::Value>)>,
 }
 
 impl Clone for ActionSpec {
@@ -901,6 +920,7 @@ impl Clone for ActionSpec {
             continuation_resolver: self.continuation_resolver.clone(),
             carrier: self.carrier,
             applied_as: self.applied_as.clone(),
+            provider: self.provider.clone(),
         }
     }
 }
@@ -922,6 +942,40 @@ struct TypedActionSeed {
 }
 
 impl ActionSpec {
+    /// This action as `provider` publishes and runs it: a view shows another
+    /// provider's resource and binds its controls to that provider's
+    /// actions. The view's publisher never runs nor publishes it; its host
+    /// invokes it at `provider`, which admits and runs it as any caller's.
+    #[must_use]
+    pub fn run_by(self, provider: impl Into<String>) -> Self {
+        self.run_as(RunBy {
+            provider: provider.into(),
+            resource: None,
+            invokes: None,
+        })
+    }
+
+    /// [`Self::run_by`] as `run` says where the provider publishes it.
+    #[must_use]
+    pub fn run_as(mut self, run: RunBy) -> Self {
+        self.provider = Some(Arc::new(run));
+        self
+    }
+
+    /// Where another provider than the resource's publisher runs this
+    /// action ([`Self::run_by`]).
+    #[must_use]
+    pub fn run_by_provider(&self) -> Option<&RunBy> {
+        self.provider.as_deref()
+    }
+
+    /// The provider that runs this action, when it is another than the
+    /// resource's publisher ([`Self::run_by`]).
+    #[must_use]
+    pub fn provider(&self) -> Option<&str> {
+        self.provider.as_deref().map(|run| run.provider.as_str())
+    }
+
     /// Mark this action as applied as the enclosing resource of kind `kind`
     /// (labelled `label`): a nested resource (a note's rich-text body)
     /// publishes its document actions re-encoded as the record's field
@@ -1099,6 +1153,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         }
     }
 
@@ -1140,6 +1195,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         })
     }
 
@@ -1175,6 +1231,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         }
     }
 
@@ -1228,6 +1285,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         }
     }
 
@@ -1294,6 +1352,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         })
     }
 
@@ -1342,6 +1401,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         }
     }
 
@@ -1444,6 +1504,7 @@ impl ActionSpec {
             continuation_resolver: None,
             carrier: false,
             applied_as: None,
+            provider: None,
         }
     }
 

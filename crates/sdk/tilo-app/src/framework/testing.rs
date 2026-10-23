@@ -162,6 +162,63 @@ pub struct HeadlessApp<A: ResourceApp> {
 /// The name tests use for [`HeadlessApp`].
 pub type TestApp<A> = HeadlessApp<A>;
 
+/// Stand in for the hosts keeping the records `A` declares kept by them
+/// ([`Records::kept_by`](super::Records::kept_by)), as the session does:
+/// each provider's settings sections are held over the profile's settings
+/// document `settings`, and what the window's controls invoke there is
+/// changed as `author`'s.
+fn serve_kept<A: ResourceApp>(
+    harness: &mut FrameHarness,
+    settings: &std::path::Path,
+    author: &str,
+) {
+    let mut declared = super::Records::declaring();
+    A::records(&mut declared);
+    let mut providers: Vec<(&'static str, Vec<super::Declare>)> = Vec::new();
+    for (provider, declare) in declared.into_kept() {
+        match providers.iter_mut().find(|(known, _)| *known == provider) {
+            Some((_, kept)) => kept.push(declare),
+            None => providers.push((provider, vec![declare])),
+        }
+    }
+    for (provider, kept) in providers {
+        let records = super::SettingsRecords::in_document(
+            A::ID,
+            &kept,
+            ui_core::storage::SettingsDocument::File(settings.to_path_buf()),
+        );
+        let person = author.to_owned();
+        harness.serve_provider(
+            provider,
+            Box::new(move |invocation| {
+                // The person's own settings: the host admits nobody else.
+                if invocation.actor != person {
+                    return Err(tilo_actions::DoorError::Unavailable {
+                        code: "permission_denied".into(),
+                        reason: format!("only {person} changes their settings"),
+                    });
+                }
+                let arguments = match invocation.argument {
+                    tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
+                    tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
+                    tilo_actions::remote::InvokeArgument::Text(_) => {
+                        return Err(tilo_actions::DoorError::InvalidArguments(
+                            "a settings change carries typed arguments".into(),
+                        ));
+                    }
+                };
+                records.invoke(
+                    invocation.address,
+                    &arguments,
+                    invocation.confirmed,
+                    &tilo_actions::ActionInvoker::actor(&person),
+                    None,
+                )
+            }),
+        );
+    }
+}
+
 fn operation(error: impl std::fmt::Display) -> LaunchError {
     LaunchError::Operation(error.to_string())
 }
@@ -514,8 +571,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 }
             },
         )?;
+        let mut harness = opened.harness;
+        serve_kept::<A>(&mut harness, &opened.profile.settings(), author);
         Ok(Self {
-            harness: Some(opened.harness),
+            harness: Some(harness),
             records: opened.records,
             checkout: opened.checkout,
             instance: opened.instance,
@@ -843,7 +902,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// agent, a script or a screen reader works with, and what it costs in
     /// context.
     pub fn agent_surface(&mut self) -> serde_json::Value {
-        let resources = self.harness().resources();
+        let mut resources = self.harness().resources();
+        // Another provider publishes what it runs, not this window.
+        resources.iter_mut().for_each(published_here);
         let mut rows: Vec<serde_json::Value> = tilo_actions::door::survey(&resources)
             .into_iter()
             .map(|descriptor| {
@@ -2239,4 +2300,11 @@ impl Drop for Collecting {
 /// `tilo-app check` do: a typo in a binding must fail, not grey a button.
 fn strict_bindings() {
     super::controls::STRICT.with(|strict| strict.set(true));
+}
+
+/// `resource` without the actions another provider runs and publishes
+/// ([`tilo_actions::ActionSpec::run_by`]).
+fn published_here(resource: &mut tilo_actions::Resource) {
+    resource.actions.retain(|spec| spec.provider().is_none());
+    resource.children.iter_mut().for_each(published_here);
 }

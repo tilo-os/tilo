@@ -148,6 +148,9 @@ pub(crate) struct ActionTable {
     /// Another record than the app's own, published at this id, whose
     /// actions a live row may offer; `None` for the app's own resource.
     record: Option<Rc<str>>,
+    /// The provider keeping that record, which runs its actions
+    /// ([`Records::kept_by`](super::Records::kept_by)).
+    kept_by: Option<&'static str>,
 }
 
 /// What bound controls look up: a publication shared with the root that
@@ -178,12 +181,15 @@ impl ActionTable {
                 overlay: Vec::new(),
             })),
             record: None,
+            kept_by: None,
         }
     }
 
-    /// Route the actions to the record `record`, where it may be changed.
-    fn route(&mut self, record: &str, editable: bool) {
+    /// Route the actions to the record `record`, where it may be changed,
+    /// kept by the provider `kept_by` when another provider runs them.
+    fn route(&mut self, record: &str, editable: bool, kept_by: Option<&'static str>) {
         self.record = editable.then(|| Rc::from(record));
+        self.kept_by = kept_by;
     }
 
     /// Follow the canonical publication of this same hosted resource.
@@ -418,8 +424,13 @@ impl<R: Resource> Actions<R> {
 
     /// These actions as another record's, published at `record`: a live row
     /// may offer them ([`Self::operation`]) where it may change it.
-    pub(crate) fn routed_to(mut self, record: &str, editable: bool) -> Self {
-        self.table.route(record, editable);
+    pub(crate) fn routed_to(
+        mut self,
+        record: &str,
+        editable: bool,
+        kept_by: Option<&'static str>,
+    ) -> Self {
+        self.table.route(record, editable, kept_by);
         self
     }
 
@@ -436,10 +447,19 @@ impl<R: Resource> Actions<R> {
         decl: &tilo_resource::ActionDecl<R>,
     ) -> Option<tilo_actions::ActionSpec> {
         let record = self.table.record.as_deref()?;
-        Some(super::record::route_spec(
-            tilo_resource::declaration_spec(decl),
-            record,
-        ))
+        let spec = super::record::route_spec(tilo_resource::declaration_spec(decl), record);
+        Some(match self.table.kept_by {
+            // The provider keeping the record runs the action this one
+            // invokes of it.
+            Some(provider) => spec.run_as(tilo_actions::RunBy {
+                provider: provider.to_owned(),
+                resource: Some(record.to_owned()),
+                invokes: AsRef::<tilo_resource::Declaration>::as_ref(decl)
+                    .invokes
+                    .clone(),
+            }),
+            None => spec,
+        })
     }
 
     /// The resource's own actions as published now: what a query view's

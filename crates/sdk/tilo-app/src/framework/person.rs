@@ -573,14 +573,23 @@ impl PersonState {
 
     /// Answer an undo or redo of an open record: how many steps it took.
     pub(crate) fn answer(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
+        let invoker = ui_core::invocation_scope::current_invoker()
+            .unwrap_or_else(|| ActionInvoker::actor(&self.me));
+        self.answer_for(payload, &invoker)
+    }
+
+    /// [`Self::answer`] for `invoker`.
+    pub(crate) fn answer_for(
+        &self,
+        payload: &[u8],
+        invoker: &ActionInvoker,
+    ) -> Result<tilo_actions::ActionOutput, String> {
         let request: HistoryRequest =
             tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
         let steps = request.steps.unwrap_or(1);
         if !(1..=MAX_STEPS).contains(&steps) {
             return Err(format!("steps is 1 to {MAX_STEPS}"));
         }
-        let invoker = ui_core::invocation_scope::current_invoker()
-            .unwrap_or_else(|| ActionInvoker::actor(&self.me));
         if invoker.actor != self.me && invoker.on_behalf_of.as_deref() != Some(self.me.as_str()) {
             return Err(format!(
                 "`{}` is {}'s own; only they change it",

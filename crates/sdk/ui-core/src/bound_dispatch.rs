@@ -1,6 +1,9 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
 pub(crate) mod legacy_document;
 
+mod hosted;
+pub(crate) use hosted::{HostedInvocation, published_here};
+
 mod deferred_intent;
 use deferred_intent::validate_deferred_arguments;
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
@@ -140,7 +143,12 @@ pub(crate) enum BoundActionError {
     /// handed it back before anything ran
     /// ([`ResourceActionRequest::route`]).
     Rerouted,
+    /// The resolved action is another provider's
+    /// ([`tilo_actions::ActionSpec::run_by`]): nothing ran here, and the
+    /// host invokes it at that provider.
+    Hosted(HostedInvocation),
 }
+
 impl BoundActionError {
     pub(crate) fn into_door(self) -> tilo_actions::DoorError {
         match self {
@@ -159,6 +167,7 @@ impl BoundActionError {
             Self::Dispatch(_) => "record_unavailable",
             Self::AmbiguousTarget { .. } => "ambiguous_action_target",
             Self::Rerouted => "bound_broker_route_required",
+            Self::Hosted(_) => "provider_unavailable",
         }
     }
 }
@@ -175,6 +184,7 @@ impl std::fmt::Display for BoundActionError {
                 )
             }
             Self::Rerouted => write!(f, "the action runs through the workspace broker"),
+            Self::Hosted(hosted) => write!(f, "the action runs at `{}`", hosted.provider),
         }
     }
 }
@@ -3081,6 +3091,16 @@ pub(crate) fn invoke_resource_action(
                         arguments,
                         confirmed,
                     )?;
+                    if let Some(hosted) = HostedInvocation::of(
+                        spec,
+                        &target.address.address,
+                        arguments.as_ref(),
+                        argument,
+                        actor,
+                        confirmed,
+                    ) {
+                        return Err(BoundActionError::Hosted(hosted));
+                    }
                     if reroute.is_some_and(|reroute| reroute(spec)) {
                         return Err(BoundActionError::Rerouted);
                     }

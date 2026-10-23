@@ -213,7 +213,7 @@ pub use resource::{
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, NESTED_RESOURCE_FACET, PROMPTED_PARAM, Resource,
     ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
-    ResourceViewRangeSpec, ResourceViewSpec, flatten, sole_text_argument,
+    ResourceViewRangeSpec, ResourceViewSpec, RunBy, flatten, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
