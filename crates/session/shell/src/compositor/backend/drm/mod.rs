@@ -4020,6 +4020,14 @@ impl Backend for DrmBackend {
         self.inner.cancel_touch();
     }
 
+    fn translate_key(&mut self, keycode: u32, pressed: bool) -> Vec<BackendEvent> {
+        self.inner.translate_key(keycode, pressed)
+    }
+
+    fn place_pointer(&mut self, x: f64, y: f64) {
+        self.inner.place_pointer(x, y);
+    }
+
     fn switch_vt(&mut self, vt: i32) {
         self.inner.change_vt(vt);
     }

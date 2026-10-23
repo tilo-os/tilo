@@ -910,6 +910,18 @@ impl InputMethodPreeditState {
     }
 }
 
+/// Whose hands an input event comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InputOrigin {
+    /// Someone at this device.
+    #[default]
+    Here,
+    /// The person at another of their devices
+    /// ([`crate::compositor::backend::BackendEvent::Sibling`]): it gives
+    /// this device's own input no priority over theirs.
+    Sibling,
+}
+
 pub struct State {
     /// Calloop loop handle — for registering input devices, session signals, libinput sources, etc.
     pub loop_handle: LoopHandle<'static, Self>,
@@ -1057,6 +1069,11 @@ pub struct State {
     /// [`crate::compositor::remote_seat::RemoteSeats`].
     pub remote_seats: RemoteSeats,
     personal_fabric_input: PersonalFabricInputHolders,
+    /// Admitted input from the person's other devices, for the event loop to
+    /// deliver as this device's own ([`Self::take_personal_fabric_input`]).
+    routed_fabric_input: Vec<crate::shell::device_fabric::FabricInputEvent>,
+    /// Whose hands the event being delivered comes from.
+    pub input_origin: InputOrigin,
     /// Every live client surface, keyed by the stable collaboration id.
     /// Native output bookkeeping uses this to emit `wl_surface.enter`, and
     /// remote pointer motion uses it to resolve the focused surface.
@@ -2113,6 +2130,8 @@ impl State {
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
             personal_fabric_input: PersonalFabricInputHolders::default(),
+            routed_fabric_input: Vec::new(),
+            input_origin: InputOrigin::Here,
             surface_handles: HashMap::new(),
             active_sessions: HashMap::new(),
             paint_apps: HashMap::new(),
@@ -4190,19 +4209,22 @@ impl State {
         }
     }
 
-    /// Inject one event that already passed the personal-fabric identity and
+    /// Admit one event that already passed the personal-fabric identity and
     /// lease gate. Unlike an app portal session, cross-device control must
     /// still yield to lock, the kill switch, and recent physical input on the
-    /// target device.
+    /// target device. What is admitted goes to the event loop
+    /// ([`Self::take_personal_fabric_input`]), which delivers it as this
+    /// device's own input: to the desktop, its apps and its clients alike.
     pub fn apply_personal_fabric_input(
         &mut self,
         controller: &crate::shell::personal_continuity::DeviceId,
         event: crate::shell::device_fabric::FabricInputEvent,
     ) -> bool {
+        use crate::shell::device_fabric::FabricInputEvent;
         let is_release = matches!(
             event,
-            crate::shell::device_fabric::FabricInputEvent::PointerButton { pressed: false, .. }
-                | crate::shell::device_fabric::FabricInputEvent::Key { pressed: false, .. }
+            FabricInputEvent::PointerButton { pressed: false, .. }
+                | FabricInputEvent::Key { pressed: false, .. }
         );
         if !is_release
             && let Some(reason) = self
@@ -4212,78 +4234,29 @@ impl State {
             tracing::debug!(?reason, "personal-fabric input yielded to local control");
             return false;
         }
-        let action = match event {
-            crate::shell::device_fabric::FabricInputEvent::PointerMotion { x, y } => {
-                RemoteAction::PointerMotionAbsolute {
-                    stream: 0,
-                    x: f64::from(x),
-                    y: f64::from(y),
-                }
-            }
-            crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed } => {
-                if !self
-                    .personal_fabric_input
-                    .button_transition(controller, button, pressed)
-                {
-                    return false;
-                }
-                RemoteAction::PointerButton {
-                    button: i32::try_from(button).unwrap_or(i32::MAX),
-                    pressed,
-                }
-            }
-            crate::shell::device_fabric::FabricInputEvent::Scroll {
-                horizontal,
-                vertical,
-            } => RemoteAction::PointerAxis {
-                dx: f64::from(horizontal),
-                dy: f64::from(vertical),
-            },
-            crate::shell::device_fabric::FabricInputEvent::Key {
+        let admitted = match event {
+            FabricInputEvent::PointerButton { button, pressed } => self
+                .personal_fabric_input
+                .button_transition(controller, button, pressed),
+            FabricInputEvent::Key {
                 keycode, pressed, ..
-            } => {
-                if !self
-                    .personal_fabric_input
-                    .key_transition(controller, keycode, pressed)
-                {
-                    return false;
-                }
-                RemoteAction::KeyboardKeycode {
-                    keycode: i32::try_from(keycode).unwrap_or(i32::MAX),
-                    pressed,
-                }
-            }
+            } => self
+                .personal_fabric_input
+                .key_transition(controller, keycode, pressed),
+            FabricInputEvent::PointerMotion { .. } | FabricInputEvent::Scroll { .. } => true,
         };
-        let applied = self.apply_remote_desktop_action(action);
-        if !applied {
-            match event {
-                crate::shell::device_fabric::FabricInputEvent::PointerButton {
-                    button,
-                    pressed: true,
-                } => {
-                    let _ = self
-                        .personal_fabric_input
-                        .button_transition(controller, button, false);
-                }
-                crate::shell::device_fabric::FabricInputEvent::Key {
-                    keycode,
-                    pressed: true,
-                    ..
-                } => {
-                    let _ = self
-                        .personal_fabric_input
-                        .key_transition(controller, keycode, false);
-                }
-                crate::shell::device_fabric::FabricInputEvent::PointerMotion { .. }
-                | crate::shell::device_fabric::FabricInputEvent::PointerButton {
-                    pressed: false,
-                    ..
-                }
-                | crate::shell::device_fabric::FabricInputEvent::Scroll { .. }
-                | crate::shell::device_fabric::FabricInputEvent::Key { pressed: false, .. } => {}
-            }
+        if admitted {
+            self.routed_fabric_input.push(event);
         }
-        applied
+        admitted
+    }
+
+    /// The admitted input of the person's other devices since the last call,
+    /// in order.
+    pub fn take_personal_fabric_input(
+        &mut self,
+    ) -> Vec<crate::shell::device_fabric::FabricInputEvent> {
+        std::mem::take(&mut self.routed_fabric_input)
     }
 
     /// Release every key/button actually attributed to one personal-fabric
@@ -4294,24 +4267,25 @@ impl State {
         &mut self,
         controller: &crate::shell::personal_continuity::DeviceId,
     ) -> bool {
+        use crate::shell::device_fabric::FabricInputEvent;
         let (keys, buttons) = self.personal_fabric_input.release_controller(controller);
-        let mut released = false;
-        for keycode in keys {
-            let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
-            let serial = self.next_serial();
-            released |= self.inject_seat_key(keycode, false, serial, time);
-        }
-        for button in buttons {
-            let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
-            let serial = self.next_serial();
-            released |= self.remote_pointer_button(
-                i32::try_from(button).unwrap_or(i32::MAX),
-                false,
-                serial,
-                time,
+        let before = self.routed_fabric_input.len();
+        self.routed_fabric_input
+            .extend(keys.into_iter().map(|keycode| FabricInputEvent::Key {
+                keycode,
+                pressed: false,
+                modifiers: 0,
+            }));
+        self.routed_fabric_input
+            .extend(
+                buttons
+                    .into_iter()
+                    .map(|button| FabricInputEvent::PointerButton {
+                        button,
+                        pressed: false,
+                    }),
             );
-        }
-        released
+        self.routed_fabric_input.len() > before
     }
 
     pub fn release_all_personal_fabric_input(&mut self) -> usize {

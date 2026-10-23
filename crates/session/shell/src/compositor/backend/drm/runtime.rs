@@ -4935,6 +4935,20 @@ impl DrmRuntime {
         self.dispatch.handle_direct_touch_cancel();
     }
 
+    /// Draw the pointer at scene `(x, y)` without reporting a motion.
+    pub fn place_pointer(&mut self, x: f64, y: f64) {
+        self.dispatch.set_pointer_scene((x, y));
+    }
+
+    /// Translate evdev key `keycode` through the active layout, as a key of
+    /// the physical keyboard is, answering the events it makes.
+    pub fn translate_key(&mut self, keycode: u32, pressed: bool) -> Vec<BackendEvent> {
+        let start = self.dispatch.events.len();
+        self.dispatch
+            .process_keyboard_key(xkb::Keycode::new(keycode.saturating_add(8)), pressed);
+        self.dispatch.events.split_off(start)
+    }
+
     /// Switch the physical keyboard to input source `index` at once.
     pub fn set_keyboard_source(&mut self, index: usize) {
         self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::load();

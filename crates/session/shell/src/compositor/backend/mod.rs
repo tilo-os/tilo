@@ -358,6 +358,10 @@ pub enum BackendEvent {
     /// `FrameBuilder::dispatch_event` — the same dispatch path the
     /// headless `execute_planned_action` uses.
     Input(WindowEvent),
+    /// Input another of the person's devices sent, delivered as this
+    /// device's own; unlike [`Self::Input`] it does not say someone is at
+    /// this device.
+    Sibling(Box<BackendEvent>),
     /// A real libinput keyboard event, preserving its kernel `CLOCK_MONOTONIC`
     /// timestamp before translation or input-loop queueing. Synthetic input
     /// and compositor-generated repeats never use this variant.
@@ -469,6 +473,8 @@ impl BackendEvent {
             | Self::ShellGesture(..)
             | Self::Touch(_)
             | Self::TabletMode(_)
+            // The person, at another of their devices, using this one.
+            | Self::Sibling(_)
             // A key press an accessibility filter rejected was still pressed.
             | Self::VisualAlert => true,
             // Devices and outputs come and go on their own (a Bluetooth
@@ -940,6 +946,19 @@ pub trait Backend {
     /// waiting for the settings poll. Default no-op: only the DRM backend
     /// translates raw keycodes itself.
     fn set_keyboard_source(&mut self, _index: usize) {}
+
+    /// Translate evdev key `keycode` through this device's keyboard layout,
+    /// as a key of its own keyboard is, for input another of the person's
+    /// devices sent. Empty where the backend translates no raw keycodes:
+    /// only the DRM backend does.
+    fn translate_key(&mut self, _keycode: u32, _pressed: bool) -> Vec<BackendEvent> {
+        Vec::new()
+    }
+
+    /// Draw the pointer at scene `(x, y)` without reporting a motion: the
+    /// caller delivers the motion itself. Default no-op for backends that
+    /// own no pointer.
+    fn place_pointer(&mut self, _x: f64, _y: f64) {}
 
     /// Cancel raw direct-touch contacts at a compositor ownership boundary.
     /// Display-only and hosted backends have no such source to retire.
