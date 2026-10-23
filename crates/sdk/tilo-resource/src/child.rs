@@ -280,13 +280,7 @@ fn field_edits(
         Ok(members)
     });
     match built {
-        Ok(mut members) => match (members.pop(), members.is_empty()) {
-            (Some(only), true) => crate::resource::encoded(&only),
-            (last, _) => {
-                members.extend(last);
-                crate::resource::encode_group(vocabulary, &members)
-            }
-        },
+        Ok(members) => crate::resource::encode_group(vocabulary, &members),
         Err(reason) => crate::resource::encode_built(Err(reason)),
     }
 }
