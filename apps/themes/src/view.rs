@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use ui::framework::Refused;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::theme::{Preset, ThemeDocument};
@@ -96,6 +97,11 @@ struct Editing {
     draft: Option<Arc<(String, Theme)>>,
     /// Whether the studio holds the theme.
     written: LocalState<bool>,
+    /// Whether this editor sent the draft's create and the studio does not
+    /// hold the theme yet: edits made meanwhile are plain edits of it, sent
+    /// after the create, rather than creates of their own that the studio
+    /// would refuse.
+    pending: LocalState<bool>,
 }
 
 impl Editing {
@@ -105,11 +111,37 @@ impl Editing {
             cx.read(|studio| studio.and_then(|studio| studio.draft(base).ok()))
                 .map(|theme| Arc::new((base.to_owned(), theme)))
         });
+        let pending = LocalState::new(false);
         let written = {
             let id = id.clone();
-            cx.value(move |studio: &Studio| studio.themes.contains(&id))
+            let pending = pending.clone();
+            cx.value(move |studio: &Studio| {
+                let written = studio.themes.contains(&id);
+                // Stored, the create is no longer pending; should the theme
+                // go again (its creating edit undone), the next edit
+                // creates it anew.
+                if written {
+                    pending.set(false);
+                }
+                written
+            })
         };
-        Self { id, draft, written }
+        Self {
+            id,
+            draft,
+            written,
+            pending,
+        }
+    }
+
+    /// The door refused `refusal` while the draft's create was pending: the
+    /// theme was not written, so say why in `notice` and let the next edit
+    /// create it again.
+    fn refused(&self, refusal: &Refused, notice: &LocalState<String>) {
+        if refusal.action == ui::tilo_resource::GROUP && self.pending.get() && !self.written.get() {
+            self.pending.set(false);
+            notice.set(format!("The theme was not created: {}", refusal.reason));
+        }
     }
 
     /// `read` of the theme shown: the studio's, or the unwritten draft.
@@ -136,14 +168,24 @@ impl Editing {
     }
 
     /// `change`, writing an unwritten draft first: one action, one undo
-    /// step, so the first edit of a draft is the one that creates it.
+    /// step, so the first edit of a draft is the one that creates it. Once
+    /// the create is sent, later changes are the change alone, whether or
+    /// not the studio holds the theme yet.
     fn invoke(&self, change: Invoke<Studio>) -> Invoke<Studio> {
         let create = self
             .draft
             .as_deref()
-            .filter(|_| !self.written.get())
+            .filter(|_| !self.written.get() && !self.pending.get())
             .map(|(base, _)| Studio::NEW_THEME.with((self.id.as_str().to_owned(), base.clone())));
+        if create.is_some() {
+            self.pending.set(true);
+        }
         Invoke::group(create.into_iter().chain([change]))
+    }
+
+    /// Whether the theme is in the studio or on its way there.
+    fn sent(&self) -> bool {
+        self.written.get() || self.pending.get()
     }
 
     /// `control`, invoking what `change` makes of each committed input.
@@ -263,6 +305,22 @@ fn notice(ui: &Ui) -> Text {
         .with_id("themes-notice")
         .with_role(TextRole::Caption)
         .with_live(ui::a11y::Politeness::Polite)
+}
+
+/// The editor's notice, which also says when the door refused the draft's
+/// create ([`Editing::refused`]).
+fn editor_notice(ui: &Ui, editing: &Editing) -> ModelView<Option<Refused>> {
+    let ui = ui.clone();
+    let editing = editing.clone();
+    ModelView::from_state(
+        &ui.dispatcher.refused(),
+        move |refusal: &Option<Refused>| -> Element {
+            if let Some(refusal) = refusal {
+                editing.refused(refusal, &ui.notice);
+            }
+            Box::new(notice(&ui))
+        },
+    )
 }
 
 /// The navigation list's id, for tests and inspection.
@@ -639,9 +697,9 @@ fn commands(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> impl Widget + us
             Button::new("theme-delete", "themes-delete-button")
                 .role(ButtonRole::Destructive)
                 .on_view(move || {
-                    // An unwritten draft has nothing to delete: leaving
+                    // A draft never sent has nothing to delete: leaving
                     // it is enough.
-                    if editing.written.get() {
+                    if editing.sent() {
                         ui.dispatcher
                             .submit(Studio::DELETE.with(editing.id.clone()));
                     }
@@ -856,6 +914,88 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, editing: &Editing) -> Element {
     Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
-            .with_child(Box::new(ui::column![preview, actions, notice(ui), form,])),
+            .with_child(Box::new(ui::column![
+                preview,
+                actions,
+                editor_notice(ui, editing),
+                form,
+            ])),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::tilo_resource::Replica;
+
+    const BASE: &str = "dark-graphite";
+
+    /// An editor of a draft of `BASE` under `id`, outside any window: what
+    /// its controls send is applied when the test says, as a door that has
+    /// not caught up yet would.
+    fn draft(studio: &Replica<Studio>, id: &str) -> Editing {
+        let theme = studio.state().unwrap().draft(BASE).unwrap();
+        Editing {
+            id: Id::from_raw(id),
+            draft: Some(Arc::new((BASE.to_owned(), theme))),
+            written: LocalState::new(false),
+            pending: LocalState::new(false),
+        }
+    }
+
+    #[test]
+    fn edits_sent_before_the_create_is_stored_edit_the_one_theme() {
+        let mut studio = Replica::<Studio>::new();
+        let editing = draft(&studio, "t1");
+        let roles = Theme::paths();
+        let first = editing.invoke(Invoke::from(editing.path(&roles.density).set(1.2)));
+        let second = editing.invoke(Invoke::from(editing.path(&roles.window_radius).set(20.0)));
+        assert!(
+            serde_json::Value::Object(second.arguments.clone())
+                .to_string()
+                .contains("field-edit")
+        );
+        assert!(
+            !serde_json::Value::Object(second.arguments.clone())
+                .to_string()
+                .contains("new-theme"),
+            "the create is sent once"
+        );
+        studio
+            .apply(first)
+            .expect("the first edit creates the theme");
+        studio.apply(second).expect("the second edits it");
+        let state = studio.state().unwrap();
+        assert_eq!(state.themes.len(), 1);
+        let theme = &state.themes[&Id::from_raw("t1")];
+        assert!((theme.density - 1.2).abs() < 1e-6);
+        assert!((theme.window_radius - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_refused_create_is_said_and_the_next_edit_creates_again() {
+        let mut studio = Replica::<Studio>::new();
+        let editing = draft(&studio, "t1");
+        let notice = LocalState::new(String::new());
+        let density = editing.path(&Theme::paths().density);
+        let refused = editing.invoke(Invoke::from(density.set(9.0)));
+        let reason = studio
+            .apply(refused)
+            .expect_err("a density outside its band is refused")
+            .to_string();
+        editing.refused(
+            &Refused {
+                action: ui::tilo_resource::GROUP.to_owned(),
+                item: None,
+                reason: reason.clone(),
+                by_room: false,
+            },
+            &notice,
+        );
+        assert!(notice.get().contains(&reason), "{}", notice.get());
+        studio
+            .apply(editing.invoke(Invoke::from(density.set(1.2))))
+            .expect("the next edit creates the theme");
+        assert_eq!(studio.state().unwrap().themes.len(), 1);
+    }
 }
