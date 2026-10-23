@@ -16,9 +16,10 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
+use tilo_dialogs::portal::{self, ContentsOutcome};
 use tilo_dialogs::shell::{FilePortalGrant, Reply, Request};
 
-use super::tests::{click, opened, panel};
+use super::tests::{click, nodes, opened, panel};
 
 /// What the session shell answers an app whose workspace granted it no
 /// files when it asks for a path (`portal-chooser-nothing-granted`).
@@ -189,5 +190,92 @@ fn the_totp_app_opens_the_file_picker() {
             "JBSWY3DPEHPK3PXP".to_owned()
         ),
         "the QR code's account is in the form"
+    );
+}
+
+/// A chooser that answers once the test says the person picked, after the
+/// frames the click ran: as a browser page's file input does, which wakes
+/// the window and changes nothing else.
+#[derive(Clone, Default)]
+struct LaterChooser {
+    answer: Arc<Mutex<Option<std::sync::mpsc::Sender<ContentsOutcome>>>>,
+}
+
+impl tilo_dialogs::FilePicker for LaterChooser {
+    fn pick(&self, _: portal::PickRequest) -> portal::PortalChannel {
+        refused(portal::PortalOutcome::Failed(NOTHING_GRANTED.into()))
+    }
+
+    fn pick_multiple(&self, _: portal::PickRequest) -> portal::MultiChannel {
+        refused(portal::MultiOutcome::Failed(NOTHING_GRANTED.into()))
+    }
+
+    fn open_file(&self, _: portal::PickRequest) -> portal::OpenFileChannel {
+        refused(portal::OpenFileOutcome::Failed(NOTHING_GRANTED.into()))
+    }
+
+    fn launch(&self, _: portal::LaunchRequest) -> portal::LaunchChannel {
+        refused(portal::LaunchOutcome::Failed(NOTHING_GRANTED.into()))
+    }
+
+    fn pick_contents(&self, _: portal::PickRequest) -> portal::ContentsChannel {
+        let (answer, channel) = std::sync::mpsc::channel();
+        *self.answer.lock().expect("answer") = Some(answer);
+        channel
+    }
+}
+
+fn refused<T>(outcome: T) -> std::sync::mpsc::Receiver<T> {
+    let (answer, channel) = std::sync::mpsc::channel();
+    let _ = answer.send(outcome);
+    channel
+}
+
+#[test]
+fn an_image_without_a_readable_code_says_so_over_the_open_sheet() {
+    let chooser = LaterChooser::default();
+    let mut services = ui::host::HostServices::null();
+    services.files = Arc::new(chooser.clone());
+    let _host = ui::host::enter(&services);
+
+    let mut app = opened((1280, 900));
+    click(&mut app, "totp-scan");
+    let answer = chooser
+        .answer
+        .lock()
+        .expect("answer")
+        .take()
+        .expect("Scan a QR image opens the chooser");
+    // A photo with no code in it.
+    let mut photo = std::io::Cursor::new(Vec::new());
+    image::GrayImage::from_pixel(96, 96, image::Luma([255]))
+        .write_to(&mut photo, image::ImageFormat::Png)
+        .expect("a PNG");
+    answer
+        .send(ContentsOutcome::Picked(vec![portal::PickedContents {
+            name: "photo.png".into(),
+            media_type: Some("image/png".into()),
+            bytes: photo.into_inner(),
+            location: None,
+        }]))
+        .expect("the app waits for the chooser");
+    // Frames as the live window runs them once nothing but the chooser
+    // moved: no input, no document change.
+    for _ in 0..3 {
+        app.harness().idle();
+    }
+
+    let notice = nodes(&mut app)
+        .into_iter()
+        .find(|node| node.name.as_deref() == Some("Notifications"))
+        .and_then(|node| node.value);
+    assert_eq!(
+        notice.as_deref(),
+        Some("Couldn\u{2019}t read a code from that image"),
+        "the person is told the image held no code they can use"
+    );
+    assert!(
+        panel(&mut app, |panel| panel.is_open()),
+        "the add sheet stays open to try another image"
     );
 }
