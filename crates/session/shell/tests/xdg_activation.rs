@@ -3,7 +3,7 @@
 use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
 
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_compositor, wl_keyboard, wl_seat, wl_shm, wl_shm_pool, wl_surface, wl_touch,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
@@ -84,6 +84,7 @@ delegate_noop!(Client: ignore xdg_activation_v1::XdgActivationV1);
 delegate_noop!(Client: ignore wl_compositor::WlCompositor);
 delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore wl_seat::WlSeat);
+delegate_noop!(Client: ignore wl_touch::WlTouch);
 delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore xdg_positioner::XdgPositioner);
 delegate_noop!(Client: ignore wl_shm::WlShm);
@@ -466,6 +467,111 @@ fn a_press_of_the_persons_in_an_app_proves_its_next_open_and_an_agents_does_not(
     );
     assert!(first, "the person's press in Chat proves Chat's next open");
     assert!(!second, "one press proves one open");
+}
+
+// A tap is a press too: the person's finger down in an app proves its next
+// open as a key or a click does, and an agent's touch through the shared
+// seat proves none.
+#[test]
+#[serial_test::serial(process_env)]
+fn a_tap_of_the_persons_in_an_app_proves_its_next_open_and_an_agents_does_not() {
+    use shell::compositor::activation::person_initiated;
+    use shell::compositor::backend::TouchEvent;
+    let mut h = Harness::new();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
+    let _touch = seat.get_touch(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+    let chat = compositor.create_surface(&qh, ());
+    let chat_xdg = wm.get_xdg_surface(&chat, &qh, ());
+    let chat_top = chat_xdg.get_toplevel(&qh, ());
+    chat_top.set_app_id("org.example.Chat".into());
+    // Notes is another app: its own connection, so its own client.
+    let notes_conn = crate::support::wayland::connect(&h.display);
+    let mut notes_queue = notes_conn.new_event_queue::<Client>();
+    let notes_qh = notes_queue.handle();
+    let notes_registry = notes_conn.display().get_registry(&notes_qh, ());
+    let mut notes_client = Client::default();
+    let mut pump_both = |h: &mut Harness, notes_client: &mut Client| {
+        for _ in 0..4 {
+            let _ = notes_queue.flush();
+            h.pump();
+            if let Some(guard) = notes_conn.prepare_read() {
+                let _ = guard.read();
+            }
+            let _ = notes_queue.dispatch_pending(notes_client);
+        }
+    };
+    pump_both(&mut h, &mut notes_client);
+    let global = |name: &str| {
+        notes_client
+            .globals
+            .iter()
+            .find(|(_, interface, _)| interface == name)
+            .map_or_else(
+                || panic!("{name} is advertised"),
+                |(id, _, version)| (*id, *version),
+            )
+    };
+    let (compositor_name, compositor_version) = global("wl_compositor");
+    let (wm_name, wm_version) = global("xdg_wm_base");
+    let notes_compositor: wl_compositor::WlCompositor =
+        notes_registry.bind(compositor_name, compositor_version.min(4), &notes_qh, ());
+    let notes_wm: xdg_wm_base::XdgWmBase =
+        notes_registry.bind(wm_name, wm_version.min(3), &notes_qh, ());
+    let (seat_name, seat_version) = global("wl_seat");
+    let notes_seat: wl_seat::WlSeat =
+        notes_registry.bind(seat_name, seat_version.min(9), &notes_qh, ());
+    let _notes_touch = notes_seat.get_touch(&notes_qh, ());
+    let notes = notes_compositor.create_surface(&notes_qh, ());
+    let notes_xdg = notes_wm.get_xdg_surface(&notes, &notes_qh, ());
+    let notes_top = notes_xdg.get_toplevel(&notes_qh, ());
+    notes_top.set_app_id("org.example.Notes".into());
+    pump_both(&mut h, &mut notes_client);
+    let chat_id = foreign_id(&h.state, "org.example.Chat");
+    let notes_id = foreign_id(&h.state, "org.example.Notes");
+    let proved = |h: &Harness, app: &str| person_initiated(&h.state.workspace_tree.read(), app);
+    let tap = |h: &mut Harness, surface: u64| {
+        h.state.forward_client_touch(
+            TouchEvent::Down {
+                slot: 0,
+                x: 4.0,
+                y: 4.0,
+            },
+            Some((surface, (0.0, 0.0))),
+        );
+        h.state
+            .forward_client_touch(TouchEvent::Up { slot: 0 }, Some((surface, (0.0, 0.0))));
+        h.state
+            .forward_client_touch(TouchEvent::Frame, Some((surface, (0.0, 0.0))));
+        h.pump();
+    };
+
+    let before_any = proved(&h, "org.example.Chat");
+    h.state.client_input.set_participant(Some(0x5eed_0003));
+    tap(&mut h, chat_id);
+    h.state.client_input.set_participant(None);
+    let after_agent = proved(&h, "org.example.Chat");
+    tap(&mut h, notes_id);
+    let after_elsewhere = proved(&h, "org.example.Chat");
+    let notes_own = proved(&h, "org.example.Notes");
+    tap(&mut h, chat_id);
+    let first = proved(&h, "org.example.Chat");
+    let second = proved(&h, "org.example.Chat");
+
+    assert!(!before_any, "no tap, no proof");
+    assert!(
+        !after_agent,
+        "an agent's touch through the shared seat proves nothing"
+    );
+    assert!(
+        !after_elsewhere,
+        "a tap in another app's window proves nothing for Chat"
+    );
+    assert!(notes_own, "it proves the next open of the app it reached");
+    assert!(first, "the person's tap in Chat proves Chat's next open");
+    assert!(!second, "one tap proves one open");
 }
 
 #[test]
