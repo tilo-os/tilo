@@ -431,7 +431,7 @@ fn with_the_bar_hidden_a_maximized_window_keeps_its_own_bar() {
     assert!(
         (stack.group.y0 - at_rest.group.y0 - bar.height()).abs() < 0.5
             && (stack.group.height() - at_rest.group.height()).abs() < 0.5,
-        "the window moved down below the bar, not resized: {:?} from {:?}",
+        "the window moved down below the bar {bar:?}, not resized: {:?} from {:?}",
         stack.group,
         at_rest.group
     );
