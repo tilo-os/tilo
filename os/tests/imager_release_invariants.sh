@@ -407,8 +407,8 @@ grep -Fq 'site-downloads:' "$workflow" \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq "'brew install --cask tilo-imager' 'brew install tilo-imager'" \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
-  && grep -Fq "IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases'" \
-    "$repo/.forgejo/workflows/release-imager-winget.yml" \
+  && grep -Fq 'TILO_RELEASE_REPOSITORY="$release_repository"' \
+    "$repo/apps/imager/packaging/monitor-winget-acceptance.sh" \
   && grep -Fq 'raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/Tilo/Imager/${version}/Tilo.Imager.yaml' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'TILO_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}' "$workflow" \
   && ok 'landing-page manifest advances only through the gated release workflow' \
@@ -637,19 +637,31 @@ grep -Fq "group: release-imager-\${{ startsWith(github.ref, 'refs/tags/imager-v'
   && ok 'tag promotion is serialized while stale branch validation is superseded' \
   || bad 'release promotion can regress or stale validation can block the current commit'
 
-winget_monitor="$repo/.forgejo/workflows/release-imager-winget.yml"
+# t's scheduled check (tools/ci/products.toml): every six hours, never cached, with the site
+# token from t's server config as its only credential, and refusing to run without it.
 winget_reconcile="$repo/apps/imager/packaging/monitor-winget-acceptance.sh"
-grep -Fq 'cron: "23 */6 * * *"' "$winget_monitor" \
-  && grep -Fq "IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases'" "$winget_monitor" \
-  && grep -Fq "if: vars.IMAGER_SITE_CREDENTIAL_BROKER != ''" "$winget_monitor" \
-  && ! grep -Fq 'secrets.' "$winget_monitor" \
-  && grep -Fq 'enable-openid-connect: true' "$winget_monitor" \
-  && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$winget_monitor" \
-  && grep -Fq 'acquire-release-token.sh' "$winget_monitor" \
+winget_check=bad
+if python3 - "$repo/tools/ci/products.toml" <<'PY'
+import subprocess, sys, tomllib
+checks = {c["name"]: c for m in tomllib.load(open(sys.argv[1], "rb"))["matrix"] for c in m["check"]}
+check = checks["imager-winget-acceptance"]
+assert check["on"] == ["schedule:23 */6 * * *", "dispatch"], check["on"]
+assert check["cache"] is False and check["secrets"] == ["TILO_SITE_TOKEN"]
+assert "id_token" not in check and "env" not in check
+assert "TILO_SITE_GIT_TOKEN=$TILO_SITE_TOKEN" in check["run"]
+assert "bash apps/imager/packaging/monitor-winget-acceptance.sh" in check["run"]
+unset = subprocess.run(["bash", "-c", check["run"]], env={"PATH": "/usr/bin:/bin"},
+                       capture_output=True, text=True)
+assert unset.returncode != 0 and "TILO_SITE_TOKEN is not set" in unset.stderr, unset.stderr
+PY
+then
+  winget_check=ok
+fi
+[[ $winget_check == ok ]] \
   && grep -Fq 'state="$(jq -r '\''.channels.winget // empty'\'' "$manifest")"' "$winget_reconcile" \
-  && grep -Fq 'GITHUB_REF_NAME="$tag" apps/imager/packaging/publish-site-release.sh' "$winget_reconcile" \
+  && grep -Fq 'GITHUB_REF_NAME="$tag" TILO_RELEASE_SERVER="$release_server"' "$winget_reconcile" \
   && grep -Fq 'published landing-page release has invalid WinGet state' "$winget_reconcile" \
-  && ok 'WinGet acceptance is reconciled automatically with short-lived site authority' \
+  && ok 'WinGet acceptance is reconciled automatically, with a site token only that check holds' \
   || bad 'WinGet acceptance still requires a manual site-promotion rerun'
 
 exit "$fail"

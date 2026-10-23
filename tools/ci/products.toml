@@ -548,6 +548,36 @@ Both installers in one WinGet manifest set, checked against WinGet's schemas (th
 and URL are placeholders: the release generates the real set from the signed installers)."""
 
 [[matrix.check]]
+name = "imager-winget-acceptance"
+image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+run = '''
+[[ -n ${TILO_SITE_TOKEN:-} ]] || {
+  echo 'TILO_SITE_TOKEN is not set: the server config must give this check the site bot token' >&2
+  exit 1
+}
+command -v npm >/dev/null || dnf -y -q install --setopt=install_weak_deps=False nodejs-npm >/dev/null
+GITHUB_SERVER_URL=https://code.tilo.so TILO_SITE_GIT_TOKEN=$TILO_SITE_TOKEN \
+  bash apps/imager/packaging/monitor-winget-acceptance.sh
+'''
+inputs = ["apps/imager/packaging/monitor-winget-acceptance.sh", "apps/imager/packaging/publish-site-release.sh", "docs/install-contract.json"]
+# The site repository is on the forge, whose Git does not take t's identity tokens.
+secrets = ["TILO_SITE_TOKEN"]
+# A check holding a secret runs as a micro-VM step, which t boots on x86_64 only for now.
+requires = ["arch=x86_64"]
+# It watches Microsoft's index and the published site, which change without this repository.
+cache = false
+timeout_secs = 1800
+cost = "minutes"
+requirement = { cores = 2, memory = "4GiB" }
+default = false
+on = ["schedule:23 */6 * * *", "dispatch"]
+comment = """
+The landing page's WinGet route, every six hours: once Microsoft's index serves the exact
+version the site already publishes as `submitted`, the site's own release build runs and the
+page says `available` (apps/imager/packaging/monitor-winget-acceptance.sh). It never selects or
+publishes another release. TILO_SITE_TOKEN may push the site repository, from main only."""
+
+[[matrix.check]]
 name = "wine/windows-{arch}-tests"
 run = "bash tools/ci/windows/wine-test.sh units /target/windows/{arch}/tests/imager-tests.exe"
 needs = ["build/windows-{arch}-tests"]

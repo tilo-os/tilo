@@ -614,11 +614,14 @@ by `microsoft/winget-pkgs`. Configure:
   user token described above; the workflow accepts no repository token fallback;
 - repository variable `WINGET_GITHUB_USER`: that bot account's login.
 
-The `Release / imager WinGet acceptance` workflow runs every six hours and can also be
-dispatched manually. It reads the release already published by the landing
-page, refuses to select another version, and uses
-`IMAGER_SITE_CREDENTIAL_BROKER` to advance `submitted` to `available` only
-after Microsoft's public index serves the exact identifier and version.
+t's check `imager-winget-acceptance` runs every six hours on main's head and with
+`t dispatch imager-winget-acceptance`. It reads the release already published by
+the landing page, refuses to select another version, keeps that release's download
+root and signing fingerprint, and advances `submitted` to `available` only after
+Microsoft's public index serves the exact identifier and version. It pushes the
+site with `TILO_SITE_TOKEN`, a token of the website bot that may push the site
+repository, which t's server config gives to runs on main; without it the check
+fails.
 
 After first publication users install with:
 

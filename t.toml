@@ -5581,6 +5581,32 @@ outputs = ["/target/windows/winget/*"]
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
 default = false
+
+# The landing page's WinGet route, every six hours: once Microsoft's index serves the exact
+# version the site already publishes as `submitted`, the site's own release build runs and the
+# page says `available` (apps/imager/packaging/monitor-winget-acceptance.sh). It never selects or
+# publishes another release. TILO_SITE_TOKEN may push the site repository, from main only.
+[[check]]
+name = "imager-winget-acceptance"
+image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+run = '''
+[[ -n ${TILO_SITE_TOKEN:-} ]] || {
+  echo 'TILO_SITE_TOKEN is not set: the server config must give this check the site bot token' >&2
+  exit 1
+}
+command -v npm >/dev/null || dnf -y -q install --setopt=install_weak_deps=False nodejs-npm >/dev/null
+GITHUB_SERVER_URL=https://code.tilo.so TILO_SITE_GIT_TOKEN=$TILO_SITE_TOKEN \
+  bash apps/imager/packaging/monitor-winget-acceptance.sh
+'''
+inputs = ["apps/imager/packaging/monitor-winget-acceptance.sh", "apps/imager/packaging/publish-site-release.sh", "docs/install-contract.json"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+requirement = { cores = 2, memory = "4GiB" }
+timeout_secs = 1800
+on = ["schedule:23 */6 * * *", "dispatch"]
+default = false
+cache = false
+secrets = ["TILO_SITE_TOKEN"]
 # END generated
 
 
