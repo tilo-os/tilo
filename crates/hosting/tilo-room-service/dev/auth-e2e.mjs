@@ -552,7 +552,7 @@ export const CHAT_CHANNEL = `(async () => {
 
 /** In the page: why `CHAT_CHANNEL` finds nothing, step by step, for a
  * failure's report. */
-const CHAT_WHY = `(async () => {
+export const CHAT_WHY = `(async () => {
   const shown = tiloMount.navigation.getSnapshot();
   const entry = shown.entries.find(entry => entry.app === 'so.tilo.chat');
   const window = entry?.route?.tab;
