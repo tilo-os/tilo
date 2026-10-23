@@ -349,6 +349,19 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
     }
     let label = app.model_message_label(&message);
     assert!(label.starts_with("Dana (via Discord): "), "{label}");
+    // One person, one colour: the bridged tile wears the linked member's.
+    let name = app.message_author_name(&message);
+    let ui::author::Author::Bot { linked_color, .. } =
+        app.message_author(&message, &name, "", None)
+    else {
+        panic!("a bridged message is the bot's");
+    };
+    assert_eq!(linked_color, Some(app.identity_colour("u_dana")));
+    assert_ne!(
+        app.identity_colour("u_dana"),
+        app.identity_colour(&message.author),
+        "not the bridge's own colour"
+    );
 }
 
 #[test]
