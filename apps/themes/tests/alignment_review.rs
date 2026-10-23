@@ -107,13 +107,27 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
         assert!(dropdown.width() > 0.0);
         near(dropdown.height(), height, "choices share control height");
     }
-    assert!(
-        toolbar.sidebar.is_some(),
-        "the bar holds the sidebar toggle"
+    // The list is docked at this width: the bar's toggle hides it and shows
+    // it again. Whether the list is shown is read from the bar, not from the
+    // list itself, which stays addressable while it slides away.
+    assert_eq!(
+        toolbar.sidebar,
+        Some(true),
+        "the bar holds the sidebar toggle, showing the list shown"
+    );
+    app.harness()
+        .expect(&SemanticExpectation::named("themes-nav").enabled(true))
+        .unwrap();
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+    assert_eq!(
+        bar(&mut app).sidebar,
+        Some(false),
+        "the toggle hid the list"
     );
     app.harness()
         .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
-    app.settle();
+    assert_eq!(bar(&mut app).sidebar, Some(true), "and shows it again");
     app.harness()
         .expect(&SemanticExpectation::named("themes-nav").enabled(true))
         .unwrap();
