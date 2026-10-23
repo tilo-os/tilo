@@ -81,6 +81,8 @@ containerfile="$repo/os/Containerfile"
 # The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
 # /usr/bin/bootc from bootc-builder, the base's release patched to find this
 # system's ESP on a disk it shares, and its licence notice are deliberate.
+# tilo-pstore-console.service and the systemd-pstore drop-in that keeps pstore
+# records in the journal are deliberate additions.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -286,7 +288,7 @@ containerfile="$repo/os/Containerfile"
 # /usr/bin/tilo-identity: one payload row each.
 # `tilo device` and `tilo action` are the tilo binary under their own names
 # (/usr/bin/device, /usr/bin/action), with completions linked the same way.
-expected_contract=c1c384af02fedf986866b0e2a864c14d73b184b679830f60e44748dfd237496f
+expected_contract=62f537f7d5ab769391fbc5d5ca87f8aa7cb013cfd7ce349bc159988fa26e5f7e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

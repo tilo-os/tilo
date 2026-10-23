@@ -99,3 +99,7 @@ upstream = "Tilo's own, not posted; mainline v7.3 has no mssecapp client"
 [[patch]]
 file = "0017-tpm-add-a-driver-for-the-TPM-behind-Qualcomm-mssecapp.patch"
 upstream = "Tilo's own, not posted; mainline v7.3 has no driver for it"
+
+[[patch]]
+file = "0021-arm64-dts-qcom-x1e80100-lenovo-yoga-slim7x-reserve-a-ramoops-region.patch"
+upstream = "Tilo's own, not posted; mainline describes no ramoops region for any X1E board"

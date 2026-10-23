@@ -1,0 +1,19 @@
+# The pstore console receives only messages below the console log level, and
+# the command line's loglevel=3 keeps that at critical so boot stays on the
+# splash. The errors that come before a reset are rarely critical, so once
+# userspace runs the level rises to 7, everything short of debug. A virtual
+# terminal in graphics mode, as under the splash and the session, draws none
+# of it. Stopping restores the command line's level for the shutdown screen.
+[Unit]
+Description=Record every kernel message in the pstore console
+ConditionPathExistsGlob=/sys/bus/platform/drivers/ramoops/*ramoops*
+After=plymouth-start.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/dmesg --console-level 7
+ExecStop=/usr/bin/dmesg --console-level 3
+
+[Install]
+WantedBy=multi-user.target

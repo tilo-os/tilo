@@ -282,7 +282,14 @@ class HardwareProfileTest(unittest.TestCase):
             # driver, the generator would hold sysinit.target for the 45 s
             # device timeout in the initrd and again after switch-root.
             kargs = self.root / prepare.KARGS_PATH
-            self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], ["systemd.tpm2_wait=0"])
+            sealed = tomllib.loads(kargs.read_text())["kargs"]
+            self.assertEqual(sealed, LENOVO["kernel_args"])
+            self.assertIn("systemd.tpm2_wait=0", sealed)
+            # A hang the 83ED cannot recover from panics, so its stacks reach
+            # the ramoops region before the watchdog resets the machine.
+            for argument in ("systemd.watchdog_sec=30", "sbsa_gwdt.action=1",
+                             "softlockup_panic=1", "nmi_watchdog=panic", "hung_task_panic=1"):
+                self.assertIn(argument, sealed)
             outputs = [profile_path, self.root / prepare.DEFINITION_PATH, dracut, kargs,
                        self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf",
                        self.root / "usr/share/libinput/50-tilo-lenovo-83ed.quirks",
