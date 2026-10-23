@@ -1,0 +1,828 @@
+//! End to end over the one host stack: every device runs the same room host
+//! the relay runs, in its own session, and its native owner is a member of
+//! every room, wherever the room is hosted. Real Iroh endpoints on loopback,
+//! real shells' networks, real hosts and a real relay; nothing is stubbed.
+//!
+//! Each test drives its devices the way the compositor's loop does: a device
+//! runs a turn ([`Device::frame`]) when its network wakes the loop, and
+//! otherwise only at the deadlines that loop keeps itself (a room push
+//! retry, the layout check after the tree changed, the join card's poll of
+//! an enrollment in flight). A wait ([`until`]) blocks on those wakes; it
+//! never sleeps on a guess.
+//!
+//! What the tests assert is what a person sees: the workspace list, a
+//! workspace's room, its windows and tabs, an app's document and the room's
+//! roster.
+
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime};
+
+use automerge::ReadDoc as _;
+use automerge::transaction::Transactable as _;
+use ed25519_dalek::SigningKey;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+use super::{HostIdentity, NetCmd, Reach, ShellNetwork};
+use crate::shell::peer_sync_overlay::{InvitationTerms, PeerSyncResponse};
+use crate::shell::state::{
+    AppKind, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceId,
+    WorkspaceTree, WorkspaceTreeHandle,
+};
+
+mod channels;
+mod home_relay;
+#[cfg(target_os = "linux")]
+mod idle_host;
+mod invite_join;
+mod live_frames;
+mod old_rooms;
+mod own_devices;
+
+/// The app whose document the tests edit, and its record.
+pub(super) const NOTES: &str = "so.tilo.notes";
+const NOTE_RECORD: &str = "plan";
+/// The note's text, a field of the record's document.
+const NOTE_TEXT: &str = "text";
+
+/// How often the compositor looks at the windows it keeps in its rooms
+/// after its tree changed (`compositor/native.rs`).
+const LAYOUT_CHECK: Duration = Duration::from_millis(500);
+/// How often the join card asks after an enrollment in flight
+/// (`PeerSyncOverlay::pending_enrollment_request`).
+const ENROLLMENT_POLL: Duration = Duration::from_millis(200);
+
+/// The wakes of every device's loop in one test: set by any of them,
+/// consumed by the one waiting.
+#[derive(Default)]
+pub(super) struct Wakes {
+    woken: Mutex<bool>,
+    ready: Condvar,
+}
+
+impl Wakes {
+    fn wake(&self) {
+        *self.woken.lock().unwrap() = true;
+        self.ready.notify_all();
+    }
+
+    /// Forget wakes already handled: the turn about to run sees their cause.
+    fn consume(&self) {
+        *self.woken.lock().unwrap() = false;
+    }
+
+    /// Block until a wake arrives or `deadline` passes.
+    fn wait_until(&self, deadline: Instant) {
+        let woken = self.woken.lock().unwrap();
+        let left = deadline.saturating_duration_since(Instant::now());
+        let (mut woken, _) = self
+            .ready
+            .wait_timeout_while(woken, left, |woken| !*woken)
+            .unwrap();
+        *woken = false;
+    }
+}
+
+/// A person: their root key, which certifies each of their devices.
+pub(super) struct Person {
+    root: SigningKey,
+}
+
+impl Person {
+    pub(super) fn new(seed: u8) -> Self {
+        Self {
+            root: SigningKey::from_bytes(&[seed; 32]),
+        }
+    }
+
+    pub(super) fn user(&self) -> [u8; 32] {
+        self.root.verifying_key().to_bytes()
+    }
+
+    /// The person's id as their own devices name them.
+    pub(super) fn id(&self) -> String {
+        match collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(self.user()),
+        ) {
+            collab_types::caps::Principal::Person(id) => id,
+            other => panic!("a root key names a person: {other:?}"),
+        }
+    }
+
+    /// A certificate from this person's root for `key`.
+    pub(super) fn certify(
+        &self,
+        key: &SigningKey,
+        label: &str,
+        capabilities: DeviceCapabilities,
+    ) -> DeviceCert {
+        let mut cert = DeviceCert {
+            user_public_key: self.user(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: label.into(),
+            capabilities,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &self.root).unwrap();
+        cert
+    }
+}
+
+/// When the compositor's loop of one device next has to run though nothing
+/// woke it, and what it last did at those deadlines.
+#[derive(Default)]
+struct Loop {
+    /// The tree's write generation the windows were last looked at in, and
+    /// when.
+    layout: Option<(u64, Instant)>,
+    /// When the enrollments in flight were last asked after.
+    polled: Option<Instant>,
+}
+
+/// One of a person's devices: its session's network over its tree, its
+/// state on disk, and its device key and certificate (made at its first
+/// start and kept across restarts, as a device's are).
+pub(super) struct Device {
+    pub(super) label: String,
+    dir: PathBuf,
+    root: SigningKey,
+    capabilities: DeviceCapabilities,
+    /// The id namespace this device mints its windows in.
+    salt: u16,
+    minted: Mutex<u64>,
+    pub(super) tree: WorkspaceTreeHandle,
+    net: Option<Arc<ShellNetwork>>,
+    custody: Arc<Mutex<Option<(SigningKey, DeviceCert)>>>,
+    wakes: Arc<Wakes>,
+    state: Mutex<Loop>,
+    /// Joins in flight, by enrollment.
+    enrollments: Mutex<Vec<u64>>,
+    /// How each finished join ended.
+    pub(super) joins: Mutex<Vec<Result<RoomId, String>>>,
+}
+
+impl Device {
+    /// A device of `person` with an empty tree, its state under `dir`,
+    /// started.
+    pub(super) fn start(
+        person: &Person,
+        label: &str,
+        dir: &Path,
+        salt: u16,
+        capabilities: DeviceCapabilities,
+        wakes: &Arc<Wakes>,
+    ) -> Self {
+        let mut tree = WorkspaceTree::default();
+        tree.set_salt_override(salt);
+        Self::start_with(person, label, dir, salt, capabilities, wakes, tree)
+    }
+
+    /// [`Self::start`] over `tree`, which persists to the device's state
+    /// file.
+    pub(super) fn start_with(
+        person: &Person,
+        label: &str,
+        dir: &Path,
+        salt: u16,
+        capabilities: DeviceCapabilities,
+        wakes: &Arc<Wakes>,
+        mut tree: WorkspaceTree,
+    ) -> Self {
+        std::fs::create_dir_all(dir).unwrap();
+        tree.persist_path = Some(dir.join("state.json"));
+        let mut device = Self {
+            label: label.into(),
+            dir: dir.to_path_buf(),
+            root: person.root.clone(),
+            capabilities,
+            salt,
+            minted: Mutex::new(0),
+            tree: tree.shared(),
+            net: None,
+            custody: Arc::default(),
+            wakes: Arc::clone(wakes),
+            state: Mutex::default(),
+            enrollments: Mutex::default(),
+            joins: Mutex::default(),
+        };
+        device.go_online();
+        device
+    }
+
+    /// Start this device's session over its current tree, as a session
+    /// starts: the network, its wake into the loop, and its rooms.
+    fn go_online(&mut self) {
+        assert!(self.net.is_none(), "{} is already online", self.label);
+        let root = self.root.clone();
+        let capabilities = self.capabilities;
+        let label = self.label.clone();
+        let custody = Arc::clone(&self.custody);
+        let net = ShellNetwork::spawn_with(
+            self.tree.clone(),
+            &self.dir.join("device-private/keypair.bin"),
+            &self.dir.join("peer-sync"),
+            Reach::Loopback,
+            move |secret, _| {
+                let key = SigningKey::from_bytes(&secret.to_bytes());
+                let mut cert = DeviceCert {
+                    user_public_key: root.verifying_key().to_bytes(),
+                    device_public_key: key.verifying_key().to_bytes(),
+                    device_label: label,
+                    capabilities,
+                    issued_at_ns: 1,
+                    expires_at_ns: None,
+                    signature: [0; 64],
+                };
+                sign_device_cert(&mut cert, &root).unwrap();
+                *custody.lock().unwrap() = Some((key.clone(), cert.clone()));
+                Some(HostIdentity {
+                    device_cert: cert,
+                    device_signing_key: key,
+                    workspace_device_certs: std::collections::HashMap::new(),
+                    workspace_revocations: std::collections::HashMap::new(),
+                    identity_paths: None,
+                })
+            },
+        )
+        .unwrap();
+        let wakes = Arc::clone(&self.wakes);
+        net.set_wake(Arc::new(move || wakes.wake()));
+        assert!(net.join_default_workspace());
+        self.net = Some(Arc::new(net));
+    }
+
+    /// Take this device off the network, as shutting it down does: its
+    /// session ends, its state stays on disk.
+    pub(super) fn go_offline(&mut self) {
+        let net = self.net.take().expect("the device is online");
+        crate::shell::persist::wait_for_saves();
+        drop(
+            Arc::try_unwrap(net)
+                .unwrap_or_else(|_| panic!("{}'s network is not shared", self.label)),
+        );
+    }
+
+    /// Start this device again from what it kept on disk, as booting it
+    /// does.
+    pub(super) fn come_back(&mut self) {
+        let path = self.dir.join("state.json");
+        let (mut tree, notice) = crate::shell::persist::load_or_default(&path);
+        assert!(
+            notice.is_none(),
+            "{} reads its own state file: {notice:?}",
+            self.label
+        );
+        tree.set_salt_override(self.salt);
+        tree.persist_path = Some(path);
+        self.tree = tree.shared();
+        *self.state.lock().unwrap() = Loop::default();
+        self.go_online();
+    }
+
+    /// Hold `keys` for every channel of this device's rooms, as its channel
+    /// membership would give them, so it seals and opens live frames.
+    pub(super) fn hold_live_keys(
+        &mut self,
+        keys: fn(collab_types::ChannelId) -> channel_crypto::ChannelContentKeys,
+    ) {
+        let net = Arc::get_mut(self.net.as_mut().expect("the device is online"))
+            .expect("nothing else holds the device's network");
+        net.live_keys = Box::new(move |_, channel| Some(keys(channel)));
+    }
+
+    pub(super) fn net(&self) -> &Arc<ShellNetwork> {
+        self.net
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} is offline", self.label))
+    }
+
+    pub(super) fn cert(&self) -> DeviceCert {
+        self.custody
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("the device has its certificate once it started")
+            .1
+            .clone()
+    }
+
+    fn key(&self) -> SigningKey {
+        self.custody
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("the device has its key once it started")
+            .0
+            .clone()
+    }
+
+    /// One turn of this device's compositor loop: the network's tick, the
+    /// windows it keeps in its rooms when its tree changed, and the join
+    /// card's poll of an enrollment in flight. Nothing while it is offline.
+    pub(super) fn frame(&self) {
+        let Some(net) = self.net.as_ref() else {
+            return;
+        };
+        net.tick();
+        let now = Instant::now();
+        let generation = self.tree.generation();
+        let look = {
+            let state = self.state.lock().unwrap();
+            state.layout.is_none_or(|(seen, at)| {
+                seen != generation && now.saturating_duration_since(at) >= LAYOUT_CHECK
+            })
+        };
+        if look {
+            let rooms: Vec<RoomId> = self
+                .tree
+                .read()
+                .desktop
+                .workspaces
+                .iter()
+                .map(crate::shell::state::Workspace::room)
+                .collect();
+            for room in rooms {
+                net.publish_hosted_legacy_windows(room, &self.tree);
+            }
+            self.state.lock().unwrap().layout = Some((self.tree.generation(), now));
+        }
+        let pending = self.enrollments.lock().unwrap().clone();
+        if !pending.is_empty() {
+            self.state.lock().unwrap().polled = Some(now);
+        }
+        for id in pending {
+            let ended = match net.poll_enrollment(id) {
+                Ok(PeerSyncResponse::EnrollmentPending { .. }) => continue,
+                Ok(PeerSyncResponse::EnrollmentJoined { room, .. }) => {
+                    Ok(RoomId::parse(&room).expect("a joined room is a room"))
+                }
+                Ok(other) => Err(format!("the join answered {other:?}")),
+                Err(error) => Err(error),
+            };
+            self.enrollments
+                .lock()
+                .unwrap()
+                .retain(|other| *other != id);
+            self.joins.lock().unwrap().push(ended);
+        }
+    }
+
+    /// When this device's loop next has to run though nothing wakes it.
+    fn next_deadline(&self) -> Option<Instant> {
+        let net = self.net.as_ref()?;
+        let state = self.state.lock().unwrap();
+        let layout = state.layout.and_then(|(seen, at)| {
+            (seen != self.tree.generation()).then(|| at.checked_add(LAYOUT_CHECK).unwrap_or(at))
+        });
+        let poll = (!self.enrollments.lock().unwrap().is_empty()).then(|| {
+            state.polled.map_or_else(Instant::now, |at| {
+                at.checked_add(ENROLLMENT_POLL).unwrap_or(at)
+            })
+        });
+        [net.next_deadline(), layout, poll]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    // What the person does.
+
+    /// Make a new workspace called `name`, as the create-workspace action
+    /// does: placed on this device's own host.
+    pub(super) fn create_workspace(&self, name: &str) -> (WorkspaceId, RoomId) {
+        self.tree.write().create_hosted_workspace(name)
+    }
+
+    /// Paste an invitation's text into the join field.
+    pub(super) fn join(&self, invitation: &str) -> Result<(), String> {
+        match self.net().accept_peer_invitation(invitation)? {
+            PeerSyncResponse::EnrollmentPending { id } => {
+                self.enrollments.lock().unwrap().push(id);
+                Ok(())
+            }
+            PeerSyncResponse::Message(room) | PeerSyncResponse::EnrollmentJoined { room, .. } => {
+                self.joins
+                    .lock()
+                    .unwrap()
+                    .push(Ok(RoomId::parse(&room).expect("a joined room is a room")));
+                Ok(())
+            }
+            other => Err(format!("the join field answered {other:?}")),
+        }
+    }
+
+    /// Invite someone to `local` from the workspace's sharing card.
+    pub(super) fn invite(
+        &self,
+        local: WorkspaceId,
+        invitee: &str,
+        recipient: Option<[u8; 32]>,
+    ) -> String {
+        self.net()
+            .issue_invitation(
+                local,
+                &InvitationTerms {
+                    role: crate::network::invite::InviteRole::Editor,
+                    expires_in_seconds: 3600,
+                    invitee_name: Some(invitee.into()),
+                    recipient_user_public_key: recipient,
+                },
+            )
+            .unwrap_or_else(|error| panic!("{} could not invite {invitee}: {error}", self.label))
+    }
+
+    /// Cancel the pending invitation to `room` for `invitee`.
+    pub(super) fn cancel_invitation(&self, room: RoomId, invitee: &str) {
+        let pending = self
+            .net()
+            .pending_invitations(room)
+            .into_iter()
+            .find(|invitation| invitation.name == invitee)
+            .unwrap_or_else(|| panic!("an invitation for {invitee} is pending"));
+        assert!(
+            self.net().cancel_invitation(&pending.id),
+            "the invitation for {invitee} is cancelled"
+        );
+    }
+
+    /// Open a window of the notes app in `room`'s workspace, in a group of
+    /// its own on the workspace's first strip. Answers its tab.
+    pub(super) fn open_window(&self, room: RoomId, title: &str) -> u64 {
+        let (group, tab) = (self.mint(), self.mint());
+        let strip_id = self.mint();
+        let mut tree = self.tree.write();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room() == room)
+            .unwrap_or_else(|| panic!("{} shows the workspace", self.label));
+        if workspace.strips.is_empty() {
+            workspace.strips.push(Strip {
+                id: StripId(strip_id),
+                name: "Main".into(),
+                window_groups: Vec::new(),
+            });
+        }
+        workspace.strips[0].window_groups.push(WindowGroup {
+            id: group,
+            tabs: vec![Tab {
+                id: tab,
+                title: title.into(),
+                tile: TileContent::AppPlaceholder {
+                    kind: AppKind::Other(NOTES.into()),
+                    label: title.into(),
+                },
+            }],
+            active_tab: tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        drop(tree);
+        tab
+    }
+
+    /// Close the window showing `tab` in `room`'s workspace.
+    pub(super) fn close_window(&self, room: RoomId, tab: u64) {
+        let mut tree = self.tree.write();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room() == room)
+            .unwrap_or_else(|| panic!("{} shows the workspace", self.label));
+        for strip in &mut workspace.strips {
+            strip
+                .window_groups
+                .retain(|group| !group.tabs.iter().any(|shown| shown.id == tab));
+        }
+    }
+
+    fn mint(&self) -> u64 {
+        let mut minted = self.minted.lock().unwrap();
+        *minted = minted.saturating_add(1);
+        tilo_desktop_model::compose_id(self.salt, 0x00E2_E000 + *minted)
+    }
+
+    /// Let the notes app keep records in `room` and have the room's host
+    /// make the note's empty record, as opening the app there first does.
+    /// The workspace's owner does this once; whoever opens it later finds
+    /// the record.
+    pub(super) fn open_notes_first(&self, room: RoomId) {
+        let net = Arc::clone(self.net());
+        let cert = self.cert();
+        let runtime = net.runtime_handle().unwrap();
+        runtime
+            .block_on(net.grant_app_authorship_at_host(room, &cert, NOTES))
+            .expect("the room's host answers for the app's authorship")
+            .unwrap_or_else(|error| panic!("the host lets the notes app author: {error}"));
+        runtime
+            .block_on(net.prepare_application_record_at_host(room, &cert, NOTES, NOTE_RECORD))
+            .expect("the room's host answers for the app's record")
+            .unwrap_or_else(|error| panic!("the host makes the note's record: {error}"));
+    }
+
+    /// Whether this device holds the note's record in `room`.
+    pub(super) fn holds_note(&self, room: RoomId) -> bool {
+        self.net.as_ref().is_some_and(|net| {
+            net.native_owner().is_ok_and(|owner| {
+                owner
+                    .with_current(room, |view| {
+                        Ok(view.peer().document(NOTES, NOTE_RECORD).is_some())
+                    })
+                    .unwrap_or(false)
+            })
+        })
+    }
+
+    /// Write `text` into the note in `room`, as the notes app does: a
+    /// change to its record signed by this device and committed by its
+    /// owner, which publishes it to the room's host.
+    pub(super) fn write_note(&self, room: RoomId, text: &str) {
+        let net = self.net();
+        let owner = net.native_owner().unwrap();
+        let key = self.key();
+        let now = SystemTime::now();
+        let changes = owner
+            .with_current(room, |view| {
+                let bytes = view
+                    .peer()
+                    .document(NOTES, NOTE_RECORD)
+                    .ok_or("the note's record is not here yet")?;
+                let mut document =
+                    automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+                document.set_actor(automerge::ActorId::from(
+                    key.verifying_key().to_bytes().to_vec(),
+                ));
+                let heads = document.get_heads();
+                document
+                    .put(automerge::ROOT, NOTE_TEXT, text)
+                    .map_err(|error| error.to_string())?;
+                Ok(document.save_after(&heads))
+            })
+            .unwrap_or_else(|error| panic!("{} edits the note: {error}", self.label));
+        let message = note_message(room, changes, &key, now);
+        owner
+            .commit_document(tilo_joined_room::testing::request(&message).unwrap(), now)
+            .unwrap_or_else(|error| panic!("{}'s owner commits the edit: {error}", self.label));
+        net.schedule_native_owner_publication(room);
+    }
+
+    /// The note's text in `room` as the notes app here shows it.
+    pub(super) fn note(&self, room: RoomId) -> Option<String> {
+        let owner = self.net.as_ref()?.native_owner().ok()?;
+        let bytes = owner
+            .with_current(room, |view| Ok(view.peer().document(NOTES, NOTE_RECORD)))
+            .ok()??;
+        let document = automerge::AutoCommit::load(&bytes).ok()?;
+        let (value, _) = document.get(automerge::ROOT, NOTE_TEXT).ok()??;
+        value.to_str().map(str::to_owned)
+    }
+
+    // What the person sees.
+
+    /// The rooms of the workspaces this device lists, in order.
+    pub(super) fn workspace_rooms(&self) -> Vec<RoomId> {
+        self.tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .map(crate::shell::state::Workspace::room)
+            .collect()
+    }
+
+    /// How many workspaces this device lists for `room`.
+    pub(super) fn workspaces_of(&self, room: RoomId) -> usize {
+        self.workspace_rooms()
+            .into_iter()
+            .filter(|listed| *listed == room)
+            .count()
+    }
+
+    /// Whether this device holds `room`: its workspace is listed and no
+    /// longer says Joining….
+    pub(super) fn holds(&self, room: RoomId) -> bool {
+        let tree = self.tree.read();
+        tree.holds_room(room)
+            && !tree.is_joining(room)
+            && tree
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room() == room)
+    }
+
+    /// The tabs of `room`'s workspace as this device shows them.
+    pub(super) fn tabs(&self, room: RoomId) -> Vec<(u64, String)> {
+        self.tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .map(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .map(|tab| (tab.id, tab.title.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(super) fn shows_tab(&self, room: RoomId, tab: u64) -> bool {
+        self.tabs(room).iter().any(|(shown, _)| *shown == tab)
+    }
+
+    /// The people in `room`'s roster as this device holds it.
+    pub(super) fn roster(&self, room: RoomId) -> BTreeSet<[u8; 32]> {
+        self.net
+            .as_ref()
+            .and_then(|net| net.native_owner().ok())
+            .and_then(|owner| {
+                owner
+                    .with_current(room, |view| {
+                        Ok(view
+                            .peer()
+                            .certificates()
+                            .iter()
+                            .map(|cert| cert.user_public_key)
+                            .collect())
+                    })
+                    .ok()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `room`'s governance as this device holds it: its owner, its members'
+    /// roles and its grants.
+    pub(super) fn policy(&self, room: RoomId) -> Option<tilo_action_policy::RoomPolicy> {
+        let owner = self.net.as_ref()?.native_owner().ok()?;
+        owner
+            .with_current(room, |view| {
+                Ok(view
+                    .peer()
+                    .permissions(view.device().device_public_key, SystemTime::now())?
+                    .policy)
+            })
+            .ok()
+    }
+
+    /// The role `person` holds in `room`, as this device sees it.
+    pub(super) fn role_of(
+        &self,
+        room: RoomId,
+        person: &Person,
+    ) -> Option<tilo_action_policy::Role> {
+        self.policy(room)?.role_of(&person.id())
+    }
+
+    /// Whether `room`'s governance lets `app` keep records there, as this
+    /// device sees it.
+    pub(super) fn app_may_author(&self, room: RoomId, app: &str) -> bool {
+        self.policy(room).is_some_and(|policy| {
+            policy
+                .grants
+                .iter()
+                .any(|grant| grant.subject == tilo_action_policy::Subject::App(app.into()))
+        })
+    }
+
+    /// Change `person`'s role in `room` from the workspace's people
+    /// settings: the room's `set-role` governance action, asked of the
+    /// room's host.
+    pub(super) fn set_role(&self, room: RoomId, person: &Person, role: &str) {
+        let net = self.net();
+        let target = net
+            .administered_room(room)
+            .unwrap_or_else(|| panic!("{} administers the room it owns", self.label));
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("person".into(), hex::encode(person.user()).into());
+        arguments.insert("role".into(), role.into());
+        net.govern(
+            &target,
+            tilo_action_policy::roles::governance::SET_ROLE,
+            arguments,
+        )
+        .unwrap_or_else(|error| panic!("the room's host changes the role: {error}"));
+    }
+
+    /// The rooms this device's own host serves; empty while it runs none.
+    pub(super) fn hosted_rooms(&self) -> Vec<RoomId> {
+        let Some(host) = self.net.as_ref().and_then(|net| net.room_host()) else {
+            return Vec::new();
+        };
+        let runtime = self.net().runtime_handle().unwrap();
+        runtime
+            .block_on(host.rooms().list())
+            .into_iter()
+            .filter_map(|summary| RoomId::parse(&summary.room))
+            .collect()
+    }
+
+    /// Where this device's own host keeps what it retains of its rooms.
+    pub(super) fn host_state_root(&self) -> PathBuf {
+        self.net()
+            .room_host()
+            .expect("the device runs its host")
+            .state_root()
+            .to_path_buf()
+    }
+
+    /// Open a connection to `other`, as two of a person's devices that find
+    /// each other on the network do.
+    pub(super) fn reach(&self, other: &Self) {
+        let addr = until(&[self, other], "the other device to listen", || {
+            other.net().dial_addr()
+        });
+        self.net()
+            .cmd_tx
+            .try_send(NetCmd::Connect { addr })
+            .unwrap();
+    }
+}
+
+/// The signed change `changes` to the note in `room` by `key`, as the notes
+/// app sends it.
+fn note_message(
+    room: RoomId,
+    changes: Vec<u8>,
+    key: &SigningKey,
+    now: SystemTime,
+) -> neighbour_wire::NeighbourMsg {
+    let room = room.to_string();
+    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    let mutation = collab_types::DocumentMutation::Incremental(changes);
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        mutation.encode().unwrap(),
+        collab_types::document_artifact_id(NOTES, &room, NOTE_RECORD),
+        author,
+        collab_types::document_attestation_id(NOTES, &room, NOTE_RECORD),
+        collab_types::OpKind::Change,
+        now,
+        collab_types::next_unordered_document_sequence(now),
+    );
+    collab_types::sign_op(&mut envelope, key).unwrap();
+    neighbour_wire::NeighbourMsg::AppDocument {
+        peer: tilo_peer_state::peer_handle(author.as_bytes()),
+        app_id: NOTES.into(),
+        cluster_id: room,
+        record_id: NOTE_RECORD.into(),
+        envelope: Box::new(envelope),
+    }
+}
+
+/// Run `devices`' loops until `probe` answers, waking only when one of
+/// them is woken or reaches a deadline of its own loop; fail at the shared
+/// hang bound naming `what`.
+pub(super) fn until<T>(devices: &[&Device], what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
+    let bound = tilo_test_env::hang_deadline();
+    let wakes = &devices
+        .first()
+        .expect("a wait is for at least one device")
+        .wakes;
+    loop {
+        wakes.consume();
+        for device in devices {
+            device.frame();
+        }
+        if let Some(value) = probe() {
+            return value;
+        }
+        assert!(Instant::now() < bound, "timed out waiting for {what}");
+        let next = devices
+            .iter()
+            .filter_map(|device| device.next_deadline())
+            .min()
+            .map_or(bound, |next| next.min(bound));
+        wakes.wait_until(next);
+    }
+}
+
+/// A fresh directory for one test's devices.
+pub(super) fn scratch() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
+}
+
+/// Make `name` on `device` and wait until its host serves it and its owner
+/// holds it as a member.
+pub(super) fn hosted_workspace(
+    device: &Device,
+    others: &[&Device],
+    name: &str,
+) -> (WorkspaceId, RoomId) {
+    let (local, room) = device.create_workspace(name);
+    let mut all = vec![device];
+    all.extend_from_slice(others);
+    until(&all, "the new workspace to be hosted on its device", || {
+        (device.holds(room) && device.hosted_rooms().contains(&room)).then_some(())
+    });
+    (local, room)
+}
