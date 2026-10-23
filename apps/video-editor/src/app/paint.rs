@@ -266,7 +266,7 @@ pub(super) fn draw_button_enabled(
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
-/// An icon-only command (a compact topbar slot, a row's reorder arrow).
+/// An icon-only command (a row's reorder arrow, a panel's remove).
 pub(super) fn draw_icon_button(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -285,34 +285,23 @@ pub(super) fn draw_icon_button(
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
-/// A command that stays down while its state is on (mute, lock, solo, the
-/// bin and inspector toggles): a plain button standing on the selection
-/// lift while it is on, exactly as a toolbar toggle is drawn.
+/// A command that stays down while its state is on (mute, lock, solo): a
+/// plain labelled button standing on the selection lift while it is on,
+/// exactly as a toolbar toggle is drawn.
 pub(super) fn draw_toggle_button(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
-    content: ToggleContent<'_>,
+    label: &str,
     on: bool,
     hovered: bool,
 ) {
     let theme = ctx.theme;
-    let face = match content {
-        ToggleContent::Icon(icon, name) => ButtonFace::icon_only(rect, icon, name),
-        ToggleContent::Label(label) => ButtonFace::new(rect, label).role(ButtonRole::Plain),
-    }
-    .control_size(control_size_for(rect, theme))
-    .toggled(on)
-    .hovered(hovered);
+    let face = ButtonFace::new(rect, label)
+        .role(ButtonRole::Plain)
+        .control_size(control_size_for(rect, theme))
+        .toggled(on)
+        .hovered(hovered);
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
-}
-
-/// What a [`draw_toggle_button`] shows.
-#[derive(Clone, Copy)]
-pub(super) enum ToggleContent<'a> {
-    /// An icon and the name a reader hears for it.
-    Icon(Icon, &'a str),
-    /// A short label.
-    Label(&'a str),
 }
 
 /// The control size whose height a laid-out rect was given: the editor lays

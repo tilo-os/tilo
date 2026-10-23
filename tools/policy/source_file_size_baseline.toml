@@ -53,8 +53,8 @@
 "apps/terminal/src/main_body.rs" = 8000
 "apps/terminal/src/tests.rs" = 5000
 "apps/tube/src/app.rs" = 3500
-"apps/video-editor/src/app.rs" = 9500
-"apps/video-editor/src/app/tests.rs" = 11500
+"apps/video-editor/src/app.rs" = 9000
+"apps/video-editor/src/app/tests.rs" = 11000
 "apps/video-editor/src/model.rs" = 5000
 "apps/video-player/src/app.rs" = 4500
 "apps/word-processor/src/widget/tests.rs" = 9000
