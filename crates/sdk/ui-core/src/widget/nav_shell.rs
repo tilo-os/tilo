@@ -95,6 +95,7 @@ use crate::widget::{
 mod band;
 mod header_parts;
 pub(crate) mod memory;
+mod nothing_listed;
 mod notices;
 mod parts;
 mod sidebar_resize;
@@ -345,6 +346,7 @@ struct Pending {
     leading: [Option<Staged>; 4],
     controls: Option<Staged>,
     rail: Option<Staged>,
+    empty: Option<Staged>,
 }
 
 impl Pending {
@@ -354,6 +356,7 @@ impl Pending {
             && self.leading.iter().all(Option::is_none)
             && self.controls.is_none()
             && self.rail.is_none()
+            && self.empty.is_none()
     }
 }
 
@@ -501,6 +504,9 @@ struct Inputs {
     leading: [bool; 4],
     /// The app's own page stack can go back ([`NavShell::with_back`]).
     content_back: bool,
+    /// The window's empty state stands in for the overview, the content
+    /// and the inspector ([`NavShell::nothing_listed`]).
+    nothing_listed: bool,
     /// The docked sidebar width a person dragged to, authored at 1×.
     user_sidebar: Option<f64>,
     /// A navigation-list sidebar: rail while narrow, list while wide.
@@ -580,6 +586,7 @@ impl Default for Inputs {
             actions: [0; 4],
             leading: [false; 4],
             content_back: false,
+            nothing_listed: false,
             toolbar_in_bar: false,
             shell_bar: false,
             user_sidebar: None,
@@ -1066,6 +1073,9 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         Vec::new()
     };
+    // The window's empty state is its one screen, nothing to drill out of:
+    // the bar's toggle reaches the sidebar behind it, else Back does.
+    let drills = stack.len() > 1 && !(inputs.nothing_listed && inputs.toggle_in_bar);
 
     // 5. The header row.
     let needs_header = !inputs.slots_in_bar()
@@ -1074,7 +1084,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             || inputs.history.is_some()
             || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
             || inputs.content_back
-            || stack.len() > 1);
+            || drills);
     // A header in the window's bar stands over the content and only while
     // the person reaches for the bar; the columns' bodies start at the top.
     let in_bar = inputs.header_in_window_bar();
@@ -1279,7 +1289,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         }
         NavPane::Content => Column::Content,
     };
-    let push_back = stack.len() > 1 && front > 0;
+    let push_back = drills && front > 0;
     let window_row = Rect::new(0.0, top, w, top + hh);
     if hh > 0.0
         && !push_back
@@ -1524,6 +1534,8 @@ pub struct NavShell {
     overview: Option<Element>,
     content: Element,
     inspector: Option<Element>,
+    /// The app's columns while [`Self::nothing_listed`] stands in for them.
+    held: Option<nothing_listed::Held>,
     rail: Option<Element>,
     filter: Option<SearchField>,
     controls: Option<Element>,
@@ -1666,6 +1678,7 @@ impl NavShell {
             sidebar: None,
             overview: None,
             content: Box::new(crate::widget::Spacer::new()),
+            held: None,
             inspector: None,
             rail: None,
             filter: None,
@@ -2213,20 +2226,24 @@ impl NavShell {
             leading,
             controls,
             rail,
+            empty,
         } = pending;
+        // Leaving the empty state brings the app's columns back before
+        // their swaps land; entering it holds them after.
+        let (leave, enter) = match empty {
+            Some(Staged(None)) => (Some(Staged(None)), None),
+            enter => (None, enter),
+        };
+        self.apply_nothing_listed(leave);
         for (column, body) in Column::ALL.into_iter().zip(bodies) {
             let Some(Staged(body)) = body else { continue };
-            match column {
-                Column::Sidebar => self.sidebar = body,
-                Column::Overview => self.overview = body,
-                Column::Content => {
-                    if let Some(content) = body {
-                        self.content = content;
-                    }
-                }
-                Column::Inspector => self.inspector = body,
+            match (self.body_slot(column), body) {
+                (nothing_listed::BodySlot::Optional(slot), body) => *slot = body,
+                (nothing_listed::BodySlot::Required(slot), Some(body)) => *slot = body,
+                (nothing_listed::BodySlot::Required(_), None) => {}
             }
         }
+        self.apply_nothing_listed(enter);
         for (header, actions) in self.headers.iter_mut().zip(actions) {
             if let Some(actions) = actions {
                 header.more.close();
@@ -2296,20 +2313,16 @@ impl NavShell {
                 Some(next) => next.is_some(),
                 None => current,
             };
-            inputs.has_sidebar = has(
-                self.sidebar.is_some(),
-                at(&self.pending.bodies, Column::Sidebar).as_ref(),
-            );
-            inputs.has_overview = has(
-                self.overview.is_some(),
-                at(&self.pending.bodies, Column::Overview).as_ref(),
-            );
-            inputs.has_inspector = has(
-                self.inspector.is_some(),
-                at(&self.pending.bodies, Column::Inspector).as_ref(),
-            );
-            inputs.has_rail = has(self.rail.is_some(), self.pending.rail.as_ref());
-            inputs.has_controls = has(self.controls.is_some(), self.pending.controls.as_ref());
+            let body = |column| self.has_body(column, at(&self.pending.bodies, column).as_ref());
+            inputs.has_sidebar = body(Column::Sidebar);
+            inputs.has_overview = body(Column::Overview);
+            inputs.has_inspector = body(Column::Inspector);
+            // The overview's rail and controls go with it.
+            let listed = !self.nothing_listed_shown();
+            inputs.nothing_listed = !listed;
+            inputs.has_rail = listed && has(self.rail.is_some(), self.pending.rail.as_ref());
+            inputs.has_controls =
+                listed && has(self.controls.is_some(), self.pending.controls.as_ref());
             // A toolbar in the window's bar searches with the bar's own
             // search, which narrows the list through the same field: the
             // field keeps no band of its own while the bar presents it.
@@ -2364,20 +2377,12 @@ impl NavShell {
 
     /// The overview as the widget the app gave it.
     pub fn overview_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
-        let slot = match at_mut(&mut self.pending.bodies, Column::Overview) {
-            Some(Staged(pending)) => pending.as_deref_mut(),
-            None => self.overview.as_deref_mut(),
-        };
-        downcast(slot)
+        downcast(self.app_body_mut(Column::Overview))
     }
 
     /// The content as the widget the app gave it.
     pub fn content_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
-        let slot = match at_mut(&mut self.pending.bodies, Column::Content) {
-            Some(Staged(pending)) => pending.as_deref_mut(),
-            None => Some(self.content.as_mut()),
-        };
-        downcast(slot)
+        downcast(self.app_body_mut(Column::Content))
     }
 
     /// The window's filter field ([`Self::with_filter`]): its query and the
@@ -2648,6 +2653,9 @@ impl NavShell {
     }
 
     fn pop_push_stack(&mut self) -> bool {
+        if self.geometry.back_column.is_none() {
+            return false;
+        }
         let stack = self.geometry.stack.clone();
         let front = stack_index(&stack, self.front_pane());
         let Some(previous) = front.checked_sub(1).and_then(|i| stack.get(i).copied()) else {
@@ -3100,11 +3108,12 @@ impl NavShell {
     /// The screen a new window opens on: the first list of items, which is
     /// the overview where there is one, the content's own list where it is
     /// one (a mail window on the inbox, a Files window on the folder; Back
-    /// goes to the mailboxes or places), else the sidebar (Settings' list).
+    /// goes to the mailboxes or places) or the empty state standing in for
+    /// the list, else the sidebar (Settings' list).
     fn opening_pane(&self, stack: &[NavPane]) -> NavPane {
         if stack.contains(&NavPane::Overview) {
             NavPane::Overview
-        } else if self.inputs.borrow().kind == ContentKind::List {
+        } else if self.inputs.borrow().kind == ContentKind::List || self.nothing_listed_shown() {
             NavPane::Content
         } else {
             stack.first().copied().unwrap_or(NavPane::Content)

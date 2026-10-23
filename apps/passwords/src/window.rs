@@ -125,6 +125,9 @@ pub struct PasswordsSurface {
     /// with.
     declared_bar: Option<(String, bool)>,
     shows_list: bool,
+    /// The empty vault stands in for the list and the item
+    /// ([`NavShell::nothing_listed`]).
+    nothing_listed: bool,
     /// Shell state a capture stages once the window has its size.
     pending: Option<String>,
     settled_layouts: u32,
@@ -231,6 +234,7 @@ impl PasswordsSurface {
             header_in_bar: false,
             declared_bar: None,
             shows_list: true,
+            nothing_listed: false,
             pending: None,
             settled_layouts: 0,
             last_window: vello::kurbo::Rect::ZERO,
@@ -346,6 +350,19 @@ impl PasswordsSurface {
             self.shell.set_overview(
                 self.shows_list
                     .then(|| Box::new(ListPane::new(&self.core, &self.requests)) as Element),
+            );
+        }
+        // An empty vault with no editor or tool open.
+        let nothing = screen == Screen::Vault && {
+            let core = self.core.borrow();
+            core.items.is_empty() && !core.opening && core.dialog.is_none()
+        };
+        if nothing != self.nothing_listed {
+            self.nothing_listed = nothing;
+            self.shell.set_nothing_listed(
+                nothing.then(|| {
+                    Box::new(crate::list_pane::vault_empty_state(&self.requests)) as Element
+                }),
             );
         }
         if self.built_list != Some(list) {
