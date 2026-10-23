@@ -3,7 +3,7 @@
 [[resources]]
 kind = "chat.workspace"
 label = "Chat"
-version = 5
+version = 6
 fields = [
   { path = "categories", type = "Collection<Category>", stored = "collection" },
   { path = "categories.*.name", type = "String", label = true },
