@@ -1086,8 +1086,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             || inputs.has_inspector
             || inputs.history.is_some()
             || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
-            || inputs.content_back
-            || drills);
+            || (!inputs.toggle_in_bar && (inputs.content_back || drills)));
     // A header in the window's bar stands over the content and only while
     // the person reaches for the bar; the columns' bodies start at the top.
     let in_bar = inputs.header_in_window_bar();
@@ -1323,9 +1322,9 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         None
     };
     if let Some(column) = back_column
-        && inputs.slots_in_bar()
+        && (inputs.slots_in_bar() || inputs.toggle_in_bar)
     {
-        // Back is the window bar's ([`NavShell::window_toolbar`]).
+        // Back is the window bar's, beside its toggle ([`NavShell::window_toolbar`]).
         g.back_column = Some(column);
     } else if let Some(column) = back_column
         && (push_back || g.header(column) != Rect::ZERO)

@@ -180,3 +180,61 @@ fn back_shows_once_there_is_somewhere_to_go_back_to() {
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
     assert!(!bar_back(&h));
 }
+
+/// A phone-wide (420 px) push stack whose app keeps the sidebar's toggle in
+/// the window's bar (Passwords, Files) has its Back there too: no header row
+/// stands under the bar to hold a lone Back chevron, on the list or on an
+/// open item.
+#[test]
+fn a_narrow_stack_with_its_toggle_in_the_bar_draws_no_row_under_it() {
+    const NARROW: u32 = 420;
+    let no_row = |h: &FrameHarness, at: &str| {
+        let g = geometry(h);
+        assert_eq!(g.header_height, 0.0, "{at}: no header row");
+        assert!(
+            g.headers.iter().all(|header| *header == Rect::ZERO),
+            "{at}: no header in any column"
+        );
+        assert_eq!(g.back, Rect::ZERO, "{at}: no Back chip");
+        assert!(!shows_back_part(h), "{at}: no Back part");
+    };
+    // Passwords: places, the list, the item.
+    let mut shell = NavShell::new()
+        .content_kind(ContentKind::Page)
+        .with_header_in_window_bar()
+        .sidebar(Probe::boxed("sidebar").0)
+        .overview(Probe::boxed("overview").0)
+        .content(Probe::boxed("content").0);
+    shell.set_sidebar_toggle_in_window_bar(true);
+    let mut h = harness(shell, NARROW, H, Theme::dark());
+    settle(&mut h, NARROW, H);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    no_row(&h, "the list");
+    let list = child_rect(&h, "overview").expect("the list shows");
+    assert!(list.y0.abs() < 1e-9, "the list starts right under the bar");
+
+    h.root_mut::<NavShell>().show(NavPane::Content);
+    settle(&mut h, NARROW, H);
+    no_row(&h, "an open item");
+    assert!(h.root::<NavShell>().can_go_back());
+    assert!(bar_back(&h), "Back is the bar's");
+    let item = child_rect(&h, "content").expect("the item shows");
+    assert!(item.y0.abs() < 1e-9, "the item starts right under the bar");
+    assert!(h.root_mut::<NavShell>().back());
+    settle(&mut h, NARROW, H);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+
+    // Files: places and the folder.
+    let mut shell = NavShell::new()
+        .content_kind(ContentKind::List)
+        .with_header_in_window_bar()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .content_header("", Vec::new());
+    shell.set_sidebar_toggle_in_window_bar(true);
+    let mut h = harness(shell, NARROW, H, Theme::dark());
+    settle(&mut h, NARROW, H);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    no_row(&h, "the folder");
+    assert!(!bar_back(&h), "the folder is the top-level page");
+}
