@@ -41,9 +41,7 @@ use vte::{Parser, Perform};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
-use crate::graphics::{
-    GraphicsScanner, StreamEvent, TerminalImagePlacement, decode_for_rendering, parse_kitty,
-};
+use crate::graphics::{GraphicsScanner, StreamEvent, TerminalImagePlacement, parse_kitty};
 
 /// The PTY reader applies natural backpressure once this many chunks are
 /// waiting for the UI. A terminal must never silently discard process output,
@@ -699,9 +697,9 @@ pub struct TerminalWidget {
     content: ContentStore,
     image_placements: Vec<TerminalImagePlacement>,
     /// Decoded images are deliberately local GPU-side state. The session record
-    /// holds only immutable content addresses; each peer validates and decodes bytes
-    /// on demand when a placement comes into view.
-    image_cache: HashMap<String, ui::widget::Image>,
+    /// holds only immutable content addresses; each peer reads, validates and
+    /// decodes bytes on a worker when a placement comes into view.
+    images: crate::image_loads::ImageLoads,
     graphics_scanner: GraphicsScanner,
 
     /// Stable per-instance id used to scope this terminal's collaboration
@@ -891,7 +889,7 @@ impl TerminalWidget {
             next_link_id: 0,
             current_link_id: 0,
             image_placements: Vec::new(),
-            image_cache: HashMap::new(),
+            images: crate::image_loads::ImageLoads::new(content.clone()),
             content,
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
@@ -1869,9 +1867,9 @@ impl TerminalWidget {
     }
 
     /// Drain queued PTY bytes and replay them through the vte parser onto the
-    /// screen. Shared by both `Widget::update` (for hosts that pump it, e.g.
-    /// the compositor's tile host) and `Widget::sync`. Returns whether any
-    /// bytes were processed this call.
+    /// screen, and take in images read meanwhile. Shared by both
+    /// `Widget::update` (for hosts that pump it, e.g. the compositor's tile
+    /// host) and `Widget::sync`. Returns whether anything arrived to show.
     fn pump(&mut self) -> bool {
         let open_activity = self.poll_session_open();
         let native_activity = self.poll_native_ime() || open_activity;
@@ -1915,7 +1913,9 @@ impl TerminalWidget {
             // Fresh output snaps the viewport back to the live bottom.
             self.scroll_offset = 0;
         }
-        activity || native_activity
+        // An image read on the worker arrived to paint.
+        let images = self.images.take_finished();
+        activity || native_activity || images
     }
 
     #[cfg(test)]
@@ -4258,7 +4258,6 @@ impl TerminalWidget {
         start_y: usize,
         visible_rows: usize,
     ) {
-        const MAX_DECODE_CACHE_ENTRIES: usize = 128;
         let placements: Vec<_> = self
             .image_placements
             .iter()
@@ -4295,29 +4294,11 @@ impl TerminalWidget {
                 continue;
             }
 
-            // The MIME and dimensions form part of this local cache key: raw
-            // Kitty payloads have no self-describing header, and a replicated
-            // descriptor must not reuse a decoded image under altered metadata.
-            let cache_key = format!(
-                "{}:{}:{}:{}",
-                placement.hash, placement.mime, placement.pixel_width, placement.pixel_height
-            );
-            if !self.image_cache.contains_key(&cache_key) {
-                if self.image_cache.len() >= MAX_DECODE_CACHE_ENTRIES {
-                    self.image_cache.clear();
-                }
-                if let Some(bytes) = self.content.read(&placement.hash)
-                    && placement.byte_len == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-                    && let Some(image) = decode_for_rendering(&placement, &bytes)
-                {
-                    self.image_cache.insert(cache_key.clone(), image);
-                }
-            }
-            if let Some(image) = self.image_cache.get_mut(&cache_key) {
+            if let Some(image) = self.images.image(&placement, &self.waker) {
                 image.paint_at(scene, transform, rect);
             } else {
-                // Honest fallback for an unavailable blob or unsupported /
-                // invalid image.  It reserves the promised cells without
+                // Honest fallback for an image still loading, an unavailable
+                // blob or an unsupported / invalid image.  It reserves the promised cells without
                 // pretending an image rendered successfully.
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
@@ -7846,6 +7827,7 @@ impl TerminalWidget {
     /// readers. A terminal made without it keeps them in memory.
     #[must_use]
     pub fn with_content(mut self, content: ContentStore) -> Self {
+        self.images.set_content(content.clone());
         self.content = content;
         self
     }
