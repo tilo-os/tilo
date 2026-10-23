@@ -879,6 +879,7 @@ impl BrokerActor {
         run: Option<&crate::services::NativeTaskBinding>,
         (surface, action): (&PublishedSurface, &PublishedAction),
     ) -> Result<(bool, Vec<tilo_action_policy::GrantId>), String> {
+        use tilo_action_policy::Refused;
         let refused = || "caller no longer authorized for invocation".to_owned();
         let record = if self.is_agent {
             None
@@ -911,9 +912,8 @@ impl BrokerActor {
             );
             self.answer_in(workspace, &node, need.kind, now)
         });
-        // The broker reaches the person on their own device to ask them
-        // ([`tilo_actions::remote::ActionHost::confirm`]).
-        let admitted = tilo_action_policy::admit(
+        // The broker reaches the person on their own device to ask them.
+        let asks = match tilo_action_policy::admit(
             tilo_action_policy::Invoked {
                 answer,
                 attended: action.contract.is_attended(),
@@ -924,15 +924,10 @@ impl BrokerActor {
                 reachable: true,
                 delegated: self.delegate().is_some(),
             },
-        );
-        let asks = match admitted {
+        ) {
             Ok(admission) => admission == tilo_action_policy::Admission::AsksFirst,
-            Err(tilo_action_policy::Refused::Task) => {
-                return Err("the task's grants do not cover this action".into());
-            }
-            Err(tilo_action_policy::Refused::Action | tilo_action_policy::Refused::Record) => {
-                return Err(refused());
-            }
+            Err(Refused::Task) => return Err("the task's grants do not cover this action".into()),
+            Err(Refused::Action | Refused::Record) => return Err(refused()),
         };
         Ok((asks, spent))
     }
