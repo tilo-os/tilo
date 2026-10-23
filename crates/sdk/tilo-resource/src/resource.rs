@@ -803,10 +803,12 @@ fn edit_paths(
             ),
         }
         if collection {
+            // A field edit changes only the record, so Undo takes a removed
+            // item back and nobody is asked first.
             flags.push(if field.quiet_remove {
                 "removing an item asks nothing".to_owned()
             } else {
-                "removing an item asks for confirmation".to_owned()
+                "removing an item asks nothing; Undo takes it back".to_owned()
             });
         }
         let description = flags.join("; ");
@@ -890,6 +892,9 @@ fn edit_paths(
         }
     }
 }
+
+mod field_edit;
+use field_edit::rooted_edit_spec;
 
 /// The published spec of [`FIELD_EDIT`], where `now` holds the values of
 /// the fields that weaken one way ([`weakening_now`]).
@@ -1035,122 +1040,6 @@ pub(crate) fn field_edit_spec_at_of(
         "The path of the field from the item, and the operation",
         Vec::new(),
     ))
-}
-
-/// The field edit at paths under `prefix`, described by `schema`.
-fn rooted_edit_spec(
-    vocabulary: &'static Vocabulary,
-    (prefix, root): (Vec<crate::Segment>, Option<crate::Shape>),
-    schema: Arc<serde_json::Value>,
-    label: String,
-    description: &'static str,
-    now: Vec<(String, String)>,
-) -> ActionSpec {
-    let mut tags = vec![tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned()];
-    if let Some(root) = root {
-        // Any door reads the edit without this record's code: it is a field
-        // edit, these collections' removals ask nothing, these fields' every
-        // edit asks, and these fields' edits making them weaker than they
-        // are now.
-        tags.extend(
-            root.quiet_removals()
-                .into_iter()
-                .map(|path| format!("{}{path}", tilo_action_policy::edits::QUIET_REMOVAL_TAG)),
-        );
-        tags.extend(root.guarded_fields().into_iter().map(|(path, trust)| {
-            if let crate::Trust::Weakens(weaker) = trust {
-                let at = now.iter().find(|(field, _)| *field == path);
-                tilo_action_policy::edits::weakening_tag(
-                    &path,
-                    at.map(|(_, now)| now.as_str()),
-                    weaker,
-                )
-            } else {
-                format!("{}{path}", tilo_action_policy::edits::GUARDED_FIELD_TAG)
-            }
-        }));
-    }
-    let judged = root.map(|root| (root, FieldValues::from(now)));
-    let mut spec = edit_spec(vocabulary, prefix, schema, label, description, judged);
-    spec.contract.tags.extend(tags);
-    spec
-}
-
-/// The values of fields, as JSON text by dotted path.
-type FieldValues = Arc<[(String, String)]>;
-
-/// The field edit at paths under `prefix`, described by `schema`; with
-/// `judged`, the shape at `prefix` and the values now of its fields that
-/// weaken one way, by which an edit's risk is judged.
-fn edit_spec(
-    vocabulary: &'static Vocabulary,
-    prefix: Vec<crate::Segment>,
-    schema: Arc<serde_json::Value>,
-    label: String,
-    description: &'static str,
-    judged: Option<(crate::Shape, FieldValues)>,
-) -> ActionSpec {
-    let read = move |value: &serde_json::Map<String, serde_json::Value>| {
-        let edit = Edit::<()>::from_json(serde_json::Value::Object(value.clone()))?;
-        let mut path = prefix.clone();
-        path.extend(edit.path().iter().cloned());
-        match (vocabulary.edit)(Edit::new(path, edit.op().clone())) {
-            Some(action) => Ok(action),
-            None => Err(format!("{} has no field edits", vocabulary.label)),
-        }
-    };
-    let read = std::sync::Arc::new(read);
-    let risk_read = std::sync::Arc::clone(&read);
-    ActionSpec::typed(
-        FIELD_EDIT,
-        label,
-        "Field edit as JSON",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required_owned(EDIT_PARAM, ParamType::Object, description)
-                .with_shared_schema(schema),
-        ],
-        move |args| {
-            let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
-                return refused("missing edit");
-            };
-            match read(value) {
-                Ok(mut action) => {
-                    action.stamp(origin_now_ms());
-                    encoded(&action)
-                }
-                Err(reason) => refused(&reason),
-            }
-        },
-    )
-    .with_description(
-        "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}. Address a collection's items by what they hold, never by position: {path: [{field: name}], op: \"upsert-item\", match: {field: value}, value: {fields}} updates the one item that matches, else appends one; insert-item and move-to place by at: \"end\" | {after: id} | {before: id}.",
-    )
-    // Controls and agents edit fields; a person picks named actions or edits
-    // the field in place.
-    .for_audience(tilo_actions::Audience::Agents)
-    // A field edit changes only the document.
-    .reversible()
-    // History records the edit itself, not `field-edit`.
-    .carrying()
-    // Removing a collection item asks, as a delete verb does, and so does
-    // any edit of a field that is not ordinary, but an edit of one that
-    // weakens one way only when it makes it weaker than it is now.
-    .with_risk(move |args| {
-        let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
-            return tilo_actions::RiskLevel::Low;
-        };
-        let Ok(action) = risk_read(value) else {
-            return tilo_actions::RiskLevel::Low;
-        };
-        let Some((shape, now)) = judged.as_ref().filter(|(_, now)| !now.is_empty()) else {
-            return action.risk();
-        };
-        match Edit::<()>::from_json(serde_json::Value::Object(value.clone())) {
-            Ok(edit) => crate::path::edit_risk(*shape, edit.path(), edit.op(), Some(now)),
-            Err(_) => action.risk(),
-        }
-    })
 }
 
 /// The edits of a resource whose document holds nothing. An app whose data
@@ -2117,6 +2006,9 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
             spec.contract.tags.push(tag.clone());
         }
     }
+    // A compensated undo arrives as a tag: once it is there, a deletion it
+    // takes back is no longer asked about.
+    spec.contract.settle_confirmation();
     spec
 }
 
@@ -2511,6 +2403,12 @@ fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     .with_risk(move |args| match build(args, 0) {
         Ok(members) => crate::group::group_risk(members.iter().map(Built::risk)),
         Err(_) => tilo_actions::RiskLevel::Low,
+    })
+    // Undo takes it back only when it takes back every member: one that
+    // reaches outside the document makes a deleting group ask.
+    .with_undo_of(move |args| match build(args, 0) {
+        Ok(members) => members.iter().all(Built::undoable),
+        Err(_) => false,
     })
 }
 

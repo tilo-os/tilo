@@ -457,6 +457,13 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
         false
     }
 
+    /// Whether the operation loses what Undo cannot bring back, beside its
+    /// document change. `#[resource]` generates it from
+    /// `#[action(irreversible)]`.
+    fn irreversible(&self) -> bool {
+        false
+    }
+
     /// Whether this operation declares the verb that undoes it
     /// (`#[action(undo = path)]`).
     fn compensates(&self) -> bool {
@@ -1226,6 +1233,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
 
     fn incoming_message(&self) -> bool {
         self.operation.incoming_message()
+    }
+
+    fn irreversible(&self) -> bool {
+        self.operation.irreversible()
     }
 
     /// A verb that declares its undo is undone by applying that verb, and a

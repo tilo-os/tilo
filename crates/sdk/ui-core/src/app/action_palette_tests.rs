@@ -908,7 +908,9 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         );
     }
 
-    // Case `ctrl_k_invokes_a_projected_semantic_view_control`.
+    // Case `ctrl_k_lists_no_projected_control_verb_for_people`: a control's
+    // own verbs (focus it, press it) are how agents and scripts drive what
+    // a person presses directly, never a row of their own.
     {
         let button = Button::new("drive-me", "Drive me");
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(button));
@@ -921,12 +923,12 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
             .as_mut()
             .unwrap()
             .set_query("focus");
-
-        assert!(app.action_palette_handle_key(&synth_enter()));
+        let labels = app.action_palette().unwrap().result_labels();
         assert!(
-            app.root_widget.is_focused(),
-            "Ctrl+K reaches the real retained control"
+            labels.iter().all(|label| !label.contains("Focus")),
+            "no control verb is a person's row: {labels:?}"
         );
+        assert!(!app.root_widget.is_focused());
     }
 }
 

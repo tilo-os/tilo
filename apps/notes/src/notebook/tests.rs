@@ -188,14 +188,10 @@ fn verbs_make_move_and_delete_notes_and_keep_the_tree_a_tree() {
         "a note's parent exists"
     );
 
-    // Deleting a note deletes the notes under it, and nothing else.
-    assert!(
-        apply(&mut notebook, Notebook::DELETE.with(a.clone())).is_err(),
-        "deleting asks for confirmation"
-    );
-    notebook
-        .apply_confirmed(Notebook::DELETE.with(a.clone()))
-        .unwrap();
+    // Deleting a note deletes the notes under it, and nothing else; Undo
+    // takes it back, so it asks nothing.
+    apply(&mut notebook, Notebook::DELETE.with(a.clone()))
+        .expect("an undoable delete asks nothing");
     assert_eq!(children(&notebook, None), [c, b]);
     assert_eq!(notebook.state().unwrap().pages.len(), 2);
 }

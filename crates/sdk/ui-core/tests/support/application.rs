@@ -820,10 +820,10 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
                         &ProbeAction("confirmed".into()),
                     )
                     .unwrap()
+                    // A question one Confirm answers: a typed name is only
+                    // for an irreversible action, and names what it loses.
                     .with_contract(tilo_actions::ActionContract {
-                        confirmation: tilo_actions::ConfirmationPolicy::Phrase {
-                            phrase: "JA".into(),
-                        },
+                        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                         ..tilo_actions::ActionContract::default()
                     }),
                 ),

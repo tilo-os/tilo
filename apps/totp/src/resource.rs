@@ -49,7 +49,8 @@ impl Totp {
     }
 
     /// Delete an account and forget its secret on every device.
-    #[action(destructive)]
+    // Undo brings the account back but not its secret, so people confirm it.
+    #[action(destructive, irreversible)]
     pub fn delete(&mut self, account: &Id) -> Result<(), Refusal> {
         self.accounts
             .remove(account)
@@ -682,6 +683,8 @@ mod tests {
             "the same verb invoked directly"
         );
 
+        // Undo brings the account back but not the secret every device
+        // forgot: deleting asks first, however it is reached.
         let delete = Totp::DELETE.with(Totp::item(first));
         assert!(
             matches!(

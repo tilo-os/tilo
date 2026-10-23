@@ -931,20 +931,21 @@ fn finish_bound(mut spec: ActionSpec, decl: &Declaration) -> ActionSpec {
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }
+    // Offered to whom it is declared for, housekept and undone as
+    // declared: `#[action(audience = "people", item = ...)]` is no
+    // agent's on its item either. Before `destructive`, which asks first
+    // for what Undo cannot bring back (`undo:irreversible`).
+    for tag in &decl.tags {
+        if !spec.contract.tags.contains(tag) {
+            spec.contract.tags.push(tag.clone());
+        }
+    }
     if decl.destructive {
         spec = spec.destructive();
     }
     // An item verb that answers answers on its item too.
     if let Some(result) = &decl.result {
         spec.contract.result = result.clone();
-    }
-    // And is offered to whom it is declared for, housekept and undone as
-    // declared: `#[action(audience = "people", item = ...)]` is no
-    // agent's on its item either.
-    for tag in &decl.tags {
-        if !spec.contract.tags.contains(tag) {
-            spec.contract.tags.push(tag.clone());
-        }
     }
     spec
 }

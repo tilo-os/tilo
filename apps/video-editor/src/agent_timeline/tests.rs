@@ -378,7 +378,7 @@ fn a_clip_is_set_and_bad_values_are_refused_without_a_change() {
 }
 
 #[test]
-fn removing_a_clip_asks_first_and_can_close_the_gap() {
+fn removing_a_clip_applies_at_once_and_can_close_the_gap() {
     let mut app = editor(&Project::new("cut"));
     import(&mut app, &wav(4), "voice.wav").unwrap();
     let first = call(&mut app, "add-clip", json!({ "media": "voice.wav" })).unwrap();
@@ -388,19 +388,20 @@ fn removing_a_clip_asks_first_and_can_close_the_gap() {
         second["clip"].as_str().unwrap().parse().unwrap(),
     );
     let address = clip_resource(first);
-    assert!(
-        app.call_on(&address, "remove-clip", json!({ "ripple": true }))
-            .is_err(),
-        "removing waits for confirmation"
-    );
+    // Undo takes a removed clip back, so removing asks nothing.
     let removed = app
-        .call_confirmed_on(&address, "remove-clip", json!({ "ripple": true }))
-        .unwrap()
+        .call_on(&address, "remove-clip", json!({ "ripple": true }))
+        .expect("an undoable removal applies at once")
         .unwrap();
     assert_eq!(removed["removed"], json!([first.to_string()]));
     let state = app.state();
     assert!(state.clip(first).is_none());
     assert_eq!(state.clip(second).unwrap().start, 0.0, "the gap closed");
+    assert!(app.undo(), "the removal is one undo step");
+    assert!(
+        app.state().clip(first).is_some(),
+        "Undo brings the clip back"
+    );
 }
 
 #[test]

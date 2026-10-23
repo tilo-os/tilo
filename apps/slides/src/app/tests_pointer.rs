@@ -236,8 +236,11 @@ fn every_inspector_property_edit_lands_in_the_deck() {
         n + 1,
         "duplicate adds an element"
     );
-    // Deleting is destructive: held for the person's confirmation.
+    // Deleting changes only the deck: it runs at once and Undo takes it
+    // back.
     bench.with(|app| app.apply_hit(Hit::DeleteElement));
+    assert_eq!(bench.deck().slides[0].elements.len(), n, "deleted at once");
+    assert!(bench.undo(), "a delete is an undo step");
     assert_eq!(bench.deck().slides[0].elements.len(), n + 1);
 }
 
@@ -596,10 +599,11 @@ fn thumbnail_drag_reorders_selects_and_deletes() {
         );
     }
 
-    // Case `dropping_a_slide_on_the_delete_zone_asks_to_delete_it`.
+    // Case `dropping_a_slide_on_the_delete_zone_deletes_it_with_undo`.
     {
         let mut bench = reorder_bench();
         let before = bench.deck().slides.len();
+        let dropped = bench.deck().slides[1].id.clone();
         bench.with(|app| {
             let start = app.rail_thumb_rects()[1].1.center();
             press(app, start);
@@ -613,8 +617,12 @@ fn thumbnail_drag_reorders_selects_and_deletes() {
             assert!(release(app), "the drop is handled");
             assert!(!app.page_sidebar.is_pending_drag(), "the drag is cleared");
         });
-        // Deleting is destructive: the drop is held for confirmation.
-        assert_eq!(bench.deck().slides.len(), before, "held for confirmation");
+        // Deleting changes only the deck: the drop deletes the slide at
+        // once and Undo takes it back.
+        assert_eq!(bench.deck().slides.len(), before - 1, "deleted at once");
+        assert!(bench.deck().slides.iter().all(|slide| slide.id != dropped));
+        assert!(bench.undo(), "a delete is an undo step");
+        assert_eq!(bench.deck().slides.len(), before);
     }
 
     // Case `delete_zone_is_inert_when_not_dragging`.

@@ -1309,9 +1309,11 @@ fn open_resource() -> Resource {
         "tilo.host.history",
         I18nManager::lookup_plain("standalone-history-title"),
     )
+    // Named by what it does: a row reads "Show History", never the
+    // resource's own name twice.
     .with_action(operation(
         "open",
-        "standalone-history-title",
+        "host-history-show",
         &HistoryCommand::Open,
     ))
     .with_action(open_at_operation())
@@ -1897,12 +1899,8 @@ mod tests {
         assert_eq!(doc.base_heads(), before);
         published_invoke(&mut host, &context, review_address, Some(&arguments), false).unwrap();
         let restore_address = tilo_actions::ActionAddress::new(&resource, "restore");
-        assert_eq!(
-            published_invoke(&mut host, &context, restore_address.clone(), None, false),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
-        );
         assert!(host.take_confirmed_restore().is_none());
-        published_invoke(&mut host, &context, restore_address, None, true).unwrap();
+        published_invoke(&mut host, &context, restore_address, None, false).unwrap();
         let confirmed = host.take_confirmed_restore().unwrap();
         assert_eq!(encode_entry(confirmed.review.entry), entry);
         assert!(matches!(confirmed.target, HistoryTarget::Legacy {
@@ -2062,9 +2060,12 @@ mod tests {
             .unwrap();
         assert_eq!(restore.kind, OperationKind::Effect);
         assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Undoable);
+        // The person reviewed the restore, and Undo takes it back: going
+        // ahead asks nothing more.
+        assert!(restore.contract.can_be_undone());
         assert_eq!(
             restore.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::None
         );
         assert!(!restore.contract.availability.is_available());
         let cancel = session
