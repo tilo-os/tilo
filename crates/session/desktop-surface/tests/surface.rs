@@ -518,6 +518,7 @@ impl TileSource for Apps {
                     .with_height(600.0)
                     .with_child(Box::new(ui::widget::Spacer::fixed(5000.0))),
             ),
+            "Greedy" => Box::new(TakesEveryWheel::default()),
             caret if caret.starts_with("Caret") => Box::new(CaretProbe::new(caret)),
             _ => {
                 return TileHost::new(ui::widget::TileContent::Notice {
@@ -527,6 +528,56 @@ impl TileSource for Apps {
             }
         };
         TileHost::new(ui::widget::TileContent::App(Box::new(Hosted(content))))
+    }
+}
+
+/// An app that takes every wheel it is handed, wherever the pointer is, as
+/// a chat's message list follows any wheel that reaches it.
+#[derive(Default)]
+struct TakesEveryWheel {
+    rect: ui::kurbo::Rect,
+}
+
+impl ui::widget::Widget for TakesEveryWheel {
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        taffy
+            .new_leaf(ui::taffy::Style {
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        if matches!(event, ui::winit::event::WindowEvent::MouseWheel { .. }) {
+            *ctx.handled = true;
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "TakesEveryWheel"
+    }
+
+    fn get_rect(&self) -> ui::kurbo::Rect {
+        self.rect
     }
 }
 
@@ -2167,5 +2218,47 @@ fn search_fits_a_phone_screen() {
     assert!(
         ((x + width / 2.0) - 195.0).abs() < 1.0,
         "and is centred: {x}, {width}"
+    );
+}
+
+/// A wheel goes to the window under the pointer: a window beside it whose
+/// app takes any wheel it is handed does not get it first, so the scroll
+/// view under the pointer scrolls. The browser desktop sends the wheel as
+/// it does, coalesced into its next frame.
+#[test]
+fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
+    let (mut driver, handle, _) = mount_apps(&["Greedy", "Long"]);
+    settle(&mut driver);
+    driver.set_coalesce_input_frames(true);
+    let tab = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[1].active_tab);
+    let rect = handle
+        .shown_tabs()
+        .iter()
+        .find(|(id, _)| *id == tab)
+        .map(|(_, rect)| *rect)
+        .expect("the scrolling window is shown");
+    let at = rect.center();
+    driver.send(&ui::winit::event::WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: (at.x, at.y).into(),
+    });
+    relayout(&mut driver);
+    let top = |driver: &ui::headless::FrameHarness| {
+        find(&driver.inspection().root, "Scrollable")
+            .map(|node| node.children[0].rect[1])
+            .expect("the scroll view")
+    };
+    let before = top(&driver);
+    for _ in 0..4 {
+        on_clock(EVENT, || {
+            driver.send_host_event(&pixel_wheel(0.0, -120.0));
+            driver.poll_frame().unwrap();
+        });
+    }
+    settle(&mut driver);
+    let after = top(&driver);
+    assert!(
+        after < before - 1.0,
+        "the page under the pointer moved up: its top {before} -> {after}"
     );
 }

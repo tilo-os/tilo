@@ -5891,7 +5891,7 @@ impl GroupRow {
     /// outrunning `node_ids`; `.get` skips the new one until its next
     /// layout pass assigns a `node_id`.
     fn dispatch_to_groups(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // Mouse buttons carry no position, so dispatch the group that owns the
+        // Mouse buttons and wheels carry no position, so dispatch the group that owns the
         // remembered cursor (or an active capture) before siblings. Keep every
         // sibling in the fallback order: synthetic and keyboard-adjacent test
         // paths can legitimately lack a preceding cursor move.
@@ -5912,7 +5912,8 @@ impl GroupRow {
                 }
             }
         }
-        let preferred = matches!(event, WindowEvent::MouseInput { .. }).then(|| {
+        let wheel = matches!(event, WindowEvent::MouseWheel { .. });
+        let preferred = (wheel || matches!(event, WindowEvent::MouseInput { .. })).then(|| {
             self.groups
                 .iter()
                 .enumerate()
@@ -5959,10 +5960,16 @@ impl GroupRow {
         if let Some(i) = preferred {
             order.push(i);
         }
-        order.extend(
-            (0..self.groups.len())
-                .filter(|i| Some(*i) != preferred && !self.layout_hides_group(*i)),
-        );
+        // A wheel is the window's under the pointer alone: one beside it
+        // would scroll what the person is not pointing at (a chat's
+        // messages take any wheel they are handed), and before this window
+        // had its turn.
+        if !(wheel && preferred.is_some()) {
+            order.extend(
+                (0..self.groups.len())
+                    .filter(|i| Some(*i) != preferred && !self.layout_hides_group(*i)),
+            );
+        }
         for i in order {
             let Some(g) = self.groups.get_mut(i) else {
                 continue;
