@@ -1233,8 +1233,7 @@ impl VideoEditorApp {
             Some(ModalHit::Action(0)) => {
                 if self.export_running() {
                     // A render in flight: this is Cancel, not Close. Stop it
-                    // and leave the dialog up so the outcome is visible here
-                    // as well as in the chip.
+                    // and leave the dialog up so the outcome is visible here.
                     if let Some(job) = self.export_job.as_ref() {
                         job.cancel();
                     }

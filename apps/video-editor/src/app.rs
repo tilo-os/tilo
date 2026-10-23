@@ -6013,7 +6013,7 @@ struct ExportLayout {
     notice_top: f64,
     /// Close, or Cancel while a render is running: the first action.
     cancel: Rect,
-    /// Export, or "Rendering…" while a render is running: the second action.
+    /// Export: the second action, absent (zero) while a render is running.
     confirm: Rect,
 }
 
@@ -8573,7 +8573,14 @@ impl VideoEditorApp {
                 );
                 ui::widget::ProgressBarFace::new(*progress as f32)
                     .paint(&mut PaintCtx::new(scene, tf, tr, theme), bar);
-                let words = format!("Rendering, {}%", (progress * 100.0).round() as i32);
+                // A full bar with the file still being closed reads as what
+                // it is, not as a render stuck at its end.
+                let percent = (progress * 100.0).round() as i32;
+                let words = if percent >= 100 {
+                    "Finishing the file".to_owned()
+                } else {
+                    format!("Rendering, {percent}%")
+                };
                 text(scene, tr, tf, &words, &ty.xs, dim, x0, bar.y1 + s1);
             }
             ExportStatus::Done { path } => {
@@ -8784,17 +8791,18 @@ impl VideoEditorApp {
 }
 
 impl VideoEditorApp {
-    fn export_actions(&self) -> [ModalAction<'static>; 2] {
-        let running = self.export_running();
-        [
-            // A render in flight turns Close into Cancel — the only way to
-            // stop it.
-            ModalAction::secondary(if running { "Cancel" } else { "Close" }),
+    fn export_actions(&self) -> Vec<ModalAction<'static>> {
+        if self.export_running() {
+            // A render in flight: Cancel, the only way to stop it, and
+            // nothing else. The progress bar above says how far it has got.
+            return vec![ModalAction::secondary("Cancel")];
+        }
+        vec![
+            ModalAction::secondary("Close"),
             // Export is offered only when it can actually happen. The dialog
             // used to say "Export needs the GStreamer build" and put a
             // bright, enabled Export button directly underneath it.
-            ModalAction::primary(if running { "Rendering…" } else { "Export" })
-                .enabled(self.export_is_offered()),
+            ModalAction::primary("Export").enabled(self.export_is_offered()),
         ]
     }
     fn discard_words(pending: &PendingOpen) -> (String, [String; 2]) {

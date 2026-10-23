@@ -1455,7 +1455,7 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
         click(&mut app, &mut doc, pill.center().x, pill.center().y);
         assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::NotAllowed));
     }
-    // Case `a_disabled_export_button_offers_no_pointer`.
+    // Case `a_disabled_export_offers_no_pointer_and_a_running_render_only_its_cancel`.
     {
         use winit::window::CursorIcon;
         let (mut app, _doc) = app_and_doc();
@@ -1473,9 +1473,9 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
         );
         let l = app.with_dialog_layout(super::VideoEditorApp::export_layout);
         assert_eq!(
-            app.cursor_shape(l.confirm.center()),
-            Some(CursorIcon::Default),
-            "no pointer over a disabled Export"
+            l.confirm,
+            Rect::default(),
+            "a running render's dialog has no Export to point at"
         );
         assert_eq!(
             app.cursor_shape(l.cancel.center()),
@@ -1484,12 +1484,14 @@ fn hover_labels_and_pointer_shapes_describe_each_region() {
         );
         app.export_job = None;
         app.export_status = ExportStatus::Idle;
-        if app.export_is_offered() {
-            assert_eq!(
-                app.cursor_shape(l.confirm.center()),
-                Some(CursorIcon::Pointer)
-            );
-        }
+        let l = app.with_dialog_layout(super::VideoEditorApp::export_layout);
+        let shape = if app.export_is_offered() {
+            CursorIcon::Pointer
+        } else {
+            // No encoder in this build: a disabled Export offers no pointer.
+            CursorIcon::Default
+        };
+        assert_eq!(app.cursor_shape(l.confirm.center()), Some(shape));
     }
 }
 
@@ -3662,15 +3664,11 @@ fn export_failures_are_accessible_and_wrap() {
             );
         }
     }
-    // Case `the_accessible_export_button_reports_a_press_that_did_nothing`:
-    // The exported Export button is marked `disabled` when export cannot run,
-    // and its action used to answer `true` anyway — telling an assistive
-    // technology the press succeeded while nothing at all happened. The undo
-    // path in this file already refuses properly; this now matches it.
-    //
-    // The refusal is provoked by a render already in flight rather than by a
-    // build with no encoder, so the disabled node exists to be pressed
-    // however this crate's features were resolved.
+    // Case `a_running_render_offers_only_its_cancel_and_refuses_a_second_export`:
+    // While a render runs the dialog's only action is its Cancel, painted and
+    // exported alike; the progress bar says how far it has got. A press on
+    // Export's key answers that nothing happened rather than claiming a
+    // second render started.
     {
         let (mut app, _doc) = app_and_doc();
         app.presentation.export_open = true;
@@ -3690,15 +3688,21 @@ fn export_failures_are_accessible_and_wrap() {
             "so a second Export is out of reach"
         );
 
+        let painted: Vec<&str> = app.export_actions().iter().map(|a| a.label).collect();
+        assert_eq!(
+            painted,
+            ["Cancel"],
+            "a running render shows only its Cancel"
+        );
         let tree = app
             .accessibility()
             .expect("the editor describes its contents");
-        let btn = a11y_find(&tree, "Start export");
-        assert_eq!(btn.len(), 1, "the dialog offers exactly one Export button");
         assert!(
-            btn[0].state.disabled,
-            "and the node says it cannot be pressed",
+            a11y_find(&tree, "Start export").is_empty(),
+            "no Export is offered while one runs",
         );
+        assert_eq!(a11y_find(&tree, "Cancel export").len(), 1);
+        assert!(a11y_find(&tree, "Close export").is_empty());
 
         let before = app.export_status.clone();
         let acted = app.a11y_export_action(&ui::a11y::Action::Activate, &[1]);
@@ -3715,10 +3719,19 @@ fn export_failures_are_accessible_and_wrap() {
             "and opens no destination chooser",
         );
 
-        // The enabled half of the same contract: with nothing in flight, the
-        // press is answered as the action it really performed.
+        // Cancel, as a reader presses it, stops the render.
+        assert!(app.a11y_export_action(&ui::a11y::Action::Activate, &[2]));
+        assert!(
+            app.presentation.export_open,
+            "the dialog stays up for the outcome"
+        );
+
+        // With nothing in flight: Export and Close, and the press is answered
+        // as the action it really performed.
         app.export_job = None;
         app.export_status = ExportStatus::Idle;
+        let painted: Vec<&str> = app.export_actions().iter().map(|a| a.label).collect();
+        assert_eq!(painted, ["Close", "Export"]);
         if app.export_is_offered() {
             assert!(
                 app.a11y_export_action(&ui::a11y::Action::Activate, &[1]),
