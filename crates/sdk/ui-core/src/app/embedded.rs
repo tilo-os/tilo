@@ -490,6 +490,7 @@ impl Widget for EmbeddedApp {
                 placement,
                 rects,
                 copies,
+                earlier: Vec::new(),
             }
         });
         let key = crate::scene_parts::PartKey::new("ui.embedded-app", ());

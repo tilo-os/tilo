@@ -277,6 +277,7 @@ pub mod render_thread;
 pub mod reorder;
 pub mod resources;
 pub mod retained_present;
+pub mod retained_raster;
 pub mod richtext;
 pub mod scale;
 pub mod scene_parts;

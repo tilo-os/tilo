@@ -4,7 +4,7 @@ use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
 
 use super::{FrameContent, bounded_present_damage};
 
-pub(super) struct CpuCanvas {
+pub(crate) struct CpuCanvas {
     rasterizer: CpuRasterizer,
     pixels: Vec<u8>,
     size: (u32, u32),
@@ -16,7 +16,7 @@ pub(super) struct CpuCanvas {
 }
 
 impl CpuCanvas {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             rasterizer: CpuRasterizer::new(Options {
                 threads: 4,
@@ -30,11 +30,11 @@ impl CpuCanvas {
         }
     }
 
-    pub(super) fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         self.valid = false;
     }
 
-    pub(super) fn rasterize(&mut self, frame: &FrameContent<'_>) -> Result<u64, String> {
+    pub(crate) fn rasterize(&mut self, frame: &FrameContent<'_>) -> Result<u64, String> {
         if frame.width == 0 || frame.height == 0 {
             return Err("CPU target dimensions must be nonzero".into());
         }
@@ -103,11 +103,11 @@ impl CpuCanvas {
     }
 
     /// The canvas: premultiplied RGBA8, rows of `width * 4` bytes.
-    pub(super) fn pixels(&self) -> &[u8] {
+    pub(crate) fn pixels(&self) -> &[u8] {
         &self.pixels
     }
 
-    pub(super) fn upload(&self, queue: &vello::wgpu::Queue, texture: &vello::wgpu::Texture) {
+    pub(crate) fn upload(&self, queue: &vello::wgpu::Queue, texture: &vello::wgpu::Texture) {
         let stride = self.size.0.saturating_mul(4);
         for region in &self.uploads {
             let offset = u64::from(region.y) * u64::from(stride) + u64::from(region.x) * 4;

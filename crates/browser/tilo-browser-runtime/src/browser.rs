@@ -306,11 +306,92 @@ impl SharedGpu {
 struct Gpu {
     shared: Rc<RefCell<SharedGpu>>,
     surface: vello::util::RenderSurface<'static>,
+    /// The surface's target keeps the last presented frame; each frame
+    /// repaints only what changed since, the way the native hosts do.
+    retained: Retained,
+}
+
+struct Retained {
+    raster: ui::retained_raster::RetainedRaster,
+    frames: ui::retained_raster::RetainedFrames,
+    /// Changed whenever the target's pixels may not be the last frame's.
+    generation: u64,
+    /// Debug builds compare a frame repainted in part with a full render.
+    #[cfg(debug_assertions)]
+    check: Option<ui::retained_raster::RasterCheck>,
+}
+
+impl Retained {
+    fn new() -> Self {
+        Self {
+            raster: ui::retained_raster::RetainedRaster::new(false),
+            frames: ui::retained_raster::RetainedFrames::default(),
+            generation: 0,
+            #[cfg(debug_assertions)]
+            check: None,
+        }
+    }
+
+    /// The target no longer shows the last presented frame: repaint all of
+    /// the next one.
+    fn forget(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.frames.forget();
+        self.raster.invalidate();
+        #[cfg(debug_assertions)]
+        {
+            self.check = None;
+        }
+    }
 }
 
 impl Gpu {
     fn failure(&self) -> Option<String> {
         self.shared.try_borrow().ok().and_then(|s| s.failure())
+    }
+}
+
+/// Compare the last frame repainted in part, once read back, with a full
+/// render of it, and start the check of this one if it was repainted in
+/// part: a stale pixel is reported, never silently presented again.
+#[cfg(debug_assertions)]
+fn check_retained(
+    retained: &mut Retained,
+    surface: &vello::util::RenderSurface<'static>,
+    renderer: &mut vello::Renderer,
+    handle: &ui::gpu::DeviceHandle,
+    physical: &vello::Scene,
+    key: ui::retained_raster::TargetKey,
+    full_redraw: bool,
+) {
+    if let Some(check) = &retained.check {
+        let Some(differing) = check.differing() else {
+            return;
+        };
+        if differing != 0 {
+            web_sys::console::error_1(&JsValue::from_str(&format!(
+                "retained frame differs from a full render in {differing} pixels"
+            )));
+        }
+        retained.check = None;
+    }
+    if full_redraw {
+        return;
+    }
+    let target = ui::retained_raster::RetainedTarget {
+        texture: &surface.target_texture,
+        view: &surface.target_view,
+    };
+    match ui::retained_raster::RasterCheck::start(
+        (&handle.device, &handle.queue),
+        renderer,
+        target,
+        physical,
+        (key.width, key.height),
+        key.base_color,
+    ) {
+        Ok(check) => retained.check = Some(check),
+        Err(error) => web_sys::console::error_1(&JsValue::from_str(&error)),
     }
 }
 
@@ -1618,6 +1699,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         }
     }
     frame.set_input_scale(dpr).map_err(error)?;
+    // Where each frame's parts are, so it repaints only where it changed.
+    frame.track_scene_parts(true);
     // Every input asks for a redraw on the next animation frame, which
     // lays out and presents: wheel notches, keys, composed text and pointer
     // moves outpace frames, so each is dispatched at once and laid out
@@ -2085,7 +2168,11 @@ async fn set_up_gpu(setup: GpuSetup) {
                     &m.status,
                     &serde_json::json!({"initialSurfaceSize":[surface.config.width,surface.config.height]}),
                 );
-                m.gpu = Some(Gpu { shared, surface });
+                m.gpu = Some(Gpu {
+                    shared,
+                    surface,
+                    retained: Retained::new(),
+                });
                 m.viewport.surface_installed();
                 m.queue_resize();
                 m.pending = true;
@@ -2260,12 +2347,15 @@ impl Mount {
             shared
                 .cx
                 .resize_surface(&mut gpu.surface, viewport.width, viewport.height);
+            // A new target texture holds nothing of the last frame.
+            gpu.retained.forget();
         }
         let mut acquired = gpu.surface.surface.get_current_texture();
         if matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated)
             && self.viewport.recover_outdated()
         {
             shared.cx.configure_surface(&gpu.surface);
+            gpu.retained.forget();
             acquired = gpu.surface.surface.get_current_texture();
         }
         let output = match acquired {
@@ -2412,21 +2502,81 @@ impl Mount {
             .devices
             .get(gpu.surface.dev_id)
             .ok_or("WebGPU device missing")?;
-        shared
-            .renderer
-            .render_to_texture(
-                &handle.device,
-                &handle.queue,
-                &physical,
-                &gpu.surface.target_view,
-                &vello::RenderParams {
-                    base_color: frame.background,
-                    width: viewport.width,
-                    height: viewport.height,
-                    antialiasing_method: vello::AaConfig::Area,
-                },
-            )
-            .map_err(|e| e.to_string())?;
+        let key = ui::retained_raster::TargetKey {
+            width: viewport.width,
+            height: viewport.height,
+            to_device: ui::scale::composite_transform(viewport.dpr),
+            base_color: frame.background,
+            generation: gpu.retained.generation,
+        };
+        let parts = self.frame.scene_parts();
+        // Compared with the frame the target shows, command by command: a
+        // change no part proves is bounded (an unknown one) repaints it all.
+        let repaint = gpu.retained.frames.repaint(frame.scene, parts, key);
+        let (damage, full_redraw) = match &repaint {
+            ui::retained_raster::Repaint::Full(_) => (&[][..], true),
+            ui::retained_raster::Repaint::Regions(regions) => (regions.as_slice(), false),
+        };
+        let target = ui::retained_raster::RetainedTarget {
+            texture: &gpu.surface.target_texture,
+            view: &gpu.surface.target_view,
+        };
+        let rasterized = gpu.retained.raster.repaint(
+            (&handle.device, &handle.queue),
+            &mut shared.renderer,
+            target,
+            ui::retained_raster::FrameContent {
+                scene: &physical,
+                width: viewport.width,
+                height: viewport.height,
+                base_color: frame.background,
+                damage_regions: damage,
+                scroll_copies: &[],
+                full_redraw,
+                backdrop: &ui::backdrop::BackdropFrame::default(),
+            },
+        );
+        let rasterized = match rasterized {
+            Ok(pixels) => pixels,
+            Err(error) => {
+                // What the target holds after a failed raster is unknown.
+                gpu.retained.forget();
+                return Err(error);
+            }
+        };
+        // How much of the frame was repainted, for the frame metrics.
+        let window = u64::from(viewport.width) * u64::from(viewport.height);
+        let render_stage = match (&repaint, rasterized.saturating_mul(100) / window.max(1)) {
+            (ui::retained_raster::Repaint::Full(unknown), _) => {
+                use ui::retained_raster::Unknown;
+                use ui::scene_parts::Unproven;
+                match unknown {
+                    Unknown::NoFrame => "render:full:no-frame",
+                    Unknown::NoParts => "render:full:no-parts",
+                    Unknown::Target => "render:full:target",
+                    Unknown::Unproven(Unproven::Structure) => "render:full:structure",
+                    Unknown::Unproven(Unproven::Section) => "render:full:outside-parts",
+                    Unknown::Unproven(Unproven::Unbounded | Unproven::Corrupt) => {
+                        "render:full:unproven"
+                    }
+                }
+            }
+            _ if rasterized == 0 => "render:unchanged",
+            (_, 0..=9) => "render:part<10%",
+            (_, 10..=49) => "render:part<50%",
+            _ => "render:full:large-damage",
+        };
+        gpu.retained.frames.presented(frame.scene, parts, key);
+        #[cfg(debug_assertions)]
+        check_retained(
+            &mut gpu.retained,
+            &gpu.surface,
+            &mut shared.renderer,
+            handle,
+            &physical,
+            key,
+            full_redraw,
+        );
         let mut encoder = handle
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -2444,7 +2594,7 @@ impl Mount {
         drop(shared_guard);
         output.present();
         self.presented_capture_protected = self.frame.capture_protected();
-        self.metric_end("render", stage);
+        self.metric_end(render_stage, stage);
         self.viewport.did_present();
         self.pending = false;
         self.frames = self.frames.saturating_add(1);
