@@ -371,8 +371,7 @@ fn populated() -> (ui::State, WordProcessorWidget) {
     wp.model_mut().enter(&mut edits(&mut state.doc));
     wp.model_mut()
         .insert_str(&mut edits(&mut state.doc), "Body text here");
-    // Open the find bar + outline pane so their chrome is drawn too.
-    wp.find.open(None, &mut Blocks(&wp.blocks));
+    // Open the outline pane so its chrome is drawn too.
     wp.outline.toggle();
     (state, wp)
 }
@@ -878,15 +877,19 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             .insert_str(&mut edits(&mut state.doc), "hello world hello there");
         wp.refresh_blocks(&state.doc);
 
-        wp.find.open(Some("hello"), &mut Blocks(&wp.blocks));
-        assert_eq!(
-            wp.find.matches().len(),
-            2,
-            "case-insensitive search finds both"
+        let found =
+            ui::widget::Findable::find(&mut wp, "hello", ui::widget::FindOptions::default());
+        assert!(
+            found.is_empty(),
+            "the paragraphs are read with the document"
         );
-
-        assert_eq!(wp.replace_all_matches(&mut edits(&mut state.doc), "hi"), 2);
         wp.refresh_blocks(&state.doc);
+        let found =
+            ui::widget::Findable::find(&mut wp, "hello", ui::widget::FindOptions::default());
+        assert_eq!(found.len(), 2, "case-insensitive search finds both");
+
+        assert_eq!(ui::widget::Findable::replace_all(&mut wp, "hi"), 2);
+        wp.apply_find_replacements(&mut edits(&mut state.doc));
         assert_eq!(wp.blocks[0].text, "hi world hi there");
         assert!(
             wp.find.matches().is_empty(),
@@ -3989,24 +3992,18 @@ fn the_zoom_field_drives_zoom_and_the_scroll_range() {
     }
 }
 
-/// The editor draws no toolbar band: at every width the page lies at the top
-/// of the window under the Find bar and the ruler alone, its commands the
-/// window bar's.
+/// The editor draws no toolbar band and no find bar: at every width the page
+/// lies at the top of the window under the ruler alone, its commands and its
+/// search the window bar's.
 #[test]
 fn the_page_starts_at_the_top_with_no_toolbar_row() {
     for width in [760, 1800] {
-        let (state, wp) = populated();
+        let (state, mut wp) = populated();
+        wp.stage_find_for_shot(&state.doc, "text");
         let framed = mount(state, wp, width, 700);
-        // The (open) Find bar leads the page's column, the ruler under it,
-        // then the page: nothing of the editor's own above them.
         assert!(
-            (framed.find_band.y0 - framed.rect.y0).abs() < 0.5,
-            "{width}px: the Find bar starts at the top, {:?}",
-            framed.find_band
-        );
-        assert!(
-            framed.zoom_viewport.y0 <= framed.find_band.y1 + framed.ruler.rect().height() + 0.5,
-            "{width}px: the writing page starts under the Find bar and the ruler, {:?}",
+            framed.zoom_viewport.y0 <= framed.rect.y0 + framed.ruler.rect().height() + 0.5,
+            "{width}px: the writing page starts under the ruler, {:?}",
             framed.zoom_viewport
         );
     }

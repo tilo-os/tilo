@@ -33,10 +33,10 @@ pub mod actions;
 #[cfg(test)]
 mod agent_tests;
 mod compact_swatch_palette;
+mod document_find;
 pub mod effects;
 pub mod file_convert;
 mod file_menu;
-mod find_bar;
 pub mod framework;
 pub mod i18n;
 pub mod model;
