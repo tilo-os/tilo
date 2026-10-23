@@ -118,3 +118,8 @@ messages-group-remove = Remove reviewed member
 messages-group-leave = Leave this group
 messages-group-add-choice = Add { $person } using { $route }
 messages-group-remove-choice = Remove { $member }
+
+# History of the conversations kept in the record.
+messages-deliver-message = Delivered a message from { $from }
+messages-send-message = Queued a message to { $to }
+messages-reply = Queued a reply
