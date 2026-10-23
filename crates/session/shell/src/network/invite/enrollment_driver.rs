@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
@@ -18,6 +18,8 @@ const MAX_PENDING: usize = 8;
 static NEXT: AtomicU64 = AtomicU64::new(1);
 struct Shared {
     result: Mutex<Option<Result<VerifiedNativeEnrollment, String>>>,
+    /// Signalled when `result` is answered or the attempt is cancelled.
+    answered: Condvar,
     cancelled: AtomicBool,
     cancel: watch::Sender<bool>,
 }
@@ -47,9 +49,22 @@ impl Attempt {
         let _turn = self.shared.result.lock_recover();
         self.shared.cancelled.store(true, Ordering::SeqCst);
         self.shared.cancel.send_replace(true);
+        self.shared.answered.notify_all();
         // Also retire a completed actor attempt: there may no longer be a task
         // watching cancellation. A still retains the exact uncertain proof.
         cancel_pending(&self.owner, self.local)
+    }
+    /// Block until the exchange with the host answered, or the attempt is
+    /// cancelled: woken by the answer itself, never by looking again.
+    pub(crate) fn wait_answered(&self) {
+        let mut result = self.shared.result.lock_recover();
+        while result.is_none() && !self.shared.cancelled.load(Ordering::SeqCst) {
+            result = self
+                .shared
+                .answered
+                .wait(result)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
     }
     pub(crate) fn finish<T>(
         &self,
@@ -131,6 +146,7 @@ pub(crate) fn command(
         owner,
         shared: Arc::new(Shared {
             result: Mutex::new(None),
+            answered: Condvar::new(),
             cancelled: AtomicBool::new(false),
             cancel,
         }),
@@ -173,6 +189,7 @@ impl Registry {
             if let Ok(mut result) = command.attempt.shared.result.lock() {
                 *result = Some(Err(error.into()));
             }
+            command.attempt.shared.answered.notify_all();
             return;
         }
         // `failure` above already answered a missing custody.
@@ -205,6 +222,7 @@ impl Registry {
                 cancel_pending(&attempt.owner, attempt.local).and_then(|()| Err("native enrollment cancelled; proof retained".into()))
             } else { result };
             if let Ok(mut stored) = attempt.shared.result.lock() { *stored = Some(result); }
+            attempt.shared.answered.notify_all();
         }));
     }
 }

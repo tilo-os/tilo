@@ -322,6 +322,21 @@ impl ShellNetwork {
         drop(attempts);
         Ok(PeerSyncResponse::EnrollmentPending { id })
     }
+    /// Wait for the pending enrollment `id` to be answered by its host, then
+    /// finish it. Blocks until the exchange ends: call it off the frame
+    /// loop.
+    pub(super) fn finish_enrollment(&self, id: u64) -> Result<PeerSyncResponse, String> {
+        let attempt = self
+            .native_enrollment
+            .attempts
+            .lock()
+            .map_err(|_| "native enrollment registry unavailable")?
+            .get(&id)
+            .cloned()
+            .ok_or("native enrollment attempt no longer active")?;
+        attempt.wait_answered();
+        self.poll_enrollment(id)
+    }
     /// Finish the pending enrollment `id` once its remote exchange completed.
     pub fn poll_enrollment(&self, id: u64) -> Result<PeerSyncResponse, String> {
         // Which room and slot it is for: finishing it forgets its attempt.

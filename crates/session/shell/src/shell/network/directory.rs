@@ -351,24 +351,24 @@ impl ShellNetwork {
     }
 
     /// Whether `room` is public, and with what: as its host answers when
-    /// a host of this person governs it; a workspace only this computer
-    /// governs is private until making it public moves it to their host.
+    /// a host of this person governs it. A workspace hosted on this device
+    /// is private: making it public moves it to their home relay.
     pub(crate) fn publication(&self, room: RoomId) -> Result<Publication, String> {
         match self.administered_room(room) {
+            Some(held) if held.hosted_here() => Ok(Publication::private(room)),
             Some(held) => publication_of(
                 &self.govern(&held, "publication", serde_json::Map::new())?,
                 held.room(),
             ),
-            None if self.governs_here(room) => Ok(Publication::private(room)),
             None => Err(NOT_YOURS.into()),
         }
     }
 
     /// Make `room` public with `listing`, or private again with `None`, on
-    /// the host that governs it. A workspace only this computer governs is
-    /// moved onto the person's home relay first, in the same slot, and is
-    /// listed there (`moved`). Blocks on the host and the move: call it off
-    /// the frame loop.
+    /// the host that governs it. A workspace hosted on this device is moved
+    /// onto the person's home relay first, the same room, and is listed
+    /// there (`moved`). Blocks on the host and the move: call it off the
+    /// frame loop.
     pub(crate) fn publish(
         &self,
         room: RoomId,
@@ -378,10 +378,10 @@ impl ShellNetwork {
             .map(|listing| listing.checked().map_err(|error| error.to_string()))
             .transpose()?;
         let (held, moved) = match (self.administered_room(room), &listing) {
-            (Some(held), _) => (held, false),
             // Private already, and nowhere to take it out of.
-            (None, None) if self.governs_here(room) => return Ok(Publication::private(room)),
-            (None, Some(_)) if self.governs_here(room) => (self.move_to_host(room)?, true),
+            (Some(held), None) if held.hosted_here() => return Ok(Publication::private(room)),
+            (Some(held), Some(_)) if held.hosted_here() => (self.move_to_host(room)?, true),
+            (Some(held), _) => (held, false),
             (None, _) => return Err(NOT_YOURS.into()),
         };
         let answer = match listing {
@@ -401,14 +401,6 @@ impl ShellNetwork {
         Ok(publication)
     }
 
-    /// Whether this computer governs `room` itself, as the person who runs
-    /// it: a workspace that lives only here.
-    fn governs_here(&self, room: RoomId) -> bool {
-        self.replica
-            .lock()
-            .is_ok_and(|replica| replica.tree.read().governs_room(room))
-    }
-
     /// Move the workspace showing `room` onto this person's home relay and
     /// wait until this device holds it there, as the room's administrator.
     fn move_to_host(&self, room: RoomId) -> Result<super::relay_rooms::HeldRoom, String> {
@@ -425,26 +417,22 @@ impl ShellNetwork {
             .map(|workspace| (workspace.id, workspace.name.clone()))
             .ok_or("that workspace is not on this computer")?;
         let moved = self
-            .move_to_home_relay(local, room, &name, None)?
+            .move_to_home_relay(local, room, &name)?
             .ok_or(NO_HOST)?;
         // The enrollment's own exchange decides when it is done or failed;
         // the room is administered here once it is installed.
-        if let Some(id) = moved.enrollment {
-            while let crate::shell::peer_sync_overlay::PeerSyncResponse::EnrollmentPending {
-                ..
-            } = self.poll_enrollment(id)?
-            {
-                std::thread::sleep(MOVE_POLL);
-            }
+        if let Some(id) = moved.enrollment
+            && let crate::shell::peer_sync_overlay::PeerSyncResponse::EnrollmentPending { .. } =
+                self.finish_enrollment(id)?
+        {
+            return Err("the workspace did not finish moving to your host".into());
         }
-        tracing::info!(from = %room, to = %moved.room, "a workspace moved to its person's host to be made public");
+        tracing::info!(%room, "a workspace moved to its person's host to be made public");
         self.administered_room(moved.room)
+            .filter(|held| !held.hosted_here())
             .ok_or_else(|| "the workspace moved to your host, but it does not answer yet; try again in a moment".into())
     }
 }
-
-/// How often moving a workspace to make it public looks at its enrollment.
-const MOVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[cfg(test)]
 mod tests {
