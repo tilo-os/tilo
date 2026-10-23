@@ -732,17 +732,25 @@ pub struct FilePicker {
 
 impl FilePicker {
     /// `accessible_roots` limits navigation — if empty, defaults to
-    /// `[initial_dir]`. `title` is the app's own purpose, if it gave one.
+    /// `[initial_dir]`. An `initial_dir` outside them opens at the first
+    /// root instead. `title` is the app's own purpose, if it gave one.
     pub fn new<P: AsRef<Path>>(
         title: impl Into<String>,
         initial_dir: P,
         accessible_roots: Vec<PathBuf>,
     ) -> Self {
-        let initial: PathBuf = initial_dir.as_ref().to_path_buf();
+        let asked: PathBuf = initial_dir.as_ref().to_path_buf();
         let roots = if accessible_roots.is_empty() {
-            vec![initial.clone()]
+            vec![asked.clone()]
         } else {
             accessible_roots
+        };
+        // Nothing can be opened or saved outside the roots, so a folder
+        // there would refuse every confirmation.
+        let initial = if roots.iter().any(|root| asked.starts_with(root)) {
+            asked
+        } else {
+            roots.first().cloned().unwrap_or(asked)
         };
         let places = default_places(&roots, None, false, &[]);
         let metrics = PickerMetrics::default();

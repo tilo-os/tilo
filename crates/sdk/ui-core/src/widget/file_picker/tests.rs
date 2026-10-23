@@ -1901,3 +1901,26 @@ fn the_sheet_says_who_asks_and_finds_files_from_the_path_bar_and_search() {
     search_and_recent_are_picker_operations();
     the_path_bar_starts_at_home_goes_up_on_a_click_and_takes_a_typed_path();
 }
+
+/// A session with no home hands the picker a temporary folder to start in
+/// and roots that do not hold it. The picker must open where it may save,
+/// so confirming a Save answers instead of refusing every name.
+#[test]
+fn a_save_picker_started_outside_its_roots_opens_at_a_root_and_saves_there() {
+    let (_g, root) = temp_tree();
+    let elsewhere = tempfile::tempdir().expect("a folder outside the roots");
+    let mut picker = FilePicker::new("Save", elsewhere.path(), vec![root.clone()])
+        .with_mode(FilePickerMode::Save)
+        .with_filename("backup.tilo-identity")
+        .settled();
+    assert_eq!(picker.current_dir(), root.as_path());
+    picker.click_open();
+    settle(&mut picker);
+    assert_eq!(picker.name_error(), None);
+    assert_eq!(
+        picker.take_outcome(),
+        Some(FilePickerOutcome::Selected(vec![
+            root.join("backup.tilo-identity")
+        ]))
+    );
+}
