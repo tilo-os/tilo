@@ -7547,7 +7547,9 @@ impl ShellNetwork {
                     tracing::warn!(%error, "device fabric merge persistence failed");
                 }
             }
-            Ok(false) => {}
+            Ok(false) => {
+                tracing::debug!(peer = %peer, "personal fabric snapshot was no newer");
+            }
             Err(error) => {
                 tracing::warn!(%error, peer = %peer, "dropping conflicting personal fabric state");
             }

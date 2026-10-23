@@ -78,6 +78,9 @@ const DEPARTURE_GRACE: Duration = Duration::from_secs(5);
 /// the neighbour never learns who this device is. The bound keeps two
 /// devices from answering each other's answers.
 const IDENTITY_ANSWER_INTERVAL: Duration = Duration::from_secs(10);
+/// Personal fabric frames kept for a peer while it is being dialled; older
+/// ones give way, as each snapshot supersedes the one before.
+const PERSONAL_FABRIC_FRAMES_WAITING: usize = 16;
 /// How often each workspace host session is asked for a fresh checkpoint
 /// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
 /// host session to ask.
@@ -667,6 +670,12 @@ enum InternalEvent {
         peer: EndpointId,
         connection_incarnation: u64,
     },
+    /// A personal fabric connection with `peer` came up, dialled or
+    /// accepted, or a dial for one failed (`None`).
+    PersonalFabricConnection {
+        peer: EndpointId,
+        connection: Option<iroh::endpoint::Connection>,
+    },
     PersonalTransferProgress {
         target: EndpointId,
         transfer_id: [u8; 16],
@@ -965,59 +974,81 @@ impl std::fmt::Debug for PersonalFabricProtocol {
 impl ProtocolHandler for PersonalFabricProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
         let peer = connection.remote_id();
-        let tx = self.internal_tx.clone();
-        let connection_incarnation = self
-            .next_connection_incarnation
-            .fetch_add(1, Ordering::Relaxed)
-            .max(1);
-        tokio::spawn(async move {
-            loop {
-                let Ok(mut recv) = connection.accept_uni().await else {
-                    let _ = tx
-                        .send(InternalEvent::PersonalFabricClosed {
-                            peer,
-                            connection_incarnation,
-                        })
-                        .await;
-                    return;
-                };
-                let bytes = match recv
-                    .read_to_end(crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128)
-                    .await
-                {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        tracing::debug!(peer = %peer, %error, "personal fabric stream read failed");
-                        continue;
-                    }
-                };
-                let Ok((frame, remaining)) =
-                    postcard::take_from_bytes::<PersonalFabricWireFrame>(&bytes)
-                else {
-                    tracing::warn!(peer = %peer, "invalid personal fabric frame");
-                    continue;
-                };
-                if !remaining.is_empty() {
-                    tracing::warn!(peer = %peer, "personal fabric frame has trailing data");
-                    continue;
-                }
-                if tx
-                    .send(InternalEvent::PersonalFabric {
-                        ws: frame.workspace,
-                        peer,
-                        connection_incarnation,
-                        user_public_key: frame.user_public_key,
-                        payload: frame.payload,
-                    })
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        });
+        read_personal_fabric(
+            connection.clone(),
+            self.internal_tx.clone(),
+            &self.next_connection_incarnation,
+        );
+        // The peer's newest connection carries this device's frames to it
+        // too: it reaches the peer however the peer reached here, where a
+        // dial of this device's own may still try paths the peer had before
+        // it restarted.
+        let _ = self
+            .internal_tx
+            .send(InternalEvent::PersonalFabricConnection {
+                peer,
+                connection: Some(connection),
+            })
+            .await;
         Ok(())
     }
+}
+
+/// Read the personal fabric frames `connection` brings, whichever side
+/// opened it, into the actor, until it closes.
+fn read_personal_fabric(
+    connection: iroh::endpoint::Connection,
+    tx: mpsc::Sender<InternalEvent>,
+    incarnations: &AtomicU64,
+) {
+    let peer = connection.remote_id();
+    let connection_incarnation = incarnations.fetch_add(1, Ordering::Relaxed).max(1);
+    tokio::spawn(async move {
+        loop {
+            let Ok(mut recv) = connection.accept_uni().await else {
+                let _ = tx
+                    .send(InternalEvent::PersonalFabricClosed {
+                        peer,
+                        connection_incarnation,
+                    })
+                    .await;
+                return;
+            };
+            let bytes = match recv
+                .read_to_end(crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128)
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::debug!(peer = %peer, %error, "personal fabric stream read failed");
+                    continue;
+                }
+            };
+            let Ok((frame, remaining)) =
+                postcard::take_from_bytes::<PersonalFabricWireFrame>(&bytes)
+            else {
+                tracing::warn!(peer = %peer, "invalid personal fabric frame");
+                continue;
+            };
+            if !remaining.is_empty() {
+                tracing::warn!(peer = %peer, "personal fabric frame has trailing data");
+                continue;
+            }
+            if tx
+                .send(InternalEvent::PersonalFabric {
+                    ws: frame.workspace,
+                    peer,
+                    connection_incarnation,
+                    user_public_key: frame.user_public_key,
+                    payload: frame.payload,
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
 }
 
 /// Why `command` means a remote party is involved, so this device must be
@@ -1225,6 +1256,12 @@ struct ActorState {
     /// these devices and never fall back to the workspace's gossip topic.
     surface_fanout_viewers: HashMap<(WorkspaceId, SurfaceId), Vec<EndpointId>>,
     personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
+    /// Frames for a peer whose dial is under way, newest last, sent once it
+    /// connects ([`PERSONAL_FABRIC_FRAMES_WAITING`] at most).
+    personal_fabric_dials: HashMap<EndpointId, std::collections::VecDeque<(WorkspaceId, Vec<u8>)>>,
+    /// Numbers each personal fabric connection, dialled or accepted, so a
+    /// frame is bound to the one it came on.
+    personal_fabric_incarnations: Arc<AtomicU64>,
     active_personal_transfers: HashMap<(EndpointId, [u8; 16]), ActivePersonalTransfer>,
     next_personal_transfer_generation: u64,
     /// Every application message peers delivered here (see [`WireTally`]).
@@ -2061,44 +2098,98 @@ impl ActorState {
             );
             return;
         }
-        let targets: Vec<_> = self
-            .peers
-            .values()
-            .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
-            .filter(|addr| exact_target.is_none_or(|target| addr.id == target))
-            .cloned()
+        // Every member of the topic, dialled by id: the endpoint knows the
+        // paths its gossip link to the peer uses, where an address kept from
+        // an earlier dial may name a port a restarted peer no longer has.
+        let targets: Vec<EndpointId> = self
+            .peers_seen
+            .keys()
+            .filter(|(topic, peer)| {
+                *topic == ws && exact_target.is_none_or(|target| *peer == target)
+            })
+            .map(|(_, peer)| *peer)
             .collect();
-        for addr in targets {
-            let peer = addr.id;
-            let connection = if let Some(connection) = self.personal_fabric_connections.get(&peer) {
-                connection.clone()
-            } else {
-                let Ok(Ok(connection)) = tokio::time::timeout(
-                    Duration::from_millis(300),
-                    self.endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
+        for peer in targets {
+            if let Some(connection) = self.personal_fabric_connections.get(&peer).cloned() {
+                self.send_personal_fabric_frame(ws, peer, &connection, &bytes)
+                    .await;
+                continue;
+            }
+            // Dialled in the background, as long as a peer takes to answer:
+            // a restarted device is reached only once the endpoint has let
+            // go of the paths it had, and a dial cut short every frame never
+            // gets that far. Its frames wait meanwhile.
+            if let Some(waiting) = self.personal_fabric_dials.get_mut(&peer) {
+                if waiting.len() == PERSONAL_FABRIC_FRAMES_WAITING {
+                    waiting.pop_front();
+                }
+                waiting.push_back((ws, bytes.clone()));
+                continue;
+            }
+            self.personal_fabric_dials.insert(
+                peer,
+                std::collections::VecDeque::from([(ws, bytes.clone())]),
+            );
+            let endpoint = self.endpoint.clone();
+            let tx = self.internal_tx.clone();
+            let incarnations = Arc::clone(&self.personal_fabric_incarnations);
+            tokio::spawn(async move {
+                let connection = tokio::time::timeout(
+                    PEER_TIMEOUT,
+                    endpoint.connect(peer, PERSONAL_FABRIC_ALPN),
                 )
                 .await
-                else {
-                    // A device that does not answer in time is skipped; the
-                    // next snapshot tries it again.
-                    continue;
-                };
-                self.personal_fabric_connections
-                    .insert(peer, connection.clone());
-                connection
-            };
-            let send = async {
-                let mut stream = connection.open_uni().await.map_err(|_| ())?;
-                stream.write_all(&bytes).await.map_err(|_| ())?;
-                stream.finish().map_err(|_| ())?;
-                Ok::<(), ()>(())
-            };
-            if !matches!(
-                tokio::time::timeout(Duration::from_millis(100), send).await,
-                Ok(Ok(()))
-            ) {
-                self.personal_fabric_connections.remove(&peer);
-            }
+                .ok()
+                .and_then(Result::ok);
+                if let Some(connection) = &connection {
+                    read_personal_fabric(connection.clone(), tx.clone(), &incarnations);
+                }
+                let _ = tx
+                    .send(InternalEvent::PersonalFabricConnection { peer, connection })
+                    .await;
+            });
+        }
+    }
+
+    /// [`InternalEvent::PersonalFabricConnection`]: keep the connection,
+    /// the peer's newest, and send what waited for it.
+    async fn personal_fabric_connected(
+        &mut self,
+        peer: EndpointId,
+        connection: Option<iroh::endpoint::Connection>,
+    ) {
+        let waiting = self.personal_fabric_dials.remove(&peer).unwrap_or_default();
+        let Some(connection) = connection else {
+            tracing::debug!(peer = %peer, "personal fabric peer did not answer");
+            return;
+        };
+        self.personal_fabric_connections
+            .insert(peer, connection.clone());
+        for (ws, bytes) in waiting {
+            self.send_personal_fabric_frame(ws, peer, &connection, &bytes)
+                .await;
+        }
+    }
+
+    async fn send_personal_fabric_frame(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        connection: &iroh::endpoint::Connection,
+        bytes: &[u8],
+    ) {
+        let send = async {
+            let mut stream = connection.open_uni().await.map_err(|_| ())?;
+            stream.write_all(bytes).await.map_err(|_| ())?;
+            stream.finish().map_err(|_| ())?;
+            Ok::<(), ()>(())
+        };
+        if !matches!(
+            tokio::time::timeout(Duration::from_millis(100), send).await,
+            Ok(Ok(()))
+        ) {
+            tracing::debug!(ws, peer = %peer, "personal fabric frame not sent; dialling afresh next time");
+            self.personal_fabric_connections.remove(&peer);
         }
     }
 
@@ -2792,6 +2883,9 @@ impl ActorState {
                     payload,
                 )
                 .await;
+            }
+            Some(InternalEvent::PersonalFabricConnection { peer, connection }) => {
+                self.personal_fabric_connected(peer, connection).await;
             }
             Some(InternalEvent::PersonalFabricClosed {
                 peer,
@@ -4102,6 +4196,7 @@ async fn run(
     governing: Option<super::governor_join::GoverningRooms>,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
+    let personal_fabric_incarnations = Arc::new(AtomicU64::new(1));
     let (input_tx, mut input_rx) = mpsc::channel(64);
     let gossip = Gossip::builder()
         .max_message_size(MAX_GOSSIP_MESSAGE_BYTES)
@@ -4122,7 +4217,7 @@ async fn run(
             PERSONAL_FABRIC_ALPN,
             PersonalFabricProtocol {
                 internal_tx: internal_tx.clone(),
-                next_connection_incarnation: Arc::new(AtomicU64::new(1)),
+                next_connection_incarnation: Arc::clone(&personal_fabric_incarnations),
             },
         )
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol);
@@ -4177,6 +4272,8 @@ async fn run(
         surface_fanout_viewers: HashMap::new(),
         pending_surface_frames: HashMap::new(),
         personal_fabric_connections: HashMap::new(),
+        personal_fabric_dials: HashMap::new(),
+        personal_fabric_incarnations,
         active_personal_transfers: HashMap::new(),
         next_personal_transfer_generation: 0,
         tally: Arc::default(),
@@ -5525,10 +5622,16 @@ mod tests {
             stream.write_all(bytes).await.unwrap();
             stream.finish().unwrap();
         }
-        let event =
-            tilo_test_env::within("valid checkpoint after unknown extension", events.recv())
-                .await
-                .unwrap();
+        let event = tilo_test_env::within("valid checkpoint after unknown extension", async {
+            loop {
+                match events.recv().await {
+                    Some(InternalEvent::PersonalFabricConnection { .. }) => {}
+                    other => return other,
+                }
+            }
+        })
+        .await
+        .unwrap();
         assert!(matches!(event, InternalEvent::PersonalFabric {
             ws: 43, payload: PersonalFabricPayload::Snapshot(bytes), ..
         } if bytes == vec![1, 2, 3]));
