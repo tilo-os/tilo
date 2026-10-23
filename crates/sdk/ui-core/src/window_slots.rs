@@ -59,6 +59,11 @@ pub struct HostedSync {
     pub closing: Vec<TabId>,
     /// An app asked for its window's search and its group opened it.
     pub searched: bool,
+    /// Tabs whose app the person just pressed one of its own slots for
+    /// ([`crate::window_toolbar::hands_keyboard_to_app`]). A press on a slot
+    /// is a press on the app: the host gives the app back the keyboard the
+    /// bar took, so Escape and what is typed next reach it.
+    pub keyboard: Vec<TabId>,
 }
 
 impl WindowSlots {
@@ -271,6 +276,11 @@ impl WindowSlots {
         }
         for (tab, event) in std::mem::take(&mut self.hosted_outbox) {
             if let Some((_, window)) = windows.iter().find(|(shown, _)| *shown == tab) {
+                if crate::window_toolbar::hands_keyboard_to_app(&event)
+                    && !sync.keyboard.contains(&tab)
+                {
+                    sync.keyboard.push(tab);
+                }
                 window.deliver(event);
                 // The app hears it on its next frame.
                 sync.changed = true;

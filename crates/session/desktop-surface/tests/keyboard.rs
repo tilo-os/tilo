@@ -167,6 +167,17 @@ impl Widget for Root {
         for child in &mut self.children {
             child.sync(state, path);
         }
+        // A panel toggle in its window's bar, as apps moved to the bar's
+        // slots declare their actions.
+        ui::window_toolbar::declare(Some(ui::window_toolbar::WindowToolbar {
+            actions: vec![ui::window_toolbar::ToolbarAction::new(
+                "panel",
+                "pin",
+                "Toggle panel",
+            )],
+            ..ui::window_toolbar::WindowToolbar::default()
+        }));
+        let _ = ui::window_toolbar::take_events();
     }
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = std::mem::take(&mut self.dirty_late);
@@ -889,4 +900,48 @@ fn a_value_set_on_a_fields_semantics_reaches_the_app() {
         .unwrap();
     desk.settle();
     assert_eq!(desk.typed(&field), "Ada");
+}
+
+/// A press on one of the app's own slots in its window's bar is a press on
+/// the app: the keyboard the click gave the bar goes back to the control
+/// that had it, so Escape (which closes the panel the slot opened) and what
+/// is typed next reach the app, not the bar.
+#[test]
+fn a_press_on_an_apps_slot_in_its_bar_leaves_the_keyboard_with_the_app() {
+    let mut desk = Desk::new(1, 450);
+    let tab = desk.tabs[0];
+    let field = format!("field-{tab}-1");
+    let rect = desk.rect(&field);
+    desk.driver.click_at(rect.center().x, rect.center().y);
+    desk.settle();
+    desk.driver.type_text("a");
+    assert_eq!(desk.typed(&field), "a", "the clicked field takes typing");
+
+    let slot = desk
+        .driver
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            (node.label() == Some("Toggle panel"))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .expect("the app's slot stands in its window's bar");
+    desk.driver.click_at(
+        f64::midpoint(slot.x0, slot.x1),
+        f64::midpoint(slot.y0, slot.y1),
+    );
+    desk.settle();
+    assert_eq!(
+        desk.focused_name().as_deref(),
+        Some(field.as_str()),
+        "the field keeps the keyboard: {:?}",
+        desk.focus_path()
+    );
+    desk.driver.type_text("b");
+    assert_eq!(
+        desk.typed(&field),
+        "ab",
+        "typing after the press reaches the app"
+    );
 }
