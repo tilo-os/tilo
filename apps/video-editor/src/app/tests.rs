@@ -6036,7 +6036,7 @@ fn render_status_is_painted_cached_and_announced() {
     }
 }
 
-/// A one-clip timeline whose footage is not on this machine. `render`
+/// A one-clip timeline whose footage is not on this machine. `render-timeline`
 /// refuses an unreadable source before it touches `GStreamer`, in every
 /// build, so a job started on this finishes at once and encodes nothing.
 fn unexportable_project() -> Project {

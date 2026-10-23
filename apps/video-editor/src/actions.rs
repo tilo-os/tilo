@@ -116,7 +116,7 @@ pub enum VideoEditorEffect {
     /// another action that takes the content. An agent's host renders it in
     /// its render service, as mp4 at 720p or 1080p.
     #[effect(kind = "read", job, cancellable, returns, host_render)]
-    Render {
+    RenderTimeline {
         #[param("Seconds on the timeline where it begins; omit for the render range's start")]
         start: Option<f64>,
         #[param("Seconds where it ends; omit for the render range's end")]
