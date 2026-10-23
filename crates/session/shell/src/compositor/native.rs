@@ -270,7 +270,7 @@ use crate::compositor::session_bootstrap::{
     LoadedSession, finish_session_collab_broker, load_session_tree, service_socket_is_live,
     start_session_collab_broker,
 };
-use crate::compositor::state::{ClientState, State};
+use crate::compositor::state::{ClientState, InputOrigin, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, PointerButtonKind, TouchPhaseKind,
     parse_request, serialise_response,
@@ -7192,6 +7192,73 @@ pub(crate) fn dispatch_spatial_input_batch(
     }
 }
 
+/// Deliver the input the person's other devices sent as this device's own:
+/// pointer and buttons through the same queue as its own pointer, keys
+/// through its keyboard layout, so the desktop, its apps and its clients all
+/// take them, and the drawn pointer moves.
+fn queue_personal_fabric_input(
+    state: &mut State,
+    backend: &mut dyn Backend,
+    pending: &mut std::collections::VecDeque<BackendEvent>,
+) {
+    use crate::shell::device_fabric::FabricInputEvent;
+    let device_id = winit::event::DeviceId::dummy();
+    for event in state.take_personal_fabric_input() {
+        let input = match event {
+            FabricInputEvent::PointerMotion { x, y } => {
+                let point = (f64::from(x), f64::from(y));
+                let placements = crate::compositor::backend::layout::placements(backend.outputs());
+                let (scene_x, scene_y) =
+                    crate::compositor::backend::layout::logical_to_scene(&placements, point);
+                backend.place_pointer(scene_x, scene_y);
+                WindowEvent::CursorMoved {
+                    device_id,
+                    position: winit::dpi::PhysicalPosition::new(point.0, point.1),
+                }
+            }
+            FabricInputEvent::PointerButton { button, pressed } => WindowEvent::MouseInput {
+                device_id,
+                state: if pressed {
+                    ElementState::Pressed
+                } else {
+                    ElementState::Released
+                },
+                button: match button {
+                    0x110 => MouseButton::Left,
+                    0x111 => MouseButton::Right,
+                    0x112 => MouseButton::Middle,
+                    0x116 => MouseButton::Back,
+                    0x115 => MouseButton::Forward,
+                    other => MouseButton::Other(u16::try_from(other).unwrap_or(u16::MAX)),
+                },
+            },
+            FabricInputEvent::Scroll {
+                horizontal,
+                vertical,
+            } => WindowEvent::MouseWheel {
+                device_id,
+                delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+                    f64::from(horizontal),
+                    f64::from(vertical),
+                )),
+                phase: winit::event::TouchPhase::Moved,
+            },
+            FabricInputEvent::Key {
+                keycode, pressed, ..
+            } => {
+                pending.extend(
+                    backend
+                        .translate_key(keycode, pressed)
+                        .into_iter()
+                        .map(|event| BackendEvent::Sibling(Box::new(event))),
+                );
+                continue;
+            }
+        };
+        pending.push_back(BackendEvent::Sibling(Box::new(BackendEvent::Input(input))));
+    }
+}
+
 fn end_spatial_control(
     network: &crate::shell::network::ShellNetwork,
     active: &mut Option<SpatialControlSession>,
@@ -10999,6 +11066,13 @@ pub fn run() {
         }
         let mut event_step = "accessibility";
         while let Some(event) = pending_events.pop_front() {
+            // Another of the person's devices' input is this device's own,
+            // except that it does not say someone is here.
+            let (event, origin) = match event {
+                BackendEvent::Sibling(event) => (*event, InputOrigin::Sibling),
+                event => (event, InputOrigin::Here),
+            };
+            state.input_origin = origin;
             dispatched_input.note(&event);
             state.physical_key_input_time_ns = match &event {
                 BackendEvent::PhysicalKey { input_time_ns, .. } => Some(*input_time_ns),
@@ -11077,7 +11151,9 @@ pub fn run() {
                     }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
-                    state.remote_input_firewall.note_local_input(Instant::now());
+                    if state.input_origin == InputOrigin::Here {
+                        state.remote_input_firewall.note_local_input(Instant::now());
+                    }
                     // Super alone, tapped or held, opens the Super surface.
                     // Observed ahead of every branch below, so a chord one of
                     // them handles still disarms it.
@@ -11649,10 +11725,12 @@ pub fn run() {
                 | BackendEvent::TabletPad(_)
                 | BackendEvent::TabletPadMap { .. }
                 | BackendEvent::TabletPadAdded(_)
-                | BackendEvent::TabletPadRemoved(_) => {
+                | BackendEvent::TabletPadRemoved(_)
+                | BackendEvent::Sibling(_) => {
                     // Redraw is implicit: the native loop paints every tick.
                     // Pen and pad events were expanded into client or
-                    // ordinary input before the batch.
+                    // ordinary input before the batch, another device's
+                    // input unwrapped above.
                 }
             }
         }
@@ -12878,6 +12956,7 @@ pub fn run() {
                     }
                 }
             }
+            queue_personal_fabric_input(&mut state, backend.as_mut(), &mut pending_events);
             let nearby_drop_events = crate::shell::device_fabric_runtime::take_nearby_drop_events();
             let nearby_drop_event_count = nearby_drop_events.len();
             pump_phase!(

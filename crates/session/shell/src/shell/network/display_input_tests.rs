@@ -622,6 +622,8 @@ struct SpatialSeat {
     _event_loop: smithay::reexports::calloop::EventLoop<'static, crate::compositor::state::State>,
     _display: smithay::reexports::wayland_server::Display<crate::compositor::state::State>,
     state: crate::compositor::state::State,
+    /// The keys the input admitted so far holds down.
+    held: BTreeSet<u32>,
 }
 #[cfg(target_os = "linux")]
 impl SpatialSeat {
@@ -633,6 +635,7 @@ impl SpatialSeat {
             _event_loop: event_loop,
             _display: display,
             state,
+            held: BTreeSet::new(),
         }
     }
     fn pump(&mut self) {
@@ -640,19 +643,23 @@ impl SpatialSeat {
             crate::compositor::native::dispatch_spatial_input_batch(&mut self.state, batch);
         }
     }
-    fn keys(&self) -> BTreeSet<u32> {
-        self.state
-            .seat
-            .get_keyboard()
-            .unwrap()
-            .pressed_keys()
-            .iter()
-            .map(|key| {
-                u32::from(*key)
-                    .checked_sub(8)
-                    .expect("seat key must be an XKB keycode")
-            })
-            .collect()
+    /// The keys down after the input admitted so far, as the event loop
+    /// would deliver it.
+    fn keys(&mut self) -> BTreeSet<u32> {
+        let held = &mut self.held;
+        for event in self.state.take_personal_fabric_input() {
+            if let crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode, pressed, ..
+            } = event
+            {
+                if pressed {
+                    held.insert(keycode);
+                } else {
+                    held.remove(&keycode);
+                }
+            }
+        }
+        held.clone()
     }
 }
 fn spatial_key(keycode: u32, pressed: bool) -> crate::shell::device_fabric::FabricInputEvent {

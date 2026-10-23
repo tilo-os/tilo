@@ -1364,29 +1364,20 @@ fn assert_native_receiver_policy(controller: &DeviceId, event: native_fabric::Fa
     let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
     let display: Display<State> = Display::new().unwrap();
     let mut state = State::new(event_loop.handle(), display.handle());
+    // Admitted input is delivered by the event loop as this device's own.
     assert!(state.apply_personal_fabric_input(controller, event));
-    let pointer = state.seat.get_pointer().unwrap().current_location();
-    assert_eq!((pointer.x, pointer.y), (0.0, 205.0));
-    assert!(state.apply_personal_fabric_input(
-        controller,
-        native_fabric::FabricInputEvent::Key {
-            keycode: 30,
-            pressed: true,
-            modifiers: 0
-        }
-    ));
-    assert!(
-        state
-            .seat
-            .get_keyboard()
-            .unwrap()
-            .pressed_keys()
-            .iter()
-            .any(|key| u32::from(*key) == 38)
-    );
-    state.release_personal_fabric_input(controller);
-    assert!(
-        state.seat.get_keyboard().unwrap().pressed_keys().is_empty(),
+    assert_eq!(state.take_personal_fabric_input(), vec![event]);
+    let key = |pressed| native_fabric::FabricInputEvent::Key {
+        keycode: 30,
+        pressed,
+        modifiers: 0,
+    };
+    assert!(state.apply_personal_fabric_input(controller, key(true)));
+    assert_eq!(state.take_personal_fabric_input(), vec![key(true)]);
+    assert!(state.release_personal_fabric_input(controller));
+    assert_eq!(
+        state.take_personal_fabric_input(),
+        vec![key(false)],
         "disconnect/revocation cleanup releases held keys"
     );
     // Keysym lookup must convert back to evdev before the common seat injector.
