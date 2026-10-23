@@ -33,6 +33,9 @@ pub struct Appearance {
 pub struct Persona {
     pub service: String,
     pub account: String,
+    /// The Tilo person the account is linked to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<String>,
 }
 
 /// Copy an avatar, then `remember-avatar(hash, result.blob)`, then plan again.
@@ -152,6 +155,7 @@ fn persona(user: &str) -> Persona {
     Persona {
         service: "discord".into(),
         account: user.into(),
+        linked: None,
     }
 }
 
@@ -172,17 +176,20 @@ fn appearance(
     chat: &serde_json::Value,
     author: &Author,
 ) -> Result<Appearance, Box<AvatarFetch>> {
-    if let Some(person) = guild
+    if let Some((link, person)) = guild
         .links
         .iter()
         .find(|link| link.discord_user == author.id)
-        .and_then(|link| tilo::person(chat, &link.person))
-        .filter(|person| !person.name.trim().is_empty())
+        .and_then(|link| Some((link, tilo::person(chat, &link.person)?)))
+        .filter(|(_, person)| !person.name.trim().is_empty())
     {
         return Ok(Appearance {
             name: person.name,
             avatar: person.avatar,
-            persona: persona(&author.id),
+            persona: Persona {
+                linked: Some(link.person.clone()),
+                ..persona(&author.id)
+            },
         });
     }
     let avatar = match (&author.avatar, &author.avatar_url) {

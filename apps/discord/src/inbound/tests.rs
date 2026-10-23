@@ -71,7 +71,8 @@ fn a_message_is_posted_with_its_authors_appearance() {
         post.appearance.persona,
         Persona {
             service: "discord".into(),
-            account: "u7".into()
+            account: "u7".into(),
+            linked: None,
         }
     );
 }
@@ -98,9 +99,10 @@ fn a_linked_account_speaks_as_its_tilo_person() {
         post.appearance.persona,
         Persona {
             service: "discord".into(),
-            account: "u7".into()
+            account: "u7".into(),
+            linked: Some("u_ada".into()),
         },
-        "still marked as written in Discord"
+        "still marked as written in Discord, by the person it is linked to"
     );
 
     // Unlinked again, or a person Chat does not know: their Discord name.

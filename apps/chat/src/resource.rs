@@ -408,6 +408,7 @@ fn bridged_post() -> (Id, crate::record::Message) {
             persona: Some(crate::record::ShownPersona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
+                linked: None,
             }),
         }),
         ..crate::record::Message::default()

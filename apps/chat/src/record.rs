@@ -525,6 +525,9 @@ pub struct ShownPersona {
     pub service: String,
     #[model(atom)]
     pub account: String,
+    /// The room member the account is linked to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<String>,
 }
 
 impl From<tilo_actions::Appearance> for ShownAs {
@@ -535,6 +538,7 @@ impl From<tilo_actions::Appearance> for ShownAs {
             persona: appearance.persona.map(|persona| ShownPersona {
                 service: persona.service,
                 account: persona.account,
+                linked: persona.linked,
             }),
         }
     }
@@ -548,6 +552,7 @@ impl From<ShownAs> for tilo_actions::Appearance {
             persona: shown.persona.map(|persona| tilo_actions::Persona {
                 service: persona.service,
                 account: persona.account,
+                linked: persona.linked,
             }),
         }
     }
