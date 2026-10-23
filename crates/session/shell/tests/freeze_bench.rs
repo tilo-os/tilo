@@ -22,7 +22,6 @@ fn placeholder_group(kind: ui::widget::AppKind, label: &str) -> WindowGroup {
     // persisted tree carries into `to_ui_window_group`.
     use shell::shell::state::Tab;
     let tab_id: u64 = 9_000_001;
-    // Map the ui AppKind back to the shell AppKind the tile expects.
     let shell_kind = match kind {
         UiKind::Terminal => shell::shell::state::AppKind::Terminal,
         UiKind::Files => shell::shell::state::AppKind::FileExplorer,

@@ -996,7 +996,6 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             "the client stands under the bar: {app:?}",
         );
 
-        // At rest, with the pointer in the app, Restore stands in the bar.
         cursor(&mut host, &layout2, maximized.center());
         paint_group(&mut host, &layout2, strip_id);
         let bounds = host.active_window_bounds().expect("painted active group");
@@ -1295,7 +1294,6 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
             row_rect.x1,
         );
 
-        // Focus the off-screen group, then run the focus-follow reconcile.
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();

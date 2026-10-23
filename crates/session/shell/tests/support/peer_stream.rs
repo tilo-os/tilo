@@ -1,6 +1,3 @@
-//! Driving a [`PeerView`] the way the compositor loop does, for tests that
-//! decode a stream frame by frame.
-
 use std::time::{Duration, Instant};
 
 use shell::shell::peer_view::{PeerView, PushOutcome};

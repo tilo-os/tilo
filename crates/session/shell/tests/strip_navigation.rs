@@ -945,7 +945,6 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
         // layout pass too, before advancing the resulting focus animation.
         h.tick();
         let home = h.scroll_x();
-        // The last group is entirely off the right of the viewport at rest.
         let g2 = h
             .host
             .group_at_for_tests(h.strip, GROUPS - 1)
@@ -992,7 +991,6 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
         let by_swipe = {
             let mut h = Harness::new();
             for _ in 0..3 {
-                // A rightward wheel steps forward, matching the chord's direction.
                 h.scroll_horizontally(4.0);
                 h.tick();
             }
@@ -1198,7 +1196,6 @@ fn the_rail_maps_the_strip_and_travels_on_click() {
              one the rail exists to advertise"
         );
 
-        // Travel to the far end and the lit run follows.
         for _ in 0..GROUPS * 2 {
             h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
             h.tick();
@@ -1401,10 +1398,6 @@ fn every_close_route_commits_the_exact_surface_durably() {
     }
 
     // Phase `pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent`.
-    // Drive the two independent close affordances and then ordinary group
-    // navigation as one user session.  This deliberately runs a frame between
-    // each mutation: historically the stale widget tree written back on the
-    // following frame was enough to resurrect a just-closed group.
     {
         let mut h = Harness::new();
         let state_dir = tempfile::tempdir().expect("temporary state directory");

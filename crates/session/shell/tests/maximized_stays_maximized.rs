@@ -270,7 +270,6 @@ impl Harness {
         self.frame();
     }
 
-    /// The person presses Super and `key`.
     fn person_presses_super(&mut self, key: NamedKey) {
         let super_key = Modifiers::from(ModifiersState::SUPER);
         for state in [ElementState::Pressed, ElementState::Released] {

@@ -306,8 +306,6 @@ fn a_finger_on_a_quick_settings_slider_moves_it_and_never_the_window_behind() {
     assert_the_window_behind_got_nothing(&mut client, "dragging a Quick Settings slider");
 }
 
-/// A tap outside Quick Settings closes it, exactly as a click there does,
-/// and the window it landed on receives nothing.
 #[test]
 fn a_tap_outside_quick_settings_closes_it_like_a_click() {
     let (_home, compositor, mut client) = desk_with_a_touch_client("org.tilo.test.qs-dismiss");
@@ -355,7 +353,6 @@ fn a_finger_drags_out_a_capture_selection() {
     touch_select_an_area(&compositor, &mut client);
 }
 
-/// A tap on the shutter takes the screenshot.
 #[test]
 fn tapping_the_capture_shutter_takes_the_screenshot() {
     let (_home, compositor, mut client) = desk_with_a_touch_client("org.tilo.test.capture-shutter");
