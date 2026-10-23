@@ -1111,6 +1111,30 @@ mod tests {
 
     // idle-to-suspend
 
+    /// Lock "Never" and suspend when idle off: however long and however
+    /// often the person walks away, idleness only darkens the screen.
+    #[test]
+    fn with_lock_never_and_idle_suspend_off_idleness_only_darkens_the_screen() {
+        let t0 = Instant::now();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
+        let mut s = SessionManager::new(cfg_s(Some(600), None, None), t0);
+        let mut seen = Vec::new();
+        for episode in 0..3_u64 {
+            let start = t0 + Duration::from_secs(episode * 100_000);
+            if episode > 0 {
+                seen.extend(s.note_activity(start));
+            }
+            for minute in 1..=24 * 60_u64 {
+                seen.extend(s.tick_inhibited(start + Duration::from_secs(minute * 60), &registry));
+            }
+        }
+        assert!(seen.contains(&SessionTransition::Blanked));
+        assert!(!seen.contains(&SessionTransition::Locked), "{seen:?}");
+        assert!(!seen.contains(&SessionTransition::Suspend), "{seen:?}");
+        assert!(!s.is_locked());
+        assert!(!s.is_suspend_pending());
+    }
+
     #[test]
     fn idle_suspend_fires_once_per_episode_and_resume_stays_locked() {
         // Phase `idle_past_suspend_threshold_emits_suspend_once`.
