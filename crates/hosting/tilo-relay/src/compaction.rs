@@ -192,7 +192,7 @@ struct Inner {
     /// once `resealing`.
     stewarded: Mutex<HashMap<ChannelKey, Route>>,
     /// Whether what stewarded channels retain in the clear is sealed: only
-    /// once the host's operator decided it ([`crate::reseal`]).
+    /// once the host's operator decided it (the relay's `reseal`).
     resealing: std::sync::atomic::AtomicBool,
 }
 
@@ -284,7 +284,7 @@ impl Compactor {
     }
 
     /// Seal what the channels this host stewards retain in the clear, from
-    /// now on: the operator decided it ([`crate::reseal`]).
+    /// now on: the operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]
     pub(crate) fn reseal_existing(&self) {
         self.0

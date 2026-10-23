@@ -7,9 +7,9 @@
 //! `tilo-relay-shell`; the transport core never names the desktop's message
 //! vocabulary itself.
 //!
-//! The adapter is injected, not looked up: [`Relay`](crate::daemon::Relay)
-//! takes one at start ([`Relay::start`](crate::daemon::Relay::start) wires
-//! [`NeighbourPayloads`]) and hands it to the compactor and to every
+//! The adapter is injected, not looked up: a host takes one when it opens
+//! ([`HostConfig::shell_payloads`](crate::host::HostConfig::shell_payloads),
+//! [`NeighbourPayloads`] by default) and hands it to the compactor and to every
 //! workspace store it opens, and the peer session asks the store of the
 //! workspace it serves. The same adapter binds native shell replay
 //! ([`ShellPayloads::replay`]): the store steps the selection the bound
@@ -22,8 +22,9 @@ use std::sync::Arc;
 
 pub use tilo_relay_shell::{Checkpoint, CheckpointKind, NeighbourPayloads, Route, ShellPayloads};
 
-/// The desktop's adapter, as [`Relay::start`](crate::daemon::Relay::start)
-/// and [`WorkspaceStore::open`](crate::store::WorkspaceStore::open) wire it.
+/// The desktop's adapter, as a host
+/// ([`HostConfig::new`](crate::host::HostConfig::new)) and
+/// [`WorkspaceStore::open`](crate::store::WorkspaceStore::open) wire it.
 #[must_use]
 pub fn neighbour() -> Arc<dyn ShellPayloads> {
     Arc::new(NeighbourPayloads)

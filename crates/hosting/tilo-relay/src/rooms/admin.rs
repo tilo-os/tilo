@@ -128,7 +128,7 @@ impl RoomAdminProtocol {
 
 impl ProtocolHandler for RoomAdminProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        crate::workspace_join::bounded_accept(
+        tilo_relay_session::workspace_join::bounded_accept(
             &self.exchanges,
             EXCHANGE_TIMEOUT,
             "room administration",

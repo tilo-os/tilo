@@ -16,7 +16,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::super::HostRoomActions;
 use super::super::tests::{admit, caller, governed, settled};
-use crate::rooms::tests::{governor, guest_device, view_read_relay};
+use crate::rooms::tests::{governor, guest_device, test_host};
 
 fn member_request(room: &str, action: &str, argument: Value) -> InvokeRequest {
     let mut request = super::super::tests::request(room, action, argument);
@@ -82,14 +82,14 @@ fn terminal_audit(person: &[u8; 32], invocation: uuid::Uuid) -> String {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let (room, workspace, host) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
 

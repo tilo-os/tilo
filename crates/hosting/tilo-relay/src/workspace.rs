@@ -138,8 +138,9 @@ pub struct WorkspaceRuntime {
     /// store-and-forward path as offline devices — reuses
     /// `store.enqueue_pending` verbatim; no new persistence code.
     pub known_peer_relays: HashSet<[u8; 32]>,
-    /// Ephemeral eligible workers plus durable exact-route job bindings.
-    pub compute: crate::compute_transport::ComputeTransportState,
+    /// What services beside the session stack keep for this workspace (a
+    /// relay's compute routing), one value per type.
+    pub extensions: Extensions,
     /// Per live device subscriber: the retained-checkpoint channels a live
     /// checkpoint has already been fanned to since the device last asked for a
     /// baseline. A device asks on subscribe and whenever it sends a presence
@@ -380,7 +381,7 @@ impl WorkspaceRuntime {
             None
         };
         let commits = CommitLedger::load(store.load_commits()?);
-        let mut runtime = Self {
+        Ok(Self {
             store,
             doc,
             persistence: None,
@@ -397,7 +398,7 @@ impl WorkspaceRuntime {
             checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
-            compute: crate::compute_transport::ComputeTransportState::default(),
+            extensions: Extensions::default(),
             action_targets: HashMap::new(),
             state_sessions: HashMap::new(),
             outbound_federation: HashMap::new(),
@@ -413,34 +414,7 @@ impl WorkspaceRuntime {
             commits,
             commit_claims: Arc::default(),
             commit_ledger_lane: Arc::new(AsyncMutex::new(())),
-        };
-        runtime.end_unfinished_compute_jobs();
-        Ok(runtime)
-    }
-
-    /// End the compute jobs an earlier run of this relay left unfinished.
-    /// Nothing in this process runs one yet: the runtime is opening, so no
-    /// compute session is attached, and a worker's jobs end with its
-    /// session to the relay. A failure leaves the jobs as they were rather
-    /// than keep the room from opening.
-    fn end_unfinished_compute_jobs(&mut self) {
-        let workspace_id = self.store.workspace_id();
-        match self.compute.fail_unfinished_jobs(
-            &self.store,
-            &mut crate::compute_session::next_queue_sequence,
-        ) {
-            Ok(0) => {}
-            Ok(ended) => tracing::info!(
-                workspace_id,
-                ended,
-                "ended the compute jobs a relay restart left unfinished"
-            ),
-            Err(error) => tracing::warn!(
-                workspace_id,
-                %error,
-                "could not end the compute jobs a relay restart left unfinished"
-            ),
-        }
+        })
     }
 
     /// The admission of `author`'s commit `op`, if this host remembers it.
@@ -2132,5 +2106,40 @@ mod tests {
         // the ledger is the one to answer it.
         drop(rt.claim_commit(AUTHOR, [1; 16]).ok().unwrap());
         drop((other, elsewhere));
+    }
+}
+
+/// What services beside the session stack keep per workspace, one value per
+/// type: a relay keeps its compute routing here. The workspace knows nothing
+/// of what they hold.
+#[derive(Default)]
+pub struct Extensions(HashMap<std::any::TypeId, Box<dyn std::any::Any + Send>>);
+
+impl Extensions {
+    /// The value of type `T`, when one was made.
+    #[must_use]
+    pub fn get<T: std::any::Any + Send>(&self) -> Option<&T> {
+        self.0
+            .get(&std::any::TypeId::of::<T>())
+            .and_then(|value| value.downcast_ref())
+    }
+
+    /// The value of type `T`, made by `make` the first time.
+    pub fn get_or_insert_with<T: std::any::Any + Send>(
+        &mut self,
+        make: impl FnOnce() -> T,
+    ) -> &mut T {
+        let value = self
+            .0
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert_with(|| Box::new(make()));
+        #[expect(
+            clippy::expect_used,
+            reason = "the entry under a type's id is only ever made as that type"
+        )]
+        let value = value
+            .downcast_mut()
+            .expect("an extension is kept under its own type");
+        value
     }
 }

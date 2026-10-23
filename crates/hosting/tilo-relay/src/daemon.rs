@@ -17,7 +17,7 @@ use iroh_base::{EndpointAddr, PublicKey};
 use tilo_clock::{Clock, unix_now_ns};
 use tokio::task::JoinHandle;
 
-use tilo_user_identity::{DeviceCert, RevocationList, verify_revocation_entry};
+use tilo_user_identity::{RevocationList, verify_revocation_entry};
 
 use crate::auth::PeerRole;
 use crate::client::RelayClient;
@@ -1232,7 +1232,8 @@ async fn environment_offer(
     let now_ms = tilo_clock::unix_now_ms();
     let mut offer = tilo_relay_protocol::RelayEnvironments::default();
     for workspace in bound {
-        let here = workspace.lock().await.compute.environment_offer(now_ms);
+        let here = crate::compute_transport::compute_state(&mut *workspace.lock().await)
+            .environment_offer(now_ms);
         offer.sessions |= here.sessions;
         offer.legacy_apps |= here.legacy_apps;
     }
@@ -1915,7 +1916,9 @@ fn parse_iroh_node_id(hex_id: &str) -> Option<PublicKey> {
 )]
 mod tests {
     use super::*;
-    use tilo_user_identity::{DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert};
+    use tilo_user_identity::{
+        DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity, sign_device_cert,
+    };
 
     fn identity(capabilities: DeviceCapabilities) -> RelayIdentity {
         let (root, user) = UserIdentity::generate("test user", 1);

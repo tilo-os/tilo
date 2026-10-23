@@ -1,50 +1,9 @@
 use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-/// A relay certified only to host rooms: it governs them without stewarding
-/// their channels.
-pub(crate) fn governor() -> (SigningKey, DeviceCert) {
-    governor_with(DeviceCapabilities::host())
-}
-
-/// A relay device of the person's own, certified with `capabilities`.
-pub(crate) fn governor_with(capabilities: DeviceCapabilities) -> (SigningKey, DeviceCert) {
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let key = SigningKey::from_bytes(&[2; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "home".into(),
-        capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
-    (key, cert)
-}
-
-pub(crate) async fn view_read_relay(
-    state_root: &Path,
-    key: &SigningKey,
-    cert: &DeviceCert,
-) -> crate::daemon::Relay {
-    crate::daemon::Relay::start_with_relay_mode(
-        crate::RelayConfig {
-            state_root: state_root.to_owned(),
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: key.clone(),
-            device_cert: cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap()
-}
+pub(crate) use super::fixtures::{
+    admit_view_reader, governor, governor_with, restricted_until, test_host,
+};
 
 pub(crate) fn signed_pre_admission(
     room: &str,
@@ -71,14 +30,14 @@ pub(crate) fn signed_pre_admission(
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+        reason = "TestHost::shutdown consumes the host after the assertions; the suggested earlier drop would use a moved value"
     )
 )]
 async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().expect("a certified host governs rooms");
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Demo").await.unwrap();
     let guest = [7; 32];
     let request = PreAdmitRequest {
@@ -121,7 +80,7 @@ pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+        reason = "TestHost::shutdown consumes the host after the assertions; the suggested earlier drop would use a moved value"
     )
 )]
 async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_refused_alone() {
@@ -129,8 +88,8 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
     use tilo_relay_protocol::rooms::{JoinReply, JoinStep, join_proof_digest};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Public").await.unwrap();
     let mut proofs = Vec::new();
     let mut people = Vec::new();
@@ -210,8 +169,8 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_
     use tilo_relay_protocol::rooms::{JoinReply, JoinStep, join_proof_digest};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Public").await.unwrap();
     let issued = n0_future::join_all((0..8_u8).map(|index| {
         let rooms = rooms.clone();
@@ -245,8 +204,8 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_
     ))
     .await;
     relay.shutdown().await;
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     for (index, (asked, (device, _))) in asked.into_iter().zip(&guests).enumerate() {
         let JoinReply::Challenge { challenge } = asked else {
             panic!("no challenge: {asked:?}");
@@ -271,15 +230,15 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+        reason = "TestHost::shutdown consumes the host after the assertions; the suggested earlier drop would use a moved value"
     )
 )]
 async fn every_settled_decision_is_announced_with_its_room() {
     use tilo_action_policy::{Answer, Grant, KindSet, Role, Subject};
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Demo").await.unwrap();
     let mut changes = rooms.governance_changes();
     let deny_outside = Grant::new(
@@ -330,36 +289,18 @@ async fn assert_view_reader_refused(
     );
 }
 
-pub(crate) async fn admit_view_reader(
-    rooms: &Rooms,
-    room: &str,
-    key: &SigningKey,
-    member: &DeviceCert,
-) {
-    let state = rooms.room(room).await.unwrap();
-    let mut room = state.lock().await;
-    let now = SystemTime::now();
-    let mut candidate = room.peer().clone();
-    candidate
-        .admit_certificate(member.clone(), key, now)
-        .unwrap();
-    let collaboration = room.collaboration().clone();
-    room.commit(candidate, key, now, |_, _| Ok(collaboration))
-        .unwrap();
-}
-
 #[cfg(feature = "agents")]
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "Relay::shutdown consumes the relay after the policy assertions; the suggested subsequent drop would use a moved value"
+    reason = "TestHost::shutdown consumes the host after the policy assertions; the suggested subsequent drop would use a moved value"
 )]
 async fn view_read_policy_requires_current_certified_person_and_observes_revocation() {
     use tilo_actions::remote::Caller;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     let created = rooms.create("Read-only resource discovery").await.unwrap();
     let member_key = SigningKey::from_bytes(&[3; 32]);
     let mut member = cert.clone();
@@ -469,15 +410,15 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
 async fn a_seeded_room_default_record_names_the_default_id() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Seeded default record").await.unwrap();
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     // An app whose windows each show a resource of their own: one that keeps
     // a room record (Scratchpad, Notes) seeds its package primary instead.
     let app = "so.tilo.sheets";
-    let record = crate::room_bots::room_record(&catalogue, app);
-    assert_eq!(record, ui::record::RecordId::room_default().as_str());
+    assert!(!catalogue.get(app).unwrap().keeps_room_record());
+    let record = ui::record::RecordId::room_default().as_str().to_owned();
     assert!(
         rooms
             .prepare_application(&created.room, &cert, &catalogue, app, &record)
@@ -511,8 +452,8 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Native authoring rollover").await.unwrap();
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     rooms
@@ -741,22 +682,8 @@ async fn legacy_window_write_respects_current_member_grants() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let (relay, rooms) = {
-        let relay = crate::daemon::Relay::start_with_relay_mode(
-            crate::RelayConfig {
-                state_root: dir.path().to_owned(),
-                ..Default::default()
-            },
-            crate::daemon::RelayIdentity {
-                user_public_key: cert.user_public_key,
-                device_signing_key: key.clone(),
-                device_cert: cert.clone(),
-                revocations: RevocationList::new(),
-            },
-            iroh::RelayMode::Disabled,
-        )
-        .await
-        .unwrap();
-        let rooms = relay.rooms().unwrap().clone();
+        let relay = test_host(dir.path(), &key, &cert).await;
+        let rooms = relay.rooms().clone();
         (relay, rooms)
     };
     let created = rooms.create("Legacy write restriction").await.unwrap();
@@ -845,7 +772,7 @@ async fn legacy_window_write_respects_current_member_grants() {
     })
     .await;
     drop(rooms);
-    crate::daemon::Relay::shutdown(relay).await;
+    crate::rooms::fixtures::TestHost::shutdown(relay).await;
 }
 
 #[cfg(feature = "agents")]
@@ -857,8 +784,8 @@ async fn legacy_window_write_respects_current_member_grants() {
 async fn app_authorship_grant_uses_current_owner_and_conflict_checked_retries() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Private app authoring").await.unwrap();
     let request = GrantAppAuthorshipRequest {
         request_id: [71; 32],
@@ -1040,15 +967,15 @@ async fn room_record(
 #[tokio::test]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "Relay::shutdown consumes the relay after the authoring assertions; the suggested subsequent drop would use a moved value"
+    reason = "TestHost::shutdown consumes the host after the authoring assertions; the suggested subsequent drop would use a moved value"
 )]
 async fn governor_authors_a_room_record_no_factory_makes() {
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Shared desktop").await.unwrap();
     let room = created.room.as_str();
     let read = || room_record(rooms, room, DESKTOP);
@@ -1116,8 +1043,8 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Native governor authoring").await.unwrap();
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     assert_unprepared_authoring_refused(rooms, &created.room, &cert, &catalogue).await;
@@ -1277,8 +1204,8 @@ async fn is_banned(rooms: &Rooms, room: &str, host: &DeviceCert, person: [u8; 32
 async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     let created = rooms.create("plaza").await.unwrap();
     let before = created.generation;
     let renamed = rooms.rename(&created.room, " Plaza ").await.unwrap();
@@ -1321,8 +1248,8 @@ async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
     use tilo_relay_session::rooms::RemoveMemberRequest;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Demo").await.unwrap();
     let guest = [7; 32];
     let request = |request_id| RemoveMemberRequest {
@@ -1368,26 +1295,6 @@ async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
     relay.shutdown().await;
 }
 
-pub(crate) async fn restricted_until(
-    rooms: &Rooms,
-    room: &str,
-    host: &DeviceCert,
-    person: [u8; 32],
-) -> Option<u64> {
-    let state = rooms.room(room).await.unwrap();
-    let now = SystemTime::now();
-    let permissions = state
-        .lock()
-        .await
-        .peer()
-        .permissions(host.device_public_key, now)
-        .unwrap();
-    permissions.policy.restricted_until(
-        &hex::encode(person),
-        &tilo_action_policy::Context::at_time(now),
-    )
-}
-
 #[tokio::test]
 #[allow(
     clippy::significant_drop_tightening,
@@ -1397,8 +1304,8 @@ async fn the_owner_restricts_until_a_time_and_lifts_it() {
     use tilo_relay_session::rooms::RemoveMemberRequest;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Demo").await.unwrap();
     let guest = [7; 32];
     let request = |request_id| RemoveMemberRequest {
@@ -1565,8 +1472,8 @@ fn install_bot(
 async fn only_a_live_bot_installed_with_personas_shows_other_names() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     let created = rooms.create("Bridged").await.unwrap();
     let governed = rooms.room(&created.room).await.unwrap();
     let mut peer = governed.lock().await.peer().clone();
@@ -1610,7 +1517,7 @@ async fn only_a_live_bot_installed_with_personas_shows_other_names() {
 struct AskedForAChannel {
     /// The relay's state and the member's channel records.
     state: tempfile::TempDir,
-    relay: crate::daemon::Relay,
+    relay: crate::rooms::fixtures::TestHost,
     rooms: Rooms,
     room: String,
     governor: collab_types::Ed25519PublicKey,
@@ -1624,11 +1531,8 @@ struct AskedForAChannel {
 async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(capabilities);
-    let relay = view_read_relay(&dir.path().join("relay"), &key, &cert).await;
-    let rooms = relay
-        .rooms()
-        .expect("a certified host governs rooms")
-        .clone();
+    let relay = test_host(&dir.path().join("relay"), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     let created = rooms.create("Sealed").await.unwrap();
     let member_key = SigningKey::from_bytes(&[3; 32]);
     let mut member = cert.clone();
@@ -1879,14 +1783,14 @@ async fn a_steward_pass_does_its_mls_work_off_the_runtime_workers() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+        reason = "TestHost::shutdown consumes the host after the assertions; the suggested earlier drop would use a moved value"
     )
 )]
 async fn decisions_settle_while_their_workspace_owner_is_stalled() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Public").await.unwrap();
     let records = rooms.inner.host.records.clone();
     // The creation's own changes are retained before the owner stalls.
@@ -1968,7 +1872,7 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+        reason = "TestHost::shutdown consumes the host after the assertions; the suggested earlier drop would use a moved value"
     )
 )]
 async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed() {
@@ -1979,8 +1883,8 @@ async fn a_proof_whose_challenge_the_host_no_longer_holds_is_answered_as_lapsed(
     };
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Lounge").await.unwrap();
     let (device, device_cert) = guest_device();
     let issued = rooms
@@ -2067,14 +1971,14 @@ fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+        reason = "TestHost::shutdown consumes the host after the assertions; the suggested earlier drop would use a moved value"
     )
 )]
 async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     let created = rooms.create("Lounge").await.unwrap();
     let member_key = SigningKey::from_bytes(&[3; 32]);
     let mut member = cert.clone();
@@ -2270,8 +2174,8 @@ async fn titles_shared(rooms: &Rooms, room: &str) -> Vec<String> {
 async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     let created = rooms.create("Lounge").await.unwrap();
     let room = created.room.clone();
     rooms
@@ -2334,8 +2238,8 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
 async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     let room = rooms.create("Team").await.unwrap().room;
     let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
     let body = terminals_opened(&rooms, &room, &a, a_salt).await;
@@ -2455,8 +2359,8 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
     for withdrawal in [Withdrawal::Closed, Withdrawal::LayoutTurnedPersonal] {
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
-        let relay = view_read_relay(dir.path(), &key, &cert).await;
-        let rooms = relay.rooms().unwrap().clone();
+        let relay = test_host(dir.path(), &key, &cert).await;
+        let rooms = relay.rooms().clone();
         let created = rooms.create("Team").await.unwrap();
         let room = created.room.clone();
         let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
@@ -2553,8 +2457,8 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
 async fn a_listed_room_refuses_members_windows_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     let room = rooms.create("Lounge").await.unwrap().room;
     let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
     let body = terminals_opened(&rooms, &room, &a, a_salt).await;
@@ -2582,8 +2486,8 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
     drop(rooms);
     relay.shutdown().await;
 
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     assert!(rooms.is_public(&room));
     assert!(
         titles_shared(&rooms, &room).await.is_empty(),
@@ -2627,8 +2531,8 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
     use tilo_desktop_model::projection::RoomLayout;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     let room = rooms.create("Lounge").await.unwrap().room;
     assert_eq!(rooms.layout(&room), RoomLayout::Shared, "invite-only");
     let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
@@ -2669,8 +2573,8 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
     drop(rooms);
     relay.shutdown().await;
 
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
     assert_eq!(
         rooms.layout(&room),
         RoomLayout::Shared,
@@ -2758,7 +2662,7 @@ async fn door_join(
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+        reason = "TestHost::shutdown consumes the host after the assertions; the suggested earlier drop would use a moved value"
     )
 )]
 async fn a_join_the_host_completed_before_the_room_moved_on_is_finished_through_membership() {
@@ -2769,8 +2673,8 @@ async fn a_join_the_host_completed_before_the_room_moved_on_is_finished_through_
     };
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Lounge").await.unwrap();
     let (laptop, laptop_cert) = guest_device();
     let (complete, first) =
@@ -2843,14 +2747,14 @@ async fn a_join_the_host_completed_before_the_room_moved_on_is_finished_through_
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+        reason = "TestHost::shutdown consumes the host after the assertions; the suggested earlier drop would use a moved value"
     )
 )]
 async fn a_room_moved_here_keeps_its_identity() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().expect("a certified host governs rooms");
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let room = "6f1c2b9e-4d3a-4f5e-8a7b-1c2d3e4f5a6b";
     let moved = rooms.create_room("Mine", Some(room)).await.unwrap();
     assert_eq!(moved.room, room, "the room keeps its identity");
@@ -2878,7 +2782,7 @@ async fn a_room_moved_here_keeps_its_identity() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+        reason = "TestHost::shutdown consumes the host after the assertions; the suggested earlier drop would use a moved value"
     )
 )]
 async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
@@ -2889,8 +2793,8 @@ async fn a_member_with_a_renewed_certificate_stays_the_same_member() {
     };
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let relay = view_read_relay(dir.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms();
     let created = rooms.create("Lounge").await.unwrap();
     let root = SigningKey::from_bytes(&[71; 32]);
     let laptop = SigningKey::from_bytes(&[72; 32]);

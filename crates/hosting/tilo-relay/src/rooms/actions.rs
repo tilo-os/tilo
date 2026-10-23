@@ -565,7 +565,10 @@ fn connector_secret(args: &Args) -> Result<Value, ActionHostError> {
     }
     #[cfg(feature = "agents")]
     {
-        crate::room_bots::installed::put_connector_secret(app, purpose, secret.as_bytes())
+        // Where the host's connectors read it.
+        tilo_secrets::SecretStore::for_app(app)
+            .item(purpose, "default")
+            .put_blocking(secret.as_bytes())
             .map_err(|error| refused(&format!("the host could not keep the secret: {error}")))?;
         Ok(json!({ "kept": true }))
     }

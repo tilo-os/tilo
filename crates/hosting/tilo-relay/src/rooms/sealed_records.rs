@@ -253,7 +253,7 @@ impl crate::compaction::StewardedKeys for Rooms {
 
 impl Rooms {
     /// Seal the records the rooms this relay stewards hold in the clear, from
-    /// now on: the host's operator decided it ([`crate::reseal`]).
+    /// now on: the host's operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]
     pub(crate) fn reseal_existing(&self) {
         self.inner
@@ -522,5 +522,7 @@ impl Rooms {
     }
 }
 
+#[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
+pub mod fixtures;
 #[cfg(all(test, feature = "agents"))]
 pub(crate) mod tests;
