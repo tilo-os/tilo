@@ -262,12 +262,12 @@ serves it. To move one forward, put the new digest in that file and in the pins 
 
 | chain | build (no secrets) | sign (stable) | publish (main, development tag) | release (stable) |
 |---|---|---|---|---|
-| room service | `image-room-service-context`, `image-room-service` | `sign-room-service` | `publish-room-service`: `dev-<commit>` | `publish-room-service`: `sha-<commit>`, signed, receipt |
-| web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry`: `dev-<commit>` | `publish-web-entry`: `sha-<commit>`, signed, receipt |
+| room service | `image-room-service-context`, `image-room-service` | `sign-room-service` | `publish-room-service` (dispatch): `dev-<commit>` | `publish-room-service`: `sha-<commit>`, signed, receipt |
+| web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry` (dispatch): `dev-<commit>` | `publish-web-entry`: `sha-<commit>`, signed, receipt |
 | release rehearsal | `image-release-rehearsal` | `sign-release-rehearsal` (`v0-rehearsal-*` tags, dispatch) | `publish-release-rehearsal` (dispatch): `dev-<commit>` | `publish-release-rehearsal`: `sha-<commit>`, signed, receipt, the `release-rehearsal` pointer |
 | mirrored images | | | `mirror-images`: the digests of `tools/ci/publish/mirrored-images.tsv` | |
 | ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built), `image-ci-fast-smoke` (runs both) | | `publish-ci-fast`, `publish-ci-control`: `sha-<commit>` | (CI tooling, not a product) |
-| registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | | `publish-registry-server`: `sha-<commit>`, receipt for GitOps | |
+| registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | `sign-registry-server` | `publish-registry-server` (dispatch): `dev-<commit>` | `publish-registry-server`: `sha-<commit>`, signed, receipt for GitOps |
 | relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `publish-relay` (`v*` tags): `<version>`, `sha-<commit>`, and `latest` for a final version, signed |
 | env-runtime | `rpm-snapshot`, `image-env-runtime-tree-x86_64`, `-aarch64`, `env-runtime-packer`; `env-runtime-preview`, `image-env-runtime-preview` (sealed with a throwaway key) | `seal-env-runtime` (publisher identity), `sign-env-runtime` (`image-env-runtime` between them) | | `release-env-runtime`: `set-<fingerprint>` once, signed |
 | RPM snapshot | `image-rpms-x86_64`, `-aarch64`, `image-rpms` (their index), `provenance-rpms` (frozen-rpm-index/v1, the fingerprint) | `sign-rpms`: the index and both images, the index's provenance, with transparency log entries | `mirror-base`: the pinned Fedora bootc base copied into registry.tilo.so while upstream serves it, before the builds | `publish-rpms`: `set-<fingerprint>` once, signed and attested |
@@ -448,7 +448,7 @@ t's server config (sops-encrypted in the infra repository), none in this reposit
 | `TILO_MODEL_CATALOG_SIGNING_KEY` | `stable`, `tag:*` | the local model catalog's signing seed: `sign-model-catalog`, `review-model-catalog` |
 | `REGISTRY_TOKEN` | `stable`, `tag:*` | a Forgejo token that may write generic packages, which do not take t's identity tokens: `publish-model-catalog` |
 | `INFRA_PROMOTION_TOKEN` | `stable` | the bot t-infra-promotion's token, which may write the infra repository: `cloud-deploy` reads the deploy target and commits the pins it moves |
-| `TILO_PACKAGES_TOKEN` | `main` | the bot t-packages' token, which may only write tilo's generic packages: extension manifests, performance results |
+| `TILO_PACKAGES_TOKEN` | `main` | the bot t-packages' token, which may only write tilo's generic packages: extension manifests, performance results. Performance runs record their results on every reference listed here (`perf-scheduled`, `vm-acceptance-perf`), so adding `stable` records stable's |
 
 `sign-apps-*` and `sign-engine-*` take `TAPP_PUBLISHER_IDENTITY` and `RUNTIME_BUNDLE_SIGNING_KEY`,
 `submit-apps` and `submit-engine` only `TAPP_PUBLISHER_IDENTITY` (registry entries are signed by the

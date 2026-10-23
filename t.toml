@@ -4,24 +4,26 @@
 # Main is where changes integrate, not a release: every push to it runs the cheap checks that
 # catch breakage in what it touched (fmt, clippy, the tests of the packages it reaches, the
 # policy and suite scripts, the lockfile, deny and hakari), and t bisects each of their failures
-# to the commit that caused it. Release candidates on `stable` run the extensive ones as well:
-# OS images and their boots, VM, micro-VM and FUSE suites, the whole-workspace nightly-* and
+# to the commit that caused it. Release candidates on `stable` run the extensive ones as well: OS
+# images and their boots, VM, micro-VM and FUSE suites, the whole-workspace nightly-* and
 # weekly-* sets, the perf runs, size budgets, certification, the full web and SDK suites,
-# Android, the goldens, development signing. Those say `on = ["stable", "dispatch"]` and
-# `default = false`; `t test <name>` runs one for a working tree, `t dispatch <name>` on a
-# branch. Nothing heavy runs on a schedule on main's head either; what does is cheap and
-# watches something outside the tree (certificate expiry, live third-party services, loop
-# devices, mirrors, extension manifests). A few heavy checks also say `idle`: main's newest head
-# runs them when CI has room left, at the lowest priority, and t bisects their failures like a
-# default check's. Publishing steps stay on main where something consumes main's development
-# tags (the builder pin below, the CI images, the mirrors, the services' dev images); those
-# only a release or a person uses (the release rehearsal and tools, the board images) are
-# dispatched. Most of the extensive checks are keyed by the packages they build
-# (`cargo_packages`) and the files they read, so running one for a change that doesn't touch
-# them takes its cached result: run those your change reaches (sdk-web for the web runtime,
-# real-fuse for the filesystem, render-counters for the toolkit's renderer, the goldens of the
-# packages whose pixels you changed). Each still builds tilo-app, the shell or the toolkit,
-# which most commits reach, so none of them is cheap enough to run on every push.
+# Android, the goldens, development signing. Those say `on = ["stable", "dispatch"]` and `default
+# = false`; `t test <name>` runs one for a working tree, `t dispatch <name>` on a branch. Nothing
+# heavy runs on a schedule on main's head either; what does is cheap and watches something
+# outside the tree (certificate expiry, live third-party services, loop devices, mirrors,
+# extension manifests). A few checks also say `idle`: main's newest head runs them when CI has
+# room left, at the lowest priority, and t bisects their failures like a default check's. Their
+# runs and bisection probes wait behind all other work and restart whenever pre-empted, so a
+# check should say it only if a run is cheap and its inputs change rarely (release-trust).
+# Publishing steps stay on main where something consumes main's development tags (the builder pin
+# below, the CI images, the mirrors); those only a release or a person uses (the services'
+# development tags, the release rehearsal and tools, the board images) are dispatched. Most of
+# the extensive checks are keyed by the packages they build (`cargo_packages`) and the files they
+# read, so running one for a change that doesn't touch them takes its cached result: run those
+# your change reaches (sdk-web for the web runtime, real-fuse for the filesystem, render-counters
+# for the toolkit's renderer, the goldens of the packages whose pixels you changed). Each still
+# builds tilo-app, the shell or the toolkit, which most commits reach, so none of them is cheap
+# enough to run on every push.
 
 # The builder index this tree's os/Containerfile.builder defines, as main's publish-ci-builder
 # published it (`dev-<commit>`), pinned so results stay comparable. `latest` lags behind it, so
@@ -1061,9 +1063,11 @@ inputs = ["keys/**", "tools/signing/**", "os/etc/containers/**", "os/tests/relea
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "minutes"
-# Release candidates and dispatches only: release-trust-expiry checks the certificates every
-# day, and the release-trust suite group (suite-release-trust) the policy's generator on main.
-on = ["stable", "dispatch"]
+# One small micro-VM run, keyed by narrow inputs that few commits change: on release candidates,
+# when dispatched, and on main's newest head when t has room (`idle`), keyed per commit and
+# bisected to the commit that broke it. release-trust-expiry checks the certificates every day,
+# and suite-release-trust the policy's generator on every push.
+on = ["stable", "dispatch", "idle"]
 default = false
 
 # The certificates again every day, uncached: one nearing expiry fails here, with the renewal
@@ -2194,8 +2198,8 @@ cp "$(cargo test --locked -p ush --test it --no-run --message-format json | test
 outputs = ["/target/vm/ush-lib", "/target/vm/ush-it", "/target/debug/tilo-ush"]
 cargo_packages = ["ush"]
 inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
-# A micro-VM run per change to ush: release candidates and dispatches only. Main runs ush's
-# tests in the test family, where these guests skip.
+# A micro-VM run per change to ush or anything it depends on: release candidates and dispatches
+# only. Every push runs ush's tests in the test family, where these guests skip.
 on = ["stable", "dispatch"]
 default = false
 
@@ -2266,7 +2270,7 @@ outputs = ["/target/vm/launcher-lib", "/target/vm/launcher-it", "/target/debug/t
 cargo_packages = ["launcher"]
 inputs = []
 # Builds launcher's tests at 16 cores for a micro-VM: release candidates and dispatches only.
-# Main runs launcher's tests in the test-x86_64 family, where these fixtures skip.
+# Every push runs launcher's tests in the test-x86_64 family, where these fixtures skip.
 on = ["stable", "dispatch"]
 default = false
 
@@ -3110,9 +3114,10 @@ plan = "full"
 # ---------------------------------------------------------------------------
 # The performance run, on release candidates and when dispatched: one check
 # per KPI group, each writing its records to /target/perf/<group>/, and
-# perf-scheduled, which compares them with the store and publishes them when it
-# runs for main (`t dispatch perf-scheduled --ref main`; TILO_PACKAGES_TOKEN is
-# main's). Groups run alone with `t test perf-render`; the whole run with
+# perf-scheduled, which compares them with the store and publishes them where
+# the run holds TILO_PACKAGES_TOKEN: the server's secret config names the
+# references that get it (`t dispatch perf-scheduled --ref main`, or `--ref
+# stable` once stable is among them). Groups run alone with `t test perf-render`; the whole run with
 # `t dispatch perf-scheduled` (inputs: accept, synthetic_series,
 # synthetic_factor). Measurements of the node they ran on, never stored results.
 
@@ -3284,8 +3289,8 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12
 needs = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
 inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh", "tools/ci/perf-compare.sh"]
 outputs = ["/target/perf/compare/**"]
-# TILO_PACKAGES_TOKEN (main only) may write tilo's generic packages, which is
-# where the results go.
+# TILO_PACKAGES_TOKEN may write tilo's generic packages, which is where the
+# results go; the references that get it are the ones that record results.
 secrets = ["TILO_PACKAGES_TOKEN"]
 cache = false
 default = false
@@ -3378,8 +3383,9 @@ apps = ""
 # `t dispatch vm-acceptance --input swap=all --input only=input` runs a selection;
 # `t test vm-acceptance` the checks a working tree's changes select; `t outputs
 # vm-acceptance` gives the report. vm-acceptance-perf runs it on release candidates and when
-# dispatched, and publishes its performance records when it runs for main (`t dispatch
-# vm-acceptance-perf --ref main`).
+# dispatched, and publishes its performance records where the run holds TILO_PACKAGES_TOKEN
+# (`t dispatch vm-acceptance-perf --ref main`, or any reference the server's secret config gives
+# it to).
 [[check]]
 name = "vm-acceptance"
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
@@ -3410,7 +3416,7 @@ run = """
 records=/target/vm-acceptance/report/records.jsonl
 [[ -s $records ]] || { echo "the acceptance run wrote no performance records" >&2; exit 1; }
 publish=false
-[[ ${T_REF:-} == main ]] && publish=true
+[[ -n ${T_REF:-} ]] && publish=true
 status=0
 python3 tools/perf/compare.py --results "$records" --store https://code.tilo.so --owner tilo \
   --lane vm-acceptance --groups boot,session,idle,memory,disk,app,render --publish-dir "$TMPDIR/publish" \
@@ -3540,6 +3546,8 @@ default = false
 
 # BEGIN generated by tools/ci/t_toml.py: products-services
 # The room service: tested before it is published, deployed by digest from stable's receipt.
+# Development tags are published only when dispatched (`t dispatch publish-room-service --ref
+# main`): what runs is stable's.
 [[check]]
 name = "image-room-service-context"
 run = "bash tools/ci/publish/room-service-context.sh /target/publish/room-service/context /target/publish/room-service/bin /target/publish/web-desktop/bundle"
@@ -3592,12 +3600,13 @@ pointers = { room-service = "/target/publish/room-service/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-on = ["main", "dispatch", "stable"]
+on = ["dispatch", "stable"]
 
 # The web entry: the Tilo app on the web, tested before it is published, deployed by digest from
 # stable's receipt. A release carries the version of the image production serves, so tabs open on
 # it survive the deploy: carry-web-entry derives that image from the build and tests it, and it is
-# what stable signs and publishes. Main's development tags are the build as it is.
+# what stable signs and publishes. Development tags, published only when dispatched (`t dispatch
+# publish-web-entry --ref main`), are the build as it is.
 [[check]]
 name = "image-web-entry-context"
 run = "bash tools/ci/publish/web-entry-context.sh /target/publish/web-entry/context /target/publish/web-desktop/bundle"
@@ -3665,11 +3674,13 @@ id_token = ["registry.tilo.so"]
 env = { TILO_RELEASE_OUT = "/target/publish/web-entry/release" }
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-on = ["main", "dispatch", "stable"]
+on = ["dispatch", "stable"]
 
 # The app registry server (crates/packaging/registry-server): x86_64 only, like the cluster it
-# runs in. Rust compiles inside the Containerfile; the image is tested before main publishes it
-# and the GitOps repository pins the receipt's digest.
+# runs in. Rust compiles inside the Containerfile; the image is tested before it is published, and
+# the GitOps repository pins the receipt's digest. Stable publishes it signed with the release key
+# as `sha-<commit>`; a dispatch on main (`t dispatch publish-registry-server --ref main`) publishes
+# the unsigned development tag `dev-<commit>`.
 [[check]]
 name = "image-registry-server"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -3690,16 +3701,29 @@ requirement = { cores = 5, memory = "24GiB" }
 default = false
 
 [[check]]
+name = "sign-registry-server"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-registry-server /target/publish/registry-server"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["image-registry-server"]
+outputs = ["/target/publish/registry-server/payload.json", "/target/publish/registry-server/signature", "/target/publish/registry-server/dry-run.pub"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+requires = ["arch=any"]
+on = ["stable"]
+
+[[check]]
 name = "publish-registry-server"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-registry-server /target/publish/registry-server 'sha-{commit}'"
+run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-registry-server /target/publish/registry-server 'dev:dev-{commit}' 'release:sha-{commit}'"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-registry-server"]
+optional_needs = ["sign-registry-server"]
 outputs = ["/target/publish/registry-server/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }
-on = ["main", "dispatch"]
+on = ["dispatch", "stable"]
 
 # The release rehearsal (tools/ci/publish/rehearsal): a one-file image that runs the whole chain
 # as a release does, so the chain is proven on t without publishing anything anyone deploys.
