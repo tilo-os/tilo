@@ -774,14 +774,6 @@ impl Widget for DiffMergeApp {
         }
     }
 
-    /// Both views are laid out, the hidden one off-band, so the retained
-    /// layout's check walks to both, not only to the one routed to.
-    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        visitor(&self.diff);
-        visitor(&self.merge);
-        true
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
