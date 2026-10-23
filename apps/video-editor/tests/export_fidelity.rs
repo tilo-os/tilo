@@ -1377,9 +1377,13 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
             if sink.is_eos() {
                 break;
             }
-            // Nothing yet, and the decoder has finished finding streams:
-            // there is genuinely no audio here.
-            if out.is_empty() && settled.load(std::sync::atomic::Ordering::SeqCst) {
+            // Nothing yet, and the decoder has finished finding streams
+            // without an audio one: there is genuinely no audio here. A found
+            // audio stream is read to its end, however late its first sample.
+            if out.is_empty()
+                && settled.load(std::sync::atomic::Ordering::SeqCst)
+                && native.lock().expect("caps slot").is_none()
+            {
                 break;
             }
         }
