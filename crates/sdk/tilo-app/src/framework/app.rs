@@ -1337,9 +1337,13 @@ fn prepare_named(
     // private windows never touch the user's profile: they run on a private
     // one removed with the process, unless a headless drive or a
     // measurement names its profile with `--data-dir`.
-    let isolated = private
-        || args.shots.is_some()
+    // A headless drive that names a scenario is a capture's window: built
+    // from that scenario's fixtures, on a profile of its own.
+    let captured = args.shots.is_some()
         || args.responsive_matrix.is_some()
+        || (args.headless.is_some() && args.scenario.is_some());
+    let isolated = private
+        || captured
         || args.native_audit
         || ((args.headless.is_some() || args.first_frame) && args.value("--data-dir").is_none());
     if isolated {
@@ -1362,8 +1366,9 @@ fn prepare_named(
         let mut prepared = prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs)?;
         prepared.context.provide_content(content);
         // An audit and a headless drive certify and drive the app someone
-        // uses; only a screenshot is built from fixtures.
-        if args.shots.is_some() || args.responsive_matrix.is_some() {
+        // uses; only a screenshot, or a drive of a named scenario, is built
+        // from fixtures.
+        if captured {
             prepared
                 .context
                 .provide_capture(Capture::new(args.scenario.clone()));
