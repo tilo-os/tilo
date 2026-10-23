@@ -61,9 +61,8 @@ impl Widget for ShellOverlayHost {
             // that principal outside the workspaces the Unix account created.
             if (acquired_identity || finished)
                 && let Some(chrome) = self.chrome.as_ref()
-                && let Some(account) = std::env::var("USER").ok().filter(|a| !a.is_empty())
             {
-                chrome.borrow_mut().adopt_provisioned_identity(&account);
+                chrome.borrow_mut().adopt_provisioned_identity();
             }
             if finished {
                 self.onboarding = None;

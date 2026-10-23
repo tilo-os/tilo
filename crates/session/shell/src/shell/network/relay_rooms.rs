@@ -771,12 +771,7 @@ impl ShellNetwork {
         // The same workspace joins the room the relay governs now: it stays
         // out of the shell's own engine from here, and says Joining… until
         // the relay's replica installs into it.
-        let replica = self
-            .replica
-            .lock()
-            .map_err(|_| "native replica unavailable")?;
-        let joined = replica.tree.write().join_native_room(name, room);
-        drop(replica);
+        let joined = self.tree.write().join_native_room(name, room);
         if joined != Some(local) {
             return Err("the workspace moving to the home relay is gone".into());
         }
@@ -875,12 +870,7 @@ impl ShellNetwork {
         listing: &RoomListing,
     ) -> Result<(), String> {
         let room = RoomId::parse(&listing.room).ok_or("the host named an invalid room")?;
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "native replica unavailable")?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         let (held, first) = {
             let tree = tree.read();
             (

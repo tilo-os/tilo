@@ -1866,29 +1866,14 @@ impl ChromeState {
             .local_user_for_room_prompt(room, &self.local_user_id)
     }
 
-    /// Hand the workspaces made before this session had an identity to the
-    /// identity first-login setup just provisioned. Until then the session
-    /// acted as the OS `account` name; the new key-derived principal is no
-    /// member of a workspace that name owns, so every app opened there would
-    /// be refused its collaboration route. Boot does the same for a session
-    /// that starts with an identity already in place.
-    pub fn adopt_provisioned_identity(&mut self, account: &str) -> usize {
+    /// Act as the identity first-login setup just provisioned. The rooms
+    /// this session made before then name their owner as their hosts
+    /// created them, which the projection of each room carries here.
+    pub fn adopt_provisioned_identity(&mut self) {
         if matches!(self.identity_source, IdentitySource::SessionRegistry) {
             self.local_user_id = crate::shell::state::local_user_id();
-        }
-        let rebound = self
-            .tree_mut()
-            .rebind_account_owned_workspaces(account, |room| {
-                self.identity_source.local_user_for_room(room)
-            })
-            .len();
-        if rebound > 0 {
-            tracing::info!(
-                "capabilities: {rebound} workspace(s) created before first-login setup now belong to its identity"
-            );
             self.bump();
         }
-        rebound
     }
 
     /// Person principal selected for the active workspace, or the session
@@ -2096,57 +2081,38 @@ impl ChromeState {
 
     /// Empty buffers are a cancel — never overwrite the name with "". A
     /// guest can never turn an inline field into an apparent local rename.
+    /// The name shows here at once and goes to the room's governor, whose
+    /// admitted answer is what every member, this one too, keeps.
     pub fn commit_workspace_name(&mut self) {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
-            // A locally-created or first-boot workspace can still be
-            // ownerless when the inline editor commits before the boot
-            // adoption pass. Claim only locally-governed rooms here; a
-            // foreign room remains closed to local mutation.
-            if !trimmed.is_empty() {
-                let claimant = self.local_user_id.clone();
-                let mut tree = self.tree_mut();
-                if let Some(active_room) = tree
-                    .desktop
-                    .active_workspace()
-                    .filter(|workspace| workspace.owner().is_none())
-                    .map(crate::shell::state::Workspace::room)
-                {
-                    tree.adopt_ownerless_workspaces_with(|room| {
-                        if *room == active_room {
-                            claimant.clone()
-                        } else {
-                            self.identity_source.local_user_for_room(room)
-                        }
-                    });
-                }
-            }
             if self.can_rename_active_workspace() && !trimmed.is_empty() {
-                let mut tree = self.tree_mut();
                 let command = tilo_desktop_model::commands::DesktopCommand::RenameWorkspace {
                     name: trimmed.to_owned(),
                 };
-                let room = tree
-                    .desktop
-                    .active_workspace()
-                    .filter(|ws| ws.name != trimmed)
-                    .map(crate::shell::state::Workspace::room)
-                    .filter(|_| {
-                        tilo_desktop_model::commands::apply_to_active_workspace(
-                            &mut tree.desktop,
-                            &command,
-                            &mut || Err("renaming mints nothing".into()),
-                        )
-                        .is_ok()
-                    });
-                if let Some(room) = room {
-                    // A workspace name is both local restart state and room
-                    // metadata. Commit both authorities at the same mutation
-                    // boundary so a crash/restart cannot restore the old
-                    // label and a peer cannot immediately write it back.
-                    tree.sync_room_doc(room);
-                    tree.seed_doc_from_cache();
-                    tree.queue_save();
+                {
+                    let mut tree = self.tree_mut();
+                    let room = tree
+                        .desktop
+                        .active_workspace()
+                        .filter(|ws| ws.name != trimmed)
+                        .map(crate::shell::state::Workspace::room)
+                        .filter(|_| {
+                            tilo_desktop_model::commands::apply_to_active_workspace(
+                                &mut tree.desktop,
+                                &command,
+                                &mut || Err("renaming mints nothing".into()),
+                            )
+                            .is_ok()
+                        });
+                    if let Some(room) = room {
+                        tree.seed_doc_from_cache();
+                        tree.queue_save();
+                        tree.request_governance(
+                            room,
+                            crate::shell::state::GovernanceRequest::Command(command),
+                        );
+                    }
                 }
             }
             self.bump();
@@ -3159,13 +3125,8 @@ impl ChromeState {
     pub fn add_workspace(&mut self, name: impl Into<String>) -> crate::shell::state::WorkspaceId {
         let id = {
             let mut tree = self.tree_mut();
-            let id = tree.append_empty_workspace(&name.into());
+            let id = tree.create_hosted_workspace(&name.into()).0;
             tree.set_active(id);
-            // A room with no owner has no administrators, so nobody can
-            // grant anything in it, including the person who just made it.
-            tree.adopt_ownerless_workspaces_with(|room| {
-                self.identity_source.local_user_for_room(room)
-            });
             id
         };
         self.bump();
@@ -5085,7 +5046,7 @@ mod active_tab_tests {
             let mut tree = tree_with(100);
             let room = tree.desktop.workspaces[0].room();
             tree.persist_path = Some(path.clone());
-            tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
+            tree.own_workspaces_for_test(|_| "shell-fixture".to_string().clone());
             tree.queue_save();
 
             // Establish a real shared-room lineage before the rename. Merely
@@ -5386,47 +5347,6 @@ mod active_tab_tests {
         assert_eq!(state.local_user_id, "renderer");
         assert_eq!(state.local_user_for_room(&room), "renderer");
         assert_eq!(state.active_local_user(), "renderer");
-    }
-}
-
-#[cfg(test)]
-mod provisioned_identity_tests {
-    use super::*;
-    use crate::shell::state::{CapRole, Workspace, WorkspaceId};
-
-    #[test]
-    fn first_login_setup_hands_account_owned_workspaces_to_the_new_identity() {
-        let mut tree = WorkspaceTree::default();
-        let mut workspace = Workspace::new(WorkspaceId(5), "Home");
-        workspace.set_owner("quickuser".to_string());
-        let room = workspace.room();
-        tree.desktop.workspaces.push(workspace);
-        let chrome = ChromeState::new(tree);
-        let person = "ab".repeat(32);
-        chrome.borrow_mut().act_as(person.clone());
-
-        assert_eq!(
-            chrome.borrow_mut().adopt_provisioned_identity("quickuser"),
-            1
-        );
-
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let workspace = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.room() == room)
-            .expect("workspace");
-        assert_eq!(workspace.owner().map(String::as_str), Some(person.as_str()));
-        assert_eq!(workspace.role_of(&person), Some(CapRole::Owner));
-        assert_eq!(workspace.role_of("quickuser"), None);
-        drop(tree);
-        drop(state);
-        assert_eq!(
-            chrome.borrow_mut().adopt_provisioned_identity("quickuser"),
-            0
-        );
     }
 }
 

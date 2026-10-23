@@ -148,7 +148,7 @@
 "crates/session/shell/src/compositor/native.rs" = 22000
 "crates/session/shell/src/compositor/selection.rs" = 3500
 "crates/session/shell/src/compositor/state.rs" = 10000
-"crates/session/shell/src/network/actor.rs" = 8500
+"crates/session/shell/src/network/actor.rs" = 7000
 "crates/session/shell/src/onboarding_view.rs" = 10000
 "crates/session/shell/src/shell/chrome_state.rs" = 5500
 "crates/session/shell/src/shell/device_fabric.rs" = 5000
@@ -157,7 +157,7 @@
 "crates/session/shell/src/shell/frame.rs" = 11000
 "crates/session/shell/src/shell/frame_retained_tests.rs" = 4000
 "crates/session/shell/src/shell/launcher.rs" = 10000
-"crates/session/shell/src/shell/network.rs" = 16500
+"crates/session/shell/src/shell/network.rs" = 14500
 "crates/session/shell/src/shell/overlay_host/overlay_event_absorb_tests.rs" = 4500
 "crates/session/shell/src/shell/overlay_host/overlay_host_tests.rs" = 4000
 "crates/session/shell/src/shell/peer_presence.rs" = 4500
@@ -169,7 +169,7 @@
 "crates/session/shell/src/shell/search/providers/actions.rs" = 10000
 "crates/session/shell/src/shell/search/providers/files.rs" = 3500
 "crates/session/shell/src/shell/search/providers/live_app_actions.rs" = 6500
-"crates/session/shell/src/shell/state.rs" = 10500
+"crates/session/shell/src/shell/state.rs" = 6500
 "crates/session/shell/src/shell/tab_binding.rs" = 3500
 "crates/session/shell/src/shell/test_control.rs" = 4500
 "crates/session/shell/tests/clipboard_e2e.rs" = 7500

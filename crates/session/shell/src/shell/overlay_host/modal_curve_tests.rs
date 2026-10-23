@@ -130,8 +130,8 @@ fn modal_transitions_pump_only_the_frames_they_need() {
         use ui::widget::Container;
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        tree.append_empty_workspace("Second");
-        tree.append_empty_workspace("Third");
+        tree.create_hosted_workspace("Second");
+        tree.create_hosted_workspace("Third");
         let chrome = ChromeState::new(tree);
         let mut h = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome);
         h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);

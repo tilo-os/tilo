@@ -423,7 +423,7 @@ fn open_package(
     let workspace = {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
-        let workspace = tree.workspace_after_opening_app(&app.package_id);
+        let workspace = tree.desktop.active_workspace().cloned();
         // The document's new read grant must reach the accepted-policy
         // publication before the launch gate checks its immutable snapshot.
         // Queue here; the launch worker waits without blocking the frame.

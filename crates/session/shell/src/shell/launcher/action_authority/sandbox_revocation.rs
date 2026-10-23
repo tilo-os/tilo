@@ -249,7 +249,7 @@ mod tests {
         )
         .with_id("document");
         tree.desktop.workspaces[0].sandbox.push(grant.clone());
-        tree.append_empty_workspace("Other isolated room");
+        tree.create_hosted_workspace("Other isolated room");
         let other_room = tree.desktop.workspaces.last_mut().unwrap();
         other_room.sandbox.push(grant.clone());
         let other_room = other_room.room();

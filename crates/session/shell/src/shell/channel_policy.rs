@@ -437,7 +437,7 @@ mod tests {
         let bob = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
         let carol = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let mut tree = WorkspaceTree::default();
-        let workspace = tree.append_empty_workspace("Shared");
+        let workspace = tree.create_hosted_workspace("Shared").0;
         let room = tree.room_of(workspace).unwrap();
         let entry = tree
             .desktop
@@ -519,7 +519,7 @@ mod tests {
         let bob = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
         let carol = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let mut tree = WorkspaceTree::default();
-        let workspace = tree.append_empty_workspace("Shared");
+        let workspace = tree.create_hosted_workspace("Shared").0;
         let room = tree.room_of(workspace).unwrap();
         let service = device_key(50);
         let entry = tree
@@ -605,7 +605,7 @@ mod tests {
         let bob = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
         let carol = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let mut tree = WorkspaceTree::default();
-        let workspace = tree.append_empty_workspace("Shared");
+        let workspace = tree.create_hosted_workspace("Shared").0;
         let room = tree.room_of(workspace).unwrap();
         let service = device_key(50);
         let entry = tree
@@ -718,7 +718,7 @@ mod tests {
         let carol = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let dave = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
         let mut tree = WorkspaceTree::default();
-        let workspace = tree.append_empty_workspace("Shared");
+        let workspace = tree.create_hosted_workspace("Shared").0;
         let room = tree.room_of(workspace).unwrap();
         let entry = tree
             .desktop

@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn only_painted_certified_remote_people_publish_chat_targets() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        tree.adopt_ownerless_workspaces(&"owner".into());
+        tree.own_workspaces_for_test(|_| "owner".into().clone());
         let room = tree.desktop.active_workspace().unwrap().room();
         let endpoint = iroh::SecretKey::generate().public();
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&[83; 32]);

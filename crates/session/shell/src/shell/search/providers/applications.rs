@@ -818,7 +818,9 @@ fn launch_resolved_installed_app(
                 st.native_app_opening.clone(),
             ))
         } else {
-            tree.workspace_after_opening_app(package_id)
+            tree.desktop
+                .active_workspace()
+                .cloned()
                 .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
         }
     };
