@@ -6068,11 +6068,13 @@ pub fn input_actions(command: InputCommand) -> Result<Vec<InputAction>, CliError
             dy,
             fingers,
             duration,
+            press,
         }) => InputAction::TouchpadSwipe {
             fingers,
             dx_mm: dx,
             dy_mm: dy,
             duration_ms: duration,
+            press,
         },
         InputCommand::Touchpad(TouchpadCommand::Click) => InputAction::TouchpadClick,
     };
@@ -6216,8 +6218,12 @@ fn describe_input(action: &InputAction) -> String {
             fingers,
             dx_mm,
             dy_mm,
+            press,
             ..
-        } => format!("moved {fingers} finger(s) {dx_mm},{dy_mm} mm on the touchpad"),
+        } => format!(
+            "{} {fingers} finger(s) {dx_mm},{dy_mm} mm on the touchpad",
+            if *press { "dragged" } else { "moved" }
+        ),
         InputAction::TouchpadClick => "clicked the touchpad".to_owned(),
         InputAction::GamepadPress { combos } => format!("pressed gamepad {}", combos.join(" ")),
         InputAction::GamepadStick { stick, x, y, .. } => {
@@ -8246,6 +8252,7 @@ mod tests {
             dy: -30,
             fingers: 2,
             duration: 300,
+            press: false,
         }))
         .unwrap();
         assert_eq!(
@@ -8254,7 +8261,8 @@ mod tests {
                 fingers: 2,
                 dx_mm: 0,
                 dy_mm: -30,
-                duration_ms: 300
+                duration_ms: 300,
+                press: false,
             }]
         );
         assert!(
