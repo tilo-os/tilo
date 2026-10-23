@@ -100,6 +100,8 @@ mod canonical_actions;
 
 #[path = "canonical_views.rs"]
 mod canonical_views;
+#[path = "sidebar_selection.rs"]
+mod sidebar_selection;
 
 #[path = "hosted_header_controls.rs"]
 mod hosted_header_controls;
