@@ -95,6 +95,9 @@ workspace-hack = { version = "0.1" }
 # isolate before the host signs it.
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
 tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
+# The content records reference: lent to a record's view, held in memory in
+# its worker, carried between the two by hash.
+tilo-content = { version = "0.1.0", path = "../../system/content" }
 
 [target.'cfg(unix)'.dependencies]
 # The worker's confinement: detach, resource limits and, on macOS, Seatbelt.
