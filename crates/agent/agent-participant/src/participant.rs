@@ -721,6 +721,7 @@ impl AgentParticipant {
                 .map(|definition| definition.app_id.to_owned())
                 .filter(|app| self.identity.delegation.permits_app(app))
                 .collect(),
+            may_plan_nothing: false,
         }
     }
 
