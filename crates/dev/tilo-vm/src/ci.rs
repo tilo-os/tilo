@@ -281,7 +281,6 @@ pub fn extract_on_host(
 mod tests {
     use super::*;
 
-    /// Sources parse and host extraction copies each manifest path.
     #[test]
     fn ci_sources_parse_and_host_extraction_copies_each_manifest_path() {
         // Phase: sources_parse.

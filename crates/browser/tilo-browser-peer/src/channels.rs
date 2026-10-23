@@ -927,7 +927,6 @@ mod tests {
             assert_eq!(requests(&changes), 0);
             assert_eq!(steward_of(&channels, &note), None);
         }
-        // A genesis whose sender's certificate arrives later counts then.
         let changes = channels.receive_frame(device(&laptop), ROOM, genesis(&laptop, &other), 0);
         assert_eq!(requests(&changes), 0);
         let changes = channels.note_cert(

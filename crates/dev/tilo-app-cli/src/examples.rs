@@ -168,10 +168,6 @@ impl Example {
 }
 
 /// An unknown example name, with the names there are.
-///
-/// # Errors
-///
-/// Returns an error naming every example when `name` is not one of them.
 pub fn find(name: &str) -> Result<&'static Example> {
     Example::named(name).with_context(|| {
         let names = ALL

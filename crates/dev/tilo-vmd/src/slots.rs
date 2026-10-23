@@ -60,7 +60,6 @@ pub struct DeviceSession {
     /// `session-<id>.scope`; or `greetd.service` while the owner is logged
     /// out.
     pub unit: String,
-    /// The account it runs as.
     pub account: String,
     /// Units `unit` starts for the session's own processes; they get the
     /// slot's layers too.
@@ -171,10 +170,6 @@ impl SlotStore {
     }
 
     /// Create a slot, or return the existing one when it matches.
-    ///
-    /// # Errors
-    /// Invalid or reserved names, outputs on a slot that is not headful,
-    /// and a kind or outputs conflicting with an existing slot.
     pub fn create(
         &self,
         name: &str,
@@ -705,7 +700,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn slot_generations_swap_roll_back_and_mark_interruptions() {
-        // Phase `create_is_idempotent_and_checks_kind`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = SlotStore::new(root.path());
@@ -735,7 +729,6 @@ mod tests {
             ));
             assert_eq!(store.load("vm").unwrap().kind, SlotKind::Vm);
         }
-        // Phase `swaps_make_generations_in_order`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = SlotStore::new(root.path());
@@ -746,7 +739,6 @@ mod tests {
             assert_eq!(swap(&store, &mut record, "launcher", "h2"), Some(2));
             // Same layer again: no new generation.
             assert_eq!(swap(&store, &mut record, "shell", "h1"), None);
-            // Replacing keeps the stacking position.
             assert_eq!(swap(&store, &mut record, "shell", "h3"), Some(3));
             let current = store.generation("a", 3).unwrap();
             assert_eq!(current.layers, ["h3", "h2"]);
@@ -754,7 +746,6 @@ mod tests {
             assert_eq!(store.generations("a"), [1, 2, 3]);
             assert_eq!(store.load("a").unwrap().current, 3);
         }
-        // Phase `unapplied_swap_does_not_move_current`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = SlotStore::new(root.path());
@@ -776,7 +767,6 @@ mod tests {
                     .is_some()
             );
         }
-        // Phase `rollback_walks_back_to_base`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = SlotStore::new(root.path());
@@ -805,7 +795,6 @@ mod tests {
                 Err(DaemonError::GenerationNotFound { .. })
             ));
         }
-        // Phase `pending_marks_interrupted_transitions`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = SlotStore::new(root.path());
@@ -863,7 +852,6 @@ mod tests {
 
     #[test]
     fn slot_pruning_and_removal_keep_what_is_current() {
-        // Phase `prune_keeps_current_and_newest`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = SlotStore::new(root.path());
@@ -892,7 +880,6 @@ mod tests {
                 referenced.contains(&"h1".to_string()) && !referenced.contains(&"h2".to_string())
             );
         }
-        // Phase `remove_is_idempotent`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = SlotStore::new(root.path());

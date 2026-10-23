@@ -1,6 +1,3 @@
-//! An action whose meaning depends on its author reads who invoked it, and a
-//! replaying replica reads the same.
-
 #![allow(
     clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"

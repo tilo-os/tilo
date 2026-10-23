@@ -60,7 +60,6 @@ pub struct CommittedDocument {
 
 /// The changes since a revision the reader holds.
 pub struct DocumentChanges {
-    /// The revision the changes lead to.
     pub revision: [u8; 32],
     /// Its heads, sorted.
     pub heads: Vec<[u8; 32]>,
@@ -134,10 +133,6 @@ impl NativeCommittedView {
     }
 
     /// Read `app`'s `record` for the device `reader`.
-    ///
-    /// # Errors
-    /// The reader may not read it now, the room does not hold it as a
-    /// complete plaintext document, or it is larger than `maximum` bytes.
     pub fn read_document(
         &self,
         reader: [u8; 32],

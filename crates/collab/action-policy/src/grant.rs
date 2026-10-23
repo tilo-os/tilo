@@ -121,7 +121,6 @@ impl fmt::Display for Role {
     }
 }
 
-/// Whom a grant is for.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Subject {
@@ -135,7 +134,6 @@ pub enum Subject {
     Task(String),
     /// A Shortcut run for a person.
     Shortcut(String),
-    /// An app acting under its own identity.
     App(String),
     /// An installed bot, by installation id. It acts for its installer and
     /// never as them.
@@ -239,7 +237,6 @@ impl fmt::Display for GrantId {
     }
 }
 
-/// One grant.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Grant {
     pub id: GrantId,
@@ -287,7 +284,6 @@ impl Grant {
         matches!(&self.lifetime, Lifetime::Task(task) if !open(task))
     }
 
-    /// Whether the grant is live in `cx`.
     #[must_use]
     pub fn is_live(&self, cx: &Context<'_>) -> bool {
         match &self.lifetime {

@@ -129,7 +129,6 @@ fn plan() -> (Vec<u8>, Vec<u8>) {
     (snapshot, doc.save_incremental())
 }
 
-/// Whether any file under `dir` contains `needle`.
 fn holds(dir: &Path, needle: &[u8]) -> bool {
     std::fs::read_dir(dir).unwrap().any(|entry| {
         let path = entry.unwrap().path();

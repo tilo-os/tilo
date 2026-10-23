@@ -160,7 +160,6 @@ fn a_device_reached_as_its_owner_runs_everything_through_sudo() {
         assert!(registry.contains("hypervisor = \"device\""), "{registry}");
         assert!(registry.contains("ssh = \"me@device\""), "{registry}");
         assert!(registry.contains("default = \"yoga\""), "{registry}");
-        // Rerunning changes nothing.
         let again = device
             .run(&["vm", "add", "yoga", "--ssh", "me@device"])
             .unwrap();
@@ -173,7 +172,6 @@ fn a_device_reached_as_its_owner_runs_everything_through_sudo() {
             .run(&["slot", "create", "mine", "--headless"])
             .unwrap();
         assert!(!created.failed, "{}", created.text);
-        // A layer the device already holds, as a build or CI pull leaves one.
         let layer = {
             let mut remote = Remote::connect("yoga", &endpoint, None, None, Vec::new()).unwrap();
             let mut builder = tar::Builder::new(Vec::new());

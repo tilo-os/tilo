@@ -73,10 +73,6 @@ pub trait CertificateAuthority: Send + Sync {
     }
 
     /// Checks `certificate` against the owner's current identity store for `room`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the certificate is unknown, revoked or not a member.
     fn authorize(
         &self,
         room: Uuid,
@@ -283,10 +279,6 @@ impl PeerActionQueue {
     }
 
     /// Submits one request through the bounded queue, as the relay adapter does.
-    ///
-    /// # Errors
-    ///
-    /// Returns `()` when the request is refused or its reply is lost.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn request_for_test(
         &self,

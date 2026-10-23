@@ -1633,8 +1633,6 @@ mod tests {
             tilo_desktop_model::WorkspaceTaskControl::default(),
         );
         let catalogue = actions(&snapshot, "Workspace", &std::collections::BTreeSet::new());
-        // An open task offers its grant set's grant and revoke beside its
-        // own actions.
         assert_eq!(catalogue.len(), 9);
         assert!(
             ["grant", "revoke"]

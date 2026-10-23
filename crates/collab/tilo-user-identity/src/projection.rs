@@ -60,10 +60,6 @@ impl std::error::Error for DisplayNameError {}
 /// `name` trimmed, if it is a display name every host and room keeps: not
 /// empty, at most [`MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES`] of UTF-8, no
 /// control characters. Self-asserted text, never authority.
-///
-/// # Errors
-///
-/// Returns why the name is refused.
 pub fn display_name(name: &str) -> Result<&str, DisplayNameError> {
     let name = name.trim();
     if name.is_empty() {
@@ -138,11 +134,6 @@ impl TrustedIdentityProjectionV1 {
 
     /// Validate all semantic bounds before a projection crosses the
     /// host/app boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the schema, root keys, cardinality, uniqueness,
-    /// or governed display names violate the projection contract.
     pub fn validate(&self) -> Result<(), TrustedIdentityProjectionError> {
         if self.schema_version != TRUSTED_IDENTITY_PROJECTION_V1_VERSION {
             return Err(TrustedIdentityProjectionError::UnsupportedSchema);
@@ -194,11 +185,6 @@ impl TrustedIdentityProjectionV2 {
 
     /// Verify schema, cardinality, names, unique roots/devices, and every
     /// root-signed device certificate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when any projection field or device certificate is
-    /// malformed, duplicated, unsupported, or fails signature verification.
     pub fn validate(&self) -> Result<(), TrustedIdentityProjectionError> {
         if self.schema_version != TRUSTED_IDENTITY_PROJECTION_VERSION {
             return Err(TrustedIdentityProjectionError::UnsupportedSchema);
@@ -244,7 +230,6 @@ impl TrustedIdentityProjectionV2 {
 pub struct GovernedHumanIdentityV2 {
     /// Ed25519 human root authority.
     pub root_public_key: [u8; 32],
-    /// Name admitted by room governance.
     pub display_name: String,
     /// Root-signed devices currently known to room governance.
     pub devices: Vec<GovernedDeviceIdentityV2>,

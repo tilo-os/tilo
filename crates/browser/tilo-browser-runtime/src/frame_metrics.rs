@@ -58,7 +58,6 @@ impl FrameMetrics {
         self.enabled.then(Instant::now)
     }
 
-    /// Count one presented frame for each of `reasons`.
     pub fn presented(&mut self, reasons: Vec<String>) {
         if !self.enabled {
             return;

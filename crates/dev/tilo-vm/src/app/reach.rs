@@ -541,7 +541,6 @@ mod tests {
     /// The lease reads as when it ends and why, or why it is not held.
     #[test]
     fn the_lease_says_until_when_and_why() {
-        // The lease is described against the clock its end was set by.
         tilo_clock::freeze_wall(tilo_clock::wall());
         let now = unix_now();
         let idle = describe_lease(&AwakeLease {

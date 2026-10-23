@@ -1,4 +1,3 @@
-//! Actual enrolled owner and signed delegated channel through production RPCs.
 #![expect(
     clippy::future_not_send,
     reason = "Capnp RPC clients are intentionally thread confined to the existing LocalSet"

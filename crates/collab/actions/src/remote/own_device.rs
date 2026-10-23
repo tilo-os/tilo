@@ -26,7 +26,6 @@ pub const RESOURCE: &str = "identity.device";
 /// Invoke an action on one of the person's devices; answers its outcome.
 pub const INVOKE: &str = "invoke";
 
-/// The target of an own-device invocation.
 #[must_use]
 pub fn target() -> RemoteActionTarget {
     RemoteActionTarget {
@@ -45,7 +44,6 @@ pub struct Invocation {
     pub device: String,
     /// The application whose action it is, by package id.
     pub app: String,
-    /// The application's resource the action is on.
     pub resource: String,
     /// The action's id on that resource.
     pub action: String,

@@ -230,7 +230,6 @@ fn admitted_input_leaves_the_same_document_as_a_direct_apply() {
     let mut direct = doc.clone();
     for round in 0..20 {
         let change = remote_change(&mut doc, &format!("k{round}"));
-        // A local edit in between moves the caller past the worker's copy.
         if round % 3 == 0 {
             doc.put(ROOT, "local", round).unwrap();
             doc.commit();
@@ -553,10 +552,6 @@ fn crafted(doc: &mut AutoCommit, start: u64, ops: Vec<automerge::legacy::Op>) ->
     automerge::Change::from(change).raw_bytes().to_vec()
 }
 
-/// List and text changes stock Automerge panics on, or takes into a
-/// document whose next save no longer loads, are refused as invalid rather
-/// than costing a worker; and a delete of a character a peer put a forged
-/// second value on is admitted, where it used to crash the worker.
 #[test]
 fn crafted_sequence_changes_are_refused_without_a_crash() {
     use automerge::legacy::{ElementId, Key, ObjectId, Op, OpId, OpType, SortedVec};

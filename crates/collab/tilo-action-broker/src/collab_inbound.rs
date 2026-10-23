@@ -152,9 +152,6 @@ pub fn deliver(
 /// The payload `envelope` carries, when it was signed for exactly `route`:
 /// a whole mutation, one segment of a larger one (endpoints reassemble it),
 /// or a sealed one.
-///
-/// # Errors
-/// The envelope was signed for another route, or its payload is untyped.
 pub fn validate_route(
     route: &CrdtRoute,
     envelope: &SignedOp,

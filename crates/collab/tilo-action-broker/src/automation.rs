@@ -44,7 +44,6 @@ use tilo_desktop_model::Workspace;
 
 /// The resource carrying the shortcut library's actions.
 pub const LIBRARY_RESOURCE: &str = "shortcuts";
-/// Kind of [`LIBRARY_RESOURCE`].
 pub const LIBRARY_RESOURCE_KIND: &str = "shortcuts.library";
 /// Save a new shortcut.
 pub const CREATE_ACTION: &str = "create";
@@ -74,7 +73,6 @@ pub fn descriptors(workspace: &Workspace) -> Vec<ActionDescriptor> {
         .collect()
 }
 
-/// The descriptor of library action `action`, when it is one.
 #[must_use]
 pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
     let shortcut_param = || {
@@ -442,7 +440,6 @@ pub struct SaveContext<'a> {
 /// A shortcut to store, or remove, in one workspace.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShortcutChange {
-    /// Save this shortcut, replacing a saved shortcut with the same id.
     Save(Box<Shortcut>),
     /// Remove the saved shortcut with this id.
     Delete(String),

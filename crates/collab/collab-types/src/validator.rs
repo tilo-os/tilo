@@ -209,7 +209,6 @@ pub struct ChannelState {
     /// via `max(channel_min, artifact_classification)`.
     pub artifact_classifications: HashMap<ArtifactId, Clearance>,
 
-    /// The channel's `min_clearance` floor.
     pub channel_min_clearance: Option<Clearance>,
 
     /// Last-seen sequence number per author (step-7 replay defence). Updated

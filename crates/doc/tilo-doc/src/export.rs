@@ -333,7 +333,6 @@ pub struct InlineRun<'a> {
     pub marks: Vec<&'a MarkSpan>,
     /// The active `link` value, whether external or an internal `#target`.
     pub link: Option<&'a str>,
-    /// The active tracked change, if any.
     pub change: Option<ActiveChange<'a>>,
     /// Note id when this is the single object-replacement placeholder covered
     /// by an exact `note-ref` mark.
@@ -513,7 +512,6 @@ pub fn without_kept_placeholders(
     }
 }
 
-/// [`without_kept_placeholders`] for a block sequence.
 pub fn without_kept_placeholders_in(blocks: &[BlockView]) -> std::borrow::Cow<'_, [BlockView]> {
     use std::borrow::Cow;
     if !blocks.iter().any(|b| !kept_placeholders(b).is_empty()) {
@@ -615,7 +613,6 @@ mod tests {
 
     #[test]
     fn block_plans_normalize_kinds_tables_images_and_walk_order() {
-        // Aliases, clamped heading levels and unknown kinds.
         let mut heading = block("heading", "title");
         heading.attrs.insert("level".into(), AttrVal::Int(99));
         assert_eq!(ExportBlock::new(&heading).kind(), BlockKind::Heading);

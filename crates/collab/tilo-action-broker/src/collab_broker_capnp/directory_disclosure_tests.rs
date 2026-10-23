@@ -1,4 +1,3 @@
-//! Signed joins and real RPC publication exercise both broker response paths.
 #![expect(
     clippy::future_not_send,
     reason = "real Cap'n Proto connections and the broker registry run on the test LocalSet"

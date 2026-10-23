@@ -580,7 +580,6 @@ fn keyboard_and_library_effects_require_admission_and_keep_request_identity() {
             let argument = request.argument.to_slot();
             request.target.address = tilo_actions::ActionAddress::new(resource, action);
             if !keyboard {
-                // Deleting a saved shortcut retains its destructive-action floor.
                 request.confirmation = Some(Confirmation::Confirmed);
             }
             let actor = BrokerActor::for_caller(&caller);

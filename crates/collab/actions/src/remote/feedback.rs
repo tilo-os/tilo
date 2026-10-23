@@ -31,7 +31,6 @@ pub struct FeedbackAdmission {
     pub owner_device: String,
     pub reporter_user: String,
     pub reporter_device: String,
-    /// The reporter's current standing in the room.
     pub standing: serde_json::Value,
     /// The room's current sandbox capabilities.
     pub sandbox: serde_json::Value,

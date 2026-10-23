@@ -651,7 +651,6 @@ impl Shared {
         std::mem::take(&mut *self.newly_dismissed.borrow_mut())
     }
 
-    /// Every tab's bound record.
     pub fn bound_records(&self) -> Vec<(TabId, RecordCheckout)> {
         self.records
             .borrow()
@@ -725,7 +724,6 @@ impl PageRoomActions {
         std::mem::take(&mut self.queue.borrow_mut().outbox)
     }
 
-    /// The page's answer to request `id`.
     pub fn answer(&self, id: u32, answer: tilo_app::linked_accounts::ActionAnswer) {
         let done = self.queue.borrow_mut().waiting.remove(&id);
         if let Some(done) = done {
@@ -1338,9 +1336,6 @@ pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_jso
 
 /// Take a desktop a peer shared: bind its tabs' records, then hand the tree
 /// to the surface's reconcile.
-///
-/// # Errors
-/// The value is not a shared desktop, or it has no workspace.
 pub(crate) fn apply_shared(
     handle: &DesktopHandle,
     shared: &Shared,
@@ -1571,9 +1566,6 @@ pub(crate) fn mount(
 
 /// Parse a `DesktopTree` (JSON) changed elsewhere, for
 /// [`DesktopHandle::replace_tree`].
-///
-/// # Errors
-/// The JSON is not a desktop tree, or it has no workspace.
 pub(crate) fn parse_tree(json: &str) -> Result<DesktopTree, String> {
     let tree = serde_json::from_str(json)
         .and_then(DesktopTree::from_json)

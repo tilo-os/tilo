@@ -94,7 +94,6 @@ impl App {
         })
     }
 
-    /// `vm enrol-admin`.
     pub(super) fn vm_enrol_admin(
         &mut self,
         via: Option<&str>,

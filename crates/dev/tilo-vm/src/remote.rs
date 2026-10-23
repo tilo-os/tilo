@@ -398,10 +398,6 @@ impl Remote {
     /// Open tilo-vmd's RPC over the peer network: `line` runs
     /// `tilo-device-admin dial`, whose first line names the device and the
     /// route before the request lines start.
-    ///
-    /// # Errors
-    /// A missing dial helper, a dial that fails (with its exit status and
-    /// what it said), or a protocol mismatch.
     pub fn over_peer(vm: &str, line: &CommandLine) -> Result<(Self, PeerSession), CliError> {
         let mut child = Command::new(&line.program)
             .args(&line.args)
@@ -456,8 +452,6 @@ impl Remote {
         }
     }
 
-    /// # Errors
-    /// Daemon-reported and transport errors.
     pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, CliError> {
         let request = params.into();
         self.client
@@ -848,7 +842,6 @@ for line in sys.stdin:
                 "{}",
                 remote[5]
             );
-            // The daemon too, and a shell is a root login shell.
             let rpc = ssh_command(&owner, None, &["tilo-vmd".into(), "rpc".into()], false);
             assert_eq!(rpc.args.last().unwrap(), "'tilo-vmd rpc'");
             let shell = ssh_command(&owner, None, &[], true);

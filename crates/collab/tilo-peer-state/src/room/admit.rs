@@ -138,7 +138,6 @@ pub enum RoomRefusal {
     OwnedContents(usize),
     /// The batch rewrites an effect receipt.
     ReceiptImmutable,
-    /// The batch rewinds checkpoint coverage.
     Coverage(String),
     /// The batch rewinds a durable receipt.
     Durability(String),

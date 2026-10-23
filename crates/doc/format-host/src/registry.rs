@@ -67,10 +67,6 @@ impl Registry {
     /// Load from a TOML file. A missing file is treated as an empty registry —
     /// the host stays up with no providers and clients get clear
     /// "unsupported mime" errors.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if reading or parsing the file fails (except for missing files).
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let raw = match std::fs::read_to_string(path) {
             Ok(s) => s,
@@ -81,11 +77,6 @@ impl Registry {
     }
 
     /// Parse the TOML body.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if parsing the TOML fails, if a provider declares
-    /// an unknown priority tier, or if `[limits]` is out of range.
     pub fn parse(toml_text: &str) -> anyhow::Result<Self> {
         let wire: WireRegistry = toml::from_str(toml_text)?;
         let mut providers = Vec::with_capacity(wire.provider.len());
@@ -146,7 +137,6 @@ mod tests {
 
     #[test]
     fn registry_parses_providers_and_limits_and_picks_the_highest_tier() {
-        // A well-formed provider.
         let toml = provider(
             "text/markdown",
             "so.tilo.markdown",
@@ -162,7 +152,6 @@ mod tests {
         assert_eq!(p.tier, Tier::Builtin);
         assert_eq!(p.trust, vec!["tilo-curated/2025".to_string()]);
 
-        // An unknown priority is refused.
         let weird = provider(
             "text/markdown",
             "so.tilo.markdown",
@@ -172,7 +161,6 @@ mod tests {
         );
         assert!(Registry::parse(&weird).is_err());
 
-        // Limits default, override, and refuse a zero cap or an unknown key.
         assert_eq!(Registry::parse("").unwrap().limits, Limits::default());
         let r = Registry::parse("[limits]\nfuel = 1000\nmax_memory_mib = 64\n").unwrap();
         assert_eq!(
@@ -185,7 +173,6 @@ mod tests {
         assert!(Registry::parse("[limits]\nmax_memory_mib = 0\n").is_err());
         assert!(Registry::parse("[limits]\nwallclock = 3\n").is_err());
 
-        // A missing file is an empty registry.
         let r = Registry::load(Path::new("/nonexistent/tilo-format-host/test.toml")).unwrap();
         assert!(r.providers.is_empty());
 

@@ -21,10 +21,6 @@ thread_local! {
 /// earlier load, each with its panic message: `[{"tab", "message"}]`. They
 /// show the message instead of running their application. Replaces the
 /// previous set; call before mounting.
-///
-/// # Errors
-///
-/// Rejects text that is not such a list.
 #[wasm_bindgen]
 pub fn quarantine_windows(entries: &str) -> Result<(), JsValue> {
     #[derive(serde::Deserialize)]

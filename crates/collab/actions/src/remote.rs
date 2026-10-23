@@ -75,7 +75,6 @@ pub enum CallerPrincipal {
     /// the hex encoding of the user root its certificate chains to, so two
     /// devices of one person are the same principal.
     Person(String),
-    /// A delegated agent, by its agent id.
     Agent(String),
     /// An application, by its package id, acting under its own identity
     /// rather than borrowing the authority of the person using it.
@@ -425,7 +424,6 @@ impl Caller {
         self.user_public_key.as_ref()
     }
 
-    /// Whether the caller acts from a foreign device.
     #[must_use]
     pub const fn is_foreign_device(&self) -> bool {
         self.foreign
@@ -469,7 +467,6 @@ impl RemoteActionTarget {
     }
 }
 
-/// The id of the room `room`'s governance resource.
 #[must_use]
 pub fn room_governance_resource(room: &str) -> String {
     format!("{ROOM_GOVERNANCE_KIND}:{room}")
@@ -494,7 +491,6 @@ pub mod device_pairing {
     /// Forget a discovered device and stop approving it (`device`).
     pub const REJECT: &str = "reject";
 
-    /// The target of pairing step `step`.
     #[must_use]
     pub fn target(step: &str) -> RemoteActionTarget {
         RemoteActionTarget {
@@ -560,7 +556,6 @@ pub mod identity_admin {
         HOME_PEER_RETRY,
     ];
 
-    /// The target of identity step `step`.
     #[must_use]
     pub fn target(step: &str) -> RemoteActionTarget {
         RemoteActionTarget {
@@ -578,7 +573,6 @@ pub mod identity_admin {
         pub key_hex: String,
         /// The key's short form people compare between screens.
         pub fingerprint: String,
-        /// Whether it is the device answering.
         pub current: bool,
         /// Whether its trust was revoked.
         pub revoked: bool,
@@ -704,7 +698,6 @@ impl InvokeRequest {
 /// Explicit confirmation carried with an invocation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Confirmation {
-    /// The caller confirmed the action.
     Confirmed,
     /// The caller typed the phrase the contract asks for.
     Phrase(String),
@@ -1426,7 +1419,6 @@ pub const MAX_FETCHED_RECORD_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordQuery {
-    /// The room the record belongs to.
     pub room: String,
     /// The application whose record it is.
     pub app: String,
@@ -1569,11 +1561,6 @@ impl RemoteActionFrame {
     /// Decode bytes from a transport. The version is checked before the
     /// message, so a frame from a newer peer is refused by version rather
     /// than misread.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`RemoteFrameError`] for oversized, unknown-version or
-    /// malformed input.
     pub fn decode(bytes: &[u8]) -> Result<Self, RemoteFrameError> {
         #[derive(Deserialize)]
         struct Version {

@@ -119,11 +119,6 @@ impl BoundedStatePeer {
     /// The embedding owner authenticates the original durable bytes and pins
     /// room/authority/enrollment under its actual barrier. This checks the same
     /// durable admission semantics within `limits`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`BoundedPeerError`] if the bytes are refused, the room or
-    /// authority does not match, or a limit is reached.
     pub fn restore(
         bytes: &[u8],
         room: &str,

@@ -78,7 +78,6 @@ struct Current<P> {
     person: KeyHex,
     policy: P,
     foreign: bool,
-    /// The bound on a delegate's device.
     delegate: Option<Bound>,
 }
 fn current<'peer, S: Storage, P: Policy>(

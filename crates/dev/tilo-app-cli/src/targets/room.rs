@@ -44,7 +44,6 @@ pub struct SharedRoom {
     pub room: String,
     /// The app every page opens.
     pub app_id: String,
-    /// The room's name, as the app's.
     pub name: String,
     child: Mutex<Child>,
     stdin: Mutex<ChildStdin>,
@@ -100,7 +99,6 @@ const OPENING_TIMEOUT: Duration = Duration::from_secs(60);
 /// Where an app's record in the room stands, for a page that opens it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct RecordClaim {
-    /// The record to open, once a page opened it.
     pub record: Option<String>,
     /// Whether the asking page is to open it.
     pub open: bool,
@@ -239,10 +237,6 @@ impl SharedRoom {
 
     /// Pre-admit the person `user_public_key` (hex), named `label`, as an
     /// Editor of the room.
-    ///
-    /// # Errors
-    ///
-    /// When the key is not one, or the host refuses or does not answer.
     pub fn admit(&self, user_public_key: &str, label: &str) -> Result<Admission> {
         if user_public_key.len() != 64 || !user_public_key.bytes().all(|b| b.is_ascii_hexdigit()) {
             bail!("no person to admit");

@@ -112,15 +112,10 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
 pub struct IdentityRow {
     /// The governed device certificate.
     pub device_cert: tilo_user_identity::DeviceCert,
-    /// The revocations the row publishes.
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
 /// Decode one [`RoomGovernance::identities`] row exactly as admission does.
-///
-/// # Errors
-///
-/// Returns the decode error if the bytes are not a governed identity row.
 pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
     let identity: crate::state::GovernedIdentity = serde_json::from_slice(bytes)?;
     Ok(IdentityRow {
@@ -243,10 +238,6 @@ pub fn extract_governed_fields(
 }
 /// Parse the complete batch and apply to a disposable candidate, never the owner.
 /// Changes with absent dependencies remain queued, as with `apply_changes`.
-///
-/// # Errors
-///
-/// Returns an error if a change is malformed or refused by isolated admission.
 pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
     // Each entry is one complete change chunk; their concatenation is ordinary
     // storage, admitted like any other untrusted document mutation.

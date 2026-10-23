@@ -298,7 +298,6 @@ impl TestHome {
         self.root.path()
     }
 
-    /// `$HOME`.
     pub fn home(&self) -> &Path {
         &self.home
     }
@@ -427,10 +426,6 @@ impl Script {
 /// file is replaced atomically. Run the result with
 /// [`Script::exec_argv`] or [`Script::command`], not by executing `path`
 /// directly; see [`Script::exec_argv`] for why.
-///
-/// # Errors
-///
-/// Returns the I/O error from creating, writing, syncing or renaming the file.
 #[cfg(unix)]
 pub fn script(path: impl AsRef<Path>, body: &str) -> io::Result<Script> {
     use std::io::Write as _;
@@ -608,7 +603,6 @@ mod tests {
         }
     }
 
-    /// Test home points every base directory into one temporary tree and restores the previous home.
     #[test]
     fn test_home_redirects_every_base_directory_and_restores_home() {
         // Phase: test_home_points_every_base_directory_into_one_temporary_tree.

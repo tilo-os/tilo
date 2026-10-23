@@ -65,7 +65,6 @@ pub(super) struct BotWrite {
 }
 
 impl StatePeer {
-    /// Every governed identity that is a bot, as stored.
     pub(super) fn bot_identities(&self) -> Result<Vec<GovernedIdentity>, String> {
         let doc = self
             .core
@@ -161,7 +160,6 @@ impl StatePeer {
         })
     }
 
-    /// Install or update a bot as `caller`.
     pub(super) fn apply_install_bot(
         &mut self,
         caller: &DeviceCert,
@@ -525,9 +523,6 @@ impl PeerGovernance<'_> {
     }
     /// Every installed bot on this room's roster, acting or not at `now`,
     /// withdrawn rows included so history stays attributed.
-    ///
-    /// # Errors
-    /// Room governance is missing or malformed.
     pub fn installations(self, now: SystemTime) -> Result<Vec<InstalledBot>, String> {
         let mut out = Vec::new();
         for identity in self.peer.bot_identities()? {
@@ -653,7 +648,6 @@ impl StatePeer {
         )
     }
 
-    /// Make `caller` the installer of the adopted bot, on a new device.
     pub(super) fn apply_adopt_bot(
         &mut self,
         caller: &DeviceCert,

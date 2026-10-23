@@ -93,7 +93,6 @@ pub struct StepGrant {
     pub names_action: bool,
 }
 
-/// What `grant` answers for the action at `node` of `kind`.
 #[must_use]
 pub fn grant_answer(grant: &[Rule], node: &TreePath, kind: ActionKind) -> StepGrant {
     let subject = Subject::Shortcut(String::new());
@@ -125,14 +124,12 @@ pub fn grant_answer(grant: &[Rule], node: &TreePath, kind: ActionKind) -> StepGr
 /// The resources a permission reaches.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reach {
-    /// The one resource a step names.
     Resource(String),
     /// Every resource of a kind, for a step that picks its resource when it
     /// runs.
     Kind(String),
 }
 
-/// One permission the shortcut will use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Permission {
     pub app_id: String,
@@ -184,7 +181,6 @@ pub fn least_privilege(steps: &[Step], catalog: &ActionCatalog) -> Vec<Permissio
     out
 }
 
-/// The grant rules for `permissions`.
 #[must_use]
 pub fn rules(permissions: &[Permission]) -> Vec<Rule> {
     permissions.iter().map(Permission::rule).collect()
@@ -492,7 +488,6 @@ mod tests {
             Answer::Deny
         );
 
-        // A narrower deny on the kind's undoable changes caps it.
         let mut restricted = kind.to_vec();
         restricted.push(action_rule(
             NOTES,

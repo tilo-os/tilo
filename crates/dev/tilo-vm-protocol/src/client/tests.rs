@@ -1,5 +1,3 @@
-//! Exercise the production client's wire calls and acknowledgment boundaries.
-
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::{self, Cursor};

@@ -894,7 +894,6 @@ mod tests {
             );
             assert_eq!(peer.durable().unwrap(), before);
             peer.core.room_doc = saved_room;
-            // A current unbounded owner still has ordinary full steering rights.
             assert!(
                 peer.workspace_mut()
                     .apply_workspace_task_command(

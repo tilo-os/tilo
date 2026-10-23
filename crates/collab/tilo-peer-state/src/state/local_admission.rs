@@ -6,11 +6,6 @@ impl StatePeer {
     /// Look up an already recorded local envelope with current authority,
     /// signature and route validation. The caller must independently require
     /// that its selected local device is exactly `envelope.author`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] if the envelope fails authority, signature or route
-    /// validation.
     pub fn lookup_exact_local_document(
         &self,
         app: &str,

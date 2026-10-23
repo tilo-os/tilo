@@ -69,11 +69,6 @@ impl WebBuild {
 
 /// Build the app at `start` for the web: the browser runtime bundle with the
 /// app registered.
-///
-/// # Errors
-///
-/// When the app is not web-capable (the portability lint), the target or
-/// capability checks fail, or the build does.
 pub fn build_web(start: &Path, request: &WebBuildRequest) -> Result<WebBuild> {
     let app_dir = resolve_app_dir(start)?;
     let portability = crate::portability::lint_app(&app_dir)?;
@@ -109,7 +104,6 @@ pub fn build_web(start: &Path, request: &WebBuildRequest) -> Result<WebBuild> {
     })
 }
 
-/// The `app` bundle of the web target, optimized when `release`.
 fn app_bundle(release: bool) -> TargetRequest {
     let mut request = TargetRequest::new(Target::Web);
     request.bundle = WebBundle::App;

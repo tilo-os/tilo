@@ -171,9 +171,6 @@ fn storage_key(app: &str, room: &str, record: &str) -> Result<StorageKey, &'stat
 
 /// Start replicating `room` for peer `id`. `events` must have been created
 /// when the peer started.
-///
-/// # Errors
-/// The room is not a uuid.
 pub(crate) fn open(
     id: u32,
     device: String,

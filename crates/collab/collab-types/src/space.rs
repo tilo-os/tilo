@@ -68,7 +68,6 @@ mod tests {
     use crate::canonical::{canonical_bytes, from_canonical_bytes};
     use crate::crypto::generate_keypair;
 
-    /// Space ids are unique and an empty space round-trips canonically.
     #[test]
     fn space_ids_are_unique_and_an_empty_space_round_trips() {
         assert_ne!(SpaceId::new(), SpaceId::new());

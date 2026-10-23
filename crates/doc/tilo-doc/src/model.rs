@@ -133,7 +133,6 @@ struct ContainerOrder {
 }
 
 impl ContainerOrder {
-    /// Set `id`'s key, replacing any it had.
     fn insert(&mut self, id: Arc<str>, key: Arc<[u8]>) {
         self.remove(&id);
         self.by_id.insert(Arc::clone(&id), Arc::clone(&key));
@@ -315,10 +314,6 @@ impl IdGen {
     /// New code that can surface an error should use [`Self::try_mint`]. The
     /// legacy mutator APIs return raw identifiers, so exhaustion aborts rather
     /// than silently colliding with a durable block id.
-    ///
-    /// # Panics
-    ///
-    /// Panics when this actor's finite identifier namespace is exhausted.
     #[allow(
         clippy::expect_used,
         reason = "the legacy API cannot return an error; panic is the explicit fail-closed behavior"
@@ -625,10 +620,6 @@ pub fn shadowed_containers(doc: &AutoCommit, root: &ObjId) -> Vec<String> {
 }
 
 /// Resolve existing containers under `root`.
-///
-/// # Errors
-/// Returns [`DocError`] if a container key is missing under `root` or does not
-/// resolve to a map.
 pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<Containers, DocError> {
     // One walk over `root` finds every container: a record holding rich text
     // in each of its items opens one per item, and a lookup per key seeks
@@ -1524,7 +1515,6 @@ pub fn block_text(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> 
 // paragraph merge per character. Every block constructor below creates that
 // object in the same change as the block itself.
 
-/// The Text object of a block, when it has one.
 fn canonical_text(doc: &AutoCommit, block_obj: &ObjId) -> Option<ObjId> {
     match doc.get(block_obj, BLOCK_TEXT) {
         Ok(Some((Value::Object(ObjType::Text), id))) => Some(id),
@@ -2399,7 +2389,6 @@ impl DocMut<'_> {
         ensure_block_text(self.doc, &obj)
     }
 
-    /// Splice text into a note's block.
     pub fn splice_note_text(
         &mut self,
         note_id: &str,
@@ -2577,7 +2566,6 @@ impl DocMut<'_> {
         ensure_block_text(self.doc, &obj)
     }
 
-    /// Splice text into one reply block.
     pub fn splice_comment_reply_text(
         &mut self,
         comment_id: &str,
@@ -2693,7 +2681,6 @@ impl DocMut<'_> {
         ensure_block_text(self.doc, &obj)
     }
 
-    /// Splice text into a comment's block.
     pub fn splice_comment_text(
         &mut self,
         comment_id: &str,
@@ -2851,8 +2838,6 @@ impl DocMut<'_> {
     fn remove_change_record(&mut self, change_id: &str) {
         let _ = self.doc.delete(&self.c.changes, change_id);
     }
-
-    // ---- bookmarks / cross-references -------------------------------------
 
     /// Anchor a **bookmark** (named anchor) over `[start, end)` of `block_id`: cover it with a `bookmark` mark
     /// valued with `name`. A zero-width (point) bookmark is widened to one character when the block has text
@@ -3432,7 +3417,6 @@ mod style_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn styles_and_doc_props_upsert_snapshot_and_open_old_documents() {
-        // Phase `styles_container_crud_and_snapshot`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -3467,7 +3451,6 @@ mod style_tests {
                 Some(&AttrVal::Bool(true))
             );
         }
-        // Phase `doc_props_crud_and_snapshot`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -3510,7 +3493,6 @@ mod style_tests {
                 "untouched prop preserved"
             );
         }
-        // Phase `open_is_backward_compatible_without_props_map`.
         {
             // A document whose meta map predates the props sub-map must open + read as having no properties.
             let mut doc = AutoCommit::new();
@@ -3526,7 +3508,6 @@ mod style_tests {
                 "reload still opens with no props"
             );
         }
-        // Phase `set_style_is_field_level_upsert`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -3647,7 +3628,6 @@ mod region_tests {
 
     #[test]
     fn headers_and_footers_are_shared_and_hold_fields() {
-        // Phase `header_footer_are_shared`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -3704,7 +3684,6 @@ mod region_tests {
                 );
             }
         }
-        // Phase `header_footer_blocks_and_page_number_field`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -3753,7 +3732,6 @@ mod region_tests {
 
     #[test]
     fn notes_anchor_their_content_and_never_remint_ids() {
-        // Phase `notes_container_is_empty_on_fresh_doc`.
         {
             // A fresh doc has an (empty) notes container — created eagerly so concurrent
             // footnote inserts converge on one shared object.
@@ -3762,7 +3740,6 @@ mod region_tests {
             assert!(note_ids(&doc, &c).is_empty(), "but empty");
             assert!(materialize_notes(&doc, &c).is_empty());
         }
-        // Phase `footnote_marker_and_note_content`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -3802,7 +3779,6 @@ mod region_tests {
             assert_eq!(snap.notes[0].kind, "footnote");
             assert_eq!(snap.notes[0].blocks[0].text, "the note");
         }
-        // Phase `seeded_id_gen_does_not_remint_note_ids`.
         {
             // A generator seeded over a reloaded doc must skip past note + note-block ids, otherwise it would re-mint an existing note.
             let mut doc = AutoCommit::new();
@@ -3851,7 +3827,6 @@ mod region_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn comments_anchor_their_content_and_threads_and_never_remint_ids() {
-        // Phase `comments_container_is_empty_on_fresh_doc`.
         {
             // A fresh doc has an (empty) comments container — eager, so concurrent comment adds converge on one shared object.
             let mut doc = AutoCommit::new();
@@ -3859,7 +3834,6 @@ mod region_tests {
             assert!(comment_ids(&doc, &c).is_empty(), "but empty");
             assert!(materialize_comments(&doc, &c).is_empty());
         }
-        // Phase `comment_anchor_and_content`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -3893,7 +3867,6 @@ mod region_tests {
             assert_eq!(snap.comments[0].blocks[0].text, "note: fix");
             assert_eq!(snap.comments[0].range, Some((pid, 11, 20)));
         }
-        // Phase `seeded_id_gen_does_not_remint_comment_ids`.
         {
             // A generator seeded over a reloaded doc must skip past comment ids, otherwise it would re-mint an existing comment.
             let mut doc = AutoCommit::new();
@@ -3932,7 +3905,6 @@ mod region_tests {
                 snap.comments
             );
         }
-        // Phase `replies_of_every_comment_come_from_one_pass`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -3983,11 +3955,9 @@ mod region_tests {
                 .collect();
             assert_eq!(counts, vec![4, 2, 1, 0]);
 
-            // A generator seeded from the document mints past every reply and reply-body block.
             let seeded = try_seeded_id_gen(&doc, &c).expect("seeds");
             assert_eq!(seeded.next, ids.next);
         }
-        // Phase `comment_threads_are_lazy_backward_compatible_and_canonical`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -4065,7 +4035,6 @@ mod region_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn tracked_changes_anchor_accept_reject_and_never_remint_ids() {
-        // Phase `changes_container_is_empty_on_fresh_doc`.
         {
             // A fresh doc has an (empty) changes container — eager, for the same convergence reason as comments/notes.
             let mut doc = AutoCommit::new();
@@ -4073,7 +4042,6 @@ mod region_tests {
             assert!(change_ids(&doc, &c).is_empty(), "but empty");
             assert!(materialize_changes(&doc, &c).is_empty());
         }
-        // Phase `tracked_insert_and_delete_anchor_and_metadata`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -4132,7 +4100,6 @@ mod region_tests {
             assert_eq!(del.kind, crate::snapshot::ChangeKind::Del);
             assert_eq!(del.range, Some((pid, 12, 17)));
         }
-        // Phase `accept_insertion_clears_mark_keeps_text`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -4160,7 +4127,6 @@ mod region_tests {
                 "change record removed on accept"
             );
         }
-        // Phase `accept_deletion_removes_text`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -4191,7 +4157,6 @@ mod region_tests {
                 "change record removed on accept"
             );
         }
-        // Phase `reject_inverts_accept`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -4226,7 +4191,6 @@ mod region_tests {
                 "both records removed"
             );
         }
-        // Phase `seeded_id_gen_does_not_remint_change_ids`.
         {
             // A generator seeded over a reloaded doc must skip past change ids, otherwise it would re-mint an existing change.
             let mut doc = AutoCommit::new();
@@ -4273,7 +4237,6 @@ mod region_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn bookmarks_anchor_cross_references_and_converge() {
-        // Phase `bookmark_anchor_cross_ref_and_snapshot`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -4313,7 +4276,6 @@ mod region_tests {
             assert_eq!(snap.bookmarks[0].name, "intro");
             assert_eq!(snap.bookmarks[0].range, (target, 4, 9));
         }
-        // Phase `point_bookmark_is_widened_and_heading_ref_id_targets_heading`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -4360,7 +4322,6 @@ mod region_tests {
                 crate::document::MarkValue::Str(format!("#{HEADING_REF_PREFIX}{h}"))
             );
         }
-        // Phase `bookmarks_converge_across_replicas`.
         {
             // Two replicas each add a bookmark to the same document; after merge both converge with both bookmarks present.
             let mut a = crate::Document::new();
@@ -4386,7 +4347,6 @@ mod region_tests {
 
     #[test]
     fn regions_clear_and_requested_blocks_materialize_faithfully() {
-        // Phase `clear_region_empties_it`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -4406,7 +4366,6 @@ mod region_tests {
                 "header cleared"
             );
         }
-        // Phase `materialize_requested_blocks_preserves_input_order_and_block_fidelity`.
         {
             let mut doc = AutoCommit::new();
             let c = init(&mut doc, &ROOT);
@@ -4487,7 +4446,6 @@ mod preserved_tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn preserved_parts_round_trip_merge_per_atom_and_never_reuse_ids() {
-        // Phase `segmented_part_round_trips_verbatim`.
         {
             let (mut doc, c, mut ids) = new_doc();
             {
@@ -4498,7 +4456,6 @@ mod preserved_tests {
                 };
                 dm.set_preserved_atoms("odt/part/styles.xml", &two_style_atoms());
             }
-            // Stored as a segmented Map, yet reconstructs byte-for-byte.
             let got =
                 preserved_part(&doc, &c, "odt/part/styles.xml", &tilo_content::NoContent).unwrap();
             assert_eq!(got, TWO_STYLE_PART, "segmented part re-emits verbatim");
@@ -4606,7 +4563,6 @@ mod preserved_tests {
                 "replicas converge on identical reconstructed bytes"
             );
         }
-        // Phase `id_generator_never_reuses_the_final_counter`.
         {
             let mut ids = IdGen::with_counter("actor".into(), u64::MAX);
             assert_eq!(ids.try_mint(), Ok("actor.18446744073709551615".into()));
@@ -4617,7 +4573,6 @@ mod preserved_tests {
                 })
             );
         }
-        // Phase `seeding_rejects_a_persisted_final_counter`.
         {
             use automerge::transaction::Transactable;
 

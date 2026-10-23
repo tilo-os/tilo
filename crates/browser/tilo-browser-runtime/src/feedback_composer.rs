@@ -24,7 +24,6 @@ pub struct FeedbackComposerCode {
     pub prepare: fn(Option<FeedbackServices>, &str, &str, u64) -> Result<AppComponent, LaunchError>,
 }
 
-/// The composer's code, for [`install_feedback_composer`].
 #[must_use]
 pub fn builtin_feedback_composer() -> FeedbackComposerCode {
     FeedbackComposerCode {

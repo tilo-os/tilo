@@ -862,9 +862,6 @@ pub(crate) fn retry_covered(view: &NativeCommittedView, bytes: &[u8]) -> Result<
 }
 impl NativeWorkspaceOwner {
     /// Read `room`'s outgoing custody: what the relay session may send now.
-    ///
-    /// # Errors
-    /// The room is fenced, this device may not publish, or `read` fails.
     pub fn with_outgoing<T>(
         &self,
         room: RoomId,
@@ -883,8 +880,6 @@ impl NativeWorkspaceOwner {
             )
         })
     }
-    /// # Errors
-    /// The room is fenced.
     #[cfg(any(test, feature = "test-support"))]
     pub fn outgoing_status(
         &self,

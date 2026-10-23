@@ -103,9 +103,6 @@ impl Verdict {
     }
 
     /// Reads the model's answer, keeping a restriction within bounds.
-    ///
-    /// # Errors
-    /// The answer is not a verdict.
     pub fn parse(text: &str) -> Result<Self, JudgeError> {
         let text = text.trim();
         // Tolerate a fenced answer from a provider without structured output.
@@ -161,7 +158,6 @@ pub trait Judge {
     /// The model id, recorded with each decision.
     fn model(&self) -> &str;
 
-    /// The verdict on `case`.
     fn judge(&self, case: &Case) -> impl Future<Output = Result<Verdict, JudgeError>> + Send;
 }
 
