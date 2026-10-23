@@ -337,20 +337,19 @@ async fn two_members_see_each_others_window_through_the_relay_alone() {
     late.show_windows(&name('a'), &[TAB]);
     let mut late_viewing = Viewing::new();
     let still = pictures[((FRAMES - 1) % 8) as usize].clone();
-    let mut answered = 0_u32;
+    let answer = || {
+        session.start_reader().or_else(|| {
+            session.deposit_captured_rgba(still.clone());
+            session.encode_next_frame(Instant::now())
+        })
+    };
+    let mut answers = Vec::new();
     tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
-            // The host hears a reader started on the window and answers as
-            // the compositor does: the share encodes a keyframe of the
-            // window as it stands, unchanged as it is.
             let started = host.take_window_keyframes();
             if !outbound.readers_started(&started).is_empty() {
-                answered += 1;
-                session.start_reader();
-                session.deposit_captured_rgba(still.clone());
-                let frame = session
-                    .encode_next_frame(Instant::now())
-                    .expect("a started reader gets a frame of the still window");
+                let frame = answer().expect("a started reader gets a frame of the still window");
+                answers.push(frame.seq);
                 assert!(
                     outbound.send(&host, &HOST, &keys, &frame.into_neighbour_msg()),
                     "the keyframe goes onto the window's track"
@@ -390,12 +389,11 @@ async fn two_members_see_each_others_window_through_the_relay_alone() {
     .await
     .expect("a member who starts showing a still window gets a keyframe of it");
 
-    // The relay hands a reader that joins others the window's newest group
-    // from its cache; a keyframe is owed only when it asks the host afresh.
-    assert!(answered <= 1, "one reader started, at most one keyframe");
+    assert!(
+        answers.len() <= 1,
+        "one reader started, at most one keyframe"
+    );
 
-    // While nobody new starts showing the still window, nothing asks for a
-    // keyframe again and nothing is sent: no encode happens.
     tokio::time::sleep(Duration::from_millis(200)).await;
     while viewer.try_recv_picture().is_some() || late.try_recv_picture().is_some() {}
     tokio::time::sleep(Duration::from_millis(1_500)).await;
@@ -417,6 +415,60 @@ async fn two_members_see_each_others_window_through_the_relay_alone() {
     })
     .await
     .expect("once nobody shows the window, nothing asks the host to encode it");
+
+    let mut reshown = Vec::new();
+    for _ in 0..2 {
+        late.show_windows(&name('a'), &[TAB]);
+        let mut again = Viewing::new();
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
+            loop {
+                let started = host.take_window_keyframes();
+                if !outbound.readers_started(&started).is_empty() {
+                    let standing = session.start_reader();
+                    let frame = standing.clone().or_else(&answer).expect("a keyframe");
+                    reshown.push((standing.is_some(), frame.seq));
+                    assert!(outbound.send(&host, &HOST, &keys, &frame.into_neighbour_msg()));
+                }
+                let mut copy = Vec::new();
+                while let Some(picture) = late.try_recv_picture() {
+                    copy.push(picture);
+                }
+                for picture in copy {
+                    for message in
+                        again
+                            .inbound
+                            .receive((&HOST, 7), TAB, APP, &keys, channel, &picture)
+                    {
+                        if let NeighbourMsg::SurfaceFrame { .. } = message {
+                            again.decoded += 1;
+                        }
+                    }
+                }
+                if again.decoded > 0 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a member who shows the still window again sees it");
+        late.show_windows(&name('a'), &[]);
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
+            while !host.wanted_windows().is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("nobody shows the window");
+    }
+    let first = reshown.first().copied().expect("the host is asked afresh");
+    assert!(
+        reshown
+            .iter()
+            .skip(1)
+            .all(|answer| *answer == (true, first.1)),
+        "showing a still window again encodes nothing: {reshown:?}"
+    );
 
     let mut latencies = viewing.latencies;
     latencies.sort_unstable();
