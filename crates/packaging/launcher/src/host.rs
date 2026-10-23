@@ -120,6 +120,26 @@ pub fn plan_host_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLau
     Ok(plan_file(path, env)?)
 }
 
+/// [`plan_host`] for a program file run by itself, such as a downloaded
+/// `AppImage` opened in Files.
+///
+/// # Errors
+///
+/// Returns [`HostError::Plan`] if `path` is not absolute.
+pub fn plan_host_program(path: &Path, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
+    Ok(desktop_entry::launch::plan_program(path, env)?)
+}
+
+/// Make the program file at `path` runnable, as opening it does.
+///
+/// # Errors
+///
+/// Returns [`HostError::Plan`] if it is not a compiled program or its mode
+/// can't be changed.
+pub fn make_runnable(path: &Path) -> Result<(), HostError> {
+    Ok(desktop_entry::launch::make_runnable(path)?)
+}
+
 /// Run an already-planned launch. Split out so a caller that built the
 /// plan itself doesn't have to resolve the entry twice.
 ///

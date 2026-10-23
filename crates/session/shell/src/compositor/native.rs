@@ -9897,6 +9897,8 @@ pub fn run() {
     // NTFS drives open only through the shell's own sheet; see shell::drives.
     crate::shell::drives::start(Arc::clone(&session_wake));
     crate::shell::app_list::set_wake(Arc::clone(&session_wake));
+    crate::shell::downloaded_apps::set_wake(Arc::clone(&session_wake));
+    crate::shell::downloaded_apps::follow_moves();
     crate::app_icons::set_wake(Arc::clone(&session_wake));
     crate::shell::mpris::set_now_playing_wake(Arc::clone(&session_wake));
     crate::shell::install_component_wake(Arc::clone(&session_wake));

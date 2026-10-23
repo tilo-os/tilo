@@ -14,7 +14,10 @@
 //! directories. So the folders on the way to each such file are watched
 //! too, for that one name: deleting, moving or renaming the file (or a
 //! folder above it) reads the scan again, and the entry shows the file is
-//! gone without anyone having to try to start it.
+//! gone without anyone having to try to start it. Each scan hands every
+//! entry whose file is gone to the hook the session set with
+//! [`on_missing_program`], which can find the file again (Tilo's filesystem
+//! knows where a record moved) and point the entry at it.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -101,6 +104,38 @@ pub fn refresh() {
     }
 }
 
+/// Called with each downloaded program's entry whose file is gone, after
+/// every scan.
+type MissingHook = Box<dyn Fn(&crate::DesktopEntry) + Send + Sync>;
+
+fn missing_hook() -> &'static OnceLock<MissingHook> {
+    static HOOK: OnceLock<MissingHook> = OnceLock::new();
+    &HOOK
+}
+
+/// Have `hook` see each downloaded program's entry whose file is gone,
+/// after every scan, on the thread that scanned. It must not block: it
+/// hands the entry to a worker. Set once per process; a later call is
+/// ignored.
+pub fn on_missing_program(hook: impl Fn(&crate::DesktopEntry) + Send + Sync + 'static) {
+    let _ = missing_hook().set(Box::new(hook));
+}
+
+fn report_missing(scan: &Scan) {
+    let Some(hook) = missing_hook().get() else {
+        return;
+    };
+    for entry in &scan.entries {
+        if entry
+            .downloaded
+            .as_ref()
+            .is_some_and(|downloaded| !downloaded.present)
+        {
+            hook(entry);
+        }
+    }
+}
+
 fn cell() -> &'static Mutex<Option<Cached>> {
     static CELL: OnceLock<Mutex<Option<Cached>>> = OnceLock::new();
     CELL.get_or_init(|| Mutex::new(None))
@@ -157,10 +192,12 @@ pub fn cached_scan_snapshot() -> (u64, Scan) {
             .map(|cached| cached.scan.get());
         if let Some(scan) = current {
             watch_programs(&scan, &follow);
+            report_missing(&scan);
         }
     });
     let scan = (*watched.get()).clone();
     watch_programs(&scan, &programs);
+    report_missing(&scan);
     *guard = Some(Cached {
         dirs,
         desktop,

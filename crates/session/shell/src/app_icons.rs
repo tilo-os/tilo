@@ -47,7 +47,8 @@ pub struct Raster {
 }
 
 impl Raster {
-    fn image_data(&self) -> ImageData {
+    #[must_use]
+    pub fn image_data(&self) -> ImageData {
         ui::raster::rgba8(Blob::new(self.rgba.clone()), self.width, self.height)
     }
 }
@@ -64,6 +65,19 @@ pub fn rasterize(file: &IconFile, device_px: u32) -> Option<Raster> {
     match file.format {
         IconFormat::Png => rasterize_png(&bytes, device_px),
         IconFormat::Svg => rasterize_svg(&bytes, device_px),
+    }
+}
+
+/// [`rasterize`] for an icon already read: `bytes` in `format`.
+#[must_use]
+pub fn rasterize_bytes(bytes: &[u8], format: IconFormat, device_px: u32) -> Option<Raster> {
+    let device_px = device_px.clamp(1, ui::icons::MAX_DEVICE_PX);
+    if u64::try_from(bytes.len()).map_or(true, |length| length > MAX_SOURCE_BYTES) {
+        return None;
+    }
+    match format {
+        IconFormat::Png => rasterize_png(bytes, device_px),
+        IconFormat::Svg => rasterize_svg(bytes, device_px),
     }
 }
 

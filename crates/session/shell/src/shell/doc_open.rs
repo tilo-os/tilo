@@ -49,6 +49,10 @@ pub enum DocumentTarget {
     Unclaimed,
     /// A directory — the caller navigates into it.
     Directory,
+    /// A compiled program, such as a downloaded `AppImage` or executable:
+    /// opening it runs it, unconfined like any host application. A script
+    /// is never one; it opens as the text it is.
+    Program,
 }
 
 /// Two outcomes, because reporting "opened" for both would be lying
@@ -70,6 +74,11 @@ pub enum Opened {
     HostLaunched {
         app: crate::shell::host_apps::HostApp,
     },
+    /// The file is a program and was started, unconfined like a host
+    /// application; `name` is the file's.
+    ProgramStarted {
+        name: String,
+    },
 }
 
 impl Opened {
@@ -77,12 +86,15 @@ impl Opened {
     pub fn app(&self) -> Option<&InstalledApp> {
         match self {
             Opened::Launched { app } | Opened::Focused { app, .. } => Some(app),
-            Opened::HostLaunched { .. } => None,
+            Opened::HostLaunched { .. } | Opened::ProgramStarted { .. } => None,
         }
     }
 
     pub fn launched(&self) -> bool {
-        matches!(self, Opened::Launched { .. } | Opened::HostLaunched { .. })
+        matches!(
+            self,
+            Opened::Launched { .. } | Opened::HostLaunched { .. } | Opened::ProgramStarted { .. }
+        )
     }
 
     /// The typed result an open action answers with: what happened and
@@ -105,6 +117,11 @@ impl Opened {
                 "opened": "host-launched",
                 "path": path,
                 "app": app.desktop_id,
+            }),
+            Opened::ProgramStarted { name } => serde_json::json!({
+                "opened": "program-started",
+                "path": path,
+                "app": name,
             }),
         }
     }
@@ -174,6 +191,9 @@ pub fn resolve_for(
         return DocumentTarget::Directory;
     }
     let ext = extension_of(path);
+    if ext.as_deref() == Some("appimage") && desktop_entry::downloaded::is_program(path) {
+        return DocumentTarget::Program;
+    }
     let editable_document = ext
         .as_deref()
         .is_some_and(tilo_doc_codecs::is_supported_ext);
@@ -223,6 +243,7 @@ pub fn resolve_for(
         None if editable_document => DocumentTarget::NoAppForDocument {
             ext: ext.unwrap_or_default(),
         },
+        None if desktop_entry::downloaded::is_program(path) => DocumentTarget::Program,
         None => DocumentTarget::Unclaimed,
     }
 }
@@ -304,6 +325,7 @@ fn open_resolved(
     let app = match target {
         DocumentTarget::App { app, .. } => *app,
         DocumentTarget::HostApp { app } => return open_with_host(&app, path, chrome, placement),
+        DocumentTarget::Program => return open_program(path, chrome),
         DocumentTarget::NoAppForDocument { ext } => {
             return Err(OpenError::NoHandler {
                 path: path.to_path_buf(),
@@ -472,6 +494,22 @@ fn open_with_host(
     )
     .map(|app| Opened::HostLaunched { app })
     .map_err(OpenError::Launch)
+}
+
+/// Run the program at `path`, as a host application with no entry. Its
+/// window is noticed like any downloaded program's, which is when the
+/// person is asked whether to add it to their apps.
+fn open_program(path: &Path, chrome: &Chrome) -> Result<Opened, OpenError> {
+    let portal_workspace_id = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        tree.desktop
+            .active_workspace()
+            .map(|workspace| workspace.room().to_string())
+    };
+    crate::shell::host_apps::launch_program(path, portal_workspace_id)
+        .map(|name| Opened::ProgramStarted { name })
+        .map_err(OpenError::Launch)
 }
 
 /// One application offered under "Open With" for a file.
