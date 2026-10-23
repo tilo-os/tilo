@@ -542,7 +542,9 @@ export const CHAT_CHANNEL = `(async () => {
   if (!window) return null;
   const post = tiloMount.actions(undefined, {window}).find(action => action.address.action === 'post');
   if (!post) return null;
-  const room = await tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window}).catch(() => null);
+  // An app's action answers at once and a room's own a promise: either way
+  // awaited, so a refusal reads as nothing rather than throwing.
+  const room = await Promise.resolve().then(() => tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window})).catch(() => null);
   const channel = room?.output?.value?.channels
     ?.find(({value}) => value.kind === 'text' && !value.archived && !value.conversation_with)?.id;
   return channel ? {window, resource: post.address.resource, channel} : null;
@@ -672,8 +674,15 @@ async function typeInNewContact(tab, text) {
   }
   const field = await until(() => tab.evaluate(WIDGET('contacts.form.first')), 30_000);
   if (!field) return {error: 'New contact showed no first name field'};
-  await click(tab, field);
-  if (!await until(async () => (await tab.evaluate(WIDGET('contacts.form.first')))?.focused, 10_000)) {
+  // The form opens in place of the list and may still be settling where
+  // it stands: click where the field is now until it takes focus.
+  const focused = await until(async () => {
+    const now = await tab.evaluate(WIDGET('contacts.form.first'));
+    if (now?.focused) return now;
+    if (now) await click(tab, now);
+    return null;
+  }, 20_000);
+  if (!focused) {
     return {error: 'the first name field did not take focus'};
   }
   for (const key of text) {
@@ -1055,7 +1064,16 @@ async function main() {
     if (moderating.entry !== 'open') await shoot('moderator', moderator);
     const visitor = await browser.context();
     const guest = await page(browser, visitor);
-    const guestOpened = await open(guest, `${web}/`, settleOptions);
+    let guestOpened = await open(guest, `${web}/`, settleOptions);
+    // The host just started again: until its relay has the room back, the
+    // door answers 503 and the page watches live, then joins by itself.
+    // What is checked here is the removal, so wait for that join.
+    if (!guestOpened.membership) {
+      guestOpened = await until(async () => {
+        const now = await settle(guest, settleOptions);
+        return now.membership ? now : null;
+      }, 90_000) ?? guestOpened;
+    }
     const guestKey = guestOpened.membership?.userPublicKey ?? null;
     const guestJoins = joinsTo(guest.requests, api);
     if (guestOpened.entry !== 'open') await shoot('removed-guest', guest);
@@ -1075,12 +1093,13 @@ async function main() {
     keepLog('removed-member', guest);
     const removedJoins = joinsTo(guest.requests.slice(sinceRemoval), api);
     check('removed-member', moderating.entry === 'open' && moderating.membership?.userPublicKey === me
-      && guestOpened.entry === 'open' && guestJoins.length === 1 && guestJoins[0].status === 200 && removal.ok
+      && guestOpened.entry === 'open' && guestJoins.at(-1)?.status === 200
+      && guestJoins.slice(0, -1).every(j => j.status === 503) && removal.ok
       && removedOpened.entry === 'refused' && !removedOpened.desktop && removedOpened.arrival !== 'done' && removedOwn
       && /\bremoved\b/.test(removedOpened.status) && removedJoins.length <= (byItself ? 1 : 2)
       && removedJoins.every(j => j.status === 403),
     {moderator: {entry: moderating.entry, membership: moderating.membership, status: moderating.status},
-      guest: {entry: guestOpened.entry, phase: guestOpened.phase, arrival: guestOpened.arrival, joins: guestJoins.map(j => j.status),
+      guest: {entry: guestOpened.entry, phase: guestOpened.phase, arrival: guestOpened.arrival, joins: guestJoins.map(j => j.status === 200 ? 200 : {status: j.status, body: j.body}),
         userPublicKey: guestKey, status: guestOpened.status, loading: guestOpened.loading}, removal, byItself, ownDesktop: removedOwn,
       entry: removedOpened.entry, desktop: removedOpened.desktop, arrival: removedOpened.arrival,
       joins: removedJoins.map(j => j.status), membership: removedOpened.membership, status: removedOpened.status,
