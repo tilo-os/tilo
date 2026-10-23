@@ -366,3 +366,42 @@ pub(crate) fn chat_kept_flat(version: u64) -> AutoCommit {
     doc.commit();
     doc
 }
+
+/// A chat record of `version` that kept its messages in itself: `#general`
+/// with `first` by ada and `second` by bo, `#random` with `elsewhere` by
+/// ada between them. Versions 1 and 2 kept them as a collection; one from
+/// before the record was a model (`flat`) as a list per channel.
+pub(crate) fn chat_with_kept_messages(version: u64, flat: bool) -> AutoCommit {
+    use serde_json::json;
+    use ui::tilo_resource::{Slot, evolution};
+    let channel = |key: &str, name: &str| json!({ "k": key, "v": { "name": { "$text": name } } });
+    let messages = if flat {
+        let row = |id: &str, author: &str, ts: i64, text: &str| json!({ "id": id, "author": author, "ts": ts, "text": { "$text": text } });
+        json!({
+            "c_general": [row("m1", "ada", 10, "first"), row("m2", "bo", 20, "second")],
+            "c_random": [row("m3", "ada", 15, "elsewhere")],
+        })
+    } else {
+        let item = |key: &str, channel: &str, author: &str, ts: i64, text: &str| json!({ "k": key, "v": { "channel": channel, "author": author, "ts": ts, "text": text } });
+        json!({
+            "m1": item("a", "c_general", "ada", 10, "first"),
+            "m2": item("b", "c_general", "bo", 20, "second"),
+            "m3": item("c", "c_random", "ada", 15, "elsewhere"),
+        })
+    };
+    let mut doc = AutoCommit::new();
+    evolution::fixture(
+        &mut doc,
+        &automerge::ROOT,
+        &json!({
+            "channels": { "c_general": channel("a", "general"), "c_random": channel("b", "random") },
+            "messages": messages,
+        }),
+    )
+    .unwrap();
+    Slot::Key(&automerge::ROOT, evolution::VERSION_KEY)
+        .put_scalar(&mut doc, automerge::ScalarValue::Uint(version))
+        .unwrap();
+    doc.commit();
+    doc
+}

@@ -837,3 +837,33 @@ fn the_sidebar_names_the_channels_and_categories_of_a_chat_kept_flat() {
         .collect();
     assert_eq!(headings, ["cat_home_text", "cat_home_voice"]);
 }
+
+#[test]
+fn messages_the_chat_record_kept_show_in_their_channel_and_none_is_unread() {
+    let mut doc = crate::testing::chat_with_kept_messages(2, false);
+    assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
+    let mut app = ChatApp::new_ephemeral();
+    app.active_channel = "c_general".into();
+    app.reload(&doc);
+    let shown: Vec<(&str, &str, &str)> = app
+        .messages
+        .iter()
+        .map(|message| {
+            (
+                message.id.as_str(),
+                message.author.as_str(),
+                message.text.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(shown, [("m1", "ada", "first"), ("m2", "bo", "second")]);
+    assert_eq!(
+        app.channel("c_random").map(|channel| channel.unread),
+        Some(0)
+    );
+    assert!(
+        app.search_messages
+            .iter()
+            .any(|message| message.text == "elsewhere")
+    );
+}
