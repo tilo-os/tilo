@@ -267,6 +267,9 @@ pub struct CodeApp {
     /// Languages whose server failed to start, so we report the failure once
     /// and do not respawn a missing binary on every frame.
     lsp_failed: std::collections::HashSet<crate::model::Language>,
+    /// Where language servers are looked for: the person's tool folders
+    /// ([`tilo_process::tools::ToolDirs::current`]) unless set.
+    lsp_tools: Option<tilo_process::tools::ToolDirs>,
     /// A language server is being launched on a background thread.
     lsp_launching: bool,
 
@@ -620,6 +623,7 @@ impl CodeApp {
             diagnostics_buffer_reads: 0,
             lsp_status: LspStatus::None,
             lsp_failed: std::collections::HashSet::new(),
+            lsp_tools: None,
             lsp_launching: false,
             find_matches: Vec::new(),
             find_current: None,

@@ -1496,15 +1496,25 @@ fn the_status_and_header_say_only_what_the_person_needs() {
 fn missing_code_help_says_so_and_keeps_why_behind_a_click() {
     use super::code_help::CodeHelpAnswer;
     let mut sample = crate::test_support::sample();
+    // A computer with no rust-analyzer anywhere the editor looks.
+    sample.editor(|app| app.lsp_tools = Some(tilo_process::tools::ToolDirs::default()));
+    sample
+        .app
+        .settings::<crate::settings::CodeSettings>()
+        .set(&crate::settings::CodeSettings {
+            language_servers: true,
+            ..Default::default()
+        })
+        .unwrap();
     sample.open("src/main.rs");
-    sample.editor(|app| {
-        app.lsp_status = LspStatus::Failed(crate::lsp::LspFailure::NotInstalled {
+    let status = sample.editor(|app| app.lsp_status.clone());
+    assert_eq!(
+        status,
+        LspStatus::Failed(crate::lsp::LspFailure::NotInstalled {
             server: "rust-analyzer".to_owned(),
-        });
-        app.lsp_failed.insert(crate::model::Language::Rust);
-        app.refresh_status();
-    });
-    sample.app.settle();
+        }),
+        "the launch reports the server missing, as itself"
+    );
     let readout = "Rust: code help unavailable";
     let bounds = sample
         .app

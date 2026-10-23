@@ -65,6 +65,7 @@ impl CodeApp {
             }
             return;
         }
+        tilo_process::tools::read_login_path();
         let Some(buf) = self.session.active_buffer() else {
             return;
         };
@@ -89,10 +90,12 @@ impl CodeApp {
         // Launching a server spawns a process and looks at the project
         // directory: on the frame loop that happens on a background thread.
         self.lsp_launching = true;
+        let tools = self.lsp_tools.clone();
         self.on_disk(
             "code-language-server",
             move || {
-                let started = crate::lsp::LspClient::start(lang, &root);
+                let tools = tools.unwrap_or_else(tilo_process::tools::ToolDirs::current);
+                let started = crate::lsp::LspClient::start_with(lang, &root, &tools);
                 (root, started)
             },
             move |app, (root, started)| app.language_server_started(lang, &root, started),
@@ -149,6 +152,14 @@ impl CodeApp {
                 self.lsp = Some(client);
                 self.lsp_language = Some(lang);
                 self.lsp_uri = None;
+                self.lsp_status = LspStatus::Starting { server };
+            }
+            // A server only the login shell's PATH knows is found once that
+            // PATH is read; until then the project reads as loading, which
+            // keeps frames, and so this lookup, coming.
+            Err(crate::lsp::LspFailure::NotInstalled { server })
+                if self.lsp_tools.is_none() && !tilo_process::tools::login_path_read() =>
+            {
                 self.lsp_status = LspStatus::Starting { server };
             }
             Err(e) => {
