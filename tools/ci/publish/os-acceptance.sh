@@ -55,7 +55,8 @@ python3 tools/perf/image_size.py --oci-layout "$image/oci" --arch "$arch" --json
   || { echo 'FAIL  the OS image is over its size budget'; status=1; }
 
 # The disk publish-os-dev-ARCH publishes once every gate passed: never booted itself (the gates
-# boot overlays of it), with zstd clusters, following the dev image it is published beside.
+# boot overlays of it), uncompressed so they read it fast (publication compresses it), following
+# the dev image it is published beside.
 revision=$(git rev-parse --verify HEAD) || die 'the disk names its commit: git = true'
 id=$(podman pull -q "oci:$dev/oci")
 [[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$dev/digest")" ]] || die "$dev/oci is not the image $dev/digest names"
@@ -64,7 +65,7 @@ export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=quickuser TI
 mkdir -p "$out/disk"
 if [[ $arch == aarch64 ]]; then export TILO_DEV_DIRECT_BUNDLE_DIR=$out/disk/direct-boot; fi
 TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_OUTPUT=$scratch/dev-disk TILO_RUN=$scratch/dev-disk-run \
-  TILO_DISK_SIZE=64G TILO_QCOW2_COMPRESS=1 TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:main-${revision:0:7}-ci" \
+  TILO_DISK_SIZE=64G TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:main-${revision:0:7}-ci" \
   bash os/dev/build-image.sh > "$out/install.log" 2>&1 \
   || { tail -n 80 "$out/install.log"; die 'the dev image does not install onto a disk'; }
 unset TILO_DEV_DIRECT_BUNDLE_DIR
