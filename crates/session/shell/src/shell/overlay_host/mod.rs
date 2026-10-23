@@ -1539,15 +1539,11 @@ pub(crate) fn is_active_workspace_owner(state: &crate::shell::chrome_state::Chro
         .is_some_and(|ws| tree.governs_room(ws.room()) && ws.may_administer(&user))
 }
 
-/// The kind chips a picker opened by "give me a new window" starts lit.
-///
-/// Both kinds are programs the user can start; they are separate chips
-/// because one runs sandboxed in the room and the other does not, which
-/// is a difference worth seeing — but neither is the odd one out when the
-/// question is "what do you want to open".
+/// The kind chip a picker opened by "give me a new window" starts lit: Apps,
+/// every kind of app the person can start.
 fn app_kind_filter() -> Vec<crate::shell::search::ResourceKind> {
     use crate::shell::search::ResourceKind;
-    vec![ResourceKind::Application, ResourceKind::HostApplication]
+    vec![ResourceKind::Application]
 }
 
 /// The modal scrim, scaled by `openness` in `0.0..=1.0` so it fades in

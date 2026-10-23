@@ -1,5 +1,6 @@
 use super::*;
 use crate::shell::uninstall_sheet::{Answer, Asking, REMOVE_DATA};
+use desktop_entry::EntryKind;
 use std::path::Path;
 
 fn places(root: &Path) -> Places {
@@ -24,6 +25,7 @@ fn host(id: &str, name: &str, path: PathBuf) -> HostEntry {
         path,
         flatpak: None,
         downloaded: None,
+        kind: EntryKind::System,
     }
 }
 
@@ -49,18 +51,23 @@ fn every_kind_for(root: &Path, person: &Person) -> Vec<AppListItem> {
             .join("flatpak/exports/share/applications/org.gnome.Chess.desktop"),
     );
     chess.flatpak = Some("org.gnome.Chess".into());
+    chess.kind = EntryKind::Flatpak;
     let mut maps = host(
         "org.gnome.Maps",
         "Maps",
         PathBuf::from("/var/lib/flatpak/exports/share/applications/org.gnome.Maps.desktop"),
     );
     maps.flatpak = Some("org.gnome.Maps".into());
+    maps.kind = EntryKind::Flatpak;
     let mut appimage = host(
         "tilo-downloaded-krita",
         "Krita",
         apps.join("tilo-downloaded/krita.desktop"),
     );
     appimage.downloaded = Some(root.join("Applications/krita-5.2.AppImage"));
+    appimage.kind = EntryKind::AppImage;
+    let mut script = host("my-script", "My script", apps.join("my-script.desktop"));
+    script.kind = EntryKind::Program;
     let host_entries = [
         chess,
         maps,
@@ -70,7 +77,7 @@ fn every_kind_for(root: &Path, person: &Person) -> Vec<AppListItem> {
             "Text Editor",
             PathBuf::from("/usr/share/applications/org.gnome.TextEditor.desktop"),
         ),
-        host("my-script", "My script", apps.join("my-script.desktop")),
+        script,
         // Answered by the installed Tilo package of the same id.
         host(
             "so.tilo.notes",
@@ -486,6 +493,7 @@ fn a_downloaded_program_goes_to_the_trash_and_its_entry_goes() {
     stray.source = AppSource::Downloaded {
         program: home.join("a.AppImage"),
         entry: PathBuf::from("/etc/passwd"),
+        appimage: true,
     };
     assert!(plan(&stray, true, &places(home), home).is_err());
 }

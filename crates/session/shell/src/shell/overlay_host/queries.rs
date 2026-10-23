@@ -419,10 +419,10 @@ impl ShellOverlayHost {
             .collect()
     }
 
-    /// Filter the palette to the host applications, as choosing the "Host
-    /// apps" chip does. For a capture, which has no pointer to choose it.
-    pub fn filter_palette_to_host_apps_for_shots(&mut self) {
-        self.active_kind_filter = vec![crate::shell::search::ResourceKind::HostApplication];
+    /// Filter the palette to apps, as choosing the Apps chip does. For a
+    /// capture, which has no pointer to choose it.
+    pub fn filter_palette_to_apps_for_shots(&mut self) {
+        self.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
     }
 
     /// [`GroupRow::canvas_pad`] of `strip`'s row, in layout pixels.

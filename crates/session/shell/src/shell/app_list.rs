@@ -62,7 +62,11 @@ pub enum AppSource {
     /// A program the person downloaded: an `AppImage`, or a program from a
     /// tarball or a loose binary. `entry` is the file the app list holds it
     /// by, which Tilo wrote.
-    Downloaded { program: PathBuf, entry: PathBuf },
+    Downloaded {
+        program: PathBuf,
+        entry: PathBuf,
+        appimage: bool,
+    },
     /// A menu entry the person put in their own applications directory.
     PersonEntry { path: PathBuf },
     /// A menu entry of the operating system.
@@ -138,17 +142,11 @@ impl AppListItem {
         match &self.source {
             AppSource::Tilo { .. } => AppKind::Tilo,
             AppSource::Flatpak { .. } => AppKind::Flatpak,
-            AppSource::Downloaded { program, .. } => {
-                if program
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("appimage"))
-                {
-                    AppKind::AppImage
-                } else {
-                    AppKind::Program
-                }
+            AppSource::Downloaded { appimage: true, .. } => AppKind::AppImage,
+            AppSource::Downloaded {
+                appimage: false, ..
             }
-            AppSource::PersonEntry { .. } => AppKind::Program,
+            | AppSource::PersonEntry { .. } => AppKind::Program,
             AppSource::System => AppKind::System,
         }
     }
@@ -195,6 +193,8 @@ pub struct HostEntry {
     pub flatpak: Option<String>,
     /// The program of a downloaded program's entry.
     pub downloaded: Option<PathBuf>,
+    /// Which kind of app the entry is, as search and `tilo app list` say.
+    pub kind: desktop_entry::EntryKind,
 }
 
 /// What the list knows of the person: whether they administer the device,
@@ -228,8 +228,9 @@ impl Places {
     }
 
     fn source_of(&self, entry: &HostEntry, person: &Person) -> AppSource {
-        if let Some(app_id) = &entry.flatpak {
-            return AppSource::Flatpak {
+        use desktop_entry::EntryKind;
+        match (entry.kind, &entry.flatpak, &entry.downloaded) {
+            (EntryKind::Flatpak, Some(app_id), _) => AppSource::Flatpak {
                 app_id: app_id.clone(),
                 installation: if entry.path.starts_with(self.data_home.join("flatpak")) {
                     FlatpakInstallation::Person
@@ -238,20 +239,19 @@ impl Places {
                         administrator: person.administrator,
                     }
                 },
-            };
-        }
-        if let Some(program) = &entry.downloaded {
-            return AppSource::Downloaded {
-                program: program.clone(),
-                entry: entry.path.clone(),
-            };
-        }
-        if entry.path.starts_with(self.applications()) {
-            return AppSource::PersonEntry {
+            },
+            (kind @ (EntryKind::AppImage | EntryKind::Program), _, Some(program)) => {
+                AppSource::Downloaded {
+                    program: program.clone(),
+                    entry: entry.path.clone(),
+                    appimage: kind == EntryKind::AppImage,
+                }
+            }
+            (EntryKind::Program, _, None) => AppSource::PersonEntry {
                 path: entry.path.clone(),
-            };
+            },
+            _ => AppSource::System,
         }
-        AppSource::System
     }
 }
 
@@ -488,8 +488,9 @@ pub fn host_entries(scan: &desktop_entry::Scan) -> Vec<HostEntry> {
             .collect(),
     )
     .iter()
-    .filter_map(|app| scan.find(&app.desktop_id))
-    .map(|entry| HostEntry {
+    .filter_map(|app| Some((app.kind, scan.find(&app.desktop_id)?)))
+    .map(|(kind, entry)| HostEntry {
+        kind,
         desktop_id: entry.id.clone(),
         name: entry.name.clone(),
         path: entry.path.clone(),
@@ -783,7 +784,7 @@ pub fn plan(
             steps.push(Step::Trash(flatpak_data_dir(home, app_id)));
             Ok((steps, Outcome::UninstalledDataInTrash))
         }
-        AppSource::Downloaded { program, entry } => {
+        AppSource::Downloaded { program, entry, .. } => {
             if !entry.starts_with(places.applications()) {
                 return Err(t("app-list-invalid-entry"));
             }

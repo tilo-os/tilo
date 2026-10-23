@@ -116,7 +116,7 @@ fn fair_budget_keeps_totals_and_single_kind_is_exempt() {
     let entries = command_entries(&groups);
     assert_eq!(entries.len(), 8);
     assert_eq!(entries[0].id, "result:0");
-    assert_eq!(entries[0].group.as_deref(), Some("Applications"));
+    assert_eq!(entries[0].group.as_deref(), Some("Apps"));
     assert_eq!(entries[0].icon, Some(crate::icons::Icon::LayoutGrid));
     assert_eq!(entries[1].group_total, Some(20));
     assert_eq!(entries[0].description.as_deref(), Some("detail"));

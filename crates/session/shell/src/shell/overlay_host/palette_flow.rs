@@ -268,11 +268,7 @@ impl ParamFlow {
 pub(super) fn opens_a_window(kind: &ResourceKind) -> bool {
     matches!(
         kind,
-        ResourceKind::Application
-            | ResourceKind::HostApplication
-            | ResourceKind::File
-            | ResourceKind::Note
-            | ResourceKind::Record
+        ResourceKind::Application | ResourceKind::File | ResourceKind::Note | ResourceKind::Record
     )
 }
 

@@ -21,7 +21,7 @@ thread_local! {
 
 fn alacritty_row() -> SearchResult {
     SearchResult::nullary(
-        ResourceKind::HostApplication,
+        ResourceKind::Application,
         "test-host-apps",
         "Alacritty",
         "Alacritty",
@@ -44,7 +44,7 @@ impl SearchProvider for HostApps {
         "Linux apps"
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
-        &[ResourceKind::HostApplication]
+        &[ResourceKind::Application]
     }
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if "alacritty".contains(&ctx.needle.to_lowercase()) {

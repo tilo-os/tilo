@@ -152,11 +152,7 @@ impl crate::shell::search::SearchProvider for AppSourceFilterFixtureProvider {
     }
 
     fn resource_kinds(&self) -> &[crate::shell::search::ResourceKind] {
-        const KINDS: [crate::shell::search::ResourceKind; 2] = [
-            crate::shell::search::ResourceKind::Application,
-            crate::shell::search::ResourceKind::HostApplication,
-        ];
-        &KINDS
+        &[crate::shell::search::ResourceKind::Application]
     }
 
     fn query(
@@ -176,17 +172,18 @@ impl crate::shell::search::SearchProvider for AppSourceFilterFixtureProvider {
                 100,
                 |_, _, _| {},
             ));
-        }
-        if context.wanted.contains(&ResourceKind::HostApplication) {
-            rows.push(SearchResult::nullary(
-                ResourceKind::HostApplication,
-                self.id(),
-                "fixture-host-app",
-                "Open Host fixture",
-                Some("Not sandboxed · System".into()),
-                100,
-                |_, _, _| {},
-            ));
+            rows.push(
+                SearchResult::nullary(
+                    ResourceKind::Application,
+                    self.id(),
+                    "fixture-host-app",
+                    "Open Host fixture",
+                    None,
+                    100,
+                    |_, _, _| {},
+                )
+                .with_facts(["System".to_owned()]),
+            );
         }
         rows
     }
@@ -1457,11 +1454,7 @@ fn palette_chips_filter_without_dismissing_and_enter_activates_the_selection() {
         );
     }
 
-    /// A new-window picker deliberately begins with both launch sources so
-    /// either kind of program can be opened. Selecting Host Apps from that
-    /// state must replace the source selection, not toggle host rows off and
-    /// leave Applications lit (the live picker regression this covers).
-    fn host_apps_chip_exclusively_filters_a_new_window_picker() {
+    fn a_new_window_picker_lists_every_kind_of_app_under_one_apps_chip() {
         use crate::shell::search::ResourceKind;
 
         let mut h = build_harness();
@@ -1471,49 +1464,35 @@ fn palette_chips_filter_without_dismissing_and_enter_activates_the_selection() {
         h.host.active_kind_filter = app_kind_filter();
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
+        h.host.palette.set_query("Open");
+        let doc = AutoCommit::new();
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
         settle(&mut h, 1600.0, 900.0);
 
-        let host_chip = h
+        assert_eq!(h.host.active_kind_filter, vec![ResourceKind::Application]);
+        let app_chips = h
             .host
             .search_filters
             .kinds()
-            .position(|kind| *kind == ResourceKind::HostApplication)
-            .expect("the picker's band offers Host Apps");
-        if h.host
-            .search_filters
-            .search_chip_rects
-            .get(host_chip)
-            .is_some_and(|rect| rect.area() <= 0.0)
-        {
-            h.host.search_filters.more_open = true;
-            settle(&mut h, 1600.0, 900.0);
-        }
-        paint_then_click(&mut h, |host| {
-            host.search_filters.search_chip_rects[host_chip].center()
-        });
-
-        assert_eq!(
-            h.host.active_kind_filter,
-            vec![ResourceKind::HostApplication]
-        );
-        assert!(
-            h.host.search_results.iter().any(|row| {
-                row.provider_id == "app-source-filter-fixture" && row.id == "fixture-host-app"
-            }),
-            "the selected Host Apps source must reach the production palette query"
-        );
-        assert!(
-            h.host
-                .search_results
-                .iter()
-                .all(|row| row.kind == ResourceKind::HostApplication),
-            "Host Apps must not leave Tilo application rows visible: {:?}",
-            h.host
-                .search_results
-                .iter()
-                .map(|row| (&row.title, &row.kind))
-                .collect::<Vec<_>>()
-        );
+            .filter(|kind| **kind == ResourceKind::Application)
+            .count();
+        assert_eq!(app_chips, 1);
+        let ids: Vec<&str> = h
+            .host
+            .search_results
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert!(ids.contains(&"fixture-tilo-app") && ids.contains(&"fixture-host-app"));
+        let groups: std::collections::BTreeSet<Option<String>> = h
+            .host
+            .palette
+            .visible_entries()
+            .iter()
+            .map(|entry| entry.group.clone())
+            .collect();
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        assert_eq!(groups.first(), Some(&Some("Apps".to_owned())));
     }
 
     fn app_search_arrows_and_enter_activate_the_visibly_selected_row() {
@@ -1523,7 +1502,7 @@ fn palette_chips_filter_without_dismissing_and_enter_activates_the_selection() {
         h.host
             .search_registry
             .register(Rc::new(AppSourceFilterFixtureProvider));
-        h.host.active_kind_filter = vec![ResourceKind::Application, ResourceKind::HostApplication];
+        h.host.active_kind_filter = vec![ResourceKind::Application];
         h.host.set_palette_visible(true);
         h.host.set_palette_focus(true);
         h.host.force_palette_settled();
@@ -1597,7 +1576,7 @@ fn palette_chips_filter_without_dismissing_and_enter_activates_the_selection() {
     }
 
     clicking_a_kind_chip_filters_without_dismissing_the_palette();
-    host_apps_chip_exclusively_filters_a_new_window_picker();
+    a_new_window_picker_lists_every_kind_of_app_under_one_apps_chip();
     app_search_arrows_and_enter_activate_the_visibly_selected_row();
     backspace_leaves_a_resource_scope_named_in_the_token();
 }

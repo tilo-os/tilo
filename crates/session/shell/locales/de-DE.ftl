@@ -1269,9 +1269,8 @@ bluetooth-handoff-failure-rollback = Zurücksetzen der Quelle fehlgeschlagen
 
 # Arten von Suchergebnissen, wie Filterchips und Gruppenüberschriften sie nennen
 search-kind-actions = Aktionen
-search-kind-applications = Anwendungen
+search-kind-applications = Apps
 search-group-in-the-store = Im Store
-search-kind-host-apps = Host-Apps
 search-kind-notes = Notizen
 search-kind-records = Einträge
 search-kind-files = Dateien
@@ -2111,8 +2110,10 @@ peer-sync-token-incomplete = Noch keine Website und kein Link
 # Übrige Shell-Hinweise: Dokumente öffnen, Herkunft von Host-Apps, Ruhestatus, Zusammenarbeit
 doc-open-failed = { $name } konnte nicht geöffnet werden
 doc-open-unnamed-file = Datei
-host-app-source-flatpak = Flatpak
-host-app-source-system = System
+app-kind-flatpak = Flatpak
+app-kind-appimage = AppImage
+app-kind-program = Programm
+app-kind-system = System
 downloaded-app-missing = Diese App ist nicht auffindbar
 downloaded-app-locate = Suchen
 downloaded-app-locate-path = Gib den vollständigen Pfad der App-Datei ein, beginnend mit /

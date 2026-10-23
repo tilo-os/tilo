@@ -88,9 +88,11 @@ The merge keeps today's lexical strength plus provider score, with these additio
 
 Groups are ordered by their best match and then by this fixed order: **Windows · Apps ·
 Resources** (one group per resource type, drawn by the app's renderer) **· Files · Actions ·
-Settings · People**. Native and Linux apps share one *Apps* group; a small badge marks a Linux
-app instead of "unconfined host app" on every row. Store pages of third-party apps the
-person does not have are their own group, *In the Store*, after everything the person has;
+Settings · People**. Native and Linux apps share one *Apps* group and one *Apps* filter; each Linux app's row
+states which kind of app it is (Flatpak, AppImage, program or the system's) as a fact, the
+same answer Files and `tilo app list` give. Store pages of third-party apps the person does
+not have are their own section, *In the Store*, after everything the person has, and the
+*Apps* filter keeps them;
 Tilo apps that open at once stay under *Apps*. No two groups share a heading. An open app is
 two kinds of row that rank together: the app, which starts it (a new window), and each of its
 windows, which switches to that window; Shift on a window opens a new window of its app here.
