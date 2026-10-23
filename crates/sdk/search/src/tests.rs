@@ -459,6 +459,44 @@ fn keywords_find_a_record_below_its_name_and_by_typo() {
     );
 }
 
+#[test]
+fn on_a_names_first_surface_two_letters_begin_a_name_not_a_keyword() {
+    let documents = || {
+        [
+            Document::new(0)
+                .field("Speed Test", FieldWeight::TITLE)
+                .field("ping", FieldWeight::KEYWORD)
+                .field("st", FieldWeight::KEYWORD),
+            Document::new(1)
+                .field("Camera", FieldWeight::TITLE)
+                .field("take a picture", FieldWeight::KEYWORD)
+                .field("Takes photos and records video", FieldWeight::SUBTITLE),
+            Document::new(2).field("Pixel Editor", FieldWeight::TITLE),
+            Document::new(3)
+                .field("Notes", FieldWeight::TITLE)
+                .field("pi is about three", FieldWeight::BODY),
+        ]
+    };
+    for index in [committed(Matching::NAMES, documents()), {
+        let mut index = SearchIndex::new(Matching::NAMES).through_tantivy();
+        index.replace_all(documents());
+        index.commit().unwrap();
+        index
+    }] {
+        assert_eq!(keys(&index, "pi"), [2], "only a name begun");
+        assert_eq!(keys(&index, "p"), [2]);
+        assert_eq!(keys(&index, "st"), [0], "initials typed whole");
+        assert_eq!(keys(&index, "pin"), [0], "three letters begin a keyword");
+        assert_eq!(keys(&index, "pic"), [1]);
+        assert_eq!(keys(&index, "pho"), [1]);
+    }
+    let loose = keys(&committed(Matching::LOOSE, documents()), "pi");
+    assert!(
+        [0, 1, 2, 3].iter().all(|key| loose.contains(key)),
+        "elsewhere two letters still begin any word: {loose:?}"
+    );
+}
+
 /// Records of every weight, some repeating a text, for comparing the
 /// direct path with tantivy.
 fn alike_documents() -> Vec<Document> {
@@ -559,7 +597,7 @@ fn direct_and_tantivy_answer_alike() {
         "dar",
         "zzz",
     ];
-    for matching in [Matching::LOOSE, Matching::default()] {
+    for matching in [Matching::LOOSE, Matching::NAMES, Matching::default()] {
         let direct = committed(matching, documents.clone());
         let tantivy = {
             let mut index = SearchIndex::new(matching).through_tantivy();

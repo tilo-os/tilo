@@ -757,6 +757,31 @@ fn titles(rows: &[SearchResult]) -> Vec<&str> {
     rows.iter().map(|row| row.title.as_str()).collect()
 }
 
+/// Two letters begin an app's name: "pi" is not looking for Speed Test by
+/// its keyword "ping", Video Editor by "pitivi" or Camera by "take a
+/// picture". Typed further, those words find them again.
+#[test]
+fn two_letters_find_apps_by_name_not_by_a_keyword_they_begin() {
+    let palette = Palette::new();
+    let apps = |rows: Vec<SearchResult>| -> Vec<String> {
+        rows.into_iter()
+            .filter(|row| row.kind == ResourceKind::Application)
+            .map(|row| row.title)
+            .collect()
+    };
+    for found in [apps(palette.ask("pi")), apps(palette.shown("pi"))] {
+        for app in ["Speed Test", "Video Editor", "Camera"] {
+            assert!(!found.iter().any(|title| title == app), "{found:?}");
+        }
+    }
+    assert!(
+        apps(palette.ask("ping"))
+            .iter()
+            .any(|title| title == "Speed Test"),
+        "a keyword typed whole still finds its app"
+    );
+}
+
 #[test]
 fn youtube_cats_offers_search_youtube_for_cats_among_the_first_three_rows() {
     let palette = Palette::new().with_web();

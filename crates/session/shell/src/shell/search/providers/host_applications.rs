@@ -342,7 +342,7 @@ impl HostApplicationsProvider {
 /// `Keywords=` and categories are matched too: how typing "browser" finds
 /// Firefox.
 fn index_apps(apps: &[HostApp], installed_ids: &HashSet<String>) -> SearchIndex {
-    let mut index = SearchIndex::new(Matching::LOOSE);
+    let mut index = SearchIndex::new(Matching::NAMES);
     index.replace_all(apps.iter().enumerate().filter_map(|(at, app)| {
         if installed_ids.contains(&app.desktop_id.to_ascii_lowercase()) {
             return None;
