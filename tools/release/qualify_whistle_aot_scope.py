@@ -301,7 +301,6 @@ def main():
                     or (operation == 1 and rows[-1]['sequence'] != 3 + (len(raw) - 1) // 64000)):
                 raise RuntimeError('cancelled session emitted unexpected replies')
         elif [row['sequence'] for row in rows] != [1] + list(range(3, len(rows) * 2, 2)):
-            # Finish follows the final draft immediately, without an Audio frame.
             if (args.mode == 'eof' or [row['sequence'] for row in rows[:-1]] !=
                     [1] + list(range(3, (len(rows) - 1) * 2, 2))
                     or rows[-1]['sequence'] != rows[-2]['sequence'] + 1):
