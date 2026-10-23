@@ -69,6 +69,10 @@ mail-draft-state-rich-body = Edited the draft
 mail-save-draft = Saved the draft
 mail-attach = Attached { $name } to the draft
 mail-mail-server = Recorded how a mail server took a change
+mail-mail-held = Changed the mail held in the mailbox
+mail-deliver-message = Delivered { $subject }
+mail-draft-message = Drafted { $subject }
+mail-draft-reply = Drafted a reply
 
 mail-import-sign-in-required = Imported account settings require authentication. Sign in before connecting.
 

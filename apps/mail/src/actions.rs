@@ -138,6 +138,32 @@ pub enum MailEffect {
     /// later. Part of the person's Mail preferences.
     #[effect(view, row)]
     AlwaysLoadRemoteContent { message: String },
+    /// Search messages
+    ///
+    /// Finds the messages held in the mailbox whose sender, recipients,
+    /// subject or text hold every word, newest first. Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    SearchMessages {
+        #[param("The words to find, ignoring case")]
+        query: String,
+        #[param("The folder to search; every folder when omitted")]
+        folder: Option<crate::model::Folder>,
+    },
+    /// Export content
+    ///
+    /// Keeps held mail as a file in the room's content and answers its
+    /// content address: one message as Markdown, JSON or .eml, or a
+    /// folder's or every message as Markdown or JSON. No file is written
+    /// and nothing is sent.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportContent {
+        #[param("md, json or eml; md when omitted", choices = ["md", "json", "eml"])]
+        format: Option<String>,
+        #[param("The id of one held message; every message when omitted")]
+        message: Option<String>,
+        #[param("The folder whose messages to export")]
+        folder: Option<crate::model::Folder>,
+    },
     /// Open link
     ///
     /// Opens one of the message's links (as Read message lists them) in the
