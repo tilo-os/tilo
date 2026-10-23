@@ -3956,6 +3956,13 @@ impl Widget for CalendarApp {
         self.announce_answers();
     }
 
+    /// The notes editor has its node under the app's whether or not an
+    /// event is open, so the retained layout's check walks to it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.notes_editor);
+        true
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
