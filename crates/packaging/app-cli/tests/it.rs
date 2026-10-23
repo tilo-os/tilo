@@ -13,5 +13,7 @@ pub mod registry_to_installed;
 pub mod runtime_fetch;
 #[path = "update_latency.rs"]
 pub mod update_latency;
+#[path = "update_phases.rs"]
+pub mod update_phases;
 #[path = "version_index.rs"]
 pub mod version_index;
