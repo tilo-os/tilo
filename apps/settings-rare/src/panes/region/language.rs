@@ -116,6 +116,16 @@ pub fn choices(offered: &Offered) -> Vec<String> {
 /// The value that follows the device's language.
 pub const DEVICE: &str = "device";
 
+/// The language the desktop is shown in, as the Language card says it.
+pub(crate) fn value(app: &SettingsApp, follows: &crate::setting::Follows) -> String {
+    name(
+        follows
+            .get::<AppearancePrefs>(app.host())
+            .language
+            .as_deref(),
+    )
+}
+
 /// `language` as Region & formats names it.
 #[must_use]
 pub fn name(language: Option<&str>) -> String {

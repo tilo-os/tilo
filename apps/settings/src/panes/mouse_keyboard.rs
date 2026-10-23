@@ -90,6 +90,8 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&InputArea> {
     app.areas().find()
 }
 
+pub(crate) mod values;
+
 /// The compose-key choice that turns it off.
 const COMPOSE_DISABLED: &str = "disabled";
 /// The Caps Lock choice that keeps it Caps Lock.
@@ -1261,6 +1263,18 @@ impl SourceCatalog {
                 .take()
                 .unwrap_or_else(crate::input_sources::read_installed)
         })
+    }
+
+    /// The name of source `id`, where the catalogue was read; never reads
+    /// it.
+    fn label_if_read(&self, id: &str) -> Option<String> {
+        let (entries, _) = self.read.get()?;
+        Some(
+            entries
+                .iter()
+                .find(|entry| entry.id == id)
+                .map_or_else(|| id.to_owned(), |entry| entry.label.clone()),
+        )
     }
 
     pub(crate) fn entries(&self) -> &[CatalogEntry] {

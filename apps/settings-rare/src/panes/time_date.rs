@@ -61,6 +61,36 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&TimeDateArea> {
     app.areas().find()
 }
 
+/// What the time settings found by search are set to, as the page last
+/// read the clock: nothing until it has.
+pub(crate) mod values {
+    use super::{ClockPrefs, TimeDatePane, area};
+    use crate::setting::{Follows, on_off};
+    use crate::settings_app::SettingsApp;
+
+    pub(crate) fn automatic(app: &SettingsApp, _: &Follows) -> Option<String> {
+        let reading = area(app)?.reading.get()?;
+        if reading.auto_error.is_some() {
+            return None;
+        }
+        reading.automatic.map(on_off)
+    }
+
+    pub(crate) fn zone(app: &SettingsApp, follows: &Follows) -> Option<String> {
+        let reading = area(app)?.reading.get()?;
+        let zone = reading.status.ok()?.timezone?;
+        let city = TimeDatePane::zone_name(&zone)?;
+        Some(if follows.get::<ClockPrefs>(app.host()).automatic_zone {
+            crate::i18n::t_args(
+                "time-zone-automatic-now",
+                &[("zone", ui::i18n::ArgValue::from(city.as_str()))],
+            )
+        } else {
+            city
+        })
+    }
+}
+
 /// A map-friendly model over the exact IANA ids accepted by timedated.
 /// Coordinates come from the same installed tzdata package; this deliberately
 /// has no embedded city/coordinate database. Aliases absent from the tzdata

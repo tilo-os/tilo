@@ -79,13 +79,81 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
             entry.id,
             found(&mut app)
         );
-        let left = content_left();
-        assert!(
-            control(app.harness().root_widget(), setting, left).is_some(),
-            "{}: its row is shown with its control",
-            entry.id
-        );
+        match entry.shown {
+            super::Shown::Row(_) => assert!(
+                control(app.harness().root_widget(), setting, content_left()).is_some(),
+                "{}: its row is shown with its control",
+                entry.id
+            ),
+            super::Shown::Value(_) => assert!(
+                widget(
+                    app.harness().root_widget(),
+                    &format!("settings.found:{}", entry.id)
+                )
+                .is_some(),
+                "{}: it is listed by name",
+                entry.id
+            ),
+        }
     }
+}
+
+/// The widget `id` in `root`.
+fn widget<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+    if root.test_id() == Some(id) {
+        return Some(root);
+    }
+    root.children()
+        .into_iter()
+        .find_map(|child| widget(child, id))
+}
+
+/// What `widget` tells assistive technology it shows.
+fn spoken(widget: &dyn Widget) -> Option<String> {
+    widget
+        .accessibility()
+        .and_then(|node| node.value)
+        .or_else(|| widget.children().into_iter().find_map(spoken))
+}
+
+/// A setting search lists by name says what it is set to: what its pane's
+/// control shows, following a change made anywhere.
+#[test]
+fn a_setting_listed_by_name_says_what_its_pane_shows() {
+    let setting = index::setting("power.lock_after").expect("indexed");
+    let mut app = searching(&crate::i18n::t(&setting.name_key()));
+    let row = format!("settings.found:{}", setting.id);
+    let before = widget(app.harness().root_widget(), &row)
+        .and_then(spoken)
+        .expect("it says what it is set to");
+
+    let minutes = app
+        .settings::<crate::prefs::PowerPrefs>()
+        .get()
+        .lock_minutes;
+    let sooner = if minutes == 1 { 2 } else { 1 };
+    app.call_on(
+        "settings:settings.power",
+        "field-edit",
+        serde_json::json!({ "edit": { "path": [{ "field": "lock_minutes" }], "op": "set", "value": sooner } }),
+    )
+    .expect("locking sooner asks nothing");
+    settle(&mut app);
+    let after = widget(app.harness().root_widget(), &row)
+        .and_then(spoken)
+        .expect("it says what it is set to");
+    assert_ne!(after, before, "the row follows the change");
+
+    app.call(
+        "open",
+        serde_json::json!({ "anchor": format!("{}{}", crate::effects::SETTING_ANCHOR, setting.id) }),
+    )
+    .expect("the setting opens in its pane");
+    settle(&mut app);
+    let shown = widget(app.harness().root_widget(), "power.lock")
+        .and_then(spoken)
+        .expect("the control says its value");
+    assert_eq!(shown, after, "search says what the pane shows");
 }
 
 #[test]

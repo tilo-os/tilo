@@ -46,6 +46,22 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&BluetoothArea> {
     app.areas().find()
 }
 
+/// Whether Bluetooth is on, as the page last read it; nothing until the
+/// area has read the adapter.
+pub(crate) fn enabled_value(
+    app: &crate::settings_app::SettingsApp,
+    _: &crate::setting::Follows,
+) -> Option<String> {
+    if adapter_absent(app.host()) {
+        return Some(t("settings-bluetooth-no-adapter"));
+    }
+    let model = area(app)?.model.get()?.borrow();
+    model
+        .read_error
+        .is_none()
+        .then(|| crate::setting::on_off(model.powered))
+}
+
 fn token(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).replace('.', "_")
 }
