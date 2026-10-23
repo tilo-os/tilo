@@ -408,17 +408,121 @@ assert.equal(await evaluate('tiloMount.state().error ?? null'), null, 'the deskt
 
 // The same at device scale 2, in a profile of its own so the two desktops do
 // not share storage: the canvas's backing store doubles while the mirror
-// stays in CSS pixels.
+// stays in CSS pixels. There every control of a window with a spread of
+// them is checked, whatever its role, and a text field's editable element,
+// the one the caret and input methods use, is checked again once it holds
+// the keyboard.
+//
+// Where the mirror of each drawn semantics node is placed, against where the
+// node is drawn, both in page CSS pixels. A node without bounds of its own
+// stands for the area it is drawn in, as in the mirror. A node is matched to
+// its element by its semantic key or action target (the last part of the
+// element's data-tilo-semantic key) when that is unique, else by a unique
+// accessible name; a node neither identifies is not checked.
+const MIRROR_PLACEMENT = `(async()=>{
+  tiloMount.requestSemantics();
+  await new Promise(done => setTimeout(done, 0));
+  const state=tiloMount.state(),canvas=tiloMount.canvas,size=state.logicalSize,r=canvas.getBoundingClientRect();
+  if(state.phase!=='presented'||!size||!(size[0]>0)||!(size[1]>0))return null;
+  const sx=r.width/size[0],sy=r.height/size[1],nodes=[],roles={};
+  const role=s=>s.role&&typeof s.role==='object'?Object.keys(s.role)[0]:s.role;
+  const visit=(s,enclosing)=>{
+    if(!s||s.state?.hidden)return;
+    const b=s.bounds?[s.bounds.x0,s.bounds.y0,s.bounds.x1-s.bounds.x0,s.bounds.y1-s.bounds.y0]:enclosing;
+    if(role(s)){
+      roles[role(s)]=(roles[role(s)]??0)+1;
+      if(b&&b[2]>0&&b[3]>0)nodes.push({role:role(s),name:s.name,id:s.semantic_key??s.action_target,b,focused:Boolean(s.state?.focused)});
+    }
+    for(const child of s.children??[])visit(child,b);
+  };
+  const walk=n=>{
+    if(!n)return;
+    if(n.semantics){if(n.semantics.state?.hidden)return;visit(n.semantics,n.rect);}
+    for(const child of n.children??[])walk(child);
+  };
+  walk(state.semantics?.root);
+  const tally=key=>{const m=new Map();for(const n of nodes)if(n[key])m.set(n[key],(m.get(n[key])??0)+1);return m;};
+  const ids=tally('id'),names=tally('name');
+  const mirrors=[...tiloMount.semantics.querySelectorAll('[data-tilo-semantic]')].map(e=>{
+    let id;try{id=JSON.parse(e.dataset.tiloSemantic).at(-1);}catch{}
+    return {e,id,name:e.getAttribute('aria-label')};
+  });
+  const controls=[];
+  for(const n of nodes){
+    let mirrored=[];
+    if(typeof n.id==='string'&&ids.get(n.id)===1)mirrored=mirrors.filter(m=>m.id===n.id);
+    if(mirrored.length!==1&&n.name&&names.get(n.name)===1)mirrored=mirrors.filter(m=>m.name===n.name);
+    if(mirrored.length!==1)continue;
+    const e=mirrored[0].e,d=e.getBoundingClientRect(),b=n.b;
+    controls.push({name:n.name??n.id,role:n.role,editable:e.localName==='textarea',focused:n.focused,active:document.activeElement===e,
+      drawn:[r.left+b[0]*sx,r.top+b[1]*sy,b[2]*sx,b[3]*sy],mirror:[d.left,d.top,d.width,d.height]});
+  }
+  return {controls,roles};
+})()`;
+const lies = c => c.drawn.every((v, k) => Math.abs(v - c.mirror[k]) <= 1);
+const describe = c => `${c.role} "${c.name}" is mirrored at ${JSON.stringify(c.mirror.map(Math.round))}, drawn at ${JSON.stringify(c.drawn.map(Math.round))}`;
+const tally = controls => {
+  const counts = {};
+  for (const c of controls) counts[c.role] = (counts[c.role] ?? 0) + 1;
+  return counts;
+};
+const enough = (counts, minimum) => Object.entries(minimum).every(([role, least]) => (counts[role] ?? 0) >= least);
+// Waits until the window has drawn its controls and every checked control's
+// mirror lies over it (an app's module arrives after its window opens, and
+// frames of this software-drawn bundle come seconds apart), then requires
+// both: every mirror within a pixel, and at least `minimum[role]` controls
+// of each role checked, so the check cannot pass over a window that lost
+// its controls.
+async function mirrorLiesOverEveryControl(page, what, minimum, accept = () => true) {
+  progress = what;
+  let placed;
+  for (const deadline = Date.now() + 60_000; ;) {
+    placed = await page.evaluate(MIRROR_PLACEMENT);
+    if (placed && placed.controls.every(lies) && enough(tally(placed.controls), minimum) && accept(placed)) break;
+    if (Date.now() > deadline) break;
+    await sleep(250);
+  }
+  assert.ok(placed, `${what}: the desktop presents a semantics tree`);
+  const counts = tally(placed.controls);
+  console.log(JSON.stringify({checking: what, checked: counts, present: placed.roles}));
+  assert.deepEqual(placed.controls.filter(c => !lies(c)).map(describe), [],
+    `${what}: every control's mirror lies within a pixel of where it is drawn`);
+  for (const [role, least] of Object.entries(minimum))
+    assert.ok((counts[role] ?? 0) >= least,
+      `${what}: at least ${least} ${role} checked, got ${counts[role] ?? 0} (checked ${JSON.stringify(counts)}, present ${JSON.stringify(placed.roles)})`);
+  return placed.controls;
+}
+// The windows, one at a time, and the controls each must have mirrored: the
+// whole desktop is checked each time, so these count its top bar and window
+// frame too. Calendar's month has a button a day, view radio buttons, a
+// combo box and a navigation tree; Tasks has a text field.
+const HIDPI_WINDOWS = [
+  ['so.tilo.calendar', {Button: 45, RadioButton: 5, ToggleButton: 2, ComboBox: 1, Tree: 1, TreeItem: 4, Tab: 1, Separator: 1}],
+  ['so.tilo.tasks', {Button: 10, ToggleButton: 2, TextInput: 1, TreeItem: 2, Separator: 1}],
+];
 {
   const hidpi = await desktop(2, {context: await browser.context()});
-  // A window, so its title bar's buttons are drawn as in the first desktop.
-  const opened = () => hidpi.evaluate('tiloMount.navigation.getSnapshot().entries.length');
-  const before = await opened();
-  await hidpi.evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();
-    await tiloMount.navigation.dispatch({kind:'launch',app:'so.tilo.calculator',generation:s.generation});})()`);
-  await polls('the calculator opens at device scale 2', opened, before + 1);
-  await sleep(1000);
-  await mirrorLiesOverDrawnButtons(hidpi.evaluate, 2);
+  assert.equal(await hidpi.evaluate('devicePixelRatio'), 2, 'the second desktop draws at device scale 2');
+  const navigate = body => hidpi.evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();
+    await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});})()`);
+  const entries = async () => (await hidpi.evaluate('tiloMount.navigation.getSnapshot()')).entries;
+  for (const [app, minimum] of HIDPI_WINDOWS) {
+    for (const entry of await entries()) await navigate({kind: 'close', route: entry.route});
+    await polls(`no window is open before ${app} at device scale 2`, async () => (await entries()).length, 0);
+    await navigate({kind: 'launch', app});
+    await polls(`${app} opens at device scale 2`, async () => (await entries()).length, 1);
+    const controls = await mirrorLiesOverEveryControl(hidpi, `${app}'s controls are mirrored where they are drawn at device scale 2`, minimum);
+    if (!minimum.TextInput) continue;
+    const field = controls.find(c => c.role === 'TextInput' && c.editable);
+    assert.ok(field, `${app}'s text field is mirrored by an editable element: ${JSON.stringify(controls.filter(c => c.role === 'TextInput'))}`);
+    // Focus it as assistive technology or a tap does: through its mirror.
+    await hidpi.evaluate(`[...tiloMount.semantics.querySelectorAll('textarea')].find(e=>e.getAttribute('aria-label')===${JSON.stringify(field.name)}).focus()`);
+    const focused = await mirrorLiesOverEveryControl(hidpi, `${app}'s focused text field "${field.name}" keeps its editable mirror over it at device scale 2`,
+      minimum, p => p.controls.some(c => c.name === field.name && c.focused && c.active));
+    const now = focused.find(c => c.name === field.name);
+    assert.ok(now?.editable && now.focused && now.active,
+      `${app}'s text field "${field.name}" holds the keyboard in the app and in the page: ${JSON.stringify(now)}`);
+  }
   const backing = await hidpi.evaluate('(c=>c.width/c.getBoundingClientRect().width)(tiloMount.canvas)');
   assert.ok(Math.abs(backing - 2) < 0.01, `at device scale 2 the canvas draws ${backing} device pixels a CSS pixel`);
   const errors = hidpi.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
