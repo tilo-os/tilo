@@ -400,15 +400,24 @@ impl AttachedView {
         confirmed: bool,
         appearance: Option<tilo_actions::Appearance>,
     ) -> Result<ActionOutput, DoorError> {
-        // The task may name the person the participant acts for now.
-        let invoker = self
-            .context
+        let invoker = self.invoker_appearing(appearance);
+        self.invoke_as(invoker, address, arguments, confirmed)
+    }
+
+    /// Whom [`Self::invoke_appearing`] admits an operation for: the
+    /// participant, or the person the task says it acts for now, showing
+    /// `appearance`.
+    #[must_use]
+    pub fn invoker_appearing(
+        &self,
+        appearance: Option<tilo_actions::Appearance>,
+    ) -> tilo_actions::ActionInvoker {
+        self.context
             .as_ref()
             .and_then(|context| context.invoker.clone())
             .filter(|invoker| invoker.actor == self.invoker.actor)
             .unwrap_or_else(|| self.invoker.clone())
-            .with_appearance(appearance);
-        self.invoke_as(invoker, address, arguments, confirmed)
+            .with_appearance(appearance)
     }
 
     /// [`Self::invoke`] for `invoker`, whom the host admitted for this one
@@ -426,6 +435,78 @@ impl AttachedView {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
     ) -> Result<ActionOutput, DoorError> {
+        let (_, started) = self.start_as(invoker, address, arguments, confirmed)?;
+        self.frame.relayout();
+        Ok(started.completed().unwrap_or_default())
+    }
+
+    /// [`Self::invoke_as`], waiting up to `within` for an operation that
+    /// runs as a job (rendering a picture, exporting a file's worth) to end
+    /// and answering with what it ended as, where [`Self::invoke_as`]
+    /// answers a job at once with nothing: for a host that hands an
+    /// effect's result back to whoever asked, an agent planning its next
+    /// step on it. A job still running when `within` is up is cancelled.
+    ///
+    /// # Errors
+    /// As [`Self::invoke_as`]; the job's failure or cancellation, or that it
+    /// did not end in time.
+    pub fn invoke_as_awaiting(
+        &mut self,
+        invoker: tilo_actions::ActionInvoker,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+        within: ui_core::time::Duration,
+    ) -> Result<ActionOutput, DoorError> {
+        let (invocation, started) = self.start_as(invoker, address, arguments, confirmed)?;
+        if let Some(output) = started.completed() {
+            self.frame.relayout();
+            return Ok(output);
+        }
+        let ended = |frame: &FrameHarness| {
+            frame
+                .job_updates(invocation)
+                .iter()
+                .find(|update| update.is_terminal())
+                .cloned()
+        };
+        self.frame
+            .wait_until(within, |frame| ended(frame).is_some());
+        match ended(&self.frame) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                Err(DoorError::Failed(error.message))
+            }
+            Some(_) => Err(DoorError::Failed(format!(
+                "{} was cancelled",
+                address.action
+            ))),
+            None => {
+                let _ = self.frame.cancel_job(invocation);
+                Err(DoorError::Failed(format!(
+                    "{} did not finish within {} seconds",
+                    address.action,
+                    within.as_secs()
+                )))
+            }
+        }
+    }
+
+    /// Start the operation `address` names for `invoker`, as
+    /// [`Self::invoke_as`] does: its invocation, and whether it finished.
+    fn start_as(
+        &mut self,
+        invoker: tilo_actions::ActionInvoker,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<
+        (
+            tilo_actions::InvocationId,
+            ui_core::host_operation::ResourceOperationStart,
+        ),
+        DoorError,
+    > {
         if !tilo_actions::door::survey(&self.resources())
             .iter()
             .any(|entry| &entry.address == address)
@@ -439,7 +520,7 @@ impl AttachedView {
             &tilo_actions::ActionContext::default()
                 .with_app(self.definition.app_id, self.definition.title),
         );
-        let (_, started) = self.frame.start_bound_job_within(
+        self.frame.start_bound_job_within(
             Some(invoker),
             Some(&ambient),
             &ui_core::bound_dispatch::BoundActionAddress {
@@ -448,9 +529,7 @@ impl AttachedView {
             },
             arguments,
             confirmed,
-        )?;
-        self.frame.relayout();
-        Ok(started.completed().unwrap_or_default())
+        )
     }
 
     /// Perform `invoke`, an action of the record's resource `R` built from
