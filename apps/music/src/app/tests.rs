@@ -748,6 +748,12 @@ fn metadata_duration_does_not_cut_off_real_audio_before_eos() {
     let deadline = tilo_test_env::hang_deadline();
     let mut furthest_position = 0.0_f64;
     while app.pb.playing {
+        // Read the decoder right before the tick that may find its EOS and tear
+        // it down: the playhead a tick leaves is as old as the gap between
+        // ticks, which a loaded machine stretches past the end of the source.
+        if let Some(position) = app.audio.position_ms() {
+            furthest_position = furthest_position.max(ui::num::f64_of_u64(position));
+        }
         app.tick();
         assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
         furthest_position = furthest_position.max(app.playhead_ms);
