@@ -880,6 +880,12 @@ impl StatePeer {
             delegate: agent,
         })
     }
+    /// The app surface this peer names in the changes it signs for `app`'s
+    /// records, if it names one.
+    #[must_use]
+    pub fn signed_surface(&self, app: &str) -> Option<[u8; 32]> {
+        self.app_surfaces.0.as_ref().and_then(|of| of(app))
+    }
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
     pub fn admitted_room(&self) -> Option<&AutoCommit> {
         self.core.room_doc.as_deref()
@@ -1845,6 +1851,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<ReceiveOutcome, String> {
         self.admit_local(app, record, envelope, LocalWrite::Plain, now)
+            .map(|report| report.summary)
     }
 
     fn admit_local(
@@ -1854,7 +1861,7 @@ impl StatePeer {
         envelope: collab_types::SignedOp,
         write: LocalWrite<'_>,
         now: SystemTime,
-    ) -> Result<ReceiveOutcome, String> {
+    ) -> Result<AdmissionReport, String> {
         if self.document(app, record).is_none() {
             return Err("local app publication cannot create a record owner".into());
         }
@@ -1873,7 +1880,6 @@ impl StatePeer {
             false,
             false,
         )
-        .map(|report| report.summary)
         .map_err(err)
     }
 
@@ -2529,7 +2535,7 @@ impl StatePeer {
             now,
             seq,
         )
-        .with_surface(self.app_surfaces.0.as_ref().and_then(|of| of(app)));
+        .with_surface(self.signed_surface(app));
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),
