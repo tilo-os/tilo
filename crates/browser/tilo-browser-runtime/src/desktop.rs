@@ -880,6 +880,9 @@ impl Tiles {
         }
         let store = self.store(definition)?;
         let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
+        if named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew) {
+            self.may_start_room_record(tab)?;
+        }
         let restore = self
             .inputs
             .views
@@ -1004,6 +1007,27 @@ impl Tiles {
         // Its ephemeral draft owner never enters Shared.stores/records:
         // neither replication nor desktop restore can publish raw text.
         Ok(component)
+    }
+
+    /// Whether this page may start the room's own record of `tab`'s app,
+    /// which this page does not hold yet: in a room, only someone who
+    /// writes there starts it. Anyone else's window waits for the room's
+    /// record (it opens once it arrives, or once the room says they write)
+    /// instead of showing a fresh one of its own as if it were the room's.
+    fn may_start_room_record(&self, tab: &Tab) -> Result<(), Unready> {
+        if self.shared.room_actions.peer.is_none() {
+            return Ok(());
+        }
+        let notice = match self.shared.standing.role() {
+            Some(role) if role.includes(tilo_action_policy::Role::Editor) => return Ok(()),
+            None => format!("Opening {}…", tab.title),
+            Some(_) => format!(
+                "{} has nothing in this room yet. It shows here once someone who writes in the room starts it.",
+                tab.title
+            ),
+        };
+        self.shared.waiting.borrow_mut().insert(tab.id);
+        Err(Unready::Notice(notice))
     }
 
     /// The record `tab` opens: its saved one, the room's own record, or a

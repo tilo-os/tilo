@@ -93,6 +93,8 @@ pub(crate) struct Room {
     uuid: String,
     workspace: u64,
     store: Rc<MemoryStore>,
+    /// Where `store` lives.
+    kept: Kept,
     ready: bool,
     mounts: HashMap<u64, Mounted>,
     desktop: DocumentReplica,
@@ -180,7 +182,7 @@ pub(crate) fn open(
     peer: PeerHandle,
     events: PeerEvents,
     room: &str,
-    store: Rc<MemoryStore>,
+    (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
     let workspace =
         tilo_relay_protocol::room_workspace_id(room).map_err(|_| "room must be a uuid")?;
@@ -191,6 +193,7 @@ pub(crate) fn open(
         uuid: room.to_owned(),
         workspace,
         store,
+        kept,
         ready: false,
         mounts: HashMap::new(),
         desktop: DocumentReplica::new(AutoCommit::new()),
@@ -301,6 +304,25 @@ pub(crate) fn close(id: u32) {
     crate::browser::forget_feedback_startup(id);
     crate::feedback_delivery::forget(id);
     ROOMS.with_borrow_mut(|rooms| rooms.remove(&id));
+}
+
+/// The store peer `id` keeps the room's documents in when it is kept in
+/// no profile: a mount through it opens its records from there, where
+/// what the room delivers is kept, instead of from a profile of its own.
+pub(crate) fn page_store(id: u32) -> Option<Rc<MemoryStore>> {
+    let room = room(id)?;
+    let room = room.borrow();
+    (room.kept == Kept::InPage).then(|| Rc::clone(&room.store))
+}
+
+/// Where a peer keeps the room's documents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kept {
+    /// In the person's profile, with everything else of theirs.
+    InProfile,
+    /// Only in the page, for as long as it is open: a peer kept in no
+    /// profile (a watching page's). Its mounts keep their records there too.
+    InPage,
 }
 
 fn room(id: u32) -> Option<Rc<RefCell<Room>>> {
@@ -500,6 +522,11 @@ impl Room {
             let attachment = &mounted.attachment;
             *attachment.permissions.borrow_mut() =
                 ui::permissions::PermissionContext::member(attachment.author.clone(), role);
+            // A window waiting to learn whether its person starts the
+            // room's record now knows.
+            if let Some((handle, shared)) = &attachment.desktop {
+                shared.retry_waiting(handle);
+            }
         }
     }
 
