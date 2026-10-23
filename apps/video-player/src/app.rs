@@ -626,6 +626,17 @@ impl PlayerApp {
             chapters: &self.shown_metadata.chapters,
             queue: self.library_items(self.queue.iter()),
             recent: self.library_items(self.recent.iter()),
+            playing: self.player.is_playing(),
+        }
+    }
+
+    /// What the current queue or recent row says about the open video: its
+    /// real state, playing or paused.
+    pub(crate) fn current_row_state(&self) -> &'static str {
+        if self.player.is_playing() {
+            "Playing"
+        } else {
+            "Paused"
         }
     }
 
@@ -4092,6 +4103,32 @@ mod tests {
             !ids.contains(&broken),
             "the broken one is not kept beside it"
         );
+    }
+
+    #[test]
+    fn the_current_row_says_whether_the_video_plays_or_is_paused() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/Clip.mp4"))
+            .expect("source identity available");
+        let current_label = |app: &PlayerApp| {
+            crate::actions::live_rows(&app.player_rows(), 32)
+                .into_iter()
+                .map(ui::framework::LiveRow::into_resource)
+                .find(|row| row.kind == "media.queue")
+                .and_then(|queue| {
+                    queue
+                        .children
+                        .into_iter()
+                        .find(|row| row.label.starts_with("Clip.mp4"))
+                })
+                .map(|row| row.label)
+        };
+        app.player.pause();
+        assert_eq!(app.current_row_state(), "Paused");
+        assert_eq!(current_label(&app).as_deref(), Some("Clip.mp4 is paused"));
+        app.player.play();
+        assert_eq!(app.current_row_state(), "Playing");
+        assert_eq!(current_label(&app).as_deref(), Some("Clip.mp4 is playing"));
     }
 
     #[test]
