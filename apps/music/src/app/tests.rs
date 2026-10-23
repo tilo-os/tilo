@@ -4439,6 +4439,43 @@ fn queue_view_and_volume_controls_are_responsive() {
 
 // ---- 16. "Add to playlist… → New playlist…" keeps the target track -----
 
+/// The window's accessibility tree passes the audit in every view: a new
+/// library as certification opens it, and each page of a full one.
+#[test]
+fn every_view_passes_the_accessibility_audit() {
+    fn audit(app: MusicApp, doc: AutoCommit, what: &str) {
+        let mut state = ui::State::new();
+        state.adopt_doc(doc);
+        let mut frame =
+            ui::headless::FrameHarness::for_root(state, app, (1280, 800), ui::theme::Theme::dark());
+        frame.relayout();
+        let issues = frame.accessibility_audit().issues;
+        assert!(issues.is_empty(), "{what}: {issues:?}");
+    }
+
+    audit(MusicApp::new(), AutoCommit::new(), "a new library");
+    for view in [
+        View::Home,
+        View::Songs,
+        View::Albums,
+        View::Artists,
+        View::Playlists,
+        View::Downloads,
+        View::Liked,
+        View::Browse,
+        View::Queue,
+        View::Lyrics,
+        View::Album("al_glasslight".into()),
+        View::Artist("ar_aurora".into()),
+        View::Playlist("pl_focus".into()),
+    ] {
+        let (mut app, doc) = app_with_doc();
+        app.disconnect();
+        app.view = view.clone();
+        audit(app, doc, &format!("{view:?}"));
+    }
+}
+
 // ---- 18. per-view render smoke test ------------------------------------
 
 #[test]
