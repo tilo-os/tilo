@@ -33,6 +33,7 @@ impl ShellDriver {
         "palette_downloaded",
         "palette_downloaded_missing",
         "launcher_downloaded",
+        "palette_open_app",
         "quick-settings",
         "qs-edit",
         "qs-edit-drag",
