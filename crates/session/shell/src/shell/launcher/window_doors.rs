@@ -97,16 +97,6 @@ pub(super) enum Routed {
     NotRunning,
 }
 
-/// Whether a process of `package_id` already serves `room` and opens the
-/// windows asked of it: another window of the app there is a new window in
-/// that process, not a second copy.
-pub(crate) fn opens_more_windows(package_id: &str, room: RoomId) -> bool {
-    lock(&DOORS)
-        .as_ref()
-        .and_then(|doors| doors.get(&key(package_id, room)))
-        .is_some_and(|door| door.serves == Serves::Yes)
-}
-
 /// Reserve the door of the process about to start for `package_id` in
 /// `room`, unless one is reserved already. Later windows of the app there
 /// are routed to it. The reservation is given up when it is dropped before
