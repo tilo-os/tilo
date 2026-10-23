@@ -709,18 +709,22 @@ impl Service {
                 }
             }
             (&Method::GET, ["presence"]) => {
+                let joins = ops::get().is_none_or(|ops| ops.mode().allows_joins());
                 let mut response = Self::json(
                     StatusCode::OK,
                     // `admission`: whether the door lets anyone in as a
                     // guest (`open`) or only the room's members (`invite`),
                     // so a member's page offers an invitation, not the link.
+                    // `joins`: whether anyone joins at all now (not while the
+                    // room is watch-only), so a watching page never promises
+                    // a join the door will not give.
                     &serde_json::json!({
                         "online": persistent.online(),
                         "watching": persistent.watching(),
                         // Whether a guest would get in now, so a watching
                         // page reloads to join only then.
-                        "open": ops::get().is_none_or(|ops| ops.mode().allows_joins())
-                            && persistent.seat_free(),
+                        "open": joins && persistent.seat_free(),
+                        "joins": joins,
                         "admission": if persistent.invite_only() { "invite" } else { "open" },
                     }),
                 );

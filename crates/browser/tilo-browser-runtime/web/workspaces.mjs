@@ -670,18 +670,30 @@ export function joinWhenSeated({workspace, retryAfter, join, fetch = globalThis.
   let timer, stopped = false;
   const next = () => { if (!stopped) timer = schedule(check, (wait + random() * wait / 2) * 1000); };
   async function check() {
-    try {
-      const response = await fetch(new URL('presence', admissionDoor(workspace)), {credentials: 'omit'});
-      if (!stopped && response.ok && (await response.json())?.open === true) {
-        stopped = true;
-        join();
-        return;
-      }
-    } catch { /* The door did not answer: ask again later. */ }
+    if (!stopped && (await doorPresence(workspace, fetch))?.open === true) {
+      stopped = true;
+      join();
+      return;
+    }
     next();
   }
   next();
   return () => { stopped = true; cancel(timer); };
+}
+
+/**
+ * What `workspace`'s door says about the room now (`presence`), without
+ * taking a seat: `open`, whether a guest would get in; `joins`, whether
+ * anyone joins at all now; `admission`, `open` or `invite` (members and
+ * invitees only); or `null` when it does not answer.
+ */
+export async function doorPresence(workspace, fetch = globalThis.fetch) {
+  try {
+    const response = await fetch(new URL('presence', admissionDoor(workspace)), {credentials: 'omit'});
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

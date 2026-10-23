@@ -308,6 +308,36 @@ export function failureMessage(error, {workspace = null, loaded = true, admitted
   return failure(admitted ? 'desktop' : 'general', name, messages);
 }
 
+/**
+ * What a page watching a room through its door says about joining, so it
+ * never promises a join the door will not give. `entered`: `watching` (an
+ * embed, until a gesture) or `seatless` (the door had no seat, `because`
+ * its code); `presence`: the door's answer (`admission`: `open` or
+ * `invite`; `joins`: `false` while nobody joins), `null` when it did not
+ * answer. `join` is what the page does
+ * next: `gesture` joins on a click or key, `seat` once the door has a seat
+ * for a guest again, `none` never by itself.
+ */
+export function visitLine({entered, because = null, presence = null, workspace = null, messages = null}) {
+  const embed = entered === 'watching';
+  // Only members and invitees get in: the door's own words for it.
+  if (embed && presence?.admission === 'invite') {
+    return {line: `You’re watching live. ${failure('invitation-only', workspace, messages)}`, join: 'none'};
+  }
+  if (presence?.joins === false) {
+    return embed
+      ? {line: 'You’re watching live. Joining is closed for now; you can join once it opens.', join: 'seat'}
+      : {line: 'Joining is closed for now, so you’re watching live. You’ll join once it opens.', join: 'seat'};
+  }
+  if (embed) return {line: 'Click or type to join', join: 'gesture'};
+  return {
+    line: because === 'full'
+      ? 'It’s full right now, so you’re watching live. You’ll join when a seat frees up.'
+      : 'You couldn’t join just now, so you’re watching live. You’ll join in a moment.',
+    join: 'seat',
+  };
+}
+
 /** The language the desktop speaks before the person chooses one in
  * Settings: its source language. The browser's own language is not it, so
  * the arrival screen and its failures do not follow the browser either: a

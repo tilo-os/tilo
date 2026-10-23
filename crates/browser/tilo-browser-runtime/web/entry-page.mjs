@@ -16,7 +16,7 @@
  * has no seat for watches live instead and is let in once a seat frees up.
  */
 import {AdmissionError} from './admission.mjs';
-import {failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING} from './arrival.mjs';
+import {failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, visitLine} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
@@ -34,7 +34,7 @@ import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError,
   hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces,
-  joinWhenSeated, membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
+  doorPresence, joinWhenSeated, membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
   settleFailedRoom, spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
@@ -594,8 +594,8 @@ export async function startEntryPage({mode}) {
   let retryAfter = null;
   /** Why the door had no seat for this page (`full`, `too-many`, `unavailable`), when it watches instead. */
   let seatlessBecause = null;
-  /** The workspace whose door had no seat for this page. */
-  let seatlessAt = null;
+  /** The workspace whose door this page watches through. */
+  let visitedAt = null;
   globalThis.tiloInvites = 0;
   /** Keeping the person this page joined as (`identity-actions.mjs`), once there is one. */
   let identityActions = null;
@@ -684,6 +684,7 @@ export async function startEntryPage({mode}) {
       reportErrors(workspace.admission);
       workspaceName = workspace.name || workspaceName;
       const watch = async () => spectate({workspace, runtime});
+      visitedAt = workspace;
       if (embed && !joinNow && !keptMembership(workspace)) {
         entered = 'watching';
         return watch();
@@ -704,7 +705,6 @@ export async function startEntryPage({mode}) {
         entered = 'seatless';
         retryAfter = error.retryAfter;
         seatlessBecause = error.code;
-        seatlessAt = workspace;
         return watch();
       }
     },
@@ -806,7 +806,7 @@ export async function startEntryPage({mode}) {
   try {
     const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});
     if (!page) return;
-    if (entered) showVisitState({entered, retryAfter, because: seatlessBecause, workspace: seatlessAt, tell, status});
+    if (entered) void showVisitState({entered, retryAfter, because: seatlessBecause, workspace: visitedAt, workspaceName, tell, status});
     // Only the desktop lists host actions: a single app's mount refuses them.
     const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed
       ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces', 'workspace', 'tab']) : null;
@@ -1224,16 +1224,19 @@ function joinByReload() {
 }
 
 /**
- * What a visitor let in through a host's door sees beyond the workspace: as
- * a watching embed, the invitation to join on the first gesture (captured,
- * so the spectator surface never sees it); without a seat, that they watch
- * live and are let in when one frees up (retried after the host's
- * Retry-After, with jitter so a full room is not asked by everyone at once).
+ * What a visitor let in through a host's door sees beyond the workspace,
+ * said as the door's presence has it (`visitLine`): as a watching embed, the
+ * invitation to join on the first gesture (captured, so the spectator
+ * surface never sees it), unless only invitees get in or nobody joins for
+ * now; without a seat, that they watch live and are let in when one frees
+ * up (asked after the host's Retry-After, with jitter so a full room is not
+ * asked by everyone at once).
  */
-function showVisitState({entered, retryAfter, because = null, workspace, tell, status}) {
+async function showVisitState({entered, retryAfter, because = null, workspace, workspaceName, tell, status}) {
   if (entered === 'joined') { tell('joined'); return; }
   tell('watching');
-  if (entered === 'watching') {
+  const embed = entered === 'watching';
+  const offerJoin = () => {
     status.textContent = 'Click or type to join';
     const gesture = event => {
       for (const type of ['pointerdown', 'keydown']) removeEventListener(type, gesture, true);
@@ -1243,13 +1246,12 @@ function showVisitState({entered, retryAfter, because = null, workspace, tell, s
       joinByReload();
     };
     for (const type of ['pointerdown', 'keydown']) addEventListener(type, gesture, true);
-    return;
-  }
-  // Said as it is: a full room, or a door that could not let them in just now.
-  status.textContent = because === 'full'
-    ? 'It’s full right now, so you’re watching live. You’ll join when a seat frees up.'
-    : 'You couldn’t join just now, so you’re watching live. You’ll join in a moment.';
-  joinWhenSeated({workspace, retryAfter, join: joinByReload});
+  };
+  const [presence, messages] = await Promise.all([doorPresence(workspace), localeMessagesSoon()]);
+  const {line, join} = visitLine({entered, because, presence, workspace: workspaceName, messages});
+  if (join === 'gesture') { offerJoin(); return; }
+  status.textContent = line;
+  if (join === 'seat') joinWhenSeated({workspace, retryAfter, join: embed ? offerJoin : joinByReload});
 }
 
 /**
