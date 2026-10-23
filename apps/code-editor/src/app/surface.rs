@@ -143,7 +143,6 @@ impl CodeApp {
             if results {
                 app.panel_visible = true;
                 app.panel.set_tab(PanelTab::Search);
-                app.panel_toggle.set_expanded(true);
             }
         };
         if let Some(target) = file
@@ -471,7 +470,6 @@ impl CodeApp {
             }
             Some("selection") => self.shots_select_words(),
             Some("completion") => self.shots_completion_demo(doc),
-            Some("find" | "find-options") => self.shots_open_find("primes", doc),
             Some("search") => self.shots_project_search("fn main"),
             Some("conflict") => self.shots_conflict(),
             Some("indexing") => self.shots_indexing(),
@@ -552,16 +550,5 @@ impl CodeApp {
 
     pub(crate) fn lsp_enabled_for_test(&self) -> bool {
         self.lsp_enabled()
-    }
-
-    pub(crate) fn find_options_shown_for_test(&self) -> bool {
-        ui::widget::Widget::accessibility(&self.find).is_some_and(|node| {
-            node.children.iter().any(|child| {
-                child.action_target.as_deref() == Some("find-MatchCase")
-                    && child
-                        .bounds
-                        .is_some_and(|bounds| bounds.x1 > bounds.x0 && bounds.y1 > bounds.y0)
-            })
-        })
     }
 }

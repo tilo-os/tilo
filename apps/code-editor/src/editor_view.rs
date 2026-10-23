@@ -497,10 +497,52 @@ impl EditorView {
         }
     }
 
-    /// The editor's current selection as text, if any. The find bar seeds its
-    /// query with this, so Ctrl+F on a selected word searches for that word.
+    /// The editor's current selection as text, if any.
     pub fn selected_text_public(&self) -> Option<String> {
         self.selected_text()
+    }
+
+    /// The text of the bound buffer as the editor shows it, its own edits
+    /// waiting for the app's dispatch included.
+    pub fn text(&self) -> &str {
+        &self.cached_text
+    }
+
+    /// Replace `matches` (in document order) with `with` as one edit through
+    /// the editor's own edit path: shown now, dispatched by the app as one
+    /// undoable action. The caret lands after the last replacement. Returns
+    /// whether the text changed.
+    pub fn replace_matches(&mut self, matches: &[crate::find::Match], with: &str) -> bool {
+        if self.text_obj.is_none() || matches.is_empty() {
+            return false;
+        }
+        let text = self.cached_text.clone();
+        let mut next = text.clone();
+        // Last to first, so each splice's place is still where it was found.
+        for m in matches.iter().rev() {
+            if let Some(at) = crate::app::flat_index(&text, m.line, m.col) {
+                crate::app::replace_chars(&mut next, at, m.len, with);
+            }
+        }
+        if next == text {
+            return false;
+        }
+        self.request_text_edit(&next);
+        if let Some((last, before)) = matches.split_last() {
+            // The replacements before it on its line moved it by their change
+            // in length.
+            let inserted = with.chars().count();
+            let col = before
+                .iter()
+                .filter(|m| m.line == last.line)
+                .fold(last.col + inserted, |col, m| {
+                    (col + inserted).saturating_sub(m.len)
+                });
+            self.carets = vec![Caret::at(last.line, col)];
+            self.clamp_carets();
+        }
+        self.scroll_to_caret();
+        true
     }
 
     /// What the person has selected (or where the caret is) while the editor

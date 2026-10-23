@@ -175,7 +175,6 @@ impl CodeApp {
                 if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.mark_saved(text, Some(stamp));
                 }
-                self.refresh_header();
                 // Tell the language server the file is on disk now; rustc-based
                 // diagnostics only refresh on save.
                 if let (Some(c), Some(uri)) = (self.lsp.as_mut(), self.lsp_uri.clone()) {
@@ -285,7 +284,6 @@ impl CodeApp {
                 }
                 self.note(format!("Reloaded {name} from disk"), false);
                 self.bound_node = None;
-                self.refresh_header();
             }
             Err(e) => {
                 let name = self
@@ -510,7 +508,6 @@ impl CodeApp {
                 self.invalidate_search_projection();
                 self.bound_node = None;
                 self.reset_language_server();
-                self.refresh_header();
                 Ok(())
             }
             Err(error) => {
@@ -565,7 +562,6 @@ impl CodeApp {
                 self.clear_search();
                 self.search_symbols.clear();
                 self.symbol_projection_revision = None;
-                self.refresh_header();
                 Ok(())
             }
             Err(e) => {
