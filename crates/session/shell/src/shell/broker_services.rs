@@ -35,7 +35,7 @@ use tilo_action_broker::services::{
     ShortcutLibraryServices, WorkspaceAuthority, WorkspaceControlServices,
     WorkspaceGovernanceRequest, WorkspaceGovernanceServices,
 };
-pub(crate) use tracker_runs::{FollowedRun, NativeTrackerRuns};
+pub(crate) use tracker_runs::{FollowedRun, NativeTrackerRuns, TrackerView};
 
 /// The same state.json owner used by canonical enrollment and ingress. Network
 /// availability never supplies or removes this durable admission boundary.
@@ -1599,9 +1599,15 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             super::launcher::display_name_for_app_id(app)
                 .unwrap_or_else(|| super::launcher::display_name_for_package_id(app))
         };
+        // A grant for the place a confirmation ran in (an issue) is that
+        // place's, whoever asked.
+        let grantee = request
+            .scope
+            .as_ref()
+            .map_or_else(|| label(&request.app_id), |scope| format!("“{scope}”"));
         let context = tilo_desktop_model::grants::app_action_grant_context(
             &request.room,
-            &label(&request.app_id),
+            &grantee,
             &label(&request.target_app),
             &format!("{} · {}", request.resource_label, request.action_label),
             answer.lifetime(),

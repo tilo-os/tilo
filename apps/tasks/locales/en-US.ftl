@@ -42,8 +42,7 @@ tasks-run-done = done
 tasks-run-failed = could not finish
 tasks-run-stopped = stopped
 tasks-run-asks = The agent asks before it runs { $action }
-tasks-run-confirm = Allow
-tasks-run-decline = Decline
+tasks-run-answer = Answer
 tasks-run-stop = Stop
 tasks-run-approve = Start
 

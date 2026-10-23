@@ -204,5 +204,7 @@ fn request(question: &PendingConfirmation, person: &str) -> AppActionConsentRequ
         needs_confirmation: true,
         confirming: true,
         moderation: None,
+        scope: None,
+        draft: None,
     }
 }

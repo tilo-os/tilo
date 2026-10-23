@@ -131,9 +131,12 @@ it, and a person's restriction always reaches their agents.
   the issue: the room's grants naming the issue (`Subject::Task` with the
   issue's address) decide for the run as the agent's own do, the most
   specific node first, and the approver's grants bound both. "Allow for this
-  issue" is such a grant, given, shown and revoked like any other; it needs
-  no lifetime of its own, as it decides nothing while no run is going. A
-  confirmation of one action grants nothing.
+  issue", offered on the host's confirmation sheet when a run asks, is such a
+  grant for the one action asked about, given as the person, shown and
+  revoked like any other; like an agent's answer for one action it lifts
+  that action's confirmation. It needs no lifetime of its own, as it decides
+  nothing while no run is going. A confirmation of one action grants
+  nothing.
 - **Shortcuts.** A Shortcut's grant set is stored with it and shown on import.
   An unattended run turns Ask into a refusal unless the set holds a matching
   Allow.

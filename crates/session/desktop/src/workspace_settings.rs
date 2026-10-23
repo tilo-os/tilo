@@ -52,6 +52,11 @@ pub trait AppDirectory {
     fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
         Vec::new()
     }
+    /// The name a person knows the resource at `address` by, when the host
+    /// can read it: an issue by its title.
+    fn resource_label(&self, _address: &str) -> Option<String> {
+        None
+    }
 }
 
 /// A host with no application catalogue: apps are named by their id.
@@ -1929,6 +1934,8 @@ pub enum SubjectKind {
     AppAction,
     Member,
     Agent,
+    /// The work on an issue: what its runs may do.
+    Issue,
     Role,
     /// Bearer token or room — surfaced so no live capability is
     /// invisible in the panel, even though the composer can't mint one.
@@ -1942,6 +1949,7 @@ impl SubjectKind {
             SubjectKind::AppAction => "workspace-settings-section-app-actions",
             SubjectKind::Member => "workspace-settings-section-people",
             SubjectKind::Agent => "workspace-settings-section-agents",
+            SubjectKind::Issue => "workspace-settings-section-issues",
             SubjectKind::Role => "workspace-settings-section-roles",
             SubjectKind::Other => "workspace-settings-section-other",
         })
@@ -1962,8 +1970,10 @@ impl GrantSubject {
             SubjectKind::App | SubjectKind::AppAction => Some(Subject::app(self.id.clone())),
             SubjectKind::Member => Some(Subject::person(self.id.clone())),
             SubjectKind::Agent => Some(Subject::agent(self.id.clone())),
-            // A role-wide grant is a policy decision, not a per-workspace click.
-            SubjectKind::Role | SubjectKind::Other => None,
+            // A role-wide grant is a policy decision, not a per-workspace
+            // click; an issue is given its grants from the question its run
+            // asks.
+            SubjectKind::Issue | SubjectKind::Role | SubjectKind::Other => None,
         }
     }
 
@@ -1974,7 +1984,7 @@ impl GrantSubject {
             SubjectKind::App | SubjectKind::AppAction => Some(Who::App(self.id.clone())),
             SubjectKind::Member => Some(Who::Person(self.id.clone())),
             SubjectKind::Agent => Some(Who::Agent(self.id.clone())),
-            SubjectKind::Role | SubjectKind::Other => None,
+            SubjectKind::Issue | SubjectKind::Role | SubjectKind::Other => None,
         }
     }
 
@@ -1982,6 +1992,15 @@ impl GrantSubject {
         match self.kind {
             SubjectKind::Member | SubjectKind::Agent => person_name(ws, local_user, &self.id),
             SubjectKind::App | SubjectKind::AppAction => app_display_name(apps, &self.id),
+            SubjectKind::Issue => apps.resource_label(&self.id).map_or_else(
+                || t("workspace-settings-subject-issue-unnamed"),
+                |title| {
+                    t_args(
+                        "workspace-settings-subject-issue",
+                        &[("title", title.into())],
+                    )
+                },
+            ),
             _ => self.id.clone(),
         }
     }
@@ -3781,7 +3800,11 @@ fn classify_grant(grant: &tilo_action_policy::Grant) -> GrantSubject {
                 &[("role", role_label(*role).into())],
             ),
         },
-        Who::Task(id) | Who::Shortcut(id) => GrantSubject {
+        Who::Task(id) => GrantSubject {
+            kind: SubjectKind::Issue,
+            id: id.clone(),
+        },
+        Who::Shortcut(id) => GrantSubject {
             kind: SubjectKind::Other,
             id: short_id(id),
         },

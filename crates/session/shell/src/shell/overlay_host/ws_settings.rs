@@ -510,6 +510,15 @@ impl ShellOverlayHost {
             // Named as the roster names them, from the one source, and the
             // person here by their own name: never a key.
             let own_name = crate::shell::topbar_chrome::own_person_name(&state);
+            let directory = SettingsDirectory {
+                tracker: self.tracker.as_deref(),
+                room: tree
+                    .desktop
+                    .active_workspace()
+                    .map(|workspace| workspace.room().to_string())
+                    .unwrap_or_default(),
+                issues: std::cell::OnceCell::new(),
+            };
             let people = tilo_desktop::collaborators::PeopleNames::of(
                 &tree.desktop,
                 &acting_user,
@@ -530,7 +539,7 @@ impl ShellOverlayHost {
                     name_selection: state.editing_workspace_name_selection,
                     governs_active_room,
                     owner_controls,
-                    apps: &crate::shell::launcher::ShellApps,
+                    apps: &directory,
                     devices: &devices,
                     public: &public,
                     archived: &archived,
@@ -538,6 +547,34 @@ impl ShellOverlayHost {
             );
         }
         WorkspaceSettingsOverlay::finish_draw(scene, plan);
+    }
+}
+
+/// This machine's applications, and the active room's issues by title, as
+/// workspace settings name them. The tracker is read only when a grant
+/// names an issue.
+struct SettingsDirectory<'a> {
+    tracker: Option<&'a crate::shell::broker_services::NativeTrackerRuns>,
+    room: String,
+    issues: std::cell::OnceCell<Option<std::sync::Arc<crate::shell::broker_services::TrackerView>>>,
+}
+
+impl tilo_desktop::workspace_settings::AppDirectory for SettingsDirectory<'_> {
+    fn app_display_name(&self, app_id: &str) -> Option<String> {
+        crate::shell::launcher::ShellApps.app_display_name(app_id)
+    }
+
+    fn default_app_candidates(&self) -> Vec<desktop_policy::AppCandidate> {
+        crate::shell::launcher::ShellApps.default_app_candidates()
+    }
+
+    fn resource_label(&self, address: &str) -> Option<String> {
+        self.issues
+            .get_or_init(|| self.tracker?.tracker(&self.room).ok().flatten())
+            .as_ref()?
+            .titles
+            .get(address)
+            .cloned()
     }
 }
 

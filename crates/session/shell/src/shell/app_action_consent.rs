@@ -119,6 +119,8 @@ mod tests {
             needs_confirmation: false,
             confirming: false,
             moderation: None,
+            scope: None,
+            draft: None,
         }
     }
 
@@ -203,6 +205,24 @@ mod tests {
             assert!(sheet.confirm(), "separate explicit final approval");
             assert_eq!(answer.try_recv().unwrap(), AppActionConsent::Once);
         }
+    }
+
+    #[test]
+    fn a_confirmation_with_a_scope_may_also_allow_it_there() {
+        let queue = PortalDialogQueue::default();
+        let prompter = SheetPrompter::new(queue.clone(), Arc::new(|_| true));
+        let mut question = request("person:ada");
+        question.confirming = true;
+        question.scope = Some("Prepare release notes".into());
+        let mut answer = prompter.ask(question).expect("the person is asked");
+        let mut sheet = crate::shell::portal_dialog::PortalDialogController::new(queue);
+        assert!(sheet.pump());
+        let choices = sheet.view().unwrap().choices().to_vec();
+        assert_eq!(choices.len(), 2, "{choices:?}");
+        assert!(choices[1].contains("Prepare release notes"), "{choices:?}");
+        assert!(sheet.select_next(false));
+        assert!(sheet.confirm());
+        assert_eq!(answer.try_recv(), Ok(AppActionConsent::Always));
     }
 
     #[test]
