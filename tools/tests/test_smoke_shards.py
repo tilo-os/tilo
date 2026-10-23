@@ -24,8 +24,10 @@ class SmokeShards(unittest.TestCase):
             browser.write_text(
                 "#!/usr/bin/env python3\n"
                 "import json,os,pathlib,signal,sys,time\n"
-                "pathlib.Path(os.environ['FIXTURE_ROOT'],f'chrome-{os.getpid()}.json')"
-                ".write_text(json.dumps(sys.argv[1:]))\n"
+                # Renamed into place, so the curl fixture never reads half a file.
+                "launch=pathlib.Path(os.environ['FIXTURE_ROOT'],f'chrome-{os.getpid()}')\n"
+                "launch.write_text(json.dumps(sys.argv[1:]))\n"
+                "launch.rename(launch.with_suffix('.json'))\n"
                 "profile=pathlib.Path(next(a.split('=',1)[1] for a in sys.argv[1:] if a.startswith('--user-data-dir=')))\n"
                 "profile.mkdir(parents=True)\n"
                 "def stop(*args):\n"
@@ -87,6 +89,9 @@ class SmokeShards(unittest.TestCase):
                 TILO_WEB_SMOKE_SHARDS=shards,
                 CDP_PORT="9333",
                 FIXTURE_HANG_BOUND=str(HANG_BOUND),
+                # The fixture browser always honours TERM; on a loaded host its
+                # close must not race the supervisor's escalation to KILL.
+                TILO_OWNED_BROWSER_TERM_GRACE_SECS=str(HANG_BOUND),
                 PATH=f"{directory}:{os.environ['PATH']}",
             )
             # Its own session, so a hung driver is stopped with every browser,
