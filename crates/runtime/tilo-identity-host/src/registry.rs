@@ -307,7 +307,6 @@ impl IdentityRegistryStore {
         &self.registry_path
     }
 
-    /// Load the identity registry from disk.
     pub fn load(&self) -> io::Result<IdentityRegistry> {
         if !self.registry_path.exists() {
             return Ok(IdentityRegistry::default());
@@ -327,7 +326,6 @@ impl IdentityRegistryStore {
         Ok(registry)
     }
 
-    /// Save the identity registry to disk.
     pub fn save(&self, registry: &IdentityRegistry) -> io::Result<()> {
         fs::create_dir_all(&self.identity_dir)?;
         set_private_dir_mode(&self.identity_dir)?;
@@ -489,7 +487,6 @@ impl IdentityRegistryStore {
         Ok(registry)
     }
 
-    /// Import a new identity record and return its profile.
     pub fn import(&self, source: &Path) -> io::Result<IdentityProfile> {
         let mut registry = self.load_reconciled()?;
         let profile = registry.import_record(source, &self.identity_dir)?.clone();
@@ -525,7 +522,6 @@ impl IdentityRegistryStore {
         Ok(profile)
     }
 
-    /// Bind an identity to a workspace in the registry.
     pub fn bind_workspace(&self, room: &str, identity_id: &str) -> io::Result<()> {
         let mut registry = self.load_reconciled()?;
         registry.bind_workspace(room, identity_id)?;

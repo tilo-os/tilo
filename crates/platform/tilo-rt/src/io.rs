@@ -94,7 +94,6 @@ pub async fn read_at(file: Arc<File>, offset: u64, len: usize) -> std::io::Resul
     .await
 }
 
-/// Write all of `data` at `offset`.
 pub async fn write_all_at(file: Arc<File>, offset: u64, data: Vec<u8>) -> std::io::Result<()> {
     run(move || {
         let mut written = 0_usize;

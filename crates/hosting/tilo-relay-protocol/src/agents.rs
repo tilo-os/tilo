@@ -145,7 +145,6 @@ pub enum TaskState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStep {
-    /// App the action belongs to.
     pub app: String,
     pub resource: String,
     /// Action id.

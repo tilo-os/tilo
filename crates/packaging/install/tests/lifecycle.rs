@@ -215,7 +215,6 @@ fn installs_list_verify_report_and_serve_thin_packages() {
         let env = Env::new();
         let v1 = env.tapp("1.0.0", b"version one", None);
 
-        // --- install -----------------------------------------------------
         let (ok, out, err) = env.cmd(&["install", v1.to_str().unwrap()]);
         assert!(ok, "install failed: {out}{err}");
         assert!(out.contains("installed: so.tilo.lifecycle 1.0.0"), "{out}");
@@ -230,13 +229,11 @@ fn installs_list_verify_report_and_serve_thin_packages() {
             env.registry_toml()
         );
 
-        // --- list --------------------------------------------------------
         let (ok, out, _) = env.cmd(&["list"]);
         assert!(ok);
         assert!(out.contains("so.tilo.lifecycle"), "{out}");
         assert!(out.contains("1.0.0"), "{out}");
 
-        // --- verify ------------------------------------------------------
         let (ok, out, err) = env.cmd(&["verify"]);
         assert!(ok, "verify failed: {out}{err}");
         assert!(out.contains("ok       so.tilo.lifecycle 1.0.0"), "{out}");
@@ -245,7 +242,6 @@ fn installs_list_verify_report_and_serve_thin_packages() {
         // have to be treated differently.
         env.seed_state();
 
-        // --- update ------------------------------------------------------
         let v2 = env.tapp("1.1.0", b"version two", None);
         let (ok, out, err) = env.cmd(&[
             "update",
@@ -275,7 +271,6 @@ fn installs_list_verify_report_and_serve_thin_packages() {
         assert!(ok, "verify after update failed: {out}{err}");
         assert!(out.contains("ok       so.tilo.lifecycle 1.1.0"), "{out}");
 
-        // --- uninstall ---------------------------------------------------
         let installed_tree = env.payload_root();
         let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--keep-state"]);
         assert!(ok, "uninstall failed: {out}{err}");
@@ -423,7 +418,6 @@ fn dry_runs_and_runtime_dependencies_are_reported_before_anything_changes() {
             "--dry-run must not touch the registry"
         );
 
-        // And the same for an update and an uninstall.
         assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
         env.seed_state();
         let v2 = env.tapp("2.0.0", b"two", None);
@@ -567,7 +561,6 @@ fn updates_refuse_downgrades_foreign_packages_and_unapproved_publishers() {
         let v1 = env.tapp("1.0.0", b"one", None);
         assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
 
-        // Same signing key, different package id.
         let build = env.home.path().join("other");
         let payload = build.join("payload");
         write_payload(&payload, b"other app");

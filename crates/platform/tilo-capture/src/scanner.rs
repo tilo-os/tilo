@@ -43,7 +43,6 @@ pub fn scanners() -> Result<Vec<Scanner>, String> {
     imp::scanners()
 }
 
-/// Scan one page as PNG.
 pub fn scan_page(device: &str, settings: ScanSettings) -> Result<Vec<u8>, String> {
     imp::scan_page(device, settings)
 }

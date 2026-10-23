@@ -343,7 +343,6 @@ fn open_dir(path: &Path) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-/// Write `limits` into the cgroup at `dir`.
 pub fn apply_limits(
     dir: &Path,
     limits: &Limits,

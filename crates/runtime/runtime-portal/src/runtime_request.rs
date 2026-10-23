@@ -95,7 +95,6 @@ pub enum Response {
     Refused { message: String },
 }
 
-/// Write one message.
 pub fn write_message<W: Write, T: Serialize>(writer: &mut W, message: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec(message).map_err(io::Error::other)?;
     if bytes.len() > MAX_MESSAGE_BYTES {

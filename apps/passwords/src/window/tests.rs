@@ -612,7 +612,6 @@ fn the_wheel_scrolls_the_editor_to_its_save_button() {
             save.y1 > 560.0,
             "at {width} the Save button starts below the window: {save:?}"
         );
-        // On the page's title, inside the editor at any width.
         harness.click_at(width - 60.0, 90.0);
         for _ in 0..10 {
             harness.scroll(0.0, -3.0);

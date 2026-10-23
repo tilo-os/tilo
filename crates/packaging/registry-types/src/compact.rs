@@ -383,7 +383,6 @@ impl CatalogueSnapshot {
         }
     }
 
-    /// Verify the snapshot in its own form.
     pub fn verify(
         &self,
         pinned_owner_pubkey_hex: &str,

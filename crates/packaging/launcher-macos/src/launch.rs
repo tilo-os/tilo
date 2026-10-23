@@ -145,7 +145,6 @@ impl LaunchedApp {
         self.mode
     }
 
-    /// Wait for the app to exit.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         wait_pid(self.pid)
     }

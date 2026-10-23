@@ -253,7 +253,6 @@ impl WriteStage {
         self.gaps().is_empty()
     }
 
-    /// Apply a write of `data` at `offset`.
     pub(super) fn write(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
         let end = offset
             .checked_add(data.len() as u64)

@@ -25,7 +25,6 @@ use super::{Storage, StorageError, atomic_write, is_hex_digest, list_digests};
 /// What [`Storage::compress_stored_objects`] did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct TwinReport {
-    /// Twins written by this run.
     pub written: usize,
     pub present: usize,
     /// Bytes of the objects twinned by this run.

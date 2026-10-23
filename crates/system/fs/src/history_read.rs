@@ -87,7 +87,6 @@ impl QuickFS {
             current_revision,
         ))
     }
-    /// Answer a history read query for `ino`.
     pub fn read_file_history(&self, ino: u64, query: Query) -> Result<Value, Error> {
         let (scope, snapshot, current_revision) = self.history_read_snapshot(ino)?;
         snapshot.read_query(scope, current_revision, query)

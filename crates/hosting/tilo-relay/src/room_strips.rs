@@ -15,7 +15,6 @@ pub(crate) const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
 /// The longest strip name, the same as one a person names in the top bar.
 const STRIP_NAME_MAX: usize = 48;
 
-/// `name` trimmed, as a strip's name.
 pub(crate) fn strip_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > STRIP_NAME_MAX {

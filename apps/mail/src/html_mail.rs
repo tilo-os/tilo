@@ -64,12 +64,10 @@ pub struct InlinePart {
     pub bytes: Vec<u8>,
 }
 
-/// How a mail is set.
 #[derive(Clone, Copy, Debug)]
 pub struct Policy<'a> {
     /// The person allowed remote content for this message.
     pub remote: bool,
-    /// The reader is dark.
     pub dark: bool,
     /// The reader's ground and ink as `#rrggbb`, for a mail set dark.
     pub ground: &'a str,
@@ -404,8 +402,6 @@ fn css_color(color: &str) -> &str {
     }
 }
 
-// ---- elements and attributes -------------------------------------------
-
 /// Elements kept with their attributes.
 const ALLOWED: &[&str] = &[
     "a",
@@ -587,8 +583,6 @@ fn kind_of(name: &str) -> Kind {
     }
 }
 
-// ---- tokens --------------------------------------------------------------
-
 /// A start or end tag as read: its lower-case name, and its attributes with
 /// lower-case names and raw values, the first of each name only.
 #[derive(Debug, Default)]
@@ -705,8 +699,6 @@ fn raw_text_end(src: &str, from: usize, name: &str) -> (usize, usize) {
     }
     (src.len(), src.len())
 }
-
-// ---- the sanitizer -------------------------------------------------------
 
 struct Sanitizer<'p> {
     policy: &'p Policy<'p>,

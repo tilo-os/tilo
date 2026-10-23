@@ -248,7 +248,6 @@ where
     refuse_proof(send, code).await
 }
 
-/// Refuse a content proof stream with `code`.
 pub(crate) async fn refuse_proof<W>(send: &mut W, code: &str) -> Result<(), EnvironmentStreamError>
 where
     W: AsyncWrite + Unpin + Send,
@@ -282,7 +281,6 @@ where
     Ok(())
 }
 
-/// Refuse a content stream with `code`.
 pub(crate) async fn refuse<W>(send: &mut W, code: &str) -> Result<(), EnvironmentStreamError>
 where
     W: AsyncWrite + Unpin + Send,

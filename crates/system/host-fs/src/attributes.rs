@@ -28,7 +28,6 @@ pub fn get(path: impl AsRef<Path>, name: impl AsRef<OsStr>) -> io::Result<Option
     }
 }
 
-/// Set attribute `name` of `path` to `value`.
 #[inline]
 pub fn set(path: impl AsRef<Path>, name: impl AsRef<OsStr>, value: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
@@ -42,7 +41,6 @@ pub fn set(path: impl AsRef<Path>, name: impl AsRef<OsStr>, value: &[u8]) -> io:
     }
 }
 
-/// Remove attribute `name` of `path`.
 #[inline]
 pub fn remove(path: impl AsRef<Path>, name: impl AsRef<OsStr>) -> io::Result<()> {
     #[cfg(unix)]
@@ -70,7 +68,6 @@ pub fn get_open(file: &File, name: impl AsRef<OsStr>) -> io::Result<Option<Vec<u
     }
 }
 
-/// Set attribute `name` of an open file to `value`.
 #[inline]
 pub fn set_open(file: &File, name: impl AsRef<OsStr>, value: &[u8]) -> io::Result<()> {
     #[cfg(unix)]

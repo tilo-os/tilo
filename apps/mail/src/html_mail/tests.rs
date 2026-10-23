@@ -226,7 +226,6 @@ fn a_hostile_mail_keeps_no_script_form_plugin_frame_or_navigation() {
         assert!(document.contains("form-action 'none'"));
         assert!(document.contains("object-src 'none'"));
         assert!(document.contains("frame-src 'none'"));
-        // The one real link opens outside the message.
         assert_eq!(prepared.links, ["https://evil.example/login"]);
         assert!(
             prepared.document.contains(
@@ -236,7 +235,6 @@ fn a_hostile_mail_keeps_no_script_form_plugin_frame_or_navigation() {
             prepared.document
         );
         assert!(document.contains("<base target=\"_blank\">"));
-        // Its words stay readable.
         assert!(prepared.document.contains("Your account is on hold."));
         assert!(prepared.document.contains("tricky"));
     }
@@ -301,7 +299,6 @@ fn the_request_filter_refuses_every_web_request_until_allowed() {
 #[test]
 fn escaped_and_disguised_addresses_are_read_as_the_engine_reads_them() {
     let cases = [
-        // Entities and whitespace inside a scheme.
         "<a href=\"java&#x09;script:alert(1)\">a</a>",
         "<a href=\"javascript&colon;alert(1)\">a</a>",
         "<a href=\"jav&#97;script:alert(1)\">a</a>",

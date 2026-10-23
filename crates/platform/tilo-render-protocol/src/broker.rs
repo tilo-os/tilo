@@ -83,7 +83,6 @@ pub struct Handshake {
     pub workspace_id: Option<String>,
 }
 
-/// Read the handshake from a new broker connection.
 pub fn read_handshake(stream: &mut impl io::Read) -> io::Result<Handshake> {
     let mut length = [0_u8; 4];
     stream.read_exact(&mut length)?;
@@ -101,7 +100,6 @@ pub fn read_handshake(stream: &mut impl io::Read) -> io::Result<Handshake> {
     Ok(handshake)
 }
 
-/// Write `handshake` to a connection.
 pub fn write_handshake(
     stream: &mut impl Write,
     app_id: &str,

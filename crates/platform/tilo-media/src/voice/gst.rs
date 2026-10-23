@@ -1767,7 +1767,6 @@ mod tests {
         pcm.extend(voiced(150));
         let packets = encoder.encode(&pcm);
         assert!(packets.len() >= 200, "{}", packets.len());
-        // The encoder was in DTX right up to the onset...
         assert!(
             transmitted(&packets[25..50]).0 <= 3,
             "not in DTX before the onset"

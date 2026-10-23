@@ -72,7 +72,6 @@ pub enum TextEdit {
 }
 
 impl PlainText {
-    /// The text in the text object `obj`.
     pub fn read_under(doc: &Doc, obj: &ObjId) -> Result<String, ModelError> {
         doc.text(obj)
             .map_err(|error| ModelError::invalid(format!("not a text: {error}")))

@@ -1997,7 +1997,6 @@ impl EnrolledServiceContext {
     pub fn channel_id(&self) -> &str {
         &self.channel_id
     }
-    /// The agent's launch context as JSON.
     pub fn agent_context_json(&self) -> Result<String, String> {
         serde_json::to_string(&serde_json::json!({ "version": 1, "room": self.binding.room, "agent": self.binding.agent, "launch": self.binding.launch, "runtime_epoch": self.runtime_epoch, "channel_id": self.channel_id, "provider": self.provider })).map_err(|e| e.to_string())
     }

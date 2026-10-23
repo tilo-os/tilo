@@ -40,7 +40,6 @@ pub const LEVEL: i32 = 19;
 /// accepts: 8 MiB, what level 19 picks for any object larger than that.
 pub const WINDOW_LOG_MAX: u32 = 23;
 
-/// The compressed twin of `bytes`.
 pub fn compress(bytes: &[u8]) -> io::Result<Vec<u8>> {
     let mut compressor = zstd::bulk::Compressor::new(LEVEL)?;
     compressor.set_parameter(CParameter::WindowLog(WINDOW_LOG_MAX))?;
