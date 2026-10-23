@@ -1006,7 +1006,6 @@ fn exported_geometry_titles_transforms_and_speed_reach_the_file() {
             p.duration(),
         );
         let path = export(&p);
-        // Past the end of the sped-up timeline there is nothing to decode.
         let frame = decode_frame(&path, 0.5);
         assert!(
             bright_fraction(&frame) > 0.005,
@@ -1115,7 +1114,6 @@ const SWITCH_SECS: f64 = 1.0;
 /// The fixture's length.
 const FIXTURE_SECS: f64 = 2.0;
 
-/// The sample a channel of the fixture holds at `t` seconds.
 fn fixture_sample(channel: usize, t: f64) -> f64 {
     let hz = match channel {
         0 => LEFT_HZ,

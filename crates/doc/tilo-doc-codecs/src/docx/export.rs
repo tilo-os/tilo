@@ -192,7 +192,6 @@ fn link_relationship_ids(snap: &DocSnapshot) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The `Relationship` of an external link.
 fn link_relationship_xml(id: &str, url: &str) -> String {
     format!(
         r#"<Relationship Id="{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="{}" TargetMode="External"/>"#,
@@ -1939,7 +1938,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn text_and_paragraph_formatting_roundtrips_through_docx() {
-        // Phase `export_import_roundtrips_model`.
         {
             let body = concat!(
                 r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p>"#,
@@ -1961,7 +1959,6 @@ mod tests {
             let m2 = norm(&d2.materialize());
             assert_eq!(m1, m2, "model round-trips through .docx export then import");
         }
-        // Phase `a_heading_defines_the_built_in_style_it_references`.
         {
             let mut d = Document::new();
             let h = d.insert_block(None, "heading");
@@ -1985,7 +1982,6 @@ mod tests {
                 "the styles part is declared"
             );
         }
-        // Phase `heading_paragraph_props_roundtrip`.
         {
             let mut d = Document::new();
             let h = d.insert_block(None, "heading");
@@ -2030,7 +2026,6 @@ mod tests {
                 b.marks
             );
         }
-        // Phase `highlight_super_and_line_spacing_roundtrip`.
         {
             let mut d = Document::new();
             let id = d.insert_block(None, "paragraph");
@@ -2086,7 +2081,6 @@ mod tests {
                 b.attrs
             );
         }
-        // Phase `subscript_roundtrips_through_docx`.
         {
             let mut d = Document::new();
             let id = d.insert_block(None, "paragraph");
@@ -2159,7 +2153,6 @@ mod tests {
                 b.marks
             );
         }
-        // Phase `named_paragraph_style_roundtrips_through_docx`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -2265,7 +2258,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn images_roundtrip_through_docx() {
-        // Phase `image_inline_roundtrips_through_docx`.
         {
             let mut d = Document::new();
             let p1 = d.insert_block(None, "paragraph");
@@ -2355,7 +2347,6 @@ mod tests {
                 im.attrs
             );
         }
-        // Phase `image_positioning_roundtrips_through_docx`.
         {
             let mut d = Document::new();
             let p1 = d.insert_block(None, "paragraph");
@@ -2428,7 +2419,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn lists_tables_and_cross_references_roundtrip_through_docx() {
-        // Phase `lists_roundtrip_with_ordering`.
         {
             let mut d = Document::new();
             let a = d.insert_block(None, "list_item");
@@ -2455,7 +2445,6 @@ mod tests {
             assert_eq!(items[0].attrs.get("ordered"), Some(&AttrVal::Bool(true)));
             assert_eq!(items[1].attrs.get("ordered"), Some(&AttrVal::Bool(false)));
         }
-        // Phase `list_numbering_format_and_start_roundtrip_through_docx`.
         {
             // Upper-roman ordered list starting at 3: format + start must round-trip.
             let mut d = Document::new();
@@ -2524,7 +2513,6 @@ mod tests {
                 "list-numbering model stable across a second round-trip"
             );
         }
-        // Phase `table_roundtrips_as_editable_cells`.
         {
             let mut d = Document::new();
             let mut prev: Option<String> = None;
@@ -2556,7 +2544,6 @@ mod tests {
             d2.splice_text(id, 1, 0, "X");
             assert_eq!(d2.block_text(id).as_deref(), Some("aX"));
         }
-        // Phase `bookmark_and_cross_reference_roundtrip_through_docx`.
         {
             let mut d = Document::new();
             let target = d.insert_block(None, "paragraph");
@@ -2632,9 +2619,7 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn document_properties_and_unmodeled_parts_roundtrip_through_docx() {
-        // Phase `document_properties_roundtrip_through_docx`.
         {
-            // Title/author/subject/keywords/dates/generator export into core.xml + app.xml generator.
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
             d.splice_text(&p, 0, 0, "body");
@@ -2729,7 +2714,6 @@ mod tests {
                 "properties stable across a second round-trip"
             );
         }
-        // Phase `core_xml_preserves_unmodeled_fields_and_updates_modeled`.
         {
             // An imported unmodeled field (revision) must survive while the title updates on export.
             let core = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -2764,7 +2748,6 @@ mod tests {
                 "unmodeled field preserved: {core_out}"
             );
         }
-        // Phase `no_docprops_when_no_properties_and_none_imported`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -2780,7 +2763,6 @@ mod tests {
                 "no app.xml for a doc with no properties"
             );
         }
-        // Phase `preserves_unmodeled_parts`.
         {
             let base = minimal_docx_styled("", "<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
             let mut c = ZipPackage::read(&base).unwrap();
@@ -2808,7 +2790,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn headers_and_footers_with_page_fields_roundtrip_through_docx() {
-        // Phase `header_footer_with_page_number_roundtrip_through_docx`.
         {
             use tilo_doc::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
             // A header "Title" + page-number footer must export wired through sectPr and re-import intact.
@@ -2906,7 +2887,6 @@ mod tests {
                 "footer stable across a second round-trip"
             );
         }
-        // Phase `imports_complex_page_field_from_header`.
         {
             // Complex-field form (fldChar begin/instrText PAGE/separate/end) imports as a single
             // page-number field, dropping the cached result text.
@@ -2967,7 +2947,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn notes_comments_and_tracked_changes_roundtrip_through_docx() {
-        // Phase `footnote_imports_from_footnotes_part`.
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
@@ -3028,7 +3007,6 @@ mod tests {
             assert_eq!(snap.notes[0].kind, "footnote");
             assert_eq!(snap.notes[0].blocks[0].text, "the footnote");
         }
-        // Phase `footnote_and_endnote_roundtrip_through_docx`.
         {
             // A footnote + an endnote built from scratch: export must write both note parts + refs
             // + content-types/rels, re-importing the same markers/notes/kinds.
@@ -3060,7 +3038,6 @@ mod tests {
                 "notes stable across a second round-trip"
             );
         }
-        // Phase `comment_imports_from_comments_part`.
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::MARK_COMMENT;
@@ -3118,7 +3095,6 @@ mod tests {
             assert_eq!(cmt.date, "2021-01-02T03:04:05");
             assert_eq!(cmt.blocks[0].text, "note: fix");
         }
-        // Phase `comment_roundtrips_through_docx`.
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::MARK_COMMENT;
@@ -3217,7 +3193,6 @@ mod tests {
                 "comments stable across a second round-trip"
             );
         }
-        // Phase `tracked_changes_roundtrip_through_docx`.
         {
             type ChangeTuple = (
                 tilo_doc::snapshot::ChangeKind,
@@ -3473,7 +3448,6 @@ mod tests {
 
     #[test]
     fn section_columns_roundtrip_through_docx() {
-        // Phase `columns_roundtrip`.
         {
             // 2-column body with a gap must round-trip; sectPr carries `w:cols w:num="2" w:space="…"`.
             let mut d = Document::new();
@@ -3508,7 +3482,6 @@ mod tests {
                 "snapshot surfaces the column count"
             );
         }
-        // Phase `columns_added_to_existing_header_sectpr`.
         {
             // A doc that already needs a sectPr (has a header) must get w:cols ADDED to it, not a second one.
             let mut d = Document::new();
@@ -3548,7 +3521,6 @@ mod tests {
                 "header survives alongside columns"
             );
         }
-        // Phase `single_column_emits_no_cols`.
         {
             // Default single-column doc must not emit w:cols, nor force a sectPr for nothing.
             let mut d = Document::new();

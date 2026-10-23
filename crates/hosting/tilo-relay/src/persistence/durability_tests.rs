@@ -150,7 +150,6 @@ fn the_sequence_survives_a_restart_with_the_clock_stepped_back() {
             .map(|tick| state.next_sequence_at(now + tick).unwrap())
             .collect();
         assert!(issued.windows(2).all(|pair| pair[0] < pair[1]));
-        // Sequences outrun a clock that stands still.
         assert_eq!(issued, [now, now + 1, now + 2]);
         issued
     };
@@ -283,7 +282,6 @@ fn thread_cpu_ns() -> u64 {
         .saturating_add(u64::try_from(now.tv_nsec).unwrap())
 }
 
-/// The lineage of the edits, as the store names it.
 fn edits_lineage(store: &WorkspaceStore) -> std::path::PathBuf {
     store.root().join("retained/v2").join(format!(
         "{}-{}",

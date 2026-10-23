@@ -32,11 +32,6 @@ impl Rooms {
     /// channel is read and none is ever created. `None` when this relay does
     /// not govern and steward the room: another device stewards it, and
     /// admits the room actions over the channel like any member.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a refused decision, and a channel that does not exist when
-    /// `create` is false.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the room stays locked from the decision until its keys are read"

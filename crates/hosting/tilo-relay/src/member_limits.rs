@@ -19,7 +19,6 @@ const KEPT: usize = 4096;
 /// Which budget refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Limited {
-    /// Too many changes in the window.
     Changes,
     /// Too many record content bytes this hour.
     Content,

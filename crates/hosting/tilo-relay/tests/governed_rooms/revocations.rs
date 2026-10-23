@@ -29,7 +29,6 @@ fn hello(device: &TestDevice, revocations: Vec<RevocationEntry>) -> NeighbourMsg
     }
 }
 
-/// `device` of the relay's own person enters `room`.
 async fn enter(relay: &Relay, host: &TestDevice, device: &TestDevice, room: &str) {
     let home = subscribed(relay, device, HOME_WORKSPACE).await;
     let _: EnteredRoom = host_action(

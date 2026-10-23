@@ -34,7 +34,6 @@ enum Class {
 /// How one retained frame's record reaches devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reach {
-    /// Every device that follows the room.
     Everyone,
     /// The devices that hold the record: its chain's head, which every
     /// device follows and keeps once it is a later part.
@@ -271,7 +270,6 @@ mod tests {
         classes.learn(second, &neighbour_wire::record_part("chat", 1));
         assert_eq!(classes.reach(&first), Some(Reach::Opened(first)));
         assert_eq!(classes.reach(&second), Some(Reach::Head(second)));
-        // Learning the earlier part again moves nothing back.
         classes.learn(first, &neighbour_wire::record_part("chat", 0));
         assert_eq!(classes.reach(&second), Some(Reach::Head(second)));
         assert_eq!(classes.reach(&[9; 32]), None);

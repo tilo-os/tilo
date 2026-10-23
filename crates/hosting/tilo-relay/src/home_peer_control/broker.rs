@@ -720,7 +720,6 @@ mod tests {
 
     #[test]
     fn enrollment_requests_run_as_the_invoking_user_with_bounded_diagnostics() {
-        // Phase `passwd_lookup_keeps_the_requesting_primary_group_and_home`.
         {
             let passwd = "root:x:0:0:root:/root:/bin/bash\ntilouser:x:42424:31337::/home/tilouser:/sbin/nologin\n";
             assert_eq!(
@@ -733,7 +732,6 @@ mod tests {
             );
             assert_eq!(account_from_passwd(passwd, 7), None);
         }
-        // Phase `enrollment_failure_preserves_the_bounded_child_diagnostic`.
         {
             let error = enrollment_command_result(
                 &bounded_command::Output {
@@ -749,7 +747,6 @@ mod tests {
                 "personal-device enrollment was not completed: requester lease expired"
             );
         }
-        // Phase `enrollment_failure_without_stderr_still_reports_exit_status`.
         {
             let error = enrollment_command_result(
                 &bounded_command::Output {
@@ -771,7 +768,6 @@ mod tests {
             assert!(validate_peer_ids("11", &"22".repeat(32)).is_err());
             assert!(validate_peer_ids(&"zz".repeat(32), &"22".repeat(32)).is_err());
         }
-        // Phase `request_projects_only_bounded_role_services_and_workspace_ids`.
         {
             let request = ApplyRequest {
                 identity_root: PathBuf::from("/var/lib/tilo"),
@@ -800,7 +796,6 @@ mod tests {
                     .all(|entry| entry.pin && entry.replication == ReplicationIntent::FullWorkspace)
             );
         }
-        // Phase `approval_identity_root_is_owned_and_confined_to_the_invoking_home`.
         {
             let dir = tempfile::tempdir().unwrap();
             let home = dir.path().join("home");
@@ -824,7 +819,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn config_and_workspace_changes_reload_or_roll_back() {
-        // Phase `failed_reload_rolls_back_config`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
@@ -838,7 +832,6 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), b"old");
             assert_eq!(std::fs::read(&home).unwrap(), b"old-home");
         }
-        // Phase `successful_reload_keeps_new_config`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
@@ -847,7 +840,6 @@ mod tests {
             assert_eq!(std::fs::read(&path).unwrap(), b"new");
             assert_eq!(std::fs::read(&home).unwrap(), b"new-home");
         }
-        // Phase `service_rollback_restores_enabled_and_active_independently`.
         {
             assert_eq!(
                 service_state_actions(ServiceState {
@@ -864,7 +856,6 @@ mod tests {
                 ("disable", "restart")
             );
         }
-        // Phase `stock_desktop_always_on_selection_self_provisions_full_sync`.
         {
             let config = desired_config(&ApplyRequest {
                 identity_root: PathBuf::from("/var/lib/tilo"),
@@ -880,7 +871,6 @@ mod tests {
             assert!(needs_local_home_peer_export(&config, false));
             assert!(!needs_local_home_peer_export(&config, true));
         }
-        // Phase `workspace_add_remove_reloads_mapping_and_keeps_continuity`.
         {
             let dir = tempfile::tempdir().unwrap();
             let relay = dir.path().join("relay.toml");

@@ -5,16 +5,12 @@
 
 use tilo_resource::Fields;
 
-/// The room's chat app.
 pub(crate) const CHAT_APP: &str = "so.tilo.chat";
 /// The longest starting channel name.
 const CHANNEL_NAME_MAX: usize = 64;
 
 /// `name` as a starting channel's name: lowercase letters, digits and `-`,
 /// so its id ([`channel_id`]) is one no other name shares.
-///
-/// # Errors
-/// The name is empty, too long or has another character.
 pub(crate) fn channel_name(name: &str) -> Result<String, String> {
     let valid = (1..=CHANNEL_NAME_MAX).contains(&name.len())
         && name

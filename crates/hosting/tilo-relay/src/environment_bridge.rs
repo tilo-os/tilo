@@ -78,18 +78,14 @@ pub enum BridgeStatus {
     },
     /// A tool was built for the environment on the relay.
     ToolBuilt {
-        /// The environment.
         record: String,
-        /// The workspace it lives in.
         workspace_id: u64,
         /// The packages it provides.
         packages: Vec<String>,
         /// The image built, by architecture.
         images: std::collections::BTreeMap<String, String>,
     },
-    /// The bridge ended.
     Ended {
-        /// The guest's exit code, when it exited.
         code: Option<i32>,
         /// Why, when it did not simply exit.
         reason: Option<String>,
@@ -125,10 +121,6 @@ pub enum BridgeEnd {
 
 /// Carry `local` (the pty the Terminal sees) to `stream`, re-attaching with
 /// `reattach` when the connection drops.
-///
-/// # Errors
-///
-/// Returns an error only when the local terminal fails.
 pub async fn run_bridge<I, O, R, F>(
     mut stream: PtyStream,
     input: &mut I,

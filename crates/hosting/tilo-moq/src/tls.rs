@@ -70,10 +70,6 @@ fn certified(
 }
 
 /// A certificate loaded once and presented for as long as the listener runs.
-///
-/// # Errors
-///
-/// The key does not match the chain or is of an unsupported kind.
 pub fn fixed_certificate(
     chain: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
@@ -226,7 +222,6 @@ mod tests {
         let files = FileCertificate::with_recheck(&chain, &key, Duration::ZERO).unwrap();
         assert_eq!(files.current().cert[0], first);
 
-        // A half-written renewal keeps the certificate that works.
         std::fs::write(&key, "").unwrap();
         stamp(&key, 2);
         assert_eq!(files.current().cert[0], first);

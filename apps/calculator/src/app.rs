@@ -366,8 +366,6 @@ impl CalculatorApp {
         }
     }
 
-    // -- pointer routing -----------------------------------------------------
-
     /// Whether a floating drawer is up over the window, so the content
     /// beneath it takes no presses.
     fn drawer_blocks(&self) -> bool {
@@ -582,8 +580,6 @@ impl CalculatorApp {
             _ => {}
         }
     }
-
-    // -- keyboard ------------------------------------------------------------
 
     /// Keyboard and IME input an unfocused instance must leave unclaimed.
     fn ignores_unfocused_input(&self, event: &WindowEvent) -> bool {

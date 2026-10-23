@@ -395,10 +395,6 @@ impl RoomRecordsLink for RelayRecordsLink {
 /// Start `cfg`'s relay with an agent supervisor as its app-serving plane,
 /// then start the supervisor's agents: those the state directory says were
 /// running resume.
-///
-/// # Errors
-///
-/// Returns why the relay did not start or the agent state could not be read.
 pub async fn start(
     cfg: crate::RelayConfig,
     identity: RelayIdentity,

@@ -1270,7 +1270,6 @@ mod tests {
             "the declared effect is gated like the row's"
         );
 
-        // Catches availability flags wired to the wrong command.
         let actions = internal_actions(&projection(InternalProjection {
             on_review: true,
             availability: InternalAvailability {

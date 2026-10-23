@@ -1487,7 +1487,6 @@ fn pairing_envelopes_are_step_bound() {
         )
         .unwrap();
         verify_response(&opened, root.verifying_key().to_bytes()).unwrap();
-        // Another key, another token nonce or another recipient device fail.
         let other = tilo_seal::SecretKey::generate().unwrap();
         assert!(
             decrypt_response(

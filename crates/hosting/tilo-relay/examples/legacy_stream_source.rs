@@ -330,7 +330,6 @@ struct Room {
     client: Arc<RelayClient>,
     workspace_id: u64,
     author: [u8; 32],
-    /// The codec the window is streamed in.
     codec: StreamCodec,
 }
 

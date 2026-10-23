@@ -48,12 +48,10 @@ const ROOM_INPUT: &str = "room";
 /// How many dead letters an installation keeps, newest last.
 pub const DEAD_LETTERS_KEPT: usize = 200;
 
-/// A bot installed in the room.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InstalledBot {
     /// The installation's id; the bot acts as `bot:<installation>`.
     pub installation: String,
-    /// The directory entry it was installed from.
     pub entry: String,
     /// Its name, as the directory lists it.
     pub name: String,
@@ -167,13 +165,11 @@ impl RunHooks for Unattended {
 
 /// How a firing went on this host.
 enum Fired {
-    /// It ran and the room took what it changed.
     Ran(Box<tilo_automation::RunReport>),
     /// It ran, and the room refused what it changed, for this reason.
     Refused(String),
 }
 
-/// One installed bot's runner.
 pub struct BotRunner {
     rooms: Rooms,
     room: String,
@@ -197,9 +193,6 @@ impl BotRunner {
     /// device `host` governs it, signing as the bot's device `bot_key`
     /// (see [`super::membership::HostRootCertifier::device_key`]), its
     /// connectors already started, its progress kept in `state_file`.
-    ///
-    /// # Errors
-    /// The program does not parse or the state file is unreadable.
     pub fn new(
         rooms: Rooms,
         room: String,
@@ -992,7 +985,6 @@ pub struct ConnectorHost {
 }
 
 impl ConnectorHost {
-    /// A host running workers from `workers` over the blob store `blobs`.
     #[must_use]
     pub fn new(
         workers: BTreeMap<String, PathBuf>,

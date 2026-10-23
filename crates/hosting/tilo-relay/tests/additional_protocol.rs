@@ -1,5 +1,3 @@
-//! A host-owned join handler shares the relay's one pinned Iroh endpoint.
-
 #![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"

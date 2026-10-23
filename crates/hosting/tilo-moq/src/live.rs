@@ -126,10 +126,6 @@ pub trait LiveSession: Send + Sync {
 /// not block on network I/O.
 pub trait LiveAuthority: Send + Sync {
     /// Verify the grant.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Denied`] when the grant does not authorize a session.
     fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied>;
     /// Validate one presence frame; returns its per-publisher sequence.
     fn presence_seq(&self, frame: &[u8]) -> Option<u64>;

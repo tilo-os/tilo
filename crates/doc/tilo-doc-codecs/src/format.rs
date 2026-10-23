@@ -23,10 +23,6 @@ pub enum CodecError {
 pub trait FormatProvider: Send + Sync {
     /// Project `bytes` into `doc`. Binary content the file embeds is added to `inputs`; the document
     /// only references it, so the caller must persist `inputs` before keeping the document.
-    ///
-    /// # Errors
-    /// Returns [`CodecError`] if `bytes` are malformed, exceed the codec's
-    /// resource bounds, or use a construct the codec refuses to import.
     fn import(
         &self,
         bytes: &[u8],

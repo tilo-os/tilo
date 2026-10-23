@@ -1407,7 +1407,6 @@ const PROVIDERS: [&str; 3] = [
 /// own operations ([`HOST_ACTIONS_PROVIDER`]), and the app-serving plane its
 /// embedder supplied for everything else.
 pub(crate) struct GovernedPlane {
-    /// Answers the rooms' governance.
     pub(crate) governance: HostRoomActions,
     /// Answers everything else, when the embedder serves apps.
     pub(crate) apps: Option<Arc<dyn AppServingPlane>>,

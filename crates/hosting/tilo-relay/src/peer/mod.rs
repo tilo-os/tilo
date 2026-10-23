@@ -138,7 +138,6 @@ pub enum PeerError {
     /// Writer error.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    /// Postcard encode error.
     #[error("encode: {0}")]
     Encode(#[from] postcard::Error),
     /// Backing store error.
@@ -168,7 +167,6 @@ const fn autobind_has_capacity(current: usize) -> bool {
 /// workspaces explicitly.
 #[derive(Clone)]
 pub struct WorkspaceAutobind {
-    /// Relay state root under which a newly seen workspace is persisted.
     pub state_root: std::path::PathBuf,
     /// The adapter a newly seen workspace's store classifies co-edit bodies
     /// with: the one the relay was started with.

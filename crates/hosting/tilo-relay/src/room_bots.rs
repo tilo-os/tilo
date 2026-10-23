@@ -33,10 +33,6 @@ pub const MODERATION_INSTALLATION: &str = "moderation";
 
 /// Enforces one of the moderation agent's governance changes on `room` as
 /// the room's root, held to the room's policy like a Moderator's own.
-///
-/// # Errors
-/// The change is not one the agent makes, names no valid person, or the
-/// room refused it.
 pub async fn govern(
     rooms: &Rooms,
     room: &str,
