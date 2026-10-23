@@ -138,6 +138,24 @@ impl BrokerChannels {
                 .is_none_or(|gate| gate.accepts(encryption, channel))
     }
 
+    /// The verdict on an op for `channel` from its journal's gate and the
+    /// registered one ([`channel_crypto::admission`]). This broker holds
+    /// every channel's whole governance state, so a channel with no gate is
+    /// one that is not encrypted.
+    pub fn document_admission(
+        &self,
+        channel: ChannelId,
+        encryption: Option<&EncryptionMetadata>,
+    ) -> collab_types::inbound::OpAdmission {
+        let gates = self
+            .governance
+            .get(&channel)
+            .map(channel_crypto::GovernanceJournal::gate)
+            .into_iter()
+            .chain(self.gates.get(&channel).copied());
+        channel_crypto::admission(gates, true, channel, encryption)
+    }
+
     /// [`Self::document_encryption_allowed`] for history a workspace host
     /// replayed in its own order (see `ChannelGate::accepts_history`).
     pub fn document_history_allowed(

@@ -39,6 +39,8 @@ mod audio_output;
 pub(super) mod committed_document;
 #[path = "directory_client.rs"]
 mod directory_client;
+#[path = "held_inbound.rs"]
+mod held_inbound;
 // The managed sender itself is Unix-only (host_worker), and so is its transport.
 #[path = "inbound_document.rs"]
 mod inbound_document;
@@ -6780,7 +6782,7 @@ async fn apply_fetched_keys(
         {
             changed |= update_route_keys(route, reply, asked);
         }
-        if !deliver_waiting(route, signer, inbound_tx).await {
+        if !held_inbound::deliver_waiting(route, signer, inbound_tx).await {
             return changed;
         }
     }
@@ -6808,61 +6810,10 @@ async fn refresh_all_route_keys(
         {
             refresh_route_keys(route, signer).await;
         }
-        if !deliver_waiting(route, signer, inbound_tx).await {
+        if !held_inbound::deliver_waiting(route, signer, inbound_tx).await {
             return;
         }
     }
-}
-
-/// Report `route`'s access change to the app, then send the edits and
-/// deliver the ciphertext that waited on its keys. `false` once the app
-/// side is gone.
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc routes are !Send and this runs only on the shovel LocalSet"
-)]
-async fn deliver_waiting(
-    route: &SdkRoute,
-    signer: &mut LocalSdkDocumentSigner,
-    inbound_tx: &InboundBridge,
-) -> bool {
-    let (state, outbound, inbound) = {
-        let Ok(mut keys) = route.encryption.lock() else {
-            return true;
-        };
-        (
-            keys.take_state_change(),
-            keys.take_held_outbound(),
-            keys.take_held_inbound(),
-        )
-    };
-    if let Some(state) = state
-        && !inbound_tx.send_durable(CollabEvent::ChannelAccess {
-            route: route.spec.clone(),
-            state,
-        })
-    {
-        return false;
-    }
-    for (frame, claims) in outbound {
-        if send_document_frame(route, signer, frame, &claims, &inbound_tx.state)
-            .await
-            .is_err()
-        {
-            tracing::warn!("collab: an edit that waited for channel access was not sent");
-        }
-    }
-    for arrived in inbound {
-        let Ok(event) = signed_document_event(arrived, &route.encryption) else {
-            continue;
-        };
-        if let Some(complete) = complete_document_event(event, &inbound_tx.reassembly.live)
-            && !inbound_tx.send_document(complete).await
-        {
-            return false;
-        }
-    }
-    true
 }
 
 /// Shovel-thread Cap'n Proto endpoint for an application's pull directory.
@@ -7236,7 +7187,11 @@ async fn dispatch_sdk_request(
                             // History pages arrive newest first, so a
                             // transfer split across pages completes when its
                             // oldest segment arrives.
-                            Ok(payload) => DocumentReassembly::complete(
+                            Ok(payload) => {
+                                if let Ok(mut keys) = route.encryption.lock() {
+                                    keys.settle(&op);
+                                }
+                                DocumentReassembly::complete(
                                 &inbound_tx.reassembly.history,
                                 &op,
                                 payload,
@@ -7244,7 +7199,8 @@ async fn dispatch_sdk_request(
                             .map(|payload| {
                                 payloads.push(payload);
                                 Box::new(op)
-                            }),
+                            })
+                            }
                             Err(DecryptFailure::Later) => {
                                 // Paged again once this device holds the key.
                                 None
@@ -13474,7 +13430,11 @@ mod tests {
             let op_bytes = postcard::to_stdvec(&op).unwrap();
 
             let broker = FakeBroker {
-                op_backlog: vec![(op_bytes, "peer-bob".to_owned(), OpAdmission::Unstated)],
+                op_backlog: vec![(
+                    op_bytes,
+                    "peer-bob".to_owned(),
+                    OpAdmission::CleartextAdmitted,
+                )],
                 ..FakeBroker::default()
             };
             let (fd, _captures, _th) = stand_up_fake_broker(broker);

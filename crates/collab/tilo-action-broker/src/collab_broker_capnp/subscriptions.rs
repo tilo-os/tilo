@@ -14,16 +14,11 @@ pub(super) fn live_admission(
     route: &CrdtRoute,
     envelope: &collab_types::SignedOp,
 ) -> OpAdmission {
-    if envelope.encryption.is_some() {
-        return OpAdmission::EncryptionRequired;
-    }
     let channel =
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
-    if channels.document_encryption_allowed(channel, None) {
-        OpAdmission::CleartextAdmitted
-    } else {
-        OpAdmission::EncryptionRequired
-    }
+    channels
+        .document_admission(channel, envelope.encryption.as_ref())
+        .into()
 }
 
 /// Replay to a new op subscriber of `channel_id` the ops this broker

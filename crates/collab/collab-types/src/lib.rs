@@ -54,6 +54,7 @@ pub mod document_transfer;
 pub mod event;
 pub mod history;
 pub mod identity;
+pub mod inbound;
 pub mod mls_governance;
 pub mod op;
 pub mod ownership_transfer;

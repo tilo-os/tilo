@@ -18,6 +18,7 @@
 
 use std::collections::VecDeque;
 
+use collab_types::inbound::{InboundHold, OpKey};
 use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};
 use runtime_collab::OpAdmission;
 use zeroize::Zeroizing;
@@ -27,7 +28,8 @@ use super::ChannelAccessState;
 /// Most edits held while waiting for access, and most bytes.
 const MAX_HELD_OUTBOUND: usize = 4096;
 const MAX_HELD_OUTBOUND_BYTES: usize = 64 * 1024 * 1024;
-/// Most ciphertext ops held while waiting for keys.
+/// Most ops held while waiting for keys or a verdict; past it the oldest is
+/// owed by history.
 const MAX_HELD_INBOUND: usize = 4096;
 
 pub(super) enum Keys {
@@ -104,7 +106,9 @@ pub(super) struct RouteKeys {
     pub(super) keys: Keys,
     held_outbound: VecDeque<HeldFrame>,
     held_outbound_bytes: usize,
-    held_inbound: VecDeque<Arrived>,
+    held_inbound: InboundHold<Arrived>,
+    /// The state and key generation held ops were last decided under.
+    decided_under: Option<(ChannelAccessState, u64)>,
     reported: Option<ChannelAccessState>,
     /// The generation of the keys that last failed to open held ciphertext
     /// and asked for newer ones: asked once per generation.
@@ -132,7 +136,8 @@ impl RouteKeys {
             keys,
             held_outbound: VecDeque::new(),
             held_outbound_bytes: 0,
-            held_inbound: VecDeque::new(),
+            held_inbound: InboundHold::new(MAX_HELD_INBOUND),
+            decided_under: None,
             reported: None,
             asked_for_held: None,
             answered: false,
@@ -264,22 +269,19 @@ impl RouteKeys {
 
     /// Open an envelope's payload under the broker's `admission` for it.
     /// Whether cleartext belongs on the channel is the broker's call alone:
-    /// cleartext it admitted applies whatever this route's keys, and
-    /// cleartext it says must be sealed is refused. A broker that states no
-    /// verdict admits cleartext only on a cleartext route.
+    /// cleartext it admitted applies whatever this route's keys, cleartext
+    /// it says must be sealed is refused, and cleartext with no verdict
+    /// waits for one.
     pub(super) fn open(
         &mut self,
         envelope: &SignedOp,
         admission: OpAdmission,
     ) -> Result<Option<Zeroizing<Vec<u8>>>, Unopened> {
         let Some(metadata) = envelope.encryption else {
-            return match (admission, &self.keys) {
-                (OpAdmission::CleartextAdmitted, _) | (OpAdmission::Unstated, Keys::Plain) => {
-                    Ok(None)
-                }
-                (OpAdmission::EncryptionRequired | OpAdmission::Unstated, _) => {
-                    Err(Unopened::Never(Never::Downgrade))
-                }
+            return match admission.admits_cleartext() {
+                Some(true) => Ok(None),
+                Some(false) => Err(Unopened::Never(Never::Downgrade)),
+                None => Err(Unopened::Later),
             };
         };
         let ciphertext = collab_types::sealed_ciphertext(envelope)
@@ -334,21 +336,56 @@ impl RouteKeys {
         self.held_outbound.drain(..).collect()
     }
 
-    /// Keep an envelope that could not be opened yet. The oldest is dropped
-    /// when the hold is full; history paging recovers it once keys arrive.
+    /// Keep an envelope that could not be opened yet, until the route's
+    /// state changes or history supplies it. When the hold is full its
+    /// oldest is owed by history instead ([`Self::owed_pages`]).
     pub(super) fn hold_inbound(&mut self, arrived: Arrived) {
-        if self.held_inbound.len() >= MAX_HELD_INBOUND {
-            self.held_inbound.pop_front();
+        if let Some(owed) = self
+            .held_inbound
+            .hold(OpKey::of(&arrived.envelope), arrived)
+        {
+            tracing::info!(op = %owed, "collab: inbound hold full; history owes its oldest op");
         }
-        self.held_inbound.push_back(arrived);
     }
 
-    /// Take every held envelope, oldest first, once keys are held.
+    /// Every held envelope, oldest first, once per change of the route's
+    /// state or keys, to decide again; what still cannot open is held again.
     pub(super) fn take_held_inbound(&mut self) -> Vec<Arrived> {
-        if !self.state().is_open() {
+        let now = (self.state(), self.generation());
+        if self.decided_under == Some(now) {
             return Vec::new();
         }
-        self.held_inbound.drain(..).collect()
+        self.decided_under = Some(now);
+        self.held_inbound
+            .take()
+            .into_iter()
+            .map(|(_, arrived)| arrived)
+            .collect()
+    }
+
+    /// History supplied this op: it no longer waits here.
+    pub(super) fn settle(&mut self, envelope: &SignedOp) {
+        self.held_inbound.settle(&OpKey::of(envelope));
+    }
+
+    /// Whether history owes this route the op.
+    pub(super) fn owes(&self, envelope: &SignedOp) -> bool {
+        self.held_inbound.is_owed(&OpKey::of(envelope))
+    }
+
+    /// Where to page history for what the full hold let go of, once the
+    /// route can open it.
+    pub(super) fn owed_pages(&self) -> Vec<(ArtifactId, u64)> {
+        if self.state().is_open() {
+            self.held_inbound.owed_pages()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// History has nothing older for `artifact`: the ops it never supplied.
+    pub(super) fn give_up_owed(&mut self, artifact: ArtifactId) -> Vec<OpKey> {
+        self.held_inbound.give_up_owed(artifact)
     }
 }
 
@@ -366,6 +403,39 @@ mod tests {
         .unwrap();
         let bytes = group.content_keys().unwrap().to_bytes().unwrap().to_vec();
         (group, bytes)
+    }
+
+    #[test]
+    fn an_op_history_supplied_while_held_is_not_released_again() {
+        let channel = ChannelId::new();
+        let (group, encoded) = keys(channel);
+        let (metadata, sealed) = group
+            .seal_content(
+                ArtifactId(uuid::Uuid::from_bytes([1; 16])),
+                ContentRetention::Delta,
+                b"from a peer",
+            )
+            .unwrap();
+        let arrived = envelope(sealed, Some(metadata));
+        let mut route = RouteKeys::requested();
+        route.hold_inbound(held(arrived.clone()));
+        route.settle(&arrived);
+        route.update(Wire::Ready, 1, Some(&encoded));
+        assert!(route.take_held_inbound().is_empty());
+    }
+
+    #[test]
+    fn held_ops_are_decided_again_only_when_the_route_changes() {
+        let channel = ChannelId::new();
+        let (_, encoded) = keys(channel);
+        let mut route = RouteKeys::requested();
+        route.hold_inbound(held(envelope(vec![1], None)));
+        let again = route.take_held_inbound();
+        assert_eq!(again.len(), 1);
+        route.hold_inbound(again.into_iter().next().unwrap());
+        assert!(route.take_held_inbound().is_empty());
+        route.update(Wire::Ready, 1, Some(&encoded));
+        assert_eq!(route.take_held_inbound().len(), 1);
     }
 
     fn held(envelope: SignedOp) -> Arrived {
@@ -531,12 +601,14 @@ mod tests {
             route.open(&old, OpAdmission::CleartextAdmitted),
             Ok(None)
         ));
-        for refused in [OpAdmission::EncryptionRequired, OpAdmission::Unstated] {
-            assert!(matches!(
-                route.open(&old, refused),
-                Err(Unopened::Never(Never::Downgrade))
-            ));
-        }
+        assert!(matches!(
+            route.open(&old, OpAdmission::EncryptionRequired),
+            Err(Unopened::Never(Never::Downgrade))
+        ));
+        assert!(matches!(
+            route.open(&old, OpAdmission::Unstated),
+            Err(Unopened::Later)
+        ));
         let other = keys(ChannelId::new()).0;
         let (metadata, sealed) = other
             .seal_content(old.artifact, ContentRetention::Delta, b"x")
@@ -610,7 +682,7 @@ mod tests {
             Sealed::Ready(_, None)
         ));
         assert!(matches!(
-            plain.open(&envelope(vec![1], None), OpAdmission::Unstated),
+            plain.open(&envelope(vec![1], None), OpAdmission::CleartextAdmitted),
             Ok(None)
         ));
     }
