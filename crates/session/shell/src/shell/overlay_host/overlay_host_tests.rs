@@ -1885,13 +1885,14 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
         reply,
     });
     assert!(h.host.pump_file_picker());
+    settle_file_picker(&mut h);
 
     assert!(pump(
         &mut h,
         &key_press(Key::Named(NamedKey::Enter)),
         Modifiers::default()
     ));
-    h.host.pump_file_picker();
+    settle_file_picker(&mut h);
     assert!(
         received.try_recv().is_err(),
         "nothing is chosen before the answer"
@@ -1921,6 +1922,18 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
         b"original",
         "the app writes, not the chooser"
     );
+}
+
+/// Pump the chooser until its worker has answered everything it was asked
+/// (its listing, a typed name's check), as the compositor does each time
+/// the worker wakes it.
+fn settle_file_picker(h: &mut Harness) {
+    tilo_test_env::wait_until("the chooser's worker to answer", || {
+        h.host.pump_file_picker();
+        !h.host
+            .file_picker()
+            .is_some_and(ui::widget::FilePicker::reading)
+    });
 }
 
 fn key_press(logical_key: Key) -> WindowEvent {
