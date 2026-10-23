@@ -1963,6 +1963,11 @@ fn open_popup(
     Ok(())
 }
 
+/// An extension's id as Chromium makes it: 32 letters `a` to `p`.
+fn extension_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
+}
+
 fn validate_event(value: &Value) -> Result<(), &'static str> {
     if value.get("tab").is_some_and(|tab| {
         !tab.as_u64()
@@ -2232,6 +2237,24 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && !url.is_empty()
                 && url.len() <= 1 << 20
         }
+        WebViewCommand::ExtensionAccess {
+            id,
+            permissions,
+            hosts,
+            token,
+        } => {
+            extension_id(id)
+                && token
+                    .as_ref()
+                    .is_none_or(|token| (32..=128).contains(&token.len()))
+                && [permissions, hosts]
+                    .iter()
+                    .all(|list| list.len() <= 512 && list.iter().all(|entry| entry.len() <= 2048))
+        }
+        WebViewCommand::ExtensionForget { id }
+        | WebViewCommand::ExtensionIdentity { id }
+        | WebViewCommand::ExtensionClick { id } => extension_id(id),
+        WebViewCommand::ExtensionPanel { action } => action.as_deref().is_none_or(extension_id),
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
         | WebViewCommand::DownloadDecision { id, .. }
@@ -2640,6 +2663,26 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::SetSiteExceptions(origins) => {
             json!({"op":"site_exceptions","origins":origins})
         }
+        WebViewCommand::ExtensionAccess {
+            id,
+            permissions,
+            hosts,
+            token,
+        } => {
+            let mut command =
+                json!({"op":"extension_access","id":id,"permissions":permissions,"hosts":hosts});
+            if let Some(token) = token {
+                command["token"] = json!(token);
+            }
+            command
+        }
+        WebViewCommand::ExtensionForget { id } => json!({"op":"extension_forget","id":id}),
+        WebViewCommand::ExtensionIdentity { id } => json!({"op":"extension_identity","id":id}),
+        WebViewCommand::ExtensionPanel { action } => match action {
+            Some(id) => json!({"op":"extension_panel","action":id}),
+            None => json!({"op":"extension_panel"}),
+        },
+        WebViewCommand::ExtensionClick { id } => json!({"op":"extension_click","id":id}),
         WebViewCommand::DevTools {
             request_id,
             method,
@@ -2723,6 +2766,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
     })
 }
 
+#[cfg(test)]
+mod extension_tests;
 #[cfg(test)]
 mod popup_tests;
 #[cfg(test)]

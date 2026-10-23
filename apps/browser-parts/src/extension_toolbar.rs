@@ -66,6 +66,56 @@ pub fn action_manifest(manifest: &Value) -> Option<ActionManifest> {
     })
 }
 
+/// What an extension may do with the Browser's tabs, as its manifest asks:
+/// its API permissions (`tabs`, `activeTab`, `scripting`) and the sites it
+/// may read and script, which its content scripts' sites count among.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Access {
+    pub permissions: Vec<String>,
+    pub hosts: Vec<String>,
+    /// The token its service worker shows the engine
+    /// ([`crate::extensions::prepare_tabs`]).
+    pub token: Option<String>,
+}
+
+pub fn access(manifest: &Value) -> Access {
+    let strings = |value: Option<&Value>| -> Vec<String> {
+        value
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    };
+    let site = |entry: &String| entry == "<all_urls>" || entry.contains("://");
+    let mut permissions = Vec::new();
+    let mut hosts = strings(manifest.get("host_permissions"));
+    // Manifest V2 lists sites among its permissions.
+    for entry in strings(manifest.get("permissions")) {
+        if site(&entry) {
+            hosts.push(entry);
+        } else {
+            permissions.push(entry);
+        }
+    }
+    for script in manifest
+        .get("content_scripts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        hosts.extend(strings(script.get("matches")));
+    }
+    hosts.sort();
+    hosts.dedup();
+    Access {
+        permissions,
+        hosts,
+        token: None,
+    }
+}
+
 /// An extension's settings page (`options_ui.page`, or MV2's
 /// `options_page`), relative to its root; one that could leave it is none.
 pub fn options_page(manifest: &Value) -> Option<String> {
@@ -107,6 +157,7 @@ pub struct Installed {
     /// Its settings page, relative to its root (`options_ui.page` or MV2's
     /// `options_page`): where an ad blocker keeps its lists and allowed sites.
     pub options: Option<String>,
+    pub access: Access,
 }
 
 impl Installed {
@@ -126,6 +177,10 @@ impl Installed {
             *title = crate::extensions::localize(title, &messages);
         }
         let options = options_page(&manifest);
+        let access = Access {
+            token: crate::extensions::tabs_token_of(&info.path),
+            ..access(&manifest)
+        };
         Some(Self {
             id,
             name: info.name.clone(),
@@ -134,6 +189,7 @@ impl Installed {
             pinned,
             action,
             options,
+            access,
         })
     }
 
@@ -340,7 +396,30 @@ mod tests {
             pinned,
             action: action_manifest(&serde_json::from_str(manifest).unwrap()),
             options: options_page(&serde_json::from_str(manifest).unwrap()),
+            access: access(&serde_json::from_str(manifest).unwrap()),
         }
+    }
+
+    #[test]
+    fn an_extension_may_use_the_tabs_and_sites_its_manifest_asks_for() {
+        let manifest = serde_json::json!({
+            "permissions": ["tabs", "scripting", "https://old.example/*"],
+            "host_permissions": ["*://*.example.com/*"],
+            "content_scripts": [{"matches": ["<all_urls>"], "js": ["c.js"]}, {"js": ["d.js"]}],
+        });
+        assert_eq!(
+            access(&manifest),
+            Access {
+                permissions: vec!["tabs".into(), "scripting".into()],
+                hosts: vec![
+                    "*://*.example.com/*".into(),
+                    "<all_urls>".into(),
+                    "https://old.example/*".into(),
+                ],
+                token: None,
+            }
+        );
+        assert_eq!(access(&serde_json::json!({})), Access::default());
     }
 
     #[test]

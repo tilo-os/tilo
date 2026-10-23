@@ -228,6 +228,9 @@ const PROFILE_OPS: &[&str] = &[
     "download_cancel",
     "download_retry",
     "download_cancel_all",
+    "extension_access",
+    "extension_forget",
+    "extension_identity",
 ];
 
 static SERVERS: Mutex<Vec<Weak<Server>>> = Mutex::new(Vec::new());
