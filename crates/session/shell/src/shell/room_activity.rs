@@ -164,7 +164,7 @@ impl EndedRun {
     fn group(&self) -> RunGroup {
         match self {
             Self::Shortcut(finished) => RunGroup::shortcut(finished.report.run),
-            Self::Task(ended) => RunGroup::task(&ended.task_id),
+            Self::Task(ended) => RunGroup::task(&ended.group),
         }
     }
 
@@ -1845,7 +1845,7 @@ mod tests {
             .push(PendingShortcutRun::ended(
                 EndedRun::Task(EndedTaskRun {
                     room: room.to_string(),
-                    task_id: "task:translate".into(),
+                    group: "task:translate".into(),
                     title: "Translate the paragraph".into(),
                     agent: "agent:scribe".into(),
                     person: "person:ada".into(),
@@ -1909,7 +1909,7 @@ mod tests {
             .push(PendingShortcutRun::ended(
                 EndedRun::Task(EndedTaskRun {
                     room: room.to_string(),
-                    task_id: "task:translate".into(),
+                    group: "task:translate".into(),
                     title: "Translate".into(),
                     agent: "agent:scribe".into(),
                     person: "person:ada".into(),

@@ -3796,7 +3796,7 @@ mod tests {
         run.action_context = serde_json::to_value(
             tilo_actions::ActionContext::default()
                 .with_purpose(run.title.as_str())
-                .with_group(run.task_id.as_str(), run.title.as_str(), "task"),
+                .with_group(run.group(), run.title.as_str(), "task"),
         )
         .unwrap();
         super::super::validate_task_run(run).unwrap();
@@ -3914,11 +3914,7 @@ mod tests {
         fixture.run.action_context = serde_json::to_value(
             tilo_actions::ActionContext::default()
                 .with_purpose(fixture.run.title.as_str())
-                .with_group(
-                    fixture.run.task_id.as_str(),
-                    fixture.run.title.as_str(),
-                    "task",
-                ),
+                .with_group(fixture.run.group(), fixture.run.title.as_str(), "task"),
         )
         .unwrap();
         fixture
