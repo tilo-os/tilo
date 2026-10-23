@@ -723,6 +723,9 @@ const CONTROL_MATCHING = pattern => `(() => {
   const canvas = tiloMount.canvas.getBoundingClientRect();
   const middle = rect => rect && rect.length === 4
     ? {x: Math.round(canvas.left + rect[0] + rect[2] / 2), y: Math.round(canvas.top + rect[1] + rect[3] / 2)} : null;
+  // A synthetic child's own bounds, where it publishes them ({x0, y0, x1, y1}).
+  const within = bounds => bounds && Number.isFinite(bounds.x0)
+    ? middle([bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0]) : null;
   const find = node => {
     if (!node) return null;
     const own = node.semantics;
@@ -730,7 +733,7 @@ const CONTROL_MATCHING = pattern => `(() => {
     const synthetic = access => {
       for (const child of access?.children ?? []) {
         if (named(child.name)) {
-          return {path: node.path, target: child.action_target ?? null, own: false, at: middle(child.rect) ?? middle(node.rect)};
+          return {path: node.path, target: child.action_target ?? null, own: false, at: within(child.bounds) ?? middle(child.rect), bounds: child.bounds ?? null};
         }
         const found = synthetic(child);
         if (found) return found;
@@ -755,7 +758,19 @@ async function pressMatching(tab, pattern, timeout) {
   let last = {pressed: false, error: 'not shown'};
   const done = await until(async () => {
     const control = await tab.evaluate(CONTROL_MATCHING(pattern));
-    if (!control) return null;
+    // Clicked, and no longer offered: the click pressed it.
+    if (!control) return last.clicked ? (last = {...last, pressed: 'pointer', error: undefined}) : null;
+    // A synthetic child with no action target of its own (a banner's
+    // button) has nothing assistive technology can activate: activating
+    // its owner would press something else. Only the pointer reaches it.
+    if (!control.own && !control.target) {
+      last = {control, pressed: false, error: 'no semantic target'};
+      if (control.at) {
+        await click(tab, control.at);
+        last.clicked = control.at;
+      }
+      return null;
+    }
     const pressed = await tab.evaluate(`tiloMount.semantic(${JSON.stringify(control.path)}, ${JSON.stringify(control.target ?? undefined)}, 'activate', '', 0, 0) === true`)
       .catch(error => ({error: error.message}));
     if (pressed === true) return (last = {control, pressed: 'semantic'});
@@ -1226,10 +1241,6 @@ async function main() {
       // Let in from the banner the inviter's desktop offers; once the
       // invitee is in, nothing more is offered.
       letIn = await pressMatching(inviter, '^Let .+ in$', 90_000);
-      if (!letIn.pressed && letIn.clicked) {
-        const gone = await until(async () => !(await inviter.evaluate(CONTROL_MATCHING('^Let .+ in$'))), 10_000);
-        if (gone) letIn = {...letIn, pressed: 'pointer'};
-      }
       invited = await until(async () => {
         const now = await settle(door, settleOptions);
         return now.entry === 'open' && now.membership ? now : null;
@@ -1243,7 +1254,8 @@ async function main() {
       && /^[0-9a-f]{64}$/.test(invited.membership?.userPublicKey ?? '') && invited.membership.userPublicKey !== me
       && invitedJoins.length === 0,
     {inviter: {entry: inviting.entry, membership: inviting.membership, status: inviting.status}, invitePressed, inviteLink,
-      joined, letIn, asking, inviterLog: letIn.pressed ? undefined : inviter.log.slice(-8), entry: invited.entry, arrival: invited.arrival, membership: invited.membership, status: invited.status,
+      joined, letIn, asking, inviterLog: letIn.pressed ? undefined : inviter.log.slice(-8),
+      inviteeLog: invited.entry === 'open' ? undefined : door.log.slice(-12), entry: invited.entry, arrival: invited.arrival, membership: invited.membership, status: invited.status,
       doorJoins: invitedJoins.map(j => j.status)});
     if (invited.entry !== 'open') await shoot('invite-admits', door);
     await door.close();
