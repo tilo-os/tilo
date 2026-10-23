@@ -56,7 +56,7 @@ use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::metrics::Metrics;
 use ui::widget::modal_dialog;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, Transient};
 use ui::widget::{
     Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead, ColorSwatchFace, Continuable,
     ControlSize, DropZoneFace, EditOutcome, EditableLabel, EmptyState, EmptyStateContent,
@@ -305,6 +305,9 @@ struct LoadingImport {
     path: PathBuf,
     kind: ImportKind,
     expected_book_id: Option<String>,
+    /// The "Opening …" card: it goes after a notice's lifetime, though
+    /// the import may run on.
+    card: Transient<()>,
 }
 
 /// A materialised workspace copy awaiting the UI/document-owner commit. The
@@ -906,7 +909,7 @@ pub struct BooksApp {
     import_loading: Option<LoadingImport>,
     pending_share: Option<PendingShare>,
     /// Empty-state message when opening a book failed.
-    load_error: Option<String>,
+    load_error: Transient<String>,
 
     // --- taffy / paint geometry -------------------------------------------
     rect: Rect,
@@ -1275,7 +1278,7 @@ impl BooksApp {
             import_generation: 0,
             import_loading: None,
             pending_share: None,
-            load_error: None,
+            load_error: Transient::new(),
             rect: Rect::ZERO,
             dirty: true,
             view: View::Library,
@@ -1993,8 +1996,9 @@ impl BooksApp {
             path,
             kind,
             expected_book_id,
+            card: Transient::showing(()),
         });
-        self.load_error = None;
+        self.load_error.dismiss();
         self.dirty = true;
         Ok(())
     }
@@ -2006,7 +2010,7 @@ impl BooksApp {
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("epub"));
         if !epub {
-            self.load_error = Some(format!(
+            self.load_error.show(format!(
                 "Couldn't open {}: only EPUB books can be added",
                 path.file_name().map_or_else(
                     || path.display().to_string(),
@@ -2020,7 +2024,7 @@ impl BooksApp {
 
     fn settle_import_failure(&mut self, message: String, code: &str) {
         self.import_loading = None;
-        self.load_error = Some(message.clone());
+        self.load_error.show(message.clone());
         if let Some(invocation) = self.resource_invocation.take() {
             self.completed_resource_invocation = Some(tilo_actions::InvocationUpdate::Failed {
                 invocation,
@@ -2073,12 +2077,12 @@ impl BooksApp {
                 cx.submit(crate::resource::shelve(&placed.entry));
                 self.pending_open_book = Some(placed.entry.id);
                 self.shelve(placed.book, placed.path);
-                self.load_error = None;
+                self.load_error.dismiss();
                 Ok(ui::framework::Effected::done())
             }
             Err(error) => {
                 let message = format!("Couldn’t open {name}: {error}");
-                self.load_error = Some(message.clone());
+                self.load_error.show(message.clone());
                 Err(message)
             }
         }
@@ -2171,7 +2175,7 @@ impl BooksApp {
                         Arc::make_mut(&mut self.library).push(Arc::new(book));
                         self.library.len() - 1
                     };
-                    self.load_error = None;
+                    self.load_error.dismiss();
                     if completed.kind == ImportKind::Open {
                         self.open_book_at(doc, index);
                     }
@@ -2195,14 +2199,19 @@ impl BooksApp {
                         .file_name()
                         .and_then(|name| name.to_str())
                         .unwrap_or("book");
-                    self.load_error = Some(format!("Couldn’t open {name}: {error}"));
+                    self.load_error
+                        .show(format!("Couldn’t open {name}: {error}"));
                     if let Some(invocation) = self.resource_invocation.take() {
                         self.completed_resource_invocation =
                             Some(tilo_actions::InvocationUpdate::Failed {
                                 invocation,
                                 error: tilo_actions::ActionFailure {
                                     code: "ebook.open_failed".into(),
-                                    message: self.load_error.clone().unwrap_or_default(),
+                                    message: self
+                                        .load_error
+                                        .as_deref()
+                                        .unwrap_or_default()
+                                        .to_owned(),
                                     details: None,
                                     retryable: false,
                                 },
@@ -2247,6 +2256,7 @@ impl BooksApp {
             path: path.to_path_buf(),
             kind,
             expected_book_id: None,
+            card: Transient::showing(()),
         });
         Ok((entered, release))
     }
@@ -2323,7 +2333,9 @@ impl BooksApp {
             Action::ToggleNotes => self.on_toggle_notes(),
             Action::ToggleTypePopover => self.reading_settings.toggle(),
             Action::DismissOverlay => self.on_dismiss_overlay(),
-            Action::DismissLoadError => self.load_error = None,
+            Action::DismissLoadError => {
+                self.load_error.dismiss();
+            }
             Action::Swallow => {}
             Action::ToggleBookmark => self.toggle_bookmark(doc),
             Action::FontInc => self.bump_setting(doc, |s| {
@@ -2755,26 +2767,26 @@ impl BooksApp {
                 .remember_book(&pending.book_id, &pending.path);
             self.library_paths.insert(pending.book_id, pending.path);
             self.local_library.save();
-            self.load_error = None;
+            self.load_error.dismiss();
         } else {
-            self.load_error = Some("The shared copy no longer matches this book.".into());
+            self.load_error
+                .show("The shared copy no longer matches this book.".into());
         }
         if let Some(invocation) = self.resource_invocation.take() {
-            self.completed_resource_invocation = Some(if self.load_error.is_none() {
-                tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                }
-            } else {
-                tilo_actions::InvocationUpdate::Failed {
+            self.completed_resource_invocation = Some(match self.load_error.as_deref() {
+                Some(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
                     error: tilo_actions::ActionFailure {
                         code: "ebook.share_failed".into(),
-                        message: self.load_error.clone().unwrap_or_default(),
+                        message: message.to_owned(),
                         details: None,
                         retryable: true,
                     },
-                }
+                },
+                None => tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
             });
         }
         self.dirty = true;
@@ -2782,7 +2794,7 @@ impl BooksApp {
 
     fn on_share_to_workspace(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         if let Err(error) = self.begin_share_book(id) {
-            self.load_error = Some(error);
+            self.load_error.show(error);
             return;
         }
         self.commit_pending_share(doc);
@@ -4514,26 +4526,49 @@ impl BooksApp {
             .reduce(|bounds, run| bounds.union(run))
     }
 
+    /// Take the import's card down once it has been up for a notice's
+    /// lifetime, so the window repaints without it.
+    fn expire_load_toast(&mut self) {
+        let opening = self
+            .import_loading
+            .as_mut()
+            .is_some_and(|loading| loading.card.expire());
+        if self.load_error.expire() || opening {
+            self.dirty = true;
+        }
+    }
+
+    /// When the import's card leaves, for the app's wake deadline.
+    fn load_toast_deadline(&self) -> Option<ui::time::Instant> {
+        self.import_loading
+            .as_ref()
+            .and_then(|loading| loading.card.deadline())
+            .into_iter()
+            .chain(self.load_error.deadline())
+            .min()
+    }
+
     /// An import in flight or the last import's failure, as a transient
-    /// card at the bottom of the window. The failure stays until it is
-    /// dismissed.
+    /// card at the bottom of the window, for a notice's lifetime or until
+    /// it is dismissed.
     fn draw_load_toast(&mut self, ctx: &mut PaintCtx<'_>) {
         let opening;
-        let (title, body, kind) = if let Some(loading) = &self.import_loading {
+        let (title, body, kind, since) = if let Some(loading) = &self.import_loading {
             let name = loading
                 .path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("book");
             opening = format!("Opening {name}");
-            (opening.as_str(), "", ToastKind::Info)
+            (opening.as_str(), "", ToastKind::Info, loading.card.since())
         } else if let Some(error) = self.load_error.as_deref() {
             // "Couldn't open x.epub: the reason" reads as a title and a body.
-            match error.split_once(": ") {
-                Some((title, body)) => (title, body, ToastKind::Error),
-                None => (error, "", ToastKind::Error),
-            }
+            let (title, body) = error.split_once(": ").unwrap_or((error, ""));
+            (title, body, ToastKind::Error, self.load_error.since())
         } else {
+            return;
+        };
+        let Some(since) = since else {
             return;
         };
         let closable = self.import_loading.is_none();
@@ -4546,6 +4581,7 @@ impl BooksApp {
             self.toast_area,
             ToastAnchor::BottomCenter,
             &card,
+            since,
         );
         if closable && hit.close_rect.width() > 0.0 {
             self.push_hit(hit.card_rect, Action::Swallow);
@@ -4659,6 +4695,7 @@ impl Widget for BooksApp {
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
         self.drain_opens();
+        self.expire_load_toast();
         self.poll_query();
         self.close_orphaned_editors();
         self.note_composer.sync(doc, path);
@@ -5070,7 +5107,7 @@ impl Widget for BooksApp {
             }
         }
         children.extend(controls);
-        if let Some(error) = self.load_error.as_ref().filter(|error| !error.is_empty()) {
+        if let Some(error) = self.load_error.get().filter(|error| !error.is_empty()) {
             children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(error.clone())
@@ -5344,6 +5381,10 @@ impl Widget for BooksApp {
 
     fn needs_redraw(&self) -> bool {
         self.dirty || self.flaps_animating()
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.load_toast_deadline()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -7095,7 +7136,7 @@ impl BooksApp {
             icon: Some(Icon::FileText),
             message: Some(message),
             action_label: Some("Open a book"),
-            error: self.load_error.is_some(),
+            error: self.load_error.is_shown(),
             ..EmptyStateContent::new("Your library is empty")
         };
         if let Some(action) = self

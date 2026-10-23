@@ -365,7 +365,7 @@ impl BooksApp {
             {
                 self.query.reveal_on_arrival = None;
             }
-            self.load_error = Some(message.to_owned());
+            self.load_error.show(message.to_owned());
         }
         self.dirty = true;
     }

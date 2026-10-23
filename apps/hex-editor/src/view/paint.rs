@@ -641,8 +641,8 @@ impl HexView {
         } else {
             self.rect
         };
-        if let Some((title, detail, _)) = &self.problem {
-            ui::widget::toast::paint_transient(
+        if let Some((title, detail)) = self.problem.get() {
+            self.problem.paint(
                 scene,
                 transform,
                 tr,

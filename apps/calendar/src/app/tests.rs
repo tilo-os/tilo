@@ -131,7 +131,7 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
         edit.start,
         Some(day.and_hms_opt(2, 30, 0).unwrap()),
         "status={:?}, selection={:?}, dispatched={:?}",
-        h.app.status,
+        h.app.status.as_deref(),
         h.app.selection,
         h.app.last_dispatched()
     );
@@ -157,7 +157,7 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
         edit.start,
         Some(day.and_hms_opt(4, 30, 0).unwrap()),
         "status={:?}, selection={:?}, dispatched={:?}, spans={:?}",
-        h.app.status,
+        h.app.status.as_deref(),
         h.app.selection,
         h.app.last_dispatched(),
         h.app.timeline_spans(&[day])
@@ -964,7 +964,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         assert!(h.app.model.event(id).is_none(), "the draft is gone");
         assert!(h.app.fresh_draft.is_none());
         assert!(
-            h.app.status.is_none(),
+            !h.app.status.is_shown(),
             "discarding is not reported as a deletion"
         );
     }
@@ -1227,7 +1227,7 @@ fn large_text_layouts_stay_in_bounds() {
         assert!(app.detail_open);
         assert!(app.rect.contains_rect(app.detail_rect));
         assert!(
-            app.status.is_none(),
+            !app.status.is_shown(),
             "creating an event does not raise a toast"
         );
     }

@@ -980,7 +980,8 @@ impl PdfApp {
             self.raster_render_pending = batch.iter().copied().collect();
             self.raster_render_batch = batch;
         } else if !batch.is_empty() {
-            self.status_note = Some("PDF render worker is unavailable".to_string());
+            self.status_note
+                .show("PDF render worker is unavailable".to_string());
         }
     }
 
@@ -1104,7 +1105,8 @@ impl PdfApp {
             if submitted {
                 self.raster_tile_batch = batch;
             } else if !batch.is_empty() {
-                self.status_note = Some("PDF render worker is unavailable".to_string());
+                self.status_note
+                    .show("PDF render worker is unavailable".to_string());
             }
         }
     }
@@ -1168,7 +1170,8 @@ impl PdfApp {
                 })
             {
                 self.raster_text_pending.remove(&i);
-                self.status_note = Some("PDF text worker is unavailable".to_string());
+                self.status_note
+                    .show("PDF text worker is unavailable".to_string());
             }
         }
     }
@@ -1670,8 +1673,9 @@ impl PdfApp {
     }
 
     /// A transient toast (e.g. "Saved to …" or "Copied 42 characters")
-    /// centred near the bottom of the canvas. Set on an action, cleared by the
-    /// next document interaction (Esc, a new open/load).
+    /// centred near the bottom of the canvas. Set on an action, gone after a
+    /// notice's lifetime or the next document interaction (Esc, a new
+    /// open/load).
     fn draw_toast(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let Some(note) = self.status_note.as_deref() else {
             return;
@@ -1679,7 +1683,7 @@ impl PdfApp {
         if note.is_empty() {
             return;
         }
-        paint_transient(
+        self.status_note.paint(
             scene,
             base,
             tr,

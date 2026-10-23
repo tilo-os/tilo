@@ -287,7 +287,8 @@ impl CameraApp {
                     let scanner_frame = fb.clone();
                     self.live_view = Some((cur_gen, frame_image_cover(fb)));
                     let Some(generation) = self.scan_generation.checked_add(1) else {
-                        self.toast = Some("Code scan counter exhausted; restart Camera".into());
+                        self.toast
+                            .show("Code scan counter exhausted; restart Camera".into());
                         return;
                     };
                     let id = format!("live:{cur_gen}");
@@ -305,7 +306,7 @@ impl CameraApp {
                         // is expected; keep the previous result until the next
                         // frame rather than spamming a toast.
                         Err(error) if error.contains("already running") => {}
-                        Err(error) => self.toast = Some(error),
+                        Err(error) => self.toast.show(error),
                     }
                 }
             }

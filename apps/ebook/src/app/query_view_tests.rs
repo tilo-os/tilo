@@ -430,7 +430,11 @@ fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
     books(&mut app).open_hit(&anchor);
     settle(&mut app);
     assert_ne!(books(&mut app).view, View::Reader, "its text is on its way");
-    assert_eq!(books(&mut app).load_error, None, "waiting is not a failure");
+    assert_eq!(
+        books(&mut app).load_error.as_deref(),
+        None,
+        "waiting is not a failure"
+    );
     lane.arrive(tilo_content::hash_bytes(&bytes), bytes);
     settle(&mut app);
     let books = books(&mut app);

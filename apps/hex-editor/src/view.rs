@@ -36,6 +36,7 @@ use std::rc::Rc;
 use std::sync::mpsc::TryRecvError;
 use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
+use ui::widget::toast::Transient;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
@@ -70,9 +71,6 @@ use crate::model::{BufferEdit, Column, EditMode, Endian, HexModel};
 use crate::resource::HexEditor;
 use layout::{CellMetrics, ENDIAN_LABELS, Geo, MODE_LABELS};
 use ui::widget::toggle_group::Segment;
-
-/// How long a failure toast stays up.
-const FLASH_MS: u128 = 3500;
 
 /// What a cancelled chooser answers.
 const CANCELLED: &str = "cancelled";
@@ -208,9 +206,9 @@ pub struct HexView {
     /// A chooser in flight, drained once per frame in `sync`, and the open
     /// or save effect it answers.
     io: Option<(FileIo, EffectReply)>,
-    /// A failed open or save: its title, the reason and its birth time. Shown
-    /// as a toast until it expires.
-    problem: Option<(String, String, Instant)>,
+    /// A failed open or save: its title and the reason, shown as a toast
+    /// for a notice's lifetime.
+    problem: Transient<(String, String)>,
 
     /// "Opened": a change worth noticing once, floating at the
     /// content's bottom-trailing corner and fading by itself.
@@ -270,7 +268,7 @@ impl HexView {
             expect_open: false,
             path: None,
             io: None,
-            problem: None,
+            problem: Transient::new(),
             status_bubble: ui::StatusBubble::new(),
             focused: false,
             dispatch: None,
@@ -385,7 +383,7 @@ impl HexView {
 
     /// A failed open or save: a toast with the reason.
     fn problem(&mut self, title: &str, reason: impl Into<String>) {
-        self.problem = Some((title.to_owned(), reason.into(), ui::time::now()));
+        self.problem.show((title.to_owned(), reason.into()));
         self.dirty = true;
     }
 
@@ -570,11 +568,10 @@ impl HexView {
         }
     }
 
-    /// True while a chooser is open or a failure toast is counting down —
-    /// the app keeps pumping frames so the pick drains and the toast
-    /// expires.
+    /// True while a chooser is open: the app keeps pumping frames so the
+    /// pick drains.
     fn is_busy(&self) -> bool {
-        self.io.is_some() || self.problem.is_some()
+        self.io.is_some()
     }
 
     /// Parse a go-to offset: `0x1F` hex, bare hex digits that include a
@@ -862,12 +859,13 @@ impl Widget for HexView {
         self.drain_chooser();
 
         // Expire a failure toast so an idle window settles back to no message.
-        if let Some((_, _, born)) = &self.problem
-            && born.elapsed().as_millis() > FLASH_MS
-        {
-            self.problem = None;
+        if self.problem.expire() {
             self.dirty = true;
         }
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.problem.deadline()
     }
 
     fn needs_idle_sync(&self) -> bool {

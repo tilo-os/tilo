@@ -51,6 +51,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::modal_dialog::ModalLayout;
+use ui::widget::toast::Transient;
 use ui::widget::{DatePicker, Popover, TextInput};
 
 use tilo_rich_text::{RichTextField, RichTextSurface};
@@ -344,10 +345,9 @@ pub struct CalendarApp {
 
     hits: Vec<(Rect, Action)>,
     last_mouse: Point,
-    status: Option<String>,
-    /// The status as first shown and when: a status leaves on its own once
-    /// it has been up for a notice's lifetime ([`Self::expire_status`]).
-    status_shown: Option<(String, ui::time::Instant)>,
+    /// The result of the last sync, import or edit, shown as a toast for a
+    /// notice's lifetime.
+    status: Transient<String>,
     /// The status toast's close button as last painted.
     status_close: Rect,
     /// A just-created blank event is a provisional draft until the user edits
@@ -519,8 +519,7 @@ impl CalendarApp {
             built_notes_w: -1.0,
             hits: Vec::new(),
             last_mouse: Point::ZERO,
-            status: None,
-            status_shown: None,
+            status: Transient::new(),
             status_close: Rect::ZERO,
             fresh_draft: None,
             dirty: true,
@@ -682,7 +681,7 @@ impl CalendarApp {
     /// Deterministic transport-state presentation for visual regression shots.
     pub fn shots_set_sync_state(&mut self, state: &str) {
         self.syncing = state == "syncing";
-        self.status = Some(match state {
+        self.status.show(match state {
             "syncing" => "Syncing calendars…".into(),
             "offline" => "Offline. Changes sync when you reconnect.".into(),
             "conflict" => {
@@ -737,7 +736,8 @@ impl CalendarApp {
         // No account configured: answer instantly rather than spinning up a
         // worker that would only return Offline.
         if self.accounts.is_empty() {
-            self.status = Some("No calendar accounts yet. Add one in Settings.".into());
+            self.status
+                .show("No calendar accounts yet. Add one in Settings.".into());
             self.dirty = true;
             return;
         }
@@ -749,7 +749,7 @@ impl CalendarApp {
         let runtime = match ui::rt::try_app() {
             Ok(runtime) => runtime,
             Err(error) => {
-                self.status = Some(format!("Sync unavailable: {error}"));
+                self.status.show(format!("Sync unavailable: {error}"));
                 self.dirty = true;
                 return;
             }
@@ -857,7 +857,7 @@ impl CalendarApp {
         }));
         self.sync_rx = Some(rx);
         self.syncing = true;
-        self.status = Some("Syncing…".into());
+        self.status.show("Syncing…".into());
         self.dirty = true;
     }
 
@@ -889,7 +889,7 @@ impl CalendarApp {
                 // Worker panicked or dropped the sender without a reply.
                 self.sync_rx = None;
                 self.syncing = false;
-                self.status = Some("Sync failed".into());
+                self.status.show("Sync failed".into());
                 if let Some(reply) = self.sync_reply.take() {
                     reply.finish(Err(
                         "calendar synchronization stopped without a result".into()
@@ -1073,7 +1073,7 @@ impl CalendarApp {
             );
         }
         self.model.events.settle();
-        self.status = Some(match outcome {
+        self.status.show(match outcome {
             SyncOutcome::Synced { calendars, .. } => {
                 format!(
                     "Synced {calendars} calendars. {added} new, {updated} updated, {removed} removed."
@@ -1256,7 +1256,8 @@ impl CalendarApp {
             .split_once('@')
             .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.'));
         if !valid {
-            self.status = Some("Enter a complete email address, such as name@example.com".into());
+            self.status
+                .show("Enter a complete email address, such as name@example.com".into());
             return;
         }
         if self
@@ -1264,7 +1265,7 @@ impl CalendarApp {
             .event(event_id)
             .is_some_and(|event| event.attendees.iter().any(|item| item.email == email))
         {
-            self.status = Some(format!("{email} is already invited"));
+            self.status.show(format!("{email} is already invited"));
             return;
         }
         self.submit(
@@ -1275,7 +1276,7 @@ impl CalendarApp {
             self.model = read;
         }
         self.invite_input.set_text("");
-        self.status = Some(format!(
+        self.status.show(format!(
             "Added {email}. Prepare the invitation in Mail to send it."
         ));
         self.dirty = true;
@@ -1659,7 +1660,7 @@ impl CalendarApp {
             return false;
         }
         self.delete_event(id, doc);
-        self.status = Some("Discarded empty draft".into());
+        self.status.show("Discarded empty draft".into());
         true
     }
 
@@ -1733,7 +1734,8 @@ impl CalendarApp {
             doc,
             Calendar::RESCHEDULE.with((crate::model::key(id), after.start, bridge_end)),
         ) {
-            self.status = Some(format!("Couldn’t move the event: {error}"));
+            self.status
+                .show(format!("Couldn’t move the event: {error}"));
             return;
         }
         let fields = Calendar::paths().events.item(&crate::model::key(id));
@@ -2024,7 +2026,7 @@ impl CalendarApp {
                 task: crate::actions::TaskData::from_task(&task),
             }),
         ) {
-            self.status = Some(error.to_string());
+            self.status.show(error.to_string());
             return;
         }
         self.say_when_kept(crate::resource::t_args(
@@ -2043,7 +2045,7 @@ impl CalendarApp {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.say_when_kept(text);
         } else {
-            self.status = Some(text.into());
+            self.status.show(text.into());
         }
     }
 
@@ -2057,7 +2059,7 @@ impl CalendarApp {
         let said = dispatcher.said();
         if let Some(text) = said.with(Clone::clone) {
             said.set(None);
-            self.status = Some(text);
+            self.status.show(text);
             self.dirty = true;
         }
         let refused = dispatcher.refused();
@@ -2065,7 +2067,7 @@ impl CalendarApp {
             return;
         };
         refused.set(None);
-        self.status = Some(crate::resource::t_args(
+        self.status.show(crate::resource::t_args(
             "calendar-change-refused",
             &[("reason", ui::i18n::ArgValue::from(refusal.reason))],
         ));
@@ -2298,14 +2300,15 @@ impl CalendarApp {
             .find(|account| account.id == id)
             .map(|account| account.collapsed)
         else {
-            self.status = Some("That calendar account is no longer configured".into());
+            self.status
+                .show("That calendar account is no longer configured".into());
             return;
         };
         let result = self.change_display(|display| {
             display.collapsed.insert(id.to_owned(), !collapsed);
         });
         if let Err(error) = result {
-            self.status = Some(error);
+            self.status.show(error);
         }
     }
 
@@ -2574,7 +2577,7 @@ impl CalendarApp {
     fn ics_export(&mut self) -> Result<(String, String), String> {
         self.dirty = true;
         if self.model.events.is_empty() && self.model.tasks.is_empty() {
-            self.status = Some("Nothing to export yet".into());
+            self.status.show("Nothing to export yet".into());
             return Err("There are no events or tasks to export".into());
         }
         Ok((
@@ -2593,7 +2596,7 @@ impl CalendarApp {
             ui::portal::PickRequest::save("Export calendar", "Export", &name).filter(ics_filter());
         Ok(
             cx.save_file(request, ics.into_bytes(), |app: &mut Self, saved, _| {
-                app.status = Some(if saved {
+                app.status.show(if saved {
                     format!(
                         "Exported {} events · {} tasks",
                         app.model.events.len(),
@@ -2624,7 +2627,8 @@ impl CalendarApp {
             let import = crate::resource::import(&payload)
                 .ok_or_else(|| format!("{} holds no events or tasks", file.name))?;
             cx.submit(import);
-            app.status = Some(format!("Imported calendar items from {}", file.name));
+            app.status
+                .show(format!("Imported calendar items from {}", file.name));
             app.dirty = true;
             Ok(ui::framework::Effected::done())
         })
@@ -2856,10 +2860,11 @@ impl CalendarApp {
                 self.blur_editor();
             }
             Action::SetCalendarVisible { id, visible } => {
-                self.status = Some(match self.set_calendar_visibility(&id, visible) {
+                let status = match self.set_calendar_visibility(&id, visible) {
                     Ok(()) => Self::visibility_status(visible).into(),
                     Err(error) => error,
-                });
+                };
+                self.status.show(status);
             }
             Action::ToggleAccountCollapsed(id) => {
                 self.toggle_account_collapsed(&id);
@@ -2897,10 +2902,12 @@ impl CalendarApp {
             Action::DiscardDraft(id) => {
                 self.fresh_draft = None;
                 self.delete_event(id, doc);
-                self.status = None;
+                self.status.dismiss();
             }
             Action::DeleteTask(id) => self.delete_task(id, doc),
-            Action::DismissStatus => self.status = None,
+            Action::DismissStatus => {
+                self.status.dismiss();
+            }
             Action::Noop => {}
         }
         // Discrete actions are worth an immediate save; if the action didn't
@@ -3866,7 +3873,7 @@ impl Widget for CalendarApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
-        self.expire_status();
+        self.status.expire();
         self.adopt_person_accounts();
         if !self.seeded {
             // Whatever the document holds is now authoritative for the UI.
@@ -3937,7 +3944,7 @@ impl Widget for CalendarApp {
         // toast an interactive creation shows.
         if std::mem::take(&mut self.staged_new_event) {
             self.new_event(edits);
-            self.status = None;
+            self.status.dismiss();
         }
         self.poll_sync(edits);
         self.commit_choices(edits, path);
@@ -4295,7 +4302,7 @@ impl Widget for CalendarApp {
                     .with_live(ui::a11y::Politeness::Polite),
             );
         }
-        if let Some(status) = &self.status {
+        if let Some(status) = self.status.get() {
             root.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(status.clone())
@@ -4382,7 +4389,7 @@ impl Widget for CalendarApp {
         if self.pinned_now.is_some() {
             return None;
         }
-        let status = self.status_deadline();
+        let status = self.status.deadline();
         let now = self.now();
         let now_line = matches!(self.view, View::Week | View::Day)
             && self.timeline_days().contains(&self.today);
@@ -4594,7 +4601,7 @@ impl CalendarApp {
                 self.detail_open = false;
                 self.selection = None;
                 self.blur_editor();
-                self.status = Some(if calendar.visible {
+                self.status.show(if calendar.visible {
                     format!("Showing {}", calendar.label)
                 } else {
                     format!(
@@ -4697,7 +4704,7 @@ impl CalendarApp {
         self.selection = None;
         self.detail_open = false;
         self.blur_editor();
-        self.status = Some("Showing all calendars".into());
+        self.status.show("Showing all calendars".into());
         self.dirty = true;
     }
 
@@ -4790,7 +4797,7 @@ impl CalendarApp {
             }
             CalendarEffect::SetVisibility { id, visible } => {
                 self.set_calendar_visibility(&id, visible)?;
-                self.status = Some(Self::visibility_status(visible).into());
+                self.status.show(Self::visibility_status(visible).into());
                 self.dirty = true;
                 Ok(Effected::done())
             }
@@ -4864,7 +4871,8 @@ impl CalendarApp {
             event.timezone
         );
         let calendar_ics = crate::ics::invitation_request(event);
-        self.status = Some("Invitation prepared for Mail — review it there before sending".into());
+        self.status
+            .show("Invitation prepared for Mail — review it there before sending".into());
         self.dirty = true;
         Ok(serde_json::json!({
             "delivery": "not_sent",

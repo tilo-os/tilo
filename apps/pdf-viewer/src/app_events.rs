@@ -1617,7 +1617,7 @@ impl PdfApp {
                 self.context_menu = None;
                 self.page_sidebar.on_escape();
                 self.clear_selection();
-                self.status_note = None;
+                self.status_note.dismiss();
                 self.dirty = true;
                 *handled = true;
             }

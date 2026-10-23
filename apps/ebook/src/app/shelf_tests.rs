@@ -193,7 +193,11 @@ fn a_book_nobody_reachable_has_says_so_on_open_and_keeps_its_tile() {
         )),
         "its tile says so, to a screen reader too"
     );
-    assert_eq!(books(&mut app).load_error, None, "nothing failed");
+    assert_eq!(
+        books(&mut app).load_error.as_deref(),
+        None,
+        "nothing failed"
+    );
     assert_ne!(books(&mut app).view, View::Reader);
     assert_eq!(shelf(&mut app), ["Lost Pages"], "its tile stays");
 }
@@ -271,7 +275,11 @@ fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
             "its tile says it waits, to a screen reader too"
         );
         let books = books(&mut app);
-        assert_eq!(books.load_error, None, "waiting is not a failure");
+        assert_eq!(
+            books.load_error.as_deref(),
+            None,
+            "waiting is not a failure"
+        );
         assert!(
             books.arriving(&entry.id).is_none(),
             "no loading bar while it waits"

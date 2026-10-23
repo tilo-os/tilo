@@ -143,7 +143,8 @@ impl PdfApp {
                     .is_ok()
             }) {
                 self.raster_text_pending.remove(&(page - 1));
-                self.status_note = Some("PDF text worker is unavailable".to_string());
+                self.status_note
+                    .show("PDF text worker is unavailable".to_string());
             }
             self.dirty = true;
         }
@@ -576,7 +577,7 @@ impl PdfApp {
         }
         if !self.selection_pages_missing().is_empty() {
             self.pending_copy = true;
-            self.status_note = Some("Copying…".to_string());
+            self.status_note.show("Copying…".to_string());
             self.submit_text_batch();
             self.dirty = true;
             return true;
@@ -587,7 +588,7 @@ impl PdfApp {
         };
         ui::clipboard_copy(&text);
         let n = text.chars().count();
-        self.status_note = Some(format!(
+        self.status_note.show(format!(
             "Copied {n} character{}",
             if n == 1 { "" } else { "s" }
         ));

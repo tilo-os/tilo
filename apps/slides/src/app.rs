@@ -2630,6 +2630,7 @@ impl Widget for SlidesApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document_ref(state, path);
+        self.io_toast.expire();
         self.adopt_deferred();
         let opened = std::mem::take(&mut self.opened.borrow_mut().requests);
         for slide in opened {
@@ -3262,12 +3263,16 @@ impl Widget for SlidesApp {
     }
 
     /// The words being edited wake the editor when a spelling mark settles
-    /// or the word under the caret has a suggestion.
+    /// or the word under the caret has a suggestion; a file notice wakes it
+    /// to leave.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.text_editor
             .as_ref()
             .filter(|_| self.editing_text)
             .and_then(|editor| editor.host.next_wake_deadline())
+            .into_iter()
+            .chain(self.io_toast.deadline())
+            .min()
     }
 
     fn tooltip(&self) -> Option<&str> {
