@@ -312,7 +312,8 @@ def main() -> int:
         before = held[0]["id"] if held else None
 
         web = web_view(site, args, out, None)
-        check("web-room", web.get("room") == session_a.room, f"the web view opened {web}")
+        check("web-room", web.get("entry") == "open" and web.get("room") == session_a.room,
+              f"the web view opened {web}")
 
         text = f"Door acceptance {time.strftime('%Y-%m-%d %H.%M.%S')}"
         _, channel = PAIR.channel_reader(session_a)
