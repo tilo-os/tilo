@@ -11,7 +11,6 @@ own-search 1 apps/browser/src/browser_widget/library.rs
 own-search 1 apps/browser/src/browser_widget/toolbar.rs
 own-search 1 apps/browser/src/daily_controls.rs
 own-search 1 apps/maps/src/offline_panel.rs
-own-search 1 apps/terminal/src/view.rs
 # The composer's formatting strip, inside the New message sheet over the mailbox.
 toolbar-row 1 apps/mail/src/compose.rs
 toolbar-row 1 apps/typst-editor/src/chrome.rs
