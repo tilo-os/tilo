@@ -207,21 +207,37 @@ pub fn refresh(engine: &SharedEngine, force: bool) {
         status.message = "Update failed: worker unavailable. Previous rules retained.".into();
     }
 }
-/// Enqueue cached rules synchronously, before initial navigation.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "matches the shared blocker startup interface"
-)]
-pub fn start(engine: SharedEngine) {
-    let initial = crate::blocker::cache_dir().map_or_else(
-        || BASELINE.to_string(),
-        |directory| cached_rules(&directory),
-    );
+/// Hand `engine` the cached rules, then `then` (the window's first
+/// navigation, which the rules must precede), then start a refresh. The
+/// cache is read on a thread of its own: the window may be drawn on the
+/// compositor's frame loop, which never waits on the disk. Where no thread
+/// can be started the engine still gets the baseline rules and `then`.
+pub fn start(engine: &SharedEngine, then: Option<WebViewCommand>) {
+    let worker = Arc::clone(engine);
+    let next = then.clone();
+    let spawned = std::thread::Builder::new()
+        .name("chromium-filter-cache".into())
+        .spawn(move || {
+            let initial = crate::blocker::cache_dir().map_or_else(
+                || BASELINE.to_string(),
+                |directory| cached_rules(&directory),
+            );
+            send_initial(&worker, initial, next);
+            refresh(&worker, false);
+        });
+    if spawned.is_err() {
+        send_initial(engine, BASELINE.to_string(), then);
+    }
+}
+
+fn send_initial(engine: &SharedEngine, rules: String, then: Option<WebViewCommand>) {
     engine.send(WebViewCommand::SetNativeFilterRules {
-        rules: Arc::new(initial),
+        rules: Arc::new(rules),
         enabled: Some(true),
     });
-    refresh(&engine, false);
+    if let Some(then) = then {
+        engine.send(then);
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -442,9 +458,11 @@ mod tests {
         if std::env::var_os("TILO_TEST_FILTER_RESTART_CHILD").is_some() {
             crate::storage::configure(None).unwrap();
             let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
-            start(engine.clone());
+            start(&engine, None);
+            // The refresh starts on the cache reader's thread, once the
+            // cached rules are handed over.
             let deadline = tilo_test_env::hang_deadline();
-            while status().busy && ui::time::now() < deadline {
+            while (status().busy || status() == Status::default()) && ui::time::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             let result = status();

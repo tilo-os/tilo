@@ -134,11 +134,13 @@ fn render_live_shot_to_png(
     // Keep capture chrome/session data isolated while using real maintained
     // protection and the same WebViewEngine event/render pipeline as the app.
     let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-    crate::blocker::spawn_filter_loader(engine.clone());
     engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
         crate::blocker::user_scripts(),
     )));
-    engine.send(WebViewCommand::Navigate(url.to_string()));
+    crate::blocker::spawn_filter_loader(
+        engine.clone(),
+        Some(WebViewCommand::Navigate(url.to_string())),
+    );
 
     let (w, h) = viewport;
     let theme = ui::launch::shot_theme_from_env()?;
