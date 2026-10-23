@@ -101,9 +101,12 @@ arguments do that:
   for good.
 - `sbsa_gwdt.action=1` panics at the watchdog's first stage, 30 s without a
   feed. The second stage resets the machine 30 s after that.
-- `softlockup_panic=1`, `nmi_watchdog=panic` (the buddy detector, see
-  `aarch64.config`) and `hung_task_panic=1` panic on a stuck CPU, or on a task
-  stuck in uninterruptible sleep for two minutes.
+- `softlockup_panic=1` and `nmi_watchdog=panic` (the buddy detector, see
+  `aarch64.config`) panic on a stuck CPU, which freezes the machine anyway.
+
+A task stuck in uninterruptible sleep for two minutes is only reported, with
+its stack, in the journal and the console record. On a working machine that is
+usually slow disk or network I/O, and rebooting would lose the work.
 
 A reset that the firmware, hypervisor or PMIC triggers runs no kernel code. It
 leaves only the console log, which now has every message up to the reset.
