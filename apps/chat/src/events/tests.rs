@@ -2460,5 +2460,67 @@ fn feed_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent, m: Modif
     app.dispatch_event(ev, 1.0, m, &mut ui::widget::Edits::lend(doc), &mut handled);
 }
 
+/// Pins opened from the window bar's button close on Escape: the bar's
+/// press leaves the keyboard with the app, and Escape there peels the panel.
+#[test]
+fn escape_closes_the_pins_opened_from_the_window_bar() {
+    use ui::headless::FrameHarness;
+    let (app, doc) = app_with_doc();
+    let mut state = ui::State::new();
+    assert!(state.adopt_doc(doc.chat));
+    let mut driver = FrameHarness::for_root(state, app, (1200, 800), ui::Theme::dark());
+    driver.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: "pins".into() });
+    assert!(
+        driver.root::<ChatApp>().pins_open,
+        "the bar's button opens the pins"
+    );
+    driver.key("Escape");
+    let app = driver.root::<ChatApp>();
+    assert!(
+        !app.pins_open && !app.right_flap_open(),
+        "Escape closes the pins"
+    );
+}
+
+/// On a window too narrow to dock it, the pins float over the conversation
+/// and end above the composer: its emoji and Send stay uncovered and take
+/// their presses, so a message can still be written and sent beside them.
+#[test]
+fn floating_pins_leave_the_composer_whole() {
+    use ui::headless::FrameHarness;
+    let (app, doc) = app_with_doc();
+    let mut state = ui::State::new();
+    assert!(state.adopt_doc(doc.chat));
+    let mut driver = FrameHarness::for_root(state, app, (900, 700), ui::Theme::dark());
+    driver.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: "pins".into() });
+    assert!(driver.wait_until(tilo_test_env::hang_bound(), |driver| {
+        !driver.root::<ChatApp>().right_flap.is_animating()
+    }));
+    let app = driver.root::<ChatApp>();
+    assert!(
+        app.pins_open && app.right_overlay(),
+        "the pins float on a narrow window"
+    );
+    let panel = app.right_flap.sidebar_rect();
+    let scrim = app.right_flap.scrim_rect();
+    for wanted in ["chat.composer-emoji", "chat.send"] {
+        let (rect, hit) = app
+            .hits
+            .iter()
+            .find(|(_, hit)| hit.semantic_id() == wanted)
+            .cloned()
+            .unwrap_or_else(|| panic!("the composer's {wanted}"));
+        assert!(
+            rect.intersect(panel).area() <= 0.0 && rect.intersect(scrim).area() <= 0.0,
+            "{wanted} at {rect:?} stays clear of the pins {panel:?} and their scrim {scrim:?}"
+        );
+        assert_eq!(
+            app.hit_at(rect.center()).map(|hit| hit.semantic_id()),
+            Some(hit.semantic_id()),
+            "a press on {wanted} reaches it"
+        );
+    }
+}
+
 mod calls_and_peers;
 mod room_state;

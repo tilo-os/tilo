@@ -52,6 +52,7 @@ mod tests {
         "chat-call-input-hint",
         "chat-call-mute",
         "chat-call-unmute",
+        "chat-call-no-microphone",
         "chat-call-deafen",
         "chat-call-undeafen",
         "chat-call-audio-only",

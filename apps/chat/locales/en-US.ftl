@@ -16,6 +16,8 @@ chat-mention-agent-tag = agent
 # Control buttons along the bottom of the expanded call overlay.
 chat-call-mute = Mute
 chat-call-unmute = Unmute
+# The muted microphone of a call on a device with no microphone: why it stays muted.
+chat-call-no-microphone = No microphone
 chat-call-deafen = Deafen
 chat-call-undeafen = Undeafen
 chat-call-audio-only = Audio only

@@ -780,9 +780,16 @@ impl ChatApp {
         // Sibling controls sit an `s2` apart, like the expanded bar's.
         let gap = f64::from(theme.tokens.spacing.s2);
         let muted = self.call.muted;
+        let no_microphone = crate::i18n::t("chat-call-no-microphone");
         let mut ctrls: Vec<(&str, Icon, ButtonRole, Hit)> = vec![
             (
-                if muted { "Unmute" } else { "Mute" },
+                if self.microphone_missing() {
+                    no_microphone.as_str()
+                } else if muted {
+                    "Unmute"
+                } else {
+                    "Mute"
+                },
                 if muted { Icon::MicOff } else { Icon::Mic },
                 ButtonRole::Secondary,
                 Hit::CallMute,
@@ -1149,7 +1156,9 @@ impl ChatApp {
         let speak = self.call_allows(crate::call::CallAction::Speak);
         [
             (
-                t(if self.call.muted {
+                t(if self.microphone_missing() {
+                    "chat-call-no-microphone"
+                } else if self.call.muted {
                     "chat-call-unmute"
                 } else {
                     "chat-call-mute"

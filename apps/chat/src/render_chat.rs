@@ -820,7 +820,10 @@ impl ChatApp {
             .secondary(&call_name)
             .leading(RowLeading::Avatar(avatar))
             .paint(&mut ctx, row);
-        let (icon, name) = if self.call.muted {
+        let no_microphone = crate::i18n::t("chat-call-no-microphone");
+        let (icon, name) = if self.microphone_missing() {
+            (Icon::MicOff, no_microphone.as_str())
+        } else if self.call.muted {
             (Icon::MicOff, "Unmute microphone")
         } else {
             (Icon::Mic, "Mute microphone")
@@ -2106,12 +2109,14 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let rect = self.composer_rect();
+        self.composer_top = None;
         // With no channel open a draft would have nowhere to go, so there is
         // no composer to type into.
         if self.direct_person.is_none() && self.channel(&self.active_channel).is_none() {
             self.composer_main.set_focus(false);
             return;
         }
+        self.composer_top = Some(rect.y0);
         if !self.can_participate() && self.direct_person.is_none() {
             self.composer_main.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, rect);
