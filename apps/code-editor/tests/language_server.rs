@@ -251,7 +251,8 @@ fn the_editor_roots_its_server_at_a_real_directory() {
     let missing = d.path().join("nope");
     let err = LspClient::start(Language::Rust, &missing)
         .err()
-        .expect("a path that is not a directory must be refused");
+        .expect("a path that is not a directory must be refused")
+        .to_string();
     assert!(err.contains("not a directory"), "got: {err}");
 
     // And a real one produces a real `file://` URI for its workspace root.

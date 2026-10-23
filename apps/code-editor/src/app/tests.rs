@@ -773,7 +773,10 @@ fn an_unfinished_server_replaces_the_no_problems_claim() {
         LspStatus::Ready {
             server: "rust-analyzer".to_string(),
         },
-        LspStatus::Failed("rust-analyzer exited".to_string()),
+        LspStatus::Failed(crate::lsp::LspFailure::Stopped {
+            server: "rust-analyzer".to_string(),
+            detail: None,
+        }),
         LspStatus::None,
     ] {
         assert_eq!(
@@ -1487,4 +1490,81 @@ fn the_status_and_header_say_only_what_the_person_needs() {
         let left = sample.editor(|app| app.status.left());
         assert!(!left.contains("Opened"), "status: {left}");
     }
+    missing_code_help_says_so_and_keeps_why_behind_a_click();
+}
+
+fn missing_code_help_says_so_and_keeps_why_behind_a_click() {
+    use super::code_help::CodeHelpAnswer;
+    let mut sample = crate::test_support::sample();
+    sample.open("src/main.rs");
+    sample.editor(|app| {
+        app.lsp_status = LspStatus::Failed(crate::lsp::LspFailure::NotInstalled {
+            server: "rust-analyzer".to_owned(),
+        });
+        app.lsp_failed.insert(crate::model::Language::Rust);
+        app.refresh_status();
+    });
+    sample.app.settle();
+    let readout = "Rust: code help unavailable";
+    let bounds = sample
+        .app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::Button && node.label() == Some(readout)
+        })
+        .and_then(|(_, node)| node.bounds())
+        .expect("the readout is a button where it is painted");
+    sample.app.harness().click_at(
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    sample.app.settle();
+    let (question, body) = sample.editor(|app| {
+        let question = app.question();
+        (question, question.map(|q| app.wording(q).body))
+    });
+    assert_eq!(question, Some(super::dialogs::Question::CodeHelp));
+    let body = body.unwrap_or_default();
+    assert!(
+        body.starts_with("rust-analyzer isn't installed on this computer.")
+            && body.contains("rustup component add rust-analyzer"),
+        "the sheet says why and how to install it: {body}"
+    );
+    let answers = sample.editor(|app| app.code_help_answers());
+    assert_eq!(
+        answers,
+        [CodeHelpAnswer::TryAgain, CodeHelpAnswer::Close],
+        "nothing more to copy than the sheet says"
+    );
+    let (asked, failed) = sample.editor(|app| {
+        app.answer_code_help(0);
+        (app.question(), app.lsp_failed.len())
+    });
+    assert_eq!(
+        (asked, failed),
+        (None, 0),
+        "trying again forgets the failure"
+    );
+    let detail = "signal: 9 (SIGKILL)";
+    let (body, answers) = sample.editor(|app| {
+        app.lsp_status = LspStatus::Failed(crate::lsp::LspFailure::Stopped {
+            server: "rust-analyzer".to_owned(),
+            detail: Some(detail.to_owned()),
+        });
+        (
+            app.wording(super::dialogs::Question::CodeHelp).body,
+            app.code_help_answers(),
+        )
+    });
+    assert_eq!(
+        body.lines().next(),
+        Some("rust-analyzer stopped. Suggestions, problems and go to definition come from it.")
+    );
+    assert!(
+        !body.contains(detail),
+        "the system's words stay behind Copy details: {body}"
+    );
+    assert!(answers.contains(&CodeHelpAnswer::CopyDetails));
 }

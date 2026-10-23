@@ -566,6 +566,57 @@ pub enum LspEvent {
     Exited,
 }
 
+/// Why a language server isn't answering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LspFailure {
+    /// Its program isn't on this computer.
+    NotInstalled { server: String },
+    /// It ran and ended; `detail` says how, when the system told.
+    Stopped {
+        server: String,
+        detail: Option<String>,
+    },
+    /// It could not start, for a reason in the system's own words.
+    Unknown { server: String, detail: String },
+}
+
+impl LspFailure {
+    /// The server's program name ("rust-analyzer").
+    pub fn server(&self) -> &str {
+        match self {
+            LspFailure::NotInstalled { server }
+            | LspFailure::Stopped { server, .. }
+            | LspFailure::Unknown { server, .. } => server,
+        }
+    }
+
+    /// The system's own account of the failure, for whoever wants it.
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            LspFailure::NotInstalled { .. } => None,
+            LspFailure::Stopped { detail, .. } => detail.as_deref(),
+            LspFailure::Unknown { detail, .. } => Some(detail),
+        }
+    }
+}
+
+impl std::fmt::Display for LspFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LspFailure::NotInstalled { server } => write!(f, "{server} is not installed"),
+            LspFailure::Stopped {
+                server,
+                detail: None,
+            } => write!(f, "{server} stopped"),
+            LspFailure::Stopped {
+                server,
+                detail: Some(detail),
+            } => write!(f, "{server} stopped ({detail})"),
+            LspFailure::Unknown { detail, .. } => f.write_str(detail),
+        }
+    }
+}
+
 /// A running language-server connection.
 pub struct LspClient {
     child: Child,
@@ -649,18 +700,22 @@ impl LspClient {
     /// with a clean file.
     ///
     /// # Errors
-    /// Returns a descriptive error string when `lang` has no server mapping,
-    /// `root` is not a directory, the server binary can't be launched, or its
-    /// piped stdio could not be taken.
-    pub fn start(lang: Language, root: &Path) -> Result<LspClient, String> {
-        let (prog, args) = Self::server_command(lang)
-            .ok_or_else(|| format!("no language server configured for {}", lang.label()))?;
+    /// [`LspFailure::NotInstalled`] when the server's program is not on this
+    /// computer; [`LspFailure::Unknown`] when `lang` has no server mapping,
+    /// `root` is not a directory, the program can't be launched, or its piped
+    /// stdio could not be taken.
+    pub fn start(lang: Language, root: &Path) -> Result<LspClient, LspFailure> {
+        let (prog, args) = Self::server_command(lang).ok_or_else(|| LspFailure::Unknown {
+            server: lang.label().to_owned(),
+            detail: format!("no language server configured for {}", lang.label()),
+        })?;
+        let unknown = |detail: String| LspFailure::Unknown {
+            server: prog.clone(),
+            detail,
+        };
 
         if !root.is_dir() {
-            return Err(format!(
-                "{} is not a directory — open a project folder for live diagnostics",
-                root.display()
-            ));
+            return Err(unknown(format!("{} is not a directory", root.display())));
         }
         let root_uri = path_to_uri(root);
 
@@ -685,24 +740,27 @@ impl LspClient {
         tilo_process::job::independent(&mut command, &prog);
         let mut child = command.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                format!("{prog} not found on PATH — install it for live diagnostics")
+                LspFailure::NotInstalled {
+                    server: prog.clone(),
+                }
             } else {
-                format!("failed to launch {prog}: {e}")
+                unknown(format!("failed to launch {prog}: {e}"))
             }
         })?;
 
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| format!("{prog}: piped stdin was not created"))?;
+            .ok_or_else(|| unknown(format!("{prog}: piped stdin was not created")))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| format!("{prog}: piped stdout was not created"))?;
+            .ok_or_else(|| unknown(format!("{prog}: piped stdout was not created")))?;
         let stdin = Arc::new(Mutex::new(stdin));
         let pending: Arc<Mutex<HashMap<i64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let events = spawn_reader_thread(&prog, stdout, stdin.clone(), pending.clone())?;
+        let events =
+            spawn_reader_thread(&prog, stdout, stdin.clone(), pending.clone()).map_err(unknown)?;
 
         let mut client = LspClient {
             child,
@@ -716,6 +774,16 @@ impl LspClient {
         };
         send_initialize_handshake(&mut client, root, &root_uri);
         Ok(client)
+    }
+
+    /// How the server's process ended, once it has: its exit status or the
+    /// signal that ended it.
+    pub fn exit_detail(&mut self) -> Option<String> {
+        self.child
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|status| status.to_string())
     }
 
     /// The directory this server was rooted at.
@@ -1343,6 +1411,7 @@ mod tests {
         let Err(err) = LspClient::start(Language::Rust, &missing) else {
             panic!("a non-directory root must be refused");
         };
+        let err = err.to_string();
         assert!(
             err.contains("not a directory"),
             "a bogus root must be refused up front, got: {err}"

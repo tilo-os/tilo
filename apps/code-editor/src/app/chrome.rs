@@ -10,7 +10,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Affine;
 
 use super::CodeApp;
 
@@ -33,16 +33,7 @@ impl CodeApp {
         }
         let status = self.status_rect;
         if status.height() > 0.0 {
-            let band = Rect::new(status.x0, status.y0, status.x1, status.y1);
-            ui::chrome::status_bar::draw(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                band,
-                &self.status.left(),
-                &self.status.right(),
-            );
+            self.draw_status(scene, transform, text_renderer, theme, status);
         }
     }
 }

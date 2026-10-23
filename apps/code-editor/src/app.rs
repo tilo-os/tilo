@@ -36,6 +36,7 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 mod chrome;
+mod code_help;
 mod dialogs;
 mod disk_work;
 mod file_workflow;
@@ -344,6 +345,7 @@ pub struct CodeApp {
     close_prompt: Option<ClosePrompt>,
     /// The sheet a question is asked in: it keeps where its answers landed.
     question_sheet: ui::widget::ModalSheet,
+    code_help: code_help::CodeHelpReadout,
 
     /// A transient message about the last file operation (saved, failed,
     /// reloaded). Shown in the status bar; cleared by the next action.
@@ -430,8 +432,8 @@ pub enum LspStatus {
     },
     /// Up and answering.
     Ready { server: String },
-    /// Could not start; carries the reason.
-    Failed(String),
+    /// Not answering, and why.
+    Failed(crate::lsp::LspFailure),
 }
 
 impl LspStatus {
@@ -439,7 +441,7 @@ impl LspStatus {
     /// the person's words: nothing once it is ready.
     pub fn label(&self) -> String {
         match self {
-            LspStatus::None | LspStatus::Ready { .. } => String::new(),
+            LspStatus::None | LspStatus::Ready { .. } | LspStatus::Failed(_) => String::new(),
             LspStatus::Starting { .. }
             | LspStatus::Busy {
                 percentage: None, ..
@@ -448,7 +450,6 @@ impl LspStatus {
                 percentage: Some(percentage),
                 ..
             } => format!("Loading project {percentage}%"),
-            LspStatus::Failed(e) => format!("Language server: {e}"),
         }
     }
 
@@ -654,6 +655,7 @@ impl CodeApp {
             conflict: None,
             close_prompt: None,
             question_sheet: ui::widget::ModalSheet::new(),
+            code_help: code_help::CodeHelpReadout::default(),
             notice: None,
             pending_jump: None,
             pending_continuation: None,
@@ -1237,6 +1239,7 @@ impl CodeApp {
             lsp_working: self.lsp_status.is_working(),
             notice: notice.text,
             dirty: self.session.active_buffer().is_some_and(|b| b.dirty),
+            code_help: self.code_help_readout(),
         });
     }
 
@@ -2522,6 +2525,10 @@ impl Widget for CodeApp {
             );
             return;
         }
+        if self.code_help_pointer(event) {
+            *ctx.handled = true;
+            return;
+        }
 
         if self.handle_global_shortcuts(
             event,
@@ -2594,6 +2601,16 @@ impl Widget for CodeApp {
         "CodeApp"
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        self.code_help_action(target, action)
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("code-editor")
     }
@@ -2631,6 +2648,7 @@ impl Widget for CodeApp {
                     }),
             );
         }
+        children.extend(self.code_help_access());
         let analysis = self.lsp_status.label();
         if !analysis.is_empty() {
             children.push(
@@ -2693,6 +2711,7 @@ impl Widget for CodeApp {
         self.editor.needs_redraw()
             || self.panel.needs_redraw()
             || self.question().is_some()
+            || self.code_help_needs_redraw()
             // A live terminal repaints continuously while visible.
             || self.terminal_visible()
     }
