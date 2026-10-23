@@ -129,4 +129,5 @@ browser-extension-screen = Den Inhalt Ihres Bildschirms aufnehmen
 browser-extension-debugger = Die geöffneten Seiten untersuchen und steuern
 browser-extension-no-access = Sie braucht keinen besonderen Zugriff
 browser-extension-no-version = Diese Erweiterung läuft in Chrome nicht mehr. Viele haben eine neuere Ausgabe, etwa uBlock Origin Lite für uBlock Origin.
+browser-extension-update-asks = { $name } möchte seit dem Update mehr Zugriff. Schalten Sie die Erweiterung ein, um ihn zu erlauben.
 browser-page-stopped = Diese Seite funktioniert nicht mehr

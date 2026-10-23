@@ -3849,7 +3849,11 @@ impl BrowserWidget {
         // The popover pads its content on every side.
         let pad = 2.0 * spacing.s4;
         let room = window.width() as f32 - 2.0 * spacing.s3 - pad;
-        let width = metrics.panel_width_list.min(room);
+        // An extension's popup or settings page takes its own width.
+        let width = (!self.credentials.open && !self.site.open)
+            .then(|| self.extensions.page_width(room))
+            .flatten()
+            .unwrap_or_else(|| metrics.panel_width_list.min(room));
         let toolbar_bottom = self
             .find_rect("browser.toolbar")
             .map_or(0.0, |toolbar| toolbar.y1);
@@ -4273,12 +4277,12 @@ fn native_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
     } else if let Some(root) = crate::storage::explicit_root() {
         ui::webview::chromium::ChromiumEngine::with_profile_extensions(
             &root.join("chromium"),
-            &crate::extensions::approved_paths(),
+            &crate::extensions::startup_paths(),
         )
         .map(|engine| engine as SharedEngine)
     } else {
         ui::webview::chromium::ChromiumEngine::new_with_extensions(
-            &crate::extensions::approved_paths(),
+            &crate::extensions::startup_paths(),
         )
         .map(|engine| engine as SharedEngine)
     };

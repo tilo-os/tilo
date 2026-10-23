@@ -1262,7 +1262,7 @@ command -v cmake >/dev/null || dnf install -y cmake
 python3 scripts/browser/build-host.py --jobs 8
 ctest --test-dir target/chromium-build --output-on-failure
 # Chromium refuses root, and the host never turns its sandbox off: the page tests run as a user.
-chmod -R a+rX target/chromium apps/browser/chromium/tests
+chmod -R a+rX target/chromium apps/browser/chromium/tests apps/browser-parts/assets/extension-manager
 mkdir -p -m 1777 /tmp/host-test
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/document_size.py target/chromium/tilo-chromium-host
@@ -1275,6 +1275,8 @@ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-g
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/extensions.py target/chromium/tilo-chromium-host \
     Extensions.test_mv3_worker_storage_content_and_action RuntimeExtensions.test_load_unload_and_denied_methods
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/extension_toggle.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
