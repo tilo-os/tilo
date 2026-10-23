@@ -75,6 +75,7 @@ const NARROW_LIST: &str = "narrow-list";
 const SEARCH: &str = "search";
 const SEARCH_KEYS: &str = "search-keys";
 const SEARCH_SOUND: &str = "search-sound";
+const SEARCH_NARROW: &str = "search-narrow";
 const ACCOUNT_FORM: &str = "account-form";
 const ACCOUNTS_NARROW: &str = "accounts-narrow";
 const ACCOUNTS_LINKING: &str = "accounts-linking";
@@ -92,6 +93,7 @@ pub fn names() -> &'static [&'static str] {
                 SEARCH,
                 SEARCH_KEYS,
                 SEARCH_SOUND,
+                SEARCH_NARROW,
                 ACCOUNT_FORM,
                 ACCOUNTS_NARROW,
                 ACCOUNTS_LINKING,
@@ -124,7 +126,7 @@ pub fn names() -> &'static [&'static str] {
 
 pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
-        Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW) => NARROW_VIEWPORT,
+        Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW | SEARCH_NARROW) => NARROW_VIEWPORT,
         Some(DEVICE_DISPLAYS) => (1200, 1100),
         Some(
             DISPLAYS_TWO | DISPLAYS_KEYBOARD | DISPLAYS_CANVAS | DISPLAYS_DRAGGING
@@ -591,7 +593,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         }
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
-        Some(SEARCH) => Staged::Search(Category::Appearance, SEARCH_QUERY),
+        Some(SEARCH | SEARCH_NARROW) => Staged::Search(Category::Appearance, SEARCH_QUERY),
         Some(SEARCH_KEYS) => Staged::Search(Category::Accessibility, SEARCH_KEYS_QUERY),
         Some(SEARCH_SOUND) => Staged::Search(Category::Sound, SEARCH_SOUND_QUERY),
         Some(ACCOUNT_FORM | ACCOUNTS_NARROW | ACCOUNTS_LINKING | ACCOUNTS_LINKED) => {
@@ -737,7 +739,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 28 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 29 + CODEC_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),

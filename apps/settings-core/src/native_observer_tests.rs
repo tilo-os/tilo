@@ -164,8 +164,11 @@ fn search_preserves_production_network_pane_but_category_switch_replaces_it() {
     assert_eq!(named_widget_identity(&*h, "NetworkPane"), None);
 }
 
+/// Searching from a narrow window's list narrows the list; what it finds
+/// comes in front of it as the rows a wide window shows, and finding
+/// nothing more goes back to the list.
 #[test]
-fn narrow_search_narrows_the_open_list_and_keeps_it_open() {
+fn narrow_search_shows_what_it_finds_in_front_of_the_list() {
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = hosted(&config, 440.0, 820.0);
     assert!(h.is_narrow());
@@ -177,16 +180,27 @@ fn narrow_search_narrows_the_open_list_and_keeps_it_open() {
     assert!(h.sidebar_open());
     let all = sidebar_row_count(&*h);
     let mut search = ui::widget::SearchDriver::default();
-    bar_search(&mut h, &mut search, "z");
+    bar_search(&mut h, &mut search, "zqx");
     let typed = snapshot(&h);
-    assert_eq!(typed["search_query"], "z");
-    assert_eq!(typed["sidebar_open"], true);
-    assert_eq!(typed["narrow"], true);
+    assert_eq!(typed["search_query"], "zqx");
+    assert!(h.found_settings().is_empty());
+    assert_eq!(
+        typed["sidebar_open"], true,
+        "finding no setting keeps the list"
+    );
     assert!(sidebar_row_count(&*h) < all);
+    bar_search(&mut h, &mut search, "high contrast");
+    let found = snapshot(&h);
+    assert_eq!(found["narrow"], true);
+    assert!(h.found_settings().contains(&"appearance.high_contrast"));
+    assert_eq!(found["sidebar_open"], false, "what it found is in front");
     bar_search(&mut h, &mut search, "");
     let restored = snapshot(&h);
     assert_eq!(restored["search_query"], "");
-    assert_eq!(restored["sidebar_open"], true);
+    assert_eq!(
+        restored["sidebar_open"], true,
+        "clearing it goes back to the list"
+    );
     assert_eq!(sidebar_row_count(&*h), all);
 }
 
