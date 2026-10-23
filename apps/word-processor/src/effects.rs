@@ -74,6 +74,31 @@ pub enum WordProcessorEffect {
         #[param("The character to read from; the start when none")]
         from: Option<usize>,
     },
+    /// Import a document kept as content.
+    ///
+    /// Replaces this document's body with a Word file (or `OpenDocument`,
+    /// Markdown, HTML, RTF, by its name) the room holds as content, while
+    /// the document is empty; a document someone wrote is never replaced.
+    /// Undo takes it back.
+    #[effect(returns, audience = "agents")]
+    ImportDocxContent {
+        #[param(content, "The document's content address, `tilo.content:<hash>`")]
+        content: String,
+        #[param(
+            "Its file name, e.g. report.docx, whose extension names the format; Word when none"
+        )]
+        name: Option<String>,
+    },
+    /// Export document as content.
+    ///
+    /// Keeps the document as a file in the content store, with no file to
+    /// write: Word unless `format` names another. The caller reads, attaches
+    /// or sends it by the content address it answers.
+    #[effect(content, kind = "read", idempotent)]
+    ExportContent {
+        #[param("docx (default), odt, md, html, rtf, txt or pdf")]
+        format: Option<String>,
+    },
     /// Convert a file.
     ///
     /// Writes a document or text file again in another format beside it,
@@ -256,7 +281,10 @@ pub enum WordProcessorEffect {
     /// list or a body paragraph.
     #[effect(edit, participant, job, returns)]
     SetParagraphStyle {
-        #[param("Paragraph kind", choices = ["paragraph", "heading", "list_item"])]
+        #[param(
+            "Paragraph kind; bullet and numbered are list items",
+            choices = ["paragraph", "heading", "list_item", "bullet", "numbered"]
+        )]
         kind: String,
         #[param("Heading level 1-6")]
         level: Option<i64>,
@@ -369,7 +397,8 @@ pub enum WordProcessorEffect {
     },
     /// Place image.
     ///
-    /// Places an image another action produced at your caret.
+    /// Places an image another action produced at your caret, at `at`, or
+    /// after the heading `after` names by its text.
     #[effect(edit, participant, audience = "agents")]
     PlaceImage {
         #[param(content, "The image another action produced, by its content hash")]
@@ -379,6 +408,10 @@ pub enum WordProcessorEffect {
             place = "blocks"
         )]
         at: Option<Place>,
+        #[param(
+            "The heading (or paragraph) the image goes after, by its text: an exact heading first, else the closest; not with at"
+        )]
+        after: Option<String>,
     },
     /// Go to.
     ///
@@ -568,7 +601,14 @@ impl WordProcessorEffect {
                 level,
                 ordered, ..
             } => {
-                if !matches!(kind.as_str(), "paragraph" | "heading" | "list_item") {
+                // A list named as a reader of the page sees it: a bullet or a
+                // numbered item is a list item of that kind.
+                let (kind, ordered) = match kind.as_str() {
+                    "bullet" => ("list_item", Some(false)),
+                    "numbered" => ("list_item", Some(true)),
+                    other => (other, *ordered),
+                };
+                if !matches!(kind, "paragraph" | "heading" | "list_item") {
                     Err(EditingError::Invalid(
                         "kind is paragraph, heading or list_item".into(),
                     ))
@@ -579,9 +619,9 @@ impl WordProcessorEffect {
                         view,
                         doc,
                         &ParagraphStyle {
-                            kind: kind.clone(),
+                            kind: kind.to_owned(),
                             level: *level,
-                            ordered: *ordered,
+                            ordered,
                         },
                     )
                 }
