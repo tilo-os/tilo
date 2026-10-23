@@ -697,8 +697,8 @@ pub fn test_sha256(bytes: &[u8]) -> String {
 
 /// Reads browser font files under `root` with the digest a page would
 /// report, for [`FontCatalog::load_browser_startup_bytes`] in tests.
-#[cfg(any(test, feature = "test-support"))]
-pub fn test_font_files(root: &Path) -> impl FnMut(&str) -> Option<(Vec<u8>, String)> + '_ {
+#[cfg(test)]
+pub(crate) fn test_font_files(root: &Path) -> impl FnMut(&str) -> Option<(Vec<u8>, String)> + '_ {
     |name| {
         let bytes = std::fs::read(root.join(name)).ok()?;
         let digest = test_sha256(&bytes);
