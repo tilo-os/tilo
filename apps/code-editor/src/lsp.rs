@@ -705,6 +705,18 @@ impl LspClient {
     /// `root` is not a directory, the program can't be launched, or its piped
     /// stdio could not be taken.
     pub fn start(lang: Language, root: &Path) -> Result<LspClient, LspFailure> {
+        Self::start_with(lang, root, &tilo_process::tools::ToolDirs::current())
+    }
+
+    /// [`Self::start`], looking for the server's program in `tools`.
+    ///
+    /// # Errors
+    /// As [`Self::start`].
+    pub fn start_with(
+        lang: Language,
+        root: &Path,
+        tools: &tilo_process::tools::ToolDirs,
+    ) -> Result<LspClient, LspFailure> {
         let (prog, args) = Self::server_command(lang).ok_or_else(|| LspFailure::Unknown {
             server: lang.label().to_owned(),
             detail: format!("no language server configured for {}", lang.label()),
@@ -719,7 +731,10 @@ impl LspClient {
         }
         let root_uri = path_to_uri(root);
 
-        let mut command = Command::new(&prog);
+        let program = tools.find(&prog).ok_or_else(|| LspFailure::NotInstalled {
+            server: prog.clone(),
+        })?;
+        let mut command = Command::new(&program);
         // Language servers communicate over pipes, not a console window.
         bounded_command::without_console_window(&mut command);
         command

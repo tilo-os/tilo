@@ -18988,6 +18988,7 @@ dependencies = [
 name = "tilo-process"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "libc",
  "runtime-portal",
  "rustix 1.1.4",
