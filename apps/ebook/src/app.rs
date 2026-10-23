@@ -679,6 +679,8 @@ enum Action {
     /// progress are kept, keyed by content id, so re-adding the file restores them.
     RemoveFromLibrary(String),
     ToggleWatchFolder(PathBuf),
+    /// Keep a copy of the book catalogues on this device, or stop.
+    ToggleKeepCatalogues,
 
     // --- settings screen: navigation -------------------------------------
     OpenSettings,
@@ -1126,6 +1128,12 @@ pub struct BooksApp {
     local_library: LocalLibrary,
     /// The person's own reader key bindings.
     reader_keys: crate::reader_keys::ReaderKeys,
+    /// Whether this device keeps a copy of the book catalogues.
+    catalogue_setting: Option<ui::framework::Setting<crate::catalogue::CatalogueCopies>>,
+    /// The device's copy of Project Gutenberg's catalogue, in a live window.
+    catalogue: Option<std::sync::Arc<crate::catalogue::DeviceCatalogue>>,
+    /// What the copy was last told: kept or released.
+    catalogue_kept: Option<bool>,
     /// The command currently awaiting a one-key local binding in Settings.
     shortcut_capture: Option<ReaderShortcut>,
     /// A short, local capture error announced through the row's accessible
@@ -1361,6 +1369,9 @@ impl BooksApp {
             watched_sources: HashMap::new(),
             local_library: LocalLibrary::default(),
             reader_keys: crate::reader_keys::ReaderKeys::default(),
+            catalogue_setting: None,
+            catalogue: None,
+            catalogue_kept: None,
             shortcut_capture: None,
             shortcut_capture_error: None,
             shelf_controls: ShelfControls::default(),
@@ -2359,6 +2370,7 @@ impl BooksApp {
             Action::ShareToWorkspace(id) => self.on_share_to_workspace(&id, doc),
             Action::RemoveFromLibrary(id) => self.on_remove_from_library(&id, doc),
             Action::ToggleWatchFolder(folder) => self.on_toggle_watch_folder(&folder, doc),
+            Action::ToggleKeepCatalogues => self.on_toggle_keep_catalogues(),
 
             // --- settings screen: navigation -----------------------------
             Action::OpenSettings => self.on_open_settings(),
@@ -3607,8 +3619,12 @@ impl BooksApp {
         self.live = cx.mode().is_live();
         self.content = cx.content();
         self.sample = cx.fixture::<crate::scenarios::SampleShelf>();
+        self.catalogue_setting = Some(cx.settings());
         if self.live {
-            self.query = query_view::BookQuery::live(cx.waker());
+            let catalogue = crate::catalogue::DeviceCatalogue::on_this_device();
+            self.query = query_view::BookQuery::live(cx.waker(), std::sync::Arc::clone(&catalogue));
+            self.catalogue = Some(catalogue);
+            self.follow_catalogue_setting();
             self.local_library = LocalLibrary::load(cx.storage().settings());
             self.reader_keys = crate::reader_keys::ReaderKeys::following(cx.settings());
             self.watched_folders
@@ -4149,6 +4165,7 @@ impl BooksApp {
             Action::ToggleWatchFolder(path) => {
                 format!("library.watch:{}", ui::a11y::hash_key(path))
             }
+            Action::ToggleKeepCatalogues => "library.keep-catalogues".into(),
             Action::OpenSettings => "settings.open".into(),
             Action::CloseSettings => "settings.close".into(),
             Action::SetSettingsTab(tab) => format!("settings.tab:{tab:?}"),
@@ -4252,6 +4269,7 @@ impl BooksApp {
             Action::OpenViaPortal => "Open book".into(),
             Action::DismissLoadError => "Dismiss".into(),
             Action::ToggleWatchFolder(path) => format!("Watch {}", path.display()),
+            Action::ToggleKeepCatalogues => crate::catalogue::KEEP_CATALOGUES.into(),
             Action::OpenSettings => "Book settings".into(),
             Action::SetSettingsTab(SettingsTab::Fonts) => "Fonts".into(),
             Action::SetSettingsTab(SettingsTab::Colours) => "Colour themes".into(),
@@ -4416,6 +4434,7 @@ impl BooksApp {
                 Role::Checkbox,
                 base.checked(self.watched_folders.contains(path)),
             ),
+            Action::ToggleKeepCatalogues => (Role::Switch, base.checked(self.keeps_catalogues())),
             _ => (Role::Button, base),
         }
     }
@@ -9555,10 +9574,12 @@ impl BooksApp {
         folders.sort();
         folders.dedup();
 
-        if folders.is_empty() {
-            return self.draw_library_settings_empty(ctx, col, y);
-        }
-        self.draw_watched_folder_rows(ctx, col, y, &folders)
+        let y = if folders.is_empty() {
+            self.draw_library_settings_empty(ctx, col, y)
+        } else {
+            self.draw_watched_folder_rows(ctx, col, y, &folders)
+        };
+        self.draw_catalogue_settings(ctx, col, y)
     }
 
     /// No folder to offer yet: say how one appears, and offer the way in.
@@ -10420,6 +10441,7 @@ fn draw_progress_label(ctx: &mut PaintCtx<'_>, rect: Rect, fraction: f32, color:
 
 mod book_card;
 use book_card::ShelfCard;
+mod catalogue_settings;
 mod query_view;
 mod stage;
 

@@ -58,7 +58,7 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "required@5"
+collab = "required@6"
 
 [entrypoint]
 bin             = "bin/shortcuts"

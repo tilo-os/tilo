@@ -669,6 +669,13 @@ enum Command {
         #[arg(long)]
         relay_service_id: String,
     },
+    /// Ask the origins of this device's public catalogue copies that are due
+    /// whether they changed, through the running daemon.
+    RefreshPublicContent {
+        /// The daemon's document-media socket.
+        #[arg(long, default_value = "/run/tilo/fs-blobs.sock")]
+        blob_sock: PathBuf,
+    },
 }
 
 /// Exit status of `publish-authority` when this device holds no governor key:
@@ -893,6 +900,14 @@ async fn run_command(cli: Cli) -> Result<()> {
             cache_dir,
             relay_service_id,
         } => unregister_content_peer(cache_dir, &relay_service_id).await,
+        Command::RefreshPublicContent { blob_sock } => {
+            let changed = tokio::task::spawn_blocking(move || {
+                runtime_fs::blobs::BlobClient::connect_session(&blob_sock)?.refresh_public()
+            })
+            .await??;
+            println!("{changed} public copies changed");
+            Ok(())
+        }
     }
 }
 
@@ -1175,8 +1190,26 @@ fn spawn_workspace_authority_reload(
 fn spawn_document_media(
     socket: &Path,
     store: &Arc<ContentStore>,
+    cache_dir: Option<&Path>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    let media = fs::document_media::DocumentMedia::new(Arc::clone(store));
+    // The device's one document-media service also keeps the device's copies
+    // of public files, beside the content store whose budget evicts them.
+    let public = cache_dir.and_then(|dir| {
+        let origin = fs::public_content::NetOrigin::new()
+            .map_err(|error| eprintln!("public content cannot be fetched here: {error}"))
+            .ok()?;
+        fs::public_content::PublicContent::open(
+            &dir.join("public-content"),
+            Arc::clone(store.files()),
+            origin,
+        )
+        .map_err(|error| eprintln!("public content cannot be kept here: {error}"))
+        .ok()
+    });
+    let media = match public {
+        Some(public) => fs::document_media::DocumentMedia::with_public(Arc::clone(store), public),
+        None => fs::document_media::DocumentMedia::new(Arc::clone(store)),
+    };
     match fs::document_media::serve_socket(socket, media) {
         Ok(handle) => Some(handle),
         Err(error) => {
@@ -2113,7 +2146,7 @@ async fn serve(
         .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
     let _media = blob_sock
         .as_deref()
-        .and_then(|socket| spawn_document_media(socket, &store));
+        .and_then(|socket| spawn_document_media(socket, &store, cache_dir.as_deref()));
     let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
         (Some(records), Some(ticket)) => (
             Workspace::join_with_records(
@@ -2477,7 +2510,7 @@ async fn mount(
     let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
     let _media = blob_sock
         .as_deref()
-        .and_then(|socket| spawn_document_media(socket, &store));
+        .and_then(|socket| spawn_document_media(socket, &store, cache_dir.as_deref()));
     let workspace = match record_services {
         Some(records) => {
             Workspace::join_with_records(

@@ -884,6 +884,12 @@ impl ResourceApp for EbookShell {
         crate::commands::COMMANDS
     }
 
+    /// Whether this device keeps the book catalogues: a setting of the
+    /// device's, published so search and agents reach it.
+    fn records(records: &mut ui::framework::Records<'_>) {
+        records.settings::<crate::catalogue::CatalogueCopies>();
+    }
+
     fn view(cx: &mut ViewCx<Ebook>) -> Element {
         let app = BooksApp::new(cx.dispatcher(), bundled_library());
         // A search hit, or an agent's `open`, shows the book, chapter,

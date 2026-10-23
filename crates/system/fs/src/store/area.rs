@@ -15,9 +15,12 @@
 //! - a **retention** class decides eviction: [`Retention::Cached`] entries
 //!   are dropped when the resident bytes exceed the byte budget, those an
 //!   always-on device is known to hold first ([`FileArea::set_held_elsewhere`]),
-//!   least recently used first within each; [`Retention::LocalOnly`]
-//!   (content only this device holds) and [`Retention::Pinned`] entries
-//!   never are.
+//!   least recently used first within each; [`Retention::Fetchable`]
+//!   entries (public content fetched from where it came from) are evicted
+//!   with them, in the same order and against the same budget, but only
+//!   their bytes go: the entry and its origin stay, so a read fetches them
+//!   again; [`Retention::LocalOnly`] (content only this device holds) and
+//!   [`Retention::Pinned`] entries never are.
 //!
 //! Entries enter by being filled range by range, or whole: a complete file
 //! is cloned in (`FICLONE`, sharing extents with the source on a
@@ -47,6 +50,9 @@ const CHUNKS: MultimapTableDefinition<[u8; 32], [u8; 44]> =
     MultimapTableDefinition::new("area_chunks");
 /// Entry key → its chunk index values, for removing them with the entry.
 const MEMBERS: TableDefinition<[u8; 32], &[u8]> = TableDefinition::new("area_members");
+/// Entry key → where a [`Retention::Fetchable`] entry's bytes are fetched
+/// from.
+const ORIGINS: TableDefinition<[u8; 32], &str> = TableDefinition::new("area_origins");
 
 /// Open file handles kept for reads and fills.
 const OPEN_FILES: usize = 256;
@@ -80,6 +86,19 @@ pub enum Retention {
     LocalOnly,
     /// Kept offline on request. Never evicted by the budget.
     Pinned,
+    /// A copy of public content this device can fetch again from where it
+    /// came from ([`FileArea::origin`]). Evicted with the cached entries,
+    /// in the same order and against the same budget, but only its bytes
+    /// go ([`FileArea::drop_bytes`]): the entry, its size and its origin
+    /// stay, so reading it again fetches them.
+    Fetchable,
+}
+
+impl Retention {
+    /// Whether the budget may evict an entry of this retention.
+    pub const fn evictable(self) -> bool {
+        matches!(self, Self::Cached | Self::Fetchable)
+    }
 }
 
 /// Where one chunk's bytes are.
@@ -308,6 +327,7 @@ impl FileArea {
             txn.open_table(ENTRIES).map_err(db_error)?;
             txn.open_multimap_table(CHUNKS).map_err(db_error)?;
             txn.open_table(MEMBERS).map_err(db_error)?;
+            txn.open_table(ORIGINS).map_err(db_error)?;
             txn.commit().map_err(db_error)?;
         }
         let area = Self {
@@ -419,7 +439,7 @@ impl FileArea {
         state
             .entries
             .values()
-            .filter(|e| e.retention == Retention::Cached)
+            .filter(|e| e.retention.evictable())
             .map(|e| e.resident.total())
             .sum()
     }
@@ -1047,6 +1067,66 @@ impl FileArea {
     /// # Errors
     ///
     /// Returns an error when the removal cannot be recorded.
+    /// Makes `key` a complete [`Retention::Fetchable`] entry holding `bytes`,
+    /// fetched from `origin`, where a read fetches them again once the
+    /// budget dropped them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bytes or the origin cannot be recorded.
+    pub fn adopt_fetched(&self, key: &AreaKey, bytes: &[u8], origin: &str) -> io::Result<()> {
+        self.adopt_bytes(key, bytes, Retention::Fetchable, &[])?;
+        let _commit = self.commit.lock_recover();
+        let txn = self.database()?.begin_write().map_err(db_error)?;
+        txn.open_table(ORIGINS)
+            .map_err(db_error)?
+            .insert(*key, origin)
+            .map_err(db_error)?;
+        txn.commit().map_err(db_error)
+    }
+
+    /// Where the bytes of a [`Retention::Fetchable`] entry are fetched from.
+    pub fn origin(&self, key: &AreaKey) -> Option<String> {
+        let txn = self.database().ok()?.begin_read().ok()?;
+        let table = txn.open_table(ORIGINS).ok()?;
+        table
+            .get(*key)
+            .ok()?
+            .map(|origin| origin.value().to_owned())
+    }
+
+    /// Drops the bytes of a [`Retention::Fetchable`] entry and keeps the
+    /// entry, its size and its origin: reading it again fetches them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be emptied or the change
+    /// recorded.
+    pub fn drop_bytes(&self, key: &AreaKey) -> io::Result<()> {
+        let size = {
+            let mut state = self.lock();
+            let generation = state.next_generation();
+            let Some(entry) = state.entries.get_mut(key) else {
+                return Ok(());
+            };
+            entry.resident = RangeSet::new();
+            entry.durable = RangeSet::new();
+            entry.unsynced = 0;
+            entry.generation = generation;
+            let size = entry.size;
+            state.handles.remove(key);
+            size
+        };
+        // A sparse file of the entry's size: its blocks are freed, and the
+        // entry still loads after a restart.
+        let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(self.path_of(key))?;
+        file.set_len(size)?;
+        self.persist(key)
+    }
+
     pub fn remove(&self, key: &AreaKey) -> io::Result<()> {
         {
             let mut state = self.lock();
@@ -1065,8 +1145,9 @@ impl FileArea {
     /// Drops cached entries until their resident bytes fit the budget:
     /// first those an always-on device holds, outside the
     /// [working set](WORKING_SET_ENTRIES), then the rest, least recently
-    /// used first within each. `keep` are never dropped (entries being read
-    /// or filled right now). Returns the bytes freed.
+    /// used first within each. A [`Retention::Fetchable`] entry is one of
+    /// them and loses only its bytes. `keep` are never dropped (entries
+    /// being read or filled right now). Returns the bytes freed.
     pub fn evict_to_budget(&self, keep: &[AreaKey]) -> u64 {
         let mut uses: Vec<u64> = {
             let state = self.lock();
@@ -1076,7 +1157,7 @@ impl FileArea {
             state
                 .entries
                 .values()
-                .filter(|e| e.retention == Retention::Cached)
+                .filter(|e| e.retention.evictable() && !e.resident.is_empty())
                 .map(|e| e.last_use)
                 .collect()
         };
@@ -1098,18 +1179,25 @@ impl FileArea {
                 state
                     .entries
                     .iter()
-                    .filter(|(key, e)| e.retention == Retention::Cached && !keep.contains(key))
+                    .filter(|(key, e)| {
+                        e.retention.evictable() && !e.resident.is_empty() && !keep.contains(key)
+                    })
                     .min_by_key(|(key, e)| {
                         let give_up_first =
                             e.last_use < working_set_since && held_elsewhere.contains(*key);
                         (!give_up_first, e.last_use)
                     })
-                    .map(|(key, e)| (*key, e.resident.total()))
+                    .map(|(key, e)| (*key, e.resident.total(), e.retention))
             };
-            let Some((key, bytes)) = victim else {
+            let Some((key, bytes, retention)) = victim else {
                 return freed;
             };
-            if self.remove(&key).is_err() {
+            let dropped = if retention == Retention::Fetchable {
+                self.drop_bytes(&key)
+            } else {
+                self.remove(&key)
+            };
+            if dropped.is_err() {
                 return freed;
             }
             freed = freed.saturating_add(bytes);
@@ -1148,6 +1236,10 @@ impl FileArea {
         let txn = self.database()?.begin_write().map_err(db_error)?;
         {
             txn.open_table(ENTRIES)
+                .map_err(db_error)?
+                .remove(*key)
+                .map_err(db_error)?;
+            txn.open_table(ORIGINS)
                 .map_err(db_error)?
                 .remove(*key)
                 .map_err(db_error)?;
@@ -1469,6 +1561,46 @@ mod tests {
         assert!(area.entry(&key(1)).is_none());
         assert!(area.entry(&key(5)).is_some(), "kept while in use");
         assert!(area.entry(&key(2)).is_some() && area.entry(&key(3)).is_some());
+    }
+
+    #[test]
+    fn the_budget_drops_a_fetchable_entrys_bytes_and_keeps_where_they_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = "https://example.org/catalogue.csv";
+        let data = [9_u8; 100];
+        {
+            let area = FileArea::open(dir.path(), 250).unwrap();
+            area.adopt_fetched(&key(1), &data, origin).unwrap();
+            area.adopt_bytes(&key(2), &data, Retention::Cached, &[])
+                .unwrap();
+            area.adopt_bytes(&key(3), &data, Retention::LocalOnly, &[])
+                .unwrap();
+            area.touch(&key(2));
+            // The same budget and the same order as cached entries: the
+            // fetchable one is the least recently used.
+            area.adopt_bytes(&key(4), &data, Retention::Cached, &[])
+                .unwrap();
+            assert_eq!(area.evict_to_budget(&[]), 100);
+            let entry = area.entry(&key(1)).expect("the entry stays");
+            assert_eq!(
+                (entry.retention, entry.size, entry.resident),
+                (Retention::Fetchable, 100, 0),
+                "only its bytes went"
+            );
+            assert_eq!(area.origin(&key(1)).as_deref(), Some(origin));
+            assert!(area.entry(&key(2)).is_some() && area.entry(&key(4)).is_some());
+            assert_eq!(area.missing(&key(1), &(0..100)), vec![0..100]);
+        }
+        // An emptied entry survives a restart, still saying where its bytes
+        // are fetched from, and fetching them makes it whole again.
+        let area = FileArea::open(dir.path(), u64::MAX).unwrap();
+        assert_eq!(area.entry(&key(1)).map(|e| e.resident), Some(0));
+        assert_eq!(area.origin(&key(1)).as_deref(), Some(origin));
+        area.adopt_fetched(&key(1), &data, origin).unwrap();
+        assert!(area.entry(&key(1)).unwrap().complete());
+        assert_eq!(area.read_at(&key(1), 0, 100).unwrap(), data);
+        area.remove(&key(1)).unwrap();
+        assert_eq!(area.origin(&key(1)), None, "removed with its entry");
     }
 
     #[test]

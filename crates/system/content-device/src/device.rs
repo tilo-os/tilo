@@ -214,12 +214,17 @@ impl ContentBackend for DeviceBackend {
 }
 
 /// The one launcher-granted device connection shared by stores in this process.
+/// The process's one connection to the daemon, over the descriptor the launcher handed it.
+pub(crate) fn client() -> Option<&'static BlobClient> {
+    static CLIENT: OnceLock<Option<BlobClient>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| BlobClient::from_environment().ok())
+        .as_ref()
+}
+
 pub(crate) fn store() -> Option<ContentStore> {
     static DEVICE: OnceLock<Option<Arc<DeviceBackend>>> = OnceLock::new();
-    let backend = DEVICE.get_or_init(|| {
-        let client = BlobClient::from_environment().ok()?;
-        Some(Arc::new(DeviceBackend::new(client)))
-    });
+    let backend = DEVICE.get_or_init(|| Some(Arc::new(DeviceBackend::new(client()?.clone()))));
     backend
         .as_ref()
         .map(|backend| ContentStore::from_backend(Arc::clone(backend) as Arc<dyn ContentBackend>))

@@ -99,6 +99,8 @@ COPY \
     os/usr/lib/systemd/user/tilo-cache-gc.timer \
     os/usr/lib/systemd/user/tilo-app-update.service \
     os/usr/lib/systemd/user/tilo-app-update.timer \
+    os/usr/lib/systemd/user/tilo-public-content-refresh.service \
+    os/usr/lib/systemd/user/tilo-public-content-refresh.timer \
     os/usr/lib/systemd/user/tilo-runtime-resident.service \
     os/usr/lib/systemd/user/tilo-runtime-resident.path \
     /usr/lib/systemd/user/
@@ -650,6 +652,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-app-update.timer && \
+    systemctl --global enable tilo-public-content-refresh.timer && \
     systemctl --global enable tilo-runtime-resident.service tilo-runtime-resident.path && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
