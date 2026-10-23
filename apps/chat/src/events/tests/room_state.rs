@@ -805,3 +805,35 @@ fn an_empty_category_is_listed_only_to_whoever_keeps_the_layout() {
         "a category with channels stays listed"
     );
 }
+
+#[test]
+fn the_sidebar_names_the_channels_and_categories_of_a_chat_kept_flat() {
+    let mut doc = crate::testing::chat_kept_flat(5);
+    assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
+    let mut app = ChatApp::new_ephemeral();
+    app.reload(&doc);
+    render_frame(&mut app, 1280.0, 720.0);
+    let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+    let names: Vec<&str> = root
+        .children
+        .iter()
+        .filter_map(|node| node.name.as_deref())
+        .collect();
+    for shown in [
+        "#general",
+        "Lounge, voice channel",
+        "Collapse Channels",
+        "Collapse Voice",
+    ] {
+        assert!(names.contains(&shown), "{shown} in {names:?}");
+    }
+    let headings: Vec<&str> = app
+        .hits
+        .iter()
+        .filter_map(|(_, hit)| match hit {
+            Hit::CategoryToggle(id) => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(headings, ["cat_home_text", "cat_home_voice"]);
+}

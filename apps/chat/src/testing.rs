@@ -303,3 +303,66 @@ pub(crate) fn work_update(work: &crate::model::AgentWork) -> crate::record::Work
             .collect(),
     }
 }
+
+/// A chat from before Chat's record was a model, as it was stored at
+/// `version`: each category's and channel's fields flat in its entry. At
+/// version 5 an order key sits beside them and the item holds an empty name
+/// and topic, written over the fields it could not read; at version 1 it
+/// holds neither.
+pub(crate) fn chat_kept_flat(version: u64) -> AutoCommit {
+    use serde_json::json;
+    use ui::tilo_resource::{Slot, evolution};
+    let opened = version >= 5;
+    let item = |key: &str, texts: &[&str]| {
+        let mut entry = serde_json::Map::new();
+        if opened {
+            entry.insert("k".into(), json!(key));
+            let held: serde_json::Map<_, _> = texts
+                .iter()
+                .map(|text| ((*text).to_owned(), json!({ "$text": "" })))
+                .collect();
+            entry.insert("v".into(), held.into());
+        }
+        entry
+    };
+    let with = |mut entry: serde_json::Map<String, serde_json::Value>,
+                fields: serde_json::Value| {
+        if let serde_json::Value::Object(fields) = fields {
+            entry.extend(fields);
+        }
+        serde_json::Value::Object(entry)
+    };
+    let mut doc = AutoCommit::new();
+    evolution::fixture(
+        &mut doc,
+        &automerge::ROOT,
+        &json!({
+            "categories": {
+                "cat_home_text": with(item("i", &["name"]), json!({
+                    "workspace": "ws_home", "name": "Channels", "order": 0,
+                })),
+                "cat_home_voice": with(item("", &["name"]), json!({
+                    "workspace": "ws_home", "name": "Voice", "order": 1,
+                })),
+            },
+            "channels": {
+                "c_general": with(item("i", &["name", "topic"]), json!({
+                    "workspace": "ws_home", "category": "cat_home_text",
+                    "name": "general", "topic": "", "kind": "text", "order": 0,
+                })),
+                "c_lounge": with(item("", &["name", "topic"]), json!({
+                    "workspace": "ws_home", "category": "cat_home_voice",
+                    "name": "Lounge", "topic": "", "kind": "voice", "order": 0,
+                })),
+            },
+        }),
+    )
+    .unwrap();
+    if version > 1 {
+        Slot::Key(&automerge::ROOT, evolution::VERSION_KEY)
+            .put_scalar(&mut doc, automerge::ScalarValue::Uint(version))
+            .unwrap();
+    }
+    doc.commit();
+    doc
+}

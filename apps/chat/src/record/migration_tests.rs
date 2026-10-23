@@ -228,3 +228,91 @@ fn a_message_part_of_version_one_opens_with_every_message_value() {
         })
     );
 }
+
+#[test]
+fn a_chat_kept_flat_before_the_model_opens_with_its_channels_and_categories() {
+    use crate::model::ChannelKind;
+    for version in [5, 1] {
+        let mut doc = crate::testing::chat_kept_flat(version);
+        assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
+        let chat = evolution::read_checked::<Chat>(&doc).unwrap();
+        assert_eq!(
+            chat.categories
+                .iter()
+                .map(|(id, category)| (id.to_string(), category.name.clone()))
+                .collect::<Vec<_>>(),
+            [
+                ("cat_home_text".to_owned(), "Channels".to_owned()),
+                ("cat_home_voice".to_owned(), "Voice".to_owned()),
+            ],
+            "version {version}"
+        );
+        let mut channels: Vec<_> = chat
+            .channels
+            .iter()
+            .map(|(id, channel)| {
+                (
+                    id.to_string(),
+                    channel.name.clone(),
+                    channel.category.as_ref().map(ToString::to_string),
+                    channel.kind,
+                )
+            })
+            .collect();
+        channels.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            channels,
+            [
+                (
+                    "c_general".to_owned(),
+                    "general".to_owned(),
+                    Some("cat_home_text".to_owned()),
+                    ChannelKind::Text
+                ),
+                (
+                    "c_lounge".to_owned(),
+                    "Lounge".to_owned(),
+                    Some("cat_home_voice".to_owned()),
+                    ChannelKind::Voice
+                ),
+            ],
+            "version {version}"
+        );
+        let (_, categories) = ui::automerge::ReadDoc::get(&doc, ROOT, "categories")
+            .unwrap()
+            .unwrap();
+        let (_, text) = ui::automerge::ReadDoc::get(&doc, &categories, "cat_home_text")
+            .unwrap()
+            .unwrap();
+        assert!(
+            ui::automerge::ReadDoc::get(&doc, &text, "name")
+                .unwrap()
+                .is_some(),
+            "the flat fields stay"
+        );
+    }
+}
+
+#[test]
+fn a_name_the_item_holds_is_kept_over_its_flat_one() {
+    let mut doc = crate::testing::chat_kept_flat(5);
+    let (_, categories) = ui::automerge::ReadDoc::get(&doc, ROOT, "categories")
+        .unwrap()
+        .unwrap();
+    let (_, text) = ui::automerge::ReadDoc::get(&doc, &categories, "cat_home_text")
+        .unwrap()
+        .unwrap();
+    let (_, held) = ui::automerge::ReadDoc::get(&doc, &text, "v")
+        .unwrap()
+        .unwrap();
+    ui::tilo_resource::write_key(&mut doc, &held, "name", &"Text".to_owned()).unwrap();
+    doc.commit();
+    assert!(evolution::migrate::<Chat>(&mut doc).unwrap());
+    let chat = evolution::read_checked::<Chat>(&doc).unwrap();
+    assert_eq!(
+        chat.categories
+            .get(&ui::tilo_resource::Id::from_raw("cat_home_text"))
+            .map(|category| category.name.as_str()),
+        Some("Text")
+    );
+}

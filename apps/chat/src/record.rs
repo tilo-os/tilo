@@ -55,7 +55,10 @@ pub const VOICE_CHANNEL: &str = "c_voice";
 /// ([`drop_workspaces`]). Versions 1 to 4 kept a filed report's submission,
 /// a triage step's update and a moderation decision's reports and
 /// take-backs as one JSON string each; they are model values now, rewritten
-/// in place.
+/// in place. Chats made before Chat's record was a model kept each channel's
+/// and category's fields flat in its entry, and opened as version 1 with
+/// those fields unread; up to version 5 they are read into the item
+/// ([`restore_flat_items`]).
 ///
 /// # Errors
 /// When `from` is not a version this chat was, or a stored value does not
@@ -65,7 +68,7 @@ fn migrate(
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
-    if !(1..=4).contains(&from) {
+    if !(1..=5).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Chat migration from {from}"
         )));
@@ -83,6 +86,7 @@ fn migrate(
     if from <= 3 {
         drop_workspaces(doc)?;
     }
+    restore_flat_items(doc)?;
     for report in collection_items(doc, &ROOT, "feedback")? {
         retype_json::<Option<ui::feedback::Submission>>(doc, &report, "submission")?;
         for step in collection_items(doc, &report, "triage")? {
@@ -132,6 +136,91 @@ fn drop_workspaces(doc: &mut ui::tilo_resource::Doc) -> Result<(), ui::tilo_reso
                 if doc.get(&value, "workspace")?.is_some() {
                     doc.delete(&value, "workspace")?;
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read the fields a chat from before its record was a model kept flat in
+/// each channel's and category's entry (`name`, `topic`, `category`,
+/// `kind`, `order` beside the item's `k` and `v`) into the item, where
+/// those chats were opened without them: a name or topic the item holds
+/// empty, a category or kind it does not hold. What the item already says
+/// stays, and the flat fields stay where they are. A collection whose every
+/// entry kept its flat `order` is listed in that order again.
+///
+/// # Errors
+/// The document's read or write error.
+fn restore_flat_items(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
+    use ui::tilo_resource::Slot;
+    let flat_str =
+        |doc: &ui::tilo_resource::Doc, entry: &ObjId, key: &str| match doc.get(entry, key) {
+            Ok(Some((Value::Scalar(scalar), _))) => match scalar.as_ref() {
+                ScalarValue::Str(text) if !text.is_empty() => Some(text.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+    for collection in ["categories", "channels"] {
+        let Some(map) = map_at(doc, &ROOT, collection)? else {
+            continue;
+        };
+        let mut ordered = Vec::new();
+        let mut every_entry_ordered = true;
+        for id in doc.keys(&map).collect::<Vec<_>>() {
+            let Some(entry) = map_at(doc, &map, &id)? else {
+                every_entry_ordered = false;
+                continue;
+            };
+            let value = match map_at(doc, &entry, "v")? {
+                Some(value) => value,
+                None if doc.get(&entry, "v")?.is_none() => {
+                    Slot::Key(&entry, "v").object(doc, ObjType::Map)?
+                }
+                None => {
+                    every_entry_ordered = false;
+                    continue;
+                }
+            };
+            for key in ["name", "topic"] {
+                if let Some(flat) = flat_str(doc, &entry, key)
+                    && ui::tilo_resource::read_key::<String>(doc, &value, key)
+                        .is_ok_and(|held| held.is_empty())
+                {
+                    flat.store(doc, Slot::Key(&value, key))?;
+                }
+            }
+            if collection == "channels" {
+                if let Some(flat) = flat_str(doc, &entry, "category")
+                    && doc.get(&value, "category")?.is_none()
+                {
+                    Some(Id::from_raw(flat)).store(doc, Slot::Key(&value, "category"))?;
+                }
+                if let Some(flat) = flat_str(doc, &entry, "kind")
+                    && doc.get(&value, "kind")?.is_none()
+                {
+                    let kind: ChannelKind = flat.parse().unwrap_or_default();
+                    kind.store(doc, Slot::Key(&value, "kind"))?;
+                }
+            }
+            match doc.get(&entry, "order")? {
+                Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
+                    ScalarValue::Int(order) => ordered.push((*order, id, entry)),
+                    ScalarValue::Uint(order) => {
+                        ordered.push((i64::try_from(*order).unwrap_or(i64::MAX), id, entry));
+                    }
+                    _ => every_entry_ordered = false,
+                },
+                _ => every_entry_ordered = false,
+            }
+        }
+        if every_entry_ordered && !ordered.is_empty() {
+            ordered.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            let keys = ui::tilo_resource::order::sequence(None, None, ordered.len());
+            for ((_, _, entry), key) in ordered.iter().zip(keys) {
+                Slot::Key(entry, "k").put_scalar(doc, ScalarValue::Str(key.into()))?;
             }
         }
     }
@@ -958,7 +1047,7 @@ impl Chat {
     read_content = Chat::content,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 5,
+    version = 6,
     migrate = migrate,
 )]
 impl Chat {
