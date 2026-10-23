@@ -81,7 +81,9 @@ pause outlives restarts. The person sees it on the task's issue in the Tasks
 app ([tasks.md](tasks.md)), and confirms (optionally editing the draft's
 fields), declines with a reason, or always allows it; the published `answer-confirmation` task
 action does the same without the card. The agent's step waits and asks again
-with the same arguments; the broker runs exactly those arguments with the
+with the same arguments, an ask the broker holds until the person answers, a
+grant that decides it changes or the run stops (each announced through
+`policy_change`), never on a clock; the broker runs exactly those arguments with the
 person's edits, carried to dispatch by a one-use token bound to them. Other
 arguments are a new question. The draft keeps no raw arguments, so secrets
 never enter the room.

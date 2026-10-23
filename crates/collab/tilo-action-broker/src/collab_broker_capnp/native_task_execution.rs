@@ -5,6 +5,7 @@ use super::{
     InvocationKey, InvocationOwner, PendingTaskRun, TaskRunEnvelope, durable_local_invocation,
 };
 use crate::services::NativeTaskBinding;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 #[cfg(test)]
 #[path = "native_task_tests.rs"]
@@ -17,7 +18,9 @@ mod tests;
 const CANCELLATION_SAMPLE: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// What a native task's re-ask of its child asked to wait for: the child
-/// moving past `seen` (with no `seen`, settling), until `until`.
+/// moving past `seen` (with no `seen`, settling), or a child that waits for
+/// its person being answered, until `until`.
+#[derive(Clone, Copy)]
 pub(super) struct ChildWait {
     seen: Option<tilo_actions::remote::UpdateMark>,
     until: tokio::time::Instant,
@@ -127,6 +130,57 @@ impl CapnpBrokerState {
         if let Some(observed) = self.observe_native_child(reask, wait, admission).await? {
             return Ok(observed);
         }
+        // A child that waits for its person is held, when the re-ask asked
+        // to be, until what decides it is announced changed: the person
+        // answered the run's question, a grant was given or revoked, the run
+        // stopped. Then it is decided afresh.
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let watch = wait.map(|_| {
+            let wake = Arc::clone(&wake);
+            tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())
+        });
+        loop {
+            if let Some(watch) = &watch {
+                let _ = watch.arm();
+            }
+            let error = match self.start_native_child(reask).await {
+                Err(error)
+                    if crate::services::NativeTaskActionRequirement::awaits_confirmation(
+                        &error.to_string(),
+                    ) =>
+                {
+                    error
+                }
+                started => return started,
+            };
+            let Some(wait) = wait.filter(|wait| tokio::time::Instant::now() < wait.until) else {
+                return Err(error);
+            };
+            let recheck = if self.announces_decisions() {
+                wait.until
+            } else {
+                super::committed_document::next_unannounced_recheck().min(wait.until)
+            };
+            let _ = tokio::time::timeout_at(recheck, wake.notified()).await;
+            let (route, identity) = admission;
+            self.revalidate_admission(route, identity)?;
+        }
+    }
+
+    /// Whether every change a run's admission reads is announced through
+    /// [`tilo_identity_host::policy_change`].
+    fn announces_decisions(&self) -> bool {
+        self.membership
+            .as_ref()
+            .is_some_and(|membership| membership.announces_policy_changes())
+            && tilo_identity_host::policy_change::timers_reliable()
+    }
+
+    /// Start `reask`'s child, once its person answered where it asks first.
+    async fn start_native_child(
+        self: &std::sync::Arc<Self>,
+        reask: &ChildReask<'_>,
+    ) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
         if !reask.target.provider.is_empty() {
             return self
                 .launch_native_task_action(reask)
