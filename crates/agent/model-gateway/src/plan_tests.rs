@@ -228,6 +228,17 @@ fn child_plan(case: &str) {
             serde_json::json!({"model":"test-model", "messages":[{"role":"user", "content":"test instruction"}]})
         }
     };
+    if matches!(
+        case,
+        "timeout" | "limits-owner-short" | "limits-owner-caller"
+    ) {
+        // A Plan deadline runs from the call's start, and the first turn of
+        // a conversation also reads the profile and unseals its key, which
+        // takes seconds on a loaded machine. Later turns take both from
+        // `PLAN_PROFILES`. These cases are such a later turn, so their 100
+        // or 200 ms usually go to the held peer rather than the vault.
+        plan_profile("test-provider", "test-model").unwrap();
+    }
     let mut events = Vec::new();
     let http = provider_client().unwrap();
     let response = tilo_rt::block_on(handle_streaming(
@@ -593,6 +604,25 @@ fn done_ms(observed: &Observed) -> u64 {
         .unwrap_or_else(|| panic!("the call logs its duration: {}", observed.stderr))
 }
 
+/// A call its deadline ended, not the held peer: never answered, asked once
+/// at most, and unknown, never retried, once its POST was out. The deadline
+/// runs on the wall clock from the call's start, so whether the POST goes
+/// out within 100 or 200 ms is up to the machine's scheduler: on a loaded
+/// one the call may end before it, which is as correct.
+fn assert_ended_by_deadline(observed: Observed, case: &str) {
+    assert!(observed.requests.len() <= 1, "{case}: never retried");
+    if observed.requests.is_empty() {
+        assert!(!observed.response.ok, "{case}");
+        assert!(observed.response.output.is_none(), "{case}");
+        let error = observed.response.error.unwrap();
+        assert!(error.contains("timed out"), "{case}: {error}");
+        assert!(error.len() <= 160, "bounded error: {error}");
+        assert!(!error.contains("fabricated-test-key"));
+    } else {
+        assert_unknown(observed);
+    }
+}
+
 fn assert_unknown(observed: Observed) {
     assert_eq!(observed.requests.len(), 1, "one accepted Plan POST");
     assert!(!observed.response.ok);
@@ -629,20 +659,9 @@ fn plan_dispatch_owner_ceiling_preserves_shorter_caller_and_transport_bounds() {
             assert!(observed.response.ok);
             assert_eq!(observed.requests.len(), 1);
         } else {
-            // The applied 100 or 200 ms run from the call's start, which
-            // includes resolving the profile and its key: on a loaded
-            // machine they can pass before the POST is out, and the call then
-            // ends having sent nothing. Either way it ends by that deadline,
-            // not the held peer, and asks once at most.
             let done_ms = done_ms(&observed);
             assert!(done_ms < 5_000, "the call took {done_ms} ms");
-            assert!(observed.requests.len() <= 1, "{case}: never retried");
-            if observed.requests.is_empty() {
-                assert!(!observed.response.ok, "{case}");
-                assert!(observed.response.output.is_none(), "{case}");
-            } else {
-                assert_unknown(observed);
-            }
+            assert_ended_by_deadline(observed, case);
         }
     }
     let Some(observed) = run_case(name, "limits-owner-invalid") else {
@@ -666,7 +685,7 @@ fn plan_dispatch_timeout_is_unknown() {
         );
         let done_ms = done_ms(&observed);
         assert!(done_ms < 10_000, "the call took {done_ms} ms");
-        assert_unknown(observed);
+        assert_ended_by_deadline(observed, "timeout");
     }
 }
 
