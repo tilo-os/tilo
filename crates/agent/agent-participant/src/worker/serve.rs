@@ -157,6 +157,17 @@ impl Worker {
         match request {
             Request::Probe { path } => Reply::Probe(probe(&path)),
             Request::PutContent(bytes) => self.content.put(&bytes),
+            Request::Shrink {
+                bytes,
+                max_side,
+                max_bytes,
+            } => {
+                if self.mode == Mode::Picture {
+                    super::picture::shrink(&bytes, max_side, max_bytes)
+                } else {
+                    Reply::Failed("this worker shrinks no pictures".into())
+                }
+            }
             Request::TakeContent => self.content.take(),
             Request::Open {
                 app_id,
@@ -170,6 +181,7 @@ impl Worker {
             },
             Request::ViewsLoad { app_id, doc } => self.load_views(app_id, &doc),
             Request::Views { wanted, policy } => self.views(&wanted, &policy),
+            Request::Title { app_id, doc } => self.title(&app_id, &doc),
             Request::ReadPrepare {
                 app_id,
                 room,
@@ -342,6 +354,17 @@ impl Worker {
         }
         self.views = Some((app_id, doc));
         Reply::Done
+    }
+
+    fn title(&self, app_id: &str, bytes: &[u8]) -> Reply {
+        if self.mode != Mode::Views {
+            return Reply::Failed("this worker reads no titles".into());
+        }
+        let mut doc = automerge::AutoCommit::new();
+        if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes) {
+            return Reply::Failed(error.to_string());
+        }
+        Reply::Title(self.catalogue.resource_title(app_id, &doc))
     }
 
     fn views(&self, wanted: &str, policy: &str) -> Reply {

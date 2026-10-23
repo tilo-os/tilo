@@ -34,7 +34,7 @@ pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 4;
+pub(crate) const PROTOCOL_VERSION: u32 = 5;
 
 /// What a worker is started to do. It decides what the worker prepares
 /// before it confines itself: a reader loads the fonts a component lays its
@@ -47,6 +47,8 @@ pub(crate) enum Mode {
     Views,
     /// Mount one record's component to answer its registered reads.
     Read,
+    /// Shrink pictures to show a planning model ([`super::picture`]).
+    Picture,
 }
 
 impl Mode {
@@ -55,6 +57,7 @@ impl Mode {
             Self::Replica => "replica",
             Self::Views => "views",
             Self::Read => "read",
+            Self::Picture => "picture",
         }
     }
 
@@ -63,6 +66,7 @@ impl Mode {
             "replica" => Some(Self::Replica),
             "views" => Some(Self::Views),
             "read" => Some(Self::Read),
+            "picture" => Some(Self::Picture),
             _ => None,
         }
     }
@@ -119,6 +123,10 @@ pub(crate) enum Request {
     /// Load an existing document of `app_id` to discover its views
     /// ([`Mode::Views`]).
     ViewsLoad { app_id: String, doc: Vec<u8> },
+    /// What an existing document of `app_id` is called ([`Mode::Views`]):
+    /// [`crate::AppCatalogue::resource_title`]. The document is read for the
+    /// answer and dropped; the worker answers any number of these.
+    Title { app_id: String, doc: Vec<u8> },
     /// The views of one resource of the loaded document under `policy`.
     Views {
         /// JSON `ViewResourceQuery`.
@@ -151,6 +159,14 @@ pub(crate) enum Request {
     },
     /// Report what the confinement still lets the worker do at `path`.
     Probe { path: String },
+    /// Decode a picture and write it out again within `max_side` pixels a
+    /// side and `max_bytes` ([`Mode::Picture`]); answered with
+    /// [`Reply::Picture`].
+    Shrink {
+        bytes: Vec<u8>,
+        max_side: u32,
+        max_bytes: u64,
+    },
     /// Keep one content item where the app's code reads it; answered with
     /// [`Reply::Stored`].
     PutContent(Vec<u8>),
@@ -181,6 +197,11 @@ pub(crate) enum Reply {
     RecordMutations(Vec<(String, bool, Vec<u8>)>),
     /// JSON `(LiveAnchor, LiveAnchor)`.
     Presence(Option<String>),
+    /// What a document is called, when its app names it.
+    Title(Option<String>),
+    /// A picture written out again as a PNG or JPEG. Not trusted: its
+    /// header is checked before it is shown to anyone.
+    Picture(Vec<u8>),
     /// The request was carried out.
     Done,
     /// The request could not be carried out.
@@ -309,7 +330,7 @@ mod tests {
 
     #[test]
     fn modes_round_trip_by_name() {
-        for mode in [Mode::Replica, Mode::Views, Mode::Read] {
+        for mode in [Mode::Replica, Mode::Views, Mode::Read, Mode::Picture] {
             assert_eq!(Mode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(Mode::parse("other"), None);
