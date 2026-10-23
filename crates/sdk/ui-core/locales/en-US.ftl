@@ -860,8 +860,3 @@ text-menu-numbered-list = Numbered list
 
 # A reference to something another app keeps, shown as a chip; $label is its name.
 reference-open = Open { $label }
-
-# Choosing who may read something kept to its readers (a private issue).
-readers-heading = Who may read it
-readers-agents = Agents who may read it, by id
-readers-waiting = Waiting for the workspace to keep it to them

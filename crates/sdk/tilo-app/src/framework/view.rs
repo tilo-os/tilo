@@ -474,46 +474,6 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         state
     }
 
-    /// What `read` makes of the record and of its children of `C` this
-    /// device reads ([`Children::readable`](super::Children::readable)), as
-    /// state kept current with both: a list that shows the parent's items
-    /// beside those its children keep (issues kept to their readers among
-    /// the others, for those readers). Act on a child's item through the
-    /// child ([`Children::record`](super::Children::record)).
-    pub fn value_with_children<C, V>(
-        &self,
-        children: &super::Children<C>,
-        read: impl Fn(&R::State, &[(Id, Rc<C::State>)]) -> V + 'static,
-    ) -> LocalState<V>
-    where
-        C: super::ChildRecord<Parent = R>,
-        V: PartialEq + Default + Clone + 'static,
-    {
-        let read = Rc::new(read);
-        let state = LocalState::new(V::default());
-        let (reading, held) = (Rc::clone(&read), children.clone());
-        let sink = state.clone();
-        let initial = self.follow_state(
-            Reads::Always,
-            move |parent| reading(parent, &held.readable()),
-            move |value| sink.set(value),
-        );
-        state.set(initial);
-        let (live, held, sink) = (self.live.clone(), children.clone(), state.clone());
-        let followed = std::cell::Cell::new(children.revision());
-        self.storage.follow_with(self.alive.clone(), move || {
-            let revision = held.revision();
-            if followed.replace(revision) == revision {
-                return;
-            }
-            let next = read(&live.get(), &held.readable());
-            if sink.with(|shown| *shown != next) {
-                sink.set(next);
-            }
-        });
-        state
-    }
-
     /// A toolkit control bound to a verb: it shows `read` of the resource and
     /// invokes `action` with each committed value, for a value that is a
     /// verb's argument rather than a field

@@ -413,7 +413,7 @@ pub fn governance_resource_with_access(ws: &Workspace, can_govern: bool) -> tilo
         ActionParam::required_owned(
             "subject",
             ParamType::Object,
-            "Who: {\"person\": id}, {\"agent\": id}, {\"app\": package id}, {\"role\": \"viewer\"|\"commenter\"|\"editor\"}, or {\"all_but\": [those]} for everyone but those",
+            "Who: {\"person\": id}, {\"agent\": id}, {\"app\": package id} or {\"role\": \"viewer\"|\"commenter\"|\"editor\"}",
         )
     };
     root.actions.push(

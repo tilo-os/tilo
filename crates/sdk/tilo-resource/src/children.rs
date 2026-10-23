@@ -12,9 +12,7 @@
 //! Every container has the same lifecycle (the framework publishes it, the
 //! app writes no verbs for it): `create` a child of a kind at a place with
 //! its first fields, `delete` it to the trash (restorable, its record and id
-//! kept), `restore` it, and `move` it to another place or group. A container
-//! whose children are made from the parent's own items also offers `take`:
-//! an item moved whole into a record of its own, under its id.
+//! kept), `restore` it, and `move` it to another place or group.
 
 use crate::{Atom, Collection, Id, Model};
 
@@ -26,9 +24,6 @@ pub const DELETE: &str = "delete";
 pub const RESTORE: &str = "restore";
 /// The id of the generated action that moves a child.
 pub const MOVE: &str = "move";
-/// The id of the generated action that takes one of the parent's items into
-/// a child of its own.
-pub const TAKE: &str = "take";
 
 /// When a child went to the room's trash: in milliseconds since the epoch.
 #[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq)]

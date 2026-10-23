@@ -395,26 +395,6 @@ impl ViewStorage {
         Some(held)
     }
 
-    /// What search finds in the records the app keeps beside its own (the
-    /// children it lists that this device reads).
-    pub(crate) fn room_search(&self) -> Vec<tilo_resource::SearchEntry> {
-        self.chains
-            .doors()
-            .iter()
-            .flat_map(|door| door.search())
-            .collect()
-    }
-
-    /// The clients of the action door those records asked the host
-    /// through, for the root to carry.
-    pub(crate) fn room_remotes(&self) -> Vec<ui_core::RemoteActions> {
-        self.chains
-            .doors()
-            .iter()
-            .filter_map(|door| door.remote())
-            .collect()
-    }
-
     /// Run `refresh` with every refresh while `alive` lives.
     pub(crate) fn follow_with(&self, alive: Weak<()>, refresh: impl FnMut() + 'static) {
         self.followed.borrow_mut().push((alive, Box::new(refresh)));
@@ -470,12 +450,10 @@ impl ViewStorage {
 
     /// Take up a newer head of each chain that arrived on this device: in
     /// a frame's settle, where the store takes the writer opening it needs,
-    /// so the views' next sync reads it; and carry out what waited for the
-    /// pass over the record the window shows, lent as `live`.
-    pub(crate) fn settle(&self, live: &mut ui_core::widget::Edits<'_>) {
+    /// so the views' next sync reads it.
+    pub(crate) fn settle(&self) {
         for chain in self.chains.doors() {
             let _ = chain.revision();
-            chain.settle(live);
         }
     }
 
