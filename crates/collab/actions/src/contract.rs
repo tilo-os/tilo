@@ -98,6 +98,13 @@ impl RiskLevel {
 /// it may do; its answer goes back to the asking device alone.
 pub const MEMBER_OWN_TAG: &str = "host:member-own";
 
+/// [`ActionContract::tags`] entry of an effect a host answers in a render
+/// service of its own rather than in the record's confined app worker:
+/// rendering a timeline to video needs a GPU and a media stack, which a
+/// confined worker has neither of. A host without such a service leaves the
+/// effect out of what its agents are offered.
+pub const HOST_RENDER_TAG: &str = "host:render";
+
 /// [`ActionContract::tags`] entry of an action for [`Audience::Agents`].
 pub const AGENTS_AUDIENCE_TAG: &str = "audience:agents";
 

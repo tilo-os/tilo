@@ -91,7 +91,15 @@
 //! `participant` (a view that moves only the invoking participant's own
 //! view, such as an agent's caret, so a remote participant may invoke it),
 //! `member` (any member of a room may ask the room's host to run it for
-//! themselves on the room's record, as linking their own account elsewhere)
+//! themselves on the room's record, as linking their own account elsewhere),
+//! `host_render` (a host answers it in a render service of its own, never in
+//! the record's confined app worker: [`tilo_actions::HOST_RENDER_TAG`]),
+//! `tag = EXPR` (repeatable: a further contract tag, a `&'static str`
+//! constant, for how a host treats the effect),
+//! `outside_with = "path"` (an effect of `kind = "read"` that reaches outside
+//! the record only when that parameter is given: an export that writes the
+//! file it names, else keeps what it made as content; each invocation is
+//! admitted as what it does)
 //! and
 //! `kind = "read"` (an effect that only reads, which whoever may read may
 //! invoke; an effect reaches outside the record by default, a view reads),
@@ -421,6 +429,8 @@ pub struct EffectRow {
     pub member: bool,
     pub item: Option<&'static str>,
     pub offload: Option<EffectOffload>,
+    pub tags: &'static [&'static str],
+    pub outside_with: Option<&'static str>,
 }
 
 /// An effect's `#[effect(offload(...))]`: the signed package entrypoint
@@ -532,6 +542,16 @@ pub struct EffectDecl {
     /// A content transform the system may run on the invoker's best-placed
     /// device (`#[effect(offload(...))]`); the handler is its local run.
     pub offload: Option<EffectOffload>,
+    /// Further contract tags, each naming how a host treats the effect
+    /// (`#[effect(host_render)]`, `#[effect(tag = ...)]`): an agent's host
+    /// routes a [`tilo_actions::HOST_RENDER_TAG`] effect to its render
+    /// service rather than the app's worker.
+    pub tags: &'static [&'static str],
+    /// The parameter that, given, makes an invocation reach outside the
+    /// record (`#[effect(kind = "read", outside_with = "path")]`): an export
+    /// writing the file it names. Without it the invocation only reads and
+    /// keeps what it made as content, and is admitted as a read.
+    pub outside_with: Option<&'static str>,
 }
 
 /// The contract tag of an effect that submits only edits of its record
@@ -600,6 +620,8 @@ impl EffectDecl {
             member: row.member,
             item: row.item,
             offload: row.offload,
+            tags: row.tags,
+            outside_with: row.outside_with,
         }
     }
 
@@ -705,10 +727,15 @@ impl EffectDecl {
                 if self.member {
                     tags.push(tilo_actions::MEMBER_OWN_TAG.to_owned());
                 }
+                tags.extend(self.tags.iter().map(|tag| (*tag).to_owned()));
                 tags
             },
             offload: self.offload.as_ref().map(EffectOffload::contract),
             ..base
+        };
+        let spec = match self.outside_with {
+            Some(param) => spec.with_need_of(outside_with(param, self.action_kind)),
+            None => spec,
         };
         match self.risk_of {
             Some(classify) => spec.with_risk(classify),
@@ -719,6 +746,22 @@ impl EffectDecl {
     /// Whether the effect runs in the background, reporting its result later.
     pub fn is_job(&self) -> bool {
         matches!(self.answers, Answers::Later { .. })
+    }
+}
+
+/// What one invocation of an effect declared `outside_with = param` is:
+/// reaching outside when `param` is given (the file an export writes), else
+/// the `least` it was declared as.
+fn outside_with(
+    param: &'static str,
+    least: ActionKind,
+) -> impl Fn(&tilo_actions::ActionArgs) -> tilo_actions::ActionNeed + Send + Sync + 'static {
+    move |args| {
+        let given = args
+            .to_json()
+            .get(param)
+            .is_some_and(|value| !value.is_null());
+        tilo_actions::ActionNeed::of(if given { ActionKind::Outside } else { least })
     }
 }
 

@@ -552,6 +552,79 @@ fn an_effect_parameter_publishes_what_its_type_is_written_as() {
     );
 }
 
+/// A tag a test host treats an effect by.
+const PRINTED_TAG: &str = "test:printed";
+
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "test.shelf.press")]
+pub enum PressEffect {
+    /// Print the shelf.
+    #[effect(job, returns, host_render, tag = PRINTED_TAG)]
+    Print,
+    /// Count the cards.
+    #[effect(returns)]
+    Count,
+    /// Export the shelf.
+    #[effect(returns, kind = "read", outside_with = "path")]
+    Export {
+        #[param("Where to write it; kept as content when absent")]
+        path: Option<String>,
+    },
+}
+
+#[test]
+fn an_export_reaches_outside_only_when_told_where_to_write() {
+    use tilo_resource::Effect as _;
+    let export = PressEffect::specs()
+        .into_iter()
+        .find(|spec| spec.id == "export")
+        .unwrap();
+    assert_eq!(
+        export.contract.kind,
+        ActionKind::Read,
+        "offered as the least it does"
+    );
+    let need = |arguments: serde_json::Value| {
+        export
+            .need_for(Some(arguments.as_object().unwrap()), None)
+            .kind
+    };
+    assert_eq!(need(serde_json::json!({})), ActionKind::Read);
+    assert_eq!(need(serde_json::json!({ "path": null })), ActionKind::Read);
+    assert_eq!(
+        need(serde_json::json!({ "path": "/tmp/shelf.json" })),
+        ActionKind::Outside
+    );
+}
+
+#[test]
+fn an_effect_carries_the_tags_its_host_treats_it_by() {
+    use tilo_resource::Effect as _;
+    let specs = PressEffect::specs();
+    let tags = |id: &str| {
+        specs
+            .iter()
+            .find(|spec| spec.id == id)
+            .unwrap()
+            .contract
+            .tags
+            .clone()
+    };
+    let print = tags("print");
+    assert!(
+        print.iter().any(|tag| tag == tilo_actions::HOST_RENDER_TAG),
+        "a host-rendered effect says so: {print:?}"
+    );
+    assert!(print.iter().any(|tag| tag == PRINTED_TAG), "{print:?}");
+    let count = tags("count");
+    assert!(
+        count
+            .iter()
+            .all(|tag| tag != tilo_actions::HOST_RENDER_TAG && tag != PRINTED_TAG),
+        "an untagged effect carries neither: {count:?}"
+    );
+}
+
 /// A card in an address book: named by first and last name, else its
 /// organization.
 #[derive(tilo_resource::Model, Default, Debug, Clone, PartialEq)]
