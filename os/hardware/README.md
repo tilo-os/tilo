@@ -171,8 +171,8 @@ Generic images retain the official `latest` default and trusted overrides.
 
 ### CI-built Lenovo install image
 
-`build-image.yml` accepts `hardware_profile=lenovo-83ed` on an explicit
-`main`-branch dispatch with `publish=true`. Supply an independently
+A Lenovo board release (not on t yet; `os-board-lenovo-83ed` builds the unsigned
+dev board image) takes `hardware_profile=lenovo-83ed`. Supply an independently
 reviewed `firmware_candidate` OCI digest and `firmware_manifest_sha256`. The
 artifact is a native Linux OCI image containing only `/firmware/`: the manifest
 and exactly the files named by the selected hardware definition, packaged with

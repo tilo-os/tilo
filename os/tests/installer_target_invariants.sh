@@ -25,7 +25,6 @@ secret_policy="$repo_root/os/usr/libexec/tilo-startup-secret-policy"
 prediction_signer="$repo_root/os/dev/sign-target-prediction.sh"
 # shellcheck source=lib/containerfile.sh
 . "$repo_root/os/tests/lib/containerfile.sh"
-os_image_workflow="$repo_root/.forgejo/workflows/build-image.yml"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -352,16 +351,8 @@ if [ -x "$prediction_signer" ] \
    && ! grep -Eq 'PRIVATE[_-]?KEY|private-key' "$prediction_signer" \
    && grep -Fq 'TILO_REQUIRE_PCR_PREDICTION' "$repo_root/os/dev/build-custom-installer.sh" \
    && grep -Fq 'sign-target-prediction.sh" "$TILO_IMAGE"' "$repo_root/os/dev/build-image.sh" \
-   && grep -Fq 'if [[ "$publish" == true ]]; then' "$os_image_workflow" \
-   && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=1' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
-   && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
-   && grep -Fq 'PROTECTED_PCR_PREDICTION_SIGNER:' "$os_image_workflow" \
-   && grep -Fq "github.event.inputs.release == 'true'" "$os_image_workflow" \
-   && ! grep -Fq 'TILO_PCR_PREDICTION_SIGNER: ${{ vars.TILO_PCR_PREDICTION_SIGNER }}' "$os_image_workflow" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-image.sh" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \
-   && grep -Fq 'sign-target-prediction.sh "$repro_image"' "$os_image_workflow" \
-   && grep -Fq 'enable-openid-connect: true' "$os_image_workflow" \
    && grep -Fq "TILO_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" \
       "$repo_root/.forgejo/workflows/release-imager.yml"; then
   ok "release prediction path uses systemd-measure and a broker signer without private-key custody"

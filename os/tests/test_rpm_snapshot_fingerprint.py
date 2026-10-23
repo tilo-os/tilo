@@ -147,12 +147,6 @@ class Fingerprint(unittest.TestCase):
             self.assertNotIn("rpms-snapshot.env", combined)
 
     def test_image_builds_resolve_standalone_signed_snapshot(self) -> None:
-        build = (ROOT / ".forgejo/workflows/build-image.yml").read_text(encoding="utf-8")
-        self.assertIn("Resolve the exact signed RPM snapshot fingerprint", build)
-        self.assertIn("./os/dev/resolve-rpm-snapshot.sh", build)
-        self.assertIn("rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}", build)
-        self.assertNotIn("os/rpms-snapshot.env", build)
-        self.assertIn("needs.ensure-rpms.result == 'success'", build)
         # The relay and the env-runtime install from the snapshot t's rpm-snapshot check
         # resolves and verifies, never from a pin file.
         checks = {check["name"]: check for check in t_matrix.checks(ROOT)}

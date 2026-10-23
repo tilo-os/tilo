@@ -34,38 +34,25 @@ driving, storage, platforms and troubleshooting; its source is
 
 Image-level changes (`os/`, units, packages) move the VM onto a new image
 instead: `tilo device vm upgrade --from sha:<commit>` for any commit CI has built,
-`--from local` for one that is not pushed yet (`tilo device guide images`). The
-`Build / OS dev` workflow builds on explicit dispatch (select the smallest
-needed architecture list), or for an image-changing pull request labelled
-`os-image` (`os-arm64` also requests both architectures), fully cached. Ordinary
-pushes and unlabelled PRs keep the native slots available for required package
-checks; scheduled and tagged releases retain their existing verification.
-PR dev images and x86 main dev images share one non-cancelling queue, so only
-one of these image workflows can occupy x86 native capacity at a time. This
-also queues an ARM-only request through the PR wrapper; the dedicated ARM main
-wrapper retains its independent queue. Existing requests finish before the
-next image starts.
-Architecture-specific main dispatches build the newest main commit only. It publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
-the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
-main also moves `tilo-vm:main-ci` to its newest dev images.
-`Release / OS` builds signed, reproduced releases only: tags, the nightly run
-and a `release` dispatch of main.
+`--from local` for one that is not pushed yet (`tilo device guide images`). t
+builds the OS and dev images of any tree (`t test os-dev-image-x86_64`, likewise
+`os-image-<arch>` and `os-board-<board>`) and gates installed images in
+`os-acceptance-<arch>`. `t dispatch publish-os-dev-x86_64 --ref main` (likewise
+`aarch64`) publishes main's head once that gate passed: `tilo-ci:main-<sha7>-<arch>`, the
+dev image `tilo-vm:main-<sha7>-ci` and its disk, and moves `tilo-vm:main-ci` and
+`tilo-vm:latest` forward.
 
-To run a main dev image on a physical x86_64 (or generic aarch64) machine, dispatch
-`Release / Dev VM disk` (`dev-disk.yml`) with `source_revision` set to the
-full commit SHA, `base_image` to
-`registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`, `dev_image` to the
-`tilo-vm@sha256:…` digest of `tilo-vm:main-<sha7>-ci-x86_64` (so the image is
-not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
-disk, `tilo-vm-candidate-x86_64.qcow2`; write it to a disk of at least 64 GB
-(`sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-x86_64.qcow2 /dev/sdX`)
-and boot it. It follows `tilo-vm:main-ci`, so `sudo bootc upgrade && sudo
-systemctl reboot` moves it to main's newest dev image. The newest such disk from
-main stays at a fixed URL, which retention never prunes:
+To run a main dev image on a physical x86_64 (or generic aarch64) machine, write its
+published disk to a disk of at least 64 GB and boot it; it follows `tilo-vm:main-ci`,
+so `sudo bootc upgrade && sudo systemctl reboot` moves it to main's newest dev image.
+The disk needs a forge token with package read access:
 
 ```sh
-curl -fLO https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x86_64/tilo-vm-candidate-x86_64.qcow2
-curl -fsSL https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x86_64/tilo-vm-candidate-x86_64.qcow2.sha256 | sha256sum -c -
+tag=main-<sha7>-ci
+base=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk/$tag
+curl -fL -H "Authorization: token $FORGEJO_TOKEN" -O "$base/tilo-vm-$tag-x86_64.qcow2"
+curl -fsSL -H "Authorization: token $FORGEJO_TOKEN" "$base/tilo-vm-$tag-x86_64.qcow2.sha256" | sha256sum -c -
+sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-$tag-x86_64.qcow2 /dev/sdX
 ```
 
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
@@ -187,9 +174,8 @@ the signed catalogue. Forgejo package publication remains a distinct artifact ch
 and alone does not make an app discoverable. [Publishing with t](docs/publishing-on-t.md)
 says what is still to move.
 
-OS publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually
-run **Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
-scheduled integration runs do not publish an OS release. macOS setup packaging,
+OS releases are dispatched on stable or a release tag (`t dispatch
+publish-os-release --ref stable`, docs/release-pipeline.md). macOS setup packaging,
 cask publication and installation tests remain in **Release / imager** but are
 disabled during alpha; tags do not enable those lanes.
 
