@@ -567,6 +567,18 @@ impl InstalledReader {
         self.asked = false;
         Some(answer)
     }
+
+    /// The answer to the read on its way, once it arrives; `None` when none
+    /// was asked for.
+    #[cfg(test)]
+    fn wait(&mut self) -> Option<(u64, Installed)> {
+        if !self.asked {
+            return None;
+        }
+        let answer = tilo_test_env::recv("the installed input methods", &self.answers);
+        self.asked = false;
+        Some(answer)
+    }
 }
 
 /// The installed on-screen keyboard package, if it is a graphical service in
@@ -789,6 +801,16 @@ impl InputMethodServices {
 
     pub fn tick(&mut self, state: &mut State) {
         self.tick_with_steps(state, |_| {});
+    }
+
+    /// Adopt the installed read on its way, as the tick its wake starts
+    /// does in the compositor loop (which tests do not run).
+    #[cfg(test)]
+    fn settle_installed(&mut self, state: &mut State) {
+        if let Some((read_epoch, installed)) = self.reader.wait() {
+            self.adopt_installed(state, read_epoch, installed);
+            self.apply(state);
+        }
     }
 
     /// Keep the production input-phase trace tied to the actual refresh and
@@ -1046,6 +1068,7 @@ mod tests {
         fixture
             .methods
             .reload(&mut fixture.state, &saved_settings());
+        fixture.methods.settle_installed(&mut fixture.state);
         wait_for(|| fixture.osk().process_group().is_some());
         let old_group = fixture.osk().process_group().unwrap();
         let old_running = Arc::clone(&fixture.osk().running);
@@ -1064,6 +1087,7 @@ mod tests {
         );
         fixture.install("2.0.0");
         fixture.methods.tick(&mut fixture.state);
+        fixture.methods.settle_installed(&mut fixture.state);
         let revoked = !fixture.osk().accepting.load(Ordering::Acquire)
             && fixture.osk().process_group().is_none();
         // Like the compositor loop, dispatch the standard Wayland display
@@ -1130,6 +1154,7 @@ mod tests {
         fixture
             .methods
             .reload(&mut fixture.state, &saved_settings());
+        fixture.methods.settle_installed(&mut fixture.state);
         wait_for(|| fixture.osk().process_group().is_some());
         let group = fixture.osk().process_group();
         let running = Arc::clone(&fixture.osk().running);
@@ -1158,6 +1183,7 @@ mod tests {
             .unwrap();
         crate::shell::launcher::invalidate_app_cache();
         fixture.methods.tick(&mut fixture.state);
+        fixture.methods.settle_installed(&mut fixture.state);
         let unchanged = fixture.osk().process_group() == group
             && Arc::ptr_eq(&fixture.osk().running, &running)
             && fixture.osk().accepting.load(Ordering::Acquire);
@@ -1195,6 +1221,7 @@ mod tests {
         fixture
             .methods
             .reload(&mut fixture.state, &saved_settings());
+        fixture.methods.settle_installed(&mut fixture.state);
         let unavailable = !fixture.methods.osk_installed
             && fixture.osk().installed.is_none()
             && fixture.state.input_method_owner_kind()
@@ -1213,6 +1240,7 @@ mod tests {
         fixture
             .methods
             .reload(&mut fixture.state, &saved_settings());
+        fixture.methods.settle_installed(&mut fixture.state);
         wait_for(|| fixture.osk().process_group().is_some());
         let running = Arc::clone(&fixture.osk().running);
         // The kernel truncates names to 15 bytes. Once the child's process
