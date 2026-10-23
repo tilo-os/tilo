@@ -12,6 +12,10 @@ struct Publisher {
     route: CrdtRoute,
     registration: uuid::Uuid,
     worker: uuid::Uuid,
+    /// The route's custodian is the live worker whose directory was admitted
+    /// first, host-mounted or launched alike: once selected it stays until it
+    /// is no longer live, then the next earliest takes over. Republishing
+    /// keeps a worker's place; a new worker or route is admitted last.
     ordinal: u64,
 }
 

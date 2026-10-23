@@ -20913,39 +20913,25 @@ mod host_worker_capacity_tests {
         }
     }
 
-    /// A workspace with 16 agents and dozens of hosted records per app fits;
-    /// the bound still refuses one connection beyond it.
+    /// Workers are counted per connection, never across them: a Cloud host
+    /// mounting a worker per record for every app and agent, far past any
+    /// former global bound, keeps every one, and closing one withdraws only
+    /// its own.
     #[test]
-    fn host_worker_capacity_fits_sixteen_agents_with_all_apps_and_stays_bounded() {
+    fn host_workers_are_owned_by_their_connections_not_a_global_count() {
         let state = state();
         let agents = 16;
-        let records = 5 * 40; // five hosted apps with 40 records each
+        let records = 8 * 64; // eight hosted apps with 64 records each
         for peer in 0..(agents + records) {
             retain(&state, peer as u64 + 1, peer).unwrap();
         }
-        for peer in (agents + records)..host_workers::MAX_HOST_WORKERS {
-            retain(&state, peer as u64 + 1, peer).unwrap();
-        }
-        assert_eq!(retained(&state), host_workers::MAX_HOST_WORKERS);
-        assert!(
-            retain(
-                &state,
-                host_workers::MAX_HOST_WORKERS as u64 + 1,
-                host_workers::MAX_HOST_WORKERS
-            )
-            .is_err()
-        );
+        assert_eq!(retained(&state), agents + records);
         // A reconnect of an already admitted peer with the same scope is idempotent.
         assert!(retain(&state, 1, 0).is_ok());
+        assert_eq!(retained(&state), agents + records);
         state.remove_connection(1);
-        assert!(
-            retain(
-                &state,
-                host_workers::MAX_HOST_WORKERS as u64 + 1,
-                host_workers::MAX_HOST_WORKERS
-            )
-            .is_ok()
-        );
+        assert_eq!(retained(&state), agents + records - 1);
+        assert!(retain(&state, (agents + records) as u64 + 1, agents + records).is_ok());
     }
 }
 
