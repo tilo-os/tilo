@@ -166,7 +166,10 @@ impl PreExec<'_> {
     /// Keep the namespace's capabilities across the `execve`: a process whose
     /// uid isn't the namespace's root (it is not mapped yet) loses them all
     /// there, unless they are ambient. The init drops every one of them
-    /// (ambient ones included) before the command runs.
+    /// (ambient ones included) before the command runs. Only permitted ones
+    /// can be ambient: a container may be denied some (Talos strips
+    /// `CAP_SYS_MODULE` and `CAP_SYS_BOOT` from every container, privileged or
+    /// not), and a helper keeps the set it was started with.
     fn keep_capabilities(&self) {
         let header = sys::CapHeader {
             version: sys::LINUX_CAPABILITY_VERSION_3,
@@ -186,6 +189,12 @@ impl PreExec<'_> {
                 report_and_exit(self.report, Step::Init, 1, errno());
             }
             for cap in 0..=self.cap_last {
+                let permitted = data
+                    .get((cap / 32) as usize)
+                    .is_some_and(|d| d.permitted & (1 << (cap % 32)) != 0);
+                if !permitted {
+                    continue;
+                }
                 let raise = libc::prctl(
                     libc::PR_CAP_AMBIENT,
                     libc::PR_CAP_AMBIENT_RAISE,
