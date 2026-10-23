@@ -13,6 +13,11 @@
 //! - `POST /edit?message=&content=` and `POST /delete?message=` change or
 //!   remove a message, as its author would.
 //! - `GET /messages?channel=` answers the channel's messages, oldest first.
+//! - `POST /slash?user=&name=&command=&code=` runs a slash command as that
+//!   user in #general (`command=link&code=ABC123`, `command=unlink`), as
+//!   Discord delivers it: an interaction on the gateway; answers `{"id": ...}`.
+//! - `GET /replies` answers the bot's replies to interactions, oldest first,
+//!   each `{"interaction": id, "reply": body}`.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -134,9 +139,20 @@ async fn control(
             (200, json!({}))
         }
         ("GET", "/messages") => (200, json!(fake.messages_in(&arg("channel")))),
+        ("POST", "/slash") => {
+            let user = fake_discord::User::new(&arg("user"), &arg("name"));
+            let code = arg("code");
+            let id = fake.slash(
+                &user,
+                &arg("command"),
+                Some(code.as_str()).filter(|c| !c.is_empty()),
+            );
+            (200, json!({ "id": id }))
+        }
+        ("GET", "/replies") => (200, json!(fake.interaction_replies())),
         _ => (
             404,
-            json!({ "error": "use /post, /edit, /delete or /messages" }),
+            json!({ "error": "use /post, /edit, /delete, /messages, /slash or /replies" }),
         ),
     };
     Response::builder()
