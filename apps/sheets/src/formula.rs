@@ -33,6 +33,7 @@ use ui::num::f64_of_usize;
 use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1};
 
 mod book;
+mod resolve;
 pub use book::{Book, recalculate_in_book, recalculate_snapshot};
 
 // ---------------------------------------------------------------------------
@@ -1103,7 +1104,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let addrs: Vec<Addr> = self.raw.keys().copied().collect();
         for addr in addrs {
             if !self.cache.contains_key(&addr) {
-                let v = self.eval_cell(addr);
+                let v = self.resolve(addr);
                 self.cache.insert(addr, v);
             }
         }
