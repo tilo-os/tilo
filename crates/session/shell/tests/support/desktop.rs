@@ -727,6 +727,12 @@ impl Desktop {
             .unwrap_or_default()
     }
 
+    /// The compositor's `/proc/<pid>/NAME` file (`status`, `limits`, ...).
+    pub fn proc_file(&self, name: &str) -> String {
+        let pid = self.child.lock().map_or(0, |child| child.id());
+        std::fs::read_to_string(format!("/proc/{pid}/{name}")).unwrap_or_default()
+    }
+
     /// CPU the compositor process used, in milliseconds, per `/proc`.
     fn compositor_cpu_ms(&self) -> u64 {
         let pid = self.child.lock().map_or(0, |child| child.id());
