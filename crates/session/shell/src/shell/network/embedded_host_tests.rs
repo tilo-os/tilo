@@ -16,7 +16,7 @@ fn tree_with(rooms: &[(&str, RoomId)]) -> WorkspaceTree {
     for (index, (name, room)) in (100u64..).zip(rooms) {
         tree.desktop
             .workspaces
-            .push(Workspace::in_room(WorkspaceId(index), *room, name));
+            .push(Workspace::in_room(WorkspaceId(index), *room, *name));
     }
     tree
 }
