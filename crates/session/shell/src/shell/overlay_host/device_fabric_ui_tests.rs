@@ -244,7 +244,6 @@ fn continuity_catalog_registers_providers_and_reaches_every_device_and_session()
         let total = device_fabric_pane_rows(&view, &RealtimeContinuityUiView::default()).len();
         assert_eq!(
             total,
-            // One extra row offers speaker setup once two devices can play.
             view.local_media.len() + view.devices.len() + 1,
             "the pane model must not truncate media or devices"
         );
@@ -756,7 +755,6 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         let (_, decline) =
             ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(decline.center());
-        // Enter on the request allows it.
         host.press_qs_device_row(0, None);
 
         let actions = actions.borrow();

@@ -27,7 +27,6 @@ pub(super) struct State {
 #[derive(Default)]
 struct Background {
     running: bool,
-    /// When the last background open failed.
     failed_at: Option<Instant>,
     /// The owner the last background open produced, until it is retained.
     opened: Option<NativeWorkspaceOwner>,
@@ -324,11 +323,6 @@ impl ShellNetwork {
         Ok(PeerSyncResponse::EnrollmentPending { id })
     }
     /// Finish the pending enrollment `id` once its remote exchange completed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the attempt is no longer active, or if installing the
-    /// enrolled room fails.
     pub fn poll_enrollment(&self, id: u64) -> Result<PeerSyncResponse, String> {
         // Which room and slot it is for: finishing it forgets its attempt.
         let target = self.enrollment_target(id);

@@ -516,7 +516,6 @@ mod tests {
         assert!(!host.now_playing_card.has_focus());
         tab(&mut host, false);
         assert!(host.now_playing_card.has_focus(), "Tab enters the card");
-        // Seek, then previous, then play/pause.
         tab(&mut host, false);
         tab(&mut host, false);
         let mut handled = false;
@@ -533,7 +532,6 @@ mod tests {
                 PlayerCommand::PlayPause
             ))
         );
-        // Next, then past the card's end back to the root page.
         tab(&mut host, false);
         tab(&mut host, false);
         assert!(!host.now_playing_card.has_focus(), "Tab leaves the card");

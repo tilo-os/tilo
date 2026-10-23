@@ -108,22 +108,10 @@ pub enum Response {
 /// seconds, and these keys are pressed on the compositor thread.
 pub trait AudioControl {
     /// Set the default sink to `pct` percent.
-    ///
-    /// # Errors
-    ///
-    /// The daemon's error, where the write is not merely queued.
     fn set_volume(&self, pct: f32) -> Result<(), String>;
     /// Set the default sink's mute flag.
-    ///
-    /// # Errors
-    ///
-    /// The daemon's error, where the write is not merely queued.
     fn set_mute(&self, muted: bool) -> Result<(), String>;
     /// Flip the default sink's mute flag.
-    ///
-    /// # Errors
-    ///
-    /// The daemon's error, where the write is not merely queued.
     fn toggle_mute(&self) -> Result<(), String>;
     /// Flip the default source's mute flag. Its readout is raised through
     /// `readout` once the resulting state is known.
@@ -309,10 +297,6 @@ fn step_volume(delta: f32, audio: &dyn AudioControl, status: Option<&StatusBridg
 /// a request to hear anything. The tray is updated only from a known
 /// previous state and only once every write succeeded, so a failure never
 /// publishes a state the sink is not in.
-///
-/// # Errors
-///
-/// The daemon's error when setting the level or un-muting failed.
 pub(crate) fn commit_volume(
     audio: &dyn AudioControl,
     status: Option<&StatusBridge>,

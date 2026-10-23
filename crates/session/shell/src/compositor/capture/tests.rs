@@ -829,7 +829,6 @@ fn app_capture_follows_its_live_surface_and_never_fakes_success() {
 
         let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
         let _ = frame_builder.paint();
-        // The target window shows a document four times its own height.
         frame_builder
             .host_mut()
             .group_at_for_tests(strip_id, 0)
@@ -1311,7 +1310,6 @@ fn every_target_captures_host_windows_off_screen_windows_at_scale_on_two_display
                 ),
             );
         }
-        // The strip.
         let strip: Vec<_> = targets
             .iter()
             .filter(|t| t.on_active_strip)
@@ -1322,7 +1320,6 @@ fn every_target_captures_host_windows_off_screen_windows_at_scale_on_two_display
             "the strip",
             &intent(SourceMode::Strip, Vec::new(), Vec::new(), strip),
         );
-        // Each screen, and a selection across the seam between them.
         let displays: Vec<Rect> = outputs
             .iter()
             .map(crate::compositor::backend::Output::logical_rect)
@@ -1345,7 +1342,6 @@ fn every_target_captures_host_windows_off_screen_windows_at_scale_on_two_display
                 Vec::new(),
             ),
         );
-        // A selection inside each host window, anchored to it.
         for surface in [SHM, DMABUF] {
             let target = target_of(&targets, surface).expect("the host window is a target");
             let local = Rect::new(40.0, 80.0, 240.0, 240.0);
@@ -1363,7 +1359,6 @@ fn every_target_captures_host_windows_off_screen_windows_at_scale_on_two_display
                 ),
             );
         }
-        // A host window's capture holds its own pixels, shm and dmabuf.
         let host_targets: Vec<(u64, [u8; 4], ui::widget::CaptureTarget)> =
             [(SHM, SHM_TEXEL), (DMABUF, DMABUF_TEXEL)]
                 .into_iter()

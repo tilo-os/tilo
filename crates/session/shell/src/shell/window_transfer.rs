@@ -120,7 +120,6 @@ impl TransferLauncher for SessionLauncher {
     }
 }
 
-/// One side of a transfer.
 #[derive(Clone, Debug)]
 struct Side {
     workspace: WorkspaceId,
@@ -311,9 +310,6 @@ fn handoff_inbox() -> &'static std::sync::Mutex<std::collections::VecDeque<Hando
 /// Take in one instance's handoff report. Called from the broker for the
 /// instance's own certified primary route, so `room`, `app_id` and
 /// `instance` are its own; the report is picked up on the next frame.
-///
-/// # Errors
-/// A report that is not well-formed.
 pub fn report_handoff(
     room: RoomId,
     app_id: String,

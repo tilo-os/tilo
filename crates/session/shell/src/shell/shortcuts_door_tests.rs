@@ -748,7 +748,6 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
         "the saved shortcut is offered as `{resource}#run`"
     );
 
-    // Run it through the door and serve its steps.
     let (run, _) = door
         .invoke(&resource, "run", &json!({ "title": "Launch notes" }))
         .expect("the run is admitted");

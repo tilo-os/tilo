@@ -99,7 +99,6 @@ pub(super) struct HeldRoom {
 }
 
 impl HeldRoom {
-    /// The room.
     pub(super) const fn room(&self) -> RoomId {
         self.room
     }
@@ -134,7 +133,6 @@ impl RelayInvitation<'_> {
     }
 }
 
-/// The name the relay's actions give `role`.
 const fn role_name(role: InviteRole) -> &'static str {
     match role {
         InviteRole::Viewer => "viewer",
@@ -143,7 +141,6 @@ const fn role_name(role: InviteRole) -> &'static str {
     }
 }
 
-/// The arguments of the governance invitation `terms`.
 fn invite_arguments(terms: &RelayInvitation<'_>) -> serde_json::Map<String, serde_json::Value> {
     let mut arguments = serde_json::Map::new();
     arguments.insert("role".into(), role_name(terms.role).into());

@@ -1,4 +1,3 @@
-//! The real default loan, original Passwords decision and private native D-Bus.
 use super::*;
 use crate::shell::in_process::messaging::sms_first;
 use std::collections::HashMap;

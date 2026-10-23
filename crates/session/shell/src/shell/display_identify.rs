@@ -385,7 +385,6 @@ mod tests {
             width: 1920,
             height: 1080,
         };
-        // The monitor sits above the laptop panel, sharing its left edge.
         let snapshot = DisplayHardwareSnapshot {
             outputs: vec![described("eDP-1", true), described("DP-1", false)],
             layout: vec![placed("DP-1", 0), placed("eDP-1", 1080)],

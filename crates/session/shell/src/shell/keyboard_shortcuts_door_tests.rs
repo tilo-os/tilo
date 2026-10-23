@@ -89,7 +89,6 @@ impl Door {
         }
     }
 
-    /// Every row `caller` is offered under `parent`.
     fn rows(&self, caller: &Caller, parent: Option<&str>) -> Vec<(String, String, String)> {
         answer(self.host.query(
             caller,

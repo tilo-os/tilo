@@ -702,7 +702,6 @@ mod tests {
 
     #[test]
     fn native_recovery_defers_only_an_invalid_existing_chain() {
-        // Phase `only_native_desktop_startup_can_defer_an_invalid_existing_chain_to_recovery`.
         {
             let invalid_cert = io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -724,7 +723,6 @@ mod tests {
                 ExistingIdentityFailureAction::FailClosed,
             );
         }
-        // Phase `native_recovery_does_not_mask_unrelated_startup_failures`.
         {
             let permission_denied = io::Error::new(
                 io::ErrorKind::PermissionDenied,

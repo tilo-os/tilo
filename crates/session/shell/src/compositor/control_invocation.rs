@@ -114,10 +114,6 @@ impl ControlInvocation {
     /// An admitted invocation. Its `receipt` is the answer, unless the
     /// request waits until `settle_by` and the job has not settled: then the
     /// job is followed.
-    ///
-    /// # Errors
-    ///
-    /// The answer to send now, when there is nothing to wait for.
     #[allow(
         clippy::result_large_err,
         reason = "the answer is the wire Response the transport writes back as is"
@@ -343,7 +339,6 @@ mod tests {
             Some(MAX_SETTLE_WAIT)
         );
         assert_eq!(settle_window(&invoke(Some(250), Some("device"))), None);
-        // A job read waits the same way, through the same bound.
         let status = |wait_ms| test_control::Command::ActionsStatus {
             invocation_id: 7,
             wait_ms,
@@ -367,7 +362,6 @@ mod tests {
             panic!("nothing to wait for");
         };
         assert_eq!(state(&answer), "accepted");
-        // A settled or job-less receipt has nothing to follow either.
         for settled in [receipt(Some(4), succeeded()), receipt(None, accepted())] {
             assert!(
                 ControlInvocation::admitted(

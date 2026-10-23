@@ -71,7 +71,6 @@ impl FilePickerSpawner for FilePickerQueue {
 /// be granting itself the thing the dialog is supposed to be asking about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickerScope {
-    /// Directory the dialog opens on.
     pub initial_dir: PathBuf,
     /// Every directory the user may reach from the dialog; the widget refuses to navigate outside these.
     pub roots: Vec<PathBuf>,
@@ -195,14 +194,12 @@ mod tests {
 
     #[test]
     fn picker_queue_queues_without_blocking_and_drains_everything() {
-        // Phase `spawn_queues_rather_than_blocking`.
         {
             let q = FilePickerQueue::new();
             let (r, _rx) = req("Open");
             q.spawn(r);
             assert_eq!(q.len(), 1, "spawn must buffer the request");
         }
-        // Phase `drain_takes_everything_and_leaves_the_queue_empty`.
         {
             let q = FilePickerQueue::new();
             let (a, _ra) = req("a");
@@ -231,7 +228,6 @@ mod tests {
 
     #[test]
     fn user_scope_root_ignores_home_or_missing_documents_dirs() {
-        // Phase `a_documents_dir_that_is_home_is_treated_as_unset`.
         {
             let home = Path::new("/home/someone");
             assert!(
@@ -239,7 +235,6 @@ mod tests {
                 "a documents dir equal to home carries no information"
             );
         }
-        // Phase `a_missing_documents_dir_is_not_used`.
         {
             let home = Path::new("/home/someone");
             assert!(!is_useful_documents_dir(
@@ -247,7 +242,6 @@ mod tests {
                 home
             ));
         }
-        // Phase `the_user_scope_always_has_a_root_and_starts_inside_it`.
         {
             let scope = PickerScope::for_user();
             assert!(

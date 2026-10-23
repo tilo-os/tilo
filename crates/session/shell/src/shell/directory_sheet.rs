@@ -41,7 +41,6 @@ use tilo_relay_protocol::rooms::RoomRole;
 const TARGET_PREFIX: &str = "directory:";
 /// The tallest the sheet grows.
 const MAX_HEIGHT: f64 = ui::tokens::Metrics::BASE.sheet_max_height as f64;
-/// One listing's row.
 const ROW_H: f64 = ui::tokens::Metrics::BASE.listing_row_height as f64;
 /// The workspace's mark at a row's start.
 const MARK: f64 = ui::tokens::Metrics::BASE.avatar_row as f64;
@@ -114,7 +113,6 @@ enum Target {
     Close,
 }
 
-/// The directory sheet.
 #[derive(Default)]
 pub struct DirectorySheet {
     open: bool,
@@ -1171,7 +1169,6 @@ mod tests {
         typed(&mut sheet, "rust");
         let names: Vec<_> = sheet.shown().iter().map(|l| l.entry.name.clone()).collect();
         assert_eq!(names, ["Rust Club"]);
-        // Enter with one answer joins it.
         let outcome = sheet.handle_event(
             &key(Key::Named(NamedKey::Enter)),
             Modifiers::default(),

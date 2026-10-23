@@ -322,7 +322,6 @@ fn open_store_for(tree: &WorkspaceTree, tab: TabId, app_id: &str) {
     }
 }
 
-/// The Store's package.
 const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
 /// Close a saved window that can't open here, at the person's word.
@@ -1677,7 +1676,6 @@ mod tests {
             "the workspace on screen is restored first"
         );
 
-        // The visible window's launch is in flight.
         launcher::set_pending_placement(visible_app, Placement::IntoTab(visible_tab));
         set_note(&mut tree, visible_tab, OPENING.into());
         for _ in 0..3 {
@@ -2197,7 +2195,6 @@ mod tests {
         assert!(!start_requested_installs(&mut tree));
         assert_eq!(missing_of(&tree, tab), Some(MissingApp::Unavailable));
 
-        // Pressing the card's button queues exactly that tab.
         let mut card = crate::shell::app_notice_card::AppNoticeCard::install(
             tab,
             "Word Processor",

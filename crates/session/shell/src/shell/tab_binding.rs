@@ -1505,7 +1505,6 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn activation_focuses_and_reveals_the_exact_surface_and_its_group() {
-        // Phase `workspace_activity_is_one_focusable_tiled_window_per_workspace`.
         {
             let mut tree = WorkspaceTree::bootstrap_demo();
             tree.persist_path = None;
@@ -1551,7 +1550,6 @@ mod tests {
             );
         }
 
-        // Phase `closing_workspace_activity_drops_it_from_durable_state`.
         {
             let dir = tempfile::tempdir().expect("state dir");
             let path = dir.path().join("workspace.json");
@@ -1591,7 +1589,6 @@ mod tests {
             );
         }
 
-        // Phase `accepted_surface_activation_persists_complete_focus_address`.
         {
             let dir = tempfile::tempdir().expect("state dir");
             let path = dir.path().join("workspace.json");
@@ -1625,7 +1622,6 @@ mod tests {
             assert_eq!(group.active_tab, tab);
         }
 
-        // Phase `activation_reveals_exact_surface_without_moving_it`.
         {
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_demo();
@@ -1648,7 +1644,6 @@ mod tests {
             assert!(!activate_surface(&mut tree, 9999));
         }
 
-        // Phase `group_id_for_surface_resolves_the_owning_group`.
         {
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_demo();
@@ -1667,14 +1662,12 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn launch_placements_are_claimed_exactly_once_by_the_matching_window() {
-        // Phase `launch_records_place_a_window_in_its_claimed_tab_or_a_live_fallback`.
         {
             // Phase `a_window_started_for_an_existing_tab_lands_in_it`.
             // A window started for a tab the room already has lands *in* that tab, not in a second one beside it.
             {
                 crate::shell::launcher::clear_pending_placements();
                 let mut tree = WorkspaceTree::bootstrap_demo();
-                // Stand in for the tab a peer's window arrived as.
                 let target = {
                     let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
                     let tab = Tab {
@@ -1894,7 +1887,6 @@ mod tests {
                 let groups_before = tree.desktop.workspaces[0].strips[0].window_groups.len();
 
                 launcher::set_pending_placement("so.tilo.placefixture", Placement::TabIn(named));
-                // The client announces the bare trailing component, as the reverse-DNS convention has it.
                 let _ = adopt_toplevel(&mut tree, 8080, Some("placefixture".into()));
                 assert_eq!(
                     tree.desktop.workspaces[0].strips[0].window_groups.len(),
@@ -1962,7 +1954,6 @@ mod tests {
             }
         }
 
-        // Phase `a_late_app_id_claims_a_pending_placement_exactly_once`.
         {
             // Phase `late_app_id_claims_placement_once_and_does_not_leak_to_next_window`.
             // Electron/GTK may create the xdg-toplevel before publishing its app-id.
@@ -2063,7 +2054,6 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn launches_documents_and_drops_land_beside_or_inside_the_right_group() {
-        // Phase `launches_open_beside_or_inside_the_focused_group`.
         {
             // Phase `a_launch_beside_a_lone_window_opens_its_own_group_to_the_right`.
             // A window opened while a single window has focus is a new thing beside it: its own column, immediately to the right.
@@ -2298,7 +2288,6 @@ mod tests {
             }
         }
 
-        // Phase `documents_and_drops_land_exactly_without_duplicating_tabs`.
         {
             // Phase `a_document_opened_from_an_app_becomes_a_tab_in_that_apps_group`.
             // A document opened from another app is the same task as the app that asked for it, so it joins that app's group as a tab.
@@ -2341,7 +2330,6 @@ mod tests {
                 );
             }
 
-            // Phase `exact_drop_placements_preserve_tab_and_group_sides`.
             {
                 let mut tree = WorkspaceTree::bootstrap_demo();
                 tree.persist_path = None;
@@ -2384,7 +2372,6 @@ mod tests {
                 assert_eq!(strip.window_groups.last().unwrap().tabs[0].id, last_group);
             }
 
-            // Phase `an_existing_document_tab_is_rehomed_without_duplication`.
             {
                 let mut tree = WorkspaceTree::bootstrap_demo();
                 tree.persist_path = None;
@@ -2430,7 +2417,6 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn closing_or_destroying_a_surface_prunes_its_records_without_stale_state() {
-        // Phase `closing_a_host_window_prunes_its_group_before_the_next_open_and_reorder`.
         {
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_demo();
@@ -2495,7 +2481,6 @@ mod tests {
             );
         }
 
-        // Phase `destroyed_foreign_surface_close_flushes_away_relaunch_record`.
         {
             crate::shell::launcher::clear_pending_placements();
             let state_dir = tempfile::tempdir().expect("temporary state directory");
@@ -2548,7 +2533,6 @@ mod tests {
             );
         }
 
-        // Phase `shared_restore_adopt_destroy_reload_has_no_stale_card`.
         {
             let state_dir = tempfile::tempdir().expect("state directory");
             let state_path = state_dir.path().join("workspace.json");
@@ -2568,7 +2552,6 @@ mod tests {
                     note: String::new(),
                 };
             persisted.queue_save();
-            // The prior session exits, releasing the state file's single writer.
             drop(persisted);
 
             let mut restored =
@@ -2651,7 +2634,6 @@ mod tests {
             );
         }
 
-        // Phase `continuation_takeover_is_captured_locally_and_its_close_is_tombstoned`.
         {
             use crate::shell::personal_continuity::{
                 AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot,
@@ -2730,7 +2712,6 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn failed_launch_cleanup_retires_only_the_unpainted_tab_it_owns() {
-        // Phase `failed_sole_launch_retires_unpainted_foreign_tab_restores_focus_and_allows_retry`.
         {
             const PACKAGE: &str = "so.tilo.failed-host";
             const SURFACE: u64 = 0xface;
@@ -2805,7 +2786,6 @@ mod tests {
             crate::shell::launcher::clear_pending_placements();
         }
 
-        // Phase `failure_cleanup_never_closes_a_foreign_surface_that_painted`.
         {
             const PACKAGE: &str = "so.tilo.painted-child";
             const SURFACE: u64 = 0xfade;
@@ -2834,7 +2814,6 @@ mod tests {
             crate::shell::foreign::store().forget(SURFACE);
         }
 
-        // Phase `concurrent_same_package_failure_does_not_guess_which_foreign_tab_to_close`.
         {
             const PACKAGE: &str = "so.tilo.concurrent-host";
             const SURFACE: u64 = 0xc0de;
@@ -2909,7 +2888,6 @@ mod tests {
             );
         }
 
-        // Phase `removing_a_group_survives_document_rehydration`.
         {
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_demo();
@@ -2952,9 +2930,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn tab_labels_take_the_best_known_name_and_rename_only_the_label() {
-        // Phase `renaming_a_tab_rewrites_only_its_visible_label`.
         {
-            // Phase `rename_tab_for_app_id_rewrites_anon_placeholder`.
             {
                 let mut tree = WorkspaceTree::bootstrap_demo();
                 // First adopt without an app-id so the tab gets the `anon-<surface_id>` placeholder.
@@ -2973,7 +2949,6 @@ mod tests {
                 assert_eq!(tab.title, "Late", "title is the humanised app-id component");
             }
 
-            // Phase `rename_tab_for_app_id_returns_false_for_unknown_surface`.
             {
                 let mut tree = WorkspaceTree::bootstrap_demo();
                 let renamed = rename_tab_for_app_id(&mut tree, 12345, "x");
@@ -2983,7 +2958,6 @@ mod tests {
                 );
             }
 
-            // Phase `title_change_rewrites_visible_label_without_changing_app_identity`.
             {
                 let mut tree = WorkspaceTree::bootstrap_demo();
                 let _ = adopt_toplevel(&mut tree, 99, Some("org.example.Editor".into()));
@@ -3015,9 +2989,7 @@ mod tests {
             }
         }
 
-        // Phase `adopted_tabs_take_the_best_known_app_name`.
         {
-            // Phase `late_app_id_keeps_a_claimed_host_launch_label`.
             {
                 let mut tree = WorkspaceTree::bootstrap_demo();
                 let _ = adopt_toplevel(&mut tree, 99, None);
@@ -3054,7 +3026,6 @@ mod tests {
                     tab_label_for_foreign("so.tilo.file-explorer"),
                     "File Explorer"
                 );
-                // The documented behaviour for an already-camel-cased id is unchanged.
                 assert_eq!(tab_label_for_foreign("org.example.MyApp"), "MyApp");
 
                 env.remove("TILO_APPS_DATA_DIR");
@@ -3072,7 +3043,6 @@ mod tests {
                 crate::shell::launcher::clear_launched_for_test();
 
                 assert_eq!(tab_label_for_foreign("so.tilo.file-explorer"), "Files");
-                // And by the trailing-component convention the app-id may use.
                 assert_eq!(tab_label_for_foreign("file-explorer"), "Files");
 
                 let mut tree = WorkspaceTree::bootstrap_demo();
@@ -3119,7 +3089,6 @@ mod tests {
                     tab.title, "Adopt Fixture",
                     "a launched app's tab carries the app's name"
                 );
-                // A late `set_app_id` re-resolves through the same rule.
                 let _ = adopt_toplevel(&mut tree, 31338, None);
                 assert!(rename_tab_for_app_id(
                     &mut tree,
@@ -3129,7 +3098,6 @@ mod tests {
                 assert_eq!(tab_of(&tree, 31338).title, "Adopt Fixture");
             }
 
-            // Phase `anonymous_app_id_falls_back_to_surface_synthetic`.
             {
                 let mut tree = WorkspaceTree::bootstrap_demo();
                 let _ = adopt_toplevel(&mut tree, 7, None);
@@ -3227,7 +3195,6 @@ mod tests {
             }
         }
 
-        // Phase `attributed_toplevel_lands_in_its_room_without_switching_the_desktop`.
         {
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_demo();
@@ -3279,7 +3246,6 @@ mod tests {
             );
         }
 
-        // Phase `adopted_native_toplevel_is_durable_without_an_unrelated_mutation`.
         {
             crate::shell::launcher::clear_pending_placements();
             for attributed in [false, true] {
@@ -3358,7 +3324,6 @@ mod tests {
             crate::shell::launcher::clear_pending_placements();
         }
 
-        // Phase `anonymous_native_adoption_does_not_persist_a_synthetic_launch_id`.
         {
             crate::shell::launcher::clear_pending_placements();
             for (attributed, app_id) in [
@@ -3390,7 +3355,6 @@ mod tests {
             }
         }
 
-        // Phase `attributed_toplevel_refuses_a_stale_room`.
         {
             let mut tree = WorkspaceTree::bootstrap_demo();
             let active = tree.desktop.active;

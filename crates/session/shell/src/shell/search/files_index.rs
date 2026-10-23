@@ -352,7 +352,6 @@ mod tests {
 
     #[test]
     fn index_filters_skip_binaries_and_bloat_and_cap_head_reads() {
-        // Phase `is_binary_hits_common_extensions`.
         {
             assert!(is_binary(Path::new("/home/x/a.png")));
             assert!(is_binary(Path::new("/home/x/a.MP3")));
@@ -360,7 +359,6 @@ mod tests {
             assert!(!is_binary(Path::new("/home/x/a")));
         }
 
-        // Phase `skip_dirs_hits_common_bloat`.
         {
             let home = Path::new("/home/x");
             assert!(should_skip(Path::new("/home/x/proj/node_modules"), home));
@@ -368,7 +366,6 @@ mod tests {
             assert!(!should_skip(Path::new("/home/x/proj/src/lib.rs"), home));
         }
 
-        // Phase `read_head_caps_allocation_regardless_of_file_size`.
         {
             let dir =
                 std::env::temp_dir().join(format!("tilo-read-head-test-{}", std::process::id()));
@@ -404,7 +401,6 @@ mod tests {
 
     #[test]
     fn query_cache_is_an_lru_that_refreshes_repeats() {
-        // Phase `query_cache_lru_evicts_oldest`.
         {
             let mut c = QueryCache::new(2);
             c.put("a".to_string(), 10, 0, Vec::new());
@@ -415,7 +411,6 @@ mod tests {
             assert!(c.get("c", 10, 0).is_some());
         }
 
-        // Phase `query_cache_moves_repeat_to_head`.
         {
             let mut c = QueryCache::new(2);
             c.put("a".to_string(), 10, 0, Vec::new());
@@ -451,7 +446,6 @@ mod content_index_integration {
     #[test]
     #[serial]
     fn walking_home_indexes_documents_and_finds_content() {
-        // Phase `walk_and_index_runs_synchronously_and_writes_docs`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();
@@ -474,7 +468,6 @@ mod content_index_integration {
             );
         }
 
-        // Phase `walks_home_and_finds_content_match`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();
@@ -582,7 +575,6 @@ mod content_index_integration {
         reason = "the test observes the writer thread the index otherwise only keeps alive"
     )]
     fn incremental_reindex_skips_untouched_and_removes_deleted_files() {
-        // Phase `incremental_reindex_skips_untouched_files`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();
@@ -610,7 +602,6 @@ mod content_index_integration {
             );
         }
 
-        // Phase `complete_incremental_scan_removes_deleted_files`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();

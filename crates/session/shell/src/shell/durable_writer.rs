@@ -73,7 +73,6 @@ impl Queue {
 
 struct Shared {
     queue: Mutex<Queue>,
-    /// Signalled when a write is queued.
     work: Condvar,
     /// Signalled when a write finishes.
     done: Condvar,
@@ -321,7 +320,6 @@ mod tests {
 
     #[test]
     fn durable_writer_coalesces_orders_and_flushes() {
-        // Phase `writes_queued_behind_a_running_one_collapse_to_the_latest`.
         {
             let (writer, release) = blocked_writer();
             let written = Arc::new(Mutex::new(Vec::new()));
@@ -339,7 +337,6 @@ mod tests {
                 "twenty saves queued behind one write are one write of the newest"
             );
         }
-        // Phase `different_files_are_written_in_submission_order`.
         {
             let (writer, release) = blocked_writer();
             let written = Arc::new(Mutex::new(Vec::new()));
@@ -355,7 +352,6 @@ mod tests {
                 "a replacement keeps its file's place in line and carries the newest content"
             );
         }
-        // Phase `flush_waits_for_a_replacement_of_an_earlier_write`.
         {
             let (writer, release) = blocked_writer();
             let written = Arc::new(Mutex::new(0));
@@ -378,7 +374,6 @@ mod tests {
                 "a barrier is not satisfied by dropping the write it waited for"
             );
         }
-        // Phase `flush_timeout_reports_a_stuck_write`.
         {
             let (writer, release) = blocked_writer();
             writer.submit(PathBuf::from("state.json"), || {});
@@ -386,7 +381,6 @@ mod tests {
             release.send(()).expect("release");
             assert!(writer.flush_timeout(tilo_test_env::hang_bound()));
         }
-        // Phase `a_panicking_write_does_not_stop_later_ones`.
         {
             let writer = DurableWriter::spawn("durable-writer-test");
             writer.submit(PathBuf::from("bad"), || panic!("disk on fire"));

@@ -1,4 +1,3 @@
-//! Exercise the real launcher claim, disk snapshot, and restore staging path.
 use super::*;
 use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
 use crate::shell::personal_continuity_registry::{ContinuationRegistry, global_registry};

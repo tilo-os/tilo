@@ -908,7 +908,6 @@ mod tests {
             "after start-up the observer only re-reads the playhead"
         );
 
-        // Leaving is a signal too.
         player.release_name(PROBE).await.unwrap();
         eventually("the player leaving the card", || {
             state.lock().unwrap().now_playing.is_empty()

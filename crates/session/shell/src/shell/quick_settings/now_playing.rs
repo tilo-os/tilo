@@ -249,7 +249,6 @@ pub enum CardAction {
         bus_name: String,
         command: PlayerCommand,
     },
-    /// Show this player from now on.
     SelectPlayer(String),
     /// Route sound to the destination with this continuity token.
     Route(String),

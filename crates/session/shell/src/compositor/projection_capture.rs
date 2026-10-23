@@ -309,7 +309,6 @@ mod tests {
 
     #[test]
     fn projection_target_size_and_encoder_pressure_scaling() {
-        // Phase `target_size_preserves_aspect_and_encoder_evenness`.
         {
             let smooth = CaptureProfile::new(1280, 720, 60, 6_000);
             assert_eq!(
@@ -325,7 +324,6 @@ mod tests {
                 Some((3840, 2160, 1.0))
             );
         }
-        // Phase `encoder_pressure_scales_continuously_and_recovers_only_to_the_ceiling`.
         {
             let ceiling = CaptureProfile::new(2560, 1440, 60, 15_000);
             let lowered = lower_profile(ceiling);

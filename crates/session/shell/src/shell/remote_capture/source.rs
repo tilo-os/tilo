@@ -454,7 +454,6 @@ mod tests {
 
     #[test]
     fn capture_sources_bound_chunks_spool_consistently_and_report_saturation() {
-        // Phase `live_profiles_are_bounded_by_the_wire_chunk`.
         {
             let camera = RemoteCaptureProfile::Camera {
                 format: RemoteVideoFormat::Nv12,
@@ -481,7 +480,6 @@ mod tests {
             );
         }
 
-        // Phase `scanner_spools_before_publishing_consistent_total_offsets`.
         {
             let profile = RemoteCaptureProfile::DocumentScanner {
                 format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
@@ -508,7 +506,6 @@ mod tests {
             assert!(chunks.iter().all(|chunk| chunk.total_bytes == 130_000));
         }
 
-        // Phase `scanner_queue_saturation_reports_failure_instead_of_blocking`.
         {
             let profile = RemoteCaptureProfile::DocumentScanner {
                 format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,

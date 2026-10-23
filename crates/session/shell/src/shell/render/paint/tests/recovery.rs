@@ -8,7 +8,6 @@ use super::*;
 fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing() {
     // Phase `gpu_target_failure_and_device_loss_hide_output_until_reconstruction`.
     {
-        // Phase `gpu_target_failure_hides_view_until_reconstruction`.
         {
             let mut target = required_target(128, 128);
             let scene = Scene::new();
@@ -30,7 +29,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             assert_eq!(target.last_render_attempts, 0);
         }
 
-        // Phase `gpu_target_counter_failures_and_device_loss_hide_output`.
         {
             for error in [
                 vello::BumpBudgetError::MapFailed,
@@ -73,7 +71,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             assert_eq!(target.last_render_attempts, 0);
         }
 
-        // Phase `gpu_target_device_loss_at_marker_hides_output`.
         {
             let mut target = required_target(128, 128);
             let mut test = completion_clock();
@@ -92,7 +89,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
 
     // Phase `gpu_target_aborted_or_poisoned_frames_submit_and_publish_nothing`.
     {
-        // Phase `gpu_target_encoded_dense_and_sparse_abort_before_submission`.
         {
             for sparse in [false, true] {
                 let mut target = required_target(128, 128);
@@ -146,7 +142,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             }
         }
 
-        // Phase `gpu_target_expiry_after_encoding_submits_no_render_or_marker`.
         {
             for sparse in [false, true] {
                 let mut target = required_target(128, 128);
@@ -179,7 +174,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             }
         }
 
-        // Phase `gpu_target_aborted_encoding_does_not_publish_timestamps`.
         {
             let mut target = required_target_with_env("VELLO_GPU_TIMESTAMPS", "1", 128, 128);
             let mut test = completion_clock();
@@ -199,7 +193,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             assert!(target.completed_view().is_none());
         }
 
-        // Phase `gpu_target_late_counter_callback_cannot_publish_replacement`.
         {
             let mut context = RenderContext::new();
             let id = context.device(None).block_on().expect("real GPU adapter");
@@ -251,7 +244,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             assert!(old.completed_view().is_none());
         }
 
-        // Phase `gpu_target_poisoned_shared_coarse_diagnostic_rejects_before_encoding`.
         {
             assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
                 bridge
@@ -271,7 +263,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             });
         }
 
-        // Phase `gpu_target_poisoned_geometry_diagnostic_rejects_before_encoding`.
         {
             assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
                 bridge
@@ -291,7 +282,6 @@ fn gpu_target_failed_aborted_or_poisoned_frames_hide_output_and_publish_nothing(
             });
         }
 
-        // Phase `gpu_target_poisoned_segment_replay_rejects_before_encoding`.
         {
             assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
                 let input = vello::SegmentOrderReplayInput {
@@ -621,7 +611,6 @@ fn gpu_target_a_reset_gpu_is_reopened_and_a_dead_one_gives_way_to_software() {
 fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
     // Phase `gpu_target_recovery_stays_within_attempt_phase_and_deadline_budgets`.
     {
-        // Phase `gpu_target_overflow_uses_four_attempt_budget`.
         {
             let mut target = required_target(384, 256);
             let region = vello::FineDamageRect {
@@ -692,7 +681,6 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
             assert_eq!(target_pixels(&target), target_pixels(&oracle));
         }
 
-        // Phase `gpu_target_linux_phase_limits_survive_recovery`.
         {
             let mut bridge = required_bridge(128, 128);
             let mut test = completion_clock();
@@ -773,7 +761,6 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
             assert!(exhausted.target.completed_view().is_none());
         }
 
-        // Phase `gpu_target_linux_phase_failures_abort_without_recovery`.
         {
             // Every individual Linux phase failure aborts immediately; no completed overflow may
             // turn a failed fence/callback/counter observation into another attempt.
@@ -828,7 +815,6 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
             }
         }
 
-        // Phase `gpu_target_absolute_deadline_spans_recovery`.
         {
             let mut target = required_target(128, 128);
             let mut test = completion_clock();
@@ -879,7 +865,6 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
 
     // Phase `gpu_target_always_waits_on_a_completion_marker`.
     {
-        // Phase `gpu_target_disabled_measurement_still_waits_for_completion`.
         {
             let mut target = required_target_with_env("VELLO_BUMP_BUDGET", "upstream", 128, 128);
             assert_eq!(
@@ -913,7 +898,6 @@ fn gpu_target_recovery_is_budgeted_and_always_waits_on_completion() {
             assert!(stats.completion_markers > 0 && replacement.completed_view().is_some());
         }
 
-        // Phase `gpu_target_post_render_is_covered_by_existing_completion_marker`.
         {
             let mut target = required_target(8, 4);
             let output = target.device.create_texture(&wgpu::TextureDescriptor {

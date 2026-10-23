@@ -40,7 +40,6 @@ fn step(id: &str) -> Option<&'static str> {
     }
 }
 
-/// Whether `id` is one of the pairing steps.
 pub(super) fn is_pair_action(id: &str) -> bool {
     step(id).is_some()
 }

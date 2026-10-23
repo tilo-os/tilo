@@ -2022,7 +2022,6 @@ impl PcmCapture {
         Ok(Self { stream })
     }
 
-    /// Capture a speaker group's sink.
     fn group_sink(serial: u32) -> Result<Self, String> {
         let config = media::pw_stream::CaptureConfig {
             node_name: "tilo-speaker-group-source".into(),

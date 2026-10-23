@@ -74,20 +74,17 @@ mod tests {
 
     #[test]
     fn output_registry_interns_stable_distinct_ids() {
-        // Phase `new_registry_is_empty`.
         {
             let r = OutputRegistry::new();
             assert!(r.is_empty());
             assert_eq!(r.len(), 0);
         }
-        // Phase `intern_mints_ids_starting_at_zero`.
         {
             let mut r = OutputRegistry::new();
             assert_eq!(r.intern(key(1, 10)), OutputId(0));
             assert_eq!(r.intern(key(1, 11)), OutputId(1));
             assert_eq!(r.intern(key(2, 10)), OutputId(2));
         }
-        // Phase `intern_is_stable_across_calls`.
         {
             let mut r = OutputRegistry::new();
             let first = r.intern(key(1, 42));
@@ -96,14 +93,12 @@ mod tests {
             // No new id minted.
             assert_eq!(r.len(), 1);
         }
-        // Phase `intern_distinct_devices_get_distinct_ids`.
         {
             let mut r = OutputRegistry::new();
             let a = r.intern(key(1, 10));
             let b = r.intern(key(2, 10));
             assert_ne!(a, b);
         }
-        // Phase `iter_yields_all_entries`.
         {
             let mut r = OutputRegistry::new();
             r.intern(key(1, 10));

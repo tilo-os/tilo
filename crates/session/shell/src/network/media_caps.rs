@@ -96,7 +96,6 @@ pub fn record(
     );
 }
 
-/// Record parsed capabilities for `peer`.
 pub fn record_caps(peer: PeerId, caps: CodecCapabilities) {
     let mut reg = registry().lock_recover();
     let changed = reg.peers.get(&peer).is_none_or(|old| *old != caps);
@@ -174,7 +173,6 @@ mod tests {
             forget(PEER);
             assert_eq!(generation(), after, "forgetting nobody changes nothing");
         }
-        // Phase `the_local_advert_names_this_peer`.
         match local_advert(7) {
             NeighbourMsg::MediaCapabilities { peer, .. } => assert_eq!(peer, 7),
             other => panic!("expected a capabilities advert, got {other:?}"),

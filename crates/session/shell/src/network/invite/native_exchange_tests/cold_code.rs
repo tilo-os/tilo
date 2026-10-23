@@ -6,7 +6,6 @@ use std::path::Path;
 use tilo_actions::Action as _;
 use tilo_joined_room::{ApplicationInitialization, ApplicationRecord, DocumentRead};
 
-/// The kind of the record a Code Editor project is.
 pub(super) const PROJECT_KIND: &str = <code_editor::Project as tilo_resource::Resource>::KIND;
 
 pub(super) const APP: &str = "so.tilo.code-editor";

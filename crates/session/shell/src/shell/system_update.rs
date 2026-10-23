@@ -71,7 +71,6 @@ pub(crate) struct LiveState {
     /// The staged image it describes; empty when nothing is staged.
     #[serde(default)]
     pub(crate) image: String,
-    /// Part of the update waits for a desktop restart.
     #[serde(default)]
     pub(crate) desktop_pending: bool,
     /// Part of the update waits for a restart of the machine.

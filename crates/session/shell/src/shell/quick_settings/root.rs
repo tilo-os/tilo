@@ -112,7 +112,6 @@ pub struct PendingRootActions {
     pub power: Option<PowerProfile>,
 }
 
-/// A row under the tiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootRow {
     /// The battery (or, without one, the power mode): opens its section.
@@ -122,7 +121,6 @@ pub enum RootRow {
     Notifications,
 }
 
-/// A button in the panel's footer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FooterButton {
     Settings,
@@ -604,8 +602,6 @@ impl QuickSettingsRoot {
         self.panel = self.page_rect(state);
     }
 
-    // ---------- sections and their motion ----------
-
     /// The section open on the page: the state's, when its control is on
     /// the page.
     fn open_section(&self, state: &QuickSettingsState) -> Option<QsSection> {
@@ -726,8 +722,6 @@ impl QuickSettingsRoot {
         };
         (width - 2.0 * self.scaled(PANEL_PAD)).max(1.0)
     }
-
-    // ---------- layout ----------
 
     /// The rows under the tiles that this machine shows.
     fn rows(state: &QuickSettingsState) -> Vec<RootRow> {
@@ -1944,7 +1938,6 @@ impl QuickSettingsRoot {
         self.lay_out(panel, state);
     }
 
-    /// Whether a stop holds keyboard focus.
     #[must_use]
     pub fn has_keyboard_focus(&self) -> bool {
         self.root_focus.is_some() || self.keyboard_focus.is_some()

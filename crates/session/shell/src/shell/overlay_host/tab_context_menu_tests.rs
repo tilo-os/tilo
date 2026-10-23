@@ -879,7 +879,6 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
             !h.tab_ids(0).contains(&active),
             "the source lost the moved tab"
         );
-        // The bump `split_active_tab` made drives the resync.
         let _ = h.host.take_structure_dirty();
         let live: Vec<Vec<u64>> = (0..2)
             .map(|i| {

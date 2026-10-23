@@ -1,4 +1,3 @@
-//! Real client/server exchanges through the production global and dispatch.
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 

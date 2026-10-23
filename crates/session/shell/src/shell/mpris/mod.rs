@@ -1481,7 +1481,6 @@ mod tests {
                 cancelled_tx.send(cancelled).unwrap();
             });
             let cancel_thread = cancel_started_rx.recv().unwrap();
-            // Either the cancel answers, or it blocks on the held mutation.
             let early = tilo_test_env::wait_for("the cancel to answer or block", || {
                 if let Ok(cancelled) = cancelled_rx.try_recv() {
                     return Some(Some(cancelled));

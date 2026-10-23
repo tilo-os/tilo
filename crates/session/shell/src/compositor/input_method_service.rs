@@ -37,7 +37,6 @@ const PACKAGE_KIND: &str = "service";
 const RETRY_BACKOFF: Duration = Duration::from_secs(5);
 const INSTALL_REFRESH: Duration = Duration::from_secs(30);
 
-/// The on-screen keyboard preference in `settings`.
 pub fn osk_preference(settings: &settings_store::live::Snapshot) -> OnScreenKeyboard {
     AccessibilitySettings::from_section(&settings.section(tilo_accessibility_settings::SECTION))
         .on_screen_keyboard
@@ -110,7 +109,6 @@ impl InputMethodService {
         self.kind
     }
 
-    /// The running service's process group, if it has one.
     pub fn process_group(&self) -> Option<libc::pid_t> {
         let group = self.process_group.load(Ordering::Acquire);
         (group > 0).then_some(group)

@@ -444,7 +444,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn record_pages_seek_without_duplicates_and_stale_on_mutation() {
-        // Phase `a_large_corpus_is_capped_on_the_first_page_without_a_title_rebuild`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work"]);
             let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
@@ -473,7 +472,6 @@ mod tests {
             assert!(first.next_cursor.is_some());
         }
 
-        // Phase `record_pages_seek_from_the_last_key_without_duplicates`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work"]);
             let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
@@ -508,7 +506,6 @@ mod tests {
             assert!(third.exhausted);
         }
 
-        // Phase `resource_limits_do_not_consume_an_unemitted_record`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work"]);
             let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
@@ -546,7 +543,6 @@ mod tests {
             assert_eq!(retried.results.len(), 1, "retry resumes at the row");
         }
 
-        // Phase `a_room_reference_mutation_stales_a_retained_cursor`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work"]);
             let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
@@ -588,7 +584,6 @@ mod tests {
             );
         }
 
-        // Phase `same_count_scan_replacement_stales_a_record_cursor`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work"]);
             let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
@@ -648,7 +643,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn records_from_other_rooms_are_findable_referenced_and_isolated() {
-        // Phase `a_record_from_another_room_is_findable_and_says_where_it_lives`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
             let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
@@ -678,7 +672,6 @@ mod tests {
             );
         }
 
-        // Phase `activating_a_row_references_the_same_record_into_this_room`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
             let (here, there) = (rooms[0], rooms[1]);
@@ -722,7 +715,6 @@ mod tests {
             );
         }
 
-        // Phase `an_edit_through_one_rooms_reference_does_not_leak_through_the_other`.
         {
             use automerge::{ROOT, ReadDoc, transaction::Transactable};
 
@@ -773,7 +765,6 @@ mod tests {
 
     #[test]
     fn record_provenance_labels_follow_the_active_room() {
-        // Phase `a_record_in_this_room_is_labelled_as_being_here`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
             let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
@@ -796,7 +787,6 @@ mod tests {
             );
         }
 
-        // Phase `a_record_from_an_unknown_room_says_so`.
         {
             let (chrome, _rooms) = chrome_with_rooms(&["Work"]);
             let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
@@ -816,7 +806,6 @@ mod tests {
             );
         }
 
-        // Phase `provenance_follows_the_active_room`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
             let reading_ws = chrome.borrow().tree().desktop.workspaces[1].id;
@@ -841,7 +830,6 @@ mod tests {
 
     #[test]
     fn record_queries_stay_in_their_ceiling_and_answer_only_when_wanted() {
-        // Phase `scores_stay_inside_the_declared_ceiling`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work"]);
             let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
@@ -879,7 +867,6 @@ mod tests {
             );
         }
 
-        // Phase `an_empty_query_returns_nothing`.
         {
             let (chrome, rooms) = chrome_with_rooms(&["Work"]);
             let index = Rc::new(RefCell::new(RoomRecords::in_memory()));

@@ -23,7 +23,6 @@ pub(super) const CHOICE_PREFIX: &str = "choice:";
 pub(super) enum Step {
     /// Rows to pick from.
     Choices(Vec<Choice>),
-    /// A field of a kind.
     Field(ArgumentSpec),
 }
 
@@ -280,7 +279,6 @@ pub(super) fn opens_a_window(kind: &ResourceKind) -> bool {
 /// What a held modifier does to a row that opens a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Activation {
-    /// As a tab in the focused window's group.
     TabHere,
     /// In its own group right beside the focused window.
     Beside,

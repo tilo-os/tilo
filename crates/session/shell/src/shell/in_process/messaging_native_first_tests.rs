@@ -1,4 +1,3 @@
-//! Default native Messages, original protected review and two certified peers.
 use super::*;
 use crate::network::{Actor, NetCmd, PeerIdentityStore};
 use crate::session_runtime::runtime;

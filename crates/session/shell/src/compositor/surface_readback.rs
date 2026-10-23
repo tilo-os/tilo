@@ -280,7 +280,6 @@ impl ShmRegion {
         })
     }
 
-    /// The region's area in pixels.
     #[must_use]
     pub fn pixels(self) -> usize {
         self.width.saturating_mul(self.height)
@@ -400,11 +399,6 @@ impl OwnedShmFrame {
 }
 
 /// Copy the committed contents of an SHM `buffer` out of the client's pool.
-///
-/// # Errors
-///
-/// Returns an error when the buffer is not SHM-backed or its declared
-/// geometry does not fit inside the pool.
 pub fn copy_shm_frame(buffer: &WlBuffer) -> Result<OwnedShmFrame, ReadbackError> {
     copy_shm_damage(buffer, &ShmCopy::default(), Vec::new())
 }
@@ -452,11 +446,6 @@ pub struct ShmShape {
 /// (reused, never shrunk): only the damaged regions when [`ShmCopy`] allows,
 /// otherwise the whole buffer. Regions covering half the buffer or more are
 /// copied whole: one contiguous copy beats many short ones.
-///
-/// # Errors
-///
-/// Returns an error when the buffer is not SHM-backed or its declared
-/// geometry does not fit inside the pool.
 pub fn copy_shm_damage(
     buffer: &WlBuffer,
     request: &ShmCopy<'_>,
@@ -489,10 +478,6 @@ pub struct ShmLayout {
 
 /// [`copy_shm_damage`] over a pool's bytes: the declared geometry is checked
 /// against `pool` before anything is read, as a hostile client controls it.
-///
-/// # Errors
-///
-/// Returns an error when the declared geometry does not fit inside `pool`.
 pub fn copy_from_pool(
     pool: &[u8],
     layout: &ShmLayout,
@@ -578,11 +563,6 @@ fn damaged_regions(request: &ShmCopy<'_>, shape: ShmShape) -> Option<Vec<ShmRegi
 
 /// Convert a whole copied SHM frame to tightly packed RGBA8 in `out`,
 /// returning its width and height.
-///
-/// # Errors
-///
-/// Returns an error when the frame carries only damaged regions, a row lies
-/// outside the copied bytes or the pixel format is unsupported.
 pub fn owned_shm_to_rgba(
     frame: &OwnedShmFrame,
     out: &mut Vec<u8>,
@@ -609,12 +589,6 @@ pub fn owned_shm_to_rgba(
 
 /// Write `frame` into `target`, a tightly packed RGBA8 image of the frame's
 /// size: every pixel for a whole frame, only the damaged regions otherwise.
-///
-/// # Errors
-///
-/// Returns an error when `target` is not the frame's size, a row lies outside
-/// the copied bytes or the pixel format is unsupported. `target` may then be
-/// partly written.
 pub fn apply_owned_shm(frame: &OwnedShmFrame, target: &mut [u8]) -> Result<(), ReadbackError> {
     let row_bytes = frame.width.saturating_mul(4);
     if target.len() != row_bytes.saturating_mul(frame.height) {
@@ -962,7 +936,6 @@ mod tests {
                 out.len()
             );
         }
-        // Phase `swizzle_row_argb_to_rgba_swaps_b_and_r`.
         {
             let src = argb_row(4);
             let mut out = Vec::new();
@@ -975,7 +948,6 @@ mod tests {
             // Pixel 3: B=9, G=15, R=21 -> RGBA = 21,15,9,0xC0
             assert_eq!(&out[12..16], &[21, 15, 9, 0xC0]);
         }
-        // Phase `swizzle_row_xrgb_forces_alpha_to_ff`.
         {
             // Xrgb8888: wire bytes [B, G, R, X]; X may be anything from the client — we always emit alpha = 0xFF.
             let src = vec![10, 20, 30, 0x00, 40, 50, 60, 0x7F];
@@ -983,7 +955,6 @@ mod tests {
             swizzle_row_to_rgba(wl_shm::Format::Xrgb8888, &src, 2, &mut out).expect("xrgb swizzle");
             assert_eq!(out, vec![30, 20, 10, 0xFF, 60, 50, 40, 0xFF]);
         }
-        // Phase `swizzle_row_rejects_unsupported_format`.
         {
             // RGB565 isn't advertised by smithay's default ShmState, so an attached one should error cleanly rather than produce a wrong-looking frame.
             let src = vec![0u8; 4 * 4];
@@ -996,7 +967,6 @@ mod tests {
         }
         // Phase `swizzle_to_rgba_returns_early_on_mismatched_lengths` (defined above).
         swizzle_to_rgba_returns_early_on_mismatched_lengths();
-        // Phase `swizzle_appends_without_clearing`.
         {
             // buffer_to_rgba's caller clears `out` before the row loop, but swizzle_row itself is
             // append-only — verify that contract so a regression clearing inside the loop breaks loudly.

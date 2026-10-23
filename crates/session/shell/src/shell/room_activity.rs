@@ -66,7 +66,6 @@ type ReadAgents = (
 );
 
 thread_local! {
-    /// Each room's verified agents as last read.
     static VERIFIED_AGENTS: std::cell::RefCell<HashMap<super::state::RoomId, ReadAgents>> =
         std::cell::RefCell::new(HashMap::new());
 }
@@ -250,7 +249,6 @@ struct PersistedFound {
 enum PersistedShare {
     /// The document did not move since the last look: what it found stands.
     Unchanged,
-    /// The document as read now.
     Read(Option<DocumentShare>),
 }
 
@@ -1755,7 +1753,6 @@ mod tests {
         let _ = history_writer();
         let (actions, departures, settles) =
             crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
-                // Leaving a workspace hands both maps to the writer.
                 queue_history_save(
                     path.clone(),
                     "seen_frontiers",
@@ -1772,7 +1769,6 @@ mod tests {
                         },
                     )])),
                 );
-                // The palette's next query.
                 let choices = load_known_history_map(&path, "morning_sources");
                 let actions = morning_source_actions_from(&workspace, &choices);
                 let departures: HashMap<u64, WorkspaceDeparture> =
@@ -1897,8 +1893,6 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
     }
 
-    /// A shortcut run the broker finished lands in the workspace document
-    /// as one undoable run as soon as a document it changed is open here.
     #[test]
     fn a_finished_shortcut_run_is_recorded_once_from_the_documents_it_changed() {
         let mut tree = WorkspaceTree::bootstrap_demo();

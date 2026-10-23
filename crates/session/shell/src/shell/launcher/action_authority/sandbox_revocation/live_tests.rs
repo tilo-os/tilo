@@ -1,4 +1,3 @@
-//! Real launcher gate and held-descriptor custody across accepted revocation.
 use super::super::{Authority, Export, lock};
 use super::*;
 use crate::shell::state::WorkspaceTree;

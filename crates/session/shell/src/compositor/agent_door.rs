@@ -73,9 +73,6 @@ pub(crate) fn door_path(
 
 /// Bind the door at `path`. A path another live session answers on is left
 /// alone; a stale socket is replaced.
-///
-/// # Errors
-/// Names why the door is not served.
 pub(crate) fn bind(path: &Path) -> Result<UnixListener, String> {
     if path.exists() && UnixStream::connect(path).is_ok() {
         return Err(format!("{} already has a live listener", path.display()));
@@ -691,7 +688,6 @@ mod tests {
             }
         });
 
-        // The person admits it, through the same decision a click makes.
         let decision = format!("allow-once@{prompt}");
         let mut registry = SearchRegistry::new();
         registry.register(std::rc::Rc::new(PermissionPromptsProvider::default()));
@@ -749,7 +745,6 @@ mod tests {
             "the live app is listed: {listed}"
         );
 
-        // Removing the agent revokes its catalogue at once.
         handle.write().desktop.workspaces[0]
             .revoke_grants_matching(|grant| matches!(grant.subject, Subject::Agent(_)));
         send(list_apps(4));

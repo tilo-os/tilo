@@ -77,7 +77,6 @@ pub(crate) struct ComposerRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ComposerOutcome {
-    /// The agent answered the request itself.
     Answered(String),
     /// The request became a task, which the adapter starts and follows.
     Started {
@@ -103,7 +102,6 @@ pub(crate) struct ComposerReceipt {
 pub(crate) enum RunPhase {
     /// Queued and being started.
     Starting,
-    /// The agent is working on it.
     Working,
     /// Done, with the agent's closing words.
     Finished(Option<String>),
@@ -140,7 +138,6 @@ pub(crate) enum DraftAnswer {
 pub(crate) enum AnswerUse {
     /// Put the answer where the selection is.
     Insert(String),
-    /// Keep the answer as a new note.
     SaveAsNote(String),
 }
 
@@ -180,11 +177,9 @@ struct View {
     title: LocalState<String>,
     /// The agent the person picked, among [`AgentQuickComposer::agents`].
     agent: LocalState<String>,
-    /// Whether there is more than one agent to pick from.
     picks_agent: LocalState<bool>,
     /// The model the person picked, among [`AgentQuickComposer::models`].
     model: LocalState<String>,
-    /// Whether there are models to pick from.
     picks_model: LocalState<bool>,
     context: LocalState<String>,
     asked: LocalState<String>,
@@ -310,7 +305,6 @@ pub(crate) struct AgentQuickComposer {
     ended: HashSet<(String, u64)>,
     /// What the status line says until something newer happens.
     notice: Option<String>,
-    /// Whether the notice says the composer is waiting on the agent.
     notice_waits: bool,
     drafts: HashMap<ComposerOwner, Draft>,
     submissions: HashMap<u64, Submission>,
@@ -894,7 +888,6 @@ impl AgentQuickComposer {
         self.draft_answer.take()
     }
 
-    /// The run the open composer follows.
     pub(crate) fn followed(&self) -> Option<&ComposerRun> {
         self.owner.as_ref().and_then(|owner| self.runs.get(owner))
     }
@@ -2034,7 +2027,6 @@ mod tests {
         Widget::sync(&mut composer, &doc, &automerge::ROOT);
         assert_eq!(composer.take_agent_switch(), Some("reed".into()));
         assert_eq!(composer.take_agent_switch(), None, "heard once");
-        // The host opens it again for the agent picked, about the same thing.
         composer.open_about(
             owner("reed"),
             "reed",

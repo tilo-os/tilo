@@ -22,12 +22,7 @@ pub const LOOK_AGAIN: Duration = Duration::from_secs(30 * 60);
 /// What the follower reaches of the device: where it is, and its clock.
 pub trait Device: Send + Sync + 'static {
     /// Where the device is.
-    ///
-    /// # Errors
-    ///
-    /// Why that is not known.
     fn locate(&self) -> Result<Location, String>;
-    /// The zone the device is set to.
     fn zone(&self) -> Option<String>;
     /// Set the device's zone.
     ///
@@ -35,7 +30,6 @@ pub trait Device: Send + Sync + 'static {
     ///
     /// Why timedated did not take it.
     fn set_zone(&self, zone: &str) -> Result<(), String>;
-    /// The zone of the city nearest `location`.
     fn nearest_zone(&self, location: Location) -> Option<String>;
 }
 
@@ -184,7 +178,6 @@ mod tests {
 
     #[test]
     fn an_automatic_zone_is_the_zone_where_the_device_is_and_nothing_is_guessed() {
-        // Landed in Osaka with the clock on Amsterdam's zone.
         let osaka = fake(
             Ok(Location {
                 latitude: 34.69,
@@ -194,7 +187,6 @@ mod tests {
         );
         assert_eq!(follow_once(&osaka), Ok(Some("Asia/Tokyo".to_owned())));
         assert_eq!(*osaka.set.lock().unwrap(), ["Asia/Tokyo"]);
-        // Looking again where the zone is already right changes nothing.
         assert_eq!(follow_once(&osaka), Ok(None));
         assert_eq!(osaka.set.lock().unwrap().len(), 1);
 

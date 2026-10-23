@@ -35,10 +35,6 @@ pub fn installed() -> bool {
 }
 
 /// Hand `request` to the compositor.
-///
-/// # Errors
-///
-/// Returns a message when no compositor drains close requests here.
 pub fn request(request: AppCloseRequest) -> Result<(), String> {
     let delivery = REQUESTS
         .get()

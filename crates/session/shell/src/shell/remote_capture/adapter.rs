@@ -842,7 +842,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn capture_adapter_advertises_approves_and_tears_down_exactly() {
-        // Phase `production_receiver_does_not_advertise_undeliverable_scans`.
         {
             let mut adapter = ProductionRemoteCaptureAdapter::new(CaptureHost::fixed(
                 crate::shell::remote_capture::host::Probe::of(
@@ -871,7 +870,6 @@ mod tests {
             ));
         }
 
-        // Phase `media_endpoint_requires_fresh_exact_app_approval_and_revokes_atomically`.
         {
             let broker = Arc::new(Mutex::new(CaptureBroker::new()));
             let mut bridge = RemoteCaptureTargetBridge::new(Arc::clone(&broker));
@@ -965,7 +963,6 @@ mod tests {
             assert_eq!(adapter.revoked, vec![session]);
         }
 
-        // Phase `app_and_policy_teardown_are_exact_and_bounded`.
         {
             let broker = Arc::new(Mutex::new(CaptureBroker::new()));
             let mut bridge = RemoteCaptureTargetBridge::new(broker);

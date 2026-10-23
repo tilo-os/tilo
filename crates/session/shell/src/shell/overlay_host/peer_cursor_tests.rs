@@ -527,7 +527,6 @@ fn following_cross_app_context_releases_all_apps_when_the_peer_or_window_leaves(
         );
         {
             let mut state = chrome.borrow_mut();
-            // The same remote session moves from Chat into Terminal.
             state.tree_mut().desktop.workspaces[0].collaborators[0].active_tab = Some(1);
             state.bump();
         }

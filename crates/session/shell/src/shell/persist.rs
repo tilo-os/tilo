@@ -1708,8 +1708,6 @@ mod tests {
             let mut original = WorkspaceTree::bootstrap_default();
             original.desktop.workspaces[0].name = "Migrated".into();
             save_tree_to(&original, &path).expect("save");
-            // Simulate the writing process exiting and releasing its state-file
-            // writer.
             drop(original);
             // What an older build leaves: `state.json` alone.
             std::fs::remove_file(state_doc_path(&path))
@@ -1805,7 +1803,6 @@ mod tests {
             crate::shell::state::WorkspaceId(0x7e57_0001),
             "Research",
         );
-        // Replay draws a workspace through its strips.
         research.strips.push(crate::shell::state::Strip {
             id: crate::shell::state::StripId(0x7e57_0002),
             name: "Main".into(),
@@ -1813,7 +1810,6 @@ mod tests {
         });
         tree.desktop.workspaces.push(research);
         tree.seed_doc_from_cache();
-        // A peer's edit, under the peer's own actor.
         let base = tree.current_heads();
         let mut peer = tree.doc.fork();
         peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
@@ -1933,7 +1929,6 @@ mod tests {
                  from it and must not be in the session"
             );
 
-            // Reported, with the facts that make it actionable.
             let notice = notice.expect(
                 "a refused state file must produce a notice — silently handing the \
                  person a bootstrapped tree is the behaviour this replaces",
@@ -1969,7 +1964,6 @@ mod tests {
                 notice.body()
             );
 
-            // Preserved, byte for byte.
             assert_eq!(
                 std::fs::read_to_string(&path).expect("re-read"),
                 on_disk,
@@ -2060,7 +2054,6 @@ mod tests {
             (tree, [first, second])
         }
 
-        // Phase `a_workspace_switch_writes_nothing_on_the_calling_thread`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
@@ -2085,7 +2078,6 @@ mod tests {
             assert_ne!(restarted.desktop.active, first);
         }
 
-        // Phase `a_queued_save_never_overwrites_a_later_synchronous_one`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
@@ -2109,7 +2101,6 @@ mod tests {
             assert_ne!(restarted.desktop.active, first);
         }
 
-        // Phase `a_burst_of_saves_lands_as_its_newest_state`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
@@ -2134,7 +2125,6 @@ mod tests {
             }
         }
 
-        // Phase `a_reader_racing_the_writer_only_sees_whole_files`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
@@ -2427,7 +2417,6 @@ mod tests {
         assert_eq!(restarted.doc.get_actor(), &actor);
         assert_eq!(restarted.desktop.workspaces[0].name, "Before the log");
 
-        // And the history continues as a log beside it.
         restarted.desktop.workspaces[0].name = "After the log".into();
         restarted.seed_doc_from_cache();
         save_tree_to(&restarted, &path).expect("save");

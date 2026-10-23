@@ -768,11 +768,6 @@ pub fn set_mirror_rich_text(store: &SharedSelection, html: &str, plain: &str) ->
 /// Replace Tilo's pending portal offer.  There is deliberately no publication
 /// until payload arrives: offering stale bytes under a newly remote-owned MIME
 /// would leak the prior selection.
-///
-/// # Errors
-///
-/// Returns an error for an empty, excessive, or malformed MIME offer, or if
-/// the shared selection store is unavailable.
 pub fn begin_mirror_offer(
     store: &SharedSelection,
     target: Target,
@@ -2345,7 +2340,6 @@ mod tests {
 
     #[test]
     fn drags_carry_decoded_local_paths_and_safe_payloads() {
-        // Phase `client_drag_uri_paths_are_local_absolute_and_percent_decoded`.
         assert_eq!(
             paths_from_uri_list(
                 b"# source names\r\nfile:///var/workspace/My%20Photo.png\r\n\
@@ -2356,7 +2350,6 @@ mod tests {
                 std::path::PathBuf::from("/tmp/report#final.pdf"),
             ]
         );
-        // Phase `client_drag_content_prefers_visual_or_text_payload_not_uri_or_secret`.
         {
             let mimes = vec![
                 URI_LIST_MIME.to_string(),
@@ -2375,7 +2368,6 @@ mod tests {
             assert_eq!(drag_content_limit("audio/ogg").0, 256 * 1024 * 1024);
             assert_eq!(drag_content_limit("video/mp4").0, 512 * 1024 * 1024);
         }
-        // Phase `multi_item_drop_advances_exact_insertion_side`.
         {
             use crate::shell::tab_binding::Placement;
             assert_eq!(
@@ -2390,7 +2382,6 @@ mod tests {
                 Placement::GroupAt(crate::shell::state::StripId::from(8), 3)
             );
         }
-        // Phase `a_chrome_drag_offers_a_uri_list_and_the_single_files_bytes`.
         {
             let drag = ChromeDrag::new(vec![std::path::PathBuf::from(
                 "/var/workspace/Demo/my photo.png",
@@ -2414,7 +2405,6 @@ mod tests {
                 "the list is not a file"
             );
         }
-        // Phase `a_multi_file_drag_is_paths_only`.
         {
             let drag = ChromeDrag::new(vec![
                 std::path::PathBuf::from("/a.png"),
@@ -2424,7 +2414,6 @@ mod tests {
             assert_eq!(drag.uri_list(), "file:///a.png\r\nfile:///b.png\r\n");
             assert_eq!(drag.file_for_mime("image/png"), None);
         }
-        // Phase `unknown_extensions_travel_as_paths_only`.
         {
             let drag = ChromeDrag::new(vec![std::path::PathBuf::from("/thing.qcow2")]);
             assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string()]);
@@ -2506,7 +2495,6 @@ mod tests {
             assert!(!compositor_owns(&s, Target::Clipboard));
             assert!(s.lock().unwrap().clipboard.clear_pending);
         }
-        // Phase `chrome_write_supersedes_stale_client_payloads`.
         {
             let s = store();
             let generation = begin_client_selection(
@@ -2528,7 +2516,6 @@ mod tests {
             );
             assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("fresh"));
         }
-        // Phase `overlarge_or_stale_client_payload_cannot_replace_current_selection`.
         {
             let s = store();
             let old =
@@ -2558,7 +2545,6 @@ mod tests {
             assert!(mimes.iter().any(|m| m == "text/plain"));
             assert!(mimes.iter().any(|m| m == "UTF8_STRING"));
         }
-        // Phase `binary_offer_round_trips_without_text_decoding_and_keeps_text_aliases`.
         {
             let s = store();
             begin_mirror_offer(
@@ -2598,7 +2584,6 @@ mod tests {
                 vec!["image/png".to_string()]
             );
         }
-        // Phase `a_chrome_rich_copy_offers_html_and_text_as_one_copy`.
         {
             let s = store();
             set_mirror_text(&s, Target::Clipboard, "copied before");
@@ -2626,7 +2611,6 @@ mod tests {
                 "a plain copy drops the formatting"
             );
         }
-        // Phase `chrome_image_copy_rejects_invalid_dimensions_and_payload_size`.
         {
             let s = store();
             let host = HostClipboard { store: s };
@@ -2647,7 +2631,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn clipboard_history_keeps_distinct_safe_copies() {
-        // Phase `clipboard_manager_tracks_distinct_copies_newest_first`.
         {
             let s = store();
             assert!(set_mirror_text(&s, Target::Clipboard, "first"));
@@ -2662,7 +2645,6 @@ mod tests {
             assert_eq!(history[0].text_preview.as_deref(), Some("first"));
             assert_eq!(history[1].text_preview.as_deref(), Some("second"));
         }
-        // Phase `primary_and_secret_or_oversized_selections_never_enter_history`.
         {
             let s = store();
             assert!(set_mirror_text(&s, Target::Primary, "selection churn"));
@@ -2681,7 +2663,6 @@ mod tests {
             .unwrap();
             assert!(clipboard_history(&s).is_empty());
         }
-        // Phase `clipboard_manager_can_pin_clear_restore_and_remove`.
         {
             let s = store();
             set_mirror_text(&s, Target::Clipboard, "keep");
@@ -2702,7 +2683,6 @@ mod tests {
             assert!(remove_history_item(&s, keep));
             assert!(!remove_history_item(&s, discard));
         }
-        // Phase `asynchronous_multi_mime_copy_becomes_one_history_item`.
         {
             let s = store();
             let generation = begin_client_selection(
@@ -2729,7 +2709,6 @@ mod tests {
             assert_eq!(history[0].text_preview.as_deref(), Some("caption"));
             assert!(history[0].mime_types.iter().any(|mime| mime == "image/png"));
         }
-        // Phase `fabric_clipboard_is_history_only_and_is_not_reauthored`.
         {
             use crate::shell::device_fabric::{ClipboardEntry, ClipboardPayload, FabricStamp};
             use crate::shell::personal_continuity::DeviceId;
@@ -2896,7 +2875,6 @@ mod tests {
             clipboard_history(&s).is_empty(),
             "a password-manager copy must not enter clipboard history"
         );
-        // The next selection replaces and clears it.
         client_copy(&s, Target::Clipboard, &[TEXT_MIME], "next");
         assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("next"));
     }
@@ -3002,7 +2980,6 @@ mod tests {
         assert_eq!(mirror_text(&s, Target::Clipboard), None);
         assert!(offered(&s).contains(&"image/png".to_owned()));
         assert!(!adopt_complete_client_selection(&s, 10_001));
-        // A late transfer for A's generation is rejected.
         record_client_bytes(&s, Target::Clipboard, a, TEXT_MIME, b"from A".to_vec());
         assert_eq!(mirror_text(&s, Target::Clipboard), None);
         record_client_bytes(&s, Target::Clipboard, b, "UTF8_STRING", b"from B".to_vec());
@@ -3031,7 +3008,6 @@ mod tests {
             Some("from chrome")
         );
 
-        // Clearing leaves nothing adoptable to resurrect.
         clear_mirror(&s, Target::Clipboard);
         assert!(!adopt_complete_client_selection(&s, 20_000));
         assert!(offered(&s).is_empty());
@@ -3043,10 +3019,8 @@ mod tests {
         let s = store();
         client_copy(&s, Target::Clipboard, &[TEXT_MIME], "same");
         assert!(adopt_complete_client_selection(&s, 5_000));
-        // The manager re-asserts identical content as a new client owner.
         client_copy(&s, Target::Clipboard, &[TEXT_MIME], "same");
         assert!(!adopt_complete_client_selection(&s, 5_100));
-        // Later, or different content, is a real copy again.
         assert!(adopt_complete_client_selection(
             &s,
             5_000 + ADOPT_COOLDOWN_MS
@@ -3086,7 +3060,6 @@ impl SelectionRefusal {
 
 #[cfg(target_os = "linux")]
 impl State {
-    /// The refusal smithay will apply to a `set_selection` made on `device`, if any.
     fn selection_refusal(
         &self,
         device: &smithay::reexports::wayland_server::backend::ObjectId,

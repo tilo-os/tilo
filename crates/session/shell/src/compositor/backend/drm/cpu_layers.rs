@@ -357,7 +357,6 @@ mod tests {
 
     fn cache(scroll_x: u32) -> FrameCache {
         let white = Color::from_rgb8(255, 255, 255);
-        // A strip canvas three screens wide, a window on each screen.
         let strip = filled(&[
             (Rect::new(16.0, 32.0, 112.0, 96.0), white),
             (Rect::new(144.0, 32.0, 240.0, 96.0), white),

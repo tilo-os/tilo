@@ -193,8 +193,6 @@ pub(crate) mod tests {
         .expect("person id");
         let handle = test_tree_of(&owner);
         let mut tree = handle.write();
-        // The device's default person is somebody other than the identity
-        // this workspace selects.
         tree.local_person = Some([0x35; 32]);
         let workspace = tree
             .desktop

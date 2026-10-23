@@ -276,12 +276,10 @@ mod tests {
     use super::*;
     #[test]
     fn surface_tracker_slots_hold_the_latest_frame_per_surface() {
-        // Phase `surface_tracker_take_latest_empty_returns_none`.
         {
             let mut tracker = SurfaceTracker::new();
             assert!(tracker.take_latest(7).is_none());
         }
-        // Phase `surface_tracker_round_trip_via_deposit_and_take`.
         {
             let mut tracker = SurfaceTracker::new();
             let rgba = vec![1, 2, 3, 4, 5, 6, 7, 8];
@@ -294,7 +292,6 @@ mod tests {
             assert!(tracker.is_empty_for(42));
             assert!(tracker.take_latest(42).is_none());
         }
-        // Phase `surface_tracker_second_deposit_overrides_first`.
         {
             let mut tracker = SurfaceTracker::new();
             tracker.deposit_for_test(1, vec![0; 16], 2, 2);
@@ -304,14 +301,12 @@ mod tests {
             assert_eq!(frame.width, 1);
             assert_eq!(frame.height, 1);
         }
-        // Phase `surface_tracker_forget_drops_slot`.
         {
             let mut tracker = SurfaceTracker::new();
             tracker.deposit_for_test(9, vec![0xFF; 4], 1, 1);
             tracker.forget(9);
             assert!(tracker.take_latest(9).is_none());
         }
-        // Phase `surface_tracker_isolates_surfaces`.
         {
             // Independent surface ids must not bleed into one another.
             let mut tracker = SurfaceTracker::new();
@@ -325,7 +320,6 @@ mod tests {
     }
     #[test]
     fn dropping_a_surface_clears_its_buffer_and_capture_path() {
-        // Phase `drop_surface_removes_buffer`.
         {
             let mut tracker = SurfaceTracker::new();
             // Deposit a non-trivial buffer so the slot really exists.
@@ -344,7 +338,6 @@ mod tests {
                 "is_empty_for must report `true` after drop_surface (slot deleted)"
             );
         }
-        // Phase `capture_path_counter_tracks_dmabuf_direct_vs_shm`.
         {
             let mut tracker = SurfaceTracker::new();
             assert_eq!(tracker.dmabuf_direct_count(), 0);
@@ -361,7 +354,6 @@ mod tests {
             assert_eq!(tracker.last_capture_path(2), Some(CapturePath::ShmReadback));
             assert_eq!(tracker.last_capture_path(999), None);
         }
-        // Phase `drop_surface_clears_capture_path`.
         {
             let mut tracker = SurfaceTracker::new();
             tracker.note_capture_path_for_test(7, CapturePath::DmabufDirect);

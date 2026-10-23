@@ -392,10 +392,6 @@ pub fn pending_device_unlocks() -> Vec<DeviceUnlockConsentView> {
 }
 
 /// Apply the owner's `device.unlock` decision on this device.
-///
-/// # Errors
-///
-/// Returns an error when no such request is waiting.
 pub fn decide_device_unlock(request_digest: [u8; 32], approved: bool) -> Result<(), String> {
     let secret_sync = if approved { secret_sync_key() } else { None };
     let decided = with_service(|service| {
@@ -451,7 +447,6 @@ pub fn remove_device(device: [u8; 32]) -> Result<(), String> {
             )
         })
         .map_err(|error| error.to_string())?;
-    // Read the fleet again at the next tick.
     with_service(|service| {
         if let Some(custody) = service.custody.as_mut() {
             custody.read_at = UNIX_EPOCH;

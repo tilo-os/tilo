@@ -41,8 +41,6 @@ pub struct ActivationFacts {
     pub source_was_focused: bool,
 }
 
-/// # Errors
-/// Returns the precise policy denial when the token creation facts are unsafe.
 pub fn evaluate_token_creation(facts: ActivationFacts) -> Result<(), ActivationDenial> {
     if facts.age > MAX_ACTIVATION_AGE {
         return Err(ActivationDenial::Expired);
@@ -65,8 +63,6 @@ pub fn evaluate_token_creation(facts: ActivationFacts) -> Result<(), ActivationD
     Ok(())
 }
 
-/// # Errors
-/// Returns the precise policy denial when an activation request is stale or mismatched.
 pub fn evaluate_activation_request(
     age: Duration,
     target_is_toplevel: bool,
@@ -191,9 +187,7 @@ mod tests {
 
     #[test]
     fn activation_is_granted_only_for_a_fresh_focused_user_launch() {
-        // Phase `focused_recent_user_launch_is_allowed`.
         assert_eq!(evaluate_token_creation(valid()), Ok(()));
-        // Phase `background_and_forged_requests_are_denied_independently`.
         {
             let cases = [
                 (
@@ -243,7 +237,6 @@ mod tests {
                 assert_eq!(evaluate_token_creation(facts), Err(denial));
             }
         }
-        // Phase `recent_serial_delivered_to_another_client_is_denied`.
         {
             let facts = ActivationFacts {
                 serial_belongs_to_source: false,
@@ -254,7 +247,6 @@ mod tests {
                 Err(ActivationDenial::UnknownSerial)
             );
         }
-        // Phase `stale_foreign_or_mismatched_target_is_denied`.
         assert_eq!(
             evaluate_activation_request(Duration::from_secs(11), true, true),
             Err(ActivationDenial::Expired)
@@ -267,7 +259,6 @@ mod tests {
             evaluate_activation_request(Duration::from_millis(5), true, false),
             Err(ActivationDenial::AppIdMismatch)
         );
-        // Phase `desktop_suffix_is_the_only_app_id_normalisation`.
         assert!(app_ids_match(
             "org.example.Editor.desktop",
             "org.example.Editor"

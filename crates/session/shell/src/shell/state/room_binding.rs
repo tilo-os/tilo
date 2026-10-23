@@ -28,7 +28,6 @@ pub(crate) struct RoomBinding {
     /// installs into: the workspace, the placeholder room it was on, and the
     /// room it is.
     pub joined: Vec<(WorkspaceId, RoomId, RoomId)>,
-    /// Placeholder rooms that held something, each kept as a workspace.
     pub kept: Vec<(RoomId, WorkspaceId)>,
     /// Placeholder rooms that held nothing, dropped.
     pub dropped: Vec<RoomId>,

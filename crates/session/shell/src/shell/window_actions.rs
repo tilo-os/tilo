@@ -297,7 +297,6 @@ impl TabActionError {
 pub enum SplitPlacement {
     /// Immediately to the right of the tab's current group.
     Right,
-    /// At the end of the strip.
     StripEnd,
 }
 
@@ -539,7 +538,6 @@ pub enum MoveTabError {
     UnknownTab,
     /// The destination workspace is gone, or has no strip to land in.
     UnknownWorkspace,
-    /// The window is already in that workspace.
     SameWorkspace,
     /// The window belongs to its workspace: its private history, or a
     /// collaborator's window shown here.
@@ -806,7 +804,6 @@ mod tests {
         let chrome = chrome_with_default_tree();
         let mut st = chrome.borrow_mut();
         let a = focused_group(&st).expect("the demo desk has a focused group");
-        // A neighbour C right of A, then back to A.
         let c_tab = open_hosted(
             &mut st,
             AppKind::Other("C".into()),
@@ -856,7 +853,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn window_actions_are_durable_for_history_restart_and_peers() {
-        // Phase `history_new_hosted_tabs_have_records_before_tree_rebuild`.
         {
             let chrome = chrome_with_default_tree();
             let mut st = chrome.borrow_mut();
@@ -880,7 +876,6 @@ mod tests {
             assert_ne!(first, second);
         }
 
-        // Phase `opening_a_hosted_app_is_durable_for_restart_and_peer_export`.
         {
             let state_dir = tempfile::tempdir().expect("state directory");
             let state_path = state_dir.path().join("state.json");
@@ -922,7 +917,6 @@ mod tests {
             }
         }
 
-        // Phase `switching_workspace_is_durable_across_restart`.
         {
             let state_dir = tempfile::tempdir().expect("state directory");
             let state_path = state_dir.path().join("state.json");
@@ -947,7 +941,6 @@ mod tests {
                 .id;
 
             tree.set_active(target);
-            // A restart ends the process that held the state file's single writer.
             drop(tree);
 
             let restarted = crate::shell::persist::load_tree_from(&state_path)
@@ -1003,7 +996,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn window_actions_open_and_duplicate_tabs_in_the_right_group() {
-        // Phase `open_terminal_here_adds_a_tab_to_the_focused_group`.
         {
             let chrome = chrome_with_default_tree();
             let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
@@ -1040,7 +1032,6 @@ mod tests {
             );
         }
 
-        // Phase `open_terminal_beside_leaves_the_focused_group_alone_when_it_holds_one_tab`.
         {
             let chrome = chrome_with_default_tree();
             let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
@@ -1071,7 +1062,6 @@ mod tests {
             assert_eq!(original.tabs.len(), 1, "the original group is untouched");
         }
 
-        // Phase `duplicate_active_tab_copies_the_focused_app_into_the_same_group`.
         {
             let chrome = chrome_with_default_tree();
             let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
@@ -1129,7 +1119,6 @@ mod tests {
             assert_eq!(g.active_tab, new_id, "the duplicate takes focus");
         }
 
-        // Phase `duplicating_a_foreign_window_reports_why_it_cannot`.
         {
             let chrome = chrome_with_default_tree();
             let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();

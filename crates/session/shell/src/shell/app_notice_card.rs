@@ -20,7 +20,6 @@ use crate::shell::state::TabId;
 enum Primary {
     /// Install the peer window's app and open it here.
     Install,
-    /// Reopen this saved window in its tab.
     Reopen(String),
     /// Open the Store on this saved window's app.
     Get(String),

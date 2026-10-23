@@ -42,7 +42,6 @@ const EXPIRY: Duration = Duration::from_secs(6);
 pub struct RoomWindowViewer {
     /// The viewer's peer handle, the address its stream travels under.
     pub peer: u64,
-    /// The room it views the window in.
     pub room: RoomId,
     pub width: u32,
     pub height: u32,
@@ -69,7 +68,6 @@ pub(super) struct State {
     outbound: std::sync::Mutex<HashMap<(iroh::EndpointId, RoomId), Told>>,
 }
 
-/// Whether `views` and `decode` are within the wire's bounds.
 fn within_bounds(views: &[SurfaceView], decode: &[SurfaceDecodeLimit]) -> bool {
     let side = |value: u32| (1..=MAX_SURFACE_VIEW_SIDE).contains(&value);
     views.len() <= MAX_SURFACE_VIEWS
@@ -345,8 +343,6 @@ mod tests {
         assert!(state.viewers(t0).is_empty(), "said it stopped");
     }
 
-    /// Each host hears its list on a change, again as a refresh, and an
-    /// empty list once when nothing of it is shown any more.
     #[test]
     fn a_host_hears_its_list_on_a_change_as_a_refresh_and_once_empty() {
         let state = State::default();

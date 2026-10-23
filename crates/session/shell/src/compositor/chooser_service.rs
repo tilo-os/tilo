@@ -1025,7 +1025,6 @@ mod tests {
         pickers: FilePickerQueue,
         present: Arc<AtomicBool>,
         wakes: Arc<std::sync::atomic::AtomicU64>,
-        /// Whether the room has an identity selected.
         selected: Arc<AtomicBool>,
         /// How often the service read whether it has.
         identity_reads: Arc<std::sync::atomic::AtomicU64>,
@@ -1143,7 +1142,6 @@ mod tests {
         fn send(&mut self, request: &Request) {
             let mut frame = serde_json::to_vec(request).unwrap();
             frame.push(b'\n');
-            // A hung-up shell is seen as the missing reply.
             let _ = self.writer.write_all(&frame);
         }
 
@@ -1234,7 +1232,6 @@ mod tests {
         app.writer.set_nonblocking(false).unwrap();
 
         session.selected.store(true, Ordering::Release);
-        // What the identity registry announces when it is written.
         tilo_identity_host::policy_change::announce();
         assert_eq!(app.reply(), Some(Reply::IdentitySelected { id: 1 }));
 
@@ -1390,7 +1387,6 @@ mod tests {
         let session = session_with_save_hint(true);
         let mut app = App::launch(&session, APP, &session.room);
 
-        // Phase `open_starts_in_the_grants_and_returns_the_chosen_file`.
         app.send(&pick(1, PickMode::Open));
         let shown_open = shown(&session);
         assert_eq!(shown_open.caller.app_id.as_str(), APP);
@@ -1418,7 +1414,6 @@ mod tests {
             })
         );
 
-        // Phase `a_file_outside_the_grants_is_never_handed_over`.
         app.send(&pick(2, PickMode::Open));
         shown(&session)
             .reply
@@ -1426,7 +1421,6 @@ mod tests {
             .unwrap();
         assert!(matches!(app.reply(), Some(Reply::Failed { id: 2, .. })));
 
-        // Phase `save_starts_in_the_save_directory_and_needs_a_write_grant`.
         app.send(&pick(3, PickMode::Save));
         let shown_save = shown(&session);
         assert!(shown_save.save);
@@ -1456,12 +1450,10 @@ mod tests {
             "a read grant does not let the app replace files"
         );
 
-        // Phase `a_closed_chooser_is_a_cancel`.
         app.send(&pick(5, PickMode::Open));
         shown(&session).reply.send(None).unwrap();
         assert_eq!(app.reply(), Some(Reply::Cancelled { id: 5 }));
 
-        // Phase `nobody_at_the_computer_shows_nothing`.
         session.present.store(false, Ordering::Release);
         app.send(&pick(6, PickMode::Open));
         assert_eq!(app.reply(), Some(Reply::Nobody { id: 6 }));
@@ -2230,7 +2222,6 @@ type = "gui"
             request: tilo_dialogs::portal::PickRequest,
             chosen: &Path,
         ) -> PathBuf {
-            // The app holds its chooser for as long as it waits on it.
             let picker = self.client(app);
             let asked = picker.pick(request);
             shown(&self.session)
@@ -2308,7 +2299,6 @@ type = "gui"
         assert_eq!(giving.documents.tokens(&giving.key(VIEWER)).len(), 1);
     }
 
-    /// The PDF Viewer's "Open a PDF", through its toolkit's chooser.
     #[test]
     #[serial_test::serial(process_env)]
     fn the_pdf_viewer_opens_a_pdf_it_was_granted_nothing_for() {
@@ -2459,7 +2449,6 @@ type = "gui"
             "nothing beside it"
         );
         if let Some(path) = giving.in_view(LOGS, &given) {
-            // What the Logs export does with the path it hears.
             std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -2468,7 +2457,6 @@ type = "gui"
                 .and_then(|mut file| file.write_all(b"{\"line\":1}\n"))
                 .unwrap();
             assert_eq!(std::fs::read(&destination).unwrap(), b"{\"line\":1}\n");
-            // And what a toolkit Save destination does.
             tilo_dialogs::portal::replace_saved(&path, b"{\"line\":2}\n").unwrap();
             assert_eq!(std::fs::read(&destination).unwrap(), b"{\"line\":2}\n");
             assert!(std::fs::write(path.with_file_name("other.jsonl"), b"x").is_err());

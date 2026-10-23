@@ -30,7 +30,6 @@ impl std::fmt::Debug for GoverningRooms {
 }
 
 impl GoverningRooms {
-    /// The rooms `tree`'s owner governs with `key`.
     #[must_use]
     pub fn new(tree: WorkspaceTreeHandle, key: ed25519_dalek::SigningKey) -> Self {
         Self { tree, key }

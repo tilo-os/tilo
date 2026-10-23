@@ -35,7 +35,6 @@ pub(crate) struct TabMenuTarget {
 /// What the open menu acts on.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum MenuSubject {
-    /// A window, through its tab.
     Window(TabMenuTarget),
     /// Something else the desktop draws, as an agent is told of it.
     Thing(Box<crate::shell::selection_agent::SelectionSeed>),
@@ -48,7 +47,6 @@ pub(crate) struct TabMenuLayer {
     /// [`build_window_menu`].
     items: Vec<WindowMenuRow>,
     target: Option<MenuSubject>,
-    /// Title of the tab the menu is for, for the accessible name.
     title: String,
     /// The accessible name when the menu is not the tab's own: the bar's
     /// "Controls your desktop" chip names what it allows.

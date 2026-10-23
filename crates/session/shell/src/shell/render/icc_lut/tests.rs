@@ -212,7 +212,6 @@ impl Panel {
             let identity: i32 = if entry % 4 == 0 { 0x1_0000 } else { 0 };
             tag.extend_from_slice(&identity.to_be_bytes());
         }
-        // Two-entry identity input and output curves.
         tag.extend_from_slice(&2_u16.to_be_bytes());
         tag.extend_from_slice(&2_u16.to_be_bytes());
         let identity_curves = [0_u16, u16::MAX].repeat(3);

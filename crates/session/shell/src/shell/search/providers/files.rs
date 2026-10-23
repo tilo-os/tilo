@@ -145,7 +145,6 @@ impl NameIndex {
         self.entries.iter().map(|(_, entry)| entry)
     }
 
-    /// The entry indexed under `key`.
     fn entry(&self, key: u64) -> Option<&NameEntry> {
         let at = self
             .entries
@@ -2303,7 +2302,6 @@ mod tests {
 
     #[test]
     fn file_name_scoring_prefers_the_exact_whole_word_leaf() {
-        // Phase `name_score_prefers_the_leaf_over_the_path`.
         {
             assert_eq!(
                 score_of("todo", "~/notes/todo.md"),
@@ -2318,7 +2316,6 @@ mod tests {
             assert_eq!(score_of("xzq", "~/notes/todo.md"), None);
         }
 
-        // Phase `a_whole_word_beats_the_start_of_a_longer_word`.
         {
             let whole = score_of("open", "~/a/open.txt").unwrap();
             let prefix = score_of("open", "~/a/opening-notes.md").unwrap();
@@ -2337,7 +2334,6 @@ mod tests {
             );
         }
 
-        // Phase `an_exact_filename_match_clearly_wins`.
         {
             let exact = score_of("open", "~/a/open.md").unwrap();
             let long = score_of("open", "~/a/opentelemetry-collector-config.md").unwrap();
@@ -2399,7 +2395,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn file_placement_sinks_assets_vendored_and_buried_paths() {
-        // Phase `a_document_outranks_the_font_assets_of_a_game`.
         {
             const GAME: &str = "~/Spiele/openttd-jgrpp-0.72.3-linux-generic-amd64";
             let p = provider_with_index_aged(vec![
@@ -2466,7 +2461,6 @@ mod tests {
             );
         }
 
-        // Phase `vendored_content_sinks_but_stays_findable`.
         {
             let mine = score_of("parser", "~/proj/src/parser.rs").unwrap();
             let theirs = score_of("parser", "~/proj/vendor/pkg/parser.rs").unwrap();
@@ -2492,7 +2486,6 @@ mod tests {
             );
         }
 
-        // Phase `depth_counts_against_a_buried_path`.
         {
             assert_eq!(depth_penalty("~/report.md"), 0);
             assert_eq!(depth_penalty("~/dev/proj/src/lib.rs"), 0);
@@ -2510,7 +2503,6 @@ mod tests {
             assert_eq!(depth_penalty("~/a/b/c/d/e/f/g/h/i/j/k"), PENALTY_DEPTH_MAX);
         }
 
-        // Phase `equal_scores_prefer_the_shallower_path`.
         {
             // Same filename/age/penalty, so the scores really tie and depth is
             // the only tiebreak left. Both sit inside `DEPTH_FREE`, where depth
@@ -2535,14 +2527,12 @@ mod tests {
 
     #[test]
     fn filename_words_match_whole_and_with_typos() {
-        // Phase `letters_and_digits_are_separate_words`.
         {
             let whole = score_of("2026", "~/a/report2026final.md").unwrap();
             let inside = score_of("eport", "~/a/report2026final.md").unwrap();
             assert!(whole > inside, "{whole} / {inside}");
         }
 
-        // Phase `a_typo_in_a_filename_still_matches`.
         {
             assert!(score_of("noets", "~/a/notes").is_some());
             assert!(
@@ -2563,7 +2553,6 @@ mod tests {
 
     #[test]
     fn recency_breaks_name_ties_from_the_index_but_never_outvotes_the_name() {
-        // Phase `recency_separates_two_files_with_the_same_name`.
         {
             let fresh = aged_score_of("report", "~/a/report.md", Some(0)).unwrap();
             let stale = aged_score_of("report", "~/b/report.md", Some(900)).unwrap();
@@ -2642,7 +2631,6 @@ mod tests {
 
     #[test]
     fn the_walk_skips_bloat_and_indexes_every_tree_before_ranking() {
-        // Phase `skip_dirs_hits_common_bloat`.
         {
             let home = Path::new("/home/x");
             assert!(should_skip(Path::new("/home/x/proj/node_modules"), home));
@@ -2708,8 +2696,6 @@ mod tests {
             }
         }
 
-        // Phase `the_best_matches_win_regardless_of_walk_position`.
-        // The best matches win regardless of where they sit in the index.
         {
             let mut entries: Vec<(String, bool)> = (0..50)
                 .map(|i| (format!("~/report/notes/entry-{i:03}.md"), false))
@@ -3165,7 +3151,6 @@ mod tests {
             );
         }
 
-        // Phase `late_non_exact_pages_keep_the_same_work_ceiling`.
         {
             let paths = (0..=LARGE_CORPUS)
                 .map(|i| format!("~/archive/{i:06}-needle.md"))
@@ -3205,7 +3190,6 @@ mod tests {
             assert!(cursor.is_some(), "fixture must reach a genuine late page");
         }
 
-        // Phase `rejects_a_cursor_after_the_retained_index_changes`.
         {
             let p =
                 provider_with_index(vec![("~/one/needle.md", false), ("~/two/needle.md", false)]);
@@ -3236,7 +3220,6 @@ mod tests {
             assert!(stale.results.is_empty());
         }
 
-        // Phase `byte_limited_page_does_not_skip_the_first_unemitted_match`.
         {
             let huge = format!("~/{}-needle.md", "x".repeat(4_096));
             let p = provider_with_index(vec![("~/a-needle.md", false), (&huge, false)]);

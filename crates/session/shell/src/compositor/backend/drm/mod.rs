@@ -902,7 +902,6 @@ mod phase_window_tests {
 
     #[test]
     fn phase_window_accumulates_and_records_every_frame_outcome() {
-        // Phase `phase_window_accumulates_completed_frame_costs`.
         {
             let mut window = PhaseWindow::default();
             window.record(timing(2));
@@ -923,7 +922,6 @@ mod phase_window_tests {
             assert_eq!(window.scanout_us, 0);
             assert_eq!(window.unprofiled_frames, 0);
         }
-        // Phase `phase_window_keeps_failed_legacy_attempt_visible_without_vello_timing`.
         {
             let mut window = PhaseWindow::default();
             window.record_legacy_attempt(None, 41, 7);
@@ -942,7 +940,6 @@ mod phase_window_tests {
             assert_eq!(summary.scanout_us, 12);
             assert_eq!(summary.window_us, 99);
         }
-        // Phase `phase_window_records_direct_submission_drop_and_flip_completion`.
         {
             let mut window = PhaseWindow::default();
             window.accumulate(paint::BridgePhaseTiming {
@@ -971,7 +968,6 @@ mod phase_window_tests {
             assert_eq!(window.readback_bytes, 0);
             assert_eq!(window.output_bytes, 0);
         }
-        // Phase `two_direct_outputs_are_one_frame`.
         {
             let mut window = PhaseWindow::default();
             let mut frame = DirectFrame::default();
@@ -997,7 +993,6 @@ mod phase_window_tests {
 
     #[test]
     fn phase_window_flush_timing_and_reset() {
-        // Phase `phase_window_is_due_only_after_the_bounded_interval`.
         {
             let mut window = PhaseWindow::default();
             let started = Instant::now();
@@ -1009,7 +1004,6 @@ mod phase_window_tests {
             assert!(!window.due(just_before));
             assert!(window.due(started + PHASE_WINDOW_INTERVAL));
         }
-        // Phase `explicit_profiling_flushes_the_first_observation_without_a_later_frame`.
         {
             let mut window = PhaseWindow::default();
             let started = Instant::now();
@@ -1021,7 +1015,6 @@ mod phase_window_tests {
             assert!(!window.should_emit(started + Duration::from_millis(1), false));
             assert!(window.should_emit(started + PHASE_WINDOW_INTERVAL, false));
         }
-        // Phase `profiling_keeps_direct_drops_and_completions_visible_without_a_frame`.
         {
             let mut window = PhaseWindow::default();
             let now = Instant::now();
@@ -1031,7 +1024,6 @@ mod phase_window_tests {
 
             assert!(window.should_emit(now, true));
         }
-        // Phase `phase_window_reset_discards_the_previous_sample_without_moving_its_clock`.
         {
             let mut window = PhaseWindow::default();
             window.record(timing(7));
@@ -1089,7 +1081,6 @@ mod direct_eligibility_tests {
 
     #[test]
     fn direct_path_eligibility_requires_the_full_contract_and_proven_identity() {
-        // Phase `direct_path_requires_the_complete_safe_contract`.
         assert_eq!(direct_scanout_rejection(eligible()), None);
         for (rejected, reason) in [
             (
@@ -1116,7 +1107,6 @@ mod direct_eligibility_tests {
         ] {
             assert_eq!(direct_scanout_rejection(rejected), Some(reason));
         }
-        // Phase `drm_node_identity_can_prove_virtual_renderer_without_pci_identity`.
         assert_eq!(
             direct_scanout_rejection(DirectEligibility {
                 renderer_pci: "",
@@ -1126,7 +1116,6 @@ mod direct_eligibility_tests {
             }),
             None
         );
-        // Phase `matching_drm_node_is_authoritative_when_the_card_has_no_pci_bus_id`.
         assert_eq!(
             direct_scanout_rejection(DirectEligibility {
                 renderer_pci: "0000:66:00.0",
@@ -1136,7 +1125,6 @@ mod direct_eligibility_tests {
             }),
             None
         );
-        // Phase `missing_renderer_identities_still_fail_closed`.
         assert_eq!(
             direct_scanout_rejection(DirectEligibility {
                 renderer_pci: "",
@@ -2365,7 +2353,6 @@ struct DirectRender {
     sparse: bool,
     revision: u64,
     render_attempts: usize,
-    /// It rendered into HDR targets.
     hdr: bool,
 }
 
@@ -4154,7 +4141,6 @@ mod tests {
             vec![(100, 0), (200, 2)],
             "each card must drain its own shared event stream exactly once"
         );
-        // Phase `overlapping_crtcs_route_flip_completion_only_within_its_card`.
         {
             // Fake card/CRTC topology. CRTC 7 exists on both cards, exactly as
             // it can in DRM. A completion from card 200 must not clear card 100's
@@ -4203,7 +4189,6 @@ mod tests {
             assert!(!paused, "and must start again when it gets them back");
             assert!(!blanked);
         }
-        // Phase `resuming_a_blanked_session_leaves_the_panels_off`.
         {
             // Restoring a session that was idle-blanked must not light the screen: the user turned it off, and a VT switch is not consent.
             let mut scanouts: Vec<ScanoutEntry> = Vec::new();
@@ -4219,7 +4204,6 @@ mod tests {
             assert!(!paused, "the CRTCs are ours again");
             assert!(blanked, "but the panels stay off");
         }
-        // Phase `a_reconfigure_adopts_the_new_output_table`.
         {
             // The presenter sizes its paint target from this table (`bridge_extent`) and renders each output's view from its position, so adopting it is what makes an unplugged monitor stop being painted for.
             let mut scanouts: Vec<ScanoutEntry> = Vec::new();
@@ -4645,7 +4629,6 @@ mod per_output_presentation_tests {
             head(1, (2560, 0), (1920, 1080), 60_000),
         ];
         let fastest = outputs.iter().filter_map(|output| output.refresh_mhz).max();
-        // Refresh periods in nanoseconds.
         let fast_period: u64 = 6_944_444;
         let slow_period: u64 = 16_666_667;
         let mut monitor = scanout::DirectScanoutState::new(0);
@@ -4677,7 +4660,6 @@ mod per_output_presentation_tests {
             } else {
                 slow_skips = slow_skips.saturating_add(1);
             }
-            // The frame retires once the outputs pacing the loop have flipped.
             assert_eq!(
                 flip_wait(refresh_of(&outputs, OutputId(0)), fastest, Duration::ZERO),
                 FlipWait::Await,

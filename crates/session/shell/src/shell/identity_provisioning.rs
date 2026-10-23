@@ -53,10 +53,6 @@ struct StoredBrokerIdentity {
 
 impl PairingBrokerServer {
     /// Start a short-lived localhost broker for one pairing ceremony.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if TLS identity generation or socket binding fails.
     pub fn start(authority: SharedPairingChannel, nonce: [u8; 16]) -> io::Result<Self> {
         Self::start_on(authority, nonce, (std::net::Ipv4Addr::LOCALHOST, 0).into())
     }
@@ -64,10 +60,6 @@ impl PairingBrokerServer {
     /// Bind the authority to an explicitly selected network interface. The
     /// caller advertises the resulting address in the QR payload; the random
     /// channel nonce is the bearer authenticator checked on every request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if TLS identity generation or socket binding fails.
     pub fn start_on(
         authority: SharedPairingChannel,
         nonce: [u8; 16],
@@ -87,10 +79,6 @@ impl PairingBrokerServer {
     }
 
     /// Start an ephemeral localhost broker limited to invite redemption.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if TLS identity generation or socket binding fails.
     pub fn start_invites(
         authority: SharedPairingChannel,
         invite_authority_root: impl Into<PathBuf>,
@@ -457,11 +445,6 @@ fn serve_pairing_request(
 /// and other hosts. Relative values are rejected: turning one into an
 /// identity path using the compositor's working directory would make key
 /// placement depend on the display manager.
-///
-/// # Errors
-///
-/// Returns an error if neither input identifies a home data directory, or if
-/// the selected directory is relative.
 pub fn host_identity_root(
     xdg_data_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
@@ -795,11 +778,6 @@ pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
 
 /// Wraps `InviteEnvelope::from_url` plus the signature check so a
 /// caller doesn't need to remember both steps.
-///
-/// # Errors
-///
-/// Returns an error if `url` doesn't parse as an invite envelope, or if
-/// its signature doesn't verify.
 pub fn parse_invite_url(url: &str) -> Result<InviteEnvelope, IdentityFlowError> {
     let env = InviteEnvelope::from_url(url)?;
     env.verify_signature()?;

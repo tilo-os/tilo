@@ -848,7 +848,6 @@ mod tests {
                     // toolkit toast and the two shell cards share one material.
                     let first = stack.rect();
                     let first_h = if state == "live" {
-                        // The shared toast card's height.
                         64.0
                     } else {
                         first.height()
@@ -880,8 +879,6 @@ mod tests {
 
         notification_stack_review_fixtures_are_written();
     }
-
-    // ---------- D-Bus bridge wiring ----------
 
     use crate::notifications::{CloseReason, IncomingNotification, NotificationBridge};
     use crate::portal::PortalCaller;
@@ -1695,7 +1692,6 @@ mod tests {
                 "held notifications are not replayed as banners"
             );
             assert_eq!(chrome.borrow().notification_history().len(), 1);
-            // A fresh post now shows again.
             chrome.borrow_mut().push_notification("live", "");
             assert_eq!(chrome.borrow().notifications().len(), 1);
         }

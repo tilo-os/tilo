@@ -164,11 +164,6 @@ impl SpeakerGroupCore {
     }
 
     /// Answer a microphone prompt on this device.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the prompt expired, the group changed, or too
-    /// many groups may already listen here.
     pub fn resolve_listen_consent(
         &mut self,
         fabric: &DeviceFabric,
@@ -208,10 +203,6 @@ impl SpeakerGroupCore {
     }
 
     /// Withdraw this device's microphone consent for a group.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when no such consent exists.
     pub fn stop_listening(&mut self, group_id: SpeakerGroupId) -> Result<Vec<Egress>, String> {
         let listeners = self.listeners_mut();
         let index = listeners

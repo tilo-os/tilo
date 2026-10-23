@@ -1946,13 +1946,11 @@ mod tests {
 
     #[test]
     fn admission_bounds_frames_in_flight_and_never_queues_behind_a_render() {
-        // Phase `an_overlapping_presenter_admits_a_frame_beside_the_owed_flip`.
         assert!(admits(0, 0, 0), "an idle pipe takes a frame");
         assert!(
             admits(0, MAX_UNRETIRED, 0),
             "the next frame renders while the previous one waits for its vblank"
         );
-        // Phase `latest_wins_no_frame_waits_behind_one_rendering`.
         assert!(
             !admits(1, 0, 0),
             "a frame queued behind one rendering would age a whole render"
@@ -1967,7 +1965,6 @@ mod tests {
             1,
             "a presenter waiting for its flip keeps the floor"
         );
-        // Phase `in_flight_frames_stay_bounded`.
         assert!(
             !admits(0, MAX_UNRETIRED.saturating_add(1), 0),
             "a presenter owing more flips than it should is refused frames"
@@ -2296,10 +2293,6 @@ mod tests {
         pipe
     }
 
-    /// Every admitted frame gives its capacity back once and retires once, whatever order
-    /// the flips of the frames before it retired in. A flip retiring inside the present that
-    /// queued it used to have no frame to settle: that frame stayed owed for good, `presented`
-    /// stopped and each later frame was admitted only as the one after it retired.
     #[test]
     fn a_flip_retiring_inside_its_own_present_still_retires_its_frame() {
         let mut pipe = run_scripted(&[Flip::WithinPresent]);

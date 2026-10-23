@@ -1485,7 +1485,6 @@ mod tests {
 
     #[test]
     fn shortcut_bindings_are_bounded_and_deliver_only_bound_ids() {
-        // Phase `shortcut_wire_is_bounded_and_cannot_duplicate_ids`.
         {
             let good = vec![("toggle".into(), HashMap::new())];
             assert_eq!(decode_shortcuts(good).unwrap().len(), 1);
@@ -1496,12 +1495,10 @@ mod tests {
             assert!(decode_shortcuts(duplicate).is_none());
             assert!(decode_shortcuts(vec![("bad space".into(), HashMap::new())]).is_none());
         }
-        // Phase `compositor_handle_cannot_activate_unbound_id`.
         {
             let handle = test_handle();
             assert!(!handle.activate("/org/freedesktop/portal/desktop/session/x", "unknown", 1));
         }
-        // Phase `compositor_event_bridge_only_delivers_bound_ids`.
         {
             let handle = test_handle();
             let session = "/org/freedesktop/portal/desktop/session/x";
@@ -1538,7 +1535,6 @@ mod tests {
 
     #[test]
     fn accelerators_are_canonical_and_reserved_chords_win() {
-        // Phase `canonical_accelerators_are_physical_and_shell_reservations_win`.
         {
             assert_eq!(
                 canonical_accelerator("Shift + Ctrl + k").as_deref(),
@@ -1550,7 +1546,6 @@ mod tests {
             let modifiers = Modifiers::default();
             assert!(accelerator_for_code("KeyK", modifiers).is_none());
         }
-        // Phase `registry_rejects_conflicts_and_reserved_chords`.
         {
             let service = ShellGlobalShortcutsService::with_dialogs(PortalDialogQueue::default());
             let request = GlobalShortcutBindingRequest {

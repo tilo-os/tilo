@@ -186,7 +186,6 @@ mod tests {
     use super::*;
     #[test]
     fn email_inputs_drop_controls_and_host_paths() {
-        // Phase `string_list_drops_controls`.
         {
             let mut v = HashMap::new();
             v.insert(
