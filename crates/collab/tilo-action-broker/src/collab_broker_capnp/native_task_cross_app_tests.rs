@@ -265,27 +265,17 @@ async fn approve_journey(
     writer: &Worker<Document>,
     settings: &Worker<DesktopControls>,
 ) -> runtime_collab::TaskRunEnvelope {
-    let queued = f.native.owner.workspace_task_snapshot(room()).unwrap();
-    assert_eq!(queued.tasks[0].status, WorkspaceTaskStatus::Queued);
-    assert!(queued.controls[&f.task].active_run.is_none());
-    assert!(
-        f.state
-            .dispatch_workspace_task(&room().to_string(), &f.task)
-            .is_err(),
-        "queue is not conscious approval"
-    );
+    // Nothing runs before the person approves.
     writer.assert_no_delivery();
     settings.assert_no_delivery();
 
-    f.approve(); // Authenticated person command, independent of any tool grant.
+    f.approve(); // The person's approval on the issue, independent of any tool grant.
     let run = delivered(agent).await;
     assert_eq!(run.task_id, f.task);
     assert!(run.instruction().contains("blocking inconsistency"));
     report(agent, &run, runtime_collab::TaskRunUpdate::Accepted)
         .await
         .unwrap();
-    let started = f.native.owner.workspace_task_snapshot(room()).unwrap();
-    assert!(started.controls[&f.task].execution.is_some());
     run
 }
 
@@ -337,19 +327,7 @@ async fn steering_journey(
     settings_args: &serde_json::Map<String, serde_json::Value>,
 ) {
     let direction = "Keep the compatibility checklist; enable Vim desktop controls for review.";
-    f.person_command(WorkspaceTaskCommand::DirectionForRun {
-        task_id: f.task.clone(),
-        run_epoch: 1,
-        after_revision: 0,
-        text: direction.into(),
-    })
-    .unwrap();
-    let saved = f.native.owner.workspace_task_snapshot(room()).unwrap();
-    assert_eq!(saved.controls[&f.task].directions[0].text, direction);
-    assert!(
-        saved.controls[&f.task].directions[0].applied.is_none(),
-        "Saved must not mean Applied"
-    );
+    f.direct(direction);
     let control = observed_control(agent, run).await;
     assert_eq!(control.directions[0].text, direction);
     assert_eq!(control.applied_revision, 0);
@@ -362,28 +340,9 @@ async fn steering_journey(
         "saved direction fences the old plan"
     );
     settings.assert_no_delivery();
-    report(
-        agent,
-        run,
-        runtime_collab::TaskRunUpdate::DirectionsApplied { revision: 1 },
-    )
-    .await
-    .unwrap();
-    let applied = f.native.owner.workspace_task_snapshot(room()).unwrap();
-    let ack = applied.controls[&f.task].directions[0]
-        .applied
-        .as_ref()
-        .unwrap();
-    assert_eq!(ack.agent_id, "scribe");
-    assert_eq!(ack.run_epoch, 1);
-    assert_eq!(
-        applied.controls[&f.task]
-            .active_run
-            .as_ref()
-            .unwrap()
-            .applied_direction_revision,
-        1
-    );
+    // The agent takes the message in, on the issue.
+    f.on_run(|run| run.directions[0].incorporated = true);
+    assert_eq!(observed_control(agent, run).await.applied_revision, 1);
     let original_id = run.run_id;
     run.lease = format!("{}:1", run.lease.rsplit_once(':').unwrap().0);
     let accepted = plan_step(agent, run, settings, second, settings_args)
@@ -454,12 +413,7 @@ async fn stop_journey(
     settings.assert_no_delivery();
     let before_writer = std::fs::read(&writer.path).unwrap();
     let before_settings = std::fs::read(&settings.path).unwrap();
-    f.person_command(WorkspaceTaskCommand::CancelForRun {
-        task_id: f.task.clone(),
-        run_epoch: 1,
-        after_revision: 1,
-    })
-    .unwrap();
+    f.stop();
     let mut cancelled = agent.task_run_cancelled_request();
     cancelled.get().set_run_id(run.run_id);
     cancelled.get().set_lease(&run.lease);
@@ -491,26 +445,6 @@ async fn stop_journey(
     );
     writer.assert_no_delivery();
     settings.assert_no_delivery();
-    assert!(
-        report(
-            agent,
-            run,
-            runtime_collab::TaskRunUpdate::Succeeded {
-                message: "False completion after stop".into()
-            }
-        )
-        .await
-        .is_err()
-    );
-    assert_eq!(
-        f.native
-            .owner
-            .workspace_task_snapshot(room())
-            .unwrap()
-            .tasks[0]
-            .status,
-        WorkspaceTaskStatus::Cancelled
-    );
     assert_eq!(std::fs::read(&writer.path).unwrap(), before_writer);
     assert_eq!(std::fs::read(&settings.path).unwrap(), before_settings);
 }

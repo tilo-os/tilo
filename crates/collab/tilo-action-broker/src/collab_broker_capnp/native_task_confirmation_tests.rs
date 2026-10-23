@@ -4,7 +4,7 @@
     reason = "Capnp RPC clients are intentionally thread confined to the existing LocalSet"
 )]
 use super::*;
-use tilo_desktop_model::{WorkspaceTaskConfirmationAnswer, WorkspaceTaskConfirmationState};
+use crate::services::{TrackerAnswer, TrackerQuestion};
 
 /// Notes' `append`, taking a `text`, published on peer 200.
 async fn append_target(f: &Fixture) -> (channel_handle::Client, invocation_stream::Client) {
@@ -106,24 +106,86 @@ async fn append_as(
     ))
 }
 
-pub(super) fn held(f: &Fixture) -> Option<tilo_desktop_model::WorkspaceTaskConfirmation> {
+/// The question the run asks its person, as its agent asked it on the issue.
+pub(super) fn held(f: &Fixture) -> Option<TrackerQuestion> {
     f.native
-        .owner
-        .workspace_task_snapshot(room())
+        .runs
+        .lock()
         .unwrap()
-        .controls
-        .get(&f.task)
-        .and_then(|control| control.confirmation.clone())
+        .iter()
+        .find(|run| run.issue == f.task)
+        .and_then(|run| run.question.clone())
 }
 
-pub(super) fn answer(f: &Fixture, id: &str, answer: WorkspaceTaskConfirmationAnswer) {
-    f.person_command(WorkspaceTaskCommand::AnswerConfirmation {
-        task_id: f.task.clone(),
-        run_epoch: 1,
-        confirmation_id: id.into(),
-        answer,
-    })
-    .unwrap();
+/// The agent asks its person, on the issue, about `resource`'s `action`
+/// with `arguments`, as the application that publishes it renders it:
+/// what an agent does when an action answers that it asks first.
+pub(super) fn ask(
+    f: &Fixture,
+    (resource, action): (&str, &str),
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> TrackerQuestion {
+    // Published by the running application, or retained from a closed one.
+    let descriptor = f
+        .state
+        .published_surfaces()
+        .into_iter()
+        .find_map(|surface| {
+            let (_, offered) = surface.action_projection(resource, action)?;
+            Some((surface.app_id, offered))
+        })
+        .expect("the action is published");
+    let draft = tilo_actions::Draft::render(
+        &descriptor
+            .1
+            .descriptor(tilo_actions::ExecutionLocus::ClientLocal),
+        arguments,
+    );
+    let digest = hex::encode(tilo_actions::draft::arguments_digest(arguments));
+    let question = TrackerQuestion {
+        id: format!("question-{digest}"),
+        app: descriptor.0,
+        resource: tilo_actions::selection::logical_resource_id(resource).into_owned(),
+        action: action.into(),
+        arguments_digest: digest,
+        draft: serde_json::to_value(&draft).unwrap(),
+        answer: TrackerAnswer::Waiting,
+    };
+    f.on_run(|run| run.question = Some(question.clone()));
+    question
+}
+
+/// The agent asks about appending `text` to the release notes.
+pub(super) fn ask_append(f: &Fixture, text: &str) -> TrackerQuestion {
+    let arguments = serde_json::json!({ "text": text });
+    ask(
+        f,
+        ("notes:release", "append"),
+        arguments.as_object().unwrap(),
+    )
+}
+
+/// The person answers the run's question on the issue.
+pub(super) fn answer(f: &Fixture, answer: TrackerAnswer) {
+    f.on_run(|run| {
+        if let Some(question) = run.question.as_mut() {
+            question.answer = answer;
+        }
+    });
+}
+
+/// The person confirms, changing the appended text to `text`.
+pub(super) fn confirm_as(f: &Fixture, text: &str) {
+    answer(
+        f,
+        TrackerAnswer::Confirmed {
+            edits: serde_json::to_value(vec![tilo_actions::DraftEdit {
+                path: vec!["text".into()],
+                text: text.into(),
+            }])
+            .unwrap(),
+        },
+    );
 }
 
 /// Nothing was dispatched to the target app (peer 200) that it has not read.
@@ -150,30 +212,12 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
                 "{waiting}"
             );
             assert!(nothing_delivered(), "nothing ran");
-            let asked = held(&f).expect("the run is paused at the draft");
-            assert!(asked.is_waiting());
-            assert_eq!(asked.draft.action_label, "Append");
-            assert_eq!(asked.draft.fields[0].value.line(), "Draft line");
+            let asked = ask_append(&f, "Draft line");
             assert!(append(&agent, &run, 9100, "Draft line").await.is_err());
             assert_eq!(held(&f).unwrap().id, asked.id);
-            let snapshot = f.native.owner.workspace_task_snapshot(room()).unwrap();
-            assert_eq!(snapshot.tasks[0].status, WorkspaceTaskStatus::InProgress);
+            assert!(nothing_delivered(), "a waiting question runs nothing");
 
-            answer(
-                &f,
-                &asked.id,
-                WorkspaceTaskConfirmationAnswer::Confirm {
-                    edits: vec![tilo_actions::DraftEdit {
-                        path: vec!["text".into()],
-                        text: "Reviewed line".into(),
-                    }],
-                },
-            );
-            assert!(matches!(
-                held(&f).unwrap().state,
-                WorkspaceTaskConfirmationState::Confirmed { .. }
-            ));
-
+            confirm_as(&f, "Reviewed line");
             // A different draft is not what they confirmed.
             let other = append(&agent, &run, 9101, "Something else")
                 .await
@@ -184,27 +228,7 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
                     .contains(tilo_actions::draft::AWAITING_CONFIRMATION)
             );
             assert!(nothing_delivered());
-            assert_ne!(held(&f).unwrap().id, asked.id, "it is a new question");
 
-            // Back to the confirmed draft: it is a new question again, the
-            // earlier answer having been replaced, so confirm it once more.
-            let again = append(&agent, &run, 9100, "Draft line").await.unwrap_err();
-            assert!(
-                again
-                    .to_string()
-                    .contains(tilo_actions::draft::AWAITING_CONFIRMATION)
-            );
-            let asked = held(&f).unwrap();
-            answer(
-                &f,
-                &asked.id,
-                WorkspaceTaskConfirmationAnswer::Confirm {
-                    edits: vec![tilo_actions::DraftEdit {
-                        path: vec!["text".into()],
-                        text: "Reviewed line".into(),
-                    }],
-                },
-            );
             let (_, update) = append(&agent, &run, 9100, "Draft line").await.unwrap();
             assert!(matches!(
                 update,
@@ -215,7 +239,6 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
             let argument: serde_json::Value =
                 serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
             assert_eq!(argument["text"], "Reviewed line", "the person's edit ran");
-            assert!(held(&f).is_none(), "the answer reached the run");
             drop(f);
         })
         .await;
@@ -232,12 +255,11 @@ async fn a_declined_action_tells_the_agent_why_and_never_runs() {
             let (_target, _stream) = append_target(&f).await;
             ask_first_for_notes(&f);
             assert!(append(&agent, &run, 9200, "Draft line").await.is_err());
-            let asked = held(&f).unwrap();
+            ask_append(&f, "Draft line");
             answer(
                 &f,
-                &asked.id,
-                WorkspaceTaskConfirmationAnswer::Decline {
-                    reason: Some("Wrong document".into()),
+                TrackerAnswer::Declined {
+                    reason: "Wrong document".into(),
                 },
             );
             let declined = append(&agent, &run, 9200, "Draft line")
@@ -250,7 +272,6 @@ async fn a_declined_action_tells_the_agent_why_and_never_runs() {
             );
             assert!(declined.contains("Wrong document"), "{declined}");
             assert!(nothing_delivered());
-            assert!(held(&f).is_none(), "the agent was told");
             drop(f);
         })
         .await;
@@ -283,18 +304,8 @@ async fn arguments_in_the_agents_wire_form_ask_first_and_run_as_confirmed() {
                     .contains(tilo_actions::draft::AWAITING_CONFIRMATION),
                 "{waiting}"
             );
-            let asked = held(&f).expect("the run is paused at the draft");
-            assert_eq!(asked.draft.fields[0].value.line(), "Draft line");
-            answer(
-                &f,
-                &asked.id,
-                WorkspaceTaskConfirmationAnswer::Confirm {
-                    edits: vec![tilo_actions::DraftEdit {
-                        path: vec!["text".into()],
-                        text: "Reviewed line".into(),
-                    }],
-                },
-            );
+            ask_append(&f, "Draft line");
+            confirm_as(&f, "Reviewed line");
             append_as(&agent, &run, 9300, wire()).await.unwrap();
             let delivered = stream.read_request().send().promise.await.unwrap();
             let wire = delivered.get().unwrap();
@@ -330,7 +341,8 @@ async fn a_run_delivered_again_carries_the_step_it_is_paused_at() {
             let (_target, stream) = append_target(&f).await;
             ask_first_for_notes(&f);
             append(&agent, &run, 9100, "Draft line").await.unwrap_err();
-            let asked = held(&f).expect("the run is paused at the draft");
+            let asked = ask_append(&f, "Draft line");
+            let shown: tilo_actions::Draft = serde_json::from_value(asked.draft.clone()).unwrap();
 
             f.state.remove_connection(100);
             let restarted = f.channel(101, true);
@@ -343,7 +355,7 @@ async fn a_run_delivered_again_carries_the_step_it_is_paused_at() {
             assert_eq!(paused.app, "so.tilo.notes");
             assert_eq!(paused.resource, "notes:release");
             assert_eq!(paused.action, "append");
-            assert_eq!(paused.draft, asked.draft);
+            assert_eq!(paused.draft, shown);
             let arguments = paused
                 .draft
                 .arguments()
@@ -356,8 +368,9 @@ async fn a_run_delivered_again_carries_the_step_it_is_paused_at() {
 
             answer(
                 &f,
-                &asked.id,
-                WorkspaceTaskConfirmationAnswer::Confirm { edits: Vec::new() },
+                TrackerAnswer::Confirmed {
+                    edits: serde_json::Value::Null,
+                },
             );
             let (_, update) = append_as(
                 &restarted,
@@ -376,7 +389,6 @@ async fn a_run_delivered_again_carries_the_step_it_is_paused_at() {
             let argument: serde_json::Value =
                 serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
             assert_eq!(argument["text"], "Draft line");
-            assert!(held(&f).is_none(), "the answer reached the run");
             drop(f);
         })
         .await;

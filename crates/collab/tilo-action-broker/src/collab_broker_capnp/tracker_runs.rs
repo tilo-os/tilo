@@ -29,7 +29,6 @@ use super::native_task_confirmation::NativeGate;
 use super::{CapnpBrokerState, InvocationJob, PendingTaskRun, PublishedAction, TaskRunEnvelope};
 use crate::services::{
     NativeTaskActionRequirement, NativeTaskBinding, TrackerAnswer, TrackerRun, TrackerRuns,
-    is_tracker_issue,
 };
 
 #[cfg(test)]
@@ -286,6 +285,9 @@ impl CapnpBrokerState {
         if current.epoch != binding.epoch {
             return Err("the issue's run was replaced".into());
         }
+        self.tracker_runs(&run.cluster_id)
+            .ok_or("the tracker is unavailable")?
+            .check_agent(&run.cluster_id, &current.agent)?;
         if !current.active {
             self.cancel_native_children(run)?;
             return Ok(runtime_collab::TaskRunStatus {
@@ -417,31 +419,20 @@ impl CapnpBrokerState {
         }
     }
 
-    /// Authorize `requirement` for `run`'s agent, wherever the run is kept:
-    /// the tracker for an issue's run, else the room's task owner.
+    /// Authorize `requirement` for `run`'s agent on its issue's tracker.
     pub(super) fn authorize_task_action(
         &self,
         run: &PendingTaskRun,
         requirement: &NativeTaskActionRequirement,
     ) -> Result<(), String> {
-        if run
-            .native
-            .as_ref()
-            .is_some_and(|binding| is_tracker_issue(&binding.task_id))
-        {
-            let current = self.tracker_run_of(run)?;
-            return self
-                .tracker_runs(&run.cluster_id)
-                .ok_or("the tracker is unavailable")?
-                .authorize_action(&run.cluster_id, &current, requirement);
-        }
-        self.native_tasks(&run.cluster_id)
-            .ok_or("native task owner unavailable")?
-            .authorize_action(&run.cluster_id, &run.agent_id, requirement)
+        let current = self.tracker_run_of(run)?;
+        self.tracker_runs(&run.cluster_id)
+            .ok_or("the tracker is unavailable")?
+            .authorize_action(&run.cluster_id, &current, requirement)
     }
 
     /// Admit a host activation for `run`'s child as [`Self::admit_tracker_action`]
-    /// admits the child, wherever the run is kept.
+    /// admits the child.
     ///
     /// # Errors
     /// As the run's admission.
@@ -452,47 +443,29 @@ impl CapnpBrokerState {
         requirement: &NativeTaskActionRequirement,
         launch: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
-        if is_tracker_issue(&binding.task_id) {
-            let current = self.tracker_run_of(run)?;
-            if current.applied_revision() != binding.revision
-                || current.latest_revision() != binding.revision
-            {
-                return Err("read the run's new messages before acting".into());
-            }
-            self.tracker_runs(&run.cluster_id)
-                .ok_or("the tracker is unavailable")?
-                .authorize_action(&run.cluster_id, &current, requirement)?;
-            return launch();
+        let current = self.tracker_run_of(run)?;
+        if current.applied_revision() != binding.revision
+            || current.latest_revision() != binding.revision
+        {
+            return Err("read the run's new messages before acting".into());
         }
-        self.native_tasks(&run.cluster_id)
-            .ok_or("native launch owner absent")?
-            .admit_host_launch(&run.cluster_id, binding, requirement, launch)
+        self.tracker_runs(&run.cluster_id)
+            .ok_or("the tracker is unavailable")?
+            .authorize_action(&run.cluster_id, &current, requirement)?;
+        launch()
     }
 
-    /// The revision of steering `run`'s agent has applied, wherever the run
-    /// is kept.
+    /// The revision of steering `run`'s agent has applied.
     ///
     /// # Errors
     /// The run ended or cannot be read.
     pub(super) fn applied_task_revision(&self, run: &PendingTaskRun) -> Result<u64, String> {
-        let binding = run.native.as_ref().ok_or("native launch binding absent")?;
-        if is_tracker_issue(&binding.task_id) {
-            return Ok(self.tracker_run_of(run)?.applied_revision());
-        }
-        Ok(self
-            .native_tasks(&run.cluster_id)
-            .ok_or("native launch owner absent")?
-            .snapshot(&run.cluster_id)?
-            .controls
-            .get(&binding.task_id)
-            .and_then(|control| control.active_run.as_ref())
-            .ok_or("native task run ended")?
-            .applied_direction_revision)
+        Ok(self.tracker_run_of(run)?.applied_revision())
     }
 
     /// Whether agents in `room` act only through their runs' admission: a
-    /// room whose tasks or tracker the host keeps.
+    /// room whose tracker the host keeps.
     pub(super) fn task_admitted_room(&self, room: &str) -> bool {
-        self.native_tasks(room).is_some() || self.tracker_runs(room).is_some()
+        self.tracker_runs(room).is_some()
     }
 }

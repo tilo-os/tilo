@@ -49,12 +49,6 @@ pub fn adopt_room(
     );
     changed |= replace(&mut workspace.bots, super::room_bots_of(doc));
 
-    changed |= replace_sorted(
-        &mut workspace.tasks,
-        projection::workspace_tasks_of(doc),
-        |task| task.id.clone(),
-    );
-
     let shortcuts = projection::workspace_shortcuts_of(doc);
     let mut claims = projection::schedule_claims_of(doc);
     for claim in &workspace.schedule_claims {
