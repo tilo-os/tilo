@@ -98,6 +98,19 @@ pub enum TransferError {
     Automerge(String),
 }
 
+impl TransferError {
+    /// Whether this is only a not-yet: on a thread that must not wait on the
+    /// disk ([`durable_store::waiting`]) the store's own thread is still
+    /// opening or reading the document, and asking again later goes on.
+    #[must_use]
+    pub fn is_opening(&self) -> bool {
+        matches!(
+            self,
+            Self::Store(app_state::StoreError::Opening(_)) | Self::Open(RecordOpenError::Opening)
+        )
+    }
+}
+
 impl From<durable_store::StoreError> for TransferError {
     fn from(error: durable_store::StoreError) -> Self {
         match error {
@@ -984,10 +997,11 @@ mod tests {
         );
     }
 
-    /// On the frame loop a transfer write only starts committing. Until it
-    /// lands the document stays the store's, so no other process takes it
-    /// or reads it half-written, and the landing says when the next one may
-    /// read it.
+    /// On the frame loop a transfer neither reads the disk nor waits for a
+    /// commit: it is told to come back while the store's own thread opens
+    /// the document, and then only starts its write. Until the write lands
+    /// the document stays the store's, so no other process takes it or
+    /// reads it half-written, and the landing says when the next one may.
     #[test]
     fn a_transfer_on_the_frame_loop_starts_its_write_and_reports_when_it_lands() {
         let temp = tempfile::tempdir().unwrap();
@@ -998,8 +1012,14 @@ mod tests {
         let snapshot = read(&store, PACKAGE, FROM, &origin).unwrap();
         let mut arrived = rehome(&snapshot, &origin, FROM, TO, &RecordId::minted()).unwrap();
         let (installed, landing) = {
-            let _loop = durable_store::waiting::forbid_commit_waits_strictly();
-            install(&store, PACKAGE, TO, &mut arrived).unwrap()
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            tilo_test_env::wait_for("the store's thread to open the record", || {
+                match install(&store, PACKAGE, TO, &mut arrived) {
+                    Ok(installed) => Some(installed),
+                    Err(error) if error.is_opening() => None,
+                    Err(error) => panic!("installing on the frame loop: {error}"),
+                }
+            })
         };
         let key = key(PACKAGE, TO, &installed.id).unwrap();
         let other_process = app_state::FsStore::new(temp.path());

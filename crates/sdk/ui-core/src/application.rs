@@ -2680,15 +2680,18 @@ mod portable_tests {
     fn checkpointing_and_closing_on_the_frame_loop_never_wait_on_storage() {
         let host = probe::ProbeHost::new();
         let root = host.root();
+        // Opened before: a frame loop opens a record through the store's
+        // own thread, which is not what this test is about.
+        let mut component =
+            probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = {
-            let _loop = durable_store::waiting::forbid_commit_waits_strictly();
-            let mut component =
-                probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
             let checkout = component.record().clone();
             assert_eq!(component.checkpoint_for_close(), Vec::<String>::new());
             let report = component.close();
             assert_eq!(report.record_error, None);
             assert_eq!(report.view_error, None);
+            drop(component);
             checkout
         };
         // Off the loop the stores may wait for their last commits.
