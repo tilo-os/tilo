@@ -1456,7 +1456,8 @@ inputs = [
   "apps/*/tilo-app.toml",
   "apps/*/search/*.ftl",
   # The ask-agent chord's test finds the apps that share a selection in their
-  # sources and checks each manifest asks for the shell-ui service.
+  # sources and checks each manifest asks for the shell-ui service; the window
+  # loading line's test does the same for the apps that report loading.
   "apps/*.rs",
 ]
 readers = [
@@ -1464,6 +1465,7 @@ readers = [
   "crates/session/shell/src/shell/doc_open.rs",
   "crates/session/shell/src/shell/search/relevance_tests.rs",
   "crates/session/shell/src/shell/selection_agent.rs",
+  "crates/session/shell/src/shell/overlay_host/window_toolbars.rs",
   "crates/session/shell/examples/files_clipboard_native.rs",
   "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",

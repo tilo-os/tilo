@@ -229,8 +229,53 @@ impl ShellOverlayHost {
             Message::OpenSearch { instance, opening } => {
                 self.open_app_window_search(app_id, *instance, *opening)
             }
+            Message::Loading { loading, instance } => {
+                self.report_app_loading(connection, app_id, *instance, *loading)
+            }
             _ => return None,
         })
+    }
+
+    /// `app_id` on shell-ui `connection`, launched as record `instance`, said
+    /// what its window is doing ([`ui::window_loading`]): the tab that shows
+    /// it draws its loading line. Returns whether the desktop shows
+    /// something new.
+    pub(crate) fn report_app_loading(
+        &mut self,
+        connection: u64,
+        app_id: &str,
+        instance: Option<u64>,
+        loading: ui::window_loading::WindowLoading,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let anchor = {
+            let state = chrome.borrow();
+            crate::shell::app_tabs::anchor_for_app(&state.tree(), app_id, instance)
+        };
+        let Some(anchor) = anchor else {
+            tracing::debug!(%app_id, "window loading from an app with no tab");
+            return false;
+        };
+        let changed = self
+            .window_toolbars
+            .report_loading(anchor.tab, connection, loading);
+        if changed {
+            self.sync_window_toolbars();
+        }
+        changed
+    }
+
+    /// Show `tab`'s loading line as though its app reported `loading`, for
+    /// screenshots and tests that run no app.
+    pub fn report_tab_loading_for_tests(
+        &mut self,
+        tab: TabId,
+        loading: ui::window_loading::WindowLoading,
+    ) {
+        self.window_toolbars.report_loading(tab, 0, loading);
+        self.sync_window_toolbars();
     }
 
     /// Show `toolbar` in tab `tab`'s bar as though its app declared it, for
@@ -443,5 +488,61 @@ impl ShellOverlayHost {
                 .iter()
                 .any(ui::widget::WindowGroup::editing_location)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The window's loading line reaches the shell over an app's shell-ui
+    /// connection, and an app holds one only when its manifest asks for the
+    /// service. An app that reports loading without it never shows a line.
+    #[test]
+    fn every_app_reporting_window_loading_asks_for_the_shell_ui_service() {
+        fn reports_loading(dir: &std::path::Path) -> bool {
+            std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        return reports_loading(&path);
+                    }
+                    path.extension().is_some_and(|extension| extension == "rs")
+                        && std::fs::read_to_string(&path)
+                            .is_ok_and(|source| source.contains("ui::window_loading::"))
+                })
+        }
+        let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
+        let mut reporting = Vec::new();
+        let mut missing = Vec::new();
+        for app in std::fs::read_dir(&apps)
+            .expect("the repository's apps")
+            .flatten()
+        {
+            let manifest = app.path().join("tilo-app.toml");
+            if !manifest.is_file() || !reports_loading(&app.path().join("src")) {
+                continue;
+            }
+            let manifest: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+            let name = app.file_name().to_string_lossy().into_owned();
+            if manifest
+                .get("sandbox")
+                .and_then(|sandbox| sandbox.get("services"))
+                .and_then(|services| services.get("shell-ui"))
+                .is_none()
+            {
+                missing.push(name.clone());
+            }
+            reporting.push(name);
+        }
+        for app in ["browser", "file-explorer", "store"] {
+            assert!(reporting.iter().any(|name| name == app), "{reporting:?}");
+        }
+        assert!(
+            missing.is_empty(),
+            "report loading without shell-ui: {missing:?}"
+        );
     }
 }

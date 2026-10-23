@@ -19,7 +19,7 @@ scheduled-idle-benchmark = []
 netns-e2e = []
 # Integration-only native broker fixtures. This forwards the shared broker's
 # equally gated fixture entry point; ordinary shell spawning never selects it.
-test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support"]
+test-support = ["tilo-action-broker/test-support", "ui/test-support", "tilo-identity-ceremony/test-support", "dep:store"]
 # Deterministic test seams for the `shots` renderer and the integration
 # tests (the `*_for_shots` setters, a candidate xwayland-satellite path).
 # The name outlived the removed `--mode hosted` loop whose input socket it
@@ -385,6 +385,8 @@ registry-types = { path = "../../packaging/registry-types" }
 # The catalogue of installable apps search shares with the Store: Flathub
 # from Flatpak's cached metadata, the fleet's manifest metadata, the block list.
 app-catalogue = { path = "../../packaging/app-catalogue" }
+# The App Store as a window of its own in the `shots` renderer (test-support).
+store = { path = "../../../apps/store", optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

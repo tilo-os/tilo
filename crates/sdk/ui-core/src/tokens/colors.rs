@@ -92,6 +92,14 @@ pub const FLOATING_EDGE_MIN_DELTA: f64 = 0.01;
 /// Weight of the focused window's neutral edge over the desktop ground.
 const FOCUSED_WINDOW_EDGE_ALPHA: u8 = 168;
 
+/// Alpha of the track a busy window's loading highlight sweeps across
+/// ([`Colors::loading_track`]): there, but quieter than the highlight.
+const LOADING_TRACK_ALPHA: u8 = 56;
+
+/// [`LOADING_TRACK_ALPHA`] under high contrast, where a faint track would
+/// disappear.
+const LOADING_TRACK_ALPHA_HIGH_CONTRAST: u8 = 128;
+
 /// Smallest OKLCH lightness step that separates a window region (sidebar,
 /// inspector) from the content ground by tone alone. A region tier closer
 /// to content than this draws a hairline on the edge they share instead
@@ -310,8 +318,9 @@ pub struct Intents {
     /// Label and glyph on an [`Self::accent`] fill.
     pub on_accent: Color,
     /// The accent as ink and as a mark on a surface: a link, the focus
-    /// ring, the caret, the text-selection wash. Clears body-text contrast
-    /// on the window.
+    /// ring, the caret, the text-selection wash, a window's loading line
+    /// (the window is busy right now: live, HIG 9.4). Clears body-text
+    /// contrast on the window.
     pub accent_ink: Color,
     /// Fill of a control that is on: a switch's track, a checked box or
     /// radio, an active Quick Settings tile, a "connected" dot. Green, the
@@ -1447,6 +1456,27 @@ impl Colors {
         } else {
             Self::hairline_on(ground, declared.a())
         }
+    }
+
+    /// A window's loading line ([`crate::window_loading`]): its progress bar
+    /// and its busy highlight, the accent as a mark on the window's content.
+    #[must_use]
+    pub fn loading_line(&self) -> Color {
+        self.intent.accent_ink
+    }
+
+    /// The faint track a busy window's loading highlight sweeps across: the
+    /// accent, faint. High contrast keeps it plainly visible.
+    #[must_use]
+    pub fn loading_track(&self) -> Color {
+        with_alpha(
+            self.intent.accent_ink,
+            if self.palette.high_contrast {
+                LOADING_TRACK_ALPHA_HIGH_CONTRAST
+            } else {
+                LOADING_TRACK_ALPHA
+            },
+        )
     }
 
     /// The edge of the window that has keyboard input: the same neutral

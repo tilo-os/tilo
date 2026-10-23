@@ -161,3 +161,22 @@ fn a_hosted_windows_slots_reach_its_bar_and_presses_reach_its_app() {
     assert!(sync.changed);
     assert_eq!(groups[0].tab_toolbar(5), None);
 }
+
+#[test]
+fn a_tabs_loading_report_is_kept_until_its_app_goes_away() {
+    let mut slots = WindowSlots::default();
+    assert!(slots.report_loading(4, 61, WindowLoading::Busy));
+    assert!(
+        !slots.report_loading(4, 61, WindowLoading::Busy),
+        "an equal report is nothing new"
+    );
+    assert!(slots.report_loading(4, 61, WindowLoading::progress(2.0)));
+    assert_eq!(
+        slots.window_loading(4),
+        Some(WindowLoading::progress(1.0)),
+        "kept bounded"
+    );
+    assert!(slots.disconnected(61));
+    assert!(slots.window_loading(4).is_none());
+    assert_eq!(slots.loading_cleared, vec![4]);
+}

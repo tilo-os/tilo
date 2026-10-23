@@ -64,6 +64,8 @@ pub(crate) mod personal;
 mod regression_tests;
 mod toolbar;
 mod window_bar;
+#[cfg(test)]
+mod window_loading_tests;
 
 const PIP_ID: &str = "browser.media-pip";
 const PIP_ELEMENT_REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
@@ -1721,24 +1723,48 @@ impl BrowserWidget {
         self.progress <= 0.0
     }
 
-    /// The loading line under the toolbar, while a page shown in the
-    /// window loads.
-    fn loading_face(&self) -> Option<ui::widget::ProgressBarFace> {
+    /// What the window's loading line shows: the engine's progress while a
+    /// page shown in the window loads, busy until the engine reports any.
+    fn window_loading(&self) -> ui::window_loading::WindowLoading {
+        use ui::window_loading::WindowLoading;
         if self.progress >= 1.0
             || self.show_settings
             || self.show_library
             || self.load_error.is_some()
             || self.engine_problem.is_some()
         {
+            WindowLoading::Idle
+        } else if self.loading_indeterminate() {
+            WindowLoading::Busy
+        } else {
+            WindowLoading::progress(self.progress as f32)
+        }
+    }
+
+    /// The loading line under the browser's own toolbar row, while a page
+    /// shown in the window loads. In a Tilo session the window's bar holds
+    /// the toolbar and the desktop draws the line under it
+    /// ([`ui::window_loading`]); this one is for a window of its own.
+    fn loading_face(&self) -> Option<ui::widget::ProgressBarFace> {
+        use ui::window_loading::WindowLoading;
+        match self.window_loading() {
+            WindowLoading::Idle => None,
+            WindowLoading::Busy => Some(ui::widget::ProgressBarFace::indeterminate(
+                self.loading_started.unwrap_or_else(ui::time::now),
+            )),
+            WindowLoading::Progress { fraction } => {
+                Some(ui::widget::ProgressBarFace::new(fraction))
+            }
+        }
+    }
+
+    /// The loading line the browser draws itself: only outside a Tilo
+    /// session, where no window bar shows the desktop's.
+    fn own_loading_face(&self) -> Option<ui::widget::ProgressBarFace> {
+        if ui::window_toolbar::is_hosted() {
             return None;
         }
-        Some(if self.loading_indeterminate() {
-            ui::widget::ProgressBarFace::indeterminate(
-                self.loading_started.unwrap_or_else(ui::time::now),
-            )
-        } else {
-            ui::widget::ProgressBarFace::new(self.progress as f32)
-        })
+        self.loading_face()
     }
 
     fn perform_browser_operation(&mut self, operation: BrowserOperation) -> Result<(), String> {
@@ -4763,7 +4789,7 @@ impl Widget for BrowserWidget {
         // while the page loads, the loading line takes its place.
         if let Some(rect) = self.find_rect("browser.toolbar") {
             ui::widget::toolbar::paint_band(scene, transform, theme, rect);
-            if let Some(face) = self.loading_face() {
+            if let Some(face) = self.own_loading_face() {
                 let height = f64::from(theme.tokens.metrics.chrome_rule_px.max(1.0)) * 2.0;
                 face.paint(
                     &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -4808,8 +4834,9 @@ impl Widget for BrowserWidget {
 
     fn needs_animation_frame(&self) -> bool {
         // An indeterminate loading line sweeps; a determinate one moves
-        // only when the engine reports progress.
-        self.loading_face()
+        // only when the engine reports progress. The desktop's line, in a
+        // Tilo session, asks the desktop for frames, not the browser.
+        self.own_loading_face()
             .is_some_and(|_| self.loading_indeterminate() && !self.motion_reduced)
             || self.navigation_hold.waiting()
             || self.suggest_debounce.is_pending()
@@ -5911,6 +5938,9 @@ impl BrowserWidget {
         self.sync_search_and_suggestions();
         // Suggestions for what was just typed in the bar go out this frame.
         self.declare_window_toolbar();
+        // The desktop draws the window's loading line from what the page
+        // is doing; an unchanged report costs nothing.
+        ui::window_loading::set(self.window_loading());
 
         if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);

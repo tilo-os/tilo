@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 use crate::hosted_window::HostedWindow;
 use crate::widget::WindowGroup;
+use crate::window_loading::WindowLoading;
 use crate::window_toolbar::{ToolbarEvent, WindowOffer, WindowToolbar};
 
 /// A desktop tab's id.
@@ -42,6 +43,11 @@ pub struct WindowSlots {
     offers: HashMap<TabId, (u64, WindowOffer)>,
     /// Tabs whose offer went away since the groups last saw them.
     offers_cleared: Vec<TabId>,
+    /// What each tab's app says its window is doing (its loading line), and
+    /// the connection it said so on.
+    loading: HashMap<TabId, (u64, WindowLoading)>,
+    /// Tabs whose loading report went away since the groups last saw them.
+    loading_cleared: Vec<TabId>,
     outbox: Vec<(u64, ToolbarEvent)>,
     /// For an app in the host's own process: its window and the revision of
     /// its slots last taken, by tab.
@@ -98,6 +104,24 @@ impl WindowSlots {
         true
     }
 
+    /// `connection`'s app said what `tab`'s window is doing
+    /// ([`crate::window_loading`]). Returns whether it changed anything.
+    pub fn report_loading(&mut self, tab: TabId, connection: u64, loading: WindowLoading) -> bool {
+        let next = (connection, loading.bounded());
+        if self.loading.get(&tab) == Some(&next) {
+            return false;
+        }
+        self.loading.insert(tab, next);
+        self.loading_cleared.retain(|cleared| *cleared != tab);
+        true
+    }
+
+    /// What `tab`'s app last said its window is doing.
+    #[must_use]
+    pub fn window_loading(&self, tab: TabId) -> Option<WindowLoading> {
+        self.loading.get(&tab).map(|(_, loading)| *loading)
+    }
+
     /// What `tab`'s app offers the bar, if it runs in a process of its own.
     #[must_use]
     pub fn window_offer(&self, tab: TabId) -> Option<&WindowOffer> {
@@ -124,9 +148,20 @@ impl WindowSlots {
         for tab in &offered {
             self.offers.remove(tab);
         }
-        let any = !gone.is_empty() || !offered.is_empty();
+        // An app that went away is loading nothing: its line finishes.
+        let loading: Vec<TabId> = self
+            .loading
+            .iter()
+            .filter(|(_, (owner, _))| *owner == connection)
+            .map(|(tab, _)| *tab)
+            .collect();
+        for tab in &loading {
+            self.loading.remove(tab);
+        }
+        let any = !gone.is_empty() || !offered.is_empty() || !loading.is_empty();
         self.cleared.extend(gone);
         self.offers_cleared.extend(offered);
+        self.loading_cleared.extend(loading);
         any
     }
 
@@ -185,6 +220,7 @@ impl WindowSlots {
     pub fn sync_groups<'a>(&mut self, groups: impl IntoIterator<Item = &'a mut WindowGroup>) {
         let cleared = std::mem::take(&mut self.cleared);
         let offers_cleared = std::mem::take(&mut self.offers_cleared);
+        let loading_cleared = std::mem::take(&mut self.loading_cleared);
         let mut events = Vec::new();
         for group in groups {
             let ids: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
@@ -203,6 +239,12 @@ impl WindowSlots {
                     group.set_tab_window_offer(id, Some(offer.clone()));
                 } else if offers_cleared.contains(&id) {
                     group.set_tab_window_offer(id, None);
+                }
+                // An unchanged report changes nothing in the tile.
+                if let Some(loading) = self.window_loading(id) {
+                    group.set_tab_loading(id, loading);
+                } else if loading_cleared.contains(&id) {
+                    group.set_tab_loading(id, WindowLoading::Idle);
                 }
             }
             events.extend(group.take_toolbar_events());

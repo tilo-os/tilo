@@ -263,6 +263,12 @@ impl FolderReads {
         }
     }
 
+    /// Forget the outstanding read: what it reads is no longer what the
+    /// window shows. Its worker finishes into nothing.
+    pub(super) fn abandon(&mut self) {
+        self.pending = None;
+    }
+
     /// The finished read, once the worker is done with it.
     pub(super) fn take(&mut self) -> Option<(Purpose, FolderRead)> {
         let read = self.pending.as_ref()?.done.lock_recover().take()?;
@@ -456,6 +462,17 @@ impl super::FileExplorerWidget {
         self.selection.select_only(index);
         self.retain_shown_selection();
         true
+    }
+
+    /// Tell the window's loading line what Files is doing: busy while a
+    /// folder (or a cloud folder's page) is being read. An unchanged report
+    /// costs nothing.
+    pub(super) fn report_window_loading(&self) {
+        if self.is_loading || self.cloud.pending.is_some() {
+            ui::window_loading::busy();
+        } else {
+            ui::window_loading::done();
+        }
     }
 
     /// Apply the read a worker finished, if one did.

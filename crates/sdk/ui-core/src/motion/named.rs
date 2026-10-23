@@ -1169,3 +1169,169 @@ impl Attention {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 12. Loading
+// ---------------------------------------------------------------------------
+
+/// A window's loading line ([`crate::window_loading`]): the thin line under
+/// its bar while the page or app in it loads.
+///
+/// - It shows only once a load has lasted [`Self::DELAY`], arriving at
+///   `fast`, so a load that finishes sooner never flashes it.
+/// - Reported progress moves the bar on [`Self::PROGRESS`] (`base`), from
+///   where it is drawn. Once it has arrived it creeps on toward a share of
+///   what is left ([`Self::creep`]) and never reaches it, so it never stalls
+///   visibly and never runs far ahead of the next report.
+/// - Busy with no progress known, a soft highlight sweeps across a faint
+///   track, easing in and out, once every [`Self::SWEEP_PERIOD`]
+///   ([`Self::sweep`]).
+/// - Finished, the bar completes at `fast` ([`Self::FINISH`]) and then fades
+///   out over `base`.
+/// - Reduced motion: progress still grows (at `fast`) but does not creep;
+///   in place of the sweep the track pulses gently ([`Self::pulse`]), drawn
+///   at a gentle rate rather than the display's.
+pub struct Loading;
+
+impl Loading {
+    /// A load shorter than this never shows.
+    pub const DELAY: crate::time::Duration = crate::time::Duration::from_millis(150);
+    /// The bar following reported progress.
+    pub const PROGRESS: MotionSpec = MotionSpec {
+        enter: Pace::Base,
+        exit: Pace::Base,
+        reduced: Reduced::Fades,
+        shortcut: Shortcut::Context,
+    };
+    /// The line arriving once [`Self::DELAY`] has passed, and fading out
+    /// once the load is complete.
+    pub const SHOW: MotionSpec = MotionSpec {
+        enter: Pace::Fast,
+        exit: Pace::Base,
+        reduced: Reduced::Fades,
+        shortcut: Shortcut::Context,
+    };
+    /// The bar completing when the load ends.
+    pub const FINISH: MotionSpec = MotionSpec {
+        enter: Pace::Fast,
+        exit: Pace::Fast,
+        reduced: Reduced::Fades,
+        shortcut: Shortcut::Context,
+    };
+    /// One sweep of the busy highlight across the line.
+    pub const SWEEP_PERIOD: crate::time::Duration = crate::time::Duration::from_millis(1500);
+    /// How wide the busy highlight is, head to tail, as a share of the line.
+    pub const SWEEP_SHARE: f64 = 0.4;
+    /// One pulse of the track under reduced motion.
+    pub const PULSE_PERIOD: crate::time::Duration = crate::time::Duration::from_millis(1800);
+    /// How often the reduced-motion pulse is drawn.
+    const PULSE_FRAME: crate::time::Duration = crate::time::Duration::from_millis(66);
+    /// The share of what is left of a load that the bar creeps toward
+    /// between two reports.
+    const CREEP_SHARE: f64 = 0.35;
+    /// How slowly it creeps: the time constant of its approach, in seconds.
+    const CREEP_SECS: f64 = 5.0;
+
+    /// How the bar goes to newly reported progress.
+    #[must_use]
+    pub fn progress_timing(motion: EffectiveMotion) -> Timing {
+        Self::PROGRESS.timing(Direction::Enter, motion, MotionSource::Pointer)
+    }
+
+    /// How the bar completes when the load ends.
+    #[must_use]
+    pub fn finish_timing(motion: EffectiveMotion) -> Timing {
+        Self::FINISH.timing(Direction::Enter, motion, MotionSource::Pointer)
+    }
+
+    /// The line's opacity `since` it began to show.
+    #[must_use]
+    pub fn appear(since: crate::time::Duration, motion: EffectiveMotion) -> f32 {
+        unit_opacity(Self::SHOW.progress_after(
+            Direction::Enter,
+            motion,
+            MotionSource::Pointer,
+            since,
+        ))
+    }
+
+    /// How long the line takes to arrive.
+    #[must_use]
+    pub fn appear_time(motion: EffectiveMotion) -> crate::time::Duration {
+        Self::SHOW.settle_time(Direction::Enter, motion, MotionSource::Pointer)
+    }
+
+    /// The line's opacity `since` its completed bar began to fade out.
+    #[must_use]
+    pub fn fade(since: crate::time::Duration, motion: EffectiveMotion) -> f32 {
+        unit_opacity(
+            1.0 - Self::SHOW.progress_after(Direction::Exit, motion, MotionSource::Pointer, since),
+        )
+    }
+
+    /// How long the completed line takes to fade out.
+    #[must_use]
+    pub fn fade_time(motion: EffectiveMotion) -> crate::time::Duration {
+        Self::SHOW.settle_time(Direction::Exit, motion, MotionSource::Pointer)
+    }
+
+    /// Where the bar stands `since` it arrived at `reported` (`0..=1`) with no
+    /// newer report: on its way toward a share of what is left, never there.
+    /// Under reduced motion it stays at `reported`.
+    #[must_use]
+    pub fn creep(reported: f64, since: crate::time::Duration, motion: EffectiveMotion) -> f64 {
+        let reported = reported.clamp(0.0, 1.0);
+        if motion.reduced() {
+            return reported;
+        }
+        let gap = (1.0 - reported) * Self::CREEP_SHARE;
+        reported + gap * (1.0 - (-since.as_secs_f64() / Self::CREEP_SECS).exp())
+    }
+
+    /// How long after arriving at `reported` the creep reaches `value`;
+    /// `None` when it never does (reduced motion, or past where it tends).
+    #[must_use]
+    pub fn creep_reaches(
+        reported: f64,
+        value: f64,
+        motion: EffectiveMotion,
+    ) -> Option<crate::time::Duration> {
+        let reported = reported.clamp(0.0, 1.0);
+        let gap = (1.0 - reported) * Self::CREEP_SHARE;
+        if motion.reduced() || gap <= 0.0 {
+            return None;
+        }
+        if value <= reported {
+            return Some(crate::time::Duration::ZERO);
+        }
+        let fraction = (value - reported) / gap;
+        if fraction >= 1.0 {
+            return None;
+        }
+        crate::time::Duration::try_from_secs_f64(-Self::CREEP_SECS * (1.0 - fraction).ln()).ok()
+    }
+
+    /// Where the busy highlight's centre is `since` the sweep began, `0..=1`
+    /// of its travel across the line and off both ends. It eases in and out
+    /// of each pass.
+    #[must_use]
+    pub fn sweep(since: crate::time::Duration) -> f64 {
+        let phase = (since.as_secs_f64() / Self::SWEEP_PERIOD.as_secs_f64()).fract();
+        0.5 - 0.5 * (phase * std::f64::consts::PI).cos()
+    }
+
+    /// How strongly the track shows `since` it began to pulse under reduced
+    /// motion, `0.4..=1`.
+    #[must_use]
+    pub fn pulse(since: crate::time::Duration) -> f32 {
+        let phase = (since.as_secs_f64() / Self::PULSE_PERIOD.as_secs_f64()).fract();
+        let wave = 0.5 - 0.5 * (phase * std::f64::consts::TAU).cos();
+        unit_opacity(0.4 + 0.6 * wave)
+    }
+
+    /// When to draw the reduced-motion pulse next, after `now`.
+    #[must_use]
+    pub fn next_pulse_frame(now: Instant) -> Instant {
+        now + Self::PULSE_FRAME
+    }
+}

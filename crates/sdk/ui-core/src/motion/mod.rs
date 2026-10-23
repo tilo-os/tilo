@@ -21,6 +21,7 @@
 //! | [`Breathe`] | a live state's soft ring (someone in a call) |
 //! | [`Feedback`] | press and hover tints |
 //! | [`Attention`] | a refusal's shake, a single pulse |
+//! | [`Loading`] | a window's loading line: progress, busy, finishing |
 //!
 //! Every motion runs on [`MotionValue`]: a spring solved in closed form, so it
 //! is exact at any frame rate, retargets from where it is drawn *and how fast
@@ -60,8 +61,8 @@ pub(crate) use clock::pin_frame;
 pub use clock::{frame_now, frames_until, frames_wanted, testing, want_frames_until};
 pub use named::{
     Ambient, Appear, Attention, Breathe, CROSS_FADE, CrossFade, Disclose, Drill, DrillDepth,
-    Extent, Feedback, Float, Follow, ListChange, PanelSlide, Reveal, Snap, Speaking, Transient,
-    WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
+    Extent, Feedback, Float, Follow, ListChange, Loading, PanelSlide, Reveal, Snap, Speaking,
+    Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
 };
 pub use pose::Pose;
 pub use presence::Presence;

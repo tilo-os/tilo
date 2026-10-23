@@ -32,6 +32,7 @@ use super::driver::ShellDriver;
 
 mod file_chooser;
 mod launcher;
+mod loading;
 mod window_search;
 
 /// One tab of a window seeded for the window-bar shots.
@@ -483,6 +484,21 @@ pub enum Action {
         surface_id: u64,
         slots: fn() -> ui::window_toolbar::WindowToolbar,
     },
+    /// Frames of the seeded window `surface_id`'s loading line
+    /// ([`ui::window_loading`]) on the toolkit's pinned clock: its app reports
+    /// each of `steps` (milliseconds after the first instant, and what the
+    /// window is doing from then) at its own instant, and `frames` frames are
+    /// captured `every_ms` apart from `from_ms` (`prefix-000`, `prefix-001`,
+    /// …), each where the line's motion stands then. Needs the shell's
+    /// `test-support` feature.
+    LoadingFrames {
+        prefix: &'static str,
+        surface_id: u64,
+        steps: &'static [(u64, ui::window_loading::WindowLoading)],
+        from_ms: u64,
+        frames: u32,
+        every_ms: u64,
+    },
     /// Cut the `idx`-th group of the active strip down to one tab, so a
     /// scenario can set up the "lone window selected" shape rather than
     /// the four-tab group the default workspace boots with.
@@ -575,6 +591,8 @@ pub enum OwnApp {
     Notes,
     /// Files at the shell's starting place, with a few files in it.
     Files,
+    /// The App Store, as a window of its own on its shell-ui connection.
+    Store,
 }
 
 /// What starts the motion a [`Action::MotionFrames`] captures. Only a build
@@ -711,6 +729,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_seed_window_bar(driver, action);
     apply_desk(driver, action);
     apply_motion_frames(driver, action, sink);
+    loading::apply_loading_frames(driver, action, sink);
     apply_own_process_window(driver, action);
 }
 
@@ -742,6 +761,14 @@ const OWN_FILES: BarTab = BarTab {
     slots: None,
 };
 
+/// The window [`Action::OwnProcessWindow`] opens for the App Store.
+const OWN_STORE: BarTab = BarTab {
+    app_id: "so.tilo.store",
+    title: "App Store",
+    surface_id: 9_303,
+    slots: None,
+};
+
 /// `Action::OwnProcessWindow` — split out of [`apply`] to keep that
 /// dispatcher short.
 fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
@@ -751,6 +778,7 @@ fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
     let window: &'static [BarTab] = match app {
         OwnApp::Notes => &[OWN_NOTES],
         OwnApp::Files => &[OWN_FILES],
+        OwnApp::Store => &[OWN_STORE],
     };
     // The window is placed and adopted as a client's toplevel is.
     apply_seed_window_bar(
@@ -818,6 +846,7 @@ fn run_own_process_app(
             }
             inputs.mount_files(&room, tab)
         }
+        OwnApp::Store => inputs.mount_store(&room, tab),
     }
     .ok_or("this host mounts no apps")?
     .map_err(|error| error.to_string())?;
@@ -1339,6 +1368,23 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
     }
 }
 
+/// The tab that shows the seeded window `surface_id`.
+fn tab_showing_surface(driver: &ShellDriver, surface_id: u64) -> Option<u64> {
+    use shell::shell::state::TileContent;
+    let chrome = driver.chrome();
+    let tree = chrome.tree();
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .find(|tab| {
+            matches!(&tab.tile, TileContent::Foreign { surface_id: id, .. } if *id == surface_id)
+        })
+        .map(|tab| tab.id)
+}
+
 /// `Action::SeedWindowBar` — split out of [`apply`] to keep that dispatcher
 /// short. The windows are adopted the way a client's toplevel is, titled
 /// the way its client titles them, gathered into one group as dragging
@@ -1350,20 +1396,7 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
 fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
     use shell::shell::state::TileContent;
     if let Action::DeclareBarSlots { surface_id, slots } = action {
-        let tab = {
-            let chrome = driver.chrome();
-            let tree = chrome.tree();
-            tree.desktop
-                .workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .find(|tab| {
-                    matches!(&tab.tile, TileContent::Foreign { surface_id: id, .. } if id == surface_id)
-                })
-                .map(|tab| tab.id)
-        };
+        let tab = tab_showing_surface(driver, *surface_id);
         if let Some(tab) = tab {
             driver
                 .host_mut()
@@ -2549,6 +2582,14 @@ fn build_scenarios() -> Vec<Scenario> {
         window_bar_writer_scenario(),
         window_bar_overflow_scenario(),
         window_bar_suggestions_scenario(),
+        loading::window_loading_browser_scenario(),
+        loading::window_loading_busy_scenario(),
+        loading::window_loading_finish_scenario(),
+        loading::window_loading_fullscreen_scenario(),
+        loading::window_loading_browser_motion_scenario(),
+        loading::window_loading_busy_motion_scenario(),
+        loading::window_loading_fullscreen_motion_scenario(),
+        loading::own_process_store_window_bar_scenario(),
         desk_widgets_scenario(),
         motion_quick_settings_scenario(),
         motion_overview_scenario(),

@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 14
+version = 15
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -13,6 +13,7 @@ sources = [
     "crates/sdk/ui-core/src/floating_surface.rs",
     "crates/sdk/ui-core/src/room_sync.rs",
     "crates/sdk/ui-core/src/window_toolbar.rs",
+    "crates/sdk/ui-core/src/window_loading.rs",
     "crates/sdk/ui-core/src/widget/find_bar.rs",
     "crates/sdk/ui-core/src/window_door.rs",
     "crates/sdk/ui-core/src/action_locus.rs",
@@ -126,6 +127,9 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "FloatingSurfaceClientMessage::edit_location.instance" = "Option<u64> optional"
 "FloatingSurfaceClientMessage::hello" = "struct"
 "FloatingSurfaceClientMessage::hello.version" = "u16"
+"FloatingSurfaceClientMessage::loading" = "struct"
+"FloatingSurfaceClientMessage::loading.instance" = "Option<u64> optional"
+"FloatingSurfaceClientMessage::loading.loading" = "WindowLoading"
 "FloatingSurfaceClientMessage::move_device_display" = "struct"
 "FloatingSurfaceClientMessage::move_device_display.placement" = "DeviceDisplayMove"
 "FloatingSurfaceClientMessage::move_device_display.request" = "u64"
@@ -504,6 +508,11 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "ToolbarViews.choices" = "Vec<ToolbarView>"
 "ToolbarViews.chosen" = "String"
 "ToolbarViews.name" = "String"
+"WindowLoading" = "enum internal tag=state"
+"WindowLoading::busy" = "unit"
+"WindowLoading::idle" = "unit"
+"WindowLoading::progress" = "struct"
+"WindowLoading::progress.fraction" = "f32"
 "WindowOffer" = "struct"
 "WindowOffer.adopted" = "Option<AdoptedQuery> optional"
 "WindowOffer.count" = "Option<SearchCount> optional"

@@ -9990,6 +9990,7 @@ impl Widget for FileExplorerWidget {
             | self.take_archive_listing()
             | self.poll_extract_chooser()
             | self.open_read_members();
+        self.report_window_loading();
         self.structure_dirty |= notice_expired | counted;
         self.poll_share_result()
             | received

@@ -52,6 +52,8 @@ collab     = "optional@6"
 tilo-fs     = "optional@6"
 app-host   = "required@3"
 identity   = "optional@6"
+# The window's loading line while an app installs.
+shell-ui   = "optional@15"
 
 [entrypoint]
 bin             = "bin/store"
