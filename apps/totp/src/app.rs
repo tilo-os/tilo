@@ -670,14 +670,14 @@ impl AuthenticatorApp {
         self.portal_rx = Some(qr_image_request().send_contents());
     }
 
-    /// Drain a completed portal request, if any. Called once per frame from
-    /// [`Widget::sync`]: decodes the chosen image into the open add sheet,
-    /// surfaces a decode/cancel/failure via the toast, and clears the
-    /// in-flight channel. Never blocks — a still pending picker leaves the
-    /// channel installed for the next frame.
-    fn drain_portal(&mut self) {
+    /// Drain a completed portal request, if any; whether it took one.
+    /// Called every frame from [`Widget::update`]: decodes the chosen image
+    /// into the open add sheet, surfaces a decode/cancel/failure via the
+    /// toast, and clears the in-flight channel. Never blocks — a still
+    /// pending picker leaves the channel installed for the next frame.
+    fn drain_portal(&mut self) -> bool {
         let Some(rx) = self.portal_rx.as_ref() else {
-            return;
+            return false;
         };
         match rx.try_recv() {
             Ok(outcome) => {
@@ -699,11 +699,12 @@ impl AuthenticatorApp {
                 }
             }
             // Still waiting on the host dialog, or the worker vanished.
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
             }
         }
+        true
     }
 
     /// Decode a chosen QR image into the open add sheet, or surface why it
@@ -714,7 +715,10 @@ impl AuthenticatorApp {
                 self.add_panel.apply_uri(&uri);
                 self.toast("QR code read", ToastKind::Success);
             }
-            Err(reason) => self.toast(reason, ToastKind::Error),
+            Err(reason) => {
+                tracing::debug!(%reason, "totp: no code read from the chosen image");
+                self.toast(crate::i18n::t("totp-scan-unreadable"), ToastKind::Error);
+            }
         }
     }
 
@@ -912,6 +916,19 @@ impl AuthenticatorApp {
 }
 
 impl Widget for AuthenticatorApp {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // The chooser answers between frames, off the UI thread. A frame
+        // only syncs when something changed, and a browser page's chooser
+        // leaves nothing else changed when it closes, so the answer is
+        // taken here, where every frame looks.
+        let answered = self.drain_portal();
+        let mut changed = answered;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
+    }
+
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         // Hosted controls can enqueue a local request after event routing.
         // Settle the retained sheet first, then consume those requests in
@@ -926,9 +943,6 @@ impl Widget for AuthenticatorApp {
         if self.copy.failed() {
             self.toast("Could not copy to the clipboard", ToastKind::Error);
         }
-        // Pull in any QR image the host portal picker returned since the last
-        // frame (off-thread; never blocks the UI).
-        self.drain_portal();
         // Sheets that left the tree last frame can go now.
         if self.add_panel.reap() {
             self.structure_dirty = true;
@@ -1704,6 +1718,40 @@ pub(crate) mod tests {
         assert!(!app.persistence_pending());
     }
 
+    /// A chooser that answers between frames is heard by the next frame's
+    /// update, the pass every frame runs, not only by a sync that a change
+    /// elsewhere has to ask for; an image without a code says so.
+    #[test]
+    fn a_chooser_answer_is_taken_up_by_the_next_frame_without_a_sync() {
+        let (mut app, state) = app_with_state();
+        app.add_panel.open();
+        let (answer, channel) = std::sync::mpsc::channel();
+        app.portal_rx = Some(channel);
+        app.update(&state.doc, &state.root);
+        assert!(app.portal_rx.is_some(), "a frame before the answer waits");
+        let mut photo = std::io::Cursor::new(Vec::new());
+        image::GrayImage::from_pixel(96, 96, image::Luma([255]))
+            .write_to(&mut photo, image::ImageFormat::Png)
+            .unwrap();
+        answer
+            .send(ContentsOutcome::Picked(vec![ui::portal::PickedContents {
+                name: "photo.png".into(),
+                media_type: Some("image/png".into()),
+                bytes: photo.into_inner(),
+                location: None,
+            }]))
+            .unwrap();
+        assert!(app.update(&state.doc, &state.root), "the answer is news");
+        assert!(app.portal_rx.is_none(), "the chooser is done");
+        assert_eq!(
+            app.notice.with(Clone::clone),
+            Some(Notice::Show(
+                "Couldn\u{2019}t read a code from that image".into(),
+                ToastKind::Error
+            ))
+        );
+    }
+
     /// QR import: host portal routing, frame drain, cancel and file decoding.
     #[test]
     fn qr_import_routes_through_the_host_portal_and_fills_the_panel() {
@@ -1745,7 +1793,7 @@ pub(crate) mod tests {
             let _work = work.background().enter();
             ui::host::scoped(&services, || app.request_qr_via_portal());
             work.run_pending();
-            app.sync(&state.doc, &state.root);
+            app.update(&state.doc, &state.root);
 
             assert!(
                 app.portal_rx.is_none(),
@@ -1768,7 +1816,7 @@ pub(crate) mod tests {
             let _work = work.background().enter();
             ui::host::scoped(&services, || app.request_qr_via_portal());
             work.run_pending();
-            app.sync(&state.doc, &state.root);
+            app.update(&state.doc, &state.root);
             assert!(
                 app.portal_rx.is_none(),
                 "the portal channel clears after a cancel"
