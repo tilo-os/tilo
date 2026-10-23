@@ -85,6 +85,55 @@ pub fn placement(window: Rect) -> (Point, f64) {
     (Point::new(x0, y0), width)
 }
 
+/// The window a palette was asked for from, when a host lays several app
+/// tiles out in one tree (the desktop's strip of windows): the innermost
+/// tile under `pressed_at` when a press asked (a control that needs
+/// confirmation, clicked in a window that does not hold the keyboard), else
+/// the tile around the `focused` node. `None` when there is no tile there:
+/// the window is the whole surface. `tile_rect` is a node's rect when it is
+/// a tile ([`tile_rect`]).
+pub(crate) fn invoking_window(
+    taffy: &TaffyTree<()>,
+    root: Option<NodeId>,
+    pressed_at: Option<Point>,
+    focused: Option<NodeId>,
+    tile_rect: impl Fn(NodeId) -> Option<Rect>,
+) -> Option<Rect> {
+    let under_press = pressed_at.and_then(|at| {
+        let mut found = None;
+        let mut pending = vec![root?];
+        while let Some(node) = pending.pop() {
+            if let Some(rect) = tile_rect(node) {
+                if !rect.contains(at) {
+                    continue;
+                }
+                found = Some(rect);
+            }
+            if let Ok(children) = taffy.children(node) {
+                pending.extend(children);
+            }
+        }
+        found
+    });
+    under_press.or_else(|| {
+        let mut node = focused?;
+        loop {
+            if let Some(rect) = tile_rect(node) {
+                return Some(rect);
+            }
+            node = taffy.parent(node)?;
+        }
+    })
+}
+
+/// `widget`'s rect when it is an app's tile, a window of its own.
+pub(crate) fn tile_rect(widget: &dyn Widget) -> Option<Rect> {
+    widget
+        .as_any()
+        .is_some_and(|any| any.is::<crate::widget::TileHost>())
+        .then(|| widget.get_rect())
+}
+
 const FIELD_SIZE: crate::widget::ControlSize = crate::widget::ControlSize::Large;
 const GAP: f64 = 10.0;
 /// One row of facet chips, a small control's height.

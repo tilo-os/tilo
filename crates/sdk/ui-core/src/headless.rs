@@ -276,6 +276,8 @@ mod caller_palette;
 mod capture;
 mod invocation_results;
 mod root_wake;
+#[cfg(test)]
+mod palette_window_tests;
 mod search_open;
 pub mod system_search;
 pub mod test_support;
@@ -303,6 +305,15 @@ pub struct FrameHarness {
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
     action_palette: Option<Box<crate::action_palette::ActionPalette>>,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// The window the open palette was asked for from, when the root lays
+    /// several out (the desktop's strip of app tiles): the palette stands
+    /// over it, as an app's own palette stands over its window.
+    palette_window: Option<Rect>,
+    /// Where the pointer is, and where the last press landed until a key
+    /// is pressed, in logical pixels: a confirmation a press asked for
+    /// stands over the window pressed in.
+    pointer_at: Option<Point>,
+    pressed_at: Option<Point>,
     /// The open search palette has provider pages left to read.
     search_pending: bool,
     root_lifetime: uuid::Uuid,
@@ -1549,6 +1560,9 @@ impl FrameHarness {
             history: None,
             action_palette: None,
             ordinary_palette_return_focus: None,
+            palette_window: None,
+            pointer_at: None,
+            pressed_at: None,
             search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -3992,12 +4006,18 @@ impl FrameHarness {
             .as_deref_mut()
             .filter(|p| p.is_presented())
         {
-            let (origin, card) = crate::action_palette::placement(Rect::new(
+            let surface = Rect::new(
                 0.0,
                 0.0,
                 f64::from(self.viewport.0),
                 f64::from(self.viewport.1),
-            ));
+            );
+            let window = self
+                .palette_window
+                .map(|window| window.intersect(surface))
+                .filter(|window| window.width() > 0.0 && window.height() > 0.0)
+                .unwrap_or(surface);
+            let (origin, card) = crate::action_palette::placement(window);
             palette.layout_with_text(&self.theme, origin, card, &mut self.text);
             palette.draw(
                 &mut self.scene,
@@ -6312,6 +6332,7 @@ impl FrameHarness {
             self.settle_replayed_draws();
         }
         crate::widget::context_menu::note_input(event);
+        self.track_acting_place(event);
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows, as in the App.
         if let Some(moved) = self.pointer_replay.before(event) {
@@ -7413,6 +7434,52 @@ impl FrameHarness {
         Ok(started)
     }
 
+    /// Follow where the person acts, as the App does: the pointer's place,
+    /// and where the last press landed until a key is pressed.
+    fn track_acting_place(&mut self, event: &WindowEvent) {
+        let scale = self.input_scale;
+        let logical = |x: f64, y: f64| Point::new(x / scale, y / scale);
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer_at = Some(logical(position.x, position.y));
+            }
+            WindowEvent::CursorLeft { .. } => self.pointer_at = None,
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                ..
+            } => self.pressed_at = self.pointer_at,
+            WindowEvent::Touch(touch) if touch.phase == winit::event::TouchPhase::Started => {
+                let at = logical(touch.location.x, touch.location.y);
+                self.pointer_at = Some(at);
+                self.pressed_at = Some(at);
+            }
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == winit::event::ElementState::Pressed =>
+            {
+                self.pressed_at = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// The window a palette is asked for from, when the root lays several
+    /// out (the desktop's strip of app tiles): the tile under the pointer
+    /// that pressed, else the one holding keyboard focus. `None` for a lone
+    /// app, whose window is the whole surface.
+    fn invoking_window_rect(&self) -> Option<Rect> {
+        crate::action_palette::invoking_window(
+            &self.taffy,
+            self.layout_built.then_some(self.root_node),
+            self.pressed_at,
+            self.focused,
+            |node| {
+                self.inspect_node(node, crate::action_palette::tile_rect)
+                    .ok()
+                    .flatten()
+            },
+        )
+    }
+
     fn open_ordinary_confirmation(
         &mut self,
         target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
@@ -7438,6 +7505,8 @@ impl FrameHarness {
                 crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref())
             });
         }
+        // Read before the tree it is found in is discarded.
+        self.palette_window = self.invoking_window_rect();
         self.discard_layout_tree();
         self.focused = None;
         let mut palette = Box::new(crate::action_palette::ActionPalette::with_host_text(
