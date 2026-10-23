@@ -132,11 +132,21 @@ pub(super) async fn handle_voice(
                     workspace_id,
                     grant: Box::new(grant),
                 },
-                Err(reason) => Envelope::VoiceRefused {
-                    workspace_id,
-                    call,
-                    reason,
-                },
+                Err(reason) => {
+                    // Why a call drops: a beat for a participation the host
+                    // forgot, or a fresh join it refused.
+                    tracing::info!(
+                        call = %hex::encode(call),
+                        beat = participation.is_some(),
+                        %reason,
+                        "voice join refused"
+                    );
+                    Envelope::VoiceRefused {
+                        workspace_id,
+                        call,
+                        reason,
+                    }
+                }
             })
         }
         Envelope::VoiceLeave {

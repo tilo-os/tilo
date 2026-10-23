@@ -319,6 +319,13 @@ impl Calls {
         let mut changed: Vec<[u8; 32]> = Vec::new();
         for id in &gone {
             if let Some(participation) = state.remove(id) {
+                tracing::info!(
+                    room = %participation.room,
+                    call = %hex::encode(participation.call),
+                    unheard_ms = now.duration_since(participation.seen).as_millis(),
+                    connection_closed = participation.outbound.is_closed(),
+                    "voice participation expired"
+                );
                 changed.push(participation.call);
                 state.changed.insert(participation.room);
             }
