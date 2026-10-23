@@ -190,10 +190,25 @@ pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, Registr
 pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<CatalogueSnapshot, RegistryError> {
     let mut url = registry_url(reg, "entries")?;
     url.set_query(Some("format=compact"));
-    let bytes = fetch_bounded(&url, MAX_INDEX_RESPONSE_BYTES, "snapshot")?;
+    // The registry names each form of its snapshot by its hash (`ETag`), so
+    // asking with the hash of the one this device holds costs an empty 304
+    // when nothing changed: an update with nothing new downloads nothing.
+    let held = checkpoint_path(reg).and_then(|path| held_snapshot(&path));
+    let etag = held.as_ref().and_then(form_hash);
+    let now = tilo_clock::unix_now();
+    let Some(bytes) =
+        fetch_revalidated(&url, MAX_INDEX_RESPONSE_BYTES, "snapshot", etag.as_deref())?
+    else {
+        // Not modified: the held snapshot is the registry's, and is verified
+        // again against the pinned key and the clock as a download would be.
+        let held = held.ok_or(RegistryError::NotStored)?;
+        if let Err(error) = classify_snapshot(&held, &reg.owner_pubkey_hex, now) {
+            return Err(expired_or(error, &held, &reg.owner_pubkey_hex, now));
+        }
+        return Ok(held);
+    };
     let snapshot =
         CatalogueSnapshot::from_json(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
-    let now = tilo_clock::unix_now();
     if let Err(error) = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now) {
         return Err(expired_or(error, &snapshot, &reg.owner_pubkey_hex, now));
     }
@@ -261,6 +276,30 @@ fn last_verified_at(
     classify_snapshot(&snapshot, owner_pubkey_hex, now_unix)
 }
 
+/// The snapshot this device accepted last from the registry whose
+/// checkpoint is `path`, when its bytes are the ones the checkpoint names.
+/// Not verified: it names what to revalidate, and is verified before use.
+fn held_snapshot(path: &std::path::Path) -> Option<CatalogueSnapshot> {
+    if path.parent().is_some_and(|parent| !parent.is_dir()) {
+        return None;
+    }
+    #[cfg(unix)]
+    let _lock = checkpoint_lock(path).ok()?;
+    let checkpoint: SnapshotCheckpoint = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let snapshot = CatalogueSnapshot::from_json(&std::fs::read(snapshot_path(path)).ok()?).ok()?;
+    (snapshot.sequence() == checkpoint.sequence
+        && snapshot.checkpoint_hash().ok()? == checkpoint.snapshot_hash_hex)
+        .then_some(snapshot)
+}
+
+/// The hash the registry names this form of a snapshot by, its `ETag`.
+fn form_hash(snapshot: &CatalogueSnapshot) -> Option<String> {
+    match snapshot {
+        CatalogueSnapshot::Full(full) => registry_types::snapshot_hash(full).ok(),
+        CatalogueSnapshot::Compact(compact) => registry_types::compact_snapshot_hash(compact).ok(),
+    }
+}
+
 /// Every retained version of `package_id`: from a freshly verified snapshot,
 /// and when that snapshot is compact, from the version index it signs.
 ///
@@ -323,6 +362,38 @@ pub(crate) fn fetch_bounded(
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|e| RegistryError::Http(e.to_string()))?;
+    read_bounded(response, limit, what)
+}
+
+/// [`fetch_bounded`], asking the server to answer `304 Not Modified` (then
+/// `None`) when what it would send has the `ETag` `etag`.
+fn fetch_revalidated(
+    url: &reqwest::Url,
+    limit: u64,
+    what: &str,
+    etag: Option<&str>,
+) -> Result<Option<Vec<u8>>, RegistryError> {
+    let mut request = client()?.get(url.clone());
+    if let Some(etag) = etag {
+        request = request.header(reqwest::header::IF_NONE_MATCH, format!("\"{etag}\""));
+    }
+    let response = request
+        .send()
+        .map_err(|e| RegistryError::Http(e.to_string()))?;
+    if etag.is_some() && response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(None);
+    }
+    let response = response
+        .error_for_status()
+        .map_err(|e| RegistryError::Http(e.to_string()))?;
+    read_bounded(response, limit, what).map(Some)
+}
+
+fn read_bounded(
+    response: reqwest::blocking::Response,
+    limit: u64,
+    what: &str,
+) -> Result<Vec<u8>, RegistryError> {
     if response
         .content_length()
         .is_some_and(|length| length > limit)
