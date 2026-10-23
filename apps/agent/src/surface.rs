@@ -76,10 +76,47 @@ pub const APP_RESOURCE: &str = "app";
 /// The stable kind tag on that resource, shared across every app.
 pub const APPLICATION_KIND: &str = "applications.app";
 
-/// The app `address` would open, or `None` when it opens nothing.
+/// The resource prefix of an open of a document the room already has:
+/// `record.<app id>.<record id>#open`. Opening it puts that document's
+/// operations on the list; `app.<app id>#open` creates a new one.
+pub const RECORD_OPEN_PREFIX: &str = "record.";
+
+/// The address that opens `record`, a document of `app_id` the room
+/// already has.
+pub fn open_record_address(app_id: &str, record: &str) -> ActionAddress {
+    ActionAddress::new(
+        format!("{RECORD_OPEN_PREFIX}{app_id}.{record}"),
+        OPEN_ACTION,
+    )
+}
+
+/// The app and record an open of an existing document names
+/// ([`open_record_address`]), or `None` when `address` is no such open.
+///
+/// An app id is dotted and never holds a `:`; a record id names its scheme
+/// before a `:` (`uuid:…`) and may hold dots after it. So the record starts
+/// at the last `.` before the first `:`, or, for a record id without a
+/// scheme, at the last `.`.
+pub fn opens_record(address: &ActionAddress) -> Option<(&str, &str)> {
+    if address.action != OPEN_ACTION {
+        return None;
+    }
+    let rest = address.resource.strip_prefix(RECORD_OPEN_PREFIX)?;
+    let head = rest.split_once(':').map_or(rest, |(head, _)| head);
+    let (app_id, record) = rest.split_at_checked(head.rfind('.')?)?;
+    let record = record.strip_prefix('.')?;
+    (!app_id.is_empty() && !record.is_empty()).then_some((app_id, record))
+}
+
+/// The app `address` would open, or `None` when it opens nothing: a new
+/// document of it (`app.<app id>#open`, `<namespace>.app#open`), or one the
+/// room already has ([`opens_record`]).
 pub fn opens(address: &ActionAddress) -> Option<&str> {
     if address.action != OPEN_ACTION {
         return None;
+    }
+    if let Some((app_id, _)) = opens_record(address) {
+        return Some(app_id);
     }
     if let Some(app_id) = address.resource.strip_prefix("app.") {
         return (!app_id.is_empty()).then_some(app_id);
@@ -179,6 +216,16 @@ impl Offer {
     /// produced some.
     pub fn wants_content(&self) -> bool {
         self.content_param().is_some()
+    }
+
+    /// Whether performing it answers with content another operation takes:
+    /// its declared result is a `tilo.content` resource.
+    pub fn produces_content(&self) -> bool {
+        matches!(
+            &self.descriptor.contract.result,
+            tilo_actions::ResultSpec::Resource { resource_kind }
+                if resource_kind == tilo_actions::CONTENT_RESOURCE_KIND
+        )
     }
 
     /// The parameter content another operation produced is carried under:
