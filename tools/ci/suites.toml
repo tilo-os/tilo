@@ -1644,7 +1644,7 @@ reason = "boots the gated dev disk in a VM and signs in; t's os-acceptance-<arch
 
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
-reason = "boots two VMs (KVM) from the gated dev disk; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect; t's os-acceptance-<arch> runs it"
+reason = "boots three VMs (KVM) from the gated dev disk, the third pairing through a device without the identity key; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/dev/test-device-admin-reach.sh"

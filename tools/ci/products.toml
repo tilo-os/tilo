@@ -1333,8 +1333,9 @@ name = "os-acceptance-{arch}"
 comment = """
 The devices and desktop a person gets from os-image-{arch} and os-dev-image-{arch}, booted under
 KVM on throwaway overlays of the dev image's installed disk (tools/ci/publish/os-acceptance.sh):
-a joined device signs in; nearby pairing from first-boot onboarding, sibling unlock and, on
-x86_64, wake; device-admin reach through a relay; the installed desktop from the sign-in screen through first use, the apps,
+a joined device signs in; nearby pairing from first-boot onboarding, a third device paired
+through one without the identity key, sibling unlock and, on x86_64, wake; device-admin reach
+through a relay; the installed desktop from the sign-in screen through first use, the apps,
 hot-plugged input and the lock screen to tilo-vmd and app updates; the boot splash on a large
 panel; and the OS image's size budget. `t outputs os-acceptance-x86_64` gives every gate's
 report and the guests' logs."""
