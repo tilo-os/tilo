@@ -4298,6 +4298,15 @@ impl Widget for GroupRow {
         }
     }
 
+    /// The windows and the resize handles between them.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        self.for_each_child(visitor);
+        for handle in &self.handles {
+            visitor(handle);
+        }
+        true
+    }
+
     #[allow(private_interfaces, reason = "toolkit-only checked custody traversal")]
     fn visit_components(
         &mut self,

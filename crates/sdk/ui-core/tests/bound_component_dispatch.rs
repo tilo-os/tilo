@@ -819,6 +819,10 @@ impl Widget for Root {
     fn children(&self) -> Vec<&dyn Widget> {
         if self.2 { vec![] } else { self.0.children() }
     }
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.0);
+        true
+    }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.2 {
             vec![]

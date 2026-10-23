@@ -278,6 +278,7 @@ mod capture;
 mod invocation_results;
 #[cfg(test)]
 mod palette_window_tests;
+mod retained_layout;
 mod root_wake;
 mod search_open;
 pub mod system_search;
@@ -340,6 +341,9 @@ pub struct FrameHarness {
     framework_input: std::rc::Rc<std::cell::Cell<bool>>,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
+    /// Which `node_map` pointers were taken from the live tree
+    /// ([`retained_layout`]).
+    layout_maps: crate::retained_widgets::Adopted,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     root_node: NodeId,
@@ -1090,6 +1094,7 @@ impl FrameHarness {
     fn discard_layout_tree(&mut self) {
         self.bindings.clear();
         self.node_map.clear();
+        self.layout_maps.clear();
         self.layout_built = false;
     }
 
@@ -1102,7 +1107,9 @@ impl FrameHarness {
             .as_mut()
             .is_some_and(|history| history.take_structure_dirty());
         let seen = std::mem::take(&mut self.composition_replaced);
-        root || history || seen
+        // A widget that replaced children without saying so is found here.
+        let stale = self.layout_maps_stale();
+        root || history || seen || stale
     }
 
     /// Whether a widget replaced children since the maps were admitted. The
@@ -1588,6 +1595,7 @@ impl FrameHarness {
             root,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
+            layout_maps: crate::retained_widgets::Adopted::default(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             history: None,
             action_palette: None,
@@ -3579,6 +3587,7 @@ impl FrameHarness {
                 );
                 self.bindings.clear();
                 self.node_map.clear();
+                self.layout_maps.clear();
                 if let Some(history) = &mut self.history {
                     history.flush_pending_toolbar();
                 }
@@ -3604,12 +3613,14 @@ impl FrameHarness {
                     self.root
                         .build_layout(&mut self.taffy, &self.theme, &mut self.node_map)
                 };
+                self.admit_layout_maps();
                 // Newly composed controls need sync. If it replaces delegates,
                 // discard these raw maps without admitting or measuring them.
                 self.root.sync(&self.state.doc, &self.state.root);
                 let history_invalidated = self.invalidate_unsupported_history_owner();
                 if self.take_composition_dirty() || history_invalidated {
                     self.node_map.clear();
+                    self.layout_maps.clear();
                     return Ok((None, true));
                 }
                 let palette_node = self
@@ -3619,6 +3630,9 @@ impl FrameHarness {
                     .map(|palette| {
                         palette.build_layout(&mut self.taffy, &self.theme, &mut self.node_map)
                     });
+                if palette_node.is_some() {
+                    self.admit_layout_maps();
+                }
                 let presentation_node = if self.history_chrome_enabled {
                     self.build_history_frame(palette_node)
                 } else {
@@ -9230,197 +9244,6 @@ impl FrameHarness {
     pub fn end_profiling(&mut self) {
         self.invalidate_local();
         self.profiler = None;
-    }
-
-    /// Whether this frame must rebuild the layout tree regardless of what the
-    /// widgets report: the test override first, then `TILO_UI_FULL_RELAYOUT`.
-    fn full_relayout_forced_now(&self) -> bool {
-        self.full_relayout_override
-            .unwrap_or_else(full_relayout_forced)
-    }
-
-    /// Force (`Some(true)`) or forbid (`Some(false)`) the full-rebuild path
-    /// for every following frame, overriding `TILO_UI_FULL_RELAYOUT`; `None`
-    /// returns to the environment's choice. Benchmarks use this to compare
-    /// both paths inside one process.
-    pub fn set_full_relayout(&mut self, forced: Option<bool>) {
-        self.invalidate_local();
-        self.full_relayout_override = forced;
-    }
-
-    /// Cumulative text measurement-cache hits and misses for this host's
-    /// renderer. Compare around input to distinguish retained scrolling from
-    /// remeasuring a whole page; a cold frame must first warm the counters.
-    pub fn text_cache_stats(&self) -> (u64, u64) {
-        self.text.cache_stats()
-    }
-
-    /// Drain this host renderer's actual shape-cache hits, misses and time
-    /// spent shaping. Like `TextRenderer::take_shape_stats`, this isolates
-    /// input work after a measured warmup without a wall-clock threshold.
-    pub fn take_text_shape_stats(&mut self) -> (u64, u64, u128) {
-        self.text.take_shape_stats()
-    }
-
-    /// What the most recent completed relayout did with its layout tree.
-    pub fn last_relayout(&self) -> RelayoutStats {
-        self.last_relayout
-    }
-
-    /// Completed relayout frames since construction; unchanged across a
-    /// skipped (inert pointer) `send`.
-    pub fn relayout_frames(&self) -> u64 {
-        self.relayout_frames
-    }
-
-    /// Completed frames that recomposed the layout tree. One input may
-    /// produce several frames (press and release, a commit tick), so callers
-    /// asserting on a structural change compare this across the input.
-    pub fn rebuilt_frames(&self) -> u64 {
-        self.relayout_frames.saturating_sub(self.retained_frames)
-    }
-
-    /// Every taffy node of the current composition, sorted. Equal across two
-    /// frames exactly when the tree was retained rather than rebuilt.
-    pub fn layout_node_ids(&self) -> Vec<u64> {
-        let mut ids: Vec<u64> = self.node_map.keys().map(|node| u64::from(*node)).collect();
-        ids.compact_sort();
-        ids
-    }
-
-    /// Invalidate taffy's cached measurement for every node whose widget
-    /// reports it may have changed size (`is_layout_dirty`) or must be
-    /// re-solved (`layout_needs_measure`), so the following
-    /// `compute_widget_layout` re-measures exactly those and their ancestors.
-    /// A node that cannot be inspected is invalidated too: stale is worse than
-    /// a redundant measure. Returns `(marked nodes, marked childless nodes)`.
-    fn mark_layout_dirty_nodes(&mut self) -> (usize, usize) {
-        let dirty: Vec<NodeId> = self
-            .node_map
-            .keys()
-            .copied()
-            .filter(|&node| {
-                // Hidden layout subtrees are not measured by Taffy. Their
-                // widget flags can remain dirty until shown, so do not let
-                // them request work on every visible edit. Showing them
-                // recomposes the tree and performs the required measurement.
-                let mut ancestor = Some(node);
-                while let Some(current) = ancestor {
-                    if self
-                        .taffy
-                        .style(current)
-                        .is_ok_and(|style| style.display == taffy::Display::None)
-                    {
-                        return false;
-                    }
-                    ancestor = self.taffy.parent(current);
-                }
-                // SAFETY: these maps describe this exclusive runner's current
-                // admitted tree; the callback only reads widget flags.
-                unsafe {
-                    crate::bound_dispatch::inspect_bound_node(
-                        &self.bindings,
-                        &self.node_map,
-                        node,
-                        |widget| widget.is_layout_dirty() || widget.layout_needs_measure(),
-                    )
-                }
-                .unwrap_or(true)
-            })
-            .collect();
-        let mut leaves = 0usize;
-        for node in &dirty {
-            if self
-                .taffy
-                .children(*node)
-                .is_ok_and(|children| children.is_empty())
-            {
-                leaves = leaves.saturating_add(1);
-            }
-            let _ = self.taffy.mark_dirty(*node);
-        }
-        (dirty.len(), leaves)
-    }
-
-    /// Compare the retained composition's geometry against a fresh rebuild of
-    /// the same state. Runs one forced full relayout, so it is a test and
-    /// diagnostics hook, not something a live host calls per frame.
-    pub fn verify_retained_geometry(&mut self) -> Result<(), String> {
-        self.invalidate_local();
-        use crate::widget::layout::composition_geometry;
-        if !self.layout_built {
-            return Ok(());
-        }
-        let retained = composition_geometry(&self.taffy, self.root_node)
-            .map_err(|error| format!("retained geometry unavailable: {error}"))?;
-        // The verification frame is not one the caller asked for: keep the
-        // diagnostics describing the frame under test.
-        let (stats, frames, retained_frames) = (
-            self.last_relayout,
-            self.relayout_frames,
-            self.retained_frames,
-        );
-        let previous = self.full_relayout_override;
-        self.full_relayout_override = Some(true);
-        self.verifying_geometry = true;
-        let rebuilt = self.try_relayout();
-        self.verifying_geometry = false;
-        self.full_relayout_override = previous;
-        self.last_relayout = stats;
-        self.relayout_frames = frames;
-        self.retained_frames = retained_frames;
-        rebuilt.map_err(|error| format!("fresh rebuild did not settle: {error}"))?;
-        let fresh = composition_geometry(&self.taffy, self.root_node)
-            .map_err(|error| format!("fresh geometry unavailable: {error}"))?;
-        if retained.len() != fresh.len() {
-            return Err(format!(
-                "retained composition has {} nodes, a fresh rebuild {}",
-                retained.len(),
-                fresh.len()
-            ));
-        }
-        for (index, (kept, built)) in retained.iter().zip(&fresh).enumerate() {
-            if kept != built {
-                return Err(format!(
-                    "node {index} of {}: retained (children {}, at {:?}, size {:?}) but rebuilt (children {}, at {:?}, size {:?})",
-                    fresh.len(),
-                    kept.0,
-                    kept.1,
-                    kept.2,
-                    built.0,
-                    built.1,
-                    built.2
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// Debug builds only: after every `every`th retained frame, verify the
-    /// retained geometry against a fresh rebuild and panic on a mismatch.
-    /// `0` disables the check (the default).
-    pub fn set_retained_geometry_check(&mut self, every: u32) {
-        self.invalidate_local();
-        self.retained_geometry_check_every = if cfg!(debug_assertions) { every } else { 0 };
-    }
-
-    fn check_retained_geometry_if_due(&mut self) {
-        if self.retained_geometry_check_every == 0
-            || self.verifying_geometry
-            || self.last_relayout.rebuilt
-            || !self
-                .retained_frames
-                .is_multiple_of(u64::from(self.retained_geometry_check_every))
-        {
-            return;
-        }
-        if let Err(mismatch) = self.verify_retained_geometry() {
-            tracing::error!(%mismatch, "headless: retained layout diverged from a fresh rebuild");
-            debug_assert!(
-                false,
-                "retained layout diverged from a fresh rebuild: {mismatch}"
-            );
-        }
     }
 
     /// Render one frame with no input and record it. A frame here is one

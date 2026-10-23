@@ -4238,6 +4238,21 @@ impl Widget for NavShell {
         }
     }
 
+    /// The parts themselves, also those of a screen not in front, which the
+    /// host meets only as stand-ins.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        for part in self.exposed_parts() {
+            if let Some(widget) = self.part(part) {
+                visitor(widget);
+            }
+        }
+        visitor(&self.sync_status);
+        if !self.toasts.is_empty() {
+            visitor(&self.toasts);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let parts = self.exposed_parts();
         let inert: Vec<bool> = parts.iter().map(|part| self.part_inert(*part)).collect();

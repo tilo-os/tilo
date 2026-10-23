@@ -4602,6 +4602,12 @@ impl Widget for ChatApp {
         root
     }
 
+    /// The host call tile has a node of its own; Chat routes and paints it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.video);
+        true
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         if !self.presented {
             self.presented = true;

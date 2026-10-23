@@ -120,6 +120,9 @@ pub(crate) struct Replacing {
     at: ReplaceAt,
     armed: Rc<Cell<bool>>,
     dirty: bool,
+    /// Whether it reports the replacement, as every widget must; one that
+    /// forgets may leave a stale layout, never a call into a replaced child.
+    reports: bool,
     rect: Rect,
 }
 
@@ -136,10 +139,18 @@ impl Replacing {
                 at,
                 armed: Rc::clone(&armed),
                 dirty: false,
+                reports: true,
                 rect: Rect::ZERO,
             },
             armed,
         )
+    }
+
+    /// [`Self::new`], but it never reports the replacement.
+    pub(crate) fn unreported(at: ReplaceAt) -> (Self, Rc<Cell<bool>>) {
+        let (mut replacing, armed) = Self::new(at);
+        replacing.reports = false;
+        (replacing, armed)
     }
 
     fn replace_if(&mut self, now: ReplaceAt) {
@@ -151,7 +162,7 @@ impl Replacing {
         self.child_replaced = replaced;
         let old = std::mem::replace(&mut self.child, Box::new(fresh));
         self.graveyard.push(old);
-        self.dirty = true;
+        self.dirty = self.reports;
     }
 }
 

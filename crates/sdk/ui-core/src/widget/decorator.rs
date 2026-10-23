@@ -417,6 +417,7 @@ decorator_trait! {
         fn layout_info() -> Option<LayoutInfo>;
         fn children() -> Vec<&dyn Widget>;
         fn for_each_child(visitor: &mut dyn FnMut(&dyn Widget));
+        fn for_each_layout_child(visitor: &mut dyn FnMut(&dyn Widget)) -> bool;
         fn name() -> &str;
         fn test_id() -> Option<&str>;
         fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;

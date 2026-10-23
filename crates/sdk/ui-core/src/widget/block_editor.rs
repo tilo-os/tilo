@@ -9890,6 +9890,14 @@ impl Widget for BlockEditor {
             .collect()
     }
 
+    /// The one leaf the block stack is measured through, and the image
+    /// buttons.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(self.stack_leaf.as_ref());
+        self.for_each_child(visitor);
+        true
+    }
+
     /// Block lines are not children, so their fields' timers (a settling
     /// squiggle, a suggestion for the word under the caret) are collected
     /// here alongside the children's.

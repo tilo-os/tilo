@@ -2501,6 +2501,15 @@ impl Widget for ModalDialog<dyn Widget> {
         }
     }
 
+    /// Laid out also while closed.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.content);
+        for key in &self.keys {
+            visitor(key);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if !self.open {
             return Vec::new();
@@ -2738,6 +2747,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         self.as_dyn().for_each_child(visitor);
+    }
+
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        self.as_dyn().for_each_layout_child(visitor)
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

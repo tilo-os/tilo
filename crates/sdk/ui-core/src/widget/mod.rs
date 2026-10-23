@@ -1588,6 +1588,21 @@ pub trait Widget {
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         defaults::for_each_child(self.children(), visitor);
     }
+    /// Every child this widget's [`Self::build_layout`] gives a layout node,
+    /// also those [`Self::for_each_child`] keeps from routing (a hidden
+    /// pane, a title, a spacer). A retained layout is checked against this
+    /// walk before it is called through again, so a widget that replaced a
+    /// child without reporting it gets a new layout instead of a call into
+    /// freed memory. A child missing here cannot be checked, so debug builds
+    /// stop on it. A wrapper that stands for its inner widget's node visits
+    /// the inner widget itself.
+    ///
+    /// Returns whether it listed them; the default lists none and returns
+    /// `false`, so the walk uses [`Self::for_each_child`]. (A constant
+    /// default is one shared function, not one copy per widget type.)
+    fn for_each_layout_child(&self, _visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        false
+    }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![]
     }

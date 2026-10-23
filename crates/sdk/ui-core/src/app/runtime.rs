@@ -29,6 +29,9 @@ pub(super) struct LayoutRuntime {
     pub(super) taffy: TaffyTree<()>,
     pub(super) root_node: Option<NodeId>,
     pub(super) node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
+    /// Which `node_map` pointers were taken from the live tree
+    /// (`app::retained_layout`).
+    pub(super) adopted: crate::retained_widgets::Adopted,
     pub(super) layout_dirty: bool,
     /// Set when a widget reports `take_structure_dirty()`: without a taffy
     /// rebuild before the next layout pass, runtime-spawned widgets have no
@@ -66,6 +69,7 @@ impl LayoutRuntime {
             taffy: TaffyTree::new(),
             root_node: None,
             node_map: std::collections::HashMap::new(),
+            adopted: crate::retained_widgets::Adopted::default(),
             layout_dirty: true,
             structure_dirty: false,
             last_frame_size: None,

@@ -445,7 +445,14 @@ impl App {
         count
     }
 
+    /// Build the layout of whatever the window presents, and check the map
+    /// it registered against the live tree at once.
     pub(super) fn build_history_presentation(&mut self) {
+        self.build_presentation_layout();
+        self.admit_layout_maps();
+    }
+
+    fn build_presentation_layout(&mut self) {
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
             self.layout.taffy = taffy::TaffyTree::new();
             dialog.sync(&self.state.doc, &self.state.root);

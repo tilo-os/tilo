@@ -202,6 +202,10 @@ impl ui::widget::Widget for OverlayApp {
     ) -> taffy::NodeId {
         self.leaf.build_layout(tree, theme, map)
     }
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn ui::Widget)) -> bool {
+        visitor(&self.leaf);
+        true
+    }
     fn draw_overlay(
         &mut self,
         _: &mut vello::Scene,

@@ -520,6 +520,7 @@ impl FrameHarness {
             &mut self.node_map,
             f64::from(self.viewport.0),
         );
+        self.admit_layout_maps();
         let palette_node = palette_node.filter(|&node| {
             self.taffy
                 .add_child(layout.root, node)

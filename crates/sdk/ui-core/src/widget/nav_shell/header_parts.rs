@@ -324,6 +324,12 @@ impl Widget for MoreActions {
         }
     }
 
+    /// Laid out also while hidden.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.button);
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.shown {
             vec![&mut self.button]

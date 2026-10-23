@@ -700,6 +700,23 @@ impl Widget for HistoryHost {
         }
         children
     }
+    /// Everything a composition can lay out, also under an open review and
+    /// whichever side the preview is not showing. The live app is its
+    /// owner's child, not this one's.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.toolbar);
+        visitor(&self.bar_status);
+        visitor(&self.timeline);
+        visitor(&self.unavailable);
+        visitor(&self.before);
+        visitor(&self.after);
+        visitor(&self.footer);
+        visitor(&self.banner);
+        if let Some(panel) = &self.review {
+            visitor(&panel.dialog);
+        }
+        true
+    }
     fn get_rect(&self) -> Rect {
         self.rect
     }

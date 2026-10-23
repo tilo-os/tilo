@@ -372,6 +372,13 @@ impl super::Decorator for ContextMenuArea {
         }
     }
 
+    /// This area stands for its content's node, laid out under it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(self.content.as_ref());
+        visitor(&self.menu);
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let open = self.menu.is_open();
         let mut children = self.content.children_mut();
