@@ -101,7 +101,11 @@ export async function mountDesktop(target,options={}) {
   // browser places its composition UI there. Nothing of it may show: a textarea's own
   // background, caret or focus outline, even nearly transparent, reads as a stray stroke.
   editor.style.cssText='position:absolute;opacity:0.01;width:2px;height:20px;padding:0;border:0;resize:none;pointer-events:none;background:transparent;color:transparent;caret-color:transparent;outline:none;box-shadow:none;appearance:none';
-  const accessibility=document.createElement('div');accessibility.setAttribute('aria-label','Tilo application');accessibility.style.cssText='position:absolute;top:0;left:0;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);';
+  // The accessibility mirror covers the canvas, each element over the control it
+  // stands for, so assistive technology that reads geometry (magnifiers, touch
+  // exploration) finds it where it is drawn. It is never seen and never takes
+  // the pointer; clipping keeps focus from scrolling it.
+  const accessibility=document.createElement('div');accessibility.setAttribute('aria-label','Tilo application');accessibility.style.cssText='position:absolute;top:0;left:0;width:100%;height:100%;overflow:clip;opacity:0;pointer-events:none;';
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
@@ -153,12 +157,20 @@ export async function mountDesktop(target,options={}) {
       localActivationGesture=undefined;void handoff.complete(gesture.scope,gesture.epoch);
     }
   }
+  // Until a resize is drawn the canvas stretches the last frame to its new
+  // CSS box, and pointer input maps into that frame the same way; the mirror
+  // follows the frame on screen, scaled from its layout size to the canvas.
+  // The canvas's CSS size comes from its resize observer, so a frame's state
+  // update never forces a synchronous layout to read it.
+  let canvasCssSize;
+  const placeSemantics=()=>semantic?.layout(canvasCssSize??=[canvas.clientWidth,canvas.clientHeight],lastState?.logicalSize);
   semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
     keydown:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keydown(...args);},
     keyup:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keyup(...args);},
     blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},
   },inputScope);
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
+  if(globalThis.ResizeObserver){const resized=new ResizeObserver(([entry])=>{canvasCssSize=[entry.contentRect.width,entry.contentRect.height];placeSemantics();});resized.observe(canvas);listeners.signal.addEventListener('abort',()=>resized.disconnect());}
   const editorListeners=[];
   function onEditor(type,fn,opts={}){
     const guarded=event=>{inputScope.capture();if(event.currentTarget!==editor){event.preventDefault();return;}fn(event);};
@@ -231,6 +243,7 @@ export async function mountDesktop(target,options={}) {
     navigationFocus.errors(state.desktopErrors??[]);
     if(state.phase==='presented'&&navigation)navigationFocus.update(navigation.controller.getSnapshot());
     if(state.semantics)semantic.update(state.semantics);
+    placeSemantics();
     const ownership=inputScope.capture(),ime=ownership?.legacy?state.ime:ownership?.ime;
     if(ime){
       editor.style.left=`${ime.x}px`;editor.style.top=`${ime.y}px`;editor.style.height=`${Math.max(1,ime.height)}px`;
