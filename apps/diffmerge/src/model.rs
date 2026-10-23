@@ -336,6 +336,9 @@ pub enum Resolution {
     TookTheirs,
     /// A conflict the user has resolved by taking both (ours then theirs).
     TookBoth,
+    /// A change the user has resolved with their own text
+    /// ([`MergeHunk::custom`]).
+    Custom,
     /// A still-open conflict.
     Conflict,
 }
@@ -356,6 +359,8 @@ pub struct MergeHunk {
     pub resolution: Resolution,
     /// True when this hunk is a real divergence (vs. a passthrough equal run).
     pub is_change: bool,
+    /// The lines a [`Resolution::Custom`] contributes; empty otherwise.
+    pub custom: Vec<String>,
 }
 
 impl MergeHunk {
@@ -373,6 +378,7 @@ impl MergeHunk {
                 v.extend(self.theirs.clone());
                 v
             }
+            Resolution::Custom => self.custom.clone(),
         }
     }
 }
@@ -408,6 +414,7 @@ impl MergeBuilder {
             theirs: lines,
             resolution: Resolution::Unchanged,
             is_change: false,
+            custom: Vec::new(),
         });
     }
 
@@ -434,6 +441,7 @@ impl MergeBuilder {
             theirs: std::mem::take(&mut self.seg_theirs),
             resolution,
             is_change: true,
+            custom: Vec::new(),
         });
         self.seg_any_ours = false;
         self.seg_any_theirs = false;

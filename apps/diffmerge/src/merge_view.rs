@@ -763,7 +763,9 @@ impl MergeView {
     ) -> (Option<Color>, Option<Color>) {
         let washed = |tone| pane::washed(theme, tone, active);
         match resolution {
-            Resolution::Unchanged => (None, None),
+            // Unchanged, or neither side taken: the result is the person's
+            // own text.
+            Resolution::Unchanged | Resolution::Custom => (None, None),
             Resolution::Conflict => (
                 Some(washed(ui::widget::Tone::Danger)),
                 Some(washed(ui::widget::Tone::Danger)),
@@ -1421,6 +1423,7 @@ fn resolution_badge(res: Resolution) -> Option<(String, ChipStyle)> {
         Resolution::TookOurs => ("hunk-took-ours", ChipStyle::Tinted(Tone::Success)),
         Resolution::TookTheirs => ("hunk-took-theirs", ChipStyle::Tinted(Tone::Success)),
         Resolution::TookBoth => ("hunk-took-both", ChipStyle::Tinted(Tone::Success)),
+        Resolution::Custom => ("hunk-custom", ChipStyle::Tinted(Tone::Success)),
         Resolution::Unchanged => return None,
     };
     Some((t(key), style))

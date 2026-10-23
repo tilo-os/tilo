@@ -68,11 +68,7 @@ pub fn compose_choice(model: &MergeModel, hunk: usize, choice: HunkChoice) -> St
 /// every other hunk keeping its current resolution. Backs the per-hunk
 /// "resolve with custom text" affordance.
 pub fn compose_custom(model: &MergeModel, hunk: usize, text: &str) -> String {
-    compose(
-        model,
-        hunk,
-        text.lines().map(std::string::ToString::to_string).collect(),
-    )
+    compose(model, hunk, crate::doc::custom_lines(text))
 }
 
 fn compose(model: &MergeModel, hunk: usize, replacement: Vec<String>) -> String {

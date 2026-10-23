@@ -7,8 +7,8 @@
 //! character), so two people opening different files at once end with one of
 //! the two sets, never a mix. The merged result is a text two people type
 //! into character by character. `resolutions` records the side taken for
-//! each hunk; opening a new merge clears it, since the old hunk indices no
-//! longer correspond.
+//! each hunk and `custom` the text a hunk was resolved with instead; opening
+//! a new merge clears both, since the old hunk indices no longer correspond.
 
 use std::collections::BTreeMap;
 
@@ -121,6 +121,12 @@ impl MergeInputs {
     }
 }
 
+/// The lines custom text contributes to the merged result, the same split
+/// [`crate::actions::compose_custom`] writes.
+pub fn custom_lines(text: &str) -> Vec<String> {
+    text.lines().map(str::to_string).collect()
+}
+
 /// The diff/merge session: what is open and the merged result.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Session {
@@ -142,6 +148,12 @@ pub struct Session {
     /// changes it.
     #[model(readonly)]
     pub resolutions: BTreeMap<String, HunkChoice>,
+    /// Custom resolutions
+    ///
+    /// The text a change was resolved with instead of a side, by its hunk
+    /// index. Only resolving a change with custom text changes it.
+    #[model(readonly)]
+    pub custom: BTreeMap<String, String>,
 }
 
 impl Session {
@@ -157,6 +169,17 @@ impl Session {
                 && h.is_change
             {
                 h.resolution = choice.to_resolution();
+            }
+        }
+        for (hunk, text) in &self.custom {
+            if let Some(h) = hunk
+                .parse::<usize>()
+                .ok()
+                .and_then(|hunk| model.hunks.get_mut(hunk))
+                && h.is_change
+            {
+                h.resolution = Resolution::Custom;
+                h.custom = custom_lines(text);
             }
         }
         model

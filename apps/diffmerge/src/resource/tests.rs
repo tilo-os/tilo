@@ -148,6 +148,87 @@ fn a_change_takes_both_sides_or_custom_text() {
     assert_eq!(session.state().unwrap().merged, "a\nCUSTOM\nc\n");
 }
 
+/// Resolving one change with custom text is recorded like taking a side:
+/// the other changes stay published and can still be resolved, the custom
+/// change counts as resolved, and taking a side for it afterwards replaces
+/// the custom text.
+#[test]
+fn a_custom_resolution_leaves_the_other_changes_resolvable() {
+    let mut session = Replica::<Session>::new();
+    session
+        .apply(Session::OPEN_MERGE.with(session::OpenMerge {
+            base_label: "base".into(),
+            base: "a\nb\nc\nd\ne\n".into(),
+            ours_label: "ours".into(),
+            ours: "a\nO1\nc\nO2\ne\n".into(),
+            theirs_label: "theirs".into(),
+            theirs: "a\nT1\nc\nT2\ne\n".into(),
+        }))
+        .unwrap();
+    let conflicts: Vec<u64> = session
+        .state()
+        .unwrap()
+        .merge_model()
+        .hunks
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.resolution.is_conflict())
+        .map(|(index, _)| u64::try_from(index).unwrap())
+        .collect();
+    let [first, second] = conflicts.as_slice() else {
+        panic!("two conflicts, not {conflicts:?}");
+    };
+    let (first, second) = (*first, *second);
+
+    session
+        .apply(Session::RESOLVE.with(session::Resolve {
+            hunk: first,
+            text: "MINE".into(),
+        }))
+        .unwrap();
+    let state = session.state().unwrap();
+    assert_eq!(state.merged, "a\nMINE\nc\nO2\ne\n");
+    let model = state.merge_model();
+    assert_eq!(model.conflict_count(), 1, "the custom change is resolved");
+    assert!(
+        state.composed(&model),
+        "the record composes the custom text"
+    );
+    let tree = session.published().unwrap();
+    assert_eq!(
+        children_of_kind(&tree, "diffmerge.session.change").len(),
+        2,
+        "both changes stay published after a custom resolution"
+    );
+
+    session
+        .apply(Session::TAKE_THEIRS.with(session::TakeTheirs { hunk: second }))
+        .expect("the other change can still take a side");
+    let state = session.state().unwrap();
+    assert_eq!(state.merged, "a\nMINE\nc\nT2\ne\n");
+    assert!(state.merge_model().fully_resolved());
+
+    session
+        .apply(Session::TAKE_OURS.with(session::TakeOurs { hunk: first }))
+        .expect("the custom change can take a side instead");
+    assert_eq!(session.state().unwrap().merged, "a\nO1\nc\nT2\ne\n");
+
+    session
+        .apply(Session::RESOLVE.with(session::Resolve {
+            hunk: first,
+            text: "STALE".into(),
+        }))
+        .unwrap();
+    session.apply(conflict_merge()).unwrap();
+    let state = session.state().unwrap();
+    assert_eq!(
+        state.merge_model().conflict_count(),
+        1,
+        "a new merge starts with no custom text"
+    );
+    assert_eq!(state.merged, "a\nOURS\nc\n");
+}
+
 /// Two people typing in the merged result converge character by
 /// character; inputs opened at once end as one of the two, never a mix.
 #[test]
