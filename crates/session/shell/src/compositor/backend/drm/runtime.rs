@@ -5795,7 +5795,7 @@ fn mouse_wheel_event(source: AxisSource, dx: f64, dy: f64) -> WindowEvent {
 /// `MouseButton`. Preserve the browser navigation buttons: dropping them in
 /// the DRM adapter made a real mouse behave differently from the hosted
 /// backend and prevented Wayland clients from receiving back/forward clicks.
-fn map_mouse_button(code: u32) -> Option<MouseButton> {
+pub(crate) fn map_mouse_button(code: u32) -> Option<MouseButton> {
     match code {
         0x110 => Some(MouseButton::Left),
         0x111 => Some(MouseButton::Right),
@@ -5877,7 +5877,7 @@ impl KeyboardXkb {
     }
 
     /// Whether `settings` compile to exactly this keymap.
-    fn compiles_to_same_keymap(&self, settings: &KeyboardSettings) -> bool {
+    pub(crate) fn compiles_to_same_keymap(&self, settings: &KeyboardSettings) -> bool {
         self.compiled == Self::keymap_names(settings)
     }
 
@@ -5964,6 +5964,18 @@ impl KeyboardXkb {
             m |= ModifiersState::SUPER;
         }
         m
+    }
+
+    /// The events evdev key `keycode` going down or up makes on this
+    /// keyboard: the modifier change it causes, then the key itself.
+    pub(crate) fn translate(&mut self, keycode: u32, pressed: bool) -> Vec<BackendEvent> {
+        let outcome = self.process(evdev_to_xkb(keycode), pressed);
+        outcome
+            .modifiers_changed
+            .map(BackendEvent::ModifiersChanged)
+            .into_iter()
+            .chain(outcome.input.map(BackendEvent::Input))
+            .collect()
     }
 
     /// Translate one key event. `keycode` already carries the +8 offset (see [`KeyboardKeyEvent::key_code`]).
@@ -6584,6 +6596,35 @@ pub(super) mod tests {
         xkb_shift_event_itself_is_named_and_following_text_is_shifted();
         // Phase `xkb_alpha_key_produces_character_input` (defined above).
         xkb_alpha_key_produces_character_input();
+    }
+
+    #[test]
+    fn a_key_from_another_device_types_what_this_layout_puts_there() {
+        let settings = KeyboardSettings {
+            model: "pc105".into(),
+            source_ids: vec!["de".into()],
+            layouts: "de".into(),
+            variants: String::new(),
+            options: None,
+            active_index: 0,
+        };
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+            eprintln!("xkb keymap unavailable; skipping");
+            return;
+        };
+        // Shift, then the key a US keyboard labels Y: a German Z.
+        let shift = keyboard.translate(42, true);
+        assert!(matches!(
+            shift.first(),
+            Some(BackendEvent::ModifiersChanged(mods)) if mods.state().shift_key()
+        ));
+        let typed = keyboard.translate(21, true);
+        let [BackendEvent::Input(WindowEvent::KeyboardInput { event, .. })] = typed.as_slice()
+        else {
+            panic!("one key event, no modifier change: {typed:?}")
+        };
+        assert_eq!(event.logical_key, Key::Character("Z".into()));
+        assert_eq!(event.text.as_deref(), Some("Z"));
     }
 
     #[test]

@@ -331,6 +331,10 @@ pub struct HeadlessBackend {
     watched: bool,
     /// The simulated panel's frame interval ([`HEADLESS_VBLANK_HZ_ENV`]).
     vblank_interval: Option<Duration>,
+    /// The person's saved keyboard layout, for the keys their other devices
+    /// send: built at the first one.
+    #[cfg(target_os = "linux")]
+    keyboard: Option<super::drm::runtime::KeyboardXkb>,
 }
 
 impl HeadlessBackend {
@@ -387,6 +391,8 @@ impl HeadlessBackend {
             vblank_interval: std::env::var(HEADLESS_VBLANK_HZ_ENV)
                 .ok()
                 .and_then(|raw| super::super::pacing::parse_refresh_override(Some(&raw))),
+            #[cfg(target_os = "linux")]
+            keyboard: None,
         })
     }
 
@@ -580,6 +586,26 @@ impl Backend for HeadlessBackend {
 
     fn outputs(&self) -> &[Output] {
         &self.outputs
+    }
+
+    /// No keyboard of its own, so the saved layout is read as each key
+    /// arrives: a layout chosen meanwhile applies from the next key on.
+    #[cfg(target_os = "linux")]
+    fn translate_key(&mut self, keycode: u32, pressed: bool) -> Vec<BackendEvent> {
+        use super::drm::{input_config::KeyboardSettings, runtime::KeyboardXkb};
+        let settings = KeyboardSettings::load();
+        if !self
+            .keyboard
+            .as_ref()
+            .is_some_and(|keyboard| keyboard.compiles_to_same_keymap(&settings))
+        {
+            self.keyboard = KeyboardXkb::from_settings(&settings);
+        }
+        let Some(keyboard) = self.keyboard.as_mut() else {
+            return Vec::new();
+        };
+        keyboard.set_active_layout(settings.active_index);
+        keyboard.translate(keycode, pressed)
     }
 }
 

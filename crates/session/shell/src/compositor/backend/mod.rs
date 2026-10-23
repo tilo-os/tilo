@@ -949,8 +949,8 @@ pub trait Backend {
 
     /// Translate evdev key `keycode` through this device's keyboard layout,
     /// as a key of its own keyboard is, for input another of the person's
-    /// devices sent. Empty where the backend translates no raw keycodes:
-    /// only the DRM backend does.
+    /// devices sent. Empty where keys arrive translated by a host session
+    /// (the nested backend).
     fn translate_key(&mut self, _keycode: u32, _pressed: bool) -> Vec<BackendEvent> {
         Vec::new()
     }
