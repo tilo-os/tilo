@@ -3218,6 +3218,7 @@ app-list-invalid-entry = Dieser Eintrag lässt sich nicht aus deinen Apps entfer
 app-list-uninstalled = { $name } deinstalliert
 app-list-uninstalled-data = Ihre Daten liegen im Papierkorb.
 app-list-uninstalled-file = Ihre Datei liegt im Papierkorb.
+app-list-uninstalled-files = Alle ihre Kopien liegen im Papierkorb.
 app-list-removed = { $name } aus deinen Apps entfernt
 app-list-uninstall-failed = { $name } konnte nicht deinstalliert werden
 app-list-remove-failed = { $name } konnte nicht aus deinen Apps entfernt werden
@@ -3227,7 +3228,11 @@ app-uninstall-cancel = Abbrechen
 app-uninstall-remove-data = Ihre Daten entfernen
 app-uninstall-remove-data-detail = Deine Einstellungen und gespeicherten Dateien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
 app-uninstall-device-body = Sie wird für alle auf diesem Computer entfernt.
-app-uninstall-file-body = { $file } kommt in den Papierkorb.
+app-uninstall-file-body = { $count ->
+    [one] Ihre Datei kommt in den Papierkorb, wo du sie wiederherstellen kannst.
+   *[other] Alle { $count } Kopien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+}
+app-uninstall-home-folder = Persönlicher Ordner
 app-uninstall-tilo-body = Deine Dokumente bleiben in deinen Arbeitsbereichen.
 app-uninstall-remove-title = { $name } aus den Apps entfernen?
 app-uninstall-remove-action = Aus Apps entfernen

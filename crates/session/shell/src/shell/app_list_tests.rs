@@ -26,6 +26,7 @@ fn host(id: &str, name: &str, path: PathBuf) -> HostEntry {
         flatpak: None,
         downloaded: None,
         kind: EntryKind::System,
+        downloaded_locations: Vec::new(),
     }
 }
 
@@ -202,6 +203,10 @@ fn words_in(sheet: &mut Asking) -> Vec<String> {
         .flat_map(|(_, node)| {
             [
                 node.label().map(str::to_owned),
+                // A row's lines under its title are its value.
+                (node.role() == ui::accesskit::Role::ListItem)
+                    .then(|| node.value().map(str::to_owned))
+                    .flatten(),
                 (node.role() == ui::accesskit::Role::Switch)
                     .then(|| node.description().map(|it| format!("switch: {it}")))
                     .flatten(),
@@ -494,6 +499,7 @@ fn a_downloaded_program_goes_to_the_trash_and_its_entry_goes() {
         program: home.join("a.AppImage"),
         entry: PathBuf::from("/etc/passwd"),
         appimage: true,
+        locations: Vec::new(),
     };
     assert!(plan(&stray, true, &places(home), home).is_err());
 }
@@ -630,4 +636,68 @@ fn a_downloaded_program_taken_off_the_apps_is_no_longer_listed_and_its_file_stay
         !icon.exists(),
         "the icon Tilo kept for it goes with the entry"
     );
+}
+
+/// Uninstalling a downloaded program sends every copy of it the person has
+/// to the Trash, so a leftover one cannot bring the app back, and the
+/// question says how many and where.
+#[test]
+fn uninstalling_a_downloaded_program_trashes_every_copy_and_says_where() {
+    let home = Path::new("/home/ute");
+    let items = every_kind(home);
+    let mut krita = item(&items, "tilo-downloaded-krita").clone();
+    let AppSource::Downloaded { locations, .. } = &mut krita.source else {
+        panic!("krita is a downloaded program");
+    };
+    locations.push(home.join("Downloads/krita-5.1/bin/krita"));
+    let (steps, outcome) = plan(&krita, true, &places(home), home).unwrap();
+    assert_eq!(outcome, Outcome::UninstalledFilesInTrash);
+    assert_eq!(
+        steps,
+        [
+            Step::Trash(home.join("Applications/krita-5.2.AppImage")),
+            Step::Trash(home.join("Downloads/krita-5.1/bin/krita")),
+            Step::ForgetEntry {
+                data_home: home.join(".local/share"),
+                desktop_id: "tilo-downloaded-krita".to_owned(),
+            },
+        ]
+    );
+    let mut sheet = Asking::new(krita);
+    let rows = copy_rows(&sheet.dialog);
+    assert_eq!(rows, ["app-uninstall.copy.0", "app-uninstall.copy.1"]);
+    let words = words_in(&mut sheet);
+    // Each copy by name, with the folder it is in.
+    for expected in [
+        "All 2 copies go to the Trash, where you can restore them.",
+        "krita-5.2.AppImage",
+        "krita",
+    ] {
+        assert!(
+            words.iter().any(|word| word == expected),
+            "{expected}: {words:?}"
+        );
+    }
+    for folder in ["Applications", "Downloads/krita-5.1/bin"] {
+        assert!(
+            words.iter().any(|word| word.ends_with(folder)),
+            "{folder}: {words:?}"
+        );
+    }
+}
+
+fn copy_rows(dialog: &ui::widget::ModalDialog<ui::widget::Column>) -> Vec<String> {
+    fn walk(widget: &dyn ui::widget::Widget, out: &mut Vec<String>) {
+        if let Some(id) = widget.test_id()
+            && id.starts_with(crate::shell::uninstall_sheet::COPY)
+        {
+            out.push(id.to_owned());
+        }
+        for child in widget.children() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(dialog.content(), &mut out);
+    out
 }
