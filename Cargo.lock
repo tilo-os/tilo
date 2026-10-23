@@ -9483,6 +9483,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-files",
+ "tilo-innertube",
  "tilo-invidious",
  "tilo-media",
  "tilo-net",
@@ -18181,6 +18182,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-innertube"
+version = "0.1.0"
+dependencies = [
+ "rustypipe",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-input-context"
 version = "0.1.0"
 dependencies = [
@@ -20552,6 +20561,7 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "rustypipe",
+ "tilo-innertube",
  "workspace-hack",
 ]
 
@@ -21180,6 +21190,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-files",
+ "tilo-innertube",
  "tilo-invidious",
  "tilo-media",
  "tilo-net",
