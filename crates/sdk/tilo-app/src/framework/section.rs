@@ -691,6 +691,14 @@ impl SettingsRecords {
         person.owners()
     }
 
+    /// The person's shared record `P` (their accounts), held beside the sections and synced with them
+    /// ([`Self::history_owners`]), opened on first use; not published here.
+    /// `None` where the sections are not kept in the person's records.
+    #[must_use]
+    pub fn shared<P: tilo_resource::SharedRecord>(&self) -> Option<super::PersonRecord<P>> {
+        self.person.as_ref()?.hold_shared::<P>()
+    }
+
     /// Every section, published with its field edits and verbs, and the
     /// person's undo and redo of each kept in their records.
     #[must_use]
