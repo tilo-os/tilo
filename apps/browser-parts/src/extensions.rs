@@ -28,13 +28,15 @@ pub enum ExtensionError {
     Io(std::io::Error),
 }
 
-const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
+/// Ad blockers carry their filter lists: Adblock Plus is 78 MB packed and
+/// 347 MB unpacked.
+const MAX_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 /// Entry count and declared unpacked size are checked before anything is
 /// inflated or written to disk.
 const ARCHIVE_LIMITS: ZipLimits = ZipLimits {
     max_parts: 4_096,
     max_part_bytes: 256 * 1024 * 1024,
-    max_total_bytes: 256 * 1024 * 1024,
+    max_total_bytes: 1024 * 1024 * 1024,
 };
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 /// Largest `_locales/<locale>/messages.json` read for an extension's names.
@@ -499,6 +501,37 @@ mod tests {
     }
 
     #[test]
+    fn an_offer_says_what_an_extension_may_do_as_chrome_does() {
+        // uBlock Origin Lite's manifest, as the Web Store serves it.
+        let ublock = r#"{"manifest_version":3,"name":"uBlock Origin Lite","version":"1",
+            "permissions":["activeTab","alarms","declarativeNetRequest","offscreen","scripting",
+            "storage","unlimitedStorage","userScripts"],"host_permissions":["<all_urls>"]}"#;
+        assert_eq!(
+            summarize_manifest(ublock).unwrap(),
+            [
+                "Read and change all your data on all websites",
+                "Block content on any page"
+            ]
+        );
+        // A tab-reading ad blocker limited to two sites by its content scripts.
+        let narrow = r#"{"manifest_version":3,"name":"x","version":"1",
+            "permissions":["tabs","storage","declarativeNetRequest"],
+            "content_scripts":[{"matches":["*://*.example.org/*","https://news.example/*"]}]}"#;
+        assert_eq!(
+            summarize_manifest(narrow).unwrap(),
+            [
+                "Read and change your data on 2 websites",
+                "Block content on any page",
+                "Read your browsing history"
+            ]
+        );
+        assert_eq!(
+            summarize_manifest(r#"{"name":"x","version":"1","permissions":["storage"]}"#).unwrap(),
+            ["It needs no special access"]
+        );
+    }
+
+    #[test]
     fn an_extension_is_named_in_its_own_locale() {
         let staged = stage_file(localized_zip("uBlock Origin Lite")).unwrap();
         assert_eq!(staged.info.name, "uBlock Origin Lite", "the offer names it");
@@ -701,10 +734,9 @@ mod approval_tests {
         std::fs::write(path.join("manifest.json"),r#"{"name":"fixture","version":"1","manifest_version":3,"permissions":["storage"],"host_permissions":["https://example.org/*"]}"#).unwrap();
         let extension = list_in(root.path()).pop().unwrap();
         assert!(!is_approved(&extension));
-        assert!(
-            permission_summary(&extension)
-                .unwrap()
-                .contains("https://example.org/*")
+        assert_eq!(
+            permission_summary(&extension).unwrap(),
+            ["Read and change your data on example.org"]
         );
         set_approved(&extension, true).unwrap();
         assert!(is_approved(&extension));
@@ -826,51 +858,133 @@ pub fn set_pinned(id: &str, pinned: bool) -> Result<(), ExtensionError> {
 ///
 /// # Errors
 /// Returns an error if the manifest cannot be read or parsed.
-pub fn permission_summary(extension: &ExtensionInfo) -> Result<String, ExtensionError> {
+pub fn permission_summary(extension: &ExtensionInfo) -> Result<Vec<String>, ExtensionError> {
     summarize_manifest(&read_manifest(&extension.path.join("manifest.json"))?)
 }
 
-/// The permission summary for manifest text, before anything is installed.
+/// What the extension may do, as Chrome warns of it when it is added: one
+/// plain line per kind of access its manifest asks for, broadest first.
+/// Optional permissions are asked for later, by the extension, and are not
+/// listed.
 ///
 /// # Errors
-/// Returns an error if the manifest cannot be parsed.
-pub fn summarize_manifest(text: &str) -> Result<String, ExtensionError> {
+/// Returns [`ExtensionError::Manifest`] when the manifest is not JSON.
+pub fn summarize_manifest(text: &str) -> Result<Vec<String>, ExtensionError> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|error| ExtensionError::Manifest(error.to_string()))?;
-    let mut permissions = Vec::new();
-    for key in [
-        "permissions",
-        "host_permissions",
-        "optional_permissions",
-        "optional_host_permissions",
-    ] {
-        if let Some(items) = value.get(key).and_then(serde_json::Value::as_array) {
-            for item in items {
-                if let Some(item) = item.as_str() {
-                    permissions.push(format!("{key}: {item}"));
-                }
-            }
-        }
-    }
+    let strings = |key: &str| -> Vec<String> {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let permissions = strings("permissions");
+    // Sites: the host permissions, MV2's hosts among its permissions, and
+    // where its content scripts run.
+    let mut patterns = strings("host_permissions");
+    patterns.extend(
+        permissions
+            .iter()
+            .filter(|permission| permission.contains("://") || *permission == "<all_urls>")
+            .cloned(),
+    );
     if let Some(scripts) = value
         .get("content_scripts")
         .and_then(serde_json::Value::as_array)
     {
         for script in scripts {
             if let Some(matches) = script.get("matches").and_then(serde_json::Value::as_array) {
-                for pattern in matches {
-                    if let Some(pattern) = pattern.as_str() {
-                        permissions.push(format!("content scripts: {pattern}"));
-                    }
-                }
+                patterns.extend(matches.iter().filter_map(|m| m.as_str().map(str::to_owned)));
             }
         }
     }
-    Ok(if permissions.is_empty() {
-        "No declared permissions".into()
-    } else {
-        permissions.join("; ")
-    })
+    let t = |key: &str| crate::CATALOG.t(key);
+    let mut lines = Vec::new();
+    let mut sites: Vec<String> = Vec::new();
+    let mut every_site = permissions.iter().any(|p| p == "debugger" || p == "proxy");
+    for pattern in &patterns {
+        match site_of(pattern) {
+            None => every_site = true,
+            Some(site) if !sites.contains(&site) => sites.push(site),
+            Some(_) => {}
+        }
+    }
+    if every_site {
+        lines.push(t("browser-extension-access-all-sites"));
+    } else if let [site] = sites.as_slice() {
+        lines.push(crate::CATALOG.t_args(
+            "browser-extension-access-site",
+            &[("site", ui::i18n::ArgValue::Text(site.clone()))],
+        ));
+    } else if !sites.is_empty() {
+        lines.push(crate::CATALOG.t_args(
+            "browser-extension-access-sites",
+            &[("count", ui::i18n::ArgValue::Number(sites.len() as f64))],
+        ));
+    }
+    let has = |names: &[&str]| permissions.iter().any(|p| names.contains(&p.as_str()));
+    for (names, key) in [
+        (
+            &[
+                "declarativeNetRequest",
+                "declarativeNetRequestWithHostAccess",
+            ][..],
+            "browser-extension-block-content",
+        ),
+        (&["history"][..], "browser-extension-change-history"),
+        (
+            &["tabs", "webNavigation"][..],
+            "browser-extension-read-history",
+        ),
+        (&["bookmarks"][..], "browser-extension-bookmarks"),
+        (&["downloads"][..], "browser-extension-downloads"),
+        (&["clipboardRead"][..], "browser-extension-clipboard-read"),
+        (&["clipboardWrite"][..], "browser-extension-clipboard-write"),
+        (&["notifications"][..], "browser-extension-notifications"),
+        (&["geolocation"][..], "browser-extension-location"),
+        (&["management"][..], "browser-extension-management"),
+        (&["nativeMessaging"][..], "browser-extension-native"),
+        (
+            &["privacy", "contentSettings"][..],
+            "browser-extension-privacy",
+        ),
+        (&["topSites"][..], "browser-extension-top-sites"),
+        (
+            &["desktopCapture", "tabCapture"][..],
+            "browser-extension-screen",
+        ),
+        (&["debugger"][..], "browser-extension-debugger"),
+    ] {
+        // Reading history is part of changing it.
+        if key == "browser-extension-read-history" && has(&["history"]) {
+            continue;
+        }
+        if has(names) {
+            lines.push(t(key));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(t("browser-extension-no-access"));
+    }
+    Ok(lines)
+}
+
+/// The site a match pattern names (`*://*.example.org/*` is `example.org`),
+/// or `None` for one that matches every site.
+fn site_of(pattern: &str) -> Option<String> {
+    if pattern == "<all_urls>" {
+        return None;
+    }
+    let host = pattern.split_once("://").map_or(pattern, |(_, rest)| rest);
+    let host = host.split('/').next().unwrap_or_default();
+    let host = host.strip_prefix("*.").unwrap_or(host);
+    (!host.is_empty() && host != "*").then(|| host.to_owned())
 }
 
 /// A verified package, read but not yet installed: what the person is shown
@@ -878,7 +992,8 @@ pub fn summarize_manifest(text: &str) -> Result<String, ExtensionError> {
 #[derive(Debug, Clone)]
 pub struct StagedPackage {
     pub info: ExtensionInfo,
-    pub permissions: String,
+    /// What it may do, one line per kind of access.
+    pub permissions: Vec<String>,
     pub bytes: std::sync::Arc<Vec<u8>>,
     /// The identifier its CRX3 signature names; `None` for an unsigned zip.
     pub signed_id: Option<String>,
@@ -1045,7 +1160,10 @@ mod lifecycle_tests {
         let staged = stage_package(package(&signer), &id).unwrap();
         assert_eq!(staged.info.name, "Lite");
         assert_eq!(staged.info.id, id);
-        assert!(staged.permissions.contains("host_permissions: <all_urls>"));
+        assert_eq!(
+            staged.permissions.first().map(String::as_str),
+            Some("Read and change all your data on all websites")
+        );
         assert!(list_in(root.path()).is_empty());
         assert!(stage_package(package(&signer), &"a".repeat(32)).is_err());
         assert_eq!(
@@ -1065,10 +1183,12 @@ mod lifecycle_tests {
         assert!(!is_approved(&info));
         assert!(approved_in(root.path()).is_empty());
         assert!(pinned_in(root.path()).is_empty());
-        assert!(
+        assert_eq!(
             permission_summary(&info)
                 .unwrap()
-                .contains("host_permissions: <all_urls>")
+                .first()
+                .map(String::as_str),
+            Some("Read and change all your data on all websites")
         );
 
         // phase: enabling_loads_the_directory_and_pinning_is_independent

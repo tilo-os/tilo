@@ -649,7 +649,7 @@ impl ExtensionController {
         };
         Some(match panel {
             Panel::Offer(package) => {
-                let content = Column::new()
+                let mut content = Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
                     .with_rhythm(ui::tokens::Rhythm::Sibling)
@@ -659,20 +659,27 @@ impl ExtensionController {
                     ))
                     .push(text(&format!("Version {}", package.info.version)))
                     .push(Box::new(
-                        Text::new(&format!("It can use: {}", package.permissions))
+                        Text::new(&CATALOG.t("browser-extension-can"))
+                            .with_role(ui::tokens::TextRole::Body),
+                    ));
+                // What it may do, one line each, as Chrome lists it.
+                for line in &package.permissions {
+                    content = content.push(Box::new(
+                        Text::new(line)
                             .with_role(ui::tokens::TextRole::Caption)
                             .dimmed(),
-                    ))
-                    .push(Box::new(
-                        Actions::new(
-                            Button::new("browser.extension.confirm", "Add extension")
-                                .on_effect(self.queue(Command::Confirm)),
-                        )
-                        .secondary(
-                            Button::new("browser.extension.cancel", "Cancel")
-                                .on_effect(self.queue(Command::Cancel)),
-                        ),
                     ));
+                }
+                let content = content.push(Box::new(
+                    Actions::new(
+                        Button::new("browser.extension.confirm", "Add extension")
+                            .on_effect(self.queue(Command::Confirm)),
+                    )
+                    .secondary(
+                        Button::new("browser.extension.cancel", "Cancel")
+                            .on_effect(self.queue(Command::Cancel)),
+                    ),
+                ));
                 (
                     Box::new(content),
                     vec![ADD_BUTTON.to_owned(), MENU_BUTTON.to_owned()],
@@ -739,7 +746,11 @@ impl ExtensionController {
         } else {
             "Off"
         };
-        let permissions = extensions::permission_summary(info).unwrap_or_else(|e| e.to_string());
+        // Its broadest access, the line Chrome lists first.
+        let permissions = extensions::permission_summary(info).map_or_else(
+            |e| e.to_string(),
+            |lines| lines.into_iter().next().unwrap_or_default(),
+        );
         let mut buttons = Vec::new();
         if info.manifest_version == 3 {
             let command = if extension.enabled {
