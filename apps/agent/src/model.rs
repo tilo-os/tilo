@@ -942,6 +942,26 @@ pub fn action_user_turn(rest: &str, catalogue: &Catalogue, revealed: &mut Reveal
     }
 }
 
+/// [`action_user_turn`] for a planner whose records keep publishing
+/// resources as a task runs (clips, sheets, messages): at most `most`
+/// operations, with look-alike resources in one line and every resource
+/// `rest` names listed whatever the cap
+/// ([`tools::catalogue_summary_with`]). `rest` is the request with what the
+/// task's steps answered, so an id an earlier step returned may be planned.
+pub fn action_user_turn_listing(
+    rest: &str,
+    catalogue: &Catalogue,
+    revealed: &mut Revealed,
+    most: usize,
+) -> FirstTurn {
+    let named = tools::Naming::in_text(rest);
+    let summary = tools::catalogue_summary_with(catalogue, revealed, most, Some(&named));
+    FirstTurn {
+        operations: format!("Operations published right now:\n\n{summary}\n"),
+        task: format!("The instruction asks for:\n\n{}\n", rest.trim()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Streamed loop turns
 // ---------------------------------------------------------------------------
