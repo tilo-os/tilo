@@ -554,7 +554,7 @@ and URL are placeholders: the release generates the real set from the signed ins
 
 [[matrix.check]]
 name = "imager-winget-acceptance"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 run = '''
 [[ -n ${TILO_SITE_TOKEN:-} ]] || {
   echo 'TILO_SITE_TOKEN is not set: the server config must give this check the site bot token' >&2
@@ -844,7 +844,7 @@ source.json, each tested RPM's size and SHA-256."""
 
 [[matrix.check]]
 name = "publish-desktop-payload"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
 inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"]
 # Only packages that logged in on stock Fedora become the payload an OS build installs.

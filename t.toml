@@ -889,7 +889,7 @@ default = false
 # binaries first on PATH.
 [[check]]
 name = "hakari"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 8, memory = "2GiB" }
@@ -1025,7 +1025,7 @@ inputs = ["apps/browser/tilo-app.toml", "crates/sdk/ui-core/assets/fonts/**", "c
 # fixtures, rpmbuild's scratch directory), which is the check's own.
 [[check]]
 name = "security"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin", TILO_IMAGE_POLICY_CHECK_BIN = "/target/debug/tilo-image-policy-check", TILO_CRYPTO_BIN = "/target/debug/tilo-crypto", TILO_ESP_WRITE_BIN = "/target/debug/tilo-esp-write", TILO_BOARD_SUCCESSOR_BIN = "/target/debug/tilo-board-successor", TILO_STAGING_HANDOFF_BIN = "/target/debug/tilo-staging-handoff" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "2GiB" }
@@ -1348,7 +1348,7 @@ default = false
 [[check]]
 name = "suite-android-runtime-supervisor"
 run = "python3 tools/ci/suites.py run --jobs 8 --group android-runtime-supervisor"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1357,7 +1357,7 @@ inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "too
 [[check]]
 name = "suite-headless-launch-preflight"
 run = "python3 tools/ci/suites.py run --jobs 8 --group headless-launch-preflight"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1366,7 +1366,7 @@ inputs = ["scripts/headless-examples/spawn-headless.sh", "scripts/headless-examp
 [[check]]
 name = "suite-runtime-dependency-closure"
 run = "python3 tools/ci/suites.py run --jobs 8 --group runtime-dependency-closure"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1375,7 +1375,7 @@ inputs = ["dist/apps/package-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/
 [[check]]
 name = "suite-runtime-dylib-lazy-link"
 run = "python3 tools/ci/suites.py run --jobs 8 --group runtime-dylib-lazy-link"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 inputs = ["tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/test_runtime_dylib_lazy_link.py", "tools/with-test-environment.sh"]
@@ -1383,7 +1383,7 @@ inputs = ["tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrappe
 [[check]]
 name = "suite-release-trust"
 run = "python3 tools/ci/suites.py run --jobs 8 --group release-trust"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1393,7 +1393,7 @@ inputs = ["keys/**", "os/Containerfile", "os/Containerfile.host", "os/dev/hardwa
 [[check]]
 name = "suite-os"
 run = "python3 tools/ci/suites.py run --jobs 8 --group os"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin", TILO_STAGING_HANDOFF_BIN = "/target/debug/tilo-staging-handoff" }
 requires = ["arch=x86_64"]
 requirement = { cores = 2, memory = "2GiB" }
@@ -1407,7 +1407,7 @@ default = false
 [[check]]
 name = "suite-native-store-autoclear"
 run = "python3 tools/ci/suites.py run --jobs 8 --group native-store-autoclear"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 2, memory = "1GiB" }
@@ -1416,7 +1416,7 @@ inputs = ["tools/ci/native-store-autoclear.py", "tools/ci/suites.py", "tools/ci/
 [[check]]
 name = "suite-os-workflows"
 run = "python3 tools/ci/suites.py run --jobs 8 --group os-workflows"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 2, memory = "1GiB" }
@@ -1425,7 +1425,7 @@ inputs = [".forgejo/workflows/**", "os/**", "os/containers/tilo-agent-host/test-
 [[check]]
 name = "suite-pipewire-echo-cancel"
 run = "python3 tools/ci/suites.py run --jobs 8 --group pipewire-echo-cancel"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1434,7 +1434,7 @@ inputs = ["crates/platform/tilo-media/src/audio.rs", "crates/platform/tilo-media
 [[check]]
 name = "suite-no-cisco-openh264"
 run = "python3 tools/ci/suites.py run --jobs 8 --group no-cisco-openh264"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1443,7 +1443,7 @@ inputs = ["dist/ci/install-build-deps.sh", "os/**", "os/tests/test_no_cisco_open
 [[check]]
 name = "suite-openssl-free"
 run = "python3 tools/ci/suites.py run --jobs 8 --group openssl-free"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "2GiB" }
@@ -1452,7 +1452,7 @@ inputs = ["*Cargo.lock", "*Cargo.toml", ".cargo/**", ".forgejo/**", "apps/*.rs",
 [[check]]
 name = "suite-mount-source-cache-keys"
 run = "python3 tools/ci/suites.py run --jobs 8 --group mount-source-cache-keys"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1461,7 +1461,7 @@ inputs = ["os/**", "os/tests/test_mount_source_cache_keys.py", "tools/ci/suites.
 [[check]]
 name = "suite-dev-feature-targets"
 run = "python3 tools/ci/suites.py run --jobs 8 --group dev-feature-targets"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1470,7 +1470,7 @@ inputs = ["*Cargo.toml", "os/components.toml", "os/tests/dev_feature_targets.py"
 [[check]]
 name = "suite-containerfile-sources"
 run = "python3 tools/ci/suites.py run --jobs 8 --group containerfile-sources"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1479,7 +1479,7 @@ inputs = [".cargo/**", ".containerignore", "Cargo.lock", "Cargo.toml", "apps", "
 [[check]]
 name = "suite-workspace-release"
 run = "python3 tools/ci/suites.py run --jobs 8 --group workspace-release"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1488,7 +1488,7 @@ inputs = ["*/src/bin/*", "*/src/main.rs", "*Cargo.toml", ".cargo/**", "Cargo.tom
 [[check]]
 name = "suite-app-store"
 run = "python3 tools/ci/suites.py run --jobs 8 --group app-store"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1497,7 +1497,7 @@ inputs = ["*Cargo.toml", "Cargo.toml", "apps/**", "crates/packaging/install/**",
 [[check]]
 name = "suite-system-extension"
 run = "python3 tools/ci/suites.py run --jobs 8 --group system-extension"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1506,7 +1506,7 @@ inputs = ["crates/system/system-extension/**", "os/**", "os/tests/boot_pack_inva
 [[check]]
 name = "suite-rollback"
 run = "python3 tools/ci/suites.py run --jobs 8 --group rollback"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1515,7 +1515,7 @@ inputs = ["crates/system/tilo-rollback/**", "os/**", "os/tests/esp_capacity.sh",
 [[check]]
 name = "suite-direct-boot-bundle"
 run = "python3 tools/ci/suites.py run --jobs 8 --group direct-boot-bundle"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1524,7 +1524,7 @@ inputs = ["os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/tes
 [[check]]
 name = "suite-home-peer"
 run = "python3 tools/ci/suites.py run --jobs 8 --group home-peer"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1533,7 +1533,7 @@ inputs = ["apps/settings-rare/**", "crates/hosting/tilo-relay/**", "crates/runti
 [[check]]
 name = "suite-app-publication"
 run = "python3 tools/ci/suites.py run --jobs 8 --group app-publication"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1542,7 +1542,7 @@ inputs = ["os/**", "os/tests/parallel_package_uploads.sh", "os/tests/prior_app_c
 [[check]]
 name = "suite-printing"
 run = "python3 tools/ci/suites.py run --jobs 8 --group printing"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1551,7 +1551,7 @@ inputs = ["crates/packaging/launcher/**", "crates/platform/tilo-capture/src/scan
 [[check]]
 name = "suite-remote-capture"
 run = "python3 tools/ci/suites.py run --jobs 8 --group remote-capture"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1560,7 +1560,7 @@ inputs = ["crates/session/shell/src/shell/remote_capture/**", "os/**", "os/tests
 [[check]]
 name = "suite-image-size"
 run = "python3 tools/ci/suites.py run --jobs 8 --group image-size"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1569,7 +1569,7 @@ inputs = [".forgejo/workflows/build-image.yml", "os/image-size-budget.toml", "os
 [[check]]
 name = "suite-windows"
 run = "python3 tools/ci/suites.py run --jobs 8 --group windows"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1578,7 +1578,7 @@ inputs = ["crates/packaging/launcher/**", "crates/session/shell/src/shell/window
 [[check]]
 name = "suite-kernel-signer"
 run = "python3 tools/ci/suites.py run --jobs 8 --group kernel-signer"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1587,7 +1587,7 @@ inputs = ["Cargo.toml", "crates/system/tilo-crypto/**", "os/**", "os/tests/test_
 [[check]]
 name = "suite-imager-packaging"
 run = "python3 tools/ci/suites.py run --jobs 8 --group imager-packaging"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 2, memory = "1GiB" }
@@ -1596,7 +1596,7 @@ inputs = [".forgejo/workflows/release-desktop.yml", ".forgejo/workflows/release-
 [[check]]
 name = "suite-native-qualification-storage"
 run = "python3 tools/ci/suites.py run --jobs 8 --group native-qualification-storage"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1605,7 +1605,7 @@ inputs = ["tools/ci/disposable-native-vm.py", "tools/ci/native-store-virtio.py",
 [[check]]
 name = "suite-ntfs-helper"
 run = "python3 tools/ci/suites.py run --jobs 8 --group ntfs-helper"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1615,7 +1615,7 @@ inputs = ["crates/session/tilo-ntfs-helper/**", "crates/session/tilo-ntfs-helper
 [[check]]
 name = "suite-dist"
 run = "python3 tools/ci/suites.py run --jobs 8 --group dist"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 2, memory = "1GiB" }
@@ -1625,7 +1625,7 @@ inputs = ["dist/**", "dist/ci/tests/test_failed_rpm_retention.py", "dist/ci/test
 [[check]]
 name = "suite-browser-tools"
 run = "python3 tools/ci/suites.py run --jobs 8 --group browser-tools"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 2, memory = "1GiB" }
@@ -1635,7 +1635,7 @@ inputs = ["apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium
 [[check]]
 name = "suite-vm-acceptance"
 run = "python3 tools/ci/suites.py run --jobs 8 --group vm-acceptance"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 writable_sources = true
@@ -1647,7 +1647,7 @@ default = false
 [[check]]
 name = "suite-perf-tools"
 run = "python3 tools/ci/suites.py run --jobs 8 --group perf-tools"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 4, memory = "1GiB" }
@@ -1656,7 +1656,7 @@ inputs = ["apps/*/tilo-app.toml", "apps/settings-core/src/categories.rs", "crate
 [[check]]
 name = "suite-developer-scripts"
 run = "python3 tools/ci/suites.py run --jobs 8 --group developer-scripts"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1665,7 +1665,7 @@ inputs = ["scripts/agent-loop/**", "scripts/app-launch-sweep.py", "scripts/headl
 [[check]]
 name = "suite-vm-acceptance-tools"
 run = "python3 tools/ci/suites.py run --jobs 8 --group vm-acceptance-tools"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1674,7 +1674,7 @@ inputs = ["scripts/vm-acceptance/**", "scripts/vm-acceptance/tests/test_error_pa
 [[check]]
 name = "suite-ux-bench"
 run = "python3 tools/ci/suites.py run --jobs 8 --group ux-bench"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1683,7 +1683,7 @@ inputs = ["scripts/ux-bench/**", "scripts/ux-bench/test_suite.py", "scripts/ux-b
 [[check]]
 name = "suite-platform-web"
 run = "python3 tools/ci/suites.py run --jobs 8 --group platform-web"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1693,7 +1693,7 @@ inputs = ["crates/platform/tilo-clipboard/web/**", "crates/platform/tilo-clipboa
 [[check]]
 name = "suite-browser-compute-web"
 run = "bash tools/ci/prepare-moq-library.sh && python3 tools/ci/suites.py run --jobs 8 --group browser-compute-web"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1704,17 +1704,17 @@ inputs = ["crates/browser/tilo-browser-compute/**", "crates/browser/tilo-browser
 [[check]]
 name = "suite-browser-runtime-web"
 run = "bash tools/ci/prepare-moq-library.sh && python3 tools/ci/suites.py run --jobs 8 --group browser-runtime-web"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 6, memory = "1GiB" }
 writable_sources = true
-inputs = ["crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-runtime/web/actions.test.mjs", "crates/browser/tilo-browser-runtime/web/admission.test.mjs", "crates/browser/tilo-browser-runtime/web/agents.test.mjs", "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs", "crates/browser/tilo-browser-runtime/web/arrival.test.mjs", "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs", "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs", "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs", "crates/browser/tilo-browser-runtime/web/bundle-update.test.mjs", "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs", "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs", "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs", "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs", "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs", "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs", "crates/browser/tilo-browser-runtime/web/entry.test.mjs", "crates/browser/tilo-browser-runtime/web/fetch-proxy.test.mjs", "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs", "crates/browser/tilo-browser-runtime/web/here.test.mjs", "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs", "crates/browser/tilo-browser-runtime/web/host-core-status.test.mjs", "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs", "crates/browser/tilo-browser-runtime/web/host-input.test.mjs", "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs", "crates/browser/tilo-browser-runtime/web/image-decode.test.mjs", "crates/browser/tilo-browser-runtime/web/json-text.test.mjs", "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs", "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs", "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs", "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs", "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs", "crates/browser/tilo-browser-runtime/web/live-transport.test.mjs", "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs", "crates/browser/tilo-browser-runtime/web/membership.test.mjs", "crates/browser/tilo-browser-runtime/web/native-catalogue.test.mjs", "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs", "crates/browser/tilo-browser-runtime/web/panorama.test.mjs", "crates/browser/tilo-browser-runtime/web/peer.test.mjs", "crates/browser/tilo-browser-runtime/web/qr.test.mjs", "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs", "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs", "crates/browser/tilo-browser-runtime/web/router.test.mjs", "crates/browser/tilo-browser-runtime/web/scrub.test.mjs", "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs", "crates/browser/tilo-browser-runtime/web/session-refusal.test.mjs", "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs", "crates/browser/tilo-browser-runtime/web/video-profile.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-audio-codecs.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-audio.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-profile.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-revocation.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-transport.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-video.test.mjs", "crates/browser/tilo-browser-runtime/web/voice.test.mjs", "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs", "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs", "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs", "crates/collab/reference/tests/links.json", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "scripts/moq-browser/**", "tools/ci/prepare-moq-library.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/web/wasm-split/src/main.rs", "tools/with-test-environment.sh"]
+inputs = ["crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-runtime/web/actions.test.mjs", "crates/browser/tilo-browser-runtime/web/admission.test.mjs", "crates/browser/tilo-browser-runtime/web/agents.test.mjs", "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs", "crates/browser/tilo-browser-runtime/web/arrival.test.mjs", "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs", "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs", "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs", "crates/browser/tilo-browser-runtime/web/bundle-update.test.mjs", "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs", "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs", "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs", "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs", "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs", "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs", "crates/browser/tilo-browser-runtime/web/entry.test.mjs", "crates/browser/tilo-browser-runtime/web/fetch-proxy.test.mjs", "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs", "crates/browser/tilo-browser-runtime/web/here.test.mjs", "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs", "crates/browser/tilo-browser-runtime/web/host-core-status.test.mjs", "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs", "crates/browser/tilo-browser-runtime/web/host-input.test.mjs", "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs", "crates/browser/tilo-browser-runtime/web/image-decode.test.mjs", "crates/browser/tilo-browser-runtime/web/json-text.test.mjs", "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs", "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs", "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs", "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs", "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs", "crates/browser/tilo-browser-runtime/web/live-transport.test.mjs", "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs", "crates/browser/tilo-browser-runtime/web/membership.test.mjs", "crates/browser/tilo-browser-runtime/web/native-catalogue.test.mjs", "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs", "crates/browser/tilo-browser-runtime/web/panorama.test.mjs", "crates/browser/tilo-browser-runtime/web/peer.test.mjs", "crates/browser/tilo-browser-runtime/web/qr.test.mjs", "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs", "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs", "crates/browser/tilo-browser-runtime/web/router.test.mjs", "crates/browser/tilo-browser-runtime/web/scrub.test.mjs", "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs", "crates/browser/tilo-browser-runtime/web/semantics.test.mjs", "crates/browser/tilo-browser-runtime/web/session-refusal.test.mjs", "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs", "crates/browser/tilo-browser-runtime/web/video-profile.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-audio-codecs.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-audio.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-buffers.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-controls.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-profile.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-revocation.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-transport.test.mjs", "crates/browser/tilo-browser-runtime/web/voice-video.test.mjs", "crates/browser/tilo-browser-runtime/web/voice.test.mjs", "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs", "crates/browser/tilo-browser-runtime/web/workspace-actions.test.mjs", "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs", "crates/collab/reference/tests/links.json", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "scripts/moq-browser/**", "tools/ci/prepare-moq-library.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/web/wasm-split/src/main.rs", "tools/with-test-environment.sh"]
 
 [[check]]
 name = "suite-desktop-open-times"
 run = "python3 tools/ci/suites.py run --jobs 8 --group desktop-open-times"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1723,7 +1723,7 @@ inputs = ["crates/browser/tilo-web-desktop/scripts/**", "crates/browser/tilo-web
 [[check]]
 name = "suite-browser-auth-e2e"
 run = "python3 tools/ci/suites.py run --jobs 8 --group browser-auth-e2e"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1732,7 +1732,7 @@ inputs = ["crates/hosting/tilo-room-service/dev/**", "crates/hosting/tilo-room-s
 [[check]]
 name = "suite-browser-benchmark-scripts"
 run = "python3 tools/ci/suites.py run --jobs 8 --group browser-benchmark-scripts"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1741,7 +1741,7 @@ inputs = ["scripts/browser/**", "scripts/browser/benchmark-pages.test.mjs", "scr
 [[check]]
 name = "suite-browser-fixture-assets"
 run = "python3 tools/ci/suites.py run --jobs 8 --group browser-fixture-assets"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -1750,7 +1750,7 @@ inputs = ["tools/ci/suites.py", "tools/ci/suites.toml", "tools/test-assets.py", 
 [[check]]
 name = "suite-cloud-rystic-ci"
 run = "python3 tools/ci/suites.py run --jobs 8 --group cloud-rystic-ci"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
@@ -2937,7 +2937,7 @@ default = false
 # `t dispatch policy-profile --input target=app-portability` (or policy-tests).
 [[check]]
 name = "policy-profile"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 run = "bash tools/ci/t-git-index.sh bash tools/ci/measure.sh 'policy profile tests' -- python3 tools/ci/profile_policy.py --target \"${T_INPUT_TARGET:-app-resource-action}\""
 requires = ["arch=x86_64"]
@@ -2952,7 +2952,7 @@ target = "app-resource-action"
 # must agree on every blob, and each one's time and memory is reported.
 [[check]]
 name = "source-blobs"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 run = """
 python3 tools/ci/compare_source_auditor.py --order "${T_INPUT_ORDER:-baseline-first}" --baseline "${T_INPUT_BASELINE:-cc3f8733cc304af1a1a09aae826ec78a4f31b178}"
@@ -3230,7 +3230,7 @@ name = "perf-footprint"
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 inputs = ["tools/perf/**", "tools/ci/perf-scheduled.sh"]
 cost = "seconds"
 outputs = ["/target/perf/footprint/**"]
@@ -3243,7 +3243,7 @@ name = "perf-footprint-image"
 on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint-image"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 inputs = ["tools/perf/**", "tools/ci/perf-scheduled.sh"]
 cost = "minutes"
 outputs = ["/target/perf/footprint-image/**"]
@@ -3366,7 +3366,7 @@ default = false
 [[check]]
 name = "perf-scheduled"
 run = "bash tools/ci/perf-compare.sh"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 # Whatever the groups' outcome, so one failing group doesn't cost the others their records:
 # perf-compare.sh fails for those T_NEEDS_FAILED names, and for any group with no records.
 needs_any_outcome = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
@@ -3519,7 +3519,7 @@ default = false
 
 [[check]]
 name = "vm-acceptance-perf"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 needs = ["vm-acceptance"]
 run = """
 records=/target/vm-acceptance/report/records.jsonl
@@ -4267,7 +4267,7 @@ default = false
 # allow_rollback=true` redeploys an older release. `t outputs cloud-deploy` has the plan.
 [[check]]
 name = "cloud-deploy"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 run = "bash tools/release/cloud-deploy.sh /target/cloud-deploy /target/publish/room-service/receipt.json /target/publish/web-entry/receipt.json"
 inputs = ["tools/release/cloud_deploy.py", "tools/release/cloud-deploy.sh"]
 needs = ["publish-room-service", "publish-web-entry"]
@@ -5037,7 +5037,7 @@ apps = ""
 # (`reads_pointers = ["stable:desktop-payload"]`).
 [[check]]
 name = "publish-desktop-payload"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
 inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"]
 needs = ["desktop-package-amd64", "desktop-package-arm64", "host-session-e2e"]
@@ -5067,7 +5067,7 @@ on = ["main", "stable", "dispatch"]
 # set is published.
 [[check]]
 name = "rpm-snapshot"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 run = "bash tools/ci/publish/rpm-snapshot-ref.sh /target/publish/rpm-snapshot"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/rpm-snapshot-ref.sh", "os/dev/registry-manifest.py", "os/dev/install-cached-cosign.sh", "os/Containerfile", "os/base-snapshot.env", "os/Containerfile.rpms", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/resolve-rpm-snapshot.sh", "os/dev/ensure-base-mirror.sh", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/derive-rpm-package-set.py", "keys/cosign.pub", "os/dev/promote-native-index.py", "os/dev/configure-cosign-kms.sh", "os/dev/require-cosign-authority.sh", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
 outputs = ["/target/publish/rpm-snapshot/rpms-ref"]
@@ -5836,7 +5836,7 @@ default = false
 # publishes another release. TILO_SITE_TOKEN may push the site repository, from main only.
 [[check]]
 name = "imager-winget-acceptance"
-image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
+image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 run = '''
 [[ -n ${TILO_SITE_TOKEN:-} ]] || {
   echo 'TILO_SITE_TOKEN is not set: the server config must give this check the site bot token' >&2

@@ -731,6 +731,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/live-transport.test.mjs",
   "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/semantics.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
@@ -1975,10 +1976,6 @@ reason = "a bun test of the MoQ bundle, which needs its npm dependencies install
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/close-recovery.test.mjs"
 reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
-
-[[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/semantics.test.mjs"
-reason = "Node 22 and 24 crash (SIGSEGV) in its composition-revocation tests; it passes on Node 26, which Fedora 44 does not package"
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/storage.test.mjs"
