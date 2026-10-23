@@ -181,7 +181,7 @@ impl CapnpBrokerState {
     /// # Errors
     /// The tracker cannot be read, or holds no such run any more.
     pub(super) fn tracker_run_of(&self, run: &PendingTaskRun) -> Result<TrackerRun, String> {
-        let binding = run.native.as_ref().ok_or("not a native task run")?;
+        let binding = &run.native;
         let runs = self
             .tracker_runs(&run.cluster_id)
             .ok_or("the tracker is unavailable")?
@@ -282,7 +282,7 @@ impl CapnpBrokerState {
         run: &PendingTaskRun,
         lease: &str,
     ) -> Result<runtime_collab::TaskRunStatus, String> {
-        let binding = run.native.as_ref().ok_or("not a native task run")?;
+        let binding = &run.native;
         let (_, revision) =
             runtime_collab::native_task_revision(lease).ok_or("invalid native task lease")?;
         let current = self.tracker_run_of(run)?;
@@ -332,11 +332,7 @@ impl CapnpBrokerState {
             group: group.map_or_else(|| run.task_id.clone(), |group| group.id.clone()),
             title: group.map_or_else(|| run.task_id.clone(), |group| group.label.clone()),
             agent: format!("agent:{}", run.agent_id),
-            person: run
-                .native
-                .as_ref()
-                .and_then(|binding| binding.starter.clone())
-                .unwrap_or_default(),
+            person: run.native.starter.clone().unwrap_or_default(),
             instruction: ended.map(|ended| ended.instruction),
             outcome: outcome.to_owned(),
         });
@@ -383,7 +379,7 @@ impl CapnpBrokerState {
         (resource, action): (&str, &str),
         argument: Option<&str>,
     ) -> Result<NativeGate, String> {
-        let binding = run.native.clone().ok_or("not a native task run")?;
+        let binding = run.native.clone();
         let prefixed =
             argument.and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX));
         let json = prefixed.or(argument);
@@ -417,7 +413,7 @@ impl CapnpBrokerState {
             .ok_or("invalid native lease")?
             .1;
         let requirement = NativeTaskActionRequirement {
-            binding: Some(current_binding),
+            binding: current_binding,
             app: app.to_owned(),
             resource_kind: descriptor.resource_kind.clone(),
             resource: resource.into(),

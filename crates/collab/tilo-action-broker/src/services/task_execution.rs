@@ -42,7 +42,7 @@ impl NativeTaskBinding {
 #[derive(Clone, Debug)]
 pub struct NativeTaskActionRequirement {
     /// Supplied by the broker's authenticated run channel, never action arguments.
-    pub binding: Option<NativeTaskBinding>,
+    pub binding: NativeTaskBinding,
     pub app: String,
     pub resource_kind: String,
     pub resource: String,
@@ -89,7 +89,7 @@ impl NativeTaskActionRequirement {
             &self.action,
         );
         let cx = Context::at_time(now);
-        let binding = self.binding.as_ref().ok_or("tracker run binding absent")?;
+        let binding = &self.binding;
         if binding.agent_id != run.agent || binding.task_id != run.issue || self.need.privileged {
             return Err("tracker run binding invalid or action privileged".into());
         }
