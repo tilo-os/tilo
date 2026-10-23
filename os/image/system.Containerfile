@@ -116,6 +116,8 @@ COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.c
     /usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf
 COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
     /usr/lib/NetworkManager/conf.d/20-tilo-wake.conf
+COPY os/usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf \
+    /usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf
 COPY os/usr/libexec/tilo-relay-firstboot os/usr/libexec/tilo-relay-state-migrate /usr/libexec/
 COPY \
     os/usr/share/polkit-1/actions/org.tilo.home-peer.policy \
