@@ -2734,7 +2734,15 @@ impl ActionPalette {
         }
         // Escape: cancel the argument step, or close the palette.
         if matches!(&key.logical_key, Key::Named(NamedKey::Escape)) {
-            if self.arg.is_some() || self.confirm.is_some() {
+            // A question a window's control asked is answered "no", as by
+            // Cancel: the person never searched, so no search is left open.
+            let asked_by_a_control = self
+                .confirm
+                .as_ref()
+                .is_some_and(|state| state.pending.ordinary.is_some());
+            if asked_by_a_control {
+                self.close();
+            } else if self.arg.is_some() || self.confirm.is_some() {
                 self.exit_argument_mode();
             } else {
                 self.close();
