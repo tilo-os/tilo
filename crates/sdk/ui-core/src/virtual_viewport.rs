@@ -110,6 +110,9 @@ pub struct ScrollMomentum {
     max_velocity: f64,
     kinetic: KineticSampler,
     pending_pixel: bool,
+    /// What [`Self::advance_whole_pixels`] has not yet moved: less than a
+    /// device pixel.
+    carry: f64,
 }
 
 impl Default for ScrollMomentum {
@@ -120,6 +123,7 @@ impl Default for ScrollMomentum {
             max_velocity: 6_000.0,
             kinetic: KineticSampler::new(),
             pending_pixel: false,
+            carry: 0.0,
         }
     }
 }
@@ -143,6 +147,7 @@ impl ScrollMomentum {
     fn start_clock(&mut self) {
         if !self.is_active() {
             self.last_step = Some(crate::time::now());
+            self.carry = 0.0;
         }
     }
 
@@ -169,6 +174,23 @@ impl ScrollMomentum {
         self.tick(elapsed)
     }
 
+    /// [`Self::advance`] in whole device pixels (`device_per_unit` of them
+    /// per logical pixel), carrying the rest to the next frame. A host that
+    /// copies what stays on screen ([`crate::scroll_copy`]) moves whole
+    /// pixels only: a glide in fractional steps would repaint its whole
+    /// viewport every frame, the frames that most need to be cheap.
+    pub fn advance_whole_pixels(&mut self, now: Instant, device_per_unit: f64) -> f64 {
+        let scale = if device_per_unit.is_finite() && device_per_unit > 0.0 {
+            device_per_unit
+        } else {
+            1.0
+        };
+        let exact = self.advance(now) + self.carry;
+        let whole = (exact * scale).round() / scale;
+        self.carry = if self.is_active() { exact - whole } else { 0.0 };
+        whole
+    }
+
     /// Advance the curve by `elapsed` and return the logical-pixel
     /// displacement ([`glide_step`]).
     pub fn tick(&mut self, elapsed: Duration) -> f64 {
@@ -183,6 +205,7 @@ impl ScrollMomentum {
     pub fn stop(&mut self) {
         self.velocity = 0.0;
         self.last_step = None;
+        self.carry = 0.0;
     }
 
     /// Classify one vertical wheel event. Line (detented) wheels accelerate
@@ -1384,6 +1407,31 @@ mod tests {
             let first = momentum.advance(frame);
             let expected = glide_step(3_000.0, 0.011).0;
             assert!((first - expected).abs() < 1e-6, "{first} vs {expected}");
+        }
+
+        for scale in [1.0, 1.5, 2.0] {
+            let mut exact = ScrollMomentum::new();
+            let mut whole = ScrollMomentum::new();
+            exact.fling(2_400.0);
+            whole.fling(2_400.0);
+            let start = exact.last_step.expect("a fling starts its clock");
+            whole.last_step = Some(start);
+            let (mut far, mut moved) = (0.0, 0.0);
+            for frame in 1..=40 {
+                let now = start + Duration::from_micros(16_667 * frame);
+                far += exact.advance(now);
+                let step = whole.advance_whole_pixels(now, scale);
+                let device = step * scale;
+                assert!(
+                    (device - device.round()).abs() < 1e-9,
+                    "frame {frame} at {scale}x moves {device} device pixels"
+                );
+                moved += step;
+                assert!(
+                    (far - moved).abs() <= 0.5 / scale + 1e-9,
+                    "never more than half a pixel behind"
+                );
+            }
         }
 
         {
