@@ -133,6 +133,13 @@ pub fn page_id(page: PageId) -> Id {
     Id::from(page.to_string())
 }
 
+/// The id a note is stored under, from either form a reader meets it in:
+/// the stored id, or the resource the notebook's read lists it as
+/// (`notes.notebook/pages/<id>`).
+fn note_key(id: Id) -> Id {
+    crate::actions::page_of_resource(id.as_str()).map_or(id, page_id)
+}
+
 /// The note a stored id names, when it is one.
 #[must_use]
 pub fn page_of(id: &Id) -> Option<PageId> {
@@ -162,6 +169,7 @@ impl Notebook {
         #[param("Title")] title: String,
         #[param("The note it goes under; none for a top-level note")] parent: Option<Id>,
     ) -> Result<(), Refusal> {
+        let parent = parent.map(note_key);
         if let Some(parent) = &parent {
             self.pages
                 .get(parent)
@@ -233,7 +241,7 @@ impl Notebook {
         #[param("The note it goes under; none for the top level")] parent: Option<Id>,
         #[param("The note it goes before; none to go last")] before: Option<Id>,
     ) -> Result<(), Refusal> {
-        self.place(page, parent, before.as_ref())
+        self.place(page, parent.map(note_key), before.map(note_key).as_ref())
     }
 
     /// Move note up
@@ -830,9 +838,11 @@ impl Notebook {
     }
 
     /// One note, or the notebook, as a reader reads it: the notebook as its
-    /// notes and tags; a note (by its id) as its title and blocks, each with
-    /// the id edits of its body name it by; a note's body resource as those
-    /// blocks.
+    /// notes and tags, the notes in notebook order (so the notes under one
+    /// parent are listed in the order the sidebar shows them); a note (by its
+    /// id) as its title and blocks, one Markdown line per block in order,
+    /// each with the id edits of its body name it by; a note's body resource
+    /// as those blocks.
     fn read_note(
         &self,
         doc: &tilo_resource::Doc,
