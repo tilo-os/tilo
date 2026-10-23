@@ -248,10 +248,8 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
     /// A room its node stewards: this owner forwards an opening app's
     /// authorship to that host ([`grant_authorship_at_host`]).
     fn grants_authorship_at_host(&self, room: &str) -> bool {
-        super::state::RoomId::parse(room).is_some_and(|room| {
-            let tree = self.tree.read();
-            tree.requires_native_owner(room) && !tree.commits_native_documents(room)
-        })
+        super::state::RoomId::parse(room)
+            .is_some_and(|room| !self.tree.read().commits_native_documents(room))
     }
 
     fn health(&self) -> Result<(), String> {
@@ -446,29 +444,17 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
     }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
+    /// Every room's effects are committed by its native owner, never
+    /// recorded into the tree's projection.
     fn record_effect(
         &self,
-        room: &str,
-        invocation: tilo_actions::InvocationId,
-        actor: &str,
-        context: tilo_actions::ActionContext,
-        status: tilo_actions::EffectReceiptStatus,
+        _room: &str,
+        _invocation: tilo_actions::InvocationId,
+        _actor: &str,
+        _context: tilo_actions::ActionContext,
+        _status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String> {
-        let mut tree = self.0.write();
-        if super::state::RoomId::parse(room).is_some_and(|room| tree.requires_native_owner(room)) {
-            return Err("native enrolled mutation requires its typed durable owner".into());
-        }
-        let id = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.room().to_string() == room)
-            .map(|w| w.id)
-            .ok_or("effect workspace no longer hosted")?;
-        // Preserve native projection semantics; this void flush is not OwnerCommitService.
-        let _ = tree.append_app_effect_receipt(id, invocation, actor, context, status);
-        drop(tree);
-        Ok(())
+        Err("native enrolled mutation requires its typed durable owner".into())
     }
 }
 
@@ -1329,110 +1315,8 @@ fn govern_at_host(
     room: super::state::RoomId,
     operation: tilo_desktop::workspace_settings::GovernanceOperation,
 ) -> Result<(), String> {
-    use super::state::GovernanceRequest;
-    use tilo_desktop::workspace_settings::GovernanceOperation as Operation;
-    use tilo_desktop_model::commands::DesktopCommand;
-    let command = match operation {
-        // A grant is the room's policy, which the governor decides as it
-        // would for a person at its own screen.
-        operation @ Operation::Grant { .. } => {
-            let grant = governed_grant(room, operation)?;
-            return network.ask_governor(
-                room,
-                GovernanceRequest::Policy(tilo_action_policy::Change::Grant(grant)),
-            );
-        }
-        Operation::Revoke { grant } => {
-            return network.ask_governor(
-                room,
-                GovernanceRequest::Policy(tilo_action_policy::Change::Revoke(
-                    tilo_action_policy::GrantId::new(grant),
-                )),
-            );
-        }
-        Operation::SavePreset {
-            name,
-            description,
-            rules,
-        } => DesktopCommand::SavePreset {
-            preset_json: serde_json::to_string(&tilo_action_policy::Preset {
-                name,
-                description,
-                rules,
-            })
-            .map_err(|error| error.to_string())?,
-        },
-        Operation::AssignPreset {
-            preset,
-            subject,
-            expires_unix,
-        } => {
-            let (subject_kind, subject) = match subject {
-                tilo_action_policy::Subject::Person(id) => ("person", id),
-                tilo_action_policy::Subject::App(id) => ("app", id),
-                tilo_action_policy::Subject::Agent(id) => ("agent", id),
-                _ => return Err("a grant set is assigned to a person, an app or an agent".into()),
-            };
-            DesktopCommand::AssignPreset {
-                preset,
-                subject_kind: subject_kind.into(),
-                subject,
-                expires_unix,
-            }
-        }
-        Operation::GrantAppAction {
-            app,
-            target_app,
-            resource,
-            action,
-            lifetime,
-        } => DesktopCommand::GrantAppAction {
-            app,
-            target_app,
-            resource,
-            action,
-            lifetime,
-        },
-        Operation::RevokeAppAction {
-            app,
-            target_app,
-            resource,
-            action,
-        } => DesktopCommand::RevokeAppAction {
-            app,
-            target_app,
-            resource,
-            action,
-        },
-    };
-    network.ask_governor(room, GovernanceRequest::Command(command))
-}
-
-/// The grant a governance `operation` gives in `room`; the governor records
-/// who gave it.
-fn governed_grant(
-    room: super::state::RoomId,
-    operation: tilo_desktop::workspace_settings::GovernanceOperation,
-) -> Result<tilo_action_policy::Grant, String> {
-    let tilo_desktop::workspace_settings::GovernanceOperation::Grant {
-        subject,
-        node,
-        kinds,
-        answer,
-        lifetime,
-    } = operation
-    else {
-        return Err("not a grant".into());
-    };
-    Ok(tilo_action_policy::Grant::new(
-        format!("grant:{}", uuid::Uuid::new_v4()),
-        subject,
-        tilo_action_policy::TreePath::room(room.to_string()).join(&node),
-        kinds,
-        answer,
-        tilo_action_policy::Subject::Person(String::new()),
-    )
-    .with_lifetime(lifetime.unwrap_or(tilo_action_policy::Lifetime::UntilRevoked)))
+    let request = super::workspace_governance::governance_request(room, operation)?;
+    network.ask_governor(room, request)
 }
 
 /// Find `id` in `resource`'s subtree.
@@ -1488,12 +1372,11 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             .iter()
             .find(|workspace| workspace.room().to_string() == room)
             .is_some_and(|workspace| {
-                tree.governs_room(workspace.room())
-                    && workspace.may_govern_at(
-                        person,
-                        tilo_action_policy::roles::governance::GRANT,
-                        tilo_clock::unix_now(),
-                    )
+                workspace.may_govern_at(
+                    person,
+                    tilo_action_policy::roles::governance::GRANT,
+                    tilo_clock::unix_now(),
+                )
             })
     }
     fn record(
@@ -1551,17 +1434,19 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
         };
         let workspace_id = workspace.id;
         let grant = tilo_action_policy::GrantId::new(grant);
-        if workspace.revoke_grant(&grant) {
-            tree.doc_write_policy(
-                workspace_id,
-                &super::state::PolicyEdit {
-                    revoked: vec![grant],
-                    ..super::state::PolicyEdit::default()
-                },
-            );
-            tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-            tree.queue_save();
-        }
+        let Some(revoker) = workspace
+            .policy
+            .grants
+            .iter()
+            .find(|held| held.id == grant)
+            .and_then(|held| match &held.granted_by {
+                tilo_action_policy::Subject::Person(person) => Some(person.clone()),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        tree.revoke_in_workspace(workspace_id, &revoker, &grant);
     }
 }
 

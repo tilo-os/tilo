@@ -25,8 +25,6 @@ pub(crate) const AGENT_REMOVE_ACTION: &str = "agent.remove";
 pub(crate) enum MembershipError {
     /// There is no active workspace to edit.
     NoWorkspace,
-    /// This machine does not govern the active workspace's room.
-    NotGoverned,
     /// The local user may not invoke this membership action here.
     Unauthorized(&'static str),
     /// The participant is not a member of the active workspace.
@@ -41,7 +39,6 @@ impl std::fmt::Display for MembershipError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoWorkspace => f.write_str("there is no active workspace"),
-            Self::NotGoverned => f.write_str("this device does not govern the active workspace"),
             Self::Unauthorized(action) => {
                 write!(f, "current workspace authority does not permit {action}")
             }
@@ -149,16 +146,15 @@ pub(crate) fn remove_agent(st: &mut ChromeState, agent: &str) -> Result<(), Memb
     .map(drop)
 }
 
-/// Apply a permission edit to the active workspace, then mirror it into the
-/// replicated doc and flush. Without the mirror an edit would change only
-/// the in-memory cache and the next boot would read the old answer back off
-/// disk. `edit` runs with the local user as actor and does its own authority
-/// check; an empty [`PolicyEdit`] is reported as [`MembershipError::Refused`].
+/// Work a permission edit out on a copy of the active workspace and ask the
+/// room's governor for it. `edit` runs with the local user as actor and
+/// does its own authority check; an empty [`PolicyEdit`] is reported as
+/// [`MembershipError::Refused`]. The change shows once the room's admitted
+/// document carries it.
 ///
 /// # Errors
 ///
-/// [`MembershipError::NoWorkspace`], [`MembershipError::NotGoverned`] or
-/// [`MembershipError::Refused`].
+/// [`MembershipError::NoWorkspace`] or [`MembershipError::Refused`].
 pub(crate) fn edit_active_workspace_policy<F>(
     st: &mut ChromeState,
     edit: F,
@@ -168,26 +164,16 @@ where
 {
     let actor = st.active_local_user();
     let mut tree = st.tree_mut();
-    let (ws_id, room) = tree
+    let mut edited = tree
         .desktop
         .active_workspace()
-        .map(|workspace| (workspace.id, workspace.room()))
+        .cloned()
         .ok_or(MembershipError::NoWorkspace)?;
-    if !tree.governs_room(room) {
-        return Err(MembershipError::NotGoverned);
-    }
-    let ws = tree
-        .desktop
-        .workspaces
-        .iter_mut()
-        .find(|workspace| workspace.id == ws_id)
-        .ok_or(MembershipError::NoWorkspace)?;
-    let changed = edit(ws, &actor);
+    let changed = edit(&mut edited, &actor);
     if changed.is_empty() {
         return Err(MembershipError::Refused);
     }
-    tree.doc_write_policy(ws_id, &changed);
-    tree.queue_save();
+    tree.request_policy_edit(edited.id, &actor, &edited, &changed);
     drop(tree);
     st.bump();
     Ok(changed)

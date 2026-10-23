@@ -6,7 +6,7 @@ use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::FreshId as _;
 use crate::shell::state::{
-    AppKind, GroupId, PeerOrigin, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+    AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
     WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 use std::collections::HashMap as StdHashMap;
@@ -1031,19 +1031,31 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         local.set_salt_override(HOST_SALT);
         let local_workspace = local.desktop.active;
         let room = local.room_of(local_workspace).expect("local room");
-        local.own_workspaces_for_test(|_| "owner".to_string().clone());
 
         let mut peer = WorkspaceTree::bootstrap_demo();
         peer.set_salt_override(PEER_SALT);
         let peer_workspace = peer.desktop.active;
         assert!(peer.stand_in_room(peer_workspace, room));
-        // The fixed ids below model windows this peer owns in the shared
-        // room. They predate this process's global allocator, so make the
-        // fixture publish them instead of treating them as pre-join tabs.
-        peer.room_share_floor.remove(&room);
-        // Matching governance makes this a legitimate member layout
-        // update, not a rejected attempt to replace the room owner.
-        peer.own_workspaces_for_test(|_| "owner".to_string().clone());
+        // What the room's admitted document carries of the peer's layout,
+        // as the native owner projects it into this device's workspace.
+        let projected = |peer: &WorkspaceTree, local: &mut WorkspaceTree| {
+            let strips = peer
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == peer_workspace)
+                .expect("peer workspace")
+                .strips
+                .clone();
+            local
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == local_workspace)
+                .expect("local workspace")
+                .strips = strips;
+            local.desktop.room_epoch = local.desktop.room_epoch.wrapping_add(1);
+        };
         let remote_strip = StripId::from(remote_id(1));
         let remote_group = remote_id(2);
         let tab = |id, title: &str, kind| Tab {
@@ -1080,38 +1092,13 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
             ],
         }];
 
-        let seed = peer
-            .export_room_changes_since(room, &[])
-            .expect("peer room changes");
-        assert!(
-            local
-                .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
-                .expect("legitimate remote layout merges"),
-            "initial remote layout is accepted"
-        );
+        projected(&peer, &mut local);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&local);
-        let peer_base = peer.room_heads(room);
         assert!(peer.reorder_group_for_tests(remote_strip, remote_id(4), 0));
         assert!(peer.reorder_tab_for_tests(remote_group, 2, 0));
-        let delta = peer
-            .export_room_changes_since(room, &peer_base)
-            .expect("reorder room delta");
         {
             let mut state = chrome.borrow_mut();
-            assert!(
-                state
-                    .tree_mut()
-                    .apply_room_changes(room, &delta, &PeerOrigin::hub(1))
-                    .expect("accepted reorder delta"),
-                "room merger reports the remote reorder"
-            );
-            assert!(
-                !state
-                    .tree_mut()
-                    .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
-                    .expect("an already-superseded room snapshot parses"),
-                "a stale room snapshot cannot undo the newer accepted reorder"
-            );
+            projected(&peer, &mut state.tree_mut());
             state.bump();
         }
         assert!(host.take_structure_dirty());

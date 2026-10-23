@@ -38,9 +38,9 @@ impl ShellOverlayHost {
         }
         let user = state.active_local_user();
         let tree = state.tree();
-        tree.desktop.active_workspace().is_some_and(|ws| {
-            tree.governs_room(ws.room()) && ws.may_govern_at(&user, action, tilo_clock::unix_now())
-        })
+        tree.desktop
+            .active_workspace()
+            .is_some_and(|ws| ws.may_govern_at(&user, action, tilo_clock::unix_now()))
     }
 
     #[allow(
@@ -467,16 +467,10 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             let tree = state.tree();
             let acting_user = state.active_local_user();
-            let governs_active_room = tree
-                .desktop
-                .active_workspace()
-                .is_some_and(|workspace| tree.governs_room(workspace.room()));
             let owner_controls = state.test_only_owner_override.unwrap_or_else(|| {
-                governs_active_room
-                    && tree
-                        .desktop
-                        .active_workspace()
-                        .is_some_and(|workspace| workspace.may_administer(&acting_user))
+                tree.desktop
+                    .active_workspace()
+                    .is_some_and(|workspace| workspace.may_administer(&acting_user))
             });
             let devices: Vec<tilo_desktop::workspace_settings::overlay::WorkspaceDevice> = tree
                 .desktop

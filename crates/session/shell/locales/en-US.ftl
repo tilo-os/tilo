@@ -23,8 +23,6 @@ continuity-other-device = your other device
 tab-closed-toast = Closed { $title }
 tab-closed-group-toast = Closed { $count } tabs
 tab-closed-undo = Undo
-workspace-deleted-toast = Deleted { $name }
-workspace-deleted-undo = Undo
 workspace-left-toast = Left { $name }
 # The name of a workspace joined before its host told its name.
 workspace-joined-name = Shared workspace
@@ -2077,8 +2075,6 @@ peer-sync-link-note-anyone = Anyone who opens the link can join. It stops workin
 peer-sync-copy-invite = Copy invite
 peer-sync-revoke = Revoke
 peer-sync-done = Done
-peer-sync-code-hint = They see this code when they open the invite
-peer-sync-code-check = Check that the person who invited you sees the same code
 peer-sync-paste-link = Paste link
 peer-sync-join-field-label = Link or site
 peer-sync-who-heading = Who
@@ -2125,24 +2121,6 @@ peer-sync-role-expires = { $role }, { $unit ->
        *[other] { $count } days
     }
 }
-peer-sync-received-role-expires = { $role } access, { $unit ->
-    [now] expires in moments
-    [seconds] expires in { $count ->
-        [one] 1 second
-       *[other] { $count } seconds
-    }
-    [minutes] expires in { $count ->
-        [one] 1 minute
-       *[other] { $count } minutes
-    }
-    [hours] expires in { $count ->
-        [one] 1 hour
-       *[other] { $count } hours
-    }
-   *[days] expires in { $count ->
-        [one] 1 day
-       *[other] { $count } days
-    }
 }
 peer-sync-role-viewer = Viewer
 peer-sync-role-commenter = Commenter
@@ -2154,7 +2132,6 @@ peer-sync-copy-identity = Copy my identity
 peer-sync-role-heading = Access
 peer-sync-recipient-hint = Choose someone you know, or paste the Tilo identity they sent you.
 peer-sync-invite-anyone = Anyone with this invite
-peer-sync-invite-received = Invite received
 peer-sync-paste-invite-hint = Like tilo.coffee, or a link someone sent you.
 peer-sync-join-site = Joins the workspace at { $host }
 peer-sync-join-invitation-link = An invitation to a workspace at { $host }

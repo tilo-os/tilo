@@ -19,6 +19,7 @@ fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError)
 #[cfg(test)]
 mod nearby_transfer_tests;
 pub(crate) mod room_governance;
+mod room_members;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -392,6 +393,13 @@ pub enum NetCmd {
     LeaveWorkspace {
         ws: WorkspaceId,
     },
+    /// Room `ws`'s admitted roster changed: `devices` are every device its
+    /// governor admitted, by endpoint id. They alone send and receive the
+    /// room's window streams; a device that left has its connections closed.
+    SetRoomRoster {
+        ws: WorkspaceId,
+        devices: Vec<EndpointId>,
+    },
     Publish {
         ws: WorkspaceId,
         msg: NeighbourMsg,
@@ -677,8 +685,16 @@ enum InternalEvent {
     SurfaceFrame {
         ws: WorkspaceId,
         peer: EndpointId,
+        connection_incarnation: u64,
         fingerprint: [u8; 32],
         msg: NeighbourMsg,
+    },
+    /// A peer opened (`Some`) or closed (`None`) a window-stream connection
+    /// to this device.
+    SurfaceIngress {
+        peer: EndpointId,
+        connection_incarnation: u64,
+        connection: Option<iroh::endpoint::Connection>,
     },
     SurfaceFanoutComplete {
         ws: WorkspaceId,
@@ -882,6 +898,7 @@ impl ProtocolHandler for DeviceUnlockProtocol {
 struct SurfaceStreamProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
     input_tx: mpsc::Sender<InternalEvent>,
+    next_connection_incarnation: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for SurfaceStreamProtocol {
@@ -895,9 +912,27 @@ impl ProtocolHandler for SurfaceStreamProtocol {
         let peer = connection.remote_id();
         let tx = self.internal_tx.clone();
         let input_tx = self.input_tx.clone();
+        let connection_incarnation = self
+            .next_connection_incarnation
+            .fetch_add(1, Ordering::Relaxed)
+            .max(1);
+        let _ = tx
+            .send(InternalEvent::SurfaceIngress {
+                peer,
+                connection_incarnation,
+                connection: Some(connection.clone()),
+            })
+            .await;
         tokio::spawn(async move {
             loop {
                 let Ok(mut recv) = connection.accept_uni().await else {
+                    let _ = tx
+                        .send(InternalEvent::SurfaceIngress {
+                            peer,
+                            connection_incarnation,
+                            connection: None,
+                        })
+                        .await;
                     return;
                 };
                 let bytes = match recv.read_to_end(MAX_SURFACE_FRAME_BYTES).await {
@@ -939,6 +974,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                 let event = InternalEvent::SurfaceFrame {
                     ws: frame.workspace,
                     peer,
+                    connection_incarnation,
                     fingerprint,
                     msg: frame.message,
                 };
@@ -1234,6 +1270,9 @@ struct ActorState {
     /// their first frame. `None` is a tombstone retained until that concrete
     /// connection closes, so an old connection cannot rebind after reconnect.
     personal_fabric_ingress: HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
+    /// Each room's admitted roster ([`NetCmd::SetRoomRoster`]), and the
+    /// window-stream connections peers opened to this device, bound to it.
+    room_members: room_members::RoomMembers,
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
     /// When each recent remote-input message arrived (see [`mark_new_input`]).
@@ -1527,6 +1566,55 @@ impl ActorState {
         Some(membership.epoch)
     }
 
+    /// Whether `peer` is a member of `ws` for window streams: on the room's
+    /// admitted roster, or, on the person's own topic, a member there.
+    fn is_surface_member(&self, ws: WorkspaceId, peer: EndpointId) -> bool {
+        if self.room_members.has_roster(ws) {
+            self.room_members.member(ws, peer).is_some()
+        } else {
+            self.peers_seen.contains_key(&(ws, peer))
+        }
+    }
+
+    /// Every device a window of `ws` streams to ([`Self::is_surface_member`]).
+    fn surface_members(&self, ws: WorkspaceId) -> Vec<EndpointId> {
+        if self.room_members.has_roster(ws) {
+            return self.room_members.members(ws);
+        }
+        self.peers_seen
+            .keys()
+            .filter(|(peer_ws, _)| *peer_ws == ws)
+            .map(|(_, peer)| *peer)
+            .collect()
+    }
+
+    /// Take room `ws`'s admitted roster as `devices` (none, and not `keep`,
+    /// once this device left it): the connections bound to a membership that
+    /// ended close, and so does this device's own to a device no room holds
+    /// any more.
+    fn set_room_roster(&mut self, ws: WorkspaceId, devices: Vec<EndpointId>, keep: bool) {
+        let local = self.endpoint.id();
+        let next = &mut self.next_membership_epoch;
+        let removed = self.room_members.set_roster(
+            ws,
+            local,
+            devices,
+            || {
+                *next = next.saturating_add(1).max(1);
+                MembershipEpoch(*next)
+            },
+            keep,
+        );
+        for connection in removed.connections {
+            connection.close(0_u32.into(), b"membership removed");
+        }
+        for device in removed.devices {
+            if let Some(connection) = self.surface_connections.remove(&device) {
+                connection.close(0_u32.into(), b"membership removed");
+            }
+        }
+    }
+
     /// The gossip link to `peer` on `ws` came up (`up`) or went down. While
     /// it is up the transport vouches for the peer: QUIC keep-alives flow
     /// under it and its idle timeout ([`PEER_TIMEOUT`]) ends it. Its going
@@ -1628,6 +1716,9 @@ impl ActorState {
                 self.gossip_topics.insert(ws);
                 self.handle_join_workspace(ws, on_event).await;
             }
+            Some(NetCmd::SetRoomRoster { ws, devices }) => {
+                self.set_room_roster(ws, devices, true);
+            }
             Some(NetCmd::LeaveWorkspace { ws }) => {
                 self.gossip_topics.remove(&ws);
                 self.native_routes.remove(ws);
@@ -1655,6 +1746,7 @@ impl ActorState {
                 }
                 self.subscribers.remove(&ws);
                 self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
+                self.set_room_roster(ws, Vec::new(), false);
                 self.pending_surface_frames
                     .retain(|(frame_ws, _), _| *frame_ws != ws);
                 self.surface_fanout_viewers
@@ -1997,20 +2089,21 @@ impl ActorState {
             return false;
         }
         let only = self.surface_fanout_viewers.get(&key);
-        let targets: Vec<_> = self
-            .peers
-            .values()
-            .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
-            .filter(|addr| only.is_none_or(|viewers| viewers.contains(&addr.id)))
-            .cloned()
+        let members = self.surface_members(ws);
+        let workspace_peer_count = members.len();
+        let targets: Vec<_> = members
+            .into_iter()
+            .filter(|peer| only.is_none_or(|viewers| viewers.contains(peer)))
+            .map(|peer| {
+                self.peers
+                    .get(&peer)
+                    .cloned()
+                    .unwrap_or_else(|| EndpointAddr::new(peer))
+            })
             .collect();
         let workspace_peer_count = match only {
             Some(_) => targets.len(),
-            None => self
-                .peers_seen
-                .keys()
-                .filter(|(peer_ws, _)| *peer_ws == ws)
-                .count(),
+            None => workspace_peer_count,
         };
         // Each viewer is an independent QUIC route. Dial/write them
         // concurrently so one unreachable peer cannot add 300ms in front of
@@ -2411,11 +2504,9 @@ impl ActorState {
     async fn publish_surface_to(&mut self, ws: WorkspaceId, msg: NeighbourMsg, viewers: &[u64]) {
         self.observe_surface_stream(ws, &msg);
         let targets = self
-            .peers
-            .keys()
-            .filter(|peer| self.peers_seen.contains_key(&(ws, **peer)))
+            .surface_members(ws)
+            .into_iter()
             .filter(|peer| viewers.contains(&crate::network::behaviour::peer_liveness_handle(peer)))
-            .copied()
             .collect::<Vec<_>>();
         match msg {
             NeighbourMsg::SurfaceFrame { .. } => {
@@ -2453,7 +2544,7 @@ impl ActorState {
             );
             return;
         };
-        if self.peers_seen.contains_key(&(ws, target))
+        if self.is_surface_member(ws, target)
             && self
                 .publish_direct(
                     ws,
@@ -2583,7 +2674,7 @@ impl ActorState {
             return;
         }
         if let Some(target) = target
-            && self.peers_seen.contains_key(&(ws, target))
+            && self.is_surface_member(ws, target)
             && self.publish_direct(ws, target, msg.clone()).await
         {
             return;
@@ -2626,7 +2717,7 @@ impl ActorState {
         target: EndpointId,
         msg: NeighbourMsg,
     ) -> bool {
-        if !self.peers_seen.contains_key(&(ws, target)) {
+        if !self.is_surface_member(ws, target) {
             tracing::warn!(ws, peer = %target, "direct route is no longer live");
             return false;
         }
@@ -2851,11 +2942,21 @@ impl ActorState {
             Some(InternalEvent::SurfaceFrame {
                 ws,
                 peer,
+                connection_incarnation,
                 fingerprint,
                 msg,
             }) => {
                 self.tally.note(msg.kind());
-                self.handle_surface_frame(ws, peer, fingerprint, msg).await;
+                self.handle_surface_frame(ws, peer, connection_incarnation, fingerprint, msg)
+                    .await;
+            }
+            Some(InternalEvent::SurfaceIngress {
+                peer,
+                connection_incarnation,
+                connection,
+            }) => {
+                self.room_members
+                    .connection(peer, connection_incarnation, connection);
             }
             Some(InternalEvent::SurfaceFanoutComplete {
                 ws,
@@ -2968,15 +3069,21 @@ impl ActorState {
         &mut self,
         ws: WorkspaceId,
         peer: EndpointId,
+        connection_incarnation: u64,
         fingerprint: [u8; 32],
         msg: NeighbourMsg,
     ) {
-        // A bare ALPN connection is not workspace admission. Require
-        // the peer to have appeared on this workspace's authenticated
-        // gossip topic first; ShellNetwork performs the capability
-        // and claimed-publisher checks before dispatch.
-        let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
-            tracing::warn!(ws, peer = %peer, "surface frame from unknown workspace peer");
+        // A bare ALPN connection is not workspace admission. Require the
+        // peer to be a member: of the room's admitted roster, or of the
+        // person's own topic. ShellNetwork performs the capability and
+        // claimed-publisher checks before dispatch.
+        let membership = if self.room_members.has_roster(ws) {
+            self.room_members.admit(ws, peer, connection_incarnation)
+        } else {
+            self.touch_existing_membership(ws, peer)
+        };
+        let Some(membership_epoch) = membership else {
+            tracing::warn!(ws, peer = %peer, "surface frame from a device that is no member");
             return;
         };
         // Input has no event id or timestamp, so two deliberate
@@ -3020,7 +3127,7 @@ impl ActorState {
             return;
         }
         for outcome in outcomes {
-            if outcome.delivered && self.peers_seen.contains_key(&(ws, outcome.peer)) {
+            if outcome.delivered && self.is_surface_member(ws, outcome.peer) {
                 if let Some(connection) = outcome.connection {
                     self.surface_connections.insert(outcome.peer, connection);
                 }
@@ -3709,7 +3816,7 @@ impl ActorState {
     /// Runs every [`HEARTBEAT_INTERVAL`] while [`Self::needs_upkeep`].
     async fn run_heartbeat_tick(&mut self) {
         for (ws, peer) in self.pending_remote_actions.targets() {
-            if self.peers_seen.contains_key(&(ws, peer)) {
+            if self.is_surface_member(ws, peer) {
                 self.flush_pending_remote_actions(ws, peer).await;
             }
         }
@@ -4209,6 +4316,7 @@ async fn run(
             SurfaceStreamProtocol {
                 internal_tx: internal_tx.clone(),
                 input_tx,
+                next_connection_incarnation: Arc::new(AtomicU64::new(1)),
             },
         )
         .accept(
@@ -4250,6 +4358,7 @@ async fn run(
         peers_seen: HashMap::new(),
         next_membership_epoch: 0,
         personal_fabric_ingress: HashMap::new(),
+        room_members: room_members::RoomMembers::default(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
         recent_input: HashMap::new(),
@@ -5641,6 +5750,7 @@ mod tests {
             InternalEvent::SurfaceFrame {
                 ws: 7,
                 peer,
+                connection_incarnation: 1,
                 fingerprint: [0; 32],
                 msg: NeighbourMsg::RemoteInput {
                     peer: 9,
