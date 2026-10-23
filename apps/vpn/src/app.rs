@@ -7,10 +7,7 @@ use crate::model::{ConnId, ConnKind, ConnStatus, Connection, LocalProfileDetails
 use crate::net::Transfer;
 use crate::probe::{self, Prober};
 use crate::resource::Vpn;
-use crate::view::{
-    self, DetailTab, Intent, Intents, MainAction, Notice, NoticeKind, Rates, ToolbarAction,
-    ToolbarActionSlot,
-};
+use crate::view::{self, DetailTab, Intent, Intents, MainAction, Notice, NoticeKind, Rates};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -126,7 +123,6 @@ struct ListKey {
 pub struct VpnApp {
     shell: NavShell,
     intents: Intents,
-    main_action: ToolbarActionSlot,
     dialog: Option<ModalDialog<Column>>,
     dialog_key: Option<String>,
     dialog_changed: bool,
@@ -214,11 +210,9 @@ impl VpnApp {
     /// runs live.
     pub fn new() -> Self {
         let intents = Intents::default();
-        let main_action = ToolbarActionSlot::default();
         VpnApp {
-            shell: Self::new_shell(&intents, &main_action),
+            shell: Self::new_shell(),
             intents,
-            main_action,
             dialog: None,
             dialog_key: None,
             dialog_changed: false,
@@ -1069,14 +1063,10 @@ impl VpnApp {
 }
 
 impl VpnApp {
-    fn new_shell(intents: &Intents, main_action: &ToolbarActionSlot) -> NavShell {
+    fn new_shell() -> NavShell {
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
-            .overview_header("Connections", vec![Box::new(view::import_button(intents))])
-            .content_header(
-                "",
-                vec![Box::new(view::MainActionButton::new(main_action, intents))],
-            )
+            .with_window_toolbar()
             .with_id("vpn-shell")
     }
     fn rates_for(&self, connection: &Connection) -> Rates {
@@ -1173,9 +1163,7 @@ impl VpnApp {
             }
             self.detail_key = Some(key);
             self.list_key = None;
-            self.main_action.set(None);
             self.shell.set_overview(None);
-            self.shell.set_content_title("");
             let content = match &notice {
                 Some(notice) => view::notice_page(notice, &self.intents),
                 None => view::empty_state(&self.intents),
@@ -1224,7 +1212,6 @@ impl VpnApp {
         }
 
         let Some(connection) = self.vault.selected_conn() else {
-            self.main_action.set(None);
             return;
         };
         let details = self.local_details.get(&connection.id);
@@ -1249,13 +1236,7 @@ impl VpnApp {
             tor_global,
         };
         let content = view::detail(&model, &self.intents, &self.detail_offset);
-        self.main_action.set(Some(ToolbarAction {
-            id: connection.id,
-            action: MainAction::of(connection, provisioned),
-        }));
-        let title = connection.name.clone();
         self.detail_key = Some(key);
-        self.shell.set_content_title(title);
         self.shell.set_content(content);
         self.dirty = true;
     }
@@ -1424,6 +1405,8 @@ impl VpnApp {
     }
 }
 
+mod window_bar;
+
 impl ui::widget::Decorator for VpnApp {
     type Inner = NavShell;
 
@@ -1444,17 +1427,21 @@ impl ui::widget::Decorator for VpnApp {
             self.probe_device();
             self.apply_pending_tool_intent();
         }
+        self.take_window_toolbar_events();
         self.drain_intents();
         self.refresh_view();
         self.refresh_sheet();
+        self.declare_window_toolbar();
         self.shell.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let asked = self.take_window_toolbar_events();
         self.drain_intents();
         self.refresh_view();
         self.refresh_sheet();
-        self.shell.update(state, path) || self.dirty
+        self.declare_window_toolbar();
+        self.shell.update(state, path) || self.dirty || asked
     }
 
     fn build_layout(
@@ -1603,6 +1590,7 @@ mod tests {
     use ui::headless::Framed;
     use ui::portal::PortalOutcome;
     use ui::tilo_resource::Invoke;
+    use ui::window_toolbar::ToolbarEvent;
     use vello::kurbo::Point;
     fn sample() -> VpnApp {
         let mut app = VpnApp::new();
@@ -1947,6 +1935,49 @@ mod tests {
             .id
     }
     #[test]
+    fn the_window_bar_names_the_connection_and_switches_its_views() {
+        let mut app = framed(demo_with_doc(), 1280.0, 800.0);
+        let bar = app.window_toolbar();
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Home")
+        );
+        let views = bar.views.expect("the detail's views are the bar's");
+        let labels: Vec<&str> = views
+            .choices
+            .iter()
+            .map(|view| view.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Status", "Configuration", "Activity"]);
+        assert_eq!(views.chosen, DetailTab::Status.id());
+        assert!(
+            !Framed::harness(&app).targets().contains_key("vpn-tabs"),
+            "the page draws no tabs of its own"
+        );
+
+        Framed::harness_mut(&mut app).press_window_slot(ToolbarEvent::Action {
+            id: DetailTab::Activity.id().to_owned(),
+        });
+        assert_eq!(app.detail_tab, DetailTab::Activity);
+        assert_eq!(
+            app.window_toolbar()
+                .views
+                .map(|views| views.chosen)
+                .as_deref(),
+            Some(DetailTab::Activity.id())
+        );
+
+        Framed::harness_mut(&mut app).press_window_slot(ToolbarEvent::Action {
+            id: window_bar::IMPORT.to_owned(),
+        });
+        assert_eq!(
+            app.modal,
+            Modal::Add,
+            "Import configuration opens the sheet"
+        );
+    }
+
+    #[test]
     fn vpn_layout_scales_scrolls_and_keeps_controls_in_band() {
         // Wide: the list and the detail side by side, the connected tunnel
         // selected and its throughput measured.
@@ -1961,7 +1992,20 @@ mod tests {
             assert_eq!(app.vault.selected, Some(home));
             let connection = app.vault.get(home).unwrap();
             assert!(app.rates_for(connection).is_live());
-            assert!(target(&app, "vpn-main-action").width() > 0.0);
+            let bar = app.window_toolbar();
+            assert!(
+                bar.actions
+                    .iter()
+                    .any(|action| action.id == window_bar::MAIN_ACTION
+                        && action.name == "Disconnect"),
+                "the connected tunnel's Disconnect is the window bar's"
+            );
+            assert!(
+                !Framed::harness(&app)
+                    .targets()
+                    .contains_key("vpn-main-action"),
+                "the window draws no header of its own"
+            );
         }
         // Phone: the list is the first screen; choosing a connection pushes
         // its detail, and Back returns.
