@@ -1,6 +1,7 @@
 //! Chrome over the viewfinder, and the pieces every screen shares: control
-//! clusters on the floating material, the mode switcher, the shutter and the
-//! tooltip. A notice is the window bar's.
+//! clusters on the floating material, the shutter and the tooltip. The mode
+//! switcher, Photos, the settings and the notices are the window bar's
+//! ([`super::window_bar`]).
 //!
 //! The viewfinder is media: what is drawn straight onto it (the guides)
 //! takes the theme's media colours, and every control
@@ -14,7 +15,7 @@ use ui::paint::PaintCtx;
 use ui::widget::tooltip::draw_hover_tooltip;
 use ui::widget::{
     BadgeFace, Button, ButtonFace, ButtonRole, ChipStyle, ControlSize, EmptyState,
-    EmptyStateContent, SegmentedFace, ToggleGroup, floating_surface,
+    EmptyStateContent, floating_surface,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -111,26 +112,6 @@ pub(super) fn cluster_width(items: &[HudItem<'_>], tr: &mut TextRenderer, theme:
     items.iter().map(|item| item.width(tr, theme)).sum::<f64>() + gaps + 2.0 * m.pad
 }
 
-/// Photos and the settings: the top-trailing cluster of every screen.
-pub(super) fn corner_actions() -> [HudItem<'static>; 2] {
-    [
-        HudItem {
-            label: "",
-            icon: Some(Icon::Image),
-            name: "Open Photos",
-            on: None,
-            action: Action::OpenPhotos,
-        },
-        HudItem {
-            label: "",
-            icon: Some(Icon::Settings),
-            name: "Camera settings",
-            on: None,
-            action: Action::Nav(Screen::Settings),
-        },
-    ]
-}
-
 impl CameraApp {
     /// Paint `items` as one floating cluster whose top-left corner is
     /// `origin`, register each control's region, and return the panel.
@@ -173,65 +154,6 @@ impl CameraApp {
         }
     }
 
-    /// Photo, Video, Codes and Documents: the switcher docked at the bottom
-    /// centre of every screen. Returns its panel.
-    pub(super) fn draw_mode_switcher(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        full: Rect,
-    ) -> Rect {
-        let m = HudMetrics::of(theme);
-        let local = on_panel(theme);
-        let entries = [
-            ("Photo", Action::SetMode(CaptureMode::Photo)),
-            ("Video", Action::SetMode(CaptureMode::Video)),
-            ("Codes", Action::Nav(Screen::Scanner)),
-            ("Documents", Action::Nav(Screen::Document)),
-        ];
-        let selected = self.selected_capture_mode();
-        let room = (full.width() - 2.0 * (m.edge + m.pad)).max(1.0);
-        let mut labels: Vec<&str> = entries.iter().map(|(label, _)| *label).collect();
-        let mut natural = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, tr, &local);
-        if natural > room {
-            // The short form of the one long label, before anything elides.
-            if let Some(documents) = labels.last_mut() {
-                *documents = "Docs";
-            }
-            natural = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, tr, &local);
-        }
-        let width = natural.min(room);
-        let height = SegmentedFace::height(ControlSize::Regular, theme);
-        let x0 = full.center().x - width / 2.0;
-        let y1 = full.y1 - m.edge - m.pad;
-        let segment = width / labels.len() as f64;
-        let segments: Vec<Rect> = (0..labels.len())
-            .map(|i| {
-                let left = x0 + segment * i as f64;
-                Rect::new(left, y1 - height, left + segment, y1)
-            })
-            .collect();
-        let strip = Rect::new(x0, y1 - height, x0 + width, y1);
-        let panel = strip.inflate(m.pad, m.pad);
-        floating_surface::paint(scene, t, panel, theme);
-        let hovered = segments
-            .iter()
-            .position(|seg| seg.contains(self.last_mouse));
-        ToggleGroup::paint(
-            scene,
-            t,
-            tr,
-            &local,
-            &SegmentedFace::new(&segments, &labels, selected).hovered(hovered),
-        );
-        for (rect, (_, action)) in segments.into_iter().zip(entries) {
-            self.push_region(rect, action);
-        }
-        panel
-    }
-
     /// The shutter: the toolkit's capture button, a photo, a video or the
     /// recording in progress, inked from the media colours.
     fn draw_shutter(
@@ -265,7 +187,7 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         full: Rect,
-    ) -> f64 {
+    ) {
         let m = HudMetrics::of(theme);
         let live = self.feed_active();
         if live {
@@ -276,23 +198,15 @@ impl CameraApp {
         // Under the settings sheet only the picture shows: the sheet is the
         // one thing that can be operated.
         if self.screen == Screen::Settings {
-            return full.y1;
+            return;
         }
         if live {
             self.draw_viewfinder_guides(scene, t, theme, full);
         }
 
         let top = self.draw_camera_top_controls(scene, t, tr, theme, full, live);
-        let switcher = if self.is_recording() {
-            None
-        } else {
-            Some(self.draw_mode_switcher(scene, t, tr, theme, full))
-        };
         let radius = f64::from(theme.tokens.metrics.min_pointer_target);
-        let shutter_bottom = switcher.map_or(full.y1 - m.edge, |panel| {
-            panel.y0 - f64::from(theme.tokens.spacing.s4)
-        });
-        let center = Point::new(full.center().x, shutter_bottom - radius);
+        let center = Point::new(full.center().x, full.y1 - m.edge - radius);
         if !live {
             let area = Rect::new(
                 full.x0,
@@ -312,7 +226,6 @@ impl CameraApp {
         } else if self.is_counting_down() {
             self.draw_countdown(scene, t, tr, theme, full, top);
         }
-        shutter.y0
     }
 
     fn paint_viewfinder(&mut self, scene: &mut Scene, t: Affine, full: Rect) {
@@ -411,9 +324,8 @@ impl CameraApp {
         }
     }
 
-    /// The quick capture settings at the top-leading corner and the Photos
-    /// and settings buttons at the top-trailing corner. Returns the band the
-    /// two clusters occupy.
+    /// The quick capture settings at the top-leading corner. Returns the
+    /// band they occupy.
     fn draw_camera_top_controls(
         &mut self,
         scene: &mut Scene,
@@ -426,9 +338,13 @@ impl CameraApp {
         let m = HudMetrics::of(theme);
         if !live && !self.is_recording() {
             // Without a picture the capture settings would change nothing
-            // anyone can see; they stay in the settings sheet. Photos and
-            // settings remain reachable.
-            return self.draw_corner_actions(scene, t, tr, theme, full);
+            // anyone can see; they stay in the settings sheet.
+            return Rect::new(
+                full.x0 + m.edge,
+                full.y0 + m.edge,
+                full.x1 - m.edge,
+                full.y0 + m.edge + m.bar(),
+            );
         }
         let timer_label = match self.settings.timer {
             Timer::Off => "",
@@ -436,7 +352,6 @@ impl CameraApp {
             Timer::S10 => "10 s",
         };
         let next_timer = super::cycle(&Timer::ALL, self.settings.timer);
-        let trailing = corner_actions();
         let mut leading = vec![
             HudItem {
                 label: self.settings.resolution.label(),
@@ -467,9 +382,9 @@ impl CameraApp {
                 action: Action::ToggleGrid,
             },
         ];
-        // Controls that do not fit beside the trailing cluster stay in the
-        // settings sheet: first the grid, then HDR.
-        let room = full.width() - 2.0 * m.edge - m.gap - cluster_width(&trailing, tr, theme);
+        // Controls that do not fit the window's width stay in the settings
+        // sheet: first the grid, then HDR.
+        let room = full.width() - 2.0 * m.edge;
         for drop in [Action::ToggleGrid, Action::ToggleHdr] {
             if cluster_width(&leading, tr, theme) <= room {
                 break;
@@ -479,9 +394,7 @@ impl CameraApp {
             });
         }
         let origin = Point::new(full.x0 + m.edge, full.y0 + m.edge);
-        let lead = self.draw_cluster(scene, t, tr, theme, origin, &leading);
-        let trail = self.draw_corner_actions(scene, t, tr, theme, full);
-        lead.union(trail)
+        self.draw_cluster(scene, t, tr, theme, origin, &leading)
     }
 
     /// The latest capture, bottom-leading: its preview opens it in the app
@@ -653,7 +566,7 @@ impl CameraApp {
     }
 
     /// A `width` × `height` rect centred at the top of the window, beside the
-    /// corner clusters when it fits between them, under them otherwise.
+    /// capture settings when it fits, under them otherwise.
     fn top_centre(&self, full: Rect, top: Rect, width: f64, height: f64, theme: &Theme) -> Rect {
         let m = HudMetrics::of(theme);
         let x0 = full.center().x - width / 2.0;
@@ -762,29 +675,6 @@ impl CameraApp {
         if let Some((label, anchor)) = self.tooltip.visible() {
             draw_hover_tooltip(scene, t, tr, theme, anchor, label, self.rect);
         }
-    }
-
-    /// Photos and the settings, the top-trailing cluster of the scanner and
-    /// document screens. Returns its panel.
-    pub(super) fn draw_corner_actions(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        full: Rect,
-    ) -> Rect {
-        let m = HudMetrics::of(theme);
-        let items = corner_actions();
-        let width = cluster_width(&items, tr, theme);
-        self.draw_cluster(
-            scene,
-            t,
-            tr,
-            theme,
-            Point::new(full.x1 - m.edge - width, full.y0 + m.edge),
-            &items,
-        )
     }
 
     /// The recent-capture preview, decoded once per capture.
