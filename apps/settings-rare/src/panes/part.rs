@@ -309,12 +309,12 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_entry!("region.numbers", tilo_locale::Locale => region::number_style),
     crate::setting::setting_entry!("region.first_day", tilo_locale::Locale => region::first_day),
     crate::setting::setting_value!("region.language" => known region::language::value),
-    crate::setting::setting_value!("time.automatic" => time_date::values::automatic),
+    crate::setting::setting_switch!("time.automatic" => time_date::values::automatic, time_date::values::automatic_switch),
     crate::setting::setting_value!("time.zone" => time_date::values::zone),
     crate::setting::setting_value!("storage.cache" => storage::values::cache),
     crate::setting::setting_value!("storage.clean" => storage::values::clean),
-    crate::setting::setting_value!("updates.automatic" => updates::values::automatic),
-    crate::setting::setting_value!("updates.metered" => updates::values::metered),
+    crate::setting::setting_switch!("updates.automatic" => updates::values::automatic, updates::values::automatic_switch),
+    crate::setting::setting_switch!("updates.metered" => updates::values::metered, updates::values::metered_switch),
 ];
 
 pub const PART: crate::area::Part = crate::area::Part {

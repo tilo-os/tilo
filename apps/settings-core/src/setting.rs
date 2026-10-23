@@ -5,14 +5,16 @@
 //! control bound to the section's field edit. The pane builds its row with
 //! that function, and so does Settings' search: typing in the window bar
 //! lists the settings that match as those same rows, operable where they
-//! are found ([`Found`]), each page's group opening its page. A setting
-//! whose pane draws it some other way is listed by name, and showing it
-//! takes the person to it in its page; the row says what it is set to, read
-//! where its pane reads it.
+//! are found ([`Found`]), each page's group opening its page. A yes-or-no
+//! that only the device can switch (a radio, the sound server) is the
+//! switch its pane shows once the window has read it can be switched. A
+//! setting whose pane draws it some other way (a layout, a schedule, a
+//! picker) is listed by name, and showing it takes the person to it in its
+//! page; the row says what it is set to, read where its pane reads it.
 //!
 //! A pane brings its settings' rows in its [`crate::area::Part`] with
-//! [`setting_entry!`], and what the others are set to with
-//! [`setting_value!`].
+//! [`setting_entry!`], its device switches with [`setting_switch!`], and
+//! what the others are set to with [`setting_value!`].
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -43,6 +45,25 @@ pub enum Shown {
     /// (never reading it). `None` while that is unknown. Read at every
     /// sync while shown, so it reads only what is already at hand.
     Value(fn(&crate::settings_app::SettingsApp, &Follows) -> Option<String>),
+    /// A yes-or-no its pane switches only where the device lets it (a
+    /// radio, a display, the sound server): the switch the second function
+    /// builds over what the first reads, as its pane reads it in the
+    /// window, like [`Shown::Value`]. Listed by name with what it says
+    /// while it cannot be switched, or is not known.
+    Switch(
+        fn(&crate::settings_app::SettingsApp, &Follows) -> Read,
+        fn(&PaneCx, bool) -> Item,
+    ),
+}
+
+/// What search reads of a setting it shows by name or as a switch of the
+/// device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Read {
+    /// What it is set to, shown beside its name; `None` while unknown.
+    Value(Option<String>),
+    /// A switch, on or off.
+    Switch(bool),
 }
 
 /// The [`SettingEntry`] of the setting `$id`, whose row `$row(cx, followed)`
@@ -83,19 +104,35 @@ macro_rules! setting_value {
 }
 pub use crate::setting_value;
 
-/// What each of `settings` is set to, where search shows it by name.
+/// The [`SettingEntry`] of the setting `$id`, which search shows as the
+/// switch `$row(cx, on)` builds while `$read(app, follows)` says
+/// it can be switched ([`Shown::Switch`]).
+#[macro_export]
+macro_rules! setting_switch {
+    ($id:literal => $read:path, $row:path) => {
+        $crate::setting::SettingEntry {
+            id: $id,
+            shown: $crate::setting::Shown::Switch($read, $row),
+        }
+    };
+}
+pub use crate::setting_switch;
+
+/// What each of `settings` is set to, where search shows it by name or as
+/// a switch of the device.
 #[must_use]
-pub fn values(
+pub fn reads(
     app: &crate::settings_app::SettingsApp,
     follows: &Follows,
     settings: &[&'static Setting],
-) -> Vec<Option<String>> {
+) -> Vec<Read> {
     settings
         .iter()
         .map(
             |setting| match entry(setting.id).map(|entry| &entry.shown) {
-                Some(Shown::Value(value)) => value(app, follows),
-                Some(Shown::Row(_)) | None => None,
+                Some(Shown::Value(value)) => Read::Value(value(app, follows)),
+                Some(Shown::Switch(read, _)) => read(app, follows),
+                Some(Shown::Row(_)) | None => Read::Value(None),
             },
         )
         .collect()
@@ -232,21 +269,21 @@ pub fn matching(query: &str) -> Vec<&'static Setting> {
 pub struct Found {
     cx: PaneCx,
     follows: Follows,
-    /// The settings found, best first, and what each shown by name is set
-    /// to ([`values`]).
+    /// The settings found, best first, and what each shown by name or as a
+    /// switch of the device is set to ([`reads`]).
     settings: Vec<&'static Setting>,
-    values: Vec<Option<String>>,
+    reads: Vec<Read>,
     composed: ui::widget::Composed,
 }
 
 impl Found {
     #[must_use]
-    pub fn new(cx: PaneCx, settings: Vec<&'static Setting>, values: Vec<Option<String>>) -> Self {
+    pub fn new(cx: PaneCx, settings: Vec<&'static Setting>, reads: Vec<Read>) -> Self {
         Self {
             cx,
             follows: Follows::default(),
             settings,
-            values,
+            reads,
             composed: ui::widget::Composed::default(),
         }
     }
@@ -268,14 +305,16 @@ impl Found {
         let category = Category::from_slug(page)?;
         let items: Vec<Item> = found
             .iter()
-            .filter_map(|&at| {
-                let value = self.values.get(at).and_then(Option::as_deref);
-                Some((*self.settings.get(at)?, value))
-            })
-            .map(|(setting, value)| {
-                if let Some(Shown::Row(row)) = entry(setting.id).map(|entry| &entry.shown) {
-                    return row(&self.cx, &self.follows);
-                }
+            .filter_map(|&at| Some((*self.settings.get(at)?, self.reads.get(at))))
+            .map(|(setting, read)| {
+                let value = match (entry(setting.id).map(|entry| &entry.shown), read) {
+                    (Some(Shown::Row(row)), _) => return row(&self.cx, &self.follows),
+                    (Some(Shown::Switch(_, row)), Some(&Read::Switch(on))) => {
+                        return row(&self.cx, on);
+                    }
+                    (_, Some(Read::Value(value))) => value.as_deref(),
+                    _ => None,
+                };
                 let name = t(&setting.name_key());
                 let show = self
                     .navigating(

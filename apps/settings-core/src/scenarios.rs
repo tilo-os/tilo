@@ -32,6 +32,9 @@ pub const SEARCH_QUERY: &str = "light";
 /// The query the `search-keys` scenario types: switches of one page and
 /// settings another page draws its own way.
 pub const SEARCH_KEYS_QUERY: &str = "keys";
+/// The query the `search-sound` scenario types with Sound read: a switch
+/// of the sound server.
+pub const SEARCH_SOUND_QUERY: &str = "mute";
 
 const CODEC_SCENARIOS: &[&str] = &[
     "codecsdemo-off",
@@ -71,6 +74,7 @@ const NARROW: &str = "narrow";
 const NARROW_LIST: &str = "narrow-list";
 const SEARCH: &str = "search";
 const SEARCH_KEYS: &str = "search-keys";
+const SEARCH_SOUND: &str = "search-sound";
 const ACCOUNT_FORM: &str = "account-form";
 const ACCOUNTS_NARROW: &str = "accounts-narrow";
 const ACCOUNTS_LINKING: &str = "accounts-linking";
@@ -87,6 +91,7 @@ pub fn names() -> &'static [&'static str] {
                 NARROW_LIST,
                 SEARCH,
                 SEARCH_KEYS,
+                SEARCH_SOUND,
                 ACCOUNT_FORM,
                 ACCOUNTS_NARROW,
                 ACCOUNTS_LINKING,
@@ -588,6 +593,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH) => Staged::Search(Category::Appearance, SEARCH_QUERY),
         Some(SEARCH_KEYS) => Staged::Search(Category::Accessibility, SEARCH_KEYS_QUERY),
+        Some(SEARCH_SOUND) => Staged::Search(Category::Sound, SEARCH_SOUND_QUERY),
         Some(ACCOUNT_FORM | ACCOUNTS_NARROW | ACCOUNTS_LINKING | ACCOUNTS_LINKED) => {
             Staged::Pane(Category::ExternalAccounts)
         }
@@ -731,7 +737,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 27 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 28 + CODEC_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),

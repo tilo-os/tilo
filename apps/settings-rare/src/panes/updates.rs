@@ -49,9 +49,15 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&UpdatesArea> {
 /// What the update settings found by search are set to, as the page last
 /// read the machine: nothing until it has.
 pub(crate) mod values {
-    use super::{UpdatesModel, area};
-    use crate::setting::{Follows, on_off};
+    use ui::LocalState;
+
+    use super::{UpdatesEffect, UpdatesModel, area};
+    use crate::effects::effect;
+    use crate::host::PaneCx;
+    use crate::i18n::t;
+    use crate::setting::{Follows, Read};
     use crate::settings_app::SettingsApp;
+    use crate::widgets::Item;
 
     fn read<V>(app: &SettingsApp, read: impl FnOnce(&UpdatesModel) -> Option<V>) -> Option<V> {
         let model = area(app)?.model.get()?;
@@ -59,17 +65,34 @@ pub(crate) mod values {
         read(&model)
     }
 
-    pub(crate) fn automatic(app: &SettingsApp, _: &Follows) -> Option<String> {
+    /// Automatic updates, a switch where the machine schedules them.
+    pub(crate) fn automatic(app: &SettingsApp, _: &Follows) -> Read {
         read(app, |model| {
-            model
-                .timer_enabled
-                .is_some()
-                .then(|| on_off(model.prefs.auto))
+            model.timer_enabled.is_some().then_some(model.prefs.auto)
         })
+        .map_or(Read::Value(None), Read::Switch)
     }
 
-    pub(crate) fn metered(app: &SettingsApp, _: &Follows) -> Option<String> {
-        read(app, |model| model.allow_metered.map(on_off))
+    pub(crate) fn automatic_switch(cx: &PaneCx, on: bool) -> Item {
+        cx.row(t("upd-automatic")).id("updates.auto").toggle_effect(
+            &LocalState::new(on),
+            effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
+        )
+    }
+
+    /// Updating over metered connections, a switch once the machine said
+    /// whether it may.
+    pub(crate) fn metered(app: &SettingsApp, _: &Follows) -> Read {
+        read(app, |model| model.allow_metered).map_or(Read::Value(None), Read::Switch)
+    }
+
+    pub(crate) fn metered_switch(cx: &PaneCx, on: bool) -> Item {
+        cx.row(t("upd-metered"))
+            .id("updates.metered")
+            .toggle_effect(
+                &LocalState::new(on),
+                effect(UpdatesEffect::SET_METERED_UPDATES),
+            )
     }
 }
 
@@ -1618,15 +1641,7 @@ impl UpdatesModel {
             value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
         ];
         if self.timer_enabled.is_some() {
-            items.push(
-                self.cx
-                    .row(t("upd-automatic"))
-                    .id("updates.auto")
-                    .toggle_effect(
-                        &LocalState::new(self.prefs.auto),
-                        effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
-                    ),
-            );
+            items.push(values::automatic_switch(&self.cx, self.prefs.auto));
         }
         if let Some(schedule) = self.schedule.as_deref().map(schedule_shown) {
             items.push(
@@ -1639,15 +1654,7 @@ impl UpdatesModel {
             );
         }
         if let Some(allowed) = self.allow_metered {
-            items.push(
-                self.cx
-                    .row(t("upd-metered"))
-                    .id("updates.metered")
-                    .toggle_effect(
-                        &LocalState::new(allowed),
-                        effect(UpdatesEffect::SET_METERED_UPDATES),
-                    ),
-            );
+            items.push(values::metered_switch(&self.cx, allowed));
         }
         section(&t("upd-details"), rows(items))
     }

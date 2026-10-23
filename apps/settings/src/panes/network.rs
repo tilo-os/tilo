@@ -61,67 +61,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NetworkArea> {
     app.areas().find()
 }
 
-/// What the network settings found by search are set to, as the page last
-/// read them: nothing until the area has read the device.
-pub(crate) mod values {
-    use super::{NetworkModel, area};
-    use crate::setting::{Follows, on_off};
-    use crate::settings_app::SettingsApp;
-
-    fn read<V>(app: &SettingsApp, read: impl FnOnce(&NetworkModel) -> Option<V>) -> Option<V> {
-        let model = area(app)?.read()?;
-        let model = model.borrow();
-        read(&model)
-    }
-
-    pub(crate) fn wifi(app: &SettingsApp, _: &Follows) -> Option<String> {
-        read(app, |model| {
-            if model.wifi_absent() {
-                return Some(crate::i18n::t("net-no-wifi-adapter"));
-            }
-            model
-                .read_errors
-                .wifi_enabled
-                .is_none()
-                .then(|| on_off(model.wifi_enabled))
-        })
-    }
-
-    pub(crate) fn wired(app: &SettingsApp, _: &Follows) -> Option<String> {
-        read(app, |model| {
-            model
-                .wired
-                .device
-                .is_some()
-                .then(|| on_off(model.wired.connected))
-        })
-    }
-
-    pub(crate) fn airplane(app: &SettingsApp, _: &Follows) -> Option<String> {
-        read(app, |model| {
-            model
-                .read_errors
-                .radios
-                .is_none()
-                .then(|| on_off(model.radios.airplane_mode))
-        })
-    }
-
-    pub(crate) fn hotspot(app: &SettingsApp, _: &Follows) -> Option<String> {
-        read(app, |model| {
-            (!model.wifi_absent()).then(|| on_off(model.radios.hotspot_active))
-        })
-    }
-
-    pub(crate) fn mobile(app: &SettingsApp, _: &Follows) -> Option<String> {
-        read(app, |model| {
-            model
-                .radios
-                .wwan_available
-                .then(|| on_off(model.radios.wwan_enabled))
-        })
-    }
-}
+pub(crate) mod values;
 
 // Ask the authenticated host: this app intentionally has an isolated network
 // namespace and cannot inspect the host's nl80211 interface by spawning iw.

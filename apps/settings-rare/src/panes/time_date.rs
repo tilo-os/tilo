@@ -64,16 +64,33 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&TimeDateArea> {
 /// What the time settings found by search are set to, as the page last
 /// read the clock: nothing until it has.
 pub(crate) mod values {
-    use super::{ClockPrefs, TimeDatePane, area};
-    use crate::setting::{Follows, on_off};
-    use crate::settings_app::SettingsApp;
+    use ui::LocalState;
 
-    pub(crate) fn automatic(app: &SettingsApp, _: &Follows) -> Option<String> {
-        let reading = area(app)?.reading.get()?;
-        if reading.auto_error.is_some() {
-            return None;
-        }
-        reading.automatic.map(on_off)
+    use super::{ClockPrefs, TimeDateEffect, TimeDatePane, area};
+    use crate::effects::effect;
+    use crate::host::PaneCx;
+    use crate::i18n::t;
+    use crate::setting::{Follows, Read};
+    use crate::settings_app::SettingsApp;
+    use crate::widgets::Item;
+
+    /// Automatic time, a switch once the clock was read and said whether
+    /// it is on.
+    pub(crate) fn automatic(app: &SettingsApp, _: &Follows) -> Read {
+        area(app)
+            .and_then(|area| area.reading.get())
+            .filter(|reading| reading.auto_error.is_none())
+            .map_or(Read::Value(None), |reading| {
+                Read::Switch(reading.automatic.unwrap_or(false))
+            })
+    }
+
+    /// The automatic-time switch.
+    pub(crate) fn automatic_switch(cx: &PaneCx, on: bool) -> Item {
+        cx.row(t("time-auto")).id("time.auto").toggle_effect(
+            &LocalState::new(on),
+            effect(TimeDateEffect::SET_AUTOMATIC_TIME),
+        )
     }
 
     pub(crate) fn zone(app: &SettingsApp, follows: &Follows) -> Option<String> {
@@ -717,10 +734,7 @@ impl TimeDatePane {
                 &t("time-auto"),
                 &t_args("time-status-error", &[("error", error.as_str().into())]),
             ),
-            (None, automatic) => self.cx.row(t("time-auto")).id("time.auto").toggle_effect(
-                &LocalState::new(automatic.unwrap_or(false)),
-                effect(TimeDateEffect::SET_AUTOMATIC_TIME),
-            ),
+            (None, automatic) => values::automatic_switch(&self.cx, automatic.unwrap_or(false)),
         }
     }
 

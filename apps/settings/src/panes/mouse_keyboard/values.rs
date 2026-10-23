@@ -41,23 +41,9 @@ pub(crate) fn caps_lock(app: &SettingsApp, follows: &Follows) -> String {
     caps_lock_shown(caps_lock_label(input(app, follows).caps_lock.as_deref()))
 }
 
-macro_rules! switch_value {
-    ($($name:ident => $field:ident),* $(,)?) => {$(
-        pub(crate) fn $name(app: &SettingsApp, follows: &Follows) -> String {
-            on_off(input(app, follows).$field)
-        }
-    )*};
-}
-
-switch_value! {
-    touchpad => touchpad_enabled,
-    tap_to_click => tap_to_click,
-    natural_scrolling => touchpad_natural_scroll,
-    disable_while_typing => disable_while_typing,
-    gestures => touchpad_gestures,
-    disable_with_mouse => touchpad_disabled_on_external_mouse,
-    left_handed => left_handed,
-    middle_click => middle_emulation,
+/// Natural scrolling, as the touchpad has it: the mouse has its own.
+pub(crate) fn natural_scrolling(app: &SettingsApp, follows: &Follows) -> String {
+    on_off(input(app, follows).touchpad_natural_scroll)
 }
 
 pub(crate) fn touchpad_speed(app: &SettingsApp, follows: &Follows) -> String {
