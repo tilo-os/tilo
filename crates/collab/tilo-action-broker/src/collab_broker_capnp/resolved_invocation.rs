@@ -48,7 +48,7 @@ fn check_registration(
         .host_workers
         .lock()
         .map_err(|_| "worker registry unavailable")?
-        .get(&peer)
+        .get(peer, &registered.route)
         .and_then(|current| current.worker_registration.clone());
     if current_worker.as_ref() != worker {
         return Err("application worker connection changed during resolution".into());
@@ -98,7 +98,7 @@ fn binding_worker<'a>(
         .host_workers
         .lock()
         .map_err(|_| "worker registry unavailable")?
-        .get(&peer)
+        .get(peer, &registered.route)
         .cloned()
         .ok_or("worker connection retired")?;
     if current.worker_registration.as_ref() != Some(worker) || worker.route != registered.route {
@@ -189,7 +189,7 @@ impl CapnpBrokerState {
             .host_workers
             .lock()
             .map_err(|_| "worker registry unavailable")?
-            .get(&peer)
+            .get(peer, &registered.route)
             .and_then(|current| current.worker_registration.clone());
         let current = binding_worker(&registered, worker.as_ref(), self, peer)?;
         binding_data(&registered, current, peer, host)
@@ -220,7 +220,7 @@ impl CapnpBrokerState {
             .host_workers
             .lock()
             .map_err(|_| "worker registry unavailable")?
-            .get(&peer)
+            .get(peer, &registered.route)
             .and_then(|current| current.worker_registration.clone());
         let resolution = tokio::time::timeout(Duration::from_secs(2), async {
             match revision {
@@ -651,7 +651,7 @@ fn invoke_checked(
             .host_workers
             .lock()
             .map_err(|_| capnp::Error::failed("worker registry unavailable".into()))?
-            .get(&peer)
+            .get(peer, &offer.registered.route)
             .cloned()
             .ok_or_else(|| capnp::Error::failed("resolved worker connection retired".into()))?;
         if offer.worker.is_none() {

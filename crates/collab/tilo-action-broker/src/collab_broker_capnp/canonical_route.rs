@@ -72,7 +72,7 @@ impl CapnpBrokerState {
             .host_workers
             .lock()
             .map_err(|_| "worker registry unavailable")?
-            .get(&peer)
+            .get(peer, route)
             .and_then(|identity| identity.worker_registration.clone());
         // Ordinary browsing remains available to non-private publishers, but
         // they cannot claim custody of a canonical invocation route.
@@ -127,7 +127,7 @@ impl CapnpBrokerState {
             .host_workers
             .lock()
             .ok()
-            .and_then(|workers| workers.get(&peer).cloned());
+            .and_then(|workers| workers.get(peer, &publisher.route).cloned());
         let Some(identity) = identity else {
             return false;
         };

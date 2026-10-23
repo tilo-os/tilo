@@ -56,6 +56,7 @@ impl CapnpBrokerState {
             if matching.next().is_some() {
                 return Err("private draft requires one exact native Chat worker".into());
             }
+            drop(matching);
             drop(workers);
             worker
         };
