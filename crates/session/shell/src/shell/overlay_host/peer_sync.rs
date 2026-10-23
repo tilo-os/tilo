@@ -675,6 +675,15 @@ impl ShellOverlayHost {
         for (digest, approve) in answers {
             self.dispatch_pairing(PeerSyncRequest::AnswerDevice { digest, approve });
         }
+        // Another device of the person found one and asks here.
+        let certification = crate::shell::device_certification::generation();
+        if certification != self.certification_seen
+            && !self.peer_sync.in_flight(&PeerSyncRequest::DevicesAsking)
+        {
+            self.certification_seen = certification;
+            self.dispatch_pairing(PeerSyncRequest::DevicesAsking);
+            return;
+        }
         if self.pairing_until_ms <= tilo_clock::unix_now_ms()
             || self.peer_sync.in_flight(&PeerSyncRequest::DevicesAsking)
             || self

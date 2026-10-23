@@ -33,6 +33,12 @@ device. From then on every device of theirs finds and trusts the others:
   certificate, the enrolment list and a later hello of the revoked device.
 - Another person's device is never admitted this way; it joins through an
   invitation to a workspace.
+- Any of the person's devices can pair a new one. A device that holds none of
+  the identity's key (or one FROST share of it) asks the devices that hold it
+  to certify the device it found; each asks the person, showing the device's
+  code, and the signatures of the key's threshold of devices make the
+  certificate (`tilo_identity_host::certification_ceremony`). A revoked device
+  is refused by every key holder.
 - On the local network the devices find each other's addresses with sealed
   probes only the person's devices can read (`crates/collab/tilo-lan-discovery`).
   A device that asks for an older one also introduces itself to it, so a device

@@ -3117,6 +3117,7 @@ pairing-done = { $device } ist jetzt eines deiner Geräte.
 pairing-asks-title = Ein Gerät möchte du sein
 pairing-asks-body = { $device }{ $from }, { $when }. Wenn du bestätigst, handelt es als du. Bestätige nur, wenn es { $code } zeigt.
 pairing-asks-from = {" "}({ $country })
+pairing-asks-via = {" "}(gefunden von deinem Gerät { $device })
 pairing-approve = { $code } bestätigen
 pairing-decline = Ablehnen
 pairing-answer-failed = Das Gerät wurde nicht beantwortet: { $error }

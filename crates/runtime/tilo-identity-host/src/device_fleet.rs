@@ -340,10 +340,10 @@ impl DeviceFleetStore {
                 valid_from_ns: now_ns,
                 local_issuer: None,
             },
-            &|digest| {
+            crate::enrollment::Certifier::Root(&|digest| {
                 root.sign(digest)
                     .map_err(|error| io::Error::other(error.to_string()))
-            },
+            }),
         )
     }
 
@@ -356,7 +356,7 @@ impl DeviceFleetStore {
         &self,
         nonces: &crate::enrollment::NonceStore,
         request: &crate::enrollment::Redemption<'_>,
-        sign: crate::enrollment::RootSign<'_>,
+        certifier: crate::enrollment::Certifier<'_>,
     ) -> io::Result<DeviceCert> {
         let token = request.token;
         let identity_id = hex::encode(token.user_public_key);
@@ -377,6 +377,7 @@ impl DeviceFleetStore {
             token,
             issuer,
             fleet.is_revoked(&token.issuer_device_public_key),
+            certifier.issuer_admits(),
             request.now_ns,
         )?;
         if fleet
@@ -390,7 +391,13 @@ impl DeviceFleetStore {
                 "enrollment token has already been consumed",
             ));
         }
-        let cert = crate::enrollment::certify(request, sign)?;
+        if fleet.is_revoked(&request.device_public_key) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "that device was removed from this identity and cannot join again",
+            ));
+        }
+        let cert = crate::enrollment::certify(request, certifier)?;
         // Nonces an older build kept in the fleet move to the one store.
         for consumed in &fleet.consumed_enrollments {
             nonces.import(&consumed.nonce)?;
@@ -725,6 +732,18 @@ impl DeviceFleetStore {
             .map_err(|error| io::Error::other(error.to_string()))?;
         self.insert_certificate(identity_id, cert.clone())?;
         Ok(cert)
+    }
+
+    /// This device's material of `identity_id`'s key, which signs only
+    /// after the person approved what it signs
+    /// ([`crate::certification_ceremony`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the identity is not registered here or cannot be
+    /// opened.
+    pub fn identity_key(&self, identity_id: &str) -> io::Result<runtime_identity::SigningIdentity> {
+        self.identity(identity_id).map(|(key, _)| key)
     }
 
     pub(crate) fn identity(

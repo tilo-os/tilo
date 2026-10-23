@@ -52,6 +52,7 @@ pub(crate) mod desktop_commands;
 #[cfg(target_os = "linux")]
 pub(crate) mod desktop_continuation;
 pub mod desktop_control;
+pub(crate) mod device_certification;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;

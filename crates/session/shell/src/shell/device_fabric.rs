@@ -751,6 +751,16 @@ pub enum PersonalFabricAction {
     ShowTab {
         tab: u64,
     },
+    /// Certify a device the sender paired: the devices that can approve it
+    /// ask their person (`crate::shell::device_certification`). The ask,
+    /// postcard-encoded.
+    CertifyAsk {
+        ask: Vec<u8>,
+    },
+    /// A device's postcard-encoded answer to a [`Self::CertifyAsk`].
+    CertifyAnswer {
+        answer: Vec<u8>,
+    },
 }
 
 /// What became of one request to wake a device.
@@ -1089,6 +1099,12 @@ impl PersonalFabricActionEnvelope {
             }
             PersonalFabricAction::ShowTab { tab } => {
                 if *tab == 0 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::CertifyAsk { ask: message }
+            | PersonalFabricAction::CertifyAnswer { answer: message } => {
+                if message.is_empty() {
                     return Err(FabricError::InvalidAction);
                 }
             }

@@ -809,7 +809,7 @@ pub fn enroll_from_local_identity(
     if !identity.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "threshold identity requires the multi-device certificate ceremony",
+            crate::certification_ceremony::cannot_sign_alone(),
         ));
     }
     let user_public_key = identity.group_public_key();
@@ -1245,7 +1245,7 @@ fn ensure_collaboration_identity_in_context(
     if !signer.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "threshold identity requires the multi-device certificate ceremony",
+            crate::certification_ceremony::cannot_sign_alone(),
         ));
     }
     paths.ensure_directories()?;
@@ -1629,7 +1629,7 @@ pub fn verify_collaboration_identity(
     if !identity.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "threshold identity requires the multi-device certificate ceremony",
+            crate::certification_ceremony::cannot_sign_alone(),
         ));
     }
     let root_public = persist::read_public_key(&paths.user_pubkey)

@@ -35,6 +35,8 @@ collab-types = { path = "../../collab/collab-types" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 # The answers the identity steps give every door (`device_admin`).
 tilo-actions = { path = "../../collab/actions" }
+# The pairing code every screen of a pairing shows (`certification_ceremony`).
+blake3.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true
 hex.workspace = true
@@ -56,6 +58,9 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-seal = { path = "../../system/tilo-seal" }
 tracing.workspace = true
+# `tilo-identity approve` on a device without the identity's key asks the
+# session, which reaches the devices that hold it.
+tilo-control = { path = "../../session/control-cli" }
 # The identity record encoder shared with the interactive identity ceremony.
 tilo-identity-ceremony = { version = "0.1.0", path = "../../collab/tilo-identity-ceremony" }
 wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
@@ -65,7 +70,6 @@ workspace-hack = { version = "0.1" }
 tempfile.workspace = true
 # A commenter's comment, as the change a notes window makes.
 automerge.workspace = true
-blake3.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]

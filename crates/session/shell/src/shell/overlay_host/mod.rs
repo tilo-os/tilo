@@ -810,6 +810,9 @@ pub struct ShellOverlayHost {
     pairing_until_ms: u64,
     /// When the host was last asked for the devices asking.
     pairing_polled_at: Option<std::time::Instant>,
+    /// The last change of the devices another of the person's devices asked
+    /// about here, as the sheet has read them.
+    certification_seen: u64,
     /// Rooms a screenshot scene stands in as held through the web.
     site_rooms_for_shots: Option<Vec<crate::shell::network::SiteRoom>>,
     /// What each device asking calls itself, for the answer's notice.

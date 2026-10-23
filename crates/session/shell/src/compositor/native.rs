@@ -8067,6 +8067,7 @@ fn install_session_peer_sync(
     net: Arc<crate::shell::network::ShellNetwork>,
 ) -> Arc<crate::shell::network::ShellNetwork> {
     crate::shell::link_open::attach_network(&net);
+    crate::shell::device_certification::attach_network(&net);
     net.attach_session_inhibitors(frame_builder.host().session_inhibitors());
     frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
