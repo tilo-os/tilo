@@ -575,6 +575,24 @@ pub enum NetEvent {
     },
 }
 
+impl NetEvent {
+    /// What the event is, for timing: the message kind for a message.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Live { .. } => "Live",
+            Self::NativeInput(_) => "NativeInput",
+            Self::PeerJoined { .. } => "PeerJoined",
+            Self::PeerLeft { .. } => "PeerLeft",
+            Self::NotAdmitted { .. } => "NotAdmitted",
+            Self::HostMember { .. } => "HostMember",
+            Self::HostReady { .. } => "HostReady",
+            Self::Msg { msg, .. } | Self::OwnReplay { msg, .. } => msg.kind(),
+            Self::PersonalFabric { .. } => "PersonalFabric",
+            Self::NearbyTransferProgress { .. } => "NearbyTransferProgress",
+        }
+    }
+}
+
 /// Actor-minted identity of one endpoint's membership incarnation on one
 /// workspace topic. This value never crosses the wire: it is authority only
 /// for local consumers of [`NetEvent`].

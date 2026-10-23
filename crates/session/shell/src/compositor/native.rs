@@ -12898,7 +12898,17 @@ pub fn run() {
             && !session_changed
             && !session.is_locked();
         if let Some(net) = peer_sync.as_ref().filter(|_| !cadence_only_tick) {
-            pump_phase!("network-tick", net.frame_tick());
+            if loop_timing {
+                let steps = pump_phase!("network-tick", net.timed_frame_tick());
+                for (step, elapsed) in steps {
+                    metrics::profile::record_phase(step, elapsed, None);
+                    if loop_timing_env && elapsed >= Duration::from_millis(8) {
+                        eprintln!("PUMP-PHASE name={step} elapsed_us={}", elapsed.as_micros());
+                    }
+                }
+            } else {
+                net.frame_tick();
+            }
             deliver_held_key_releases!();
             if !std::mem::replace(&mut device_fabric_tried, true) {
                 device_fabric_worker = start_device_fabric(net, &notif_bridge);

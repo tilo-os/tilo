@@ -54,12 +54,16 @@ pub(crate) use private_chat::PrivateChatRoute;
 #[cfg(test)]
 mod reachability_tests;
 mod record_content;
+mod room_push;
 #[cfg(test)]
 mod tick_bench;
 #[cfg(test)]
 mod tick_off_loop_tests;
+mod turn_steps;
 pub(crate) use native_enrollment::NativeOwnerStatus;
 pub use record_content::InboundRecordContent;
+use room_push::RoomPush;
+use turn_steps::TurnSteps;
 #[cfg(test)]
 mod agent_question_tests;
 #[cfg(test)]
@@ -969,40 +973,6 @@ const SYNC_REPAIR_DELAY: std::time::Duration = std::time::Duration::from_secs(2)
 /// idle, converged desktop asks once per this long.
 const SYNC_SAFETY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 const HOME_PEER_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
-/// Upper bound between full projections of every room while nothing the
-/// push trigger watches has moved. Most local edits move the desktop
-/// document's heads and are pushed the same tick; this catches the few that
-/// only reach a room document through projection (a record index, say).
-const ROOM_PUSH_FALLBACK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// What [`ShellNetwork::push_room_changes`] last saw and last announced.
-#[derive(Default)]
-struct RoomPush {
-    /// Desktop-document heads, peer-merge epoch and external revision at
-    /// the last full check: when none moved, no room can have changed
-    /// locally, so a tick costs one heads read.
-    trigger: Option<(Vec<automerge::ChangeHash>, u64, u64)>,
-    /// When every room was last projected.
-    last_full: Option<std::time::Instant>,
-    /// Each room's document heads as last announced (or first seen, which
-    /// announces nothing: a peer that lacks older history pulls it).
-    announced: std::collections::HashMap<RoomId, Vec<automerge::ChangeHash>>,
-    /// The tree's write generation right after the last full projection.
-    /// Projection reads nothing but the tree, and every tree write bumps the
-    /// generation, so while it holds there is nothing to project.
-    projected_generation: Option<u64>,
-    /// The generation right after a check that found no trigger moved:
-    /// until it changes, only the fallback projection has anything to do.
-    checked_generation: Option<u64>,
-    /// When a tick found the tree held by another thread: the push runs
-    /// again at [`ROOM_PUSH_RETRY`] rather than waiting for the lock.
-    retry_at: Option<std::time::Instant>,
-}
-
-/// How soon a room push that found the tree held by another thread tries
-/// again: about a frame, so a change still goes out promptly, while the
-/// loop never waits on that thread's write.
-const ROOM_PUSH_RETRY: std::time::Duration = std::time::Duration::from_millis(8);
 /// Keep transport bursts from monopolizing the compositor thread. The actor's
 /// channel is bounded, so leaving events queued simply applies backpressure
 /// until the next frame instead of losing ordering or data.
@@ -7040,110 +7010,6 @@ impl ShellNetwork {
         }
     }
 
-    /// Announce every room document change since the last announcement as a
-    /// `SyncResp`, so peers see an edit, an opened, moved or closed tab, a
-    /// rename within one network round trip instead of at their next pull.
-    /// At most one message per room per tick. Cheap when idle: rooms are
-    /// projected only when the desktop document, the peer-merge epoch or the
-    /// external revision moved, or [`ROOM_PUSH_FALLBACK_INTERVAL`] passed,
-    /// and never while the tree is unwritten since the last projection.
-    /// Runs on the compositor's loop, so it never waits for the tree: held
-    /// by another thread, the push retries at [`Self::next_deadline`].
-    /// A batch that landed from a peer is re-announced once, which reaches
-    /// a member that missed the original; the echo changes nothing for
-    /// those that already hold it, so it does not repeat.
-    fn push_room_changes(&self) {
-        let Some(handle) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
-            return;
-        };
-        let Ok(mut push) = self.room_push.lock() else {
-            return;
-        };
-        let now = std::time::Instant::now();
-        let generation = handle.generation();
-        let due = push
-            .last_full
-            .is_none_or(|last| now.duration_since(last) >= ROOM_PUSH_FALLBACK_INTERVAL);
-        if push.projected_generation == Some(generation)
-            || (!due && push.checked_generation == Some(generation))
-        {
-            push.retry_at = None;
-            return;
-        }
-        // Projecting writes the room documents. Another thread holding the
-        // tree (a worker, the portal, a protocol callback) would hold the
-        // loop for as long as it keeps it; the push runs again shortly
-        // instead ([`Self::next_deadline`]).
-        let Some(mut tree) = handle.try_write() else {
-            push.retry_at = Some(now.checked_add(ROOM_PUSH_RETRY).unwrap_or(now));
-            return;
-        };
-        push.retry_at = None;
-        // This guard's release is the next bump; a later one is a write
-        // made after this projection.
-        let projected = handle.generation().wrapping_add(1);
-        let mut outgoing = Vec::new();
-        let trigger = (
-            tree.current_heads(),
-            tree.desktop.room_epoch,
-            tree.desktop.external_revision,
-        );
-        let moved = push.trigger.as_ref() != Some(&trigger);
-        if !moved && !due {
-            push.checked_generation = Some(projected);
-            return;
-        }
-        if moved {
-            // Once this activity settles, ask the rooms for what this shell
-            // or a peer missed of it.
-            self.schedule_repair_pull();
-        }
-        push.trigger = Some(trigger);
-        push.last_full = Some(now);
-        push.projected_generation = Some(projected);
-        let rooms = tree.rooms();
-        push.announced.retain(|room, _| rooms.contains(room));
-        for room in rooms {
-            if tree.requires_native_owner(room) {
-                continue;
-            }
-            tree.sync_room_doc(room);
-            let heads = tree.room_heads(room);
-            if heads.is_empty() {
-                continue;
-            }
-            let Some(announced) = push.announced.get(&room) else {
-                push.announced.insert(room, heads);
-                continue;
-            };
-            if *announced == heads {
-                continue;
-            }
-            let changes = tree
-                .room_docs
-                .get_mut(&room)
-                .map(|doc| {
-                    doc.get_changes(announced)
-                        .into_iter()
-                        .map(|change| change.raw_bytes().to_vec())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            push.announced.insert(room, heads);
-            if !changes.is_empty() {
-                outgoing.push(NeighbourMsg::SyncResp {
-                    changes,
-                    room: room.to_string(),
-                });
-            }
-        }
-        drop(tree);
-        drop(push);
-        for msg in outgoing {
-            let _ = self.publish_message(msg);
-        }
-    }
-
     /// Drain a bounded batch of pending [`NetEvent`]s from the actor, forward `Msg`
     /// variants into the replica's `handle`, and publish each resulting
     /// outbound message via `cmd_tx`. Transport polling never blocks; durable
@@ -7153,7 +7019,7 @@ impl ShellNetwork {
     /// file: for a thread that may wait for the disk. The compositor's loop
     /// ticks with [`Self::frame_tick`].
     pub fn tick(&self) {
-        self.tick_with(Admission::InPlace);
+        self.tick_with(Admission::InPlace, &mut TurnSteps::default());
     }
 
     /// [`Self::tick`] for the compositor's frame loop, which must never wait
@@ -7161,7 +7027,14 @@ impl ShellNetwork {
     /// ([`native_admission`]), and no later event is handled until that
     /// admission's remainder ran here.
     pub fn frame_tick(&self) {
-        self.tick_with(Admission::OffLoop);
+        self.tick_with(Admission::OffLoop, &mut TurnSteps::default());
+    }
+
+    /// [`Self::frame_tick`], timing each of its steps.
+    pub fn timed_frame_tick(&self) -> TurnSteps {
+        let mut steps = TurnSteps::timed();
+        self.tick_with(Admission::OffLoop, &mut steps);
+        steps
     }
 
     /// When [`Self::frame_tick`] must run again though nothing wakes the
@@ -7171,21 +7044,27 @@ impl ShellNetwork {
         self.room_push.lock().ok().and_then(|push| push.retry_at)
     }
 
-    fn tick_with(&self, admission: Admission) {
+    fn tick_with(&self, admission: Admission, steps: &mut TurnSteps) {
         self.remote_action_replies.expire(std::time::Instant::now());
-        self.note_session_reachability(false);
+        steps.time("network/reachability", || {
+            self.note_session_reachability(false)
+        });
         // Local room changes go out the tick they land; the periodic pull
         // repairs whatever a peer missed.
-        self.push_room_changes();
-        self.kick_periodic_sync();
-        self.reconcile_personal_workspaces();
-        self.refresh_home_peer_hosts_periodically();
-        self.apply_published_home_peers();
-        match admission {
+        steps.time("network/room-push", || self.push_room_changes());
+        steps.time("network/periodic-sync", || self.kick_periodic_sync());
+        steps.time("network/personal-workspaces", || {
+            self.reconcile_personal_workspaces()
+        });
+        steps.time("network/home-peers", || {
+            self.refresh_home_peer_hosts_periodically();
+            self.apply_published_home_peers();
+        });
+        steps.time("network/shared-rooms", || match admission {
             Admission::InPlace => self.finish_shared_rooms(),
             Admission::OffLoop => self.finish_shared_rooms_off_loop(),
-        }
-        self.live_keepalive();
+        });
+        steps.time("network/keepalive", || self.live_keepalive());
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
         // holder panicked mid-drain) just skips this tick rather than
@@ -7196,7 +7075,11 @@ impl ShellNetwork {
         // An admission handed off the loop completes before any later event.
         match self.take_native_admission() {
             native_admission::Lane::Busy => return,
-            native_admission::Lane::Finished(admitted) => self.complete_native_inputs(*admitted),
+            native_admission::Lane::Finished(admitted) => {
+                steps.time("network/native-complete", || {
+                    self.complete_native_inputs(*admitted);
+                });
+            }
             native_admission::Lane::Idle => {}
         }
         for room in self.native_admission.take_replays() {
@@ -7233,21 +7116,25 @@ impl ShellNetwork {
                 break;
             };
             let admits = matches!(&event, NetEvent::NativeInput(_));
-            match event {
-                // An app write and those of its session queued right after
-                // it are one admission: a room's replay persists once.
-                NetEvent::NativeInput(input) if self.admits_in_batch(&input) => {
-                    let batch = self.batch_from(input, &mut event_rx);
-                    match admission {
-                        Admission::OffLoop => self.dispatch_native_inputs_off_loop(batch),
-                        Admission::InPlace => self.dispatch_native_inputs(batch),
+            let kind = event.kind();
+            steps.time_named(
+                || turn_steps::event_step(kind),
+                || match event {
+                    // An app write and those of its session queued right after
+                    // it are one admission: a room's replay persists once.
+                    NetEvent::NativeInput(input) if self.admits_in_batch(&input) => {
+                        let batch = self.batch_from(input, &mut event_rx);
+                        match admission {
+                            Admission::OffLoop => self.dispatch_native_inputs_off_loop(batch),
+                            Admission::InPlace => self.dispatch_native_inputs(batch),
+                        }
                     }
-                }
-                NetEvent::NativeInput(input) if matches!(admission, Admission::OffLoop) => {
-                    self.dispatch_native_input_off_loop(input);
-                }
-                event => self.dispatch_net_event(event),
-            }
+                    NetEvent::NativeInput(input) if matches!(admission, Admission::OffLoop) => {
+                        self.dispatch_native_input_off_loop(input);
+                    }
+                    event => self.dispatch_net_event(event),
+                },
+            );
             // Signed replay may cross a durable writer and publish app state.
             // Leave the remaining FIFO queued until the next UI turn, where
             // control requests can progress between actual admissions; an
