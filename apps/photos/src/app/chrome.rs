@@ -121,17 +121,16 @@ impl Chrome {
     pub(super) fn new() -> Self {
         let base = ui::tokens::Metrics::BASE;
         let inspector_width = f64::from(base.panel_width_list);
-        // The inspector docks only where the sidebar, it and a readable
-        // timeline all fit; narrower, it floats.
-        let inspector_breakpoint =
-            f64::from(base.sidebar_width + base.panel_width_list + base.content_min_width);
         Self {
             places: NavFeed::new(),
             bar: None,
             inspector: SidebarDrawer::new()
                 .right()
                 .docked_width(inspector_width)
-                .breakpoint(inspector_breakpoint)
+                // It docks wherever the timeline beside it keeps a readable
+                // width (the shell's sidebar is outside this window's
+                // content); narrower, it floats.
+                .content_min_width(f64::from(base.content_min_width))
                 .closed(),
             title: String::new(),
             status_left: String::new(),

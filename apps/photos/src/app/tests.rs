@@ -2976,3 +2976,44 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
         Some("photos:library-album:photos.album:trip")
     );
 }
+
+/// The album panel never hides the way to fill an empty library: where the
+/// timeline keeps its readable width beside it, it docks; narrower, it floats
+/// and the empty state's Open stands in the part it leaves.
+#[test]
+fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
+    for (width, docks) in [(1_160.0, true), (716.0, false)] {
+        let size = (width as u32, 800);
+        let mut harness =
+            ui::headless::FrameHarness::for_root(ui::State::new(), test_app(), size, Theme::dark());
+        harness.relayout_at(size).expect("Photos lays out");
+        harness.root_mut::<PhotosApp>().begin_new_album();
+        harness.relayout_at(size).expect("Photos lays out");
+        let app = harness.root::<PhotosApp>();
+        assert!(
+            app.chrome.inspector.is_open(),
+            "{width}px: the album panel is open"
+        );
+        assert_eq!(
+            app.chrome.inspector.is_docked(),
+            docks,
+            "{width}px: the panel docks only beside a readable timeline"
+        );
+        let open = app
+            .empty_state
+            .as_ref()
+            .expect("an empty library shows its empty state")
+            .action_rect();
+        let panel_left = app.rect.x1
+            - app
+                .chrome
+                .inspector
+                .resolved_overlay_width()
+                .max(app.chrome.inspector.sidebar_rect().width());
+        assert!(open.width() > 0.0, "{width}px: the empty state offers Open");
+        assert!(
+            open.x1 <= panel_left,
+            "{width}px: Open ({open:?}) stands clear of the panel from x {panel_left}"
+        );
+    }
+}
