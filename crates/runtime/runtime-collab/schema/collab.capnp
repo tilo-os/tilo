@@ -750,12 +750,25 @@ interface Stream {
   # this field on the RPC rather than folding it into the postcard
   # envelope lets non-Rust clients cheaply route by author without
   # decoding the payload.
-  read @0 () -> (op :Data, fromUserId :Text, kind :OpKind);
+  #
+  # `admission` is the broker's verdict for this op on its channel: the
+  # broker alone decides whether cleartext is admitted, and the app applies
+  # that verdict.
+  read @0 () -> (op :Data, fromUserId :Text, kind :OpKind, admission :OpAdmission);
 }
 
 enum OpKind {
   # Every live stream frame is a postcard-encoded SignedOp.
   signed @0;
+}
+
+enum OpAdmission {
+  # A broker that predates the verdict.
+  unstated @0;
+  # The channel admits cleartext for this op.
+  cleartextAdmitted @1;
+  # The channel requires this op sealed.
+  encryptionRequired @2;
 }
 
 interface PresenceHandle {

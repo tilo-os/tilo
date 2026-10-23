@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 4
+version = 5
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -383,6 +383,10 @@ capnp = [
 "capnp:collab.capnp:LiveActivity" = "interface"
 "capnp:collab.capnp:LiveActivity.controls" = "@1 (after:UInt64)->(serial:UInt64,controlsJson:Data)"
 "capnp:collab.capnp:LiveActivity.show" = "@0 (activityJson:Data)->()"
+"capnp:collab.capnp:OpAdmission" = "enum"
+"capnp:collab.capnp:OpAdmission.cleartextAdmitted" = "@1"
+"capnp:collab.capnp:OpAdmission.encryptionRequired" = "@2"
+"capnp:collab.capnp:OpAdmission.unstated" = "@0"
 "capnp:collab.capnp:OpKind" = "enum"
 "capnp:collab.capnp:OpKind.signed" = "@0"
 "capnp:collab.capnp:PersonChatStream" = "interface"
@@ -474,7 +478,7 @@ capnp = [
 "capnp:collab.capnp:ScrollbackBatch.latestSeq" = "@2 :UInt64"
 "capnp:collab.capnp:ScrollbackBatch.ops" = "@0 :List(Data)"
 "capnp:collab.capnp:Stream" = "interface"
-"capnp:collab.capnp:Stream.read" = "@0 ()->(op:Data,fromUserId:Text,kind:OpKind)"
+"capnp:collab.capnp:Stream.read" = "@0 ()->(op:Data,fromUserId:Text,kind:OpKind,admission:OpAdmission)"
 "capnp:collab.capnp:TaskRunStream" = "interface"
 "capnp:collab.capnp:TaskRunStream.read" = "@0 ()->(taskJson:Text)"
 "capnp:collab.capnp:WorkspaceControlHandle" = "interface"
