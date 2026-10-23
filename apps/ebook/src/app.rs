@@ -8460,6 +8460,8 @@ impl BooksApp {
                 swatches: &swatches,
                 show_note: true,
                 show_delete: del_group.is_some(),
+                show_select_all: false,
+                shortcuts: false,
             },
             ui::HudPlacement::new(anchor_pt, bounds),
             self.cursor,
@@ -8481,6 +8483,7 @@ impl BooksApp {
                     Some(g) => Action::DeleteHighlight(g),
                     None => Action::Swallow,
                 },
+                ui::HudAction::SelectAll => Action::Swallow,
             };
             self.push_hit(rect, mapped);
         }

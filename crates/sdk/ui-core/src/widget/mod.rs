@@ -3306,7 +3306,7 @@ pub mod selection_handles;
 pub use screenshot_markup::{
     MarkupExport, MarkupStroke, MarkupTool, ScreenshotMarkup, ScreenshotMarkupCommand,
 };
-pub use selection_handles::{Handle as SelectionHandle, SelectionHandles};
+pub use selection_handles::{Handle as SelectionHandle, SelectionHandles, TextGrip, TextGrips};
 
 pub mod activity_timeline;
 pub mod history;

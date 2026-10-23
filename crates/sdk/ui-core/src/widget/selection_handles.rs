@@ -448,6 +448,87 @@ impl SelectionHandles {
     }
 }
 
+/// One end of a text selection a finger can take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextGrip {
+    Start,
+    End,
+}
+
+/// The grips of a text selection on a touchscreen: at its start a stem
+/// down the first selected line's leading edge with a knob above it, at
+/// its end a stem down the last line's trailing edge with a knob below,
+/// in the selection's accent. A finger drags either end; the knobs are hit
+/// at a constant target on screen whatever the zoom.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextGrips {
+    /// The first and the last selected line's box, on screen.
+    start: Rect,
+    end: Rect,
+    /// The pointer target around each knob, in screen pixels.
+    target: f64,
+}
+
+impl TextGrips {
+    /// Grips for a selection whose first line covers `start` and last line
+    /// `end` on screen, each knob as easy to hit as `target` pixels.
+    pub fn new(start: Rect, end: Rect, target: f64) -> Self {
+        Self { start, end, target }
+    }
+
+    fn radius(&self) -> f64 {
+        self.target * 0.2
+    }
+
+    /// The centre of `grip`'s knob on screen.
+    pub fn knob(&self, grip: TextGrip) -> Point {
+        let r = self.radius();
+        match grip {
+            TextGrip::Start => Point::new(self.start.x0, self.start.y0 - r),
+            TextGrip::End => Point::new(self.end.x1, self.end.y1 + r),
+        }
+    }
+
+    /// The lowest a grip's target reaches on screen: what floats below the
+    /// selection stands below this.
+    pub fn reach_below(&self) -> f64 {
+        self.knob(TextGrip::End).y + self.target / 2.0
+    }
+
+    /// The grip `point` (screen) takes, nearest first.
+    pub fn grip_at(&self, point: Point) -> Option<TextGrip> {
+        let reach = self.target / 2.0;
+        [TextGrip::Start, TextGrip::End]
+            .into_iter()
+            .map(|grip| (grip, self.knob(grip).distance(point)))
+            .filter(|(_, distance)| *distance <= reach)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(grip, _)| grip)
+    }
+
+    /// Paint the grips, `base` mapping screen pixels to the scene.
+    pub fn draw(&self, scene: &mut Scene, base: Affine, theme: &Theme) {
+        let accent = theme.tokens.colors.intent.accent_ink;
+        let surface = theme.tokens.colors.surfaces.base;
+        let r = self.radius();
+        let stems = [
+            Line::new(
+                (self.start.x0, self.start.y0),
+                (self.start.x0, self.start.y1),
+            ),
+            Line::new((self.end.x1, self.end.y0), (self.end.x1, self.end.y1)),
+        ];
+        for stem in &stems {
+            scene.stroke(&Stroke::new(2.0), base, accent, None, stem);
+        }
+        for grip in [TextGrip::Start, TextGrip::End] {
+            let knob = Circle::new(self.knob(grip), r);
+            scene.fill(Fill::NonZero, base, accent, None, &knob);
+            scene.stroke(&Stroke::new(1.5), base, surface, None, &knob);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,5 +681,27 @@ mod tests {
             false,
         );
         assert!(flat.determinant().abs() > 1e-4);
+    }
+
+    #[test]
+    fn a_text_selection_grip_is_taken_at_its_knob_within_the_target() {
+        let grips = TextGrips::new(
+            Rect::new(100.0, 200.0, 300.0, 216.0),
+            Rect::new(40.0, 400.0, 220.0, 416.0),
+            48.0,
+        );
+        let start = grips.knob(TextGrip::Start);
+        let end = grips.knob(TextGrip::End);
+        assert!(
+            start.y < 200.0,
+            "the start knob stands above the first line"
+        );
+        assert!(end.y > 416.0, "the end knob hangs below the last line");
+        assert_eq!(grips.grip_at(start), Some(TextGrip::Start));
+        assert_eq!(
+            grips.grip_at(end + Vec2::new(20.0, 10.0)),
+            Some(TextGrip::End)
+        );
+        assert_eq!(grips.grip_at(Point::new(200.0, 300.0)), None);
     }
 }
