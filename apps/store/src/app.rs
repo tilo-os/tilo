@@ -1207,42 +1207,7 @@ impl StoreApp {
             self.remotes_open = false;
             self.safety_open = false;
         }
-        // The field shows the query whoever set it (typing, an action, a
-        // link), or the field's stale text would set it back next frame.
-        let query = self.query.clone();
-        self.set_filter_field(&query);
         self.structure_dirty = true;
-    }
-
-    /// Put `query` in the window's filter field, as if typed there.
-    fn set_filter_field(&mut self, query: &str) {
-        if let Some(field) = self.root.as_mut().and_then(|root| root.filter_mut())
-            && field.value() != query
-        {
-            field.set_query(query);
-        }
-    }
-
-    /// The filter field's query reached `self.query`; whether it changed.
-    fn follow_filter_field(&mut self) -> bool {
-        let Some(value) = self
-            .root
-            .as_ref()
-            .and_then(|root| root.filter())
-            .map(|field| field.value().to_owned())
-        else {
-            return false;
-        };
-        if value == self.query {
-            return false;
-        }
-        self.set_query(value);
-        let count = (!self.query.trim().is_empty())
-            .then(|| ui::widget::FilterCount::new(self.results.len(), self.items.len()));
-        if let Some(field) = self.root.as_mut().and_then(|root| root.filter_mut()) {
-            field.set_count(count);
-        }
-        true
     }
 
     pub fn set_status_line(&mut self, s: impl Into<String>) {
@@ -1394,10 +1359,28 @@ impl ui::widget::Collaborative for StoreApp {
     }
 }
 
+/// The window bar's search is the Store's: what is typed searches the
+/// catalogue in place, and closing the search clears it.
+impl ui::widget::Queryable for StoreApp {
+    fn set_query_text(&mut self, text: &str) {
+        self.set_query(text.to_owned());
+    }
+
+    fn query_closed(&mut self) {
+        self.set_query(String::new());
+    }
+
+    fn query_count(&self) -> Option<ui::widget::FilterCount> {
+        (!self.query.trim().is_empty())
+            .then(|| ui::widget::FilterCount::new(self.results.len(), self.items.len()))
+    }
+}
+
 impl Widget for StoreApp {
     ui::provides!(
         dyn ui::widget::Collaborative,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::widget::Queryable
     );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -1406,9 +1389,6 @@ impl Widget for StoreApp {
             .as_mut()
             .is_some_and(|root| root.update(state, path))
             | self.sync_window_toolbar();
-        if self.follow_filter_field() {
-            return true;
-        }
         if self.back_requested.take() {
             self.show_catalogue();
             self.structure_dirty = true;
@@ -1459,17 +1439,12 @@ impl Widget for StoreApp {
         let mut root = self.root.take().unwrap_or_else(|| {
             let can = Rc::clone(&self.can_go_back);
             let requested = Rc::clone(&self.back_requested);
-            let mut filter = ui::widget::SearchField::filter()
-                .with_id("store.search")
-                .with_placeholder(&ui::i18n!("store-search-placeholder"));
-            filter.set_query(&self.query);
             Box::new(
                 ui::widget::NavShell::new()
                     .content_kind(ui::widget::ContentKind::Grid)
                     .with_page_column(f32::from(view::Measure::CATALOGUE_LINES))
                     .with_id("store.shell")
                     .with_window_toolbar()
-                    .with_filter(filter)
                     .on_back(move || can.get(), move || requested.set(true)),
             )
         });
@@ -1485,12 +1460,6 @@ impl Widget for StoreApp {
             root.set_content(self.compose(theme));
             self.composition_context = Some((theme.clone(), locale, pseudo));
             self.composition_dirty = false;
-        }
-        // A field made after the query was set starts with it.
-        if let Some(field) = root.filter_mut()
-            && field.value() != self.query
-        {
-            field.set_query(&self.query);
         }
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);
@@ -1554,9 +1523,6 @@ impl Widget for StoreApp {
         {
             root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
-        // Each keystroke in the filter field searches the catalogue on this
-        // device; the page shows the results on the next layout.
-        self.follow_filter_field();
         if self.back_requested.take() {
             self.show_catalogue();
             self.structure_dirty = true;
@@ -2048,13 +2014,10 @@ impl StoreApp {
                 if query.chars().count() > 512 {
                     return Err("search query is too long".into());
                 }
-                // The same search as typing it into the window's filter field.
-                self.set_filter_field(&query);
                 self.set_query(query);
             }
             StoreEffect::ShowView { view } => {
                 let view = View::named(&view).ok_or_else(|| "unknown Store view".to_string())?;
-                self.set_filter_field("");
                 self.set_query(String::new());
                 self.show_view(view);
             }
@@ -2080,7 +2043,6 @@ impl StoreApp {
                 self.focused_detail = None;
                 self.remotes_open = false;
                 self.safety_open = false;
-                self.set_filter_field("");
                 self.set_query(String::new());
                 self.pending_detail = None;
                 self.show_view(View::Repository(remote.clone()));
@@ -2093,13 +2055,11 @@ impl StoreApp {
                     if category.chars().count() > 128 || !self.categories().contains(&category) {
                         return Err("unknown Store category".into());
                     }
-                    self.set_filter_field("");
                     self.set_query(String::new());
                     self.show_view(View::Category(category));
                 }
             }
             StoreEffect::ClearFilters => {
-                self.set_filter_field("");
                 self.set_query(String::new());
                 self.structure_dirty = true;
             }
