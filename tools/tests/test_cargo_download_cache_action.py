@@ -10,9 +10,7 @@ PREPARE_ACTION_PATH = ".forgejo/actions/prepare-rust-build"
 DIRECT_CONSUMERS = {
     "release-apps.yml": 3,  # The scoped Signal build is also a Cargo consumer.
 }
-PREPARED_CONSUMERS = {
-    "perf-scheduled.yml": 10,
-}
+PREPARED_CONSUMERS: dict[str, int] = {}
 
 
 class CargoDownloadCacheActionTests(unittest.TestCase):
