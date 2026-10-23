@@ -93,7 +93,7 @@ pub(crate) fn widget_boxes(root: &dyn crate::widget::Widget) -> Vec<(WidgetIdent
 
 /// Every widget whose own damage covers a change to its box this frame
 /// ([`crate::widget::Widget::damage_covers_own_box`]), by identity as [`widget_boxes`] has it.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub(crate) fn boxes_covered_by_own_damage(
     root: &dyn crate::widget::Widget,
 ) -> std::collections::HashSet<WidgetIdentity> {
@@ -136,7 +136,7 @@ pub(crate) fn moved_boxes(
 
 /// The old and new box of every widget that a rebuild and relayout moved,
 /// and the box of every widget that came or went, matched by identity.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub(crate) fn changed_boxes(
     before: &[(WidgetIdentity, Rect)],
     after: &[(WidgetIdentity, Rect)],
