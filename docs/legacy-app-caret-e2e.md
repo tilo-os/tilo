@@ -34,8 +34,9 @@ its compositor log, application log, result JSON, and a final screenshot.
 
 ## Running locally
 
-Install `gnome-text-editor`, `qt6-qtbase-examples`, and `libreoffice-writer`,
-build the shell, then run:
+Install `gnome-text-editor`, `qt6-qtbase-examples`, and `libreoffice-writer`
+(`sudo bash scripts/legacy-app-subjects.sh` on Fedora), build the shell, then
+run:
 
 ```sh
 cargo build --locked -p shell --bin shell
@@ -48,14 +49,15 @@ skips, because a silently reduced matrix would make this gate misleading.
 
 ## CI policy
 
-`.forgejo/workflows/ci-legacy-apps.yml` is required on pull requests that
-touch compositor input, legacy collaboration/streaming, peer-view input, the
-harness, or its build environment. The same path filter runs after direct
-pushes to `main`. A daily scheduled run catches regressions caused by builder
-image and toolkit updates even when Tilo source did not change.
+t's `legacy-apps` check runs it every night and when dispatched
+(`t test legacy-apps`). `legacy-apps-build` builds the shell; the check installs
+the three applications with `scripts/legacy-app-subjects.sh`, as root in a
+micro-VM step, and runs the harness under lavapipe. Its screenshots and logs
+are its outputs (`t outputs legacy-apps`). It is never served from the cache:
+the nightly run catches regressions from Fedora's toolkit and application
+updates even when Tilo's source did not change.
 
-Running the job for every unrelated pull request is unnecessary: it launches
-three GUI applications and builds the shell, while the ordinary affected-crate
-workflow already covers changes outside this compatibility boundary. Daily is
-frequent enough for dependency drift; path-gated pre-merge execution prevents
-known caret regressions from landing.
+It is not a default check: it launches three GUI applications and builds the
+shell, while the shell's own tests cover changes outside this compatibility
+boundary. Run it for a change to compositor input, legacy collaboration or
+streaming, peer-view input or the harness.

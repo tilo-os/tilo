@@ -113,7 +113,6 @@ Jobs that need more than an unprivileged container:
 
 | Job | Needs |
 |---|---|
-| `ci-filesystem.yml` cloud-servers | service containers (WebDAV, Nextcloud, PostgreSQL) |
 | `build-env-tools.yml` | a privileged container |
 | `dev-disk.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
 | `release-imager.yml` | `/dev/kvm` |

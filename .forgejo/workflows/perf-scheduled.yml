@@ -149,7 +149,7 @@ jobs:
     container:
       image: ${{ needs.builder.outputs.image }}
     env:
-      # ci-filesystem.yml's Cargo environment, so the build reuses the
+      # CI's test-build Cargo environment, so the build reuses the
       # compiler outputs main's check runs store.
       CARGO_BUILD_JOBS: "8"
       CARGO_INCREMENTAL: "0"
@@ -421,8 +421,8 @@ jobs:
   # Compositor-side input and workspace-switch latency: a headless
   # compositor driven through its control socket, rendering with lavapipe on
   # the shared `runner` class, through scripts/perf/latency_bench.py. The
-  # compositor is ci-legacy-apps.yml's debug build with the same Cargo
-  # environment, so the compiler cache that lane fills serves it. Input to
+  # compositor is a debug build with CI's test-build Cargo environment, so
+  # the compiler cache CI fills serves it. Input to
   # photon on real hardware is the weekly, report-only
   # scripts/perf/device_latency_bench.py (docs/benchmarks/reference-hardware.md).
   latency:
