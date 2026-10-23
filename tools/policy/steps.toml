@@ -87,7 +87,7 @@ run = """python3 tools/policy/check_workflow_package_paths.py \
   --check tilo-advisory-lock 't.toml#canary-ci-builder-cache-cold-x86_64' \
   --check tilo-advisory-lock 't.toml#canary-ci-builder-cache-warm-x86_64' \
   --check tilo-crypto 't.toml#development-signing-context-x86_64' \
-  --check tilo-fs .forgejo/workflows/ci-filesystem.yml \
+  --check tilo-fs 't.toml#real-fuse' \
   --check tilo-relay 't.toml#image-relay' \
   --check registry-server 't.toml#image-registry-server' \
   --check tilo-runtime 't.toml#runtime-macos' \

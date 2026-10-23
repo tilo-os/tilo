@@ -766,8 +766,8 @@ unchanged in three layers:
   responder, with injected 429/5xx responses, truncated bodies, expired
   credentials and cursor resets);
 - real servers in containers: Nextcloud and Apache mod_dav, started by
-  `crates/system/cloud-source-dav/tests/servers.sh`;
-- live accounts on a schedule, when CI secrets are present.
+  `crates/system/cloud-source-dav/tests/servers.sh` (t's `cloud-servers`);
+- live accounts every night, from t's secrets (`cloud-live`).
 
 `crates/system/fs/tests/cloud_mount.rs` covers the mount end to end against
 the fake, including a kernel mount where `/dev/fuse` exists.

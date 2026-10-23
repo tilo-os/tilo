@@ -80,8 +80,6 @@ class BuilderResolutionTests(unittest.TestCase):
         self.assertNotIn('credentials:', shared)
         self.assertNotIn('enable-openid-connect:', shared)
         callers = (
-            'ci-legacy-apps.yml',
-            'ci-filesystem.yml',
             'vm-acceptance.yml',
         )
         for name in callers:

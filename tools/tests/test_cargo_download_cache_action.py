@@ -11,7 +11,7 @@ DIRECT_CONSUMERS = {
     "release-apps.yml": 3,  # The scoped Signal build is also a Cargo consumer.
 }
 PREPARED_CONSUMERS = {
-    "ci-legacy-apps.yml": 1,
+    "perf-scheduled.yml": 10,
 }
 
 
@@ -84,7 +84,6 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
         with self.subTest(phase='path filtered consumers track the shared action'):
             workflows = ROOT / ".forgejo" / "workflows"
             expected = {
-                "ci-legacy-apps.yml": (ACTION_PATH, PREPARE_ACTION_PATH),
                 "release-apps.yml": (ACTION_PATH,),
             }
             for name, actions in expected.items():
