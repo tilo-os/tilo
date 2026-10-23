@@ -41,6 +41,19 @@ impl EntrySource {
     }
 }
 
+/// What kind of app an entry is, as people tell apps apart: the one answer
+/// the person's app list, search and `tilo app list` all give.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntryKind {
+    Flatpak,
+    AppImage,
+    /// A program the person downloaded or put in their own applications
+    /// directory.
+    Program,
+    /// One of the operating system's.
+    System,
+}
+
 /// An extra launch verb declared by a `[Desktop Action <name>]` group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopAction {
@@ -96,6 +109,25 @@ pub struct DesktopEntry {
 }
 
 impl DesktopEntry {
+    /// What kind of app this is. `person_applications` is the person's own
+    /// applications directory: an entry of theirs there is a program of
+    /// theirs, not the system's.
+    pub fn kind(&self, person_applications: Option<&Path>) -> EntryKind {
+        if matches!(self.source, EntrySource::Flatpak { .. }) {
+            return EntryKind::Flatpak;
+        }
+        if let Some(downloaded) = &self.downloaded {
+            return match downloaded.kind {
+                crate::downloaded::ProgramKind::AppImage => EntryKind::AppImage,
+                crate::downloaded::ProgramKind::Program => EntryKind::Program,
+            };
+        }
+        if person_applications.is_some_and(|dir| self.path.starts_with(dir)) {
+            return EntryKind::Program;
+        }
+        EntryKind::System
+    }
+
     /// Whether this entry should be offered in a menu of `desktop`. Four independent reasons to
     /// say no, all from the spec: wrong `Type`, `Hidden`, `NoDisplay`, and the
     /// `OnlyShowIn`/`NotShowIn` filter. `TryExec` is checked separately by the scanner, which can
@@ -452,6 +484,38 @@ X-Flatpak=com.spotify.Client
 
     fn parse_str(s: &str, id: &str) -> DesktopEntry {
         parse(s, id, Path::new("/tmp/x.desktop"), &[]).expect("parses")
+    }
+
+    #[test]
+    fn an_entry_is_a_flatpak_an_appimage_a_program_or_the_systems() {
+        let mine = Path::new("/home/ana/.local/share/applications");
+        let at = |path: &str, contents: &str| {
+            parse(contents, "x", Path::new(path), &[]).expect("parses")
+        };
+        let plain = "[Desktop Entry]\nType=Application\nName=Editor\nExec=editor\n";
+        assert_eq!(
+            at("/usr/share/applications/x.desktop", SPOTIFY).kind(Some(mine)),
+            EntryKind::Flatpak
+        );
+        assert_eq!(
+            at("/usr/share/applications/x.desktop", plain).kind(Some(mine)),
+            EntryKind::System
+        );
+        assert_eq!(
+            at("/home/ana/.local/share/applications/x.desktop", plain).kind(Some(mine)),
+            EntryKind::Program
+        );
+        let appimage = format!(
+            "{plain}X-Tilo-Downloaded-Program=/home/ana/Downloads/Editor.AppImage\nX-Tilo-Downloaded-Kind=AppImage\n"
+        );
+        assert_eq!(
+            at(
+                "/home/ana/.local/share/applications/tilo-downloaded/x.desktop",
+                &appimage
+            )
+            .kind(Some(mine)),
+            EntryKind::AppImage
+        );
     }
 
     #[test]

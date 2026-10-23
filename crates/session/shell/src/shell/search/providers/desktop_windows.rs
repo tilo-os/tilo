@@ -894,13 +894,13 @@ mod tests {
             "Linux apps"
         }
         fn resource_kinds(&self) -> &[ResourceKind] {
-            &[ResourceKind::HostApplication]
+            &[ResourceKind::Application]
         }
         fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
             (0..40)
                 .map(|i| {
                     SearchResult::nullary(
-                        ResourceKind::HostApplication,
+                        ResourceKind::Application,
                         "host-apps",
                         format!("org.example.App{i}"),
                         format!("App {i}"),
@@ -954,10 +954,11 @@ mod tests {
             rows.iter().map(|row| &row.id).collect::<Vec<_>>()
         );
         assert!(
-            !rows
-                .iter()
-                .any(|row| row.kind == ResourceKind::HostApplication),
-            "the Linux app list is a keystroke away, not the default"
+            rows.iter()
+                .filter(|row| row.provider_id == "host-apps")
+                .count()
+                <= crate::shell::search::JUMP_BACK_IN_GROUP_ROWS,
+            "a few apps to start with; the app list is a keystroke away, not the default"
         );
         assert!(rows.iter().any(|row| row.id == "room.activity.open"));
         assert!(
@@ -985,7 +986,7 @@ mod tests {
         assert_eq!(
             app_scoped
                 .iter()
-                .find(|group| group.kind == ResourceKind::HostApplication)
+                .find(|group| group.kind == ResourceKind::Application)
                 .map(|group| group.total),
             Some(40),
             "scoped to one app, the empty palette lists that app's inventory, not a curated pick"
@@ -1004,7 +1005,7 @@ mod tests {
             listing.iter().any(|row| row.id == "tab.close:100:1")
                 && listing
                     .iter()
-                    .filter(|row| row.kind == ResourceKind::HostApplication)
+                    .filter(|row| row.provider_id == "host-apps")
                     .count()
                     == 40,
             "agents still enumerate every action and app"

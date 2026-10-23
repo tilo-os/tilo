@@ -70,12 +70,12 @@ impl ShellDriver {
         self.scene_palette_query(query);
     }
 
-    /// The launcher (Super+N) with the "Host apps" chip chosen and nothing
-    /// typed: every app Tilo did not package, the added downloads among
-    /// them.
+    /// The launcher (Super+N) with the Apps chip chosen and nothing typed:
+    /// every app the person has, the added downloads among them, each
+    /// saying which kind of app it is.
     pub(super) fn scene_downloaded_launcher(&mut self) {
         self.seed_downloaded_apps();
-        self.fb.host_mut().filter_palette_to_host_apps_for_shots();
+        self.fb.host_mut().filter_palette_to_apps_for_shots();
         self.scene_palette_query("");
     }
 }

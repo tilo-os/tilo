@@ -10,19 +10,17 @@
 //! directory. `launch` accepts only an opaque portal-attribution room string:
 //! it lets an existing Flatpak's authenticated portal request resolve to the
 //! workspace containing its window, but is not passed to the app and grants
-//! no Tilo service or sandbox authority. The palette labels host apps under
-//! [`ResourceKind::HostApplication`] so a user can tell which kind of
-//! app they're looking at. Software that cannot speak Wayland reaches the
+//! no Tilo service or sandbox authority. Search lists host apps with every
+//! other app and states on each row which kind of app it is (Flatpak,
+//! `AppImage`, program or part of the system). Software that cannot speak Wayland reaches the
 //! private rootless-Xwayland display of the workspace it opens in, and only
 //! that one: X11 has no client isolation, so one X server never spans two
 //! workspaces.
-//!
-//! [`ResourceKind::HostApplication`]: crate::shell::search::ResourceKind::HostApplication
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use desktop_entry::{DesktopEntry, EntrySource};
+use desktop_entry::DesktopEntry;
 
 use crate::shell::launcher::{self, LaunchError};
 use tilo_lock::MutexRecover as _;
@@ -34,9 +32,8 @@ pub struct HostApp {
     /// The identity `run-host` resolves and window correlation matches on.
     pub desktop_id: String,
     pub name: String,
-    /// `Flatpak` or `System`: the entry's provenance, as a stable name. People
-    /// read it through [`HostApp::source_display`].
-    pub source_label: &'static str,
+    /// What kind of app it is, the same answer the person's app list gives.
+    pub kind: desktop_entry::EntryKind,
     pub categories: Vec<String>,
     pub keywords: Vec<String>,
     /// Every string this app's window might announce itself as. See
@@ -246,7 +243,11 @@ impl HostApp {
         Self {
             desktop_id: entry.id.clone(),
             name: entry.name.clone(),
-            source_label: entry.source.label(),
+            kind: entry.kind(
+                tilo_paths::xdg::data_home()
+                    .map(|home| home.join("applications"))
+                    .as_deref(),
+            ),
             categories: entry.categories.clone(),
             keywords: entry.keywords.clone(),
             window_identities: entry.window_identities(),
@@ -257,21 +258,18 @@ impl HostApp {
         }
     }
 
-    /// The provenance as people read it, so it is visible without opening.
-    pub fn source_display(&self) -> String {
-        if self.is_flatpak() {
-            crate::shell::i18n::t("host-app-source-flatpak")
-        } else {
-            crate::shell::i18n::t("host-app-source-system")
-        }
+    /// What kind of app it is, in the words the person's app list uses.
+    pub fn kind_label(&self) -> String {
+        crate::shell::i18n::t(match self.kind {
+            desktop_entry::EntryKind::Flatpak => "app-kind-flatpak",
+            desktop_entry::EntryKind::AppImage => "app-kind-appimage",
+            desktop_entry::EntryKind::Program => "app-kind-program",
+            desktop_entry::EntryKind::System => "app-kind-system",
+        })
     }
 
     pub fn is_flatpak(&self) -> bool {
-        self.source_label
-            == EntrySource::Flatpak {
-                app_id: String::new(),
-            }
-            .label()
+        self.kind == desktop_entry::EntryKind::Flatpak
     }
 }
 
@@ -767,7 +765,7 @@ mod tests {
         HostApp {
             desktop_id: desktop_id.to_string(),
             name: name.to_string(),
-            source_label: "Flatpak",
+            kind: desktop_entry::EntryKind::Flatpak,
             categories: Vec::new(),
             keywords: Vec::new(),
             mime_types: Vec::new(),
@@ -897,11 +895,11 @@ mod tests {
 
         fn cross_source_aliases_are_one_app_and_keep_flatpak_confinement() {
             let system = HostApp {
-                source_label: "System",
+                kind: desktop_entry::EntryKind::System,
                 ..app("vendor-chat", "Chat", &["Chat"])
             };
             let flatpak = HostApp {
-                source_label: "Flatpak",
+                kind: desktop_entry::EntryKind::Flatpak,
                 ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
             };
             let apps = deduplicate(vec![system, flatpak.clone()]);
@@ -918,11 +916,11 @@ mod tests {
 
         fn window_adoption_uses_the_canonical_alias() {
             let system = HostApp {
-                source_label: "System",
+                kind: desktop_entry::EntryKind::System,
                 ..app("vendor-chat", "Chat", &["Chat"])
             };
             let flatpak = HostApp {
-                source_label: "Flatpak",
+                kind: desktop_entry::EntryKind::Flatpak,
                 ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
             };
             let canonical = deduplicate(vec![system, flatpak.clone()]);

@@ -721,16 +721,15 @@ impl ShellOverlayHost {
         r: &crate::shell::search::SearchResult,
     ) -> (ui::icons::Icon, Option<ui::icons::AppImage>) {
         use crate::shell::search::ResourceKind;
-        let mut icon = self
-            .search_registry
-            .row_icon(r)
-            .unwrap_or_else(|| ui::search::system::icon_for_kind(&r.kind));
+        let provided_icon = self.search_registry.row_icon(r);
+        let mut icon = provided_icon.unwrap_or_else(|| ui::search::system::icon_for_kind(&r.kind));
         let mut image = None;
         match &r.kind {
-            ResourceKind::HostApplication => image = crate::app_icons::for_desktop_id(&r.id),
             ResourceKind::Application => {
                 let package = r.id.strip_prefix("app:").unwrap_or(&r.id);
-                icon = ui::icons::app_glyph(package, None);
+                if provided_icon.is_none() {
+                    icon = ui::icons::app_glyph(package, None);
+                }
                 image = crate::app_icons::for_window_app_id(package);
             }
             ResourceKind::Tab | ResourceKind::WindowGroup => {

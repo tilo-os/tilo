@@ -2606,7 +2606,7 @@ fn an_apps_app_chooser_lists_the_apps_and_answers_none_when_closed() {
     assert!(host.choosing_app());
     assert_eq!(
         host.active_kind_filter,
-        [ResourceKind::Application, ResourceKind::HostApplication],
+        [ResourceKind::Application],
         "it lists the apps, which the palette shows with their icons"
     );
     // A row that is no installed app (a shortcut, a catalogue offer) is no

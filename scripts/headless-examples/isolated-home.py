@@ -103,7 +103,7 @@ def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
     # /var/lib/flatpak/exports/share/applications regardless of the
     # environment (crates/system/desktop-entry/src/scan.rs, with a test
     # pinning that behaviour), so system Flatpaks appear in the palette's
-    # Host Apps group whatever this variable says.
+    # Apps group whatever this variable says.
     #
     # And pointing it at the staged tree actively breaks rendering: the
     # Vulkan loader finds its ICD manifests through XDG_DATA_DIRS too, so

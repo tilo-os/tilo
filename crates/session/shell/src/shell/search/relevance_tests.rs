@@ -870,7 +870,7 @@ fn music_palette() -> Palette {
     let musicpod = HostApp {
         desktop_id: "org.feichtmeier.Musicpod".into(),
         name: "Musicpod".into(),
-        source_label: "Flatpak",
+        kind: desktop_entry::EntryKind::Flatpak,
         categories: vec!["Audio".into()],
         keywords: vec!["music".into()],
         mime_types: Vec::new(),
@@ -899,7 +899,29 @@ fn installed_and_tilo_apps_lead_then_own_content_then_flatpak_store_pages() {
     let uninstalled_flatpak = |row: &SearchResult| {
         palette.registry.availability(row) == Availability::ThirdPartyCatalogue
     };
-    for rows in [palette.ask("music"), palette.shown("music")] {
+    let shown = palette.shown("music");
+    let first_shown_file = shown
+        .iter()
+        .position(|row| row.provider_id == "files")
+        .expect("the palette shows the person's music files");
+    assert!(
+        first_shown_file > 0
+            && shown[..first_shown_file]
+                .iter()
+                .all(|row| row.kind == ResourceKind::Application),
+        "the palette leads with the person's apps: {:?}",
+        titles(&shown)
+    );
+    assert!(
+        shown
+            .iter()
+            .skip_while(|row| !uninstalled_flatpak(row))
+            .all(&uninstalled_flatpak),
+        "the palette lists Store pages last: {:?}",
+        titles(&shown)
+    );
+    {
+        let rows = palette.ask("music");
         let at = |provider: &str, id: &str| {
             rows.iter()
                 .position(|row| row.provider_id == provider && row.id == id)
@@ -952,8 +974,7 @@ fn installed_and_tilo_apps_lead_then_own_content_then_flatpak_store_pages() {
 
 /// No two groups share a heading: when the person's apps and third-party
 /// Store pages both match, the Store pages are their own group, after the
-/// person's own content, and Tilo apps that open at once stay under
-/// Applications.
+/// person's own content, and Tilo apps that open at once stay under Apps.
 #[test]
 fn store_pages_have_their_own_heading_after_the_persons_content() {
     let palette = music_palette();
@@ -996,7 +1017,10 @@ fn store_pages_have_their_own_heading_after_the_persons_content() {
             );
         }
     }
-    let applications = groups
+    // Every row, not the palette's budgeted share: one Apps group holds
+    // every kind of app, so a budgeted one shows only its first few.
+    let untrimmed = palette.with_args("music", |args| palette.registry.query_grouped(args, 0));
+    let applications = untrimmed
         .iter()
         .find(|group| group.kind == ResourceKind::Application)
         .expect("the person's apps");
@@ -1005,7 +1029,7 @@ fn store_pages_have_their_own_heading_after_the_persons_content() {
             .results
             .iter()
             .any(|row| row.id == "app:so.tilo.sheet-music"),
-        "the Tilo app that opens at once stays under Applications"
+        "the Tilo app that opens at once stays under Apps"
     );
 }
 

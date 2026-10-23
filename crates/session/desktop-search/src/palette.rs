@@ -547,7 +547,7 @@ mod tests {
             .palette()
             .visible_entries()
             .iter()
-            .find(|entry| entry.group.as_deref() == Some("Applications"))
+            .find(|entry| entry.group.as_deref() == Some("Apps"))
             .and_then(|entry| entry.group_total);
         assert_eq!(header, Some(total), "the header counts every app");
 

@@ -353,7 +353,7 @@ impl ActionCatalog {
     ///
     /// With no `kinds`, every kind is kept except files and folders, which
     /// stay out unless `files`: a checkout's worth of `markdown.rs` is not
-    /// what a search for an app's action means. With `kinds` (`application`,
+    /// what a search for an app's action means. With `kinds` (`app`,
     /// `action`, `note`, `file`, …; singular or plural, any case) only those
     /// are kept, files included when named. The rows left are ordered live
     /// app resources and their actions first, then by kind in the palette's
@@ -367,6 +367,10 @@ impl ActionCatalog {
                 .collect();
             if name.ends_with('s') {
                 name.pop();
+            }
+            // Apps were "applications" before they were one kind.
+            if name == "application" {
+                "app".clone_into(&mut name);
             }
             name
         }

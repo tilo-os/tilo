@@ -63,8 +63,9 @@ the previous session. Remove `tilo-session` with the same package manager only
 after signing in to another desktop.
 
 Applications already installed by the distribution or Flatpak remain
-available from Tilo search and keep using the same home-directory data. They are
-shown as **Host Apps** because Tilo does not retroactively sandbox them. Fedora's
+available from Tilo search, under **Apps** with every other app, and keep using the
+same home-directory data. Each one's row says whether it is a Flatpak, an AppImage, a
+program or part of the system; Tilo does not retroactively sandbox them. Fedora's
 package also installs the rootless Xwayland bridge needed by legacy X11-only
 applications; Tilo starts it on demand, one per workspace.
 

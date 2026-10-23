@@ -2572,7 +2572,7 @@ mod tests {
         let host = |id: &str, name: &str| crate::shell::host_apps::HostApp {
             desktop_id: id.into(),
             name: name.into(),
-            source_label: "System",
+            kind: desktop_entry::EntryKind::System,
             categories: Vec::new(),
             keywords: Vec::new(),
             window_identities: vec![id.into()],

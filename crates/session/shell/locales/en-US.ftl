@@ -1271,9 +1271,8 @@ bluetooth-handoff-failure-rollback = source rollback failed
 
 # Search result kinds, as the filter chips and group headers name them
 search-kind-actions = Actions
-search-kind-applications = Applications
+search-kind-applications = Apps
 search-group-in-the-store = In the Store
-search-kind-host-apps = Host Apps
 search-kind-notes = Notes
 search-kind-records = Records
 search-kind-files = Files
@@ -2131,8 +2130,10 @@ peer-sync-token-incomplete = Not a site or link yet
 # Leftover shell notices: document opens, host app provenance, quiet status, collaboration
 doc-open-failed = Couldn't open { $name }
 doc-open-unnamed-file = File
-host-app-source-flatpak = Flatpak
-host-app-source-system = System
+app-kind-flatpak = Flatpak
+app-kind-appimage = AppImage
+app-kind-program = Program
+app-kind-system = System
 downloaded-app-missing = Can't find this app
 downloaded-app-locate = Locate
 downloaded-app-locate-path = Enter the full path of the app's file, starting with /
