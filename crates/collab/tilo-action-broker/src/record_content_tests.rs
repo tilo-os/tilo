@@ -1,8 +1,10 @@
 /// Two hosts on one record's route, each with an app on it: a picture one
 /// app hands its host reaches the other app through the other host, in
-/// verified pieces, as content its record references.
+/// verified pieces, as content its record references, after the app
+/// heard it being fetched.
 #[tokio::test(flavor = "current_thread")]
 async fn a_picture_one_app_offers_reaches_an_app_on_another_host() {
+    use runtime_collab::BlobState;
     use signed_worker::OriginalRoom;
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -24,13 +26,26 @@ async fn a_picture_one_app_offers_reaches_an_app_on_another_host() {
                 "a host keeps only bytes that are their address"
             );
 
-            let arrivals = app_b.handle.subscribe_blobs().await.unwrap();
+            let news = app_b.handle.subscribe_blobs().await.unwrap();
+            let next = || async {
+                tokio::time::timeout(tilo_test_env::hang_bound(), news.read())
+                    .await
+                    .expect("news of the picture")
+                    .unwrap()
+            };
             app_b.handle.want_blob(&hash).await.unwrap();
-            let arrived = tokio::time::timeout(tilo_test_env::hang_bound(), arrivals.read())
-                .await
-                .expect("the picture arrives")
-                .unwrap();
-            assert_eq!(arrived.hash, hash);
+            let fetching = next().await;
+            assert_eq!(
+                (fetching.hash.as_str(), fetching.state),
+                (hash.as_str(), BlobState::Fetching),
+                "the app hears its want is fetched from the host that holds it"
+            );
+            assert!(fetching.bytes.is_empty());
+            let arrived = next().await;
+            assert_eq!(
+                (arrived.hash.as_str(), arrived.state),
+                (hash.as_str(), BlobState::Arrived)
+            );
             assert_eq!(arrived.bytes, picture);
         })
         .await;
