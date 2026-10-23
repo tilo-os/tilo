@@ -1031,6 +1031,7 @@ impl Widget for MusicApp {
             if !self.catalogue_connected && super::ONLINE_CATALOGUE {
                 page_content.push(
                     AccessNode::new(Role::Group)
+                        .with_hashed_key("home-empty")
                         .with_name(super::HOME_EMPTY_TITLE)
                         .with_description(super::HOME_EMPTY_MESSAGE)
                         .with_children(vec![
@@ -1050,6 +1051,7 @@ impl Widget for MusicApp {
                 });
                 page_content.push(
                     AccessNode::new(Role::Group)
+                        .with_hashed_key("library-empty")
                         .with_name("Empty music library")
                         .with_description(message)
                         .with_children(search.into_iter().collect()),
@@ -1238,6 +1240,7 @@ impl Widget for MusicApp {
             View::Playlists => {
                 page_content.push(
                     AccessNode::new(Role::Button)
+                        .with_hashed_key("new-playlist")
                         .with_name("New playlist")
                         .with_action_target("music.new-playlist"),
                 );
@@ -1315,6 +1318,7 @@ impl Widget for MusicApp {
                         .enumerate()
                         .map(|(index, line)| {
                             AccessNode::new(Role::Paragraph)
+                                .with_hashed_key(format!("lyric:{index}"))
                                 .with_name(&line.text)
                                 .with_position(index + 1, self.lyrics.len())
                         }),
@@ -1326,6 +1330,7 @@ impl Widget for MusicApp {
         if !list_items.is_empty() {
             page_content.push(
                 AccessNode::new(Role::List)
+                    .with_hashed_key("page-items")
                     .with_name(format!("{page_name} items"))
                     .with_children(list_items),
             );
@@ -1337,7 +1342,11 @@ impl Widget for MusicApp {
             .with_children(page_content);
 
         let mut children = vec![navigation, search, page, player];
-        children.extend(self.toast.access_node());
+        children.extend(
+            self.toast
+                .access_node()
+                .map(|toast| toast.with_hashed_key("toast")),
+        );
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Music")
