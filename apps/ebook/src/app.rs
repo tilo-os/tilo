@@ -139,55 +139,6 @@ struct ImportWorker {
     results: mpsc::Receiver<ImportResult>,
 }
 
-/// A completed immutable search projection. The worker owns all O(n) index
-/// construction; the UI thread only installs this already-complete value.
-struct SearchBuild {
-    fingerprint: u64,
-    generation: u64,
-    provider: crate::search_provider::BookSearch,
-}
-
-struct SearchWorker {
-    results: mpsc::Receiver<SearchBuild>,
-}
-
-impl SearchWorker {
-    /// `prior` is the published provider; its chapter-prose index is reused
-    /// when the book set has not changed.
-    fn spawn(
-        prior: crate::search_provider::BookSearch,
-        books: Arc<Vec<Arc<Book>>>,
-        annotations: Arc<Vec<Annotation>>,
-        registry: Arc<Vec<crate::model::LibraryEntry>>,
-        fingerprint: u64,
-        generation: u64,
-    ) -> Result<Self, String> {
-        let (send, results) = mpsc::sync_channel(1);
-        ui::rt::spawn_thread("ebook-search-builder", move || {
-            let provider = crate::search_provider::BookSearch::new_shared_after(
-                &prior,
-                books,
-                annotations,
-                registry,
-                generation,
-            );
-            // The receiver is intentionally allowed to disappear during
-            // shutdown; publication has no side effect outside the app.
-            let _ = send.send(SearchBuild {
-                fingerprint,
-                generation,
-                provider,
-            });
-        })
-        .map_err(|error| error.to_string())?;
-        Ok(Self { results })
-    }
-
-    fn try_recv(&self) -> Option<SearchBuild> {
-        self.results.try_recv().ok()
-    }
-}
-
 impl ImportWorker {
     fn new() -> Result<Self, String> {
         let mailbox = Arc::new((
@@ -10488,7 +10439,9 @@ mod book_card;
 use book_card::ShelfCard;
 mod catalogue_settings;
 mod query_view;
+mod search_worker;
 mod stage;
+use search_worker::SearchWorker;
 
 pub(crate) use query_view::PASSAGE;
 pub(crate) use query_view::kinds as query_kinds;
