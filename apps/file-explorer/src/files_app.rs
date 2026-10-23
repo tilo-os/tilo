@@ -7527,7 +7527,8 @@ impl FileExplorerWidget {
     pub fn open_terminal(&self) -> Result<(), String> {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("open_terminal");
-        runtime_portal::tools::open_tool(self.terminal_intent())
+        let on_behalf_of = ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes());
+        runtime_portal::tools::open_tool(self.terminal_intent(), on_behalf_of)
     }
 
     /// Activate entry `idx` (by displayed index): navigate into a directory

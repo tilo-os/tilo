@@ -114,9 +114,12 @@ pub(crate) fn answer(
             Ok(crate::device_read::job(
                 cx,
                 move || {
-                    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-                        route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
-                    })
+                    os_actions::open_tool(
+                        os_actions::ToolIntent::WorkspaceSettings {
+                            route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
+                        },
+                        None,
+                    )
                 },
                 |_: &mut SettingsApp, opened: Result<(), String>, _| {
                     opened.map(|()| Effected::done())

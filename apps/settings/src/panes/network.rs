@@ -766,11 +766,12 @@ pub(crate) trait NetworkService: Send + Sync {
     /// # Errors
     /// Why there is none to open.
     fn sign_in_page(&self) -> Result<String, String>;
-    /// Open a system tool.
+    /// Open a system tool, for the broker invocation `on_behalf_of` when
+    /// an agent asked for it ([`os_actions::open_tool`]).
     ///
     /// # Errors
     /// Why it could not be opened.
-    fn open_tool(&self, intent: ToolIntent) -> Result<(), String>;
+    fn open_tool(&self, intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(), String>;
 }
 
 /// This device's `NetworkManager`, its radios switched through the
@@ -845,9 +846,9 @@ impl NetworkService for DeviceNetwork {
         os_actions::captive_portal_uri()
     }
 
-    fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+    fn open_tool(&self, intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(), String> {
         crate::device_read::off_ui_thread();
-        os_actions::open_tool(intent)
+        os_actions::open_tool(intent, on_behalf_of)
     }
 }
 
@@ -941,7 +942,7 @@ impl NetworkService for SampleNetwork {
         Err("a sample has no sign-in page".into())
     }
 
-    fn open_tool(&self, _intent: ToolIntent) -> Result<(), String> {
+    fn open_tool(&self, _intent: ToolIntent, _: Option<[u8; 16]>) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         Ok(())
     }
@@ -1877,7 +1878,9 @@ impl NetworkModel {
                         profile: None,
                     },
                 };
-                Begun::work(move || Landed::Opened(service.open_tool(intent)))
+                let on_behalf_of =
+                    ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes());
+                Begun::work(move || Landed::Opened(service.open_tool(intent, on_behalf_of)))
             }
             NetworkEffect::RunDiagnostics => {
                 Begun::work(move || Landed::Diagnosed(service.diagnostics()))
@@ -4141,7 +4144,7 @@ mod tests {
             Err("no portal".into())
         }
 
-        fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+        fn open_tool(&self, intent: ToolIntent, _: Option<[u8; 16]>) -> Result<(), String> {
             crate::device_read::off_ui_thread();
             let _ = intent;
             self.changes.lock().unwrap().push("tool".into());
@@ -4527,7 +4530,7 @@ mod tests {
         fn sign_in_page(&self) -> Result<String, String> {
             Err("no portal".into())
         }
-        fn open_tool(&self, _: ToolIntent) -> Result<(), String> {
+        fn open_tool(&self, _: ToolIntent, _: Option<[u8; 16]>) -> Result<(), String> {
             Ok(())
         }
     }

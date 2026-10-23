@@ -1903,7 +1903,7 @@ impl App {
                 deferred: None,
             },
         );
-        let invoker_scope = crate::invocation_scope::InvokerScope::enter(invoker);
+        let invoker_scope = crate::invocation_scope::InvokerScope::delivered(invoker, invocation);
         let authorization = self.authorize_published_invocation(
             &crate::invocation_scope::PublishedInvocationRequest {
                 wire_id: id,
