@@ -303,6 +303,9 @@ back, waits until the counters' readback has landed, not a fixed four polls:
 on the device the process shares, another thread's poll can be the one
 running the readback's map callback after this thread's wait returned, and
 a frame that overflowed was then taken for one that fit.
+`settling_waits_for_counters_whose_callback_lands_on_another_thread` lands
+the callback from another thread (through `test_helpers::hold_ready`) and
+fails the four-poll settle.
 
 ## `vendor/vello/src/render.rs`
 
