@@ -6720,8 +6720,13 @@ impl ShellNetwork {
         });
     }
 
+    /// Capture this device's continuity, keep it on disk, and tell the
+    /// person's other devices when it changed. The capture and its durable
+    /// write are this device's own state (they acknowledge owner claims and
+    /// closed tabs once on disk), so they happen even while it knows no
+    /// other device; only the publish waits for someone to tell.
     fn publish_personal_continuity_if_changed(&self) {
-        if !self.enforce_app_continuations_policy() || !self.personal_fabric_allowed() {
+        if !self.enforce_app_continuations_policy() {
             return;
         }
         let Some(user_public_key) = self.personal_continuity_user else {
@@ -6735,6 +6740,9 @@ impl ShellNetwork {
         let Some(snapshot) = self.local_continuity_snapshot_bytes() else {
             return;
         };
+        if !self.personal_fabric_allowed() {
+            return;
+        }
         let after = self
             .personal_continuity_fingerprint
             .lock()
