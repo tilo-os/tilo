@@ -1,30 +1,23 @@
-# Containers: its sections through the engine's actions (the shots run
-# without Podman, so each says so).
+# Containers: its sections over the engine of the app's own scenarios,
+# through the engine's actions (never the Podman of the machine the shots
+# run on).
 
 [[situation]]
 name = "containers"
-title = "Containers"
-
-[[situation.steps]]
-invoke = { resource = "containers.engine", action = "set-section", args = { section = "containers" } }
+title = "A container's resource use"
+scenario = "stats"
 
 [[situation]]
 name = "images"
 title = "Images"
-
-[[situation.steps]]
-invoke = { resource = "containers.engine", action = "set-section", args = { section = "images" } }
+scenario = "images"
 
 [[situation]]
 name = "volumes"
 title = "Volumes"
-
-[[situation.steps]]
-invoke = { resource = "containers.engine", action = "set-section", args = { section = "volumes" } }
+scenario = "volumes"
 
 [[situation]]
 name = "distrobox"
 title = "Distrobox"
-
-[[situation.steps]]
-invoke = { resource = "containers.engine", action = "set-section", args = { section = "distrobox" } }
+scenario = "distrobox"

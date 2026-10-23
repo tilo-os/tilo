@@ -942,6 +942,7 @@ pub struct FileExplorerShell;
 impl ResourceApp for FileExplorerShell {
     type Resource = FileExplorer;
     const ID: &'static str = "so.tilo.file-explorer";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Files];
     const TITLE: &'static str = "Files";
     const ICON: Option<&'static str> = Some("file-explorer");
     /// A folder to open (`file-explorer ~/Documents`), or a received share
