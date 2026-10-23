@@ -333,6 +333,12 @@ pub fn active_tab_id(st: &ChromeState) -> Option<TabId> {
 /// visible tab until actual surface destruction admits the close. The `✕`,
 /// keyboard chord, tab menu and declared action converge here.
 ///
+/// No per-person check comes first, unlike a shared desktop in a browser
+/// ([`tilo_desktop_model::commands::may_command`]): this desktop
+/// changes only rooms this device holds, where the person at it owns the
+/// topology, and it records no one as a window's author, so there is no
+/// "someone else's window" to protect or to release once they leave.
+///
 /// # Errors
 ///
 /// [`TabActionError::UnknownTab`] when the tab is not in the tree or the

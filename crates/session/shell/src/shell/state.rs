@@ -5486,6 +5486,10 @@ impl WorkspaceTree {
     /// Only reorders inside one strip commit here; a close runs its own
     /// lifecycle ([`crate::shell::window_actions::close_tab`]).
     ///
+    /// Like a close, a move is not checked per person: this desktop records
+    /// no window authors, so the policy a shared desktop applies to other
+    /// people's windows has nothing to decide on here.
+    ///
     /// # Errors
     ///
     /// Returns a description when the command no longer matches the tree or
