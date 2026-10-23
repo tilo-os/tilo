@@ -163,9 +163,18 @@ const profileA='authenticated-public-key-a@host',profileB='authenticated-public-
   // undone because its first write is still in flight.
   const storeProfile='authenticated-passwords@host';
   await invoke(a,'store_open',storeProfile,'items');
+  // Hold the browser's writes until the test has seen the save in flight:
+  // otherwise the write can land before the store is asked how it ended.
+  await a.evaluate(`globalThis.originalCreateWritable=FileSystemFileHandle.prototype.createWritable;
+    globalThis.heldWrites=new Promise(release=>{globalThis.releaseWrites=release;});
+    FileSystemFileHandle.prototype.createWritable=function(...args){
+      return globalThis.heldWrites.then(()=>globalThis.originalCreateWritable.apply(this,args));
+    };`);
   await invoke(a,'store_put','items','Bank');
   assert.deepEqual(await invoke(a,'store_titles','items'),['Bank']);
   assert.equal(await invoke(a,'store_flush','items'),'pending');
+  await a.evaluate(`FileSystemFileHandle.prototype.createWritable=globalThis.originalCreateWritable;
+    globalThis.releaseWrites();`);
   await invoke(a,'flush',storeProfile);
   assert.equal(await invoke(a,'store_flush','items'),'durable');
   await a.reload();await a.waitFor('globalThis.probeReady === true');
