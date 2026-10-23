@@ -179,6 +179,12 @@ pub fn freeze_wall(at: SystemTime) {
     FROZEN_HERE_MS.with(|here| here.set(ms));
 }
 
+/// Let the wall clock run again after [`freeze_wall`], on every thread.
+pub fn thaw_wall() {
+    FROZEN_WALL_MS.store(0, Ordering::Relaxed);
+    FROZEN_HERE_MS.with(|here| here.set(0));
+}
+
 /// Whether [`freeze_wall`] pinned the wall clock.
 #[must_use]
 pub fn wall_frozen() -> bool {
