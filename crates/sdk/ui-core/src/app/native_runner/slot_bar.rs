@@ -33,7 +33,7 @@ use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::widget::window_controls::{CONTROL_GAP, CONTROL_PX};
 use crate::widget::window_toolbar_row::ToolbarRow;
 use crate::widget::{HistoryControl, InPlace, Widget, WindowSearch, WindowSearchRequest};
-use crate::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
+use crate::window_toolbar::{SearchOpening, ToolbarAction, ToolbarEvent, WindowToolbar};
 
 /// The row's one "tab": the window itself.
 const WINDOW: u64 = 0;
@@ -193,8 +193,8 @@ impl SlotBar {
     /// What the app asked of its bar: its Find (open the search), its Ctrl+L
     /// (edit the location).
     fn serve_app_requests(&mut self, app: &mut App) {
-        if crate::window_toolbar::take_search_request() {
-            self.open_search(app, MotionSource::Keyboard);
+        if let Some(opening) = crate::window_toolbar::take_search_request() {
+            self.open_search(app, MotionSource::Keyboard, opening);
         }
         if crate::window_toolbar::take_edit_request() && self.row.begin_edit() {
             self.repaint = true;
@@ -202,18 +202,23 @@ impl SlotBar {
     }
 
     /// Open the search in place on what the app offers, or give the open
-    /// one the keyboard. An app with nothing to search in place gets its
-    /// own search of everything it publishes, as the desktop's bar hands it
-    /// to the platform search.
-    fn open_search(&mut self, app: &mut App, source: MotionSource) {
+    /// one the keyboard (for the replace chord, the replacement). An app
+    /// with nothing to search in place gets its own search of everything it
+    /// publishes, as the desktop's bar hands it to the platform search.
+    fn open_search(&mut self, app: &mut App, source: MotionSource, opening: SearchOpening) {
         if self.search.is_open() {
-            self.search.take_keyboard();
+            match opening {
+                SearchOpening::Find => self.search.take_keyboard(),
+                SearchOpening::Replace => self.search.focus_replacement(),
+            }
         } else {
             let in_place: InPlace = app.window_search_offer().into();
             if in_place == InPlace::Nothing {
                 app.open_search(SearchRequest::this_app());
             } else {
-                self.search.open(in_place, source);
+                self.search.open_as(in_place, source, opening);
+                // The document says what it offers as the search reaches it.
+                self.drive_search(app);
             }
         }
         self.repaint = true;
@@ -225,7 +230,9 @@ impl SlotBar {
         let acted = !requests.is_empty();
         for request in requests {
             match request {
-                WindowSearchRequest::Open => self.open_search(app, MotionSource::Pointer),
+                WindowSearchRequest::Open => {
+                    self.open_search(app, MotionSource::Pointer, SearchOpening::Find);
+                }
                 WindowSearchRequest::Close => self.search.close(crate::motion::input_source()),
                 WindowSearchRequest::Widen(_) => {
                     // No platform search outside a session: the app's own
@@ -312,6 +319,9 @@ impl SlotBar {
         self.search.draw(scene, transform, text, theme, presence);
         self.row
             .paint_popups(scene, transform, text, theme, presence);
+        // The search's options panel, over the app.
+        self.search
+            .draw_overlay(scene, transform, text, theme, presence);
     }
 
     /// Hand `event` to the row when it is the row's: a pointer over a slot,
@@ -330,13 +340,17 @@ impl SlotBar {
         let over = rect.contains(self.pointer);
         let mut handled = false;
         let mut focus = None;
-        // Find opens the window's search, or gives the open one the
-        // keyboard, before the app sees the chord, as the desktop's bar does.
-        if is_find(event, app.input.modifiers, app.input.platform)
-            && !self.search.has_keyboard()
-            && app.window_bar_takes_find()
+        // Find (and Find and Replace) opens the window's search, or gives
+        // the open one the keyboard, before the app sees the chord, as the
+        // desktop's bar does.
+        if let Some(opening) = crate::widget::window_search::search_chord(
+            event,
+            app.input.modifiers.state(),
+            app.input.platform,
+        ) && !self.search.has_keyboard()
+            && app.window_bar_takes(opening)
         {
-            self.open_search(app, MotionSource::Keyboard);
+            self.open_search(app, MotionSource::Keyboard, opening);
             window.request_redraw();
             return true;
         }
@@ -427,31 +441,6 @@ impl SlotBar {
     }
 }
 
-/// Whether `event` is Find: the platform's command modifier with F.
-fn is_find(
-    event: &WindowEvent,
-    modifiers: winit::event::Modifiers,
-    platform: crate::platform::PlatformConventions,
-) -> bool {
-    let WindowEvent::KeyboardInput {
-        event:
-            winit::event::KeyEvent {
-                logical_key: winit::keyboard::Key::Character(key),
-                state: ElementState::Pressed,
-                ..
-            },
-        ..
-    } = event
-    else {
-        return false;
-    };
-    let state = modifiers.state();
-    key.eq_ignore_ascii_case("f")
-        && !state.shift_key()
-        && !state.alt_key()
-        && platform.command_modifier_down(state)
-}
-
 /// The row's room: the window's band less the search control at its end.
 fn search_room(rect: Rect) -> Rect {
     Rect::new(
@@ -466,7 +455,7 @@ fn search_room(rect: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::widget::{NavItem, NavList, NavSection};
-    use winit::keyboard::{Key, ModifiersState};
+    use winit::keyboard::Key;
 
     fn settings_like_list() -> NavList {
         NavList::new(vec![
@@ -535,7 +524,7 @@ mod tests {
         let mut app = App::new(crate::State::new(), Box::new(settings_like_list()));
         let mut bar = SlotBar::new();
         shown(&mut bar);
-        bar.open_search(&mut app, MotionSource::Keyboard);
+        bar.open_search(&mut app, MotionSource::Keyboard, SearchOpening::Find);
         assert!(bar.search.is_open() && bar.search.has_keyboard());
         assert_eq!(
             bar.search.in_place(),
@@ -562,25 +551,6 @@ mod tests {
         bar.search.close(MotionSource::Keyboard);
         bar.drive_search(&mut app);
         assert_eq!(filter(&app), "", "closing the search shows the whole list");
-    }
-
-    #[test]
-    fn find_is_the_platform_command_with_f() {
-        let platform = crate::platform::PlatformConventions::default();
-        let command = if platform.platform() == crate::platform::Platform::MacOs {
-            ModifiersState::SUPER
-        } else {
-            ModifiersState::CONTROL
-        };
-        let f =
-            crate::synthetic_input::key_input(&Key::Character("f".into()), ElementState::Pressed);
-        assert!(is_find(&f, command.into(), platform));
-        assert!(!is_find(&f, ModifiersState::empty().into(), platform));
-        assert!(!is_find(
-            &f,
-            (command | ModifiersState::SHIFT).into(),
-            platform
-        ));
     }
 
     #[test]

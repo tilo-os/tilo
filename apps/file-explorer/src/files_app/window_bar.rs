@@ -376,6 +376,8 @@ impl FileExplorerWidget {
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
+            | ToolbarEvent::SearchOptions { .. }
+            | ToolbarEvent::SearchReplace { .. }
             | ToolbarEvent::History => return,
         };
         if let Some(command) = command {

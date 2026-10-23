@@ -141,6 +141,7 @@ fn an_app_in_its_own_process_offers_its_window_and_hears_the_bars_search_and_his
         search: SearchOffer::Document,
         count: None,
         history: Some(HistoryOffer::Closed),
+        ..WindowOffer::default()
     };
     app.send(&FloatingSurfaceClientMessage::WindowOffer {
         offer,
@@ -205,7 +206,10 @@ fn an_app_in_its_own_process_offers_its_window_and_hears_the_bars_search_and_his
         frame.host_mut().receive_window_bar_message(
             connection + 1,
             "org.example.Other",
-            &FloatingSurfaceClientMessage::OpenSearch { instance: None },
+            &FloatingSurfaceClientMessage::OpenSearch {
+                instance: None,
+                opening: ui::window_toolbar::SearchOpening::Find,
+            },
         ),
         Some(false)
     );

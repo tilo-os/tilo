@@ -82,8 +82,14 @@ impl ShellOverlayHost {
     }
 
     /// `app_id` (launched as record `instance`) asked for its window's
-    /// search: its Ctrl+F. Only the tab the window shows searches.
-    pub(crate) fn open_app_window_search(&mut self, app_id: &str, instance: Option<u64>) -> bool {
+    /// search: its Ctrl+F, or its Ctrl+H (`opening`). Only the tab the
+    /// window shows searches.
+    pub(crate) fn open_app_window_search(
+        &mut self,
+        app_id: &str,
+        instance: Option<u64>,
+        opening: ui::window_toolbar::SearchOpening,
+    ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -104,7 +110,7 @@ impl ShellOverlayHost {
                 .iter_mut()
                 .find(|group| group.active_tab_id() == anchor.tab)
             {
-                opened = group.open_search_for_app(anchor.tab);
+                opened = group.open_search_for_app(anchor.tab, opening);
                 break;
             }
         }
@@ -176,7 +182,9 @@ impl ShellOverlayHost {
             Message::WindowOffer { offer, instance } => {
                 self.offer_app_window(connection, app_id, *instance, *offer)
             }
-            Message::OpenSearch { instance } => self.open_app_window_search(app_id, *instance),
+            Message::OpenSearch { instance, opening } => {
+                self.open_app_window_search(app_id, *instance, *opening)
+            }
             _ => return None,
         })
     }

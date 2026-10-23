@@ -140,6 +140,8 @@ impl WindowSlots {
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
+            | ToolbarEvent::SearchOptions { .. }
+            | ToolbarEvent::SearchReplace { .. }
             | ToolbarEvent::History => self.offers.get(&tab).map(|(connection, _)| *connection),
             ToolbarEvent::ToggleSidebar
             | ToolbarEvent::Back
@@ -250,7 +252,7 @@ impl WindowSlots {
         for (tab, window) in windows {
             let edit = window.take_edit_request();
             let search = window.take_search_request();
-            if !edit && !search {
+            if !edit && search.is_none() {
                 continue;
             }
             // Only the tab its window shows edits or searches.
@@ -259,7 +261,9 @@ impl WindowSlots {
                 .find(|group| group.active_tab_id() == *tab)
             {
                 sync.changed |= edit && group.edit_location();
-                if search && group.open_search_for_app(*tab) {
+                if let Some(opening) = search
+                    && group.open_search_for_app(*tab, opening)
+                {
                     sync.searched = true;
                     sync.changed = true;
                 }

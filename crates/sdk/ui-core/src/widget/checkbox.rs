@@ -14,7 +14,7 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 /// tap area stays 32/48 px while the mark sits with 16 px icons and body
 /// text. Fixed rather than read from the scaled spacing tokens because
 /// the target it sits in does not follow `ui_scale` either.
-const BOX_EDGE: f64 = 18.0;
+pub(crate) const BOX_EDGE: f64 = 18.0;
 /// Space between the target's trailing edge and the label; shared by
 /// `measure` and `draw` so the label lands where it was measured. 10 px is
 /// deliberately between `s2` and `s3`: the 24 px box already leaves 4 px of
