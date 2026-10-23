@@ -182,6 +182,85 @@ impl ProfileChoice {
 }
 
 /// The card behind the bar's own avatar.
+/// The card itself as a place keyboard focus can rest: opening the card is
+/// not editing, so focus lands here, on the whole card, rather than in its
+/// name field. A click on the field, or Tab, enters it. It lies under the
+/// card's content, filling it, draws nothing and takes no input; assistive
+/// technology reads it as the card.
+struct CardFocus {
+    rect: Rect,
+    focused: bool,
+}
+
+impl CardFocus {
+    fn new() -> Self {
+        Self {
+            rect: Rect::ZERO,
+            focused: false,
+        }
+    }
+}
+
+impl Widget for CardFocus {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        use ui::widget::TaffyTreeExt;
+        let style = taffy::Style {
+            position: taffy::Position::Absolute,
+            inset: taffy::Rect {
+                left: taffy::LengthPercentageAuto::length(0.0),
+                right: taffy::LengthPercentageAuto::length(0.0),
+                top: taffy::LengthPercentageAuto::length(0.0),
+                bottom: taffy::LengthPercentageAuto::length(0.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(t("profile-card"))
+                .with_semantic_key("profile-card-focus")
+                .with_state(AccessState::new().focusable(true).focused(self.focused)),
+        )
+    }
+
+    fn name(&self) -> &'static str {
+        "ProfileCardFocus"
+    }
+}
+
 pub struct ProfileCard {
     popover: Popover<Container>,
     /// The name being typed.
@@ -287,6 +366,9 @@ impl ProfileCard {
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
+            // First in the card's focus order: the card opens focused on
+            // itself, not in its name field.
+            .push(Box::new(CardFocus::new()))
             .push(Box::new(header));
         if model.offers_presence {
             body = self.presence_sections(body, model);
@@ -862,6 +944,46 @@ mod tests {
         let harness = ui::headless::Framed::harness_mut(frame);
         harness.poll_frame().unwrap();
         harness.inspection_json().unwrap()
+    }
+
+    /// Opening the card is not editing: focus rests on the card itself, and
+    /// Tab (or a click) enters the name field.
+    #[test]
+    fn the_card_opens_focused_on_itself_and_tab_enters_the_name() {
+        // The card's keyboard stops in tree order, as both shells' focus
+        // order walks them; a trap that opens focuses the first.
+        fn stops(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {
+            if widget.is_focusable()
+                && let Some(node) = widget.accessibility()
+            {
+                out.push(node);
+            }
+            for child in widget.children() {
+                stops(child, out);
+            }
+        }
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &model(),
+            Rect::new(1200.0, 2.0, 1220.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let mut order = Vec::new();
+        stops(&card, &mut order);
+        let names: Vec<_> = order.iter().map(|node| node.name.clone()).collect();
+        let first = order.first().expect("the open card has keyboard stops");
+        assert_eq!(
+            first.semantic_key.as_deref(),
+            Some("profile-card-focus"),
+            "the card opens focused on itself, not its name field: {names:?}"
+        );
+        assert_eq!(first.name, Some(t("profile-card")));
+        assert_eq!(
+            order.get(1).and_then(|node| node.name.clone()),
+            Some(t("profile-name")),
+            "Tab enters the name field: {names:?}"
+        );
     }
 
     /// A person who has not named themselves is asked, gently, in the card:
