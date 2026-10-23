@@ -121,6 +121,11 @@ pub struct WindowToolbar {
     /// window's navigation, leading the row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar: Option<bool>,
+    /// The sidebar toggle holds its place but cannot act: a view of the
+    /// window that has no sidebar, so the row stands still as the views
+    /// change. Only with [`Self::sidebar`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sidebar_unavailable: bool,
     /// Back and forward, for an app that keeps a trail of places.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub navigation: Option<ToolbarNavigation>,

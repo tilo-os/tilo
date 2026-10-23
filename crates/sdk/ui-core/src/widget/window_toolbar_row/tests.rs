@@ -752,3 +752,47 @@ fn a_sidebar_or_panel_toggle_shows_whether_its_panel_is_open() {
         }
     }
 }
+
+/// A view with no sidebar keeps the toggle's place, disabled, so the
+/// location stands where it stands in the views that have one.
+#[test]
+fn an_unavailable_sidebar_holds_its_place_and_cannot_act() {
+    let row_for = |unavailable: bool| {
+        let mut toolbar = address_book(false);
+        toolbar.sidebar_unavailable = unavailable;
+        let mut row = ToolbarRow::new();
+        row.show(
+            4,
+            Some(&toolbar),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        row.lay_out(Rect::new(0.0, 0.0, 420.0, 40.0));
+        row
+    };
+    let available = row_for(false);
+    let mut unavailable = row_for(true);
+    assert_eq!(
+        unavailable.slots().sidebar,
+        available.slots().sidebar,
+        "the toggle keeps its place"
+    );
+    assert_eq!(unavailable.slots().location, available.slots().location);
+
+    let toggle = find_node(
+        &unavailable.accessibility(),
+        Role::ToggleButton,
+        &text("window-toolbar-show-sidebar"),
+    )
+    .cloned()
+    .expect("the toggle is still found");
+    assert!(toggle.state.disabled, "and says it cannot act");
+    assert!(!unavailable.perform(SIDEBAR_TARGET));
+    let center = unavailable.slots().sidebar.center();
+    unavailable.press(center);
+    unavailable.release(center);
+    assert!(
+        unavailable.take_events().is_empty(),
+        "neither a press nor assistive technology toggles it"
+    );
+}
