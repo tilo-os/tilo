@@ -119,7 +119,10 @@ impl AgentParticipant {
         if holds_nothing && !imports(step) {
             let mut known: Vec<DocumentRoute> = Vec::new();
             for route in self.unopened.routes() {
-                if route.app_id == step.app && !self.others_document(&route, &request) {
+                if route.app_id == step.app
+                    && !super::parts::is_part(&route.record)
+                    && !self.others_document(&route, &request)
+                {
                     known.push(route);
                 }
             }

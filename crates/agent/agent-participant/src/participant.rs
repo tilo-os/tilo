@@ -42,7 +42,9 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 pub mod actions;
 mod authors;
 mod context;
+mod introduce;
 mod logs;
+mod parts;
 mod planning;
 mod records;
 mod running;
@@ -217,6 +219,9 @@ pub struct AgentParticipant {
     /// step ran.
     plan_ready_at: Option<Instant>,
     apps: BTreeMap<DocumentRoute, ConfinedReplica>,
+    /// The parts of a chain (a chat's messages) held in an open record,
+    /// by the part's route: the holder's ([`parts`]).
+    beside: BTreeMap<DocumentRoute, DocumentRoute>,
     /// The room's content store, lent to every record the agent holds.
     content: tilo_content::ContentStore,
     /// Records the agent has not mounted, each merged as it changes.
@@ -377,6 +382,7 @@ impl AgentParticipant {
             reopened_for: None,
             plan_ready_at: None,
             apps: BTreeMap::new(),
+            beside: BTreeMap::new(),
             content: config.content,
             unopened,
             live: LiveState::starting_now(),
@@ -580,7 +586,16 @@ impl AgentParticipant {
                     return;
                 };
                 let route = document.route.clone();
-                if let Some(app) = self.apps.get_mut(&route) {
+                if parts::is_part(&route.record)
+                    && let Some(holder) = self.merge_part(&route, &mutation)
+                {
+                    self.generation = self.generation.wrapping_add(1);
+                    self.last_merge = Some(Instant::now());
+                    self.live.durable_changed(&LiveRecord {
+                        app: holder.app_id,
+                        record: holder.record,
+                    });
+                } else if let Some(app) = self.apps.get_mut(&route) {
                     self.generation = self.generation.wrapping_add(1);
                     self.last_merge = Some(Instant::now());
                     if let Err(error) = app.apply(&mutation) {
@@ -866,6 +881,7 @@ impl AgentParticipant {
         for route in self.unopened.people_first() {
             if self.identity.delegation.permits_app(&route.app_id)
                 && !self.apps.contains_key(&route)
+                && !parts::is_part(&route.record)
                 && !self.others_document(&route, text)
             {
                 routes.push(route);
@@ -1475,7 +1491,8 @@ impl AgentParticipant {
         Performed::Asking
     }
 
-    /// Commit whatever the open records changed since the last commit.
+    /// Commit whatever the open records changed since the last commit,
+    /// the parts they hold beside them included.
     fn publish_changes(&mut self) {
         for (route, app) in &mut self.apps {
             match app.take_mutation() {
@@ -1489,12 +1506,22 @@ impl AgentParticipant {
                 Err(error) => tracing::warn!(%error, "agent: a change was not admitted"),
             }
         }
+        let holders: Vec<DocumentRoute> = self.apps.keys().cloned().collect();
+        for holder in holders {
+            if let Err(error) = self.publish_parts(&holder) {
+                tracing::warn!(%error, "agent: a part's change could not be committed");
+            }
+        }
     }
 
     /// Records of the room the agent has seen but not opened.
     #[must_use]
     pub fn known_records(&self) -> Vec<DocumentRoute> {
-        self.unopened.routes()
+        self.unopened
+            .routes()
+            .into_iter()
+            .filter(|route| !parts::is_part(&route.record))
+            .collect()
     }
 
     /// Open `app_id` on `record` (a record the room already has), or on a
@@ -1520,7 +1547,11 @@ impl AgentParticipant {
             .catalogue
             .get(app_id)
             .is_some_and(ui::application::ApplicationDefinition::keeps_room_record);
-        let record = record.or_else(|| room_record.then_some(""));
+        // A part of a chain is held beside its record, never opened: asked
+        // for one, the agent opens the record that keeps it.
+        let record = record
+            .filter(|record| !parts::is_part(record))
+            .or_else(|| room_record.then_some(""));
         let (seed, seeded) = match record {
             Some(record) => {
                 let route = route(record);
@@ -1565,6 +1596,8 @@ impl AgentParticipant {
             self.peer.publish(route.clone(), &mutation)?;
         }
         self.apps.insert(route.clone(), app);
+        self.hold_waiting_parts(&route);
+        self.introduce_in_chat(&route);
         self.generation = self.generation.wrapping_add(1);
         self.show_on_desk(&route);
         self.focus = Some(LiveRecord {
@@ -1701,6 +1734,8 @@ impl AgentParticipant {
                 .map_err(Refusal::Agent)?;
         }
         let place = app.presence();
+        // A post goes to the chat's head part, held beside the record.
+        self.publish_parts(route).map_err(Refusal::Agent)?;
         self.show_on_desk(route);
         self.focus = Some(LiveRecord {
             app: route.app_id.clone(),

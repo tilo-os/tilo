@@ -1550,3 +1550,158 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     device.close();
     hosted.stop().await;
 }
+
+const CHAT: &str = "so.tilo.chat";
+
+/// Ask for a grant labelled `label` covering `apps`, and wait until the
+/// laptop approves it.
+async fn approved_grant(browser: &mut Browser, label: &str, apps: &[&str]) -> String {
+    let requested = browser
+        .call(
+            SUPERVISOR_RESOURCE,
+            REQUEST_GRANT_ACTION,
+            InvokeArgument::Json(
+                serde_json::json!({"label": label, "rooms": [ROOM], "apps": apps,
+                                   "expiresInSecs": 3600})
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    let grant = requested["grant"].as_str().unwrap().to_owned();
+    browser
+        .until("the grant to be approved", |status| {
+            status
+                .grants
+                .iter()
+                .any(|g| g.id == grant && g.state == GrantState::Approved)
+        })
+        .await;
+    grant
+}
+
+/// One written step of the room's Chat.
+fn chat_step(resource: &str, action: &str, arguments: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"app": CHAT, "resource": resource, "action": action, "arguments": arguments})
+}
+
+/// Two agents talk in the room's Chat. Its messages are kept in parts
+/// beside the chat record: what one agent posts goes out on its part's own
+/// route, the other, holding the chat record, has it there, and the chat
+/// names it by the label the poster's person gave it, which the poster
+/// introduced itself with on opening the chat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn agents_post_in_the_rooms_chat_and_read_each_other_by_name() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let reader = approved_grant(&mut browser, "Reader", &[CHAT]).await;
+    let poster = approved_grant(&mut browser, "Poster", &[CHAT]).await;
+    let channel = chat::record::CHAT_CHANNEL;
+
+    // The reader starts the room's chat (its first channels) and holds it.
+    let begin = serde_json::json!([chat_step(
+        "chat.workspace",
+        "begin-chat",
+        &serde_json::json!({"name": "Reader", "initials": "RE", "color": 1}),
+    )]);
+    let spawn = |grant: &str, task: &serde_json::Value| {
+        InvokeArgument::Json(
+            serde_json::json!({"grant": grant, "task": task.to_string(), "room": ROOM})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+    };
+    browser
+        .call(SUPERVISOR_RESOURCE, SPAWN_ACTION, spawn(&reader, &begin))
+        .await
+        .unwrap();
+    browser
+        .until(
+            "the chat to begin",
+            last_task_is(&reader, TaskState::Completed, 1),
+        )
+        .await;
+
+    // The poster, which never started the chat, posts in it.
+    let post = serde_json::json!([chat_step(
+        "chat.messages",
+        "post",
+        &serde_json::json!({"channel": channel, "text": "Hello from the poster"}),
+    )]);
+    browser
+        .call(SUPERVISOR_RESOURCE, SPAWN_ACTION, spawn(&poster, &post))
+        .await
+        .unwrap();
+    browser
+        .until("the post", last_task_is(&poster, TaskState::Completed, 1))
+        .await;
+
+    // The reader exports the channel from the chat it holds: the post is
+    // there, under the poster's name. Asked again until it has arrived.
+    let export = serde_json::json!([chat_step(
+        "chat.workspace",
+        "export-content",
+        &serde_json::json!({"channel": channel, "format": "json"}),
+    )])
+    .to_string();
+    let deadline = tilo_test_env::hang_deadline();
+    let mut tasks = 1;
+    loop {
+        browser
+            .call(
+                &agent_resource(&reader),
+                MESSAGE_ACTION,
+                InvokeArgument::Text(export.clone()),
+            )
+            .await
+            .unwrap();
+        tasks += 1;
+        let status = browser
+            .until(
+                "the export",
+                last_task_is(&reader, TaskState::Completed, tasks),
+            )
+            .await;
+        let task = status
+            .agents
+            .iter()
+            .find(|agent| agent.id == reader)
+            .and_then(|agent| agent.tasks.last().cloned())
+            .unwrap();
+        let address = task
+            .steps
+            .iter()
+            .flat_map(|step| step.content.iter())
+            .next_back()
+            .cloned()
+            .expect("the export is kept as content");
+        let exported: serde_json::Value =
+            serde_json::from_slice(&hosted.agents.content(ROOM, &address).unwrap()).unwrap();
+        let posted = exported["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["text"] == "Hello from the poster")
+            .cloned();
+        if let Some(posted) = posted {
+            assert_eq!(posted["authorName"], "Poster", "{posted}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the reader never had the post: {exported}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    hosted.stop().await;
+}
