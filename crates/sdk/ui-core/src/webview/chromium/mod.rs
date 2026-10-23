@@ -400,8 +400,11 @@ struct Runtime {
     routes: Routes,
     next_tab: AtomicU32,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
-    /// The profile socket this process serves its host on.
-    server: std::sync::OnceLock<Arc<shared::Server>>,
+    /// The profile socket this process serves its host on. Shared with the
+    /// host's supervisor, which publishes it without holding the runtime:
+    /// a strong reference on the supervisor could be the last one, and the
+    /// supervisor cannot wait for itself.
+    server: Arc<std::sync::OnceLock<Arc<shared::Server>>>,
     /// Set when another process's host runs this profile.
     link: Option<shared::ClientLink>,
     service_session: Option<String>,
@@ -912,6 +915,7 @@ struct Starter {
     ready: std::sync::mpsc::Receiver<()>,
     claim: Option<shared::Claim>,
     runtime: Weak<Runtime>,
+    published: Arc<std::sync::OnceLock<Arc<shared::Server>>>,
     hub: Arc<shared::Hub>,
     shared: Arc<Shared>,
     queue: Arc<CommandQueue>,
@@ -932,14 +936,9 @@ impl Starter {
         let served = self
             .claim
             .as_ref()
-            .map(|claim| claim.serve(self.runtime.clone(), &self.hub))
+            .map(|claim| claim.serve(self.runtime.clone(), &self.published, &self.hub))
             .transpose();
         let server = served.as_ref().ok().cloned().flatten();
-        if let Some(runtime) = self.runtime.upgrade()
-            && let Some(server) = &server
-        {
-            let _ = runtime.server.set(server.clone());
-        }
         let started = served.and_then(|_| {
             self.ready
                 .recv_timeout(Duration::from_secs(20))
@@ -1193,7 +1192,7 @@ impl ChromiumEngine {
             routes: routes.clone(),
             next_tab: AtomicU32::new(2),
             download_events: download_events.clone(),
-            server: std::sync::OnceLock::new(),
+            server: Arc::default(),
             link: None,
             service_session: mode.service_session(),
             exited: Arc::new(AtomicBool::new(false)),
@@ -1237,6 +1236,7 @@ impl ChromiumEngine {
             ready: ready_rx,
             claim,
             runtime: Arc::downgrade(&runtime),
+            published: runtime.server.clone(),
             hub,
             shared: shared.clone(),
             queue: tx.clone(),

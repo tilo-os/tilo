@@ -297,6 +297,7 @@ impl Claim {
     pub(super) fn serve(
         &self,
         runtime: Weak<Runtime>,
+        published: &OnceLock<Arc<Server>>,
         hub: &Arc<Hub>,
     ) -> Result<Arc<Server>, String> {
         let listener = self
@@ -312,9 +313,7 @@ impl Claim {
         });
         // Published before the first client is admitted: a client that has
         // connected finds its owner's server on the owner's runtime.
-        if let Some(runtime) = server.runtime.upgrade() {
-            let _ = runtime.server.set(server.clone());
-        }
+        let _ = published.set(server.clone());
         let weak = Arc::downgrade(&server);
         if let Err(error) = spawn_named("chromium-share", move || accept_loop(&weak)) {
             server.listener.close();
@@ -788,7 +787,7 @@ pub(super) fn connect(connection: Connection) -> Result<Arc<ChromiumEngine>, Str
         routes,
         next_tab: AtomicU32::new(0),
         download_events,
-        server: OnceLock::new(),
+        server: Arc::default(),
         link: Some(link),
         service_session: None,
         exited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
