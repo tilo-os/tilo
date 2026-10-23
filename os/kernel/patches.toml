@@ -99,3 +99,15 @@ upstream = "Tilo's own, not posted; mainline describes no ramoops region for any
 [[patch]]
 file = "0022-power-reset-qcom-pon-log-the-PMIC-s-power-on-and-reset-reasons.patch"
 upstream = "Tilo's own, not posted; mainline qcom-pon reads no reason register"
+
+[[patch]]
+file = "0023-i2c-qcom-geni-Restore-the-source-clock-selection-policy.patch"
+upstream = "Fixes the 7.2.9 stable backport of cb97bf3d4f91, which moved X1E80100 I2C from a 19.2 MHz to a 32 MHz source clock and broke the I2C HID keyboard and touchpad; not yet in 7.2 stable"
+merged = "v7.4"
+commit = "8cb5c17be3a2fadc41075d04ce1c24c831546aaf"
+
+[[patch]]
+file = "0024-Revert-wifi-ath12k-add-panic-handler.patch"
+upstream = "The 7.2.11 stable backport of the mainline revert: ath12k's panic notifier sleeps, so a panic on a machine with a WCN7850 hangs before kmsg_dump writes pstore or drm_panic draws"
+merged = "v7.3"
+commit = "05165f7b3b9ab6817fe216c24f90755b7c5e15f3"
