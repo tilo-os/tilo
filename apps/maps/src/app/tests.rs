@@ -758,19 +758,42 @@ fn traffic_overlay_populates_honestly_and_draws_its_legend_only_when_on() {
             !a.map_controls.traffic_enabled() && a.traffic.is_empty(),
             "off + empty at start"
         );
-        tap_control(&mut a, MapControlAction::ToggleTraffic);
+        tap_control(&mut a, MapControlAction::Layers);
+        assert!(
+            a.menu_open(MapMenu::Layers),
+            "the layers button opens the menu of layers"
+        );
+        let rows: Vec<_> = a
+            .overflow
+            .items()
+            .iter()
+            .map(|item| (item.label().map(str::to_owned), item.checked()))
+            .collect();
+        assert_eq!(rows, [(Some("Traffic".to_owned()), Some(false))]);
+        assert!(
+            !a.map_controls.traffic_enabled(),
+            "opening it changes nothing"
+        );
+        a.overflow_select(0);
+        a.overflow.close();
         assert!(
             a.map_controls.traffic_enabled(),
-            "the control toggles the overlay on"
+            "choosing Traffic turns the overlay on"
         );
         assert!(
             !a.traffic.is_empty(),
             "sample cartography yields congestion segments"
         );
-        tap_control(&mut a, MapControlAction::ToggleTraffic);
+        tap_control(&mut a, MapControlAction::Layers);
+        assert_eq!(
+            a.overflow.items().first().and_then(MenuItem::checked),
+            Some(true),
+            "Traffic shows as on"
+        );
+        a.overflow_select(0);
         assert!(
             !a.map_controls.traffic_enabled(),
-            "the control toggles the overlay back off"
+            "choosing it again turns the overlay back off"
         );
     }
 
@@ -2840,10 +2863,7 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
         let mut scene = Scene::new();
         app.draw_app(&mut scene, Affine::IDENTITY, &mut text, &theme);
 
-        let traffic = app
-            .map_controls
-            .rect(MapControlAction::ToggleTraffic)
-            .center();
+        let traffic = app.map_controls.rect(MapControlAction::Layers).center();
         move_to(&mut app, traffic.x, traffic.y);
         assert!(press_left(&mut app));
         assert!(
@@ -3049,7 +3069,7 @@ fn semantic_controls_are_stable_modal_and_operable() {
             "maps.control:zoom-in",
             "maps.control:zoom-out",
             "maps.control:locate",
-            "maps.control:traffic",
+            "maps.control:layers",
         ];
         for (index, (child, expected_target)) in
             node.children.iter().zip(expected_targets).enumerate()
@@ -3061,13 +3081,13 @@ fn semantic_controls_are_stable_modal_and_operable() {
                 "control {index} must activate at its visible bounds"
             );
         }
-        let traffic = node
+        let layers = node
             .children
             .iter()
-            .find(|child| child.action_target.as_deref() == Some("maps.control:traffic"))
-            .expect("traffic semantics");
-        assert_eq!(traffic.role, ui::a11y::Role::Switch);
-        assert_eq!(traffic.state.checked, Some(false));
+            .find(|child| child.action_target.as_deref() == Some("maps.control:layers"))
+            .expect("layers semantics");
+        assert_eq!(layers.role, ui::a11y::Role::ToggleButton);
+        assert_eq!(layers.state.checked, Some(false));
     }
 
     // Phase `semantic_control_targets_are_stable_unique_and_operable`.
@@ -3089,12 +3109,12 @@ fn semantic_controls_are_stable_modal_and_operable() {
         );
         assert!(Widget::perform_semantic_action(
             &mut a,
-            "maps.control:traffic",
-            &ui::a11y::Action::ToggleCheck,
+            "maps.control:layers",
+            &ui::a11y::Action::Activate,
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert!(a.map_controls.traffic_enabled());
+        assert!(a.menu_open(MapMenu::Layers));
     }
 
     // Phase `offline_dialog_is_modal_semantic_and_operable`.
@@ -3279,7 +3299,7 @@ fn map_controls_stay_on_screen_clear_of_panel_and_navigation_card() {
         );
         let nav = a.navigation_rect();
         let zoom_in = a.map_controls.rect(MapControlAction::ZoomIn);
-        let traffic = a.map_controls.rect(MapControlAction::ToggleTraffic);
+        let traffic = a.map_controls.rect(MapControlAction::Layers);
         assert!(
             zoom_in.y0 >= nav.y1,
             "zoom-in {zoom_in:?} must start below the navigation card {nav:?}"
@@ -3288,7 +3308,7 @@ fn map_controls_stay_on_screen_clear_of_panel_and_navigation_card() {
             MapControlAction::ZoomIn,
             MapControlAction::ZoomOut,
             MapControlAction::Locate,
-            MapControlAction::ToggleTraffic,
+            MapControlAction::Layers,
         ] {
             let rect = a.map_controls.rect(action);
             assert!(
@@ -3330,7 +3350,7 @@ fn map_controls_stay_on_screen_clear_of_panel_and_navigation_card() {
             MapControlAction::ZoomIn,
             MapControlAction::ZoomOut,
             MapControlAction::Locate,
-            MapControlAction::ToggleTraffic,
+            MapControlAction::Layers,
         ] {
             let rect = a.map_controls.rect(action);
             assert!(
@@ -3367,7 +3387,7 @@ fn map_controls_stay_on_screen_clear_of_panel_and_navigation_card() {
             MapControlAction::ZoomIn,
             MapControlAction::ZoomOut,
             MapControlAction::Locate,
-            MapControlAction::ToggleTraffic,
+            MapControlAction::Layers,
         ];
 
         // Docked at the breakpoint, 840×360, with text a quarter larger:
