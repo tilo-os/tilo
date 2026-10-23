@@ -557,6 +557,10 @@ pub(crate) struct LibraryIndex {
     looked: u64,
     /// Books whose segment is being built here.
     building: HashSet<String>,
+    /// Books whose segment was built here and handed on to be kept: not
+    /// built again while their row still names none, which is what a row
+    /// shows while the room has not taken the index, or after it refused it.
+    built_here: HashSet<String>,
     built_send: Sender<(String, Vec<u8>)>,
     built: Receiver<(String, Vec<u8>)>,
     /// Segments being read back, by the hash their row names.
@@ -584,6 +588,7 @@ impl Default for LibraryIndex {
             store: None,
             looked: ui::collaboration::record_content::arrivals(),
             building: HashSet::new(),
+            built_here: HashSet::new(),
             built_send,
             built,
             loading: HashSet::new(),
@@ -623,7 +628,10 @@ impl LibraryIndex {
             .map(|entry| entry.id.as_str())
             .collect();
         for book in books {
-            if !unindexed.contains(book.id.as_str()) || !self.building.insert(book.id.clone()) {
+            if !unindexed.contains(book.id.as_str())
+                || self.built_here.contains(&book.id)
+                || !self.building.insert(book.id.clone())
+            {
                 continue;
             }
             let book = Arc::clone(book);
@@ -650,6 +658,7 @@ impl LibraryIndex {
         let built: Vec<(String, Vec<u8>)> = self.built.try_iter().collect();
         for (book, _) in &built {
             self.building.remove(book);
+            self.built_here.insert(book.clone());
         }
         built
     }
@@ -709,6 +718,12 @@ impl LibraryIndex {
         if self.fetching.as_ref().is_some_and(|fetch| !fetch.reading) {
             self.read_book();
         }
+    }
+
+    /// Whether a segment is being built here.
+    #[cfg(test)]
+    pub(crate) fn building(&self) -> bool {
+        !self.building.is_empty()
     }
 
     /// Whether segments are still being read back.
@@ -991,6 +1006,25 @@ mod tests {
                 .collect(),
             ..Book::default()
         }
+    }
+
+    #[test]
+    fn a_book_whose_index_the_room_did_not_take_is_not_built_again() {
+        let pumped = ui::background::Pumped::new();
+        let mut index = LibraryIndex::default().with_background(pumped.background());
+        let books = [Arc::new(book(vec![vec!["Call me Ishmael."]]))];
+        let entries = [LibraryEntry {
+            id: "book:test".into(),
+            ..LibraryEntry::default()
+        }];
+        index.build_missing(&books, &entries);
+        pumped.run_pending();
+        assert_eq!(index.take_built().len(), 1, "built once");
+        // The row still names no index: the room refused it, or has not
+        // taken it yet. Building it again would only send it again.
+        index.build_missing(&books, &entries);
+        pumped.run_pending();
+        assert!(index.take_built().is_empty(), "not built again");
     }
 
     #[test]

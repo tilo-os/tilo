@@ -218,6 +218,12 @@ impl BookQuery {
         }
     }
 
+    /// The library's index as this device holds it.
+    #[cfg(test)]
+    pub(super) fn index_mut(&mut self) -> &mut LibraryIndex {
+        &mut self.index
+    }
+
     /// Scroll the results by `dy`; whether they moved.
     pub(super) fn scroll_by(&mut self, dy: f64) -> bool {
         let before = self.scroll;
@@ -290,6 +296,8 @@ impl BooksApp {
         for book in self.library.iter() {
             book.id.hash(&mut hasher);
         }
+        let may_index = self.may_index();
+        may_index.hash(&mut hasher);
         let key = hasher.finish();
         self.query.index.read_arrived();
         let arrived = self.query.index.take_loaded();
@@ -298,8 +306,10 @@ impl BooksApp {
             self.query.indexed = Some(key);
             self.elsewhere = Arc::new(books_elsewhere(entries, &self.library));
             // A segment built here is kept in the content store with the
-            // book's row; without one it would not reach other devices.
-            if self.content.is_some() {
+            // book's row; without one it would not reach other devices. A
+            // participant who may not keep it there builds none: the books
+            // here are searched from their own text.
+            if self.content.is_some() && may_index {
                 self.query.index.build_missing(&self.library, entries);
             }
             let here: std::collections::HashSet<&str> =
@@ -444,6 +454,17 @@ impl BooksApp {
         self.dirty = true;
     }
 
+    /// Whether this participant may keep a book's index with its row.
+    fn may_index(&self) -> bool {
+        self.dispatch.may_invoke(&crate::resource::index_book(
+            "",
+            crate::resource::StoredContent {
+                hash: String::new(),
+                size: 0,
+            },
+        ))
+    }
+
     /// Keep the segments built since the last frame in the content store,
     /// each joining its book's row.
     pub(super) fn keep_built_segments(&mut self, doc: &mut ui::widget::Edits<'_>) {
@@ -451,6 +472,9 @@ impl BooksApp {
         let Some(store) = self.content.clone() else {
             return;
         };
+        if built.is_empty() || !self.may_index() {
+            return;
+        }
         for (book, segment) in built {
             match store.put(&segment) {
                 Ok(hash) => {

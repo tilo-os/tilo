@@ -1639,13 +1639,17 @@ impl BooksApp {
         }
         let id = self.library.get(self.book_idx)?.id.clone();
         self.last_persisted = Some(key);
-        Some(Ebook::RECORD_PROGRESS.with(books::RecordProgress {
+        let progress = Ebook::RECORD_PROGRESS.with(books::RecordProgress {
             book: id,
             chapter: self.chapter,
             block,
             fraction,
             opened: false,
-        }))
+        });
+        // A participant the room does not let change the library (a guest
+        // who may only view) reads on without their place being sent: the
+        // room would refuse it on every page turn.
+        self.dispatch.may_invoke(&progress).then_some(progress)
     }
 
     /// The first block on the page the reader is at: what the reading
