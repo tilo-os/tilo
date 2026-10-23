@@ -279,6 +279,10 @@ decorator_trait! {
             Some(self)
         }
 
+        fn stands_for(&self, address: *const ()) -> bool {
+            std::ptr::from_ref(self).cast::<()>() == address || self.inner().stands_for(address)
+        }
+
         fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
             Some(self)
         }
@@ -360,6 +364,10 @@ decorator_trait! {
 
         fn as_any(&self) -> Option<&dyn std::any::Any> {
             Decorator::as_any(self)
+        }
+
+        fn stands_for(&self, address: *const ()) -> bool {
+            Decorator::stands_for(self, address)
         }
 
         fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

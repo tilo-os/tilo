@@ -1,6 +1,6 @@
 //! What a frame that only scrolled the document repaints.
 
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::PdfApp;
 
@@ -26,6 +26,50 @@ pub(super) struct CanvasShown {
     pub(super) floating: bool,
 }
 
+impl ui::scroll_copy::Shown for CanvasShown {
+    fn scroll(&self) -> Vec2 {
+        Vec2::new(self.scroll.0, self.scroll.1)
+    }
+
+    fn clip(&self) -> Rect {
+        self.canvas
+    }
+
+    fn transform(&self) -> Affine {
+        self.transform
+    }
+
+    fn same_view(&self, other: &Self) -> bool {
+        !self.floating
+            && !other.floating
+            && self.zoom.to_bits() == other.zoom.to_bits()
+            && self.rect == other.rect
+    }
+
+    fn overlays(&self, out: &mut Vec<Rect>) {
+        for thumb in self.thumbs.iter().flatten() {
+            // The whole lane the thumb runs in, so a thumb copied with the
+            // content is painted over where it lands.
+            out.push(Rect::new(
+                thumb.x0.min(self.canvas.x1 - thumb.width()) - 2.0,
+                if thumb.width() < thumb.height() {
+                    self.canvas.y0
+                } else {
+                    thumb.y0 - 2.0
+                },
+                self.canvas.x1,
+                self.canvas.y1,
+            ));
+        }
+        if self.bubble.area() > 0.0 {
+            out.push(self.bubble.expand());
+        }
+        if self.hud.area() > 0.0 {
+            out.push(self.hud.expand());
+        }
+    }
+}
+
 impl PdfApp {
     /// A frame that only scrolled the document (and took in pages the
     /// worker delivered) offers its host a copy of what stays on screen and
@@ -36,64 +80,25 @@ impl PdfApp {
         if !ui::widget::Widget::needs_redraw(self) {
             return;
         }
-        let whole = |regions: &mut Vec<Rect>| regions.push(self.rect);
-        let (Some(drawing), Some(presented)) = (self.canvas_drawing, self.canvas_presented) else {
-            return whole(regions);
+        let only_view =
+            !self.dirty && self.drag.is_none() && self.pan.is_none() && self.rail_drag.is_none();
+        let Some(current_page) = self
+            .shown
+            .frames()
+            .map(|(drawing, presented)| (drawing.current_page, presented.current_page))
+        else {
+            return regions.push(self.rect);
         };
-        let only_view = !self.dirty
-            && self.drag.is_none()
-            && self.pan.is_none()
-            && self.rail_drag.is_none()
-            && !drawing.floating
-            && !presented.floating
-            && drawing.zoom.to_bits() == presented.zoom.to_bits()
-            && drawing.canvas == presented.canvas
-            && drawing.rect == presented.rect
-            && drawing.transform == presented.transform;
-        if !only_view {
-            return whole(regions);
+        let mut damage = Vec::new();
+        if !only_view || self.shown.compare(self, &mut damage) == ui::scroll_copy::Since::Repaint {
+            return regions.push(self.rect);
         }
-        let mut still: Vec<Rect> = Vec::new();
-        for frame in [&drawing, &presented] {
-            for thumb in frame.thumbs.iter().flatten() {
-                // The whole lane the thumb runs in, so a thumb copied with
-                // the content is painted over where it lands.
-                still.push(Rect::new(
-                    thumb.x0.min(frame.canvas.x1 - thumb.width()) - 2.0,
-                    if thumb.width() < thumb.height() {
-                        frame.canvas.y0
-                    } else {
-                        thumb.y0 - 2.0
-                    },
-                    frame.canvas.x1,
-                    frame.canvas.y1,
-                ));
-            }
-            if frame.bubble.area() > 0.0 {
-                still.push(frame.bubble.expand());
-            }
-            if frame.hud.area() > 0.0 {
-                still.push(frame.hud.expand());
-            }
-        }
-        let delta = vello::kurbo::Vec2::new(
-            presented.scroll.0 - drawing.scroll.0,
-            presented.scroll.1 - drawing.scroll.1,
-        );
-        let copied = delta != vello::kurbo::Vec2::ZERO
-            && ui::scroll_copy::offer(
-                self,
-                drawing.canvas,
-                delta,
-                still.clone(),
-                drawing.transform,
-            );
-        if delta != vello::kurbo::Vec2::ZERO && !copied {
-            regions.push(drawing.canvas);
-        }
-        regions.extend(still);
+        regions.extend(damage);
+        let Some(drawing) = self.shown.drawing() else {
+            return;
+        };
         // The page rail and the outline mark the current page.
-        if drawing.current_page != presented.current_page {
+        if current_page.0 != current_page.1 {
             if self.show_rail {
                 regions.push(self.rail_rect);
             }

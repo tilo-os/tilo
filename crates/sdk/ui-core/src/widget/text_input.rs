@@ -60,6 +60,8 @@ struct AlternateLayout {
     signature: u64,
 }
 
+#[path = "text_input_damage.rs"]
+mod damage;
 #[path = "text_input_reveal.rs"]
 mod reveal;
 use reveal::RevealToggle;
@@ -410,6 +412,9 @@ pub struct TextInput {
     /// local for the owner to submit ([`Self::take_dirty`]); how
     /// `BlockEditor` binds text nested inside a `List`.
     bound_text: Option<ObjId>,
+    /// Where the document stood, and what the field showed, when it last
+    /// read the bound text: a sync over an unchanged document reads nothing.
+    adopted: Option<preparation::Adopted>,
     /// Stamped on every inserted run so peers can highlight "what they wrote".
     local_author: Option<String>,
     /// Horizontal alignment of wrapped text within the input's width.
@@ -437,6 +442,7 @@ pub struct TextInput {
     /// once they are in.
     spell_generation: u64,
     spell_spans: Vec<(usize, usize)>,
+    shown: crate::scroll_copy::ShownFrames<damage::FieldShown>,
     /// `spell_spans` were cleared while idle and no longer describe the
     /// cached text, so the next check cannot splice into them.
     spell_spans_stale: bool,
@@ -740,6 +746,7 @@ impl TextInput {
             gutter_text_scale: 1.0,
             plain: false,
             bound_text: None,
+            adopted: None,
             local_author: None,
             align: TextAlign::Left,
             secret: false,
@@ -752,6 +759,7 @@ impl TextInput {
             spell_cache_key: None,
             spell_generation: spellcheck::dictionaries_generation(),
             spell_spans: Vec::new(),
+            shown: crate::scroll_copy::ShownFrames::default(),
             spell_spans_stale: false,
             spell_dictionary: None,
             personal_spelling: None,
@@ -857,6 +865,10 @@ impl TextInput {
             .bound_text
             .as_ref()
             .ok_or_else(|| crate::view::ThawError::State("text is not bound".into()))?;
+        let seen = preparation::Adopted::of(state, obj, &self.text);
+        if self.adopted.as_ref() == Some(&seen) {
+            return Ok(());
+        }
         let text = state
             .text(obj)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
@@ -864,6 +876,7 @@ impl TextInput {
         self.adopt_model_text(text);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
+        self.adopted = Some(seen.showing(&self.text));
         Ok(())
     }
 
@@ -2403,13 +2416,21 @@ impl TextInput {
         }
         self.refresh_highlight();
         let display = self.layout_display_text();
-        let spans = self.palette_display_spans(syntax);
-        debug_assert_eq!(
-            spans
-                .iter()
-                .map(|span| span.text.as_str())
-                .collect::<String>(),
-            display
+        // Syntax colours paint with the visible rows
+        // ([`Self::highlight_color_at`]), so highlighted code is shaped as
+        // plain paragraphs and a keystroke reshapes only its line.
+        let spans = if self.paints_highlight() {
+            Vec::new()
+        } else {
+            self.palette_display_spans(syntax)
+        };
+        debug_assert!(
+            spans.is_empty()
+                || spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+                    == display
         );
         let signature = Self::attributed_signature(
             self.shaped_signature(&display, &style.family, style.size, Some(available_width)),
@@ -2652,7 +2673,7 @@ impl TextInput {
         theme: &Theme,
         style: &TextStyle,
         caret_byte: usize,
-        gutter_width: f64,
+        (gutter_width, visible): (f64, Rect),
     ) {
         if gutter_width <= 0.0 {
             return;
@@ -2661,7 +2682,15 @@ impl TextInput {
             return;
         };
         let current_line = layout.logical_line_index(caret_byte);
-        for (line, top, _height) in layout.logical_line_origins() {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "on-screen offsets in logical pixels are far inside f32"
+        )]
+        let (top, bottom) = (
+            (visible.y0 - self.single_origin.y) as f32,
+            (visible.y1 - self.single_origin.y) as f32,
+        );
+        for (line, top, _height) in layout.logical_line_origins_within(top, bottom) {
             let number = line.saturating_add(1).to_string();
             let (width, _) = tr.measure_style(&number, None, style);
             #[allow(
@@ -2882,12 +2911,16 @@ impl TextInput {
             };
             // A long note is taller than the window: paint only the rows the
             // field's clip and the viewport let through.
-            tr.draw_rich_in_clip(
+            let syntax = &theme.tokens.syntax;
+            let paint = |byte: usize| self.highlight_color_at(byte, syntax);
+            tr.draw_rich_in_clip_painted(
                 scene,
                 layout,
                 text_transform,
                 color,
                 transform.transform_rect_bbox(visible),
+                self.paints_highlight()
+                    .then_some(&paint as &dyn Fn(usize) -> Option<vello::peniko::Color>),
             );
         }
 
@@ -2898,7 +2931,7 @@ impl TextInput {
             theme,
             &style,
             caret_byte,
-            gutter_width,
+            (gutter_width, visible),
         );
         self.draw_ml_caret(scene, transform, theme, (caret_position, shape));
         scene.pop_layer();
@@ -3554,6 +3587,43 @@ impl TextInput {
 
     fn ml_left(&self) -> f64 {
         self.ml_pad_x() + self.code_gutter_w()
+    }
+
+    /// Whether the highlighter's colours paint over plainly shaped text:
+    /// always, unless authored runs style the text instead.
+    fn paints_highlight(&self) -> bool {
+        self.highlighter.is_some() && self.rich_spans.is_none()
+    }
+
+    /// The highlighter's colour at `byte` of the laid-out text (the source
+    /// with any composition shown at the caret), in `syntax`'s colours.
+    /// `None` between tokens and within the composition.
+    fn highlight_color_at(
+        &self,
+        byte: usize,
+        syntax: &SyntaxPalette,
+    ) -> Option<vello::peniko::Color> {
+        let byte = if self.core.has_preedit() {
+            let caret = self.core.caret().min(self.text.len());
+            let composed = self.core.preedit().len();
+            if byte >= caret.saturating_add(composed) {
+                byte.saturating_sub(composed)
+            } else if byte >= caret {
+                return None;
+            } else {
+                byte
+            }
+        } else {
+            byte
+        };
+        let line = self
+            .hl_line_starts
+            .partition_point(|start| *start <= byte)
+            .checked_sub(1)?;
+        let local = byte.saturating_sub(*self.hl_line_starts.get(line)?);
+        let spans = self.hl_spans.get(line)?;
+        let span = spans.get(spans.partition_point(|span| span.range.end <= local))?;
+        span.range.contains(&local).then(|| syntax.color(span.kind))
     }
 
     /// Threads the cross-line carry over all lines so block comments / fenced
@@ -5619,6 +5689,7 @@ impl Widget for TextInput {
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
             self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
+            self.note_shown(transform, theme);
             return;
         }
         self.multiline_shaped = false;
@@ -5955,6 +6026,15 @@ impl Widget for TextInput {
     /// container that only redraws for a dirty child.
     fn needs_redraw(&self) -> bool {
         true
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.collect_damage_for(self, regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.mark_shown();
+        super::defaults::mark_drawn(self.children_mut());
     }
 
     fn is_focusable(&self) -> bool {

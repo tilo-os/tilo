@@ -39,6 +39,10 @@ use vello::wgpu;
 
 use crate::widget::Widget;
 
+#[path = "scroll_copy_shown.rs"]
+mod shown;
+pub use shown::{Piece, Showing, Shown, ShownFrames, Since};
+
 /// How far outside its layout box a widget may paint: anti-aliasing, a
 /// shadow, a hover lift. The native window grows every widget's damage by
 /// as much, in logical pixels.
@@ -547,27 +551,36 @@ pub struct CopyPlan {
 /// app out in its body): an ancestor in all but the walk.
 struct Node {
     widget: *const (),
+    /// The offering scrollers it stands for besides itself
+    /// ([`Widget::stands_for`]): a decorator stands in the tree for the
+    /// widget it wraps.
+    stands_for: Vec<*const ()>,
     depth: usize,
     rect: Rect,
     clip: Option<Rect>,
     encloses: bool,
 }
 
-fn nodes(roots: &[&dyn Widget]) -> Vec<Node> {
-    fn walk(widget: &dyn Widget, depth: usize, out: &mut Vec<Node>) {
+fn nodes(roots: &[&dyn Widget], owners: &[*const ()]) -> Vec<Node> {
+    fn walk(widget: &dyn Widget, depth: usize, owners: &[*const ()], out: &mut Vec<Node>) {
         out.push(Node {
             widget: std::ptr::from_ref(widget).cast::<()>(),
+            stands_for: owners
+                .iter()
+                .copied()
+                .filter(|owner| widget.stands_for(*owner))
+                .collect(),
             depth,
             rect: widget.get_rect(),
             clip: widget.child_clip_rect(),
             encloses: false,
         });
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
+        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), owners, out));
     }
     let mut out = Vec::new();
     for (index, root) in roots.iter().enumerate() {
         let start = out.len();
-        walk(*root, 0, &mut out);
+        walk(*root, 0, owners, &mut out);
         if index > 0
             && let Some(node) = out.get_mut(start)
         {
@@ -655,7 +668,7 @@ fn plan_one(
     let Some(index) = tree
         .iter()
         .enumerate()
-        .filter(|(_, node)| node.widget == offer.owner)
+        .filter(|(_, node)| node.widget == offer.owner || node.stands_for.contains(&offer.owner))
         .max_by_key(|(_, node)| node.depth)
         .map(|(index, _)| index)
     else {
@@ -791,7 +804,8 @@ pub fn plan_scaled(
     if offers.is_empty() {
         return planned;
     }
-    let tree = nodes(roots);
+    let owners: Vec<*const ()> = offers.iter().map(|offer| offer.owner).collect();
+    let tree = nodes(roots, &owners);
     let window = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
     // Where accepted copies read and write: a later copy that overlaps them
     // would read pixels an earlier one moved.

@@ -3345,7 +3345,8 @@ impl TextRenderer {
 
         // Glyphs batch by face, shaped weight, color, size and baseline shift.
         for run in layout.buffer.layout_runs() {
-            self.draw_rich_run(scene, &run, layout, transform, color, None);
+            let paint = RunPaint { color, paint: None };
+            self.draw_rich_run(scene, &run, layout, transform, paint, None);
         }
 
         draw_rich_underlines(scene, layout, transform, color);
@@ -3363,14 +3364,40 @@ impl TextRenderer {
         color: Color,
         clip: Rect,
     ) {
+        self.draw_rich_in_clip_painted(scene, layout, transform, color, clip, None);
+    }
+
+    /// [`Self::draw_rich_in_clip`], each glyph in the colour `paint` gives
+    /// the byte it starts at, where it gives one: syntax colours applied as
+    /// the visible rows paint, so the paragraph is shaped without them and
+    /// an edit reshapes only the lines it touched.
+    pub fn draw_rich_in_clip_painted(
+        &mut self,
+        scene: &mut Scene,
+        layout: &crate::richtext::RichTextLayout,
+        transform: Affine,
+        color: Color,
+        clip: Rect,
+        paint: Option<&dyn Fn(usize) -> Option<Color>>,
+    ) {
         draw_rich_backgrounds(scene, layout, transform);
-        for run in layout.buffer.layout_runs() {
+        let rows: Box<dyn Iterator<Item = cosmic_text::LayoutRun<'_>>> =
+            match clip_in_layout(transform, clip) {
+                Some((top, bottom)) => Box::new(layout.rows_within(top, bottom)),
+                None => Box::new(layout.buffer.layout_runs()),
+            };
+        for run in rows {
             // A long block repeats this for every page slice it spans; skip
-            // whole visual lines before any per-glyph work or glyph encoding.
+            // whole visual lines before any per-glyph work or glyph encoding,
+            // and stop at the first below the clip: rows run downward.
             if rich_run_outside_clip(&run, transform, clip) {
+                if rich_run_below_clip(&run, transform, clip) {
+                    break;
+                }
                 continue;
             }
-            self.draw_rich_run(scene, &run, layout, transform, color, Some(clip));
+            let paint_run = RunPaint { color, paint };
+            self.draw_rich_run(scene, &run, layout, transform, paint_run, Some(clip));
         }
         draw_rich_underlines(scene, layout, transform, color);
         draw_rich_strikes(scene, layout, transform, color);
@@ -3384,11 +3411,11 @@ impl TextRenderer {
         run: &cosmic_text::LayoutRun<'_>,
         layout: &crate::richtext::RichTextLayout,
         transform: Affine,
-        color: Color,
+        paint: RunPaint<'_>,
         clip: Option<Rect>,
     ) {
-        if !self.draw_uniform_rich_run(scene, run, layout, transform, color, clip) {
-            self.draw_rich_run_copied(scene, run, layout, transform, color, clip);
+        if !self.draw_uniform_rich_run(scene, run, layout, transform, paint, clip) {
+            self.draw_rich_run_copied(scene, run, layout, transform, paint, clip);
         }
     }
 
@@ -3399,7 +3426,7 @@ impl TextRenderer {
         run: &cosmic_text::LayoutRun<'_>,
         layout: &crate::richtext::RichTextLayout,
         transform: Affine,
-        color: Color,
+        paint: RunPaint<'_>,
         clip: Option<Rect>,
     ) -> bool {
         if layout.hanging_punctuation.first || layout.hanging_punctuation.last {
@@ -3408,6 +3435,15 @@ impl TextRenderer {
         let Some(first) = run.glyphs.first() else {
             return false;
         };
+        let first_color = paint.of(layout, run.line_i, first);
+        if paint.paint.is_some()
+            && run
+                .glyphs
+                .iter()
+                .any(|glyph| paint.of(layout, run.line_i, glyph) != first_color)
+        {
+            return false;
+        }
         let shift = layout.baseline_at(layout.glyph_global_byte(run.line_i, first.start));
         #[allow(
             clippy::float_cmp,
@@ -3428,7 +3464,7 @@ impl TextRenderer {
             face_id: first.font_id,
             glyphs: run.glyphs,
             size: first.font_size,
-            color: resolve_rich_color(color, first.color_opt),
+            color: first_color,
             line_y: run.line_y + shift.offset(first.font_size),
             variations: &layout.font_variations,
         };
@@ -3442,16 +3478,17 @@ impl TextRenderer {
         run: &cosmic_text::LayoutRun<'_>,
         layout: &crate::richtext::RichTextLayout,
         transform: Affine,
-        color: Color,
+        paint: RunPaint<'_>,
         clip: Option<Rect>,
     ) {
+        let color = paint.color;
         use crate::richtext::BaselineShift;
         let exercised_hyphen = run
             .glyphs
             .last()
             .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
         let mut face: Option<cosmic_text::fontdb::ID> = None;
-        let mut cur_color: Option<cosmic_text::Color> = None;
+        let mut cur_color: Option<Color> = None;
         let mut cur_weight: Option<Weight> = None;
         let mut cur_shift = BaselineShift::None;
         // Avoid repeated growth for ordinary lines without reserving an
@@ -3466,10 +3503,11 @@ impl TextRenderer {
             }
             let global_byte = layout.glyph_global_byte(run.line_i, g.start);
             let g_shift = layout.baseline_at(global_byte);
+            let g_color = paint.at(global_byte, g);
             // Glyphs batch by face, shaped weight, color, size and baseline shift.
             let changed = face != Some(g.font_id)
                 || cur_weight != Some(g.font_weight)
-                || cur_color != g.color_opt
+                || cur_color != Some(g_color)
                 || (g.font_size - batch_size).abs() > f32::EPSILON
                 || cur_shift != g_shift;
             if let Some(face_id) = face
@@ -3481,7 +3519,7 @@ impl TextRenderer {
                     face_id,
                     glyphs: &batch,
                     size: batch_size,
-                    color: resolve_rich_color(color, cur_color),
+                    color: cur_color.unwrap_or(color),
                     line_y: run.line_y + dy,
                     variations: &layout.font_variations,
                 };
@@ -3490,7 +3528,7 @@ impl TextRenderer {
             }
             face = Some(g.font_id);
             cur_weight = Some(g.font_weight);
-            cur_color = g.color_opt;
+            cur_color = Some(g_color);
             cur_shift = g_shift;
             size = g.font_size;
             batch_size = g.font_size;
@@ -3506,7 +3544,7 @@ impl TextRenderer {
                 face_id: f,
                 glyphs: &batch,
                 size,
-                color: resolve_rich_color(color, cur_color),
+                color: cur_color.unwrap_or(color),
                 line_y: run.line_y + dy,
                 variations: &layout.font_variations,
             };
@@ -3735,6 +3773,75 @@ pub(crate) fn rich_run_outside_clip(
         return false;
     }
     screen.y1 < clip.y0 || screen.y0 > clip.y1
+}
+
+/// The colour a rich run's glyphs paint in: their shaped colour over the
+/// block's `color`, unless `paint` gives the byte a glyph starts at one.
+#[derive(Clone, Copy)]
+struct RunPaint<'p> {
+    color: Color,
+    paint: Option<&'p dyn Fn(usize) -> Option<Color>>,
+}
+
+impl RunPaint<'_> {
+    fn at(&self, global_byte: usize, glyph: &cosmic_text::LayoutGlyph) -> Color {
+        self.paint
+            .and_then(|paint| paint(global_byte))
+            .unwrap_or_else(|| resolve_rich_color(self.color, glyph.color_opt))
+    }
+
+    fn of(
+        &self,
+        layout: &crate::richtext::RichTextLayout,
+        line: usize,
+        glyph: &cosmic_text::LayoutGlyph,
+    ) -> Color {
+        if self.paint.is_none() {
+            return resolve_rich_color(self.color, glyph.color_opt);
+        }
+        self.at(layout.glyph_global_byte(line, glyph.start), glyph)
+    }
+}
+
+/// Whether `run` lies wholly below `clip` under an upright `transform`
+/// (no shear, no flip), so every later row of its paragraph does too.
+/// The rows `clip` (on screen) shows of a layout drawn with `transform`, as
+/// a span of the layout's y, when the transform keeps rows upright.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "on-screen offsets in logical pixels are far inside f32"
+)]
+fn clip_in_layout(transform: Affine, clip: Rect) -> Option<(f32, f32)> {
+    let [_, shear_y, shear_x, scale_y, _, translate_y] = transform.as_coeffs();
+    // An invalid clip draws everything, as the per-row cull does.
+    let valid = [clip.x0, clip.y0, clip.x1, clip.y1, translate_y, scale_y]
+        .iter()
+        .all(|value| value.is_finite())
+        && clip.x0 <= clip.x1
+        && clip.y0 <= clip.y1;
+    (valid && shear_x == 0.0 && shear_y == 0.0 && scale_y > 0.0).then(|| {
+        (
+            ((clip.y0 - translate_y) / scale_y) as f32,
+            ((clip.y1 - translate_y) / scale_y) as f32,
+        )
+    })
+}
+
+fn rich_run_below_clip(run: &cosmic_text::LayoutRun<'_>, transform: Affine, clip: Rect) -> bool {
+    let [_, shear_y, shear_x, scale_y, _, _] = transform.as_coeffs();
+    shear_x == 0.0
+        && shear_y == 0.0
+        && scale_y > 0.0
+        && rich_run_outside_clip(run, transform, clip)
+        && transform
+            .transform_rect_bbox(Rect::new(
+                0.0,
+                f64::from(run.line_top),
+                0.0,
+                f64::from(run.line_top),
+            ))
+            .y0
+            > clip.y1
 }
 
 #[cfg(test)]
