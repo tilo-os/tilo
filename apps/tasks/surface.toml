@@ -8,7 +8,7 @@ fields = [
   { path = "issues", type = "Collection<Issue>", stored = "collection", unit = true },
   { path = "issues.*.number", type = "u64", readonly = true },
   { path = "issues.*.title", type = "String", label = true },
-  { path = "issues.*.body", type = "RichText", ops = "sha256:32d3007b3b137974" },
+  { path = "issues.*.body", type = "RichText", ops = "sha256:b86bfc65e3faa1c9" },
   { path = "issues.*.status", type = "Status" },
   { path = "issues.*.assignee", type = "Option<Atom>", readonly = true },
   { path = "issues.*.model", type = "Option<ModelChoice>", readonly = true, stored = "record" },

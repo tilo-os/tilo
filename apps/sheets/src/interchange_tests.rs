@@ -113,6 +113,25 @@ const XLSX_SHEET1: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="ye
 const XLSX_SHEET2: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>note &lt;1&gt;</t></is></c></row><row r="3"><c r="C3"><v>7</v></c></row></sheetData></worksheet>"#;
 
+/// [`excel_like_xlsx`] with its "Notes & Data" tab hidden, as Excel keeps a
+/// tab someone hid.
+pub(crate) fn excel_like_xlsx_hiding_notes() -> Vec<u8> {
+    let workbook = XLSX_WORKBOOK.replace(
+        r#"sheetId="2" r:id="rId2""#,
+        r#"sheetId="2" state="hidden" r:id="rId2""#,
+    );
+    zip_of(&[
+        ("[Content_Types].xml", XLSX_CONTENT_TYPES),
+        ("_rels/.rels", XLSX_ROOT_RELS),
+        ("xl/workbook.xml", &workbook),
+        ("xl/_rels/workbook.xml.rels", XLSX_WORKBOOK_RELS),
+        ("xl/sharedStrings.xml", XLSX_SHARED_STRINGS),
+        ("xl/styles.xml", XLSX_STYLES),
+        ("xl/worksheets/sheet1.xml", XLSX_SHEET1),
+        ("xl/worksheets/sheet2.xml", XLSX_SHEET2),
+    ])
+}
+
 fn excel_like_xlsx() -> Vec<u8> {
     zip_of(&[
         ("[Content_Types].xml", XLSX_CONTENT_TYPES),
@@ -142,12 +161,15 @@ fn foreign_workbooks_import_and_exports_round_trip() {
         assert_eq!(raw(budget, "C1"), "Total");
         assert_eq!(raw(budget, "A2"), "Rent");
 
-        // Numbers import as numbers; only date/time number formats survive as a
-        // format (currency and percent re-infer from the value on import).
+        // Numbers import as numbers in the format their cell style shows:
+        // money stays money and a percentage a percentage, as dates do.
         assert_eq!(raw(budget, "B2"), "1200");
-        assert_eq!(format(budget, "B2"), CellFormat::General);
+        assert_eq!(
+            format(budget, "B2"),
+            CellFormat::Currency(tilo_locale::Currency::USD)
+        );
         assert_eq!(raw(budget, "B4"), "0.25");
-        assert_eq!(format(budget, "B4"), CellFormat::General);
+        assert_eq!(format(budget, "B4"), CellFormat::Percent);
         assert_eq!(raw(budget, "A3"), "45000");
         assert_eq!(format(budget, "A3"), CellFormat::Date(DateStyle::Iso));
         assert_eq!(raw(budget, "B3"), "45001.5");

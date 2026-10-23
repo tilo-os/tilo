@@ -80,8 +80,26 @@ impl WordProcessorWidget {
             None => return Some(Err("the document is not at hand".into())),
         };
         let participant = ui::invocation_scope::current_participant();
+        // An image told the heading it goes after goes at that paragraph's
+        // end, found by its text.
+        let after = match effect {
+            WordProcessorEffect::PlaceImage {
+                after: Some(after), ..
+            } if cx.place().is_some() => {
+                return Some(Err(format!(
+                    "give `at` or `after`, not both (`after` is `{after}`)"
+                )));
+            }
+            WordProcessorEffect::PlaceImage {
+                after: Some(after), ..
+            } => match crate::actions::image_place::after_paragraph(&doc, after) {
+                Ok(place) => Some(place),
+                Err(error) => return Some(Err(error)),
+            },
+            _ => None,
+        };
         // Told where to act, it acts there; else at the invoker's caret.
-        let view = match (cx.place(), &participant) {
+        let view = match (after.as_ref().or_else(|| cx.place()), &participant) {
             (Some(place), _) => {
                 match crate::actions::participant::ParticipantView::at_place(&doc, place) {
                     Ok(view) => view,
@@ -1281,6 +1299,12 @@ impl WordProcessorWidget {
             }
             WordProcessorEffect::Ruler => self.view.ruler_visible = !self.view.ruler_visible,
             WordProcessorEffect::Outline => self.outline.toggle(),
+            WordProcessorEffect::ImportDocxContent { content, name } => {
+                return self.import_content(cx, &content, name.as_deref());
+            }
+            WordProcessorEffect::ExportContent { format } => {
+                return self.export_content(cx, format.as_deref());
+            }
             other => return Err(format!("`{}` is not handled here", other.id())),
         }
         self.lifecycle.dirty = true;
@@ -1319,6 +1343,88 @@ impl WordProcessorWidget {
         self.kept = None;
         self.format = Some(format);
         Ok(())
+    }
+
+    /// Replace the body of this document, while it is empty, with the file
+    /// `name` (Word when it has none) kept as `content`, a
+    /// `tilo.content:<hash>` address. A document with words, pictures or
+    /// tables in it is someone's writing, which an import never replaces.
+    fn import_content(
+        &mut self,
+        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        content: &str,
+        name: Option<&str>,
+    ) -> ui::framework::EffectAnswer {
+        let hash = ui::tilo_actions::content_hash(content.trim())
+            .ok_or_else(|| format!("`{content}` names no content: give `tilo.content:<hash>`"))?
+            .to_ascii_lowercase();
+        let doc = cx.document().ok_or("the document is not at hand")?.clone();
+        let containers = crate::model::open(&doc)?;
+        let written =
+            tilo_doc::model::materialize_region(&doc, &containers, tilo_doc::model::Region::Body)
+                .iter()
+                .any(|block| block.kind != "paragraph" || !block.text.trim().is_empty());
+        if written {
+            return Err(
+                "this document already has writing in it, which an import would replace: open a \
+                 new document and import there"
+                    .into(),
+            );
+        }
+        let name = name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("document.docx");
+        let bytes = self
+            .inner
+            .content_store()
+            .read(&hash)
+            .ok_or_else(|| format!("{name} is not on this device"))?;
+        let format = WpFormat::from_path(std::path::Path::new(name));
+        self.replace_with(cx, &bytes, format)?;
+        self.path = None;
+        self.kept = None;
+        self.format = Some(format);
+        self.lifecycle.dirty = true;
+        Ok(ui::framework::Effected::value(serde_json::json!({
+            "imported": name,
+            "content": format!("tilo.content:{hash}"),
+        })))
+    }
+
+    /// Keep the document as a file in `format` (Word when none) in the
+    /// content store, and answer its address.
+    fn export_content(
+        &mut self,
+        cx: &ui::framework::EffectCx<crate::framework::Document, Self>,
+        format: Option<&str>,
+    ) -> ui::framework::EffectAnswer {
+        let extension = format
+            .map(|format| format.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|format| !format.is_empty())
+            .unwrap_or_else(|| "docx".to_owned());
+        let format = match extension.as_str() {
+            "docx" | "word" => WpFormat::Docx,
+            "odt" => WpFormat::Odt,
+            "md" | "markdown" => WpFormat::Markdown,
+            "html" | "htm" => WpFormat::Html,
+            "rtf" => WpFormat::Rtf,
+            "txt" | "text" => WpFormat::Text,
+            "pdf" => WpFormat::Pdf,
+            other => {
+                return Err(format!(
+                    "`{other}` is no format: docx, odt, md, html, rtf, txt or pdf"
+                ));
+            }
+        };
+        let doc = cx.document().ok_or("the document is not at hand")?.clone();
+        let bytes = self.export_bytes(&doc, format)?;
+        let hash = self
+            .inner
+            .content_store()
+            .put(&bytes)
+            .map_err(|error| format!("the document could not be kept: {error}"))?;
+        ui::framework::Effected::content(&hash)
     }
 
     /// Replace the document's body with `bytes` read as `format`.

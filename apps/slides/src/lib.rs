@@ -59,4 +59,6 @@ pub use deck::Deck;
 pub use resource::SlidesShell;
 
 #[cfg(test)]
+mod agent_tests;
+#[cfg(test)]
 mod deck_operations_tests;
