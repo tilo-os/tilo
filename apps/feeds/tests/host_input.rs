@@ -44,3 +44,29 @@ fn the_add_feed_field_takes_typed_text() {
         Some("https://example.com/feed")
     );
 }
+
+/// A guest's New folder opens its dialog at once: the button opens
+/// something here and reaches nothing outside, so the workspace asks
+/// nothing first.
+#[test]
+fn a_guests_new_folder_opens_its_dialog_unasked() {
+    let mut app = TestApp::<feeds::FeedsShell>::new().unwrap();
+    app.harness().relayout();
+    app.set_role(ui::permissions::Role::Editor);
+    app.harness().click_named("feeds.new-folder").unwrap();
+    app.settle();
+    app.harness().relayout();
+    assert!(
+        app.asking().is_none(),
+        "New folder asks nothing: {:?}",
+        app.harness().asking_why()
+    );
+    assert!(
+        app.harness()
+            .controls()
+            .iter()
+            .any(|control| control.name.as_deref() == Some("Create folder")),
+        "the New folder dialog opened: {:?}",
+        app.harness().control_failures()
+    );
+}

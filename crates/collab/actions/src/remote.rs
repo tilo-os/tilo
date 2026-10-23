@@ -868,7 +868,7 @@ impl ApplicationLaunch {
         description: &str,
     ) -> crate::ActionSpec {
         let app_id = app_id.to_owned();
-        crate::ActionSpec::typed_operation(
+        let spec = crate::ActionSpec::typed_operation(
             id,
             label,
             description,
@@ -891,7 +891,16 @@ impl ApplicationLaunch {
                     }
                 })
             },
-        )
+        );
+        Self::launched_here(spec)
+    }
+
+    /// Opening an app is what the launcher does for whoever is at this
+    /// desktop: it opens a window of their own and reaches no one else, so
+    /// a room's grants have nothing to consent to ([`crate::OWN_DEVICE_SCOPE`]).
+    fn launched_here(mut spec: crate::ActionSpec) -> crate::ActionSpec {
+        spec.contract.tags.push(crate::OWN_DEVICE_SCOPE.to_owned());
+        spec
     }
 
     /// This launch as the action `id` an app offers on a resource of its
@@ -905,7 +914,7 @@ impl ApplicationLaunch {
                     payload: Vec::new(),
                 }
             });
-        crate::ActionSpec::typed_operation(
+        Self::launched_here(crate::ActionSpec::typed_operation(
             id,
             label,
             description,
@@ -913,7 +922,7 @@ impl ApplicationLaunch {
             Self::TYPE,
             Vec::new(),
             move |_| encoded.clone(),
-        )
+        ))
     }
 }
 
@@ -2062,6 +2071,25 @@ mod tests {
 
     fn mallory() -> Caller {
         Caller::authenticated([9; 32], [8; 32])
+    }
+
+    /// Camera's "Open Photos" opens a window of the person's own, as the
+    /// launcher does: a room's grants have nothing to consent to, so a guest
+    /// is not asked first.
+    #[test]
+    fn opening_an_app_needs_no_room_consent() {
+        for spec in [
+            ApplicationLaunch::app("so.tilo.photos").spec("open-photos", "Open Photos", ""),
+            ApplicationLaunch::content_spec("so.tilo.photos", "open-capture", "Open", ""),
+        ] {
+            assert!(spec.contract.is_own_device(), "{}", spec.id);
+            assert_eq!(
+                spec.contract.need().kind,
+                crate::ActionKind::Read,
+                "{}",
+                spec.id
+            );
+        }
     }
 
     #[test]
