@@ -1,0 +1,36 @@
+From: Tilo <tilo@tilo.so>
+Subject: arm64: dts: qcom: x1e80100-lenovo-yoga-slim7x: reserve a ramoops region
+
+The Yoga Slim 7x has reset itself with no kernel message in the journal,
+because journald writes to disk only every few minutes and a reset takes
+the unwritten tail with it. A RAM region the kernel never maps survives a
+warm reset, so pstore can keep the console log and any oops or panic
+dump there and hand them to the next boot.
+
+Firmware does not describe such a region, and the low 4 GiB are full of
+firmware carve-outs. The region sits in the middle of the high bank, away
+from the top, where the boot loader and the EFI stub allocate, and from
+the bottom, where the firmware's runtime regions sit. Error correction
+lets ramoops recover a record a boot-time allocation only partly
+overwrote.
+
+diff --git a/arch/arm64/boot/dts/qcom/x1e80100-lenovo-yoga-slim7x.dts b/arch/arm64/boot/dts/qcom/x1e80100-lenovo-yoga-slim7x.dts
+index 9eb2dfd..ad5b87e 100644
+--- a/arch/arm64/boot/dts/qcom/x1e80100-lenovo-yoga-slim7x.dts
++++ b/arch/arm64/boot/dts/qcom/x1e80100-lenovo-yoga-slim7x.dts
+@@ -169,6 +169,15 @@
+ 			reusable;
+ 			linux,cma-default;
+ 		};
++
++		ramoops@c00000000 {
++			compatible = "ramoops";
++			reg = <0xc 0x00000000 0x0 0x200000>;
++			no-map;
++			console-size = <0x100000>;
++			record-size = <0x40000>;
++			ecc-size = <16>;
++		};
+ 	};
+ 
+ 	sound {

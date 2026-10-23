@@ -309,8 +309,9 @@ grep -Fq 'systemd-timesyncd.service' "$repo/os/Containerfile" \
   || { echo 'redundant systemd time synchronization can re-enter the boot path' >&2; exit 1; }
 grep -Fq 'systemd-network-generator.service' "$repo/os/Containerfile" \
   || { echo 'unused kernel-command-line network generation can re-enter sysinit' >&2; exit 1; }
-grep -Fq 'systemd-pstore.service' "$repo/os/Containerfile" \
-  || { echo 'persistent crash-log copying can re-enter the login path' >&2; exit 1; }
+grep -Fqx 'ConditionPathExistsGlob=/sys/bus/platform/drivers/ramoops/*ramoops*' \
+  "$repo/os/usr/lib/systemd/system/tilo-pstore-console.service" \
+  || { echo 'the pstore console level must not run where no ramoops region exists' >&2; exit 1; }
 grep -Fq 'systemd-coredump.socket' "$repo/os/Containerfile" \
   || { echo 'inherited core-dump collector can remain socket-activated' >&2; exit 1; }
 grep -Fq 'systemd-binfmt.service' "$repo/os/Containerfile" \
