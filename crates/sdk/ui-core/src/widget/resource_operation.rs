@@ -324,7 +324,7 @@ pub fn start_in_children<W: Widget + ?Sized>(
 
 /// [`start_in_children`] once the children are in hand: not generic, so it
 /// is compiled once rather than for every widget type that routes by default.
-fn start_in(
+pub(crate) fn start_in(
     children: Vec<&mut (dyn Widget + '_)>,
     op: &ResourceOperation<'_>,
     doc: &mut crate::widget::Edits<'_>,
@@ -458,7 +458,7 @@ fn local_history_handlers(widget: &(impl Widget + ?Sized)) -> &'static [&'static
     }
 }
 
-fn subtree_handlers(widget: &(impl Widget + ?Sized), local: &[&str]) -> HashSet<String> {
+pub(crate) fn subtree_handlers(widget: &(impl Widget + ?Sized), local: &[&str]) -> HashSet<String> {
     let mut handlers = local
         .iter()
         .map(|handler| (*handler).to_string())
@@ -474,7 +474,7 @@ fn subtree_handlers(widget: &(impl Widget + ?Sized), local: &[&str]) -> HashSet<
     handlers
 }
 
-fn start_by_default(
+pub(crate) fn start_by_default(
     widget: &mut (impl Widget + ?Sized),
     op: &ResourceOperation<'_>,
     doc: &mut crate::widget::Edits<'_>,
@@ -486,7 +486,7 @@ fn start_by_default(
     start_in_children(widget, op, doc, path)
 }
 
-fn poll_by_default(
+pub(crate) fn poll_by_default(
     widget: &mut (impl Widget + ?Sized),
     invocation: tilo_actions::InvocationId,
     cancellation_requested: bool,

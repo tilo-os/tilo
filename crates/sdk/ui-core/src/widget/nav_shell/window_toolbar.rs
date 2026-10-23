@@ -5,7 +5,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::{Column, InspectorPlacement, NavPane, NavShell, Staged, Widget, at, is_app_search};
+use super::{
+    Column, InspectorPlacement, NavPane, NavShell, Part, Staged, Widget, at, is_app_search,
+};
 use crate::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 /// The shell's buttons, and an app inside it ([`WindowBarLink`]), report
@@ -240,11 +242,39 @@ pub(super) struct ShellBar {
     yielded: bool,
 }
 
+/// The shell that declares a window's slots, and what it declared.
+type Owner = (u64, Option<WindowToolbar>);
+
 thread_local! {
-    /// The shell that declares the window's slots, and what it declared.
-    static OWNER: std::cell::RefCell<Option<(u64, Option<WindowToolbar>)>> =
-        const { std::cell::RefCell::new(None) };
+    /// Each window's declaring shell, by the window
+    /// ([`crate::window_toolbar::current_window`]): a host that runs several
+    /// apps on one thread (the browser desktop) shows each in a window of
+    /// its own, and one window's shell must not take another's slots.
+    static OWNERS: std::cell::RefCell<std::collections::HashMap<Option<usize>, Owner>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     static NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Read the current window's declaring shell.
+fn with_owner<R>(read: impl FnOnce(Option<&Owner>) -> R) -> R {
+    let window = crate::window_toolbar::current_window();
+    OWNERS.with(|owners| read(owners.borrow().get(&window)))
+}
+
+/// Set (or with `None`, clear) the current window's declaring shell.
+fn set_owner(owner: Option<Owner>) {
+    let window = crate::window_toolbar::current_window();
+    OWNERS.with(|owners| {
+        let mut owners = owners.borrow_mut();
+        match owner {
+            Some(owner) => {
+                owners.insert(window, owner);
+            }
+            None => {
+                owners.remove(&window);
+            }
+        }
+    });
 }
 
 impl Default for ShellBar {
@@ -263,59 +293,54 @@ impl Default for ShellBar {
 }
 
 impl ShellBar {
-    /// Whether this shell may declare the slots: no other shell does.
+    /// Whether this shell may declare the window's slots: no other shell
+    /// of the window does.
     fn may_declare(&self) -> bool {
-        OWNER.with(|owner| owner.borrow().as_ref().is_none_or(|(id, _)| *id == self.id))
+        with_owner(|owner| owner.is_none_or(|(id, _)| *id == self.id))
     }
 
-    /// Whether what the bar holds is another part's declaration than a
-    /// shell's.
+    /// Whether what the window's bar holds is another part's declaration
+    /// than a shell's.
     fn declared_by_another_part() -> bool {
         let Some(declared) = crate::window_toolbar::declared() else {
             return false;
         };
-        OWNER.with(|owner| {
-            owner
-                .borrow()
-                .as_ref()
-                .is_none_or(|(_, ours)| ours.as_ref() != Some(&declared))
-        })
+        with_owner(|owner| owner.is_none_or(|(_, ours)| ours.as_ref() != Some(&declared)))
     }
 
     fn declare(&self, toolbar: Option<WindowToolbar>) {
         let owned = toolbar.is_some();
         crate::window_toolbar::declare(toolbar);
-        OWNER.with(|owner| {
-            *owner.borrow_mut() = owned.then(|| (self.id, crate::window_toolbar::declared()));
-        });
+        set_owner(owned.then(|| (self.id, crate::window_toolbar::declared())));
     }
 
     fn owns(&self) -> bool {
-        OWNER.with(|owner| {
-            owner
-                .borrow()
-                .as_ref()
-                .is_some_and(|(id, _)| *id == self.id)
-        })
+        with_owner(|owner| owner.is_some_and(|(id, _)| *id == self.id))
     }
 }
 
 impl Drop for ShellBar {
     fn drop(&mut self) {
         // The slots go with the shell that declared them; a shell built in
-        // its place declares its own.
+        // its place declares its own. A shell dropped while another window
+        // is current only gives up its claim: its own window goes with it.
         // A shell dropped as its thread ends finds the slots gone already.
-        let owned = OWNER
-            .try_with(|owner| {
-                let mut owner = owner.borrow_mut();
-                let owned = owner.as_ref().is_some_and(|(id, _)| *id == self.id);
-                if owned {
-                    *owner = None;
+        let window = crate::window_toolbar::current_window();
+        let retract = OWNERS
+            .try_with(|owners| {
+                let mut owners = owners.borrow_mut();
+                let mine: Vec<Option<usize>> = owners
+                    .iter()
+                    .filter(|(_, (id, _))| *id == self.id)
+                    .map(|(window, _)| *window)
+                    .collect();
+                for owned in &mine {
+                    owners.remove(owned);
                 }
-                owned
+                mine.contains(&window)
             })
             .unwrap_or(false);
-        if owned {
+        if retract {
             crate::window_toolbar::retract();
         }
     }
@@ -349,6 +374,11 @@ impl NavShell {
     fn header_slots(&self) -> Option<Vec<(ToolbarAction, Column, Vec<usize>)>> {
         let mut slots = Vec::new();
         for column in Column::ALL {
+            // As in the shell's own header row, a column the shell does not
+            // have offers nothing: its buttons are not the window's.
+            if !self.has_column(column) {
+                continue;
+            }
             let leading = match at(&self.pending.leading, column) {
                 Some(Staged(next)) => next.is_some(),
                 None => at(&self.headers, column).leading.is_some(),
@@ -362,6 +392,53 @@ impl NavShell {
             }
         }
         Some(slots)
+    }
+
+    /// Whether the shell has `column` as of its next build (shown or not:
+    /// a closed sidebar is still the window's).
+    fn has_column(&self, column: Column) -> bool {
+        let inputs = self.inputs.borrow();
+        match column {
+            Column::Sidebar => inputs.has_sidebar,
+            Column::Overview => inputs.has_overview,
+            Column::Content => true,
+            Column::Inspector => inputs.has_inspector,
+        }
+    }
+
+    /// The header buttons the shell hands to the window's bar: drawn and
+    /// pressed there, not laid out in the shell, yet the window's controls
+    /// all the same. They publish their actions and take the operations a
+    /// press in the bar starts, as they do in a header row.
+    pub(super) fn bar_parts(&self) -> Vec<Part> {
+        if !self.inputs.borrow().shell_bar {
+            return Vec::new();
+        }
+        let exposed = self.exposed_parts();
+        Column::ALL
+            .into_iter()
+            .filter(|column| self.has_column(*column))
+            .flat_map(|column| {
+                (0..at(&self.headers, column).actions.len()).map(move |i| Part::Action(column, i))
+            })
+            .filter(|part| !exposed.contains(part))
+            .collect()
+    }
+
+    /// The header buttons among `parts` ([`Self::bar_parts`]), each once.
+    pub(super) fn parts_mut(&mut self, parts: &[Part]) -> Vec<&mut (dyn Widget + 'static)> {
+        let mut widgets = Vec::new();
+        for (index, header) in self.headers.iter_mut().enumerate() {
+            let Some(column) = Column::ALL.into_iter().find(|c| c.index() == index) else {
+                continue;
+            };
+            for (i, action) in header.actions.iter_mut().enumerate() {
+                if parts.contains(&Part::Action(column, i)) {
+                    widgets.push(action.as_mut());
+                }
+            }
+        }
+        widgets
     }
 
     /// What the window shows, for the bar's location: the title of the
@@ -399,7 +476,7 @@ impl NavShell {
         if ShellBar::declared_by_another_part() {
             self.shell_bar.yielded = true;
             if self.shell_bar.owns() {
-                OWNER.with(|owner| owner.borrow_mut().take());
+                set_owner(None);
             }
             self.slots_changed();
             return;

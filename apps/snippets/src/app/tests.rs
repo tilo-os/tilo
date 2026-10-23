@@ -1014,3 +1014,41 @@ fn the_collapse_button_collapses_and_expands_the_sidebar() {
         "the button expanded it again"
     );
 }
+
+/// In the desktop the window's bar shows the library's "New snippet", and a
+/// press there adds one. An empty library's one action is in the window
+/// itself, so its bar offers none that would do nothing.
+#[test]
+fn the_window_bars_new_snippet_adds_one() {
+    let bar_actions = |app: &mut TestApp<SnippetsShell>| -> Vec<String> {
+        app.harness().present_in_window_bar();
+        app.settle();
+        ui::window_toolbar::declared()
+            .map(|toolbar| {
+                toolbar
+                    .actions
+                    .into_iter()
+                    .map(|action| action.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut empty = launched(&[]);
+    let offered = bar_actions(&mut empty);
+    assert!(
+        !offered.iter().any(|id| id == "snippets.new"),
+        "{offered:?}"
+    );
+    drop(empty);
+
+    let mut app = launched(&[snippet("Deploy", "make deploy")]);
+    let offered = bar_actions(&mut app);
+    assert!(offered.iter().any(|id| id == "snippets.new"), "{offered:?}");
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "snippets.new".into(),
+        });
+    app.settle();
+    let failures = format!("{:?}", app.harness().control_failures());
+    assert_eq!(app.state().snippets.len(), 2, "{failures}");
+}

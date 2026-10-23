@@ -2312,6 +2312,90 @@ fn a_header_the_bar_cannot_show_keeps_its_row() {
     );
 }
 
+/// A header button bound to an action, as framework apps build theirs, runs
+/// when pressed in the window's bar, though the shell lays no header row out
+/// under it. A column the shell does not have offers none of its buttons, as
+/// its header row would show none.
+#[test]
+fn a_header_action_runs_from_the_window_bar() {
+    use crate::window_toolbar::{ToolbarEvent, declared};
+    let pressed = SharedRc::new(Cell::new(0));
+    let count = SharedRc::clone(&pressed);
+    let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
+        .on_own_device_effect(move || count.set(count.get() + 1));
+    let compose = Button::icon_only("mail.compose", Icon::Plus, "Compose");
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Mailboxes", vec![Box::new(add)])
+        .overview_header("Inbox", vec![Box::new(compose)])
+        .content_header("Design review", Vec::new());
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    h.set_permission_ctx(crate::permissions::PermissionContext::member(
+        "ada",
+        crate::permissions::Role::Editor,
+    ));
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    let toolbar = declared().expect("the shell declares the window's slots");
+    let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
+    assert!(ids.contains(&"mail.new-mailbox"), "{ids:?}");
+    assert!(
+        !ids.contains(&"mail.compose"),
+        "a column the shell does not have offers no buttons: {ids:?}"
+    );
+
+    h.press_window_slot(ToolbarEvent::Action {
+        id: "mail.new-mailbox".into(),
+    });
+    h.idle();
+    assert!(
+        h.control_failures().is_empty(),
+        "{:?}",
+        h.control_failures()
+    );
+    assert_eq!(h.refusal_shown(), None);
+    assert_eq!(pressed.get(), 1, "the bar's press runs the button's action");
+}
+
+/// A host that runs several apps on one thread (the browser desktop) shows
+/// each in a window of its own: every window's shell declares that window's
+/// slots, and one declaring never makes another step aside, keep a header
+/// row under its bar and leave its old slots there.
+#[test]
+fn each_window_on_one_thread_keeps_its_own_shells_slots() {
+    use crate::hosted_window::HostedWindow;
+    use crate::window_toolbar::enter;
+    let windows = [HostedWindow::new(), HostedWindow::new()];
+    let mut harnesses: Vec<FrameHarness> = windows
+        .iter()
+        .map(|window| {
+            let _scope = enter(Some(window));
+            let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+            h.present_in_window_bar();
+            settle(&mut h, 1280, 800);
+            h
+        })
+        .collect();
+    for _ in 0..2 {
+        for (window, h) in windows.iter().zip(&mut harnesses) {
+            let _scope = enter(Some(window));
+            settle(h, 1280, 800);
+        }
+    }
+    for (i, (window, h)) in windows.iter().zip(&harnesses).enumerate() {
+        assert!(
+            window.declared().is_some(),
+            "window {i}'s shell declares its slots"
+        );
+        assert_eq!(
+            geometry(h).header_height,
+            0.0,
+            "window {i} draws no header row under its bar"
+        );
+    }
+}
+
 /// A content that continues on another device and answers a diagnostic
 /// input with its own state.
 struct ResumableContent(crate::widget::Spacer);
