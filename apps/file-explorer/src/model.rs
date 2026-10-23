@@ -999,9 +999,19 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
     let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for entry in rd.flatten() {
+        // The entry's own metadata: a link's, never its target's. It is the
+        // row's identity, so an operation on the row acts on the link.
         let meta = entry.metadata().ok();
         let path = entry.path();
-        let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
+        // What the row opens: a link lists as its target (a folder, with a
+        // file's size and date), as activating it follows it. A link to
+        // nothing stays the link.
+        let target = meta
+            .as_ref()
+            .filter(|meta| meta.file_type().is_symlink())
+            .and_then(|_| std::fs::metadata(&path).ok());
+        let shown = target.as_ref().or(meta.as_ref());
+        let is_dir = shown.is_some_and(std::fs::Metadata::is_dir);
         let mime = tilo_mime::from_path_or_octet_stream(&path).to_string();
         // Content hydration state only applies to files — a directory's structure
         // is always fully projected — so we don't query (or badge) folders.
@@ -1044,11 +1054,8 @@ fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String>
             name: entry.file_name().to_string_lossy().into_owned(),
             path,
             is_dir,
-            size: meta.as_ref().map_or(0, std::fs::Metadata::len),
-            modified: meta
-                .as_ref()
-                .and_then(|m| m.modified().ok())
-                .map(DateTime::from),
+            size: shown.map_or(0, std::fs::Metadata::len),
+            modified: shown.and_then(|m| m.modified().ok()).map(DateTime::from),
             mime,
             sync_state,
             content_hash,
