@@ -705,3 +705,27 @@ test('unique test ids do not replace the canonical keyboard owner for text actio
  const editor=root.children[0];editor.focus();editor.value='2^2';editor.dispatchEvent(event('input',{inputType:'insertText',data:'2'}));editor.setSelectionRange(1,2);editor.dispatchEvent(event('select'));
  assert(calls.length>=3);assert(calls.every(x=>x[0]===owner));assert(calls.some(x=>x[2]==='focus')&&calls.some(x=>x[2]==='value')&&calls.some(x=>x[2]==='selection'));bridge.close();
 });
+
+test('mirrored elements sit over their drawn rects, nested ones relative to the element they are in',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
+  const at=element=>['left','top','width','height'].map(side=>element.style[side]);
+  bridge.update({root:{path:'desk',children:[
+    {path:'desk/send',rect:[40,30,80,24],semantics:{role:'Button',name:'Send'}},
+    {path:'desk/list',rect:[0,100,300,200],semantics:{role:'List',name:'Rows',children:[
+      {role:'ListItem',name:'First',bounds:{x0:10,y0:110,x1:290,y1:140}},
+      {role:'ListItem',name:'Whole'}]}}]}});
+  const [send,list]=root.children,[first,whole]=list.children;
+  assert.match(send.style.cssText,/position:absolute/);assert.match(send.style.cssText,/pointer-events:none/);
+  assert.deepEqual(at(send),['40px','30px','80px','24px'],'layout pixels until the canvas size is known');
+  assert.deepEqual(at(first),['10px','10px','280px','30px'],'offset from its list, which is its containing block');
+  assert.deepEqual(at(whole),['0px','0px','300px','200px'],'a node without bounds covers the area it is drawn in');
+  // The canvas shows the frame at twice its layout size while a resize is
+  // pending: the mirror stretches with the frame on screen.
+  bridge.layout([1200,800],[600,400]);
+  assert.deepEqual(at(send),['80px','60px','160px','48px']);
+  assert.deepEqual(at(list),['0px','200px','600px','400px']);
+  assert.deepEqual(at(first),['20px','20px','560px','60px']);
+  // A redrawn frame moves the button; its element follows.
+  bridge.update({root:{path:'desk',children:[{path:'desk/send',rect:[50,30,80,24],semantics:{role:'Button',name:'Send'}}]}});
+  assert.equal(root.children[0],send);assert.deepEqual(at(send),['100px','60px','160px','48px']);
+});

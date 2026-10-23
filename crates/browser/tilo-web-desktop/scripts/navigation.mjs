@@ -182,6 +182,44 @@ for (const app of ['so.tilo.clocks', 'so.tilo.calculator', 'so.tilo.notes']) {
   await settles(`${app} opens`, s => s.entries.length, before + 1);
   await sleep(1000);
 }
+// The accessibility mirror lies over the canvas: each uniquely named button
+// the frame lays out has its DOM element at the rect it is drawn at, in the
+// page's CSS pixels, where magnifiers, touch exploration and element
+// geometry look for it.
+{
+  progress = 'the accessibility mirror lies over the drawn buttons';
+  let placed;
+  for (let i = 0; i < 50; i++) {
+    if (i) await sleep(200);
+    placed = await evaluate(`(()=>{
+      const state=tiloMount.state(),canvas=tiloMount.canvas,size=state.logicalSize,r=canvas.getBoundingClientRect();
+      if(state.phase!=='presented'||!size||!(size[0]>0)||!(size[1]>0))return null;
+      const drawn=new Map();
+      const walk=n=>{
+        const s=n?.semantics;if(s?.state?.hidden)return;
+        if(s?.role==='Button'&&s.name){
+          const b=s.bounds?[s.bounds.x0,s.bounds.y0,s.bounds.x1-s.bounds.x0,s.bounds.y1-s.bounds.y0]:n.rect;
+          if(b&&b[2]>0&&b[3]>0)drawn.set(s.name,drawn.has(s.name)?null:b);
+        }
+        for(const child of n?.children??[])walk(child);
+      };
+      walk(state.semantics?.root);
+      const sx=r.width/size[0],sy=r.height/size[1],out=[];
+      for(const [name,b] of drawn){
+        const mirrored=[...tiloMount.semantics.querySelectorAll('[role=button]')].filter(e=>e.getAttribute('aria-label')===name);
+        if(!b||mirrored.length!==1)continue;
+        const d=mirrored[0].getBoundingClientRect();
+        out.push({name,drawn:[r.left+b[0]*sx,r.top+b[1]*sy,b[2]*sx,b[3]*sy],mirror:[d.left,d.top,d.width,d.height]});
+      }
+      return out;
+    })()`);
+    if (placed?.length && placed.every(p => p.drawn.every((v, k) => Math.abs(v - p.mirror[k]) <= 1))) break;
+  }
+  assert.ok(placed?.length, 'the desktop mirrors at least one drawn button');
+  for (const p of placed) assert.ok(p.drawn.every((v, k) => Math.abs(v - p.mirror[k]) <= 1),
+    `"${p.name}" is mirrored at ${JSON.stringify(p.mirror)}, drawn at ${JSON.stringify(p.drawn)}`);
+  console.log(JSON.stringify({settled: progress, buttons: placed.length}));
+}
 const order = (await snapshot()).entries.map(e => e.label);
 const {width, height} = await evaluate('(({width,height})=>({width,height}))(tiloMount.canvas.getBoundingClientRect())');
 const [cx, cy] = [Math.round(width / 2), Math.round(height * 0.6)];
