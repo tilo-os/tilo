@@ -15,6 +15,12 @@ pub(crate) struct CpuCanvas {
     uploads: Vec<Region>,
 }
 
+/// A canvas to rasterize frames into when they are rasterized on the CPU
+/// (`on_cpu`), else none.
+pub(crate) fn canvas(on_cpu: bool) -> Option<CpuCanvas> {
+    on_cpu.then(CpuCanvas::new)
+}
+
 impl CpuCanvas {
     pub(crate) fn new() -> Self {
         Self {
