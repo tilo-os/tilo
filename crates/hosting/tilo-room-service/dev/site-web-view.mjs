@@ -23,8 +23,13 @@ import {CHAT_CHANNEL, CHAT_WHY, chatShows, open, page} from './auth-e2e.mjs';
 /** In the page: what its Chat holds for `channel` (how many messages, the
  * latest few texts), or why it could not say. */
 const CHANNEL_READS = ({window, channel}) => `(async () => {
-  const result = await tiloMount.invokeAction('chat.workspace', 'read-messages',
-    {channel: ${JSON.stringify(channel)}, page_size: 32}, {window: ${JSON.stringify(window)}});
+  let result;
+  try {
+    result = await tiloMount.invokeAction('chat.workspace', 'read-messages',
+      {channel: ${JSON.stringify(channel)}, pageSize: 32}, {window: ${JSON.stringify(window)}});
+  } catch (error) {
+    return {refused: String(error?.message ?? error)};
+  }
   const messages = result?.output?.value?.messages;
   return {state: result?.state ?? null, error: result?.error ?? null,
     count: Array.isArray(messages) ? messages.length : null,

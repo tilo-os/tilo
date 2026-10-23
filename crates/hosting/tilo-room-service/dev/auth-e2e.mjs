@@ -592,7 +592,7 @@ export async function chatShows(tab, channel, text) {
   if (!chat) return false;
   return tab.evaluate(`(async () => {
     const result = await tiloMount.invokeAction('chat.workspace', 'read-messages',
-      {channel: ${JSON.stringify(channel)}, page_size: 32}, {window: ${JSON.stringify(chat.window)}});
+      {channel: ${JSON.stringify(channel)}, pageSize: 32}, {window: ${JSON.stringify(chat.window)}});
     return Boolean(result?.output?.value?.messages?.some(message => message.text === ${JSON.stringify(text)}));
   })()`);
 }
