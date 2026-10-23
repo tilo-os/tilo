@@ -2113,6 +2113,66 @@ mod command_path_tests {
         );
     }
 
+    /// A link to a folder lists as the folder it opens and a link to a file
+    /// as the file it opens: first among the folders, with the target's size,
+    /// and named as a folder to an agent. On Tilo's own image `/home`, `/opt`
+    /// and `/srv` are such links. A link to nothing stays a file.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_lists_as_what_it_opens() {
+        let d = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let folder = elsewhere.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("inside.txt"), b"x").unwrap();
+        let file = elsewhere.path().join("file.txt");
+        std::fs::write(&file, vec![b'x'; 5000]).unwrap();
+        std::fs::write(d.path().join("a-plain.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(&folder, d.path().join("z-linked-folder")).unwrap();
+        std::os::unix::fs::symlink(&file, d.path().join("linked-file.txt")).unwrap();
+        std::os::unix::fs::symlink("missing-target", d.path().join("dangling")).unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let shown = w.displayed_entries();
+        let names: Vec<&str> = shown.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "z-linked-folder",
+                "a-plain.txt",
+                "dangling",
+                "linked-file.txt"
+            ],
+            "the linked folder sorts with the folders"
+        );
+        let linked_folder = &shown[0];
+        assert!(linked_folder.is_dir, "a link to a folder is a folder");
+        let linked_file = shown
+            .iter()
+            .find(|entry| entry.name == "linked-file.txt")
+            .unwrap();
+        assert!(!linked_file.is_dir);
+        assert_eq!(
+            linked_file.size, 5000,
+            "a linked file shows its target's size"
+        );
+        let dangling = shown.iter().find(|entry| entry.name == "dangling").unwrap();
+        assert!(!dangling.is_dir, "a link to nothing stays a file");
+        // The row keeps the link's own identity: operations on it act on the
+        // link, never on what it points at.
+        let link_meta = std::fs::symlink_metadata(d.path().join("z-linked-folder")).unwrap();
+        assert_eq!(
+            linked_folder.observed,
+            host_fs::ObservedObject::from_metadata(&link_meta)
+        );
+        let answer = w.folder_answer().to_string();
+        assert!(
+            answer.contains("\"z-linked-folder/\""),
+            "an agent reads the linked folder as a folder: {answer}"
+        );
+    }
+
     /// Rename (command, exported action and headless F2) plus the flows that drop
     /// into rename — each phase on its own temp dir and widget.
     #[test]
