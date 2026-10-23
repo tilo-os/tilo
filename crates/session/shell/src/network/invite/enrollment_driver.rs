@@ -92,6 +92,16 @@ pub(crate) enum Via {
         http: Arc<dyn tilo_relay_client::HttpClient>,
         door: Option<tilo_relay_session::workspace_join::DoorAdmission>,
     },
+    /// This device's own host, in process: a room placed on this device
+    /// (`crate::network::local_host::LocalHost::join_client`). An endpoint
+    /// cannot dial itself.
+    Local(tilo_relay_session::workspace_join::WorkspaceJoinClient),
+}
+impl Command {
+    /// Whether the enrollment goes to this device's own host, in process.
+    pub(crate) const fn is_local(&self) -> bool {
+        matches!(self.via, Via::Local(_))
+    }
 }
 impl std::fmt::Debug for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -174,6 +184,7 @@ impl Registry {
             let client = match via {
                 Via::Iroh => tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
                 Via::Https { http, door } => tilo_relay_session::workspace_join::WorkspaceJoinClient::https(http, door),
+                Via::Local(client) => client,
             };
             // A certificate due for renewal is renewed before the host sees it.
             if let Ok(Err(error)) = tokio::task::spawn_blocking(crate::firstboot::renew_due_device_certificates).await {
