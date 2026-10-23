@@ -1087,7 +1087,7 @@ mod tests {
     #[test]
     fn actual_view_refuses_stale_prepared_secret_without_touching_reducer() {
         let directory = tempfile::TempDir::new().expect("isolated first-use identity directory");
-        let mut view = OnboardingView::new(directory.path().to_path_buf());
+        let mut view = OnboardingView::isolated(directory.path().to_path_buf(), false);
         view.publish_semantic_state();
         let revision = view.semantic.borrow().revision;
         let phase = view.semantic.borrow().phase;

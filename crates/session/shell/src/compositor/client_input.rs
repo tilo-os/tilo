@@ -2745,7 +2745,10 @@ mod tests {
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
             fb.host_mut()
-                .enable_onboarding(std::path::PathBuf::from("/tmp/tilo-oobe-input-test"));
+                .enable_test_onboarding(crate::onboarding_view::OnboardingView::isolated(
+                    std::path::PathBuf::from("/tmp/tilo-oobe-input-test"),
+                    false,
+                ));
             let _ = fb.paint_settled();
 
             assert!(

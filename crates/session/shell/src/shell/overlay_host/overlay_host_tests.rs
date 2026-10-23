@@ -827,9 +827,11 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         let chrome = ChromeState::new(tree);
         let mut host =
             ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
-        host.enable_host_desktop_onboarding(std::path::PathBuf::from(
-            "/var/empty/tilo-first-login-tour-test",
-        ));
+        host.enable_test_onboarding(
+            crate::onboarding_view::OnboardingView::isolated_host_desktop(
+                std::path::PathBuf::from("/var/empty/tilo-first-login-tour-test"),
+            ),
+        );
         host.set_onboarding_visual_state_for_snapshot(
             crate::onboarding_view::OnboardingVisualState::TourNavigate,
         );

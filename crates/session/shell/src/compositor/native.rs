@@ -16504,7 +16504,10 @@ mod tests {
         {
             let mut fb = FrameBuilder::new((800, 600));
             assert!(client_input_allowed(&fb));
-            fb.enable_onboarding(std::path::PathBuf::from("/tmp/tilo-onboarding-test"));
+            fb.enable_test_onboarding(crate::onboarding_view::OnboardingView::isolated(
+                std::path::PathBuf::from("/tmp/tilo-onboarding-test"),
+                false,
+            ));
             assert!(fb.host().onboarding_active());
             assert!(
                 !client_input_allowed(&fb),
