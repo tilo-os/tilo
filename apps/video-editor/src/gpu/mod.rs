@@ -1613,13 +1613,20 @@ mod tests {
 
             let (w, h) = (192u32, 108u32);
             let mut c = compositor();
-            let mut sources = MediaFrameSource::new(&p, Fetch::Exact);
-            let live = c.frame(&p, 2.0, w, h, &mut sources);
-
-            assert!(
-                sources.served_real_picture(),
-                "the frame source reported no decoded picture — the canvas is a stand-in",
-            );
+            // Strict, so a cold pipeline slower than one fetch is asked again
+            // rather than written off: render until the decoded picture lands.
+            let mut sources = MediaFrameSource::new(&p, Fetch::Exact).strict();
+            let deadline = tilo_test_env::hang_deadline();
+            let live = loop {
+                let live = c.frame(&p, 2.0, w, h, &mut sources);
+                if sources.served_real_picture() {
+                    break live;
+                }
+                assert!(
+                    ui::time::now() < deadline,
+                    "the frame source reported no decoded picture — the canvas is a stand-in",
+                );
+            };
             let detail = horizontal_detail(&live, w, h);
             println!("app-path canvas horizontal detail = {detail:.3}");
             assert!(
