@@ -41,6 +41,8 @@ enum Work {
     FinishSharedRooms,
     PlaceWorkspaces,
     FollowList(crate::shell::personal_workspaces::Adoption),
+    /// Enter the rooms a configured host lists (each, when `None`).
+    HostRooms(Option<iroh::EndpointId>),
     SyncRound,
     RoomBatch {
         peer: iroh::EndpointId,
@@ -89,6 +91,7 @@ impl ShellNetwork {
                                 network.finish_shared_rooms();
                             }
                             Work::FollowList(adoption) => network.follow_list(adoption),
+                            Work::HostRooms(host) => network.enter_configured_host_rooms(host),
                             Work::PlaceWorkspaces => {
                                 network.placement_pass_started();
                                 network.place_pending_workspaces();
@@ -296,6 +299,7 @@ impl ShellNetwork {
                 Work::FinishSharedRooms
                 | Work::PlaceWorkspaces
                 | Work::FollowList(_)
+                | Work::HostRooms(_)
                 | Work::SyncRound
                 | Work::RoomBatch { .. },
             )) => Ok(()),
@@ -416,6 +420,28 @@ impl ShellNetwork {
         };
         if let Work::FollowList(adoption) = unsent {
             self.follow_list(adoption);
+        }
+    }
+
+    /// Enter, on the peer-sync worker, the rooms the configured workspace
+    /// host `host` (each, when `None`) lists: nothing for a session
+    /// configured with none.
+    pub(super) fn enter_configured_host_rooms_off_loop(&self, host: Option<iroh::EndpointId>) {
+        let configured = super::configured_host_addrs();
+        if configured.is_empty()
+            || host.is_some_and(|host| !configured.iter().any(|addr| addr.id == host))
+        {
+            return;
+        }
+        let unsent = match self.peer_sync_worker.worker.get() {
+            Some(worker) => match worker.send(Work::HostRooms(host)) {
+                Ok(()) => return,
+                Err(mpsc::SendError(work)) => work,
+            },
+            None => Work::HostRooms(host),
+        };
+        if let Work::HostRooms(host) = unsent {
+            self.enter_configured_host_rooms(host);
         }
     }
 
