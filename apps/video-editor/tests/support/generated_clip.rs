@@ -15,7 +15,7 @@ pub const FPS: u32 = 30;
 const FRAMES: u32 = 4 * FPS;
 /// Part of the cached file's name: change it whenever the pictures or the
 /// sound the generator produces change, so no build reuses a stale clip.
-const GENERATION: u32 = 1;
+const GENERATION: u32 = 2;
 
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
