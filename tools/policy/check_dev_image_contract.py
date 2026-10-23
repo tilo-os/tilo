@@ -39,9 +39,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DEV_CONTAINERFILE = "os/Containerfile.dev"
-# The CI workflows that build a dev image: the OS lane that gates on it and the
-# disk workflow for images that already exist.
-DEV_IMAGE_WORKFLOWS = (".forgejo/workflows/build-image.yml", ".forgejo/workflows/dev-disk.yml")
+# The CI workflows that build a dev image: the disk workflow for images that
+# already exist.
+DEV_IMAGE_WORKFLOWS = (".forgejo/workflows/dev-disk.yml",)
 DEV_REPOSITORY = "registry.tilo.so/tilo/tilo-vm"
 # Unsigned OS images from main integration builds; dev disks build on them.
 INTEGRATION_REPOSITORY = "registry.tilo.so/tilo/tilo-ci"

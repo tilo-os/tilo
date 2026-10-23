@@ -19,13 +19,6 @@ class ShellPushTests(unittest.TestCase):
     def read(self, name: str) -> str:
         return (WORKFLOWS / name).read_text()
 
-    def test_os_candidates_and_integration_children_are_unique(self):
-        text = self.read("build-image.yml")
-        self.assertIn('$TILO_OS_REPOSITORY:candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}-${{ matrix.arch }}"', text)
-        self.assertIn('tilo:index-candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"', text)
-        self.assertIn('$repository:index-candidate-${TILO_IMAGE_SOURCE}-${GITHUB_RUN_ID}-${{ github.run_attempt }}"', text)
-        self.assertIn('"docker://registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH-$GITHUB_RUN_ID-${{ github.run_attempt }}"', text)
-
     def test_base_mirror_dev_disk_and_wine_pushes_are_unique(self):
         mirror = (ROOT / "os/dev/ensure-base-mirror.sh").read_text()
         self.assertIn('fedora-bootc:${BASE_SOURCE##*:}-recover-', mirror)

@@ -7,7 +7,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".forgejo/workflows/dev-disk.yml"
-OS_RELEASE = ROOT / ".forgejo/workflows/build-image.yml"
 PUBLISH = ROOT / "os/dev/publish-dev-disk.sh"
 CANDIDATE = ROOT / "os/dev/publish-dev-disk-candidate.sh"
 CHECK = ROOT / "os/dev/check-dev-vm.sh"
@@ -292,80 +291,6 @@ class DevVmCheckTests(unittest.TestCase):
         self.assertIn("sudo -n tilo-vmd rpc", source)
         self.assertIn(".result.arch == $arch", source)
         self.assertIn(".result.base.image_digest == $base", source)
-
-
-class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.source = OS_RELEASE.read_text(encoding="utf-8")
-        self.lane = job(self.source, "build-and-push")
-
-    def test_os_lane_gates_and_publishes_its_own_dev_disk(self) -> None:
-        with self.subTest(phase='no run waits on every lane before a dev disk'):
-            self.assertNotIn("dispatch-dev-disk:", self.source)
-        with self.subTest(phase='integration gates the dev image built from this lane'):
-            gate = step(self.lane, "Reseal, install, boot, and stage the verified image")
-            self.assertIn("DEV_GATE: ${{ steps.release-mode.outputs.dev-gate }}", gate)
-            self.assertIn('TILO_DEV_BASE="$dev_base"', gate)
-            self.assertIn("./os/dev/build-dev-image.sh", gate)
-            # No registry round trip: the base is this lane's own image.
-            self.assertIn('podman tag "$first_tag" "$dev_base"', gate)
-            # Kata lanes import, build and install on a native overlay store,
-            # before the image enters Podman at all.
-            self.assertIn('CONTAINERS_STORAGE_CONF="$(./os/dev/ci-native-podman-store.sh)"', gate)
-            self.assertLess(
-                gate.index("ci-native-podman-store.sh"),
-                gate.index('"containers-storage:$first_tag"'),
-            )
-            self.assertNotIn("podman pull", gate)
-            # One install per lane: the prod install only in the other branch.
-            dev = gate.index("if [[ $DEV_GATE == true ]]; then")
-            prod = gate.index("./os/dev/build-image.sh", dev)
-            self.assertLess(gate.index("          else\n", dev), prod)
-            # Same desktop gate, then tilo-vmd.
-            self.assertIn("./os/dev/vm.sh test native-atspi-smoke.sh lock", gate)
-            self.assertLess(
-                gate.index("native-atspi-smoke.sh lock"),
-                gate.index('./os/dev/check-dev-vm.sh --arch'),
-            )
-            # The slow-frame sign-in ends the session, so it comes last.
-            slow = gate.index("./os/dev/test-slow-frame-launch.sh")
-            self.assertLess(gate.index("./os/tests/booted_app_update.sh"), slow)
-            self.assertLess(slow, gate.index("          else\n", slow))
-            self.assertIn('qemu-img create -f qcow2 -F qcow2 -b "$DEV_OUTPUT/qcow2/disk.qcow2" "$TILO_DISK"', gate)
-        with self.subTest(phase='the lane publishes its own architecture'):
-            publish = step(self.lane, "Publish this architecture's dev image and disk")
-            self.assertIn("steps.release-mode.outputs.dev-gate == 'true'", publish)
-            self.assertIn("steps.dev-image.outcome == 'success'", publish)
-            self.assertIn("./os/dev/publish-dev-disk.sh", publish)
-            self.assertIn("BASE_REPOSITORY: registry.tilo.so/tilo/tilo-ci", publish)
-            self.assertIn("BASE_TRUST: integration", publish)
-            self.assertIn("DEV_TAG: ${{ steps.release-mode.outputs.dev-series }}-ci", publish)
-            self.assertIn("DISK_TOOLING_REVISION: ${{ env.TILO_IMAGE_SOURCE }}", publish)
-            self.assertLess(
-                self.lane.index("- name: Reseal, install, boot, and stage the verified image"),
-                self.lane.index("- name: Publish this architecture's dev image and disk"),
-            )
-        with self.subTest(phase='dev trust image is pushed unsigned'):
-            push = step(self.lane, "Publish the dev-trust integration image")
-            self.assertIn("steps.release-mode.outputs.dev-series != ''", push)
-            self.assertIn("continue-on-error: true", push)
-            self.assertIn('ref="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"', push)
-            self.assertNotRegex(push, r"cosign (?:sign|attest)")
-            mode = step(self.lane, "Select build, validation, or publication mode")
-            self.assertIn('series="main-${TILO_IMAGE_SOURCE:0:7}"', mode)
-            self.assertIn('echo "dev-channel=$([[ $GITHUB_REF == refs/heads/main ]]', mode)
-        with self.subTest(phase='publication requests its architecture from the signed child'):
-            request = step(self.lane, "Request this architecture's dev disk from the signed child")
-            self.assertIn("steps.release-mode.outputs.publish == 'true'", request)
-            self.assertIn("continue-on-error: true", request)
-            self.assertIn("IMAGE: registry.tilo.so/tilo/tilo@${{ steps.release.outputs.digest }}", request)
-            self.assertIn("architectures:$arch", request)
-            self.assertIn("actions/workflows/dev-disk.yml/dispatches", request)
-            self.assertLess(
-                self.lane.index("- name: Verify and describe the native release child"),
-                self.lane.index("- name: Request this architecture's dev disk from the signed child"),
-            )
-
 
 
 if __name__ == "__main__":

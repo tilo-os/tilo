@@ -159,8 +159,8 @@ pointers = { release-rehearsal = "{dir}/receipt.json" }
 family = "ci-images"
 name = "ci-fast"
 about = """
-The fast CI images, x86_64 only: published from main, pinned by digest in tools/ci/images.toml
-by hand. image-ci-fast-smoke runs what the jobs that use them need, before either is published."""
+The fast CI image, x86_64 only: published from main, pinned by digest in tools/ci/images.toml
+by hand. image-ci-fast-smoke runs what the jobs that use it need, before it is published."""
 repository = "registry.tilo.so/tilo/ci-fast"
 dev = ["sha-{commit}"]
 gates = ["image-ci-fast-smoke"]
@@ -172,22 +172,6 @@ cost = "heavy"
 # It builds FROM the multi-GB CI builder: a micro-VM step can't grow past what it reserves.
 # Measured: 7.4 GiB peak, too close to 8 GiB for a step that can't grow.
 requirement = { cores = 4, memory = "12GiB" }
-
-[[product]]
-family = "ci-images"
-name = "ci-control"
-about = "ci-control adds the Docker client to the ci-fast image just built, not to the pinned one."
-repository = "registry.tilo.so/tilo/ci-control"
-dev = ["sha-{commit}"]
-gates = ["image-ci-fast-smoke"]
-
-[product.build]
-containerfile = "os/Containerfile.ci-control"
-build_args = ["--build-arg CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/image.oci.tar"]
-needs = ["image-ci-fast"]
-inputs = ["os/Containerfile.ci-control"]
-cost = "minutes"
-requirement = { cores = 4, memory = "8GiB" }
 
 [[product]]
 family = "ci-images"

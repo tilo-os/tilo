@@ -172,7 +172,7 @@ model, a socket it cannot reach is explained (and how to get one), and
 `unknown_action` / `invalid_arguments` refusals print the next command to try.
 
 `os/tests/installed-admin-actions.sh` proves this on a booted image in
-`build-image.yml`: after first login, over the admin's ssh and with no
+t's `os-acceptance-{arch}` check: after first login, over the admin's ssh and with no
 `TILO_TEST_CONTROL`, it invokes Notes by address, lists it, and reads the window
 back through `tilo-control windows`. It then creates a note through Notes' `new-page` action and reads it back through `read`.
 

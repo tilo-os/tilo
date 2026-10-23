@@ -46,9 +46,9 @@
 #         -t localhost/tilo-vm:latest .
 #
 # os/dev/build-dev-image.sh (./os/build.sh --dev) does that for the local
-# production image and then writes a disk. CI runs the same script: the OS
-# integration lane (.forgejo/workflows/build-image.yml) FROM the image it just
-# built, and .forgejo/workflows/dev-disk.yml FROM a published one.
+# production image and then writes a disk. CI builds the same image in t's
+# os-dev-image-{arch} check FROM the os-image-{arch} of the same tree, and
+# .forgejo/workflows/dev-disk.yml FROM a published one.
 # ============================================================================
 
 # The production image to derive from: `localhost/tilo:latest` (./os/build.sh),
