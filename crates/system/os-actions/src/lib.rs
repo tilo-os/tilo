@@ -74,9 +74,9 @@ pub use audio::{
     set_volume, toggle_mute, toggle_source_mute,
 };
 pub use battery::{
-    BatteryHistory, BatteryHistoryPoint, BatteryInfo, ChargeCapBackend, ChargeCapCapability,
-    PowerDevice, PowerSupplyKind, charge_capability, load_battery_history, power_devices,
-    set_charge_limit, set_charge_limit_checked,
+    BatteryHistory, BatteryHistoryPoint, BatteryInfo, CapacityUnit, ChargeCapBackend,
+    ChargeCapCapability, PowerDevice, PowerSupplyKind, charge_capability, load_battery_history,
+    power_devices, set_charge_limit, set_charge_limit_checked,
 };
 pub use bluetooth::{
     BluetoothHandoffTarget, BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth,
