@@ -454,7 +454,7 @@ class Product:
             raise ProductError(f"{self.name}: publish takes run, inputs, outputs, pointers and requirement")
         if self.dev and self.release:
             channel = "any"
-            on = [*self.dev_on, *self.release_on]
+            on = dedupe([*self.dev_on, *self.release_on])
         elif self.dev:
             channel, on = "dev", self.dev_on
         else:
