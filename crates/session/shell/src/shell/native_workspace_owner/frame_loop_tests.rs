@@ -69,9 +69,13 @@ impl HeldSync {
         (held, release)
     }
 
-    /// Park here until released; the sync then goes on.
-    fn park(&self) {
+    /// Park here until released, telling the test through `announce` once
+    /// parked; the sync then goes on. Parked counts from before `announce`,
+    /// so a test that heard it and finds the sync no longer parked knows
+    /// the sync went on: a call under test waited for it.
+    fn park_after(&self, announce: impl FnOnce()) {
         self.parked.store(true, Ordering::SeqCst);
+        announce();
         let _ = self
             .released
             .lock()
@@ -182,8 +186,9 @@ fn owner_and_authority_lookups_never_wait_for_a_publication_in_progress() {
         with_observer(
             move |event| {
                 if event.checkpoint == Checkpoint::BeforeDataFlush {
-                    let _ = syncing.send(());
-                    holding.park();
+                    holding.park_after(|| {
+                        let _ = syncing.send(());
+                    });
                 }
             },
             || snapshot.write_to(&path),
@@ -287,9 +292,9 @@ fn opening_the_owner_never_holds_the_tree_across_a_disk_sync() {
         let directories = reached.clone();
         let sync = |stage: &'static str, to: &std::sync::mpsc::Sender<Stage>| {
             let (held, release) = HeldSync::new();
-            held.parked.store(true, Ordering::SeqCst);
-            let _ = to.send((stage, held.clone(), release));
-            held.park();
+            held.park_after(|| {
+                let _ = to.send((stage, held.clone(), release));
+            });
         };
         with_provision_observer(
             move |event| {
