@@ -41,7 +41,7 @@ mod support;
 tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -55,7 +55,7 @@ use tilo_actions::remote::{
 };
 use tilo_agent_participant::{AgentHost, ApiKey, AppCatalogue, ModelChoice};
 use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
-use tilo_relay::certify::{ApproverDecision, ApproverReply};
+use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay_client::Approver;
@@ -138,8 +138,16 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
 }
 
 /// The laptop: a root holder answering every agent request with the
-/// agent's certificate and the delegation of exactly what was proposed.
-fn approve_agents(relay: &Relay, root: SigningKey, laptop: &Device) -> tokio::task::JoinHandle<()> {
+/// agent's certificate and the delegation of exactly what was proposed, and
+/// every question an agent puts to its person (an action that asks first):
+/// allowed once for the agents in `confirming` (a scenario's `may_confirm`),
+/// refused for the rest.
+fn approve_agents(
+    relay: &Relay,
+    root: SigningKey,
+    laptop: &Device,
+    confirming: Arc<std::sync::Mutex<BTreeSet<String>>>,
+) -> tokio::task::JoinHandle<()> {
     let addr = relay.node_addr();
     let cert = laptop.cert.clone();
     let key = laptop.key.clone();
@@ -189,6 +197,24 @@ fn approve_agents(relay: &Relay, root: SigningKey, laptop: &Device) -> tokio::ta
                     matches!(decided, Ok(ApproverReply::Decided) | Err(_)),
                     "{decided:?}"
                 );
+            }
+            let Ok(questions) = approver.list_confirmations().await else {
+                return;
+            };
+            for question in questions {
+                let allowed = confirming.lock().is_ok_and(|agents| {
+                    agents.contains(&question.agent_id) || agents.contains(&question.agent_label)
+                });
+                let answer = if allowed {
+                    ConfirmationAnswer::AllowOnce
+                } else {
+                    ConfirmationAnswer::Deny
+                };
+                eprintln!(
+                    "bench: {} asked to {} · {}: {answer:?}",
+                    question.agent_label, question.action_label, question.resource_label
+                );
+                let _ = approver.answer(question.id, answer).await;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -333,6 +359,9 @@ struct Event {
 struct Role {
     name: String,
     apps: Vec<String>,
+    /// Its person allows the actions it asks about first (deleting clips);
+    /// the others' questions are refused.
+    may_confirm: bool,
 }
 
 /// A step: tasks issued together once the steps it comes after have ended.
@@ -392,6 +421,7 @@ impl Scenario {
                     .iter()
                     .map(|app| app_id(app))
                     .collect(),
+                may_confirm: agent["may_confirm"].as_bool().unwrap_or(false),
             })
             .collect();
         let content = value["content"]
@@ -737,7 +767,13 @@ async fn campaign_bench() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let hosted = start_with(&root, &host, state.path(), model).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
-    let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
+    let confirming = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
+    let _approver = approve_agents(
+        &hosted.relay,
+        root.clone(),
+        &laptop,
+        Arc::clone(&confirming),
+    );
     eprintln!("bench: host started for scenario {}", scenario.id);
     let browser = Browser::open(&hosted, &browser_device, &host).await;
 
@@ -746,6 +782,16 @@ async fn campaign_bench() {
         grants.insert(role.name.clone(), grant_for(&browser, role).await);
     }
     eprintln!("bench: {} grants approved", grants.len());
+    if let Ok(mut agents) = confirming.lock() {
+        agents.extend(
+            scenario
+                .agents
+                .iter()
+                .filter(|role| role.may_confirm)
+                .flat_map(|role| [Some(role.name.clone()), grants.get(&role.name).cloned()])
+                .flatten(),
+        );
+    }
     // The team joins the room before the work begins, as people are in it
     // before anyone hands out tasks: each agent holds the room's keys when
     // the records it will work on are made. The clock starts after.
