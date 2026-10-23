@@ -73,6 +73,16 @@ impl WidgetPresence {
 }
 
 impl PresenceCtx {
+    /// Whether widgets paint marks placed from their own content at `now`
+    /// ([`WidgetPresence::marks_follow_content`]): a widget's damage does
+    /// not say where those marks were.
+    pub fn places_content_marks(&self, now: Instant) -> bool {
+        self.has_visible_interactions(now)
+            || self.carets.values().any(|list| !list.is_empty())
+            || self.selections.values().any(|list| !list.is_empty())
+            || self.typing.values().any(|marks| !marks.is_empty())
+    }
+
     /// What widgets may paint from at `now`; see [`WidgetPresence`].
     pub fn widget_presence(&self, now: Instant) -> WidgetPresence {
         WidgetPresence {

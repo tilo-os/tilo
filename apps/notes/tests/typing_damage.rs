@@ -121,6 +121,7 @@ impl Host {
                 .map(|rect| placement.transform_rect_bbox(*rect).inflate(1.0, 1.0))
                 .collect(),
             copies: Vec::new(),
+            earlier: Vec::new(),
         });
         let mut scene = Scene::new();
         let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {

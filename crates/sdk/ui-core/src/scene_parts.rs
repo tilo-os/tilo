@@ -141,6 +141,11 @@ pub struct DamageHint {
     /// pixels it presented may move them instead of repainting where they
     /// land ([`damage_with_copies`]). Any other host repaints there.
     pub copies: Vec<crate::scroll_copy::MovedRegion>,
+    /// What differs between each earlier generation still known and `to`,
+    /// as `rects` does for `from`: a host that presented an older
+    /// generation (the content was drawn more than once between two of its
+    /// frames) repaints these instead of the whole part.
+    pub earlier: Vec<(u64, Vec<Rect>)>,
 }
 
 impl DamageHint {
@@ -154,6 +159,18 @@ impl DamageHint {
             && self.source == previous.source
             && self.placement == previous.placement
             && !(self.rects.is_empty() && self.copies.is_empty())
+    }
+
+    /// `self`'s damage since `previous` when that painted an earlier
+    /// generation of the same source in the same place.
+    fn reaches(&self, previous: &Self) -> Option<&[Rect]> {
+        if self.source != previous.source || self.placement != previous.placement {
+            return None;
+        }
+        self.earlier
+            .iter()
+            .find(|(from, rects)| *from == previous.to && !rects.is_empty())
+            .map(|(_, rects)| rects.as_slice())
     }
 
     /// What changed for a host that makes no copy: the rects, and where
@@ -183,10 +200,22 @@ impl DamageHint {
                 None => rects.push(transform.transform_rect_bbox(copy.destination()).expand()),
             }
         }
+        let earlier = self
+            .earlier
+            .iter()
+            .map(|(from, rects)| {
+                let rects = rects
+                    .iter()
+                    .map(|rect| transform.transform_rect_bbox(*rect))
+                    .collect();
+                (*from, rects)
+            })
+            .collect();
         Self {
             placement: transform * self.placement,
             rects,
             copies,
+            earlier,
             ..self.clone()
         }
     }
@@ -497,6 +526,13 @@ pub fn hinted<R>(
     let result = draw(scene);
     boundary(scene, Boundary::EndHinted(hint));
     result
+}
+
+/// Close the part [`begin`] opened as a [`hinted`] part: for a draw that
+/// knows what changed only once it has drawn (a widget notes its damage
+/// while drawing).
+pub fn end_hinted(scene: &mut Scene, hint: Option<DamageHint>) {
+    boundary(scene, Boundary::EndHinted(hint));
 }
 
 /// Record the parts of a scene drawn on its own (a retained scene a widget
@@ -839,6 +875,9 @@ fn changed_owner(
                     } else {
                         (owner, new.repainted(), false)
                     });
+                }
+                if let Some(rects) = new.reaches(old) {
+                    return Ok((owner, rects.to_vec(), false));
                 }
             }
             (PartEnd::Hint(_), PartEnd::Hint(_)) => {}

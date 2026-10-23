@@ -4,6 +4,9 @@
 //! size, a redraw, the pointer's shape — comes from the surface.
 
 use super::*;
+use crate::damage::{
+    WidgetIdentity, boxes_covered_by_own_damage, changed_boxes, moved_boxes, widget_boxes,
+};
 use crate::profiling::InputPhase;
 
 /// What an [`App`] needs from the surface it is shown on.
@@ -1142,89 +1145,6 @@ impl App {
                 .next_wake_deadline()
                 .is_some_and(|deadline| deadline <= crate::time::now())
     }
-}
-
-/// A widget's identity within one tree walk: its address and its depth (a
-/// widget held at the start of its parent shares the parent's address).
-type WidgetIdentity = (*const (), usize);
-
-/// Every widget in tree order, by identity, with its layout box.
-fn widget_boxes(root: &dyn Widget) -> Vec<(WidgetIdentity, KurboRect)> {
-    fn walk(widget: &dyn Widget, depth: usize, out: &mut Vec<(WidgetIdentity, KurboRect)>) {
-        out.push((
-            (std::ptr::from_ref(widget).cast::<()>(), depth),
-            widget.get_rect(),
-        ));
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
-    }
-    let mut out = Vec::new();
-    walk(root, 0, &mut out);
-    out
-}
-
-/// Every widget whose own damage covers a change to its box this frame
-/// ([`Widget::damage_covers_own_box`]), by identity as [`widget_boxes`] has it.
-fn boxes_covered_by_own_damage(root: &dyn Widget) -> std::collections::HashSet<WidgetIdentity> {
-    fn walk(
-        widget: &dyn Widget,
-        depth: usize,
-        out: &mut std::collections::HashSet<WidgetIdentity>,
-    ) {
-        if widget.damage_covers_own_box() {
-            out.insert((std::ptr::from_ref(widget).cast::<()>(), depth));
-        }
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
-    }
-    let mut out = std::collections::HashSet::new();
-    walk(root, 0, &mut out);
-    out
-}
-
-/// The old and new box of every widget a relayout moved or resized, when
-/// `before` and `after` list the same widgets in the same order; `None`
-/// when they do not, and which pixels moved cannot be said.
-fn moved_boxes(
-    before: &[(WidgetIdentity, KurboRect)],
-    after: &[(WidgetIdentity, KurboRect)],
-) -> Option<Vec<KurboRect>> {
-    if before.len() != after.len() {
-        return None;
-    }
-    let mut moved = Vec::new();
-    for ((old_widget, old), (new_widget, new)) in before.iter().zip(after) {
-        if old_widget != new_widget {
-            return None;
-        }
-        if old != new {
-            moved.extend([*old, *new]);
-        }
-    }
-    Some(moved)
-}
-
-/// The old and new box of every widget that a rebuild and relayout moved,
-/// and the box of every widget that came or went, matched by identity.
-fn changed_boxes(
-    before: &[(WidgetIdentity, KurboRect)],
-    after: &[(WidgetIdentity, KurboRect)],
-) -> Vec<KurboRect> {
-    let old: std::collections::HashMap<_, _> = before.iter().copied().collect();
-    let new: std::collections::HashMap<_, _> = after.iter().copied().collect();
-    let mut changed = Vec::new();
-    for (widget, rect) in after {
-        match old.get(widget) {
-            Some(was) if was == rect => {}
-            Some(was) => changed.extend([*was, *rect]),
-            None => changed.push(*rect),
-        }
-    }
-    changed.extend(
-        before
-            .iter()
-            .filter(|(widget, _)| !new.contains_key(widget))
-            .map(|(_, rect)| *rect),
-    );
-    changed
 }
 
 /// `extent` scene pixels in device pixels at `scale` per scene pixel.

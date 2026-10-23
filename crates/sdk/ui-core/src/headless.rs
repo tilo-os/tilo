@@ -403,6 +403,10 @@ pub struct FrameHarness {
     /// Scratch scene for the draw pass. Never rasterised — see
     /// [`FrameHarness::relayout`] for why it is drawn at all.
     scene: Scene,
+    /// Whether the draw pass records the scene's damage parts
+    /// ([`Self::track_scene_parts`]), and the parts the last one drew.
+    track_scene_parts: bool,
+    scene_parts: Option<crate::scene_parts::SectionParts>,
     /// Protection of the prepared scene; unknown/failed paints stay protected.
     scene_capture_protected: bool,
     /// The backdrops the scene's floating surfaces were drawn over, which
@@ -1621,6 +1625,8 @@ impl FrameHarness {
             text,
             theme,
             scene: Scene::new(),
+            track_scene_parts: false,
+            scene_parts: None,
             scene_capture_protected: true,
             backdrop: std::sync::Arc::default(),
             records: None,
@@ -2926,6 +2932,19 @@ impl FrameHarness {
         result
     }
 
+    /// Record the damage parts of every scene the draw pass produces from
+    /// now on ([`crate::scene_parts`]), for a host that compares each frame
+    /// with the one it presented before ([`Self::scene_parts`]).
+    pub fn track_scene_parts(&mut self, track: bool) {
+        self.track_scene_parts = track;
+    }
+
+    /// The damage parts of the last scene drawn, when they were recorded
+    /// ([`Self::track_scene_parts`]) and well nested.
+    pub fn scene_parts(&self) -> Option<&crate::scene_parts::SectionParts> {
+        self.scene_parts.as_ref()
+    }
+
     /// Borrow the completed scene. Use `frame_output` when semantics are needed.
     pub fn frame_render_input(&self) -> FrameRenderInput<'_> {
         self.drain_component_wakes();
@@ -3290,6 +3309,7 @@ impl FrameHarness {
                     if finalizing_activation {
                         self.presence.pop_viewport(previous_viewport);
                         self.scene.reset();
+                        self.scene_parts = None;
                         self.owner_service_layout_retired = true;
                         self.layout_requested = true;
                     }
@@ -3310,6 +3330,7 @@ impl FrameHarness {
             if finalizing_activation {
                 self.presence.pop_viewport(previous_viewport);
                 self.scene.reset();
+                self.scene_parts = None;
                 self.owner_service_layout_retired = true;
                 self.layout_requested = true;
             }
@@ -3932,7 +3953,14 @@ impl FrameHarness {
         let replay_scope = crate::retained_present::PanReplay::begin(pan_frame, self.pan_frames);
         self.scene_capture_protected = true;
         let protected_paint = crate::secret_paint::SecretPaint::begin();
+        self.scene_parts = None;
+        let parts_recording = self
+            .track_scene_parts
+            .then(crate::scene_parts::Recording::begin);
         self.scene.reset();
+        if parts_recording.is_some() {
+            crate::scene_parts::track(&self.scene);
+        }
         // Floating chrome records what lies below it, so a capture blurs it
         // under the material exactly as the live window's renderer does.
         let backdrop_recording = crate::backdrop::BackdropRecording::begin();
@@ -4139,6 +4167,9 @@ impl FrameHarness {
         self.draw_caller_palette();
         self.refresh_system_search();
         self.draw_system_search();
+        if let Some(recording) = parts_recording {
+            self.scene_parts = recording.finish().of(&self.scene);
+        }
         self.backdrop = std::sync::Arc::new(crate::backdrop::BackdropFrame::from_single_scene(
             backdrop_recording.finish(),
         ));
@@ -15315,6 +15346,9 @@ mod framed_tests;
 #[cfg(test)]
 #[path = "headless/owner_fifo_tests.rs"]
 mod owner_fifo_tests;
+#[cfg(test)]
+#[path = "headless/retained_damage_tests.rs"]
+mod retained_damage_tests;
 
 #[cfg(test)]
 #[path = "headless/owner_layout_custody_tests.rs"]

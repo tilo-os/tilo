@@ -178,6 +178,111 @@ pub enum TileContent {
     Arriving,
 }
 
+/// How far around a widget's damage its drawing may reach: antialiasing,
+/// shadows and focus rings outside its layout box, in logical pixels (as
+/// the native window pads its widget damage).
+const APP_DAMAGE_REACH: f64 = 16.0;
+
+/// The app's drawings as a host comparing frames sees them
+/// ([`crate::scene_parts::DamageHint`]): which generation it painted last,
+/// where, and every widget's box then. A drawing at the same place changed
+/// where its widgets say ([`Widget::collect_damage`]) and where widgets a
+/// relayout moved were and are, as the native app window repaints; any
+/// other drawing repaints the window.
+#[derive(Debug)]
+struct ContentDamage {
+    source: u64,
+    generation: u64,
+    /// Where the last drawing placed the app, and its widgets' boxes then.
+    painted: Option<(Affine, Vec<(crate::damage::WidgetIdentity, Rect)>)>,
+    /// The last few drawings' damage, each with the generation it was
+    /// measured from: a host may present only some of the drawings.
+    steps: std::collections::VecDeque<(u64, Vec<Rect>)>,
+}
+
+/// How many drawings back a hint still says what changed.
+const APP_DAMAGE_STEPS: usize = 4;
+
+impl ContentDamage {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            source: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            generation: 0,
+            painted: None,
+            steps: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Note that `app` was just drawn at `placement`, clipped to `clip`, and
+    /// say what changed since its last drawing. No hint when it moved, when
+    /// its widgets are not the ones drawn before (which pixels moved cannot
+    /// be said), or when widgets paint other people's marks placed from
+    /// their content, which their damage does not cover.
+    fn hint(
+        &mut self,
+        app: &dyn Widget,
+        placement: Affine,
+        clip: Rect,
+        presence: &PresenceCtx,
+    ) -> Option<crate::scene_parts::DamageHint> {
+        let boxes = crate::damage::widget_boxes(app);
+        let from = self.generation;
+        self.generation = self.generation.wrapping_add(1);
+        let previous = self.painted.replace((placement, boxes));
+        let moved = previous
+            .filter(|(placed, _)| *placed == placement)
+            .and_then(|(_, before)| {
+                let (_, after) = self.painted.as_ref()?;
+                crate::damage::moved_boxes(&before, after)
+            });
+        let Some(moved) = moved.filter(|_| !presence.places_content_marks(crate::time::now()))
+        else {
+            self.steps.clear();
+            return None;
+        };
+        let mut damage = moved;
+        app.collect_damage(&mut damage);
+        let rects = damage
+            .into_iter()
+            .map(|rect| {
+                placement
+                    .transform_rect_bbox(rect.inflate(APP_DAMAGE_REACH, APP_DAMAGE_REACH))
+                    .intersect(clip)
+            })
+            .filter(|rect| !rect.is_zero_area())
+            .collect::<Vec<_>>();
+        let earlier = (0..self.steps.len())
+            .map(|first| {
+                let since = self.steps.range(first..).flat_map(|(_, rects)| rects);
+                (
+                    self.steps[first].0,
+                    since.chain(&rects).copied().collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        self.steps.push_back((from, rects.clone()));
+        if self.steps.len() > APP_DAMAGE_STEPS {
+            self.steps.pop_front();
+        }
+        Some(crate::scene_parts::DamageHint {
+            source: self.source,
+            from,
+            to: self.generation,
+            placement,
+            rects,
+            copies: Vec::new(),
+            earlier,
+        })
+    }
+
+    /// The app was not drawn: its next drawing follows none.
+    fn forget(&mut self) {
+        self.painted = None;
+        self.steps.clear();
+    }
+}
+
 /// A tab is an open thing, not a view onto one shared thing: the document
 /// behind it is the tab's own, otherwise two tabs of the same app would
 /// share one document, and undo/presence/search with it.
@@ -387,6 +492,9 @@ pub struct TileHost {
     /// it. The content keeps its own layout rect, so it is drawn this much
     /// further right instead.
     content_shift: f64,
+    /// What the app drew last, for a host that repaints only where it
+    /// changed ([`ContentDamage`]).
+    content_damage: ContentDamage,
     pub focused: bool,
     /// Last pointer position, so a button press (which carries none) can be
     /// attributed to this tile or to a neighbour.
@@ -776,6 +884,7 @@ impl TileHost {
             hosted_window: None,
             rect: Rect::ZERO,
             content_shift: 0.0,
+            content_damage: ContentDamage::new(),
             focused: false,
             pointer: None,
             flush_edges: false,
@@ -3443,7 +3552,22 @@ impl TileHost {
                             .as_ref()
                             .is_none_or(|history| history.live_visible())
                         {
+                            // The app is a damage part of its own, hinted
+                            // with its widgets' damage: a host comparing
+                            // frames repaints a typed character, not the
+                            // window.
+                            let key = crate::scene_parts::PartKey::new("ui.tile-app", ());
+                            crate::scene_parts::begin(scene, key);
                             w.draw(scene, content_transform, tr, theme, presence);
+                            let hint = self.content_damage.hint(
+                                &**w,
+                                content_transform,
+                                transform.transform_rect_bbox(self.rect),
+                                presence,
+                            );
+                            crate::scene_parts::end_hinted(scene, hint);
+                        } else {
+                            self.content_damage.forget();
                         }
                         if let Some(history) = &mut self.history {
                             history.draw(scene, content_transform, tr, theme, presence);

@@ -132,10 +132,23 @@ pub(crate) struct SaveIndicator {
     retry_record: bool,
     /// Where the surface last painted.
     drawn: Option<Rect>,
+    /// Where the surface was before this frame painted it.
+    replaced: Replaced,
     /// What the surface shows changed since the last frame.
     dirty: bool,
     /// Where the pointer last was.
     pointer: Point,
+}
+
+/// Where the save status was before the frame painted it over.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Replaced {
+    /// Nothing painted it since the last frame.
+    NotYet,
+    /// Painted, replacing what was here (`None`: nothing).
+    From(Option<Rect>),
+    /// Where it was is forgotten (a capture reset it).
+    Unknown,
 }
 
 impl SaveIndicator {
@@ -146,6 +159,7 @@ impl SaveIndicator {
             saves,
             retry_record: false,
             drawn: None,
+            replaced: Replaced::NotYet,
             dirty: false,
             pointer: Point::ZERO,
         }
@@ -198,6 +212,7 @@ impl SaveIndicator {
         self.surface = SaveStatusSurface::new();
         self.retry_record = false;
         self.drawn = None;
+        self.replaced = Replaced::Unknown;
         self.dirty = true;
         self.follow(now);
     }
@@ -239,6 +254,9 @@ impl SaveIndicator {
             return;
         }
         self.follow(now);
+        if self.replaced == Replaced::NotYet {
+            self.replaced = Replaced::From(self.drawn);
+        }
         self.drawn = self
             .surface
             .paint(scene, transform, tr, theme, area, now)
@@ -316,10 +334,16 @@ impl SaveIndicator {
     }
 
     /// Where the next frame differs: where the surface was while it only
-    /// fades, and all of `area` when what it shows changed (its new place is
-    /// known only once it paints).
+    /// fades; when what it shows changed, where it was and is once this
+    /// frame painted it, and all of `area` before (its new place is known
+    /// only once it paints).
     pub(crate) fn collect_damage(&self, area: Rect, now: Instant, regions: &mut Vec<Rect>) {
         if !self.needs_redraw(now) {
+            return;
+        }
+        if let (true, Replaced::From(was)) = (self.dirty, self.replaced) {
+            regions.extend(was);
+            regions.extend(self.drawn);
             return;
         }
         let fading = !self.dirty
@@ -338,6 +362,7 @@ impl SaveIndicator {
 
     pub(crate) fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.replaced = Replaced::NotYet;
     }
 
     /// What the bubble says, for a test.
@@ -440,6 +465,47 @@ mod tests {
             Some("The disk is full"),
             "a failure still shows"
         );
+    }
+
+    /// Once a frame painted the bubble, a change to it repaints where it
+    /// was and is, not the view under it: a keystroke whose save says
+    /// nothing repaints nothing of the status.
+    #[test]
+    fn a_painted_change_damages_the_bubble_not_the_view() {
+        init();
+        let t0 = ui_core::time::now();
+        let area = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        let mut text = ui_core::text_render::TextRenderer::new();
+        let theme = ui_core::Theme::dark();
+        let mut indicator = SaveIndicator::new(Saves::default());
+        let mut frame = |indicator: &mut SaveIndicator, now: Instant| {
+            let mut scene = ui_core::vello::Scene::new();
+            indicator.paint(&mut scene, Affine::IDENTITY, &mut text, &theme, area, now);
+            let mut regions = Vec::new();
+            indicator.collect_damage(area, now, &mut regions);
+            indicator.mark_drawn();
+            regions
+        };
+        indicator.record(&RecordSaveStatus::Saving, t0);
+        let stalled = at(t0, SAVE_STALL.as_secs());
+        indicator.follow(stalled);
+        let mut before = Vec::new();
+        indicator.collect_damage(area, stalled, &mut before);
+        assert!(
+            before.contains(&area),
+            "unpainted, its new place is unknown"
+        );
+        let shown = frame(&mut indicator, stalled);
+        let bubble = indicator.drawn.expect("the stall shows a bubble");
+        assert_eq!(shown, vec![bubble], "the bubble came where it is");
+        indicator.record(&RecordSaveStatus::Saved, at(t0, 12));
+        let saved = frame(&mut indicator, at(t0, 12));
+        assert!(saved.contains(&bubble), "where it was: {saved:?}");
+        assert!(!saved.contains(&area), "not the view: {saved:?}");
+        indicator.record(&RecordSaveStatus::Saving, at(t0, 40));
+        indicator.record(&RecordSaveStatus::Saved, at(t0, 40));
+        let quiet = frame(&mut indicator, at(t0, 41));
+        assert!(!quiet.contains(&area), "a silent save: {quiet:?}");
     }
 
     #[test]
