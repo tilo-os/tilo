@@ -51,8 +51,12 @@ mod linux {
             // SAFETY: `raw` is a descriptor this call just opened and owns.
             let fd = unsafe { OwnedFd::from_raw_fd(raw) };
             arm(&fd)?;
+            // SAFETY: `fd` is the timerfd opened above, moved into the
+            // AsyncFd. Nothing else holds it, so it stays open and refers to
+            // the same timer until the AsyncFd deregisters it on drop.
+            let fd = unsafe { AsyncFd::register_with_interest(fd, Interest::READABLE) }?;
             Ok(Self {
-                fd: AsyncFd::with_interest(fd, Interest::READABLE)?,
+                fd,
                 suspended: suspended_time()?,
             })
         }
