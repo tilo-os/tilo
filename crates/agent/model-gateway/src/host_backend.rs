@@ -12,6 +12,8 @@
 use super::*;
 use crate::openai::{self, Target};
 pub use agent_provider_config::protocol;
+/// The wire and output-limit field a trusted host's endpoint takes.
+pub use agent_provider_config::{ProviderProtocol, TokenLimitParam};
 use protocol as neutral;
 
 /// Compatibility source accepted only from a trusted host operator.
@@ -100,6 +102,15 @@ pub struct CompletionClient {
     runtime: Option<tokio::runtime::Runtime>,
     http: reqwest::Client,
     request_hints: serde_json::Value,
+    /// The wire the endpoint speaks: `OpenAI` chat completions unless the
+    /// operator named Anthropic's Messages API.
+    protocol: ProviderProtocol,
+    /// The OpenAI-compatible endpoint's output-limit field, when it is not
+    /// the one the request names (`max_tokens`).
+    token_limit: Option<TokenLimitParam>,
+    /// The config root whose vault adopts the key; the user's own unless
+    /// the operator named one.
+    credentials: Option<PathBuf>,
 }
 
 impl CompletionClient {
@@ -117,7 +128,37 @@ impl CompletionClient {
             runtime: Some(runtime),
             http,
             request_hints: serde_json::json!({}),
+            protocol: ProviderProtocol::OpenAiCompatible,
+            token_limit: None,
+            credentials: None,
         })
+    }
+
+    /// Adopt the key into the vault under the config root `root` rather
+    /// than the user's: a host run that keeps no credential of its own past
+    /// it (a benchmark's private state directory), or a session without the
+    /// platform's secret store.
+    #[must_use]
+    pub fn with_credentials_in(mut self, root: impl Into<PathBuf>) -> Self {
+        self.credentials = Some(root.into());
+        self
+    }
+
+    /// Speak `protocol` to the endpoint: Anthropic's Messages API (its
+    /// endpoint is the API's origin, `https://api.anthropic.com`) or `OpenAI`
+    /// chat completions. Anthropic takes none of the request hints.
+    #[must_use]
+    pub const fn with_protocol(mut self, protocol: ProviderProtocol) -> Self {
+        self.protocol = protocol;
+        self
+    }
+
+    /// Name the output limit with `param`, as an OpenAI-compatible
+    /// endpoint whose models refuse `max_tokens` wants it.
+    #[must_use]
+    pub const fn with_token_limit_param(mut self, param: TokenLimitParam) -> Self {
+        self.token_limit = Some(param);
+        self
     }
 
     /// Set trusted-host provider preferences. Only service tier and reasoning
@@ -159,17 +200,33 @@ impl CompletionClient {
             .runtime
             .as_ref()
             .ok_or_else(|| neutral::ModelError::new(neutral::ErrorKind::Unavailable))?;
+        let profile = ProviderProfile {
+            endpoint: endpoint.into(),
+            protocol: self.protocol,
+            token_limit_param: self.token_limit,
+            ..ProviderProfile::default()
+        };
+        // Hints are OpenAI request fields: Anthropic refuses fields it does
+        // not know.
+        let no_hints = serde_json::json!({});
+        let hints = match self.protocol {
+            ProviderProtocol::OpenAiCompatible => &self.request_hints,
+            ProviderProtocol::Anthropic => &no_hints,
+        };
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
                     runtime.block_on(complete_with_http(
-                        endpoint,
+                        &profile,
                         source,
                         target,
-                        (model, request, &self.request_hints),
+                        (model, request, hints),
                         key,
                         deadline,
-                        &ServiceCredentials::open(),
+                        &self
+                            .credentials
+                            .as_deref()
+                            .map_or_else(ServiceCredentials::open, ServiceCredentials::open_in),
                         &self.http,
                     ))
                 })
@@ -209,8 +266,12 @@ async fn complete_async(
     credentials: &ServiceCredentials,
 ) -> Result<neutral::ModelResponse, neutral::ModelError> {
     let http = host_http(reqwest::header::HeaderMap::new())?;
+    let profile = ProviderProfile {
+        endpoint: endpoint.into(),
+        ..ProviderProfile::default()
+    };
     complete_with_http(
-        endpoint,
+        &profile,
         source,
         target,
         (turn.0, turn.1, &serde_json::json!({})),
@@ -223,7 +284,7 @@ async fn complete_async(
 }
 
 async fn complete_with_http(
-    endpoint: &str,
+    profile: &ProviderProfile,
     source: &ApiKey,
     target: Target,
     turn: (&str, &neutral::ModelRequest, &serde_json::Value),
@@ -250,10 +311,7 @@ async fn complete_with_http(
     } else {
         pooled.clone()
     };
-    let profile = ProviderProfile {
-        endpoint: endpoint.into(),
-        ..ProviderProfile::default()
-    };
+    let endpoint = profile.endpoint.as_str();
     for made in 1..=openai::ATTEMPTS {
         let secret = source
             .resolve(endpoint, credentials)
@@ -264,7 +322,7 @@ async fn complete_with_http(
             .ok_or_else(|| neutral::ModelError::new(neutral::ErrorKind::TimedOut))?;
         let failure = match rig_adapter::host_complete(
             &http,
-            &profile,
+            profile,
             secret.as_deref().map(String::as_str),
             turn.0,
             request.clone(),
@@ -517,6 +575,118 @@ mod tests {
                 std::io::ErrorKind::WouldBlock
             );
         }
+    }
+
+    /// A peer answering one request with `answer` (JSON), handing back the
+    /// request's head (lower-cased) and body.
+    fn answer_once(
+        answer: serde_json::Value,
+    ) -> (String, std::thread::JoinHandle<(String, serde_json::Value)>) {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(&mut socket);
+            let (mut head, mut length) = (String::new(), 0);
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                let line = line.to_ascii_lowercase();
+                if let Some(value) = line.strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+                head.push_str(&line);
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            let answer = answer.to_string();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}", answer.len()).unwrap();
+            (head, serde_json::from_slice(&body).unwrap())
+        });
+        (origin, peer)
+    }
+
+    /// One turn of `client` at `endpoint` with a fabricated key, adopted
+    /// into a vault of its own.
+    fn one_turn(
+        client: CompletionClient,
+        endpoint: &str,
+    ) -> Result<neutral::ModelResponse, neutral::ModelError> {
+        let vault = tempfile::tempdir().unwrap();
+        let mut client = client.with_credentials_in(vault.path());
+        let request = neutral::Conversation::new("system", "hello").request(Vec::new(), 512);
+        client.complete(
+            endpoint,
+            &ApiKey::Value("fabricated-key".into()),
+            Target::Standard,
+            "model",
+            &request,
+            "unused-key",
+            tilo_test_env::hang_deadline(),
+        )
+    }
+
+    #[test]
+    fn an_anthropic_endpoint_is_asked_on_its_messages_api_without_openai_hints() {
+        let (origin, peer) = answer_once(serde_json::json!({
+            "id": "msg", "type": "message", "role": "assistant", "model": "model",
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn", "stop_sequence": null,
+            "usage": {"input_tokens": 40, "output_tokens": 9,
+                      "cache_read_input_tokens": 900, "cache_creation_input_tokens": 60}
+        }));
+        let client = CompletionClient::new()
+            .unwrap()
+            .with_request_hints(
+                &serde_json::json!({"service_tier": "flex", "reasoning_effort": "low"}),
+            )
+            .with_protocol(ProviderProtocol::Anthropic);
+        let response = one_turn(client, &origin).unwrap();
+        let (head, body) = peer.join().unwrap();
+        assert!(head.starts_with("post /v1/messages "), "{head}");
+        assert!(head.contains("x-api-key: fabricated-key\r\n"), "{head}");
+        assert!(!head.contains("authorization:"), "{head}");
+        assert_eq!(body["max_tokens"], 512);
+        assert!(
+            body.get("service_tier").is_none() && body.get("reasoning_effort").is_none(),
+            "{body}"
+        );
+        assert_eq!(response.stop_reason, neutral::StopReason::EndTurn);
+        // Every input token, those read from and written to the cache too.
+        assert_eq!(response.usage.input_tokens, 1000);
+        assert_eq!(response.usage.cached_input_tokens, 900);
+        assert_eq!(response.usage.cache_write_tokens, 60);
+        assert_eq!(response.usage.output_tokens, 9);
+    }
+
+    #[test]
+    fn an_endpoint_told_its_output_limit_field_gets_that_field() {
+        let (origin, peer) = answer_once(serde_json::json!({
+            "id": "reply", "object": "chat.completion", "created": 1, "model": "model",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "done"},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 30, "total_tokens": 1030,
+                      "prompt_tokens_details": {"cached_tokens": 768},
+                      "completion_tokens_details": {"reasoning_tokens": 20}}
+        }));
+        let client = CompletionClient::new()
+            .unwrap()
+            .with_token_limit_param(TokenLimitParam::MaxCompletionTokens);
+        let response = one_turn(client, &format!("{origin}/v1")).unwrap();
+        let (head, body) = peer.join().unwrap();
+        assert!(head.starts_with("post /v1/chat/completions "), "{head}");
+        assert_eq!(body["max_completion_tokens"], 512);
+        assert!(body.get("max_tokens").is_none(), "{body}");
+        assert_eq!(response.usage.input_tokens, 1000);
+        assert_eq!(response.usage.cached_input_tokens, 768);
+        assert_eq!(response.usage.reasoning_tokens, 20);
     }
 
     #[test]
