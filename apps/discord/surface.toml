@@ -3,7 +3,7 @@
 [[resources]]
 kind = "discord.guild"
 label = "Discord server"
-version = 2
+version = 3
 fields = [
   { path = "guild_id", type = "String", readonly = true },
   { path = "name", type = "String", label = true },
