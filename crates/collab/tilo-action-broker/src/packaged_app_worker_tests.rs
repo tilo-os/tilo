@@ -243,3 +243,118 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
         })
         .await;
 }
+
+/// A session opens many windows of one app, each holding several records:
+/// every window is the worker of every record it joined, however many the
+/// session holds in all, and closing a window withdraws only its own.
+#[tokio::test(flavor = "current_thread")]
+async fn a_session_with_many_windows_and_records_keeps_every_worker() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            const WINDOWS: usize = 48;
+            const RECORDS: usize = 6;
+            let env = Environment::new();
+            let mut services = env.membership.services();
+            services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
+            services.launcher = Some(Arc::new(LaunchedHere {
+                app: env.route.app_id.clone(),
+                room: env.route.cluster_id.clone(),
+            }));
+            let rig = Rig::with_services(&env, services).await;
+            let person = tilo_action_policy::Subject::Person(principal_id_for_root(
+                env.cert.user_public_key,
+            ));
+            let grant = tilo_action_policy::Grant::new(
+                "the-person-edits",
+                person.clone(),
+                env.membership.read().workspaces[0]
+                    .node()
+                    .app(env.route.app_id.clone()),
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                person,
+            );
+            env.membership.write().workspaces[0].grant(grant);
+            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
+            let route = |window: u64, record: usize| {
+                CrdtRoute::record(
+                    &env.route.app_id,
+                    env.route.cluster_id.clone(),
+                    format!("window-{window}-record-{record}"),
+                )
+            };
+            let before = rig.state.host_workers.lock().unwrap().len();
+            let mut windows = Vec::new();
+            for window in 0..WINDOWS as u64 {
+                let peer = 1_000 + window;
+                let (app, server, client) = launched_app_connection(
+                    &rig.state,
+                    &rig.directories,
+                    peer,
+                    &env.route.app_id,
+                    &env.route.cluster_id,
+                );
+                let mut channels = Vec::new();
+                for record in 0..RECORDS {
+                    channels.push(
+                        app.join_channel(&route(window, record).channel_key(), &identity)
+                            .await
+                            .expect("a window joins every record it opens"),
+                    );
+                }
+                channels[RECORDS - 1]
+                    .publish_action_directory(
+                        &env.route.app_id,
+                        capnp_rpc::new_client(LocalDocumentDirectory {
+                            kind: tilo_actions::OperationKind::Document,
+                            read: false,
+                            pin_dropped: Rc::new(std::cell::Cell::new(false)),
+                            resolutions: Rc::new(std::cell::Cell::new(0)),
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                windows.push((peer, app, server, client, channels));
+            }
+            {
+                let workers = rig.state.host_workers.lock().unwrap();
+                for (peer, ..) in &windows {
+                    for record in 0..RECORDS {
+                        let window = peer - 1_000;
+                        assert!(
+                            workers
+                                .get(*peer, &route(window, record))
+                                .is_some_and(|worker| worker.worker_registration.is_some()),
+                            "window {window} is the worker of record {record}"
+                        );
+                    }
+                }
+                assert_eq!(workers.len(), before + WINDOWS * RECORDS);
+            }
+            for (peer, _, _, _, channels) in &windows {
+                channels[RECORDS - 1]
+                    .admit_local_document_action(&edit_report(
+                        &env,
+                        &route(peer - 1_000, RECORDS - 1),
+                    ))
+                    .await
+                    .expect("every window's edit is admitted");
+            }
+
+            let (closed, ..) = windows.remove(0);
+            rig.state.remove_connection(closed);
+            {
+                let workers = rig.state.host_workers.lock().unwrap();
+                assert!(!workers.holds(closed));
+                assert_eq!(workers.len(), before + (WINDOWS - 1) * RECORDS);
+            }
+            let (open, _, _, _, channels) = &windows[0];
+            channels[RECORDS - 1]
+                .admit_local_document_action(&edit_report(&env, &route(open - 1_000, RECORDS - 1)))
+                .await
+                .expect("the other windows keep their workers");
+            drop(windows);
+            rig.stop().await;
+        })
+        .await;
+}

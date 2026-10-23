@@ -806,9 +806,13 @@ impl OriginalInvocation {
                 {
                     return Err("original native target connection retired or replaced".into());
                 }
-                self.check_execution_frontier(&state)?;
             }
         }
+        // Custody is only who holds the target, and the policy on top of it
+        // is the operation's, the same for every holder: an execution lease
+        // keeps its captured facts through cooperative cancellation, while
+        // outside effects (external moderation, approved checks, private
+        // drafts) also run `check_execution_frontier` on every recheck.
         drop(state);
         tilo_user_identity::verify_device_cert_at(self.certificate()?, now)
             .map_err(|_| "original invocation certificate expired")?;

@@ -13,21 +13,13 @@ use std::collections::HashMap;
 
 use super::{AdmittedJoinIdentity, CapnpBrokerState, CrdtRoute, PrivateWorkerRegistration};
 
-/// Bound on live worker routes: one per route a worker connection holds,
-/// removed when that connection drops.
-///
-/// Measured use (Cloud host): one headless worker per hosted app record, and
-/// every record ever opened in the room stays hosted (each "Open Notes"
-/// creates a record), plus one registered connection per managed agent. On a
-/// device, each open app window holds its own app's routes, usually one. A
-/// workspace with 16 agents and a few dozen records per app must fit: the
-/// former bound of 32 refused the 33rd record, which failed the whole worker
-/// mount and so every agent. Each entry is a small admitted identity (two
-/// certificates and a few ids, under 2 KiB), so this keeps memory bounded
-/// (well under 1 MiB) while leaving room for real workspaces.
-pub(super) const MAX_HOST_WORKERS: usize = 256;
-
 /// The admitted worker joins, by connection and route.
+///
+/// Each entry belongs to the connection that joined: one per route it
+/// holds as a worker, the same route again replacing nothing, and all of
+/// them withdrawn when that connection drops. So the registry is never
+/// larger than the joins its live connections hold, and no count across
+/// connections decides whether one more window may join.
 #[derive(Default)]
 pub(super) struct HostWorkers(HashMap<u64, HashMap<CrdtRoute, AdmittedJoinIdentity>>);
 
@@ -68,6 +60,7 @@ impl HostWorkers {
     }
 
     /// Admitted worker routes, across every connection.
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.0.values().map(HashMap::len).sum()
     }
@@ -162,11 +155,6 @@ impl CapnpBrokerState {
                 ));
             }
         } else {
-            if workers.len() >= MAX_HOST_WORKERS {
-                return Err(capnp::Error::failed(
-                    "host worker connection capacity reached".into(),
-                ));
-            }
             workers
                 .0
                 .entry(peer)
