@@ -133,7 +133,7 @@ fn a_still_is_on_the_timeline_at_an_even_width() {
 #[test]
 fn an_agent_renders_only_short_timelines_of_room_content() {
     assert!(renderable(&placing(&content("ab"), 10.0)).is_ok());
-    let file = renderable(&placing("/Users/someone/footage.mp4", 10.0)).unwrap_err();
+    let file = renderable(&placing("/Users/you/footage.mp4", 10.0)).unwrap_err();
     assert!(file.contains("import-content"), "{file}");
     let long = renderable(&placing(&content("ab"), 300.0)).unwrap_err();
     assert!(long.contains("at most 120"), "{long}");
