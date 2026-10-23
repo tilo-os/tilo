@@ -58,13 +58,38 @@ fn store_pages(host: &ShellOverlayHost) -> Vec<String> {
         .collect()
 }
 
-#[test]
-fn store_pages_join_an_open_search_when_the_store_index_lands() {
+/// The loop's wake, as the shell installs it for search and app icons: each
+/// wake is one message.
+fn wake_channel() -> (
+    crate::shell::search::invocation_wake::Installed,
+    mpsc::Receiver<()>,
+) {
     let (woken, wakes) = mpsc::channel();
     let woken = Mutex::new(woken);
-    let _wake = crate::shell::search::invocation_wake::install(Arc::new(move || {
+    let wake: crate::session_runtime::Wake = Arc::new(move || {
         let _ = woken.lock().expect("wake sender lock").send(());
-    }));
+    });
+    crate::app_icons::set_wake(Arc::clone(&wake));
+    (crate::shell::search::invocation_wake::install(wake), wakes)
+}
+
+/// Run the loop as the shell does: on each wake, update, until nothing
+/// the frame owes is still on its way (the index, then the rows' icons).
+fn settle_on_wakes(host: &mut ShellOverlayHost, wakes: &mpsc::Receiver<()>, doc: &AutoCommit) {
+    loop {
+        wakes
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("work on its way wakes the loop when it lands");
+        host.update(doc, &automerge::ROOT);
+        if !host.has_pending_visual_work() {
+            return;
+        }
+    }
+}
+
+#[test]
+fn store_pages_join_an_open_search_when_the_store_index_lands() {
+    let (_wake, wakes) = wake_channel();
     let source = StoreCatalogueTestSource::new(flathub_with_spotify());
     let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
     let mut host =
@@ -92,12 +117,8 @@ fn store_pages_join_an_open_search_when_the_store_index_lands() {
     );
 
     drop(building);
-    wakes
-        .recv_timeout(tilo_test_env::hang_bound())
-        .expect("the finished build wakes the loop");
-    host.update(&doc, &root);
+    settle_on_wakes(&mut host, &wakes, &doc);
     assert_eq!(store_pages(&host), ["Spotify"]);
-    assert!(!host.has_pending_visual_work());
     assert_eq!(host.palette.query(), "spotify");
     drop(host);
 }
