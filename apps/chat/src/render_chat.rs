@@ -360,20 +360,23 @@ impl ChatApp {
     ) -> Author<'a> {
         let color = self.identity_colour(&m.author);
         if m.author.starts_with("bot:") {
+            // The member a persona is linked to, by the name the room knows
+            // them by: a linked account speaks as that member.
+            let linked = m
+                .appearance
+                .as_ref()
+                .and_then(|appearance| appearance.persona.as_ref()?.linked.as_deref())
+                .and_then(|person| self.users.iter().find(|user| user.id == person));
             Author::Bot {
                 bot_name: name,
                 // The roster does not name a bot's installer yet; the chip's
                 // details are not shown in Chat so far.
                 installed_by: "",
                 appearance: m.appearance.as_ref(),
-                // The member a persona is linked to, by the name the room
-                // knows them by: a linked account speaks as that member.
-                linked: m
-                    .appearance
-                    .as_ref()
-                    .and_then(|appearance| appearance.persona.as_ref()?.linked.as_deref())
-                    .and_then(|person| self.users.iter().find(|user| user.id == person))
-                    .map(|user| user.name.as_str()),
+                linked: linked.map(|user| user.name.as_str()),
+                // A linked account wears its person's colour, as their own
+                // messages, the bar and the call do.
+                linked_color: linked.map(|user| self.identity_colour(&user.id)),
                 image: shown,
             }
         } else if self.is_provider_output(m) {
