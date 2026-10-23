@@ -40,7 +40,10 @@ class StepsTests(unittest.TestCase):
         step = next(step for step in steps.load(ROOT) if step.name == "app-text-contract")
         self.assertEqual(steps.own_files(step, ROOT), [
             "tools/policy/check_app_resource_action_contract.py", "tools/policy/check_app_text_contract.py",
-            "tools/policy/rust_source.py"])
+            "tools/policy/findings.py", "tools/policy/rust_source.py"])
+        self.assertEqual(step.t_command, "python3 tools/policy/findings.py python3 tools/policy/check_app_text_contract.py")
+        unit = next(step for step in steps.load(ROOT) if step.name == "unit")
+        self.assertEqual(unit.t_command, unit.command, "the suite's tests name their own failures")
 
     def test_malformed_steps_are_refused(self):
         for text, message in (

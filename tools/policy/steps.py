@@ -16,6 +16,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = "tools/policy/steps.toml"
 GIT_INDEX = "tools/ci/t-git-index.sh"
+FINDINGS = "tools/policy/findings.py"
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 FIELDS = {"name", "label", "run", "inputs", "git", "tests", "covered_by"}
 # Directories whose modules a step's Python imports by bare name (each script puts its own
@@ -45,6 +46,12 @@ class Step:
     def command(self) -> str:
         """What runs it: under t-git-index.sh when it reads the tree through Git."""
         return f"bash {GIT_INDEX} {self.run}" if self.git else self.run
+
+    @property
+    def t_command(self) -> str:
+        """What t runs: a check of the tree reports each of its findings for t to compare with
+        main's (findings.py); the suite's tests say which test failed themselves."""
+        return self.command if self.tests else f"python3 {FINDINGS} {self.command}"
 
 
 def load(root: Path = ROOT) -> list[Step]:
@@ -103,6 +110,8 @@ def own_files(step: Step, root: Path = ROOT) -> list[str]:
         imports(match[1], root, files)
     if step.git:
         files.add(GIT_INDEX)
+    if not step.tests:
+        files.add(FINDINGS)
     return sorted(files)
 
 

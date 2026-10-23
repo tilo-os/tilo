@@ -110,9 +110,10 @@ Then:
 1. Commit (once per clone, `python3 tools/dev/install-git-hooks.py` turns on the hooks).
 2. `git push origin HEAD:main`, in the background: the pre-push hook runs t's push gate on the
    commit as committed, in about a minute: rustfmt of the changed files, the policy steps and
-   generated-file checks the change touches, `changes`, and clippy of the changed packages. It
-   skips what is red on main already, and names the opt-in checks the change touches
-   (`t test <check>` runs one); main runs the tests and the rest.
+   generated-file checks the change touches, `changes`, and clippy of the changed packages. What
+   is red on main runs too and passes only with no lint or policy finding main doesn't have; it
+   names the opt-in checks the change touches (`t test <check>` runs one); main runs the tests
+   and the rest.
 3. If it refuses, fix and commit (it says when `t fix` already fixed files for you to commit),
    or `git fetch origin && git rebase origin/main` when main moved, then push again: a change
    that passed and rebased as the same patch passes again at once.
