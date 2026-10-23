@@ -118,26 +118,7 @@ enum Command {
     /// `--tapps`) and write `catalog.json` naming the signed ids beside them
     /// in `--out`. Builds nothing: a release's signing step runs it over a
     /// build's output.
-    SignCatalog {
-        /// Publisher identity file (`{"secret_key_hex": …}`).
-        #[arg(long)]
-        identity: PathBuf,
-        /// The env-runtime image id (`tapp:<hex>`) every tool was built on.
-        #[arg(long)]
-        runtime: PackageId,
-        /// The tools' architecture, `x86_64` or `aarch64`.
-        #[arg(long)]
-        arch: String,
-        /// The catalog the build wrote, naming the unsigned ids.
-        #[arg(long)]
-        catalog: PathBuf,
-        /// The directory holding the unsigned `.tapp`s.
-        #[arg(long)]
-        tapps: PathBuf,
-        /// Receives `<hex id>.tapp` for each signed tool and `catalog.json`.
-        #[arg(long)]
-        out: PathBuf,
-    },
+    SignCatalog(SignCatalogArgs),
     /// Merge catalog documents into one.
     MergeCatalogs {
         #[arg(long)]
@@ -145,6 +126,28 @@ enum Command {
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
     },
+}
+
+#[derive(clap::Args)]
+struct SignCatalogArgs {
+    /// Publisher identity file (`{"secret_key_hex": …}`).
+    #[arg(long)]
+    identity: PathBuf,
+    /// The env-runtime image id (`tapp:<hex>`) every tool was built on.
+    #[arg(long)]
+    runtime: PackageId,
+    /// The tools' architecture, `x86_64` or `aarch64`.
+    #[arg(long)]
+    arch: String,
+    /// The catalog the build wrote, naming the unsigned ids.
+    #[arg(long)]
+    catalog: PathBuf,
+    /// The directory holding the unsigned `.tapp`s.
+    #[arg(long)]
+    tapps: PathBuf,
+    /// Receives `<hex id>.tapp` for each signed tool and `catalog.json`.
+    #[arg(long)]
+    out: PathBuf,
 }
 
 #[derive(serde::Serialize)]
@@ -203,11 +206,7 @@ fn main() -> anyhow::Result<()> {
             packages,
         } => {
             let (id, tree) = runtime.materialise()?;
-            let sealer = match (identity, publisher) {
-                (_, Some(hex)) => Sealer::Publisher(parse_publisher(&hex)?),
-                (Some(path), None) => Sealer::Identity(env_tools::signing::identity_file(&path)?),
-                (None, None) => Sealer::Identity(SigningIdentity::generate()),
-            };
+            let sealer = Sealer::of(identity.as_deref(), publisher.as_deref())?;
             std::fs::create_dir_all(&out_dir)?;
             let builder = Builder::new(
                 DirStore::new(id, tree, Some(sealer), Some(out_dir))?,
@@ -252,32 +251,7 @@ fn main() -> anyhow::Result<()> {
                 "key": built.key,
             }))
         }
-        Command::SignCatalog {
-            identity,
-            runtime,
-            arch,
-            catalog,
-            tapps,
-            out,
-        } => {
-            let identity = env_tools::signing::identity_file(&identity)?;
-            let arch = match arch.as_str() {
-                "x86_64" => tilo_app_package::manifest::Arch::X86_64,
-                "aarch64" => tilo_app_package::manifest::Arch::AArch64,
-                other => anyhow::bail!("--arch {other:?}: tools are built for x86_64 or aarch64"),
-            };
-            let unsigned =
-                Catalog::load(&catalog).with_context(|| catalog.display().to_string())?;
-            let (signed, ids) = env_tools::delegated::sign_catalog(
-                &unsigned, &tapps, &runtime, arch, &identity, &out,
-            )?;
-            signed.save(&out.join("catalog.json"))?;
-            let ids: std::collections::BTreeMap<String, String> = ids
-                .into_iter()
-                .map(|(unsigned, signed)| (unsigned.to_string(), signed.to_string()))
-                .collect();
-            print(&serde_json::json!({ "signed": ids }))
-        }
+        Command::SignCatalog(args) => sign_catalog(&args),
         Command::MergeCatalogs { out, inputs } => {
             let mut merged = Catalog::default();
             for input in &inputs {
@@ -287,6 +261,31 @@ fn main() -> anyhow::Result<()> {
             print(&serde_json::json!({ "tools": merged.tools.len() }))
         }
     }
+}
+
+fn sign_catalog(args: &SignCatalogArgs) -> anyhow::Result<()> {
+    let identity = env_tools::signing::identity_file(&args.identity)?;
+    let arch = match args.arch.as_str() {
+        "x86_64" => tilo_app_package::manifest::Arch::X86_64,
+        "aarch64" => tilo_app_package::manifest::Arch::AArch64,
+        other => anyhow::bail!("--arch {other:?}: tools are built for x86_64 or aarch64"),
+    };
+    let unsigned =
+        Catalog::load(&args.catalog).with_context(|| args.catalog.display().to_string())?;
+    let (signed, ids) = env_tools::delegated::sign_catalog(
+        &unsigned,
+        &args.tapps,
+        &args.runtime,
+        arch,
+        &identity,
+        &args.out,
+    )?;
+    signed.save(&args.out.join("catalog.json"))?;
+    let ids: std::collections::BTreeMap<String, String> = ids
+        .into_iter()
+        .map(|(unsigned, signed)| (unsigned.to_string(), signed.to_string()))
+        .collect();
+    print(&serde_json::json!({ "signed": ids }))
 }
 
 /// Add `built` to the catalog document at `path`, creating it if missing.
@@ -391,6 +390,17 @@ enum Sealer {
     /// For this publisher, whose key is elsewhere: a placeholder signature
     /// that `sign-catalog` replaces.
     Publisher([u8; 32]),
+}
+
+impl Sealer {
+    /// `build`'s `--identity` or `--publisher`; a throwaway key without either.
+    fn of(identity: Option<&Path>, publisher: Option<&str>) -> anyhow::Result<Self> {
+        Ok(match (identity, publisher) {
+            (_, Some(hex)) => Self::Publisher(parse_publisher(hex)?),
+            (Some(path), None) => Self::Identity(env_tools::signing::identity_file(path)?),
+            (None, None) => Self::Identity(SigningIdentity::generate()),
+        })
+    }
 }
 
 /// A store over one runtime that writes each tool it is given to a
