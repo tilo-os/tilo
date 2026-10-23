@@ -1056,6 +1056,8 @@ pub fn admit_in_window(
         },
         tilo_action_policy::Asker {
             reachable: direct,
+            // A window has no session delegate: an agent acting in it holds a
+            // bounded standing (`direct` false), so its asks already refuse.
             delegated: false,
         },
     );
