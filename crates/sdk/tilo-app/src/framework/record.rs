@@ -422,8 +422,11 @@ impl<'a> Records<'a> {
         self.chains
     }
 
-    /// What was declared kept by another provider ([`Self::kept_by`]).
-    pub(crate) fn into_kept(self) -> Vec<(&'static str, Declare)> {
+    /// What was declared kept by another provider ([`Self::kept_by`]),
+    /// with the provider keeping each: what a host standing in for those
+    /// providers (the native test hosts do) serves.
+    #[must_use]
+    pub fn into_kept(self) -> Vec<(&'static str, Declare)> {
         self.kept
     }
 
