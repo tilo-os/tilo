@@ -1,10 +1,12 @@
-//! The library: a sheet over the video with the queue, recent videos and
-//! shared playlists and bookmarks.
+//! The library: the queue, recent videos and shared playlists and
+//! bookmarks, in the window's sidebar.
 //!
-//! The sheet is the toolkit's leading drawer, so it slides in over a scrim,
-//! is floating material and dismisses on the scrim, `Escape` or Close. Its
-//! rows are list rows: choosing a row plays it, and the actions a row offers
-//! show on hover and focus.
+//! The sheet is the toolkit's leading drawer: docked beside the picture
+//! where the window is wide enough, else floating over the picture down to
+//! the transport, which it never covers; floating, a press beside it puts it
+//! away. The window bar's sidebar toggle and `Escape` show and hide it, so it
+//! has no title or close of its own. Its rows are list rows: choosing a row
+//! plays it, and the actions a row offers show on hover and focus.
 
 use super::{
     Affine, Button, ButtonFace, Icon, LibraryRowHit, LibraryTab, LocalMediaEntry, PlayerApp, Point,
@@ -124,10 +126,35 @@ impl PlayerApp {
         }
     }
 
+    /// Lay the library out for the window: docked beside the picture where
+    /// the picture keeps its minimum width, else floating over the picture
+    /// down to the transport, which stays uncovered. A docked library that
+    /// changed width asks for the player to be laid out beside it again.
+    pub(super) fn resolve_library(&mut self) {
+        let content = self.drawer.resolve(self.rect);
+        if self.drawer.is_overlay() && self.transport_top > self.rect.y0 {
+            self.drawer.resolve(Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x1,
+                self.transport_top.min(self.rect.y1),
+            ));
+        }
+        let inset = if self.drawer.is_docked() {
+            (content.x0 - self.rect.x0).max(0.0)
+        } else {
+            0.0
+        };
+        if (inset - self.content_inset).abs() > 0.5 {
+            self.content_inset = inset;
+            self.content_inset_stale = true;
+            self.dirty = true;
+        }
+    }
+
     fn clear_library_rects(&mut self) {
         self.library_row_hits.clear();
         self.shared_row_hits.clear();
-        self.library_close_rect = Rect::ZERO;
         self.library_clear_rect = Rect::ZERO;
         self.library_queue_tab_rect = Rect::ZERO;
         self.library_recent_tab_rect = Rect::ZERO;
@@ -159,49 +186,9 @@ impl PlayerApp {
         let inner = Rect::new(sheet.x0 + s4, sheet.y0 + s4, sheet.x1 - s4, sheet.y1 - s4);
         let cursor = self.last_cursor;
 
-        // Header: the title, Clear on Recent, Close.
-        let control = ButtonFace::height(ControlSize::Regular, theme);
-        let header = Rect::new(inner.x0, inner.y0, inner.x1, inner.y0 + control);
-        self.library_close_rect = Rect::new(header.x1 - control, header.y0, header.x1, header.y1);
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::icon_only(self.library_close_rect, Icon::X, "Close library")
-                .hovered(self.library_close_rect.contains(cursor))
-                .focused(self.library_focus_id.as_deref() == Some("library-close")),
-        );
-        let mut title_end = self.library_close_rect.x0 - s1;
-        if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
-            let width = ButtonFace::new(Rect::ZERO, "Clear")
-                .role(ButtonRole::Plain)
-                .intrinsic_width(text, theme);
-            self.library_clear_rect = Rect::new(title_end - width, header.y0, title_end, header.y1);
-            Button::paint(
-                scene,
-                transform,
-                text,
-                theme,
-                &ButtonFace::new(self.library_clear_rect, "Clear")
-                    .role(ButtonRole::Plain)
-                    .hovered(self.library_clear_rect.contains(cursor))
-                    .focused(self.library_focus_id.as_deref() == Some("library-clear")),
-            );
-            title_end = self.library_clear_rect.x0 - s1;
-        }
-        PaintCtx::new(scene, transform, text, theme).text_role_in_band(
-            "Library",
-            TextRole::Heading,
-            theme.tokens.colors.text_primary,
-            header.x0,
-            header,
-            Some(ui::num::f32_of_f64((title_end - header.x0).max(0.0))),
-        );
-
         // The library's views: tabs, each as wide as its label.
         let tab_h = SegmentedFace::height(ControlSize::Regular, theme);
-        let tabs_y0 = header.y1 + sibling;
+        let tabs_y0 = inner.y0;
         let segments = LibraryTab::LABELS.map(ui::widget::Segment::new);
         let packed = SegmentedFace::partition_segments(
             Rect::new(inner.x0, tabs_y0, inner.x1, tabs_y0 + tab_h),
@@ -234,8 +221,30 @@ impl PlayerApp {
                 .focused(tab_focus),
         );
 
+        // Clear, on Recent with something to clear, at the trailing end of
+        // its own row under the tabs.
+        let mut list_top = tabs_y0 + tab_h + sibling;
+        if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
+            let control = ButtonFace::height(ControlSize::Regular, theme);
+            let width = ButtonFace::new(Rect::ZERO, "Clear")
+                .role(ButtonRole::Plain)
+                .intrinsic_width(text, theme);
+            self.library_clear_rect =
+                Rect::new(inner.x1 - width, list_top, inner.x1, list_top + control);
+            Button::paint(
+                scene,
+                transform,
+                text,
+                theme,
+                &ButtonFace::new(self.library_clear_rect, "Clear")
+                    .role(ButtonRole::Plain)
+                    .hovered(self.library_clear_rect.contains(cursor))
+                    .focused(self.library_focus_id.as_deref() == Some("library-clear")),
+            );
+            list_top = self.library_clear_rect.y1 + sibling;
+        }
+
         // The list under the tabs.
-        let list_top = tabs_y0 + tab_h + sibling;
         let list = Rect::new(
             sheet.x0 + s1,
             list_top,
