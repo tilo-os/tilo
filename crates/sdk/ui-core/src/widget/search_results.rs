@@ -571,6 +571,21 @@ impl SearchResultsView {
         }
     }
 
+    /// Where the empty-state line is set: its left edge, the width it wraps
+    /// at and its style. A longer line (why a confirmation asks) wraps inside
+    /// the card, centred, rather than running past a narrow window's edges.
+    fn empty_frame(&self, theme: &Theme) -> (f64, f32, crate::text_render::TextStyle) {
+        let style = theme
+            .text(TextRole::Caption)
+            .with_align(crate::text_render::ParagraphAlign::Center);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "card widths are logical pixels well within f32 range"
+        )]
+        let width = (self.rect.width() - PAD * 2.0).max(1.0) as f32;
+        (self.rect.x0 + PAD, width, style)
+    }
+
     fn draw_empty(
         &self,
         scene: &mut Scene,
@@ -578,16 +593,15 @@ impl SearchResultsView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let style = theme.text(TextRole::Caption);
-        let (tw, th) = tr.measure_style(&self.empty_text, None, &style);
-        let cx = self.rect.center().x - f64::from(tw) / 2.0;
+        let (x, width, style) = self.empty_frame(theme);
+        let (_, th) = tr.measure_style(&self.empty_text, Some(width), &style);
         let cy = (self.rect.y1 - self.empty_footer + self.rect.y0) / 2.0 - f64::from(th) / 2.0;
         tr.draw_style(
             scene,
             &self.empty_text,
             theme.tokens.colors.text_dim,
-            compose(transform, Affine::translate((cx, cy))),
-            None,
+            compose(transform, Affine::translate((x, cy))),
+            Some(width),
             &style,
         );
     }
@@ -1364,6 +1378,26 @@ mod tests {
         v.set_groups(reg.query_grouped(query));
         v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
         v
+    }
+
+    /// Why a confirmation asks is a sentence, and a window may be narrow:
+    /// the line wraps inside the card and still fits its empty band.
+    #[test]
+    fn a_long_empty_line_wraps_inside_a_narrow_card() {
+        let theme = Theme::dark();
+        let mut view = SearchResultsView::new().with_empty_text(
+            "This workspace asks before \u{201c}Save\u{201d} reaches outside it, and you decide: confirm to go ahead.",
+        );
+        view.set_rect(Rect::new(10.0, 0.0, 250.0, EMPTY_H));
+        let (x, width, style) = view.empty_frame(&theme);
+        assert!(x >= view.rect.x0 && x + f64::from(width) <= view.rect.x1);
+        let mut text = TextRenderer::new();
+        let (wrapped_width, wrapped_height) =
+            text.measure_style(&view.empty_text, Some(width), &style);
+        let (_, line) = text.measure_style("Ag", None, &style);
+        assert!(wrapped_width <= width + 0.5, "{wrapped_width} > {width}");
+        assert!(wrapped_height > line * 1.5, "the sentence wraps");
+        assert!(f64::from(wrapped_height) <= EMPTY_H, "{wrapped_height}");
     }
 
     #[test]

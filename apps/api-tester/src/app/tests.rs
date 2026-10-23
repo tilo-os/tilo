@@ -852,6 +852,60 @@ fn send_without_a_url_asks_for_one() {
     assert!(app.state().history.is_empty());
 }
 
+/// A guest's Save opens the save form at once: the button reaches nothing
+/// outside, and saving into a collection is an edit, decided as one.
+#[test]
+fn a_guests_save_opens_the_form_unasked() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    open(&mut app, &Request::new("Kept"));
+    app.set_role(ui::permissions::Role::Editor);
+    app.harness().click_named("api.save-request").unwrap();
+    app.settle();
+    assert!(
+        app.asking().is_none(),
+        "Save asks nothing: {:?}",
+        app.harness().asking_why()
+    );
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert_eq!(
+            surface.form.as_ref().map(|form| form.mode),
+            Some(FormMode::SaveRequest),
+            "the save form opened"
+        );
+    })
+    .unwrap();
+}
+
+/// Escape answers the window's ask "no", as Cancel does: the ask closes,
+/// nothing is sent, and no empty search is left open in its place.
+#[test]
+fn escape_closes_a_guests_ask_without_leaving_a_search() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("No address");
+    request.url = "  ".into();
+    open(&mut app, &request);
+    app.set_role(ui::permissions::Role::Editor);
+    app.harness().click_named("api.send").unwrap();
+    app.settle();
+    assert!(app.asking().is_some(), "the guest is asked");
+    app.harness().key("Escape");
+    app.settle();
+    assert!(app.asking().is_none(), "Escape closed the ask");
+    let fields: Vec<_> = app
+        .harness()
+        .controls()
+        .into_iter()
+        .filter(|control| control.role == ui::accesskit::Role::TextInput)
+        .filter_map(|control| control.name)
+        .collect();
+    assert!(
+        !fields.iter().any(|name| name == "Search"),
+        "no palette search is left open: {fields:?}"
+    );
+    app.with_surface::<ApiTesterApp, _>(|surface| assert!(surface.error.is_none(), "not sent"))
+        .unwrap();
+}
+
 /// A guest (an Editor) pressing Send reaches a server outside the room, so
 /// the room's grants ask first: the guest is asked in the window, told they
 /// decide, and nothing is sent until they confirm. The click is never
