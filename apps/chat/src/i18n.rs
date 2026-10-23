@@ -47,6 +47,7 @@ mod tests {
         "chat-call-mute-action",
         "chat-call-unmute-action",
         "chat-call-status",
+        "chat-call-count",
         "chat-call-select-input",
         "chat-call-input",
         "chat-call-input-hint",

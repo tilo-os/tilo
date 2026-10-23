@@ -59,6 +59,10 @@ chat-call-issue-screen-denied = Screen sharing was not allowed
 chat-call-issue-screen-lost = Screen sharing stopped
 
 chat-call-title = Call: { $channel }
+chat-call-count = { $count ->
+    [one] 1 in call
+   *[other] { $count } in call
+    }
 chat-call-open = Open call conversation
 chat-call-join = Join muted
 chat-call-leave-action = Leave call
