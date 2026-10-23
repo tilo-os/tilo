@@ -1502,9 +1502,17 @@ struct HeaderActions<'a> {
 impl HeaderActions<'_> {
     fn button(&self, id: &str, icon: Icon, label: &str, request: Request) -> HeaderButton {
         let requests = Rc::clone(self.requests);
+        // Refreshing fetches from the feeds' sites; every other header
+        // button opens something here or makes an edit, decided as one.
+        let button = Button::icon_only(id, icon, label);
+        let fetches = matches!(request, Request::Refresh);
+        let push = move || requests.borrow_mut().push(request.clone());
         HeaderButton::new(
-            Button::icon_only(id, icon, label)
-                .on_effect(move || requests.borrow_mut().push(request.clone())),
+            if fetches {
+                button.on_effect(push)
+            } else {
+                button.on_own_device_effect(push)
+            },
             self.core,
         )
     }

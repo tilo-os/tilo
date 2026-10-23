@@ -240,7 +240,8 @@ impl Command {
             id: id.to_owned(),
             bind: Box::new(move |button, cx| {
                 let dispatch = cx.dispatcher();
-                Box::new(button.on_effect(move || {
+                // The effect it hands on decides who may run it.
+                Box::new(button.on_own_device_effect(move || {
                     dispatch.effect(&crate::resource::ViewOp::FindArea { area: select() });
                 }))
             }),
