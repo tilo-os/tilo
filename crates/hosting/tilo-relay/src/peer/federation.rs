@@ -72,15 +72,6 @@ pub(super) async fn handle_sync_request(
         .get(&peer.device_public_key)
         .map(|sub| sub.tx.clone());
     let source = StateSource::new(peer, session);
-    if let Some(mailbox) = &wr.sync_refresh
-        && session.connection_live.is_some()
-        && expected
-            .as_ref()
-            .is_some_and(|tx| tx.same_channel(session.outbound))
-        && source.authorized(&wr)
-    {
-        mailbox.enqueue(workspace_id, ws.clone(), source.clone());
-    }
     drop(wr);
     let owner = crate::persistence::handle(&ws).await;
     owner

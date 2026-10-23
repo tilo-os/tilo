@@ -24,7 +24,7 @@ use tilo_user_identity::{
 };
 
 use tilo_relay::{
-    RelayConfig, WorkspaceBinding,
+    RelayConfig,
     daemon::{Relay, RelayIdentity},
 };
 
@@ -178,16 +178,6 @@ async fn spawn_relay_with(
         state_root: state_root.to_path_buf(),
         ..Default::default()
     };
-    for id in workspaces {
-        cfg.workspaces.push(WorkspaceBinding {
-            id: *id,
-            pin: true,
-            replication: tilo_relay::ReplicationIntent::FullWorkspace,
-            admitted_users: Vec::new(),
-            shell_authority: None,
-            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-        });
-    }
     let identity = RelayIdentity {
         user_public_key: user.user_pk,
         device_signing_key: relay_dev.sk.clone(),
@@ -199,12 +189,31 @@ async fn spawn_relay_with(
         .await
         .unwrap();
     for id in workspaces {
-        relay
-            .set_workspace_membership(*id, true, members.to_vec(), state_root.to_path_buf())
-            .await
-            .unwrap();
+        admit_members(&relay, *id, members, state_root).await;
     }
     relay
+}
+
+/// Make `members` the room's member devices, as the room's governor does:
+/// the devices are all the relay owner's.
+pub async fn admit_members(
+    relay: &Relay,
+    workspace: u64,
+    members: &[[u8; 32]],
+    state_root: &std::path::Path,
+) {
+    relay
+        .replace_governed_workspace_access(
+            workspace,
+            true,
+            tilo_peer_state::GovernedAccess {
+                member_devices: members.to_vec(),
+                member_user_roots: vec![relay.own_user_public_key()],
+            },
+            state_root.to_path_buf(),
+        )
+        .await
+        .unwrap();
 }
 
 /// Bind a plain iroh endpoint the tests can use to dial a relay.

@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tilo_relay::{Relay, RelayConfig, TrustPolicy, WorkspaceBinding};
+use tilo_relay::{Relay, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, IdentityPaths, RevocationList, persist};
 use ush::supervisor::{ServeResponse, recv_with_fd};
 
@@ -117,15 +117,6 @@ async fn a_terminal_reaches_an_environment_on_the_persons_relay_and_re_attaches(
     let relay = Relay::start(
         RelayConfig {
             state_root: state.path().to_path_buf(),
-            trust_policy: TrustPolicy::AllowAny,
-            workspaces: vec![WorkspaceBinding {
-                id: workspace,
-                pin: true,
-                replication: tilo_relay::ReplicationIntent::FullWorkspace,
-                admitted_users: Vec::new(),
-                shell_authority: None,
-                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-            }],
             ..RelayConfig::default()
         },
         tilo_relay::daemon::RelayIdentity {
@@ -138,10 +129,13 @@ async fn a_terminal_reaches_an_environment_on_the_persons_relay_and_re_attaches(
     .await
     .unwrap();
     relay
-        .set_workspace_membership(
+        .replace_governed_workspace_access(
             workspace,
             true,
-            vec![worker.device_pubkey(), laptop.device_pubkey()],
+            tilo_peer_state::GovernedAccess {
+                member_devices: vec![worker.device_pubkey(), laptop.device_pubkey()],
+                member_user_roots: vec![worker.cert.user_public_key, laptop.cert.user_public_key],
+            },
             state.path().to_path_buf(),
         )
         .await

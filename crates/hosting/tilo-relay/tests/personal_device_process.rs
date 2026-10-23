@@ -306,15 +306,13 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         transferred[0].relay_service_node_id,
         "the transferred registration names the actual home-peer service"
     );
-    relay
-        .set_workspace_membership(
-            FILE_WORKSPACE,
-            true,
-            vec![member_cert.device_public_key],
-            state.path().to_path_buf(),
-        )
-        .await
-        .unwrap();
+    crate::common::admit_members(
+        &relay,
+        FILE_WORKSPACE,
+        &[member_cert.device_public_key],
+        state.path(),
+    )
+    .await;
     let transferred_addr = transferred[0]
         .relay_endpoint
         .clone()
@@ -342,15 +340,13 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         })
     ));
     let continuity = tilo_relay::personal_continuity_workspace_id(&root.verifying_key().to_bytes());
-    relay
-        .set_workspace_membership(
-            continuity,
-            true,
-            vec![member_cert.device_public_key],
-            state.path().to_path_buf(),
-        )
-        .await
-        .unwrap();
+    crate::common::admit_members(
+        &relay,
+        continuity,
+        &[member_cert.device_public_key],
+        state.path(),
+    )
+    .await;
     client
         .send(Envelope::Subscribe {
             workspace_id: continuity,
