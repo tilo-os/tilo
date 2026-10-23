@@ -346,6 +346,7 @@ Deleted:
 | `build-ci-builder.yml` | `image-ci-builder-<arch>`, `image-ci-builder`, `canary-ci-builder-*-<arch>`, `sign-ci-builder`, `sign-dev-ci-builder`, `publish-ci-builder` | both architectures built; checks in t.toml; Forgejo Actions no longer runs |
 | `build-rpms.yml` | `image-rpms-<arch>`, `image-rpms`, `provenance-rpms`, `sign-rpms`, `publish-rpms`, `rpm-snapshot` | both architectures built; checks in t.toml; Forgejo Actions no longer runs |
 | `host-session-e2e.yml` | `host-session-e2e` (needs `desktop-package-amd64`; records each RPM's SHA-256 in `source.json`), which `publish-desktop-payload` needs on stable; the replay of another run's RPMs is the cached lane | `t dispatch host-session-e2e` on main |
+| `release-imager-winget.yml` | `imager-winget-acceptance` (every six hours and dispatch, `cache = false`), with the site token as the secret `TILO_SITE_TOKEN` instead of a broker lease | fails until the server config has `TILO_SITE_TOKEN` |
 
 Still here, with what is missing:
 
@@ -407,7 +408,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 | workflow | trigger | secrets and variables | runner needs | outputs | on t |
 |---|---|---|---|---|---|
 | `release-imager.yml` | `imager-v*` tags (signed release); dispatch (unsigned rehearsal) | brokers on the runners, each leased with OIDC: OpenPGP signing for Linux, Authenticode for Windows, Developer ID and notarization for macOS, GitHub App tokens for the public release repository, Homebrew tap and winget, a site token; Cosign; `REGISTRY_TOKEN`; the EFI/PCR signer | Linux x86_64 and arm64 with KVM and a render node, macOS on both arches, Windows on both arches | the GitHub release in `tilo-os/releases`, Homebrew, winget pull request, site downloads, installer media | Linux and macOS jobs as checks (`requires = ["os=macos", …]`), each signing step a separate check on `tag:imager-v*`; brokers become fixed credentials as secrets for release nodes; Windows: below |
-| `release-imager-winget.yml` | every 6 hours | site token through the broker | Linux | the site's download state | scheduled check, `cache = false` |
+| ~~`release-imager-winget.yml`~~ | every 6 hours | site token through the broker | Linux | the site's download state | moved to t (above) |
 | `release-runtime-macos.yml` | dispatch (disabled) | macOS broker, update key | macOS arm64 | artifacts | shadowed on t, unsigned: `runtime-macos-app` (dispatch); Developer ID signing needs a release-only Mac and `dist/macos/build-app.sh` split into build and sign (dist/macos/README.md) |
 
 ### Not publishing
@@ -450,6 +451,7 @@ t's server config (sops-encrypted in the infra repository), none in this reposit
 | `REGISTRY_TOKEN` | `stable`, `tag:*` | a Forgejo token that may write generic packages, which do not take t's identity tokens: `publish-model-catalog` |
 | `INFRA_PROMOTION_TOKEN` | `stable` | the bot t-infra-promotion's token, which may write the infra repository: `cloud-deploy` reads the deploy target and commits the pins it moves |
 | `TILO_PACKAGES_TOKEN` | `main` | the bot t-packages' token, which may only write tilo's generic packages: extension manifests, performance results. Performance runs record their results on every reference listed here (`perf-scheduled`, `vm-acceptance-perf`), so adding `stable` records stable's |
+| `TILO_SITE_TOKEN` | `main` | a token of the website bot that may push the site repository (`tilo/site`), whose forge takes no identity token from t: `imager-winget-acceptance` |
 
 `sign-apps-*` and `sign-engine-*` take `TAPP_PUBLISHER_IDENTITY` and `RUNTIME_BUNDLE_SIGNING_KEY`,
 `submit-apps` and `submit-engine` only `TAPP_PUBLISHER_IDENTITY` (registry entries are signed by the

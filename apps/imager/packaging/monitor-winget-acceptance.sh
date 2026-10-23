@@ -44,7 +44,20 @@ case "$state" in
     ;;
 esac
 
+# The published release names its own download root and signing key; passing
+# them back unchanged leaves the WinGet state the only thing this can advance.
+release_root="$(jq -r '.releaseRoot // empty' "$manifest")"
+fingerprint="$(jq -r '.linuxSigningFingerprint // empty' "$manifest")"
+[[ "$release_root" =~ ^(https://[A-Za-z0-9.-]+)/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/releases$ ]] \
+  || { printf 'published landing-page release has invalid release root: %s\n' "$release_root" >&2; exit 1; }
+release_server="${BASH_REMATCH[1]}"
+release_repository="${BASH_REMATCH[2]}"
+[ -n "$fingerprint" ] \
+  || { printf 'published landing-page release has no Linux signing fingerprint\n' >&2; exit 1; }
+
 # publish-site-release.sh rechecks the exact accepted Microsoft manifest,
 # preserves a fail-safe submitted state on transient failure, runs the website
 # release contract/build, and pushes only when the state actually advances.
-GITHUB_REF_NAME="$tag" apps/imager/packaging/publish-site-release.sh
+GITHUB_REF_NAME="$tag" TILO_RELEASE_SERVER="$release_server" \
+  TILO_RELEASE_REPOSITORY="$release_repository" TILO_LINUX_SIGNING_FINGERPRINT="$fingerprint" \
+  apps/imager/packaging/publish-site-release.sh
