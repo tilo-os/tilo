@@ -1067,8 +1067,10 @@ impl<R: Resource> Dispatcher<R> {
     /// Whether the participant may take `invoke`: what its declaration, or
     /// the typed value it applies, needs. One this resource does not declare
     /// (an edit bound to a surface's view state) is left to the host, which
-    /// checks what its published action needs.
-    fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
+    /// checks what its published action needs. A surface asks before work
+    /// that only feeds a write (an index it would keep with a row), so a
+    /// participant who may not make the write is not sent it.
+    pub fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
         if invoke.id == tilo_resource::APPLY || invoke.id == tilo_resource::FIELD_EDIT {
             return match invoke.build(0) {
                 Ok(action) => self.may_apply(&action),

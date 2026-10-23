@@ -371,6 +371,58 @@ fn a_book_whose_text_arrives_later_is_indexed_on_that_device() {
 }
 
 #[test]
+fn a_guest_who_may_only_view_builds_no_index_and_sends_no_write() {
+    use crate::resource::shelve;
+
+    let mut app = TestApp::<EbookShell>::new().unwrap();
+    books(&mut app).query = super::query_view::BookQuery::hermetic();
+    let content = app.content();
+    let bytes = crate::test_epub::long_classic(24, 6);
+    let book = crate::epub::parse_epub(&bytes, 0, "").unwrap();
+    let mut entry =
+        crate::content::prepare_imported_book(std::path::Path::new("odyssey.epub"), book.clone()).1;
+    entry.shared = false;
+    entry.content =
+        crate::model::LibraryEntry::stored(&tilo_content::hash_bytes(&bytes), bytes.len() as u64)
+            .unwrap();
+    app.invoke(shelve(&entry)).unwrap();
+    app.settle();
+
+    // A guest who may only view opens the shelf; the text reaches their
+    // device as they open the book.
+    app.set_role(ui::permissions::Role::Viewer);
+    content.put(&bytes).unwrap();
+    books(&mut app).query_opened();
+    books(&mut app).open_hit(&crate::resource::book_place_resource(&book.id));
+    for _ in 0..4 {
+        books(&mut app).settle_query();
+        app.settle();
+    }
+    assert_eq!(
+        books(&mut app).open_book().map(|open| open.id.clone()),
+        Some(book.id.clone()),
+        "the book opens for the guest"
+    );
+    assert!(
+        books(&mut app).query.index_mut().take_built().is_empty()
+            && !books(&mut app).query.index_mut().building(),
+        "no index is built for a write the room would refuse"
+    );
+    assert!(
+        books(&mut app).dispatch.refused().get().is_none(),
+        "nothing the guest may not write was sent"
+    );
+    let row = app
+        .state()
+        .entries
+        .values()
+        .find(|row| row.id == book.id)
+        .cloned()
+        .unwrap();
+    assert_eq!(row.index_hash(), None, "the row names no index");
+}
+
+#[test]
 fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
     use ui::collaboration::record_content::{ContentLane, RecordContent};
 
