@@ -60,12 +60,12 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
             self.assertIn("oci-index.py", index["run"])
             smoke = (ROOT / "os/tests/release_tools_image.sh").read_text()
             self.assertIn("max_image_bytes=536870912", smoke)
-        with self.subTest(phase='main publishes one immutable index, proven anonymously pullable'):
+        with self.subTest(phase='dispatched: one immutable index, proven anonymously pullable'):
             self.doCleanups()
             self.setUp()
             publish = self.checks["publish-release-tools"]
             self.assertEqual(publish["needs"], ["image-release-tools"])
-            self.assertEqual(publish["on"], ["main", "dispatch"])
+            self.assertEqual(publish["on"], ["dispatch"])
             self.assertEqual(publish["id_token"], ["registry.tilo.so"])
             self.assertIn("registry.tilo.so/tilo/tilo-release-tools", publish["run"])
             self.assertIn("'sha-{commit}'", publish["run"])

@@ -122,12 +122,14 @@ name = "release-rehearsal"
 about = """
 The release rehearsal (tools/ci/publish/rehearsal): a one-file image that runs the whole chain
 as a release does, so the chain is proven on t without publishing anything anyone deploys.
-Main publishes `dev-<commit>` when its inputs change. A tag `v0-rehearsal-<n>` (or `t dispatch
+`t dispatch publish-release-rehearsal --ref main` publishes `dev-<commit>`; main doesn't on its
+own, since nothing deploys it. A tag `v0-rehearsal-<n>` (or `t dispatch
 publish-release-rehearsal --ref stable`) runs it as a release: it is signed with the release key in
 KMS (identity token, AWS role), published as `sha-<commit>` with the signature and a receipt, and
 the reference's `release-rehearsal` pointer is set. No other check runs on such a tag."""
 repository = "registry.tilo.so/tilo/release-rehearsal"
 dev = ["dev-{commit}"]
+dispatch = true
 release = ["sha-{commit}"]
 release_on = ["dispatch", "tag:v0-rehearsal-*"]
 
@@ -183,12 +185,14 @@ name = "release-tools"
 about = """
 The release tools image (os/Containerfile.release-tools): the compiler-free environment the
 release jobs run in, built and tested natively per architecture and published from main as
-one index. Its consumers pin the index by digest; jobs pull it before they can log in, so it
-must be anonymously pullable."""
+one index when someone asks (`t dispatch publish-release-tools --ref main`). Its consumers pin
+the index by digest by hand, so a push to main has nothing to publish it for; jobs pull it
+before they can log in, so it must be anonymously pullable."""
 repository = "registry.tilo.so/tilo/tilo-release-tools"
 arches = ["x86_64", "aarch64"]
 index = true
 dev = ["sha-{commit}"]
+dispatch = true
 anonymous = true
 
 [product.build]
@@ -797,10 +801,10 @@ family = "development-signing"
 about = """
 The development signing tools proven natively on both architectures (os/tests/
 development_signing_native.sh): a fixture image with private keys and a local registry,
-whose tests nest Podman, so it runs as root in a micro-VM step. It runs on main whenever
-what it reads changes (the signing tools, their tests, tilo-crypto and what it depends on);
-T_INPUT_PROOF=prediction|retention|prediction-retention selects one proof once it can also
-be dispatched."""
+whose tests nest Podman, so it runs as root in a micro-VM step. It builds and boots fixture
+images on both architectures, so it runs on release candidates and when dispatched, not on
+every push to main. `t dispatch development-signing-x86_64 --input
+proof=prediction|retention|prediction-retention` runs one proof."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 
 [[matrix.check]]
@@ -811,6 +815,8 @@ cargo_packages = ["tilo-crypto"]
 outputs = ["/target/development-signing/{arch}/**"]
 requires = ["arch={arch}"]
 cost = "heavy"
+on = ["stable", "dispatch"]
+default = false
 
 [[matrix.check]]
 name = "development-signing-{arch}"
@@ -821,6 +827,9 @@ requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 requirement = { cores = 4, memory = "16GiB" }
 timeout_secs = 2700
+on = ["stable", "dispatch"]
+default = false
+dispatch_inputs = { proof = "full" }
 
 [[matrix]]
 family = "env-tools"
@@ -1117,14 +1126,16 @@ default = false
 [[matrix.check]]
 name = "nightly-os-image-{arch}"
 comment = """
-The image os-image-{arch} built, checked as a device gets it, every night main's image inputs
-changed (tools/ci/publish/os-image-smoke.sh): inside the image, every ELF resolves its libraries,
-every script its interpreter and every package its dependencies, the enabled units exist and
-verify, every GStreamer plugin loads and Miracast's software encoders work, and the programs
-the desktop runs start (tools/ci/image_smoke.py); then the image is installed onto a disk as a
-release validation installs one and booted under KVM until the greeter accepts input, with no
-unit failed on the way. It installs from the RPM set of the same run when no snapshot of it is
-published, so a package-set change is checked on main before it reaches stable."""
+The image os-image-{arch} built, checked as a device gets it, on every release candidate and
+when dispatched (tools/ci/publish/os-image-smoke.sh): inside the image, every ELF resolves its
+libraries, every script its interpreter and every package its dependencies, the enabled units
+exist and verify, every GStreamer plugin loads and Miracast's software encoders work, and the
+programs the desktop runs start (tools/ci/image_smoke.py); then the image is installed onto a
+disk as a release validation installs one and booted under KVM until the greeter accepts input,
+with no unit failed on the way. It installs from the RPM set of the same run when no snapshot
+of it is published, so a package-set change is checked before stable ships it (`t dispatch
+nightly-os-image-x86_64 --ref main` checks it on main sooner). It builds the whole OS image, so
+pushes to main don't run it."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-image-smoke.sh {arch} /target/os/{arch}/image /target/publish/os-smoke/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-image-smoke.sh", "tools/ci/image_smoke.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh"]
@@ -1136,7 +1147,7 @@ isolation = "vm"
 cost = "heavy"
 requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 5400
-on = ["schedule:30 1 * * *"]
+on = ["stable", "dispatch"]
 default = false
 
 [[matrix]]
@@ -1144,8 +1155,9 @@ family = "os"
 about = """
 Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
-since bootc takes a device tree only from one. Every night, and when dispatched (`t dispatch
-publish-os-board-lenovo-83ed --ref main`), main's head is built and pushed as
+since bootc takes a device tree only from one. When dispatched (`t dispatch
+publish-os-board-lenovo-83ed --ref main`; it builds the whole aarch64 OS image, so main
+doesn't run it on its own), main's head is built and pushed as
 registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
 sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 follow on their own (DEVELOPMENT.md, "Board dev images on real hardware")."""
@@ -1176,7 +1188,7 @@ needs = ["os-board-{board}"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["schedule:30 1 * * *", "dispatch"]
+on = ["dispatch"]
 
 [[matrix]]
 family = "extension-manifests"
