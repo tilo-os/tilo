@@ -68,6 +68,9 @@ tempfile.workspace = true
 tilo-cpu-raster = { path = "../../crates/sdk/tilo-cpu-raster" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# A reader hosted in a desktop window, as the browser desktop hosts it.
+tilo-desktop-model = { path = "../../crates/session/desktop-model" }
+tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
 
 [[test]]
 name = "it"

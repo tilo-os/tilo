@@ -951,10 +951,11 @@ impl Dropdown {
                     .with_name(label.clone())
                     .with_key(Self::option_key(value))
                     .with_position(row.saturating_add(1), total)
+                    // The keyboard stays on the combobox while its list is
+                    // open: an option marked focused would take the tree's
+                    // focus from it.
                     .with_state(
-                        AccessState::new()
-                            .selected(self.menu.is_none() && *value == self.selected)
-                            .focused(self.is_focused() && row == self.highlight),
+                        AccessState::new().selected(self.menu.is_none() && *value == self.selected),
                     );
                 if drawn.height() > 0.0 {
                     option = option.with_bounds(drawn);

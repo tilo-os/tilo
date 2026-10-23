@@ -754,11 +754,15 @@ mod tests {
         // each fsync waits for that writeback, which took the subject from
         // seconds to past the hang bound. What it checks is admission and
         // transition order, not durability, so its whole tree lives on a
-        // private tmpfs where those syncs return at once.
-        let root = "/tmp/userspace-cohort";
+        // private tmpfs where those syncs return at once. The tmpfs covers
+        // only a fresh empty directory: the test binary and the source tree
+        // may themselves live under /tmp, and must stay visible to the child.
+        let tmpfs = tempfile::tempdir().unwrap();
+        let mount = tmpfs.path().to_str().unwrap();
+        let root = format!("{mount}/userspace-cohort");
         let bound = tilo_test_env::hang_bound().as_secs().to_string();
-        let output = Command::new("timeout").args([bound.as_str(), "bwrap", "--unshare-all", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"])
-            .args(["--setenv", SUBJECT, root])
+        let output = Command::new("timeout").args([bound.as_str(), "bwrap", "--unshare-all", "--uid", "0", "--gid", "0", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", mount])
+            .args(["--setenv", SUBJECT, root.as_str(), "--setenv", "TMPDIR", mount])
             .arg(std::env::current_exe().unwrap()).args(["daemon::userspace::tests::userspace_cohort_admits_all_imports_and_preserves_one_owner_transition", "--exact", "--nocapture"])
             .output().unwrap();
         assert!(

@@ -937,3 +937,68 @@ fn a_muted_microphone_on_a_device_without_one_says_so() {
         "and its tooltip says so"
     );
 }
+
+#[test]
+fn the_docked_call_shows_the_other_person_large_and_follows_who_speaks() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    render_frame(&mut app, 1280.0, 800.0);
+    let me = app.me.id.clone();
+    assert_eq!(app.huddle_people(), vec![me.clone()], "alone: yourself");
+    assert!(app.huddle_features_me());
+
+    service_streams(&mut app, "c_huddle", 2);
+    render_frame(&mut app, 1280.0, 800.0);
+    let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
+    let people = app.huddle_people();
+    assert_eq!(people[0], first, "with company: someone else is large");
+    assert!(people[1..].contains(&me), "yourself goes small");
+    assert!(!app.huddle_features_me());
+
+    app.native_voice.snapshot.speaking = vec![second.clone()];
+    app.refresh_native_streams();
+    render_frame(&mut app, 1280.0, 800.0);
+    assert_eq!(app.huddle_people()[0], second, "who speaks is large");
+
+    app.native_voice.snapshot.speaking.clear();
+    app.refresh_native_streams();
+    render_frame(&mut app, 1280.0, 800.0);
+    assert_eq!(app.huddle_people()[0], second, "a pause keeps them large");
+
+    app.native_voice.snapshot.speaking = vec![me];
+    app.refresh_native_streams();
+    render_frame(&mut app, 1280.0, 800.0);
+    assert_eq!(
+        app.huddle_people()[0],
+        second,
+        "speaking yourself changes nothing"
+    );
+}
+
+#[test]
+fn a_call_that_ended_for_a_reason_no_longer_counts_you_in_it() {
+    use ui::presence::capability::PublishesPresence;
+    let (mut app, _doc) = app_with_doc();
+    service_streams(&mut app, "c_huddle", 1);
+    let me = app.me.id.clone();
+    assert!(app.in_call());
+    assert!(app.voice_people("c_huddle").contains(&me));
+    assert!(app.presence_payload().is_some(), "the others see you in it");
+
+    // The room ended this device's part (a page that stood still past the
+    // participation's lifetime): the panel stays to say why.
+    app.native_voice.snapshot.state = ui::native_media::State::Ended;
+    app.native_voice.snapshot.issue = Some(ui::native_media::Issue::SessionEnded);
+    app.project_native_voice();
+    assert!(app.call.active, "the panel says why the call ended");
+    assert!(!app.in_call());
+    assert_eq!(
+        app.voice_people("c_huddle"),
+        vec![format!("{:064x}", 1)],
+        "only who is still in the call"
+    );
+    assert!(
+        app.presence_payload().is_none(),
+        "the others no longer see you in it"
+    );
+}

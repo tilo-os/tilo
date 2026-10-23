@@ -13,6 +13,8 @@
 //! frame when one has arrived (`remote_screens`) and an honest "connecting"
 //! placeholder — never a fabricated picture — until then.
 
+use std::collections::BTreeSet;
+
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
@@ -282,14 +284,76 @@ impl ChatApp {
             self.speaking.clear();
             return;
         }
-        let heard = self
+        let heard: BTreeSet<String> = self
             .call_participants()
             .into_iter()
             .filter(|p| p.talking && !p.muted)
             .map(|p| p.user)
             .collect();
+        let me = self.me.id.clone();
+        let keeps = self
+            .call
+            .featured
+            .as_ref()
+            .is_some_and(|featured| heard.contains(featured));
+        if !keeps && let Some(speaker) = heard.iter().find(|person| **person != me) {
+            self.call.featured = Some(speaker.clone());
+        }
         self.speaking
             .reconcile(heard, theme.motion(), ui::time::now());
+    }
+
+    /// Everyone in the docked call, the one it shows large first: the other
+    /// person it heard last, else the first other person, and this person
+    /// only when alone. Yourself is who you need to see least.
+    fn huddle_participants(&self) -> Vec<Participant> {
+        let mut parts = self.call_participants();
+        let featured = self
+            .call
+            .featured
+            .as_ref()
+            .and_then(|featured| parts.iter().skip(1).position(|p| &p.user == featured))
+            .map_or(1, |index| index + 1);
+        if featured < parts.len() {
+            let person = parts.remove(featured);
+            parts.insert(0, person);
+        }
+        parts
+    }
+
+    /// Who the docked call shows, the large tile's person first.
+    #[cfg(test)]
+    pub(crate) fn huddle_people(&self) -> Vec<String> {
+        self.huddle_participants()
+            .into_iter()
+            .map(|p| p.user)
+            .collect()
+    }
+
+    /// Whether the docked call shows this person large: only while alone.
+    pub(crate) fn huddle_features_me(&self) -> bool {
+        self.huddle_participants()
+            .first()
+            .is_none_or(|p| self.is_me(&p.user))
+    }
+
+    /// The large tile of the docked call when it shows someone else: their
+    /// camera picture once it arrives, else their face and why there is
+    /// none.
+    pub(crate) fn draw_huddle_featured(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(p) = self.huddle_participants().into_iter().next() else {
+            return;
+        };
+        if self.is_me(&p.user) {
+            return;
+        }
+        self.draw_member_picture(scene, tf, tr, theme, self.huddle_video(), &p);
     }
 
     /// A person's face in the call: their colour as a ring, and their
@@ -314,7 +378,7 @@ impl ChatApp {
         }
         // The participant strip opens only when there is someone beside you
         // to show in it.
-        let parts = self.call_participants();
+        let parts = self.huddle_participants();
         let open = parts.len() > 1 && self.participants_should_show(parts.len());
         self.call_chrome_motion.reconcile(open, theme);
         if !self.call.expanded {
@@ -539,7 +603,11 @@ impl ChatApp {
             .map_or_else(|| "Call".into(), |c| c.name.clone());
         ui::surface::floating_drag_grip(scene, tf, panel, local.text_dim);
         let sp = &theme.tokens.spacing;
-        let n = self.call_participants().len();
+        // A call that ended for a reason counts only who is still in it.
+        let n = self
+            .call_participants()
+            .len()
+            .saturating_sub(usize::from(!self.in_call()));
         let count = format!("{n} in call");
         let count_style = local.text(TextRole::Caption).numeric();
         let count_w = width_of(tr, &count, &count_style);
@@ -577,8 +645,11 @@ impl ChatApp {
         let panel = self.huddle_panel();
         let local = theme.on_ground(ui::chrome::panel_ground(theme));
         let v = self.huddle_video();
-        let you = self.user_name(&self.me.id);
-        Self::name_plate(scene, tf, tr, theme, v, &you, self.call.muted);
+        let parts = self.huddle_participants();
+        if let Some(featured) = parts.first() {
+            let name = self.user_name(&featured.user);
+            Self::name_plate(scene, tf, tr, theme, v, &name, featured.muted);
+        }
         // A call that ended for a reason says it on the status line.
         if let Some(error) = self
             .media_error
@@ -599,7 +670,6 @@ impl ChatApp {
             );
         }
 
-        let parts = self.call_participants();
         let others = parts.len().saturating_sub(1);
         let c = &self.chrome;
         let status = Rect::new(
@@ -1263,7 +1333,39 @@ impl ChatApp {
         rect: Rect,
         p: &Participant,
     ) {
+        self.draw_member_picture(scene, tf, tr, theme, rect, p);
         let name = self.user_name(&p.user);
+        Self::name_plate(scene, tf, tr, theme, rect, &name, p.muted);
+        if p.sharing {
+            let side = ChipFace::height(theme);
+            let inset = f64::from(theme.tokens.spacing.s2);
+            ChipFace::new(
+                Rect::new(
+                    rect.x1 - inset - side,
+                    rect.y0 + inset,
+                    rect.x1 - inset,
+                    rect.y0 + inset + side,
+                ),
+                "",
+            )
+            .lead(ChipLead::Glyph(Icon::Monitor))
+            .style(ChipStyle::Live)
+            .paint(scene, tf, tr, theme);
+        }
+    }
+
+    /// What a member's tile shows under its name plate: their decoded camera
+    /// picture, ringing while they talk, or their face and why there is no
+    /// picture.
+    fn draw_member_picture(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        p: &Participant,
+    ) {
         let is_stream = self
             .native_voice
             .snapshot
@@ -1300,23 +1402,6 @@ impl ChatApp {
                 member_tile_caption(p)
             };
             self.paint_viewfinder(PaintCtx::new(scene, tf, tr, theme), rect, &p.user, caption);
-        }
-        Self::name_plate(scene, tf, tr, theme, rect, &name, p.muted);
-        if p.sharing {
-            let side = ChipFace::height(theme);
-            let inset = f64::from(theme.tokens.spacing.s2);
-            ChipFace::new(
-                Rect::new(
-                    rect.x1 - inset - side,
-                    rect.y0 + inset,
-                    rect.x1 - inset,
-                    rect.y0 + inset + side,
-                ),
-                "",
-            )
-            .lead(ChipLead::Glyph(Icon::Monitor))
-            .style(ChipStyle::Live)
-            .paint(scene, tf, tr, theme);
         }
     }
 

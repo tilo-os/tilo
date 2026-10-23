@@ -40,13 +40,13 @@ async function connected({status = STATUS_ADMITTED, expectedPhase = 'live', leav
     carrier:options=>openCarrier({...options, WebTransport})});
   let onEvent;
   // `timers` are carrier retries; the join's grant deadline is not one.
-  const sent = [], timers = [], audio = {stopped:0, muted:false};
+  const sent = [], timers = [], deadlines = [], audio = {started:0, stopped:0, muted:false};
   const call = createVoiceCall({transport,
     signalling:{join:id=>sent.push(['join',id]), leave:()=>{sent.push(['leave']);if(leaveError)throw leaveError;},
       onEvent:listener=>{onEvent=listener; return ()=>{};}},
-    audio:{start:async ()=>({get captureActive() {return !audio.muted && !audio.stopped;},
+    audio:{start:async ()=>(audio.started++, {get captureActive() {return !audio.muted && !audio.stopped;},
       setMuted:async muted=>{audio.muted=muted;}, stop:async ()=>{audio.stopped++;}})},
-    environment:new EventTarget(), clock:{setTimeout:(callback,delay)=>{const timer={callback,delay};if(delay!==GRANT_DEADLINE_MS)timers.push(timer);return timer;}, clearTimeout:timer=>{timer.cancelled=true;}}});
+    environment:new EventTarget(), clock:{setTimeout:(callback,delay)=>{const timer={callback,delay};(delay===GRANT_DEADLINE_MS?deadlines:timers).push(timer);return timer;}, clearTimeout:timer=>{timer.cancelled=true;}}});
   call.join(CALL);
   await drain();
   const grant = {call:CALL, participation:SELF, token:'01',
@@ -56,18 +56,45 @@ async function connected({status = STATUS_ADMITTED, expectedPhase = 'live', leav
   await drain();
   assert.equal(call.state.phase,expectedPhase);
   assert.equal(call.stats().captureActive,expectedPhase==='live');
-  return {call,audio,timers,sent,admission,webTransport,onEvent,grant};
+  return {call,audio,timers,deadlines,sent,admission,webTransport,onEvent,grant};
 }
 
-test('authenticated carrier revocation closes audio when the signalling end event is lost', async () => {
+/** The grant deadline an admission the room took away waits on, run. */
+function deadlinePasses(f) {
+  const waiting = f.deadlines.filter(timer=>!timer.cancelled);
+  assert.equal(waiting.length,1,'the call waits for a fresh grant');
+  waiting[0].callback();
+}
+
+test('authenticated carrier revocation closes audio, then ends the call when no fresh grant comes', async () => {
   const f = await connected();
   f.admission.enqueue(Uint8Array.of(STATUS_REVOKED));
   await drain();
   assert.equal(f.call.stats().captureActive,false);
   assert.equal(f.audio.stopped,1,'explicit authority loss must dispose playback and capture, not retain a paused session');
+  assert.equal(f.call.state.phase,'reconnecting','the session may still hold the participation');
+  assert.equal(f.timers.length,0,'revocation must not schedule a carrier retry on the revoked grant');
+  assert.deepEqual(f.sent,[['join',CALL]]);
+  deadlinePasses(f);
   assert.equal(f.call.state.phase,'ended');
-  assert.equal(f.timers.length,0,'revocation must not schedule a carrier retry');
   assert.deepEqual(f.sent,[['join',CALL],['leave']]);
+  f.call.dispose();
+});
+
+test('a call the room took the carrier from goes on with the fresh grant the session brings', async () => {
+  const f = await connected();
+  f.admission.enqueue(Uint8Array.of(STATUS_REVOKED));
+  await drain();
+  assert.equal(f.call.state.phase,'reconnecting');
+  // The session joined afresh: a new participation and token.
+  const fresh = 'b'.repeat(64);
+  f.onEvent({kind:'granted',grant:{...f.grant, participation:fresh, token:'03', publication:`${CALL}/${fresh}`,
+    participants:[{namespace:`${CALL}/${fresh}`,device:SELF,user:SELF,publishes:true}]}});
+  await drain();
+  assert.equal(f.call.state.phase,'live');
+  assert.equal(f.audio.started,2,'audio starts again for the fresh admission');
+  assert.equal(f.deadlines.filter(timer=>!timer.cancelled).length,0);
+  assert.deepEqual(f.sent,[['join',CALL]],'nothing left the call');
   f.call.dispose();
 });
 
@@ -88,6 +115,8 @@ test('authenticated revocation close code closes audio even without a delivered 
   const f = await connected();
   f.webTransport.hostClose(0x7402);
   await drain();
+  assert.equal(f.call.state.phase,'reconnecting');
+  deadlinePasses(f);
   assert.equal(f.call.state.phase,'ended');
   assert.equal(f.audio.stopped,1);
   assert.equal(f.timers.filter(timer=>!timer.cancelled).length,0);
@@ -95,8 +124,10 @@ test('authenticated revocation close code closes audio even without a delivered 
 });
 
 test('an explicit admission denial stops audio instead of retrying a refused grant', async () => {
-  const f = await connected({status:STATUS_DENIED,expectedPhase:'ended'});
+  const f = await connected({status:STATUS_DENIED,expectedPhase:'reconnecting'});
   assert.equal(f.audio.stopped,1);
+  deadlinePasses(f);
+  assert.equal(f.call.state.phase,'ended');
   assert.equal(f.timers.length,0);
   f.call.dispose();
 });
@@ -119,6 +150,7 @@ test('revocation disposes audio even when signalling Leave throws', async () => 
   const f = await connected({leaveError:new Error('signalling disconnected')});
   f.admission.enqueue(Uint8Array.of(STATUS_REVOKED));
   await drain();
+  deadlinePasses(f);
   assert.equal(f.call.state.phase,'ended');
   assert.equal(f.audio.stopped,1);
   assert.equal(f.timers.length,0);

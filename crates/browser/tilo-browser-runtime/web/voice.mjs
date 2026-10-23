@@ -330,7 +330,7 @@ export function createVoiceCall({
       // authenticated carrier says this grant no longer has authority.
       void session.authorityLost?.then(() => {
         if (ticket !== generation || !grant || state.call !== opening.call) return;
-        admissionEnded(opening.call, new MediaAdmissionError().message);
+        admissionLost(opening.call, new MediaAdmissionError().message);
       });
       void session.closed.then(() => {
         if (carrier !== session) return;
@@ -343,7 +343,7 @@ export function createVoiceCall({
       connecting = undefined;
       report({type: 'voice-carrier-error', error});
       if (error instanceof MediaAdmissionError) {
-        admissionEnded(opening.call, error.message);
+        admissionLost(opening.call, error.message);
         return;
       }
       retry();
@@ -372,6 +372,8 @@ export function createVoiceCall({
     if (state.phase === 'idle' || state.phase === 'ended' || next.call !== state.call) return;
     grant = next;
     clearGrantDeadline();
+    // Back after the room took the carrier away: audio again, as wanted.
+    if (!audioSession && !audioStarting) void startAudio();
     const canPublish = next.directions.publish;
     if (!canPublish && !state.muted) void audioSession?.setMuted(true);
     update({admitted: true, canPublish, muted: canPublish ? state.muted : true, participants: participants()});
@@ -390,6 +392,22 @@ export function createVoiceCall({
   function clearGrantDeadline() {
     if (grantTimer !== undefined) clearTimer(grantTimer);
     grantTimer = undefined;
+  }
+
+  /** The room took the carrier's admission away (revoked it, or refused
+   * its token): nothing is sent or played on it any more. The session
+   * still holds the participation and joins afresh when the host forgot it
+   * (a page that stood still past its lifetime, a token renewed meanwhile),
+   * so the call waits for that grant; one that does not come in time ends
+   * the call, and an end the session reports ends it at once. */
+  function admissionLost(call, reason) {
+    if (call !== state.call) return;
+    stopAll();
+    update({phase: 'reconnecting', carrier: 'waiting', camera: false, screen: false, participants: []});
+    grantTimer = setTimer(() => {
+      grantTimer = undefined;
+      if (state.call === call && !grant && state.phase !== 'idle' && state.phase !== 'ended') admissionEnded(call, reason);
+    }, GRANT_DEADLINE_MS);
   }
 
   function admissionEnded(call, reason) {
