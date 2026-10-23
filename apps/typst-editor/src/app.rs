@@ -107,11 +107,6 @@ use crate::preview::PreviewPane;
 use crate::resource::TypstFilePaths;
 use crate::worker::CompileWorker;
 
-/// Pixels-per-point the document is rasterised at. 2.0 keeps pages crisp on
-/// a `HiDPI` surface; preview zoom only scales the *display*, never the render
-/// resolution.
-const PPP: f32 = 2.0;
-
 /// Which single pane the compact (narrow-window) layout is showing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CompactPane {
@@ -528,7 +523,9 @@ impl TypstApp {
             // about the document: the preview says it is empty instead. A
             // late result for text since deleted is superseded the same way.
             self.preview.set_blank();
-        } else if out.pages.is_empty() {
+        } else if let Some(document) = &out.document {
+            self.preview.set_document(document.clone(), &out.page_text);
+        } else {
             // The compile failed. Keep the last successful render on screen (so
             // the reader doesn't lose their place while fixing a typo) and flag
             // it stale; only fall back to a placeholder when nothing has ever
@@ -537,8 +534,6 @@ impl TypstApp {
                 self.preview.set_failed();
             }
             self.preview.set_stale(true);
-        } else {
-            self.preview.set_pages_with_text(&out.pages, &out.page_text);
         }
         self.diagnostics.set_diagnostics(out.diagnostics);
         if self.err_count > 0 && self.compile_feedback {
@@ -566,9 +561,9 @@ impl TypstApp {
         // What the results that arrive from now on are for.
         self.last_source = source.to_string();
         if let Some(w) = self.worker.as_mut() {
-            w.request(source.to_string(), PPP);
+            w.request(source.to_string());
         } else {
-            let out = compile::compile_source(&self.parts, source, PPP);
+            let out = compile::compile_source(&self.parts, source);
             self.apply_output(out);
         }
     }
@@ -1291,6 +1286,10 @@ impl Widget for TypstApp {
         }
         // Land a finished Open/Save/Export file dialog.
         self.drain_io();
+        // Pages the renderer finished while nothing else happened repaint.
+        if self.preview.take_renders() {
+            self.dirty = true;
+        }
         self.editor.pull(doc);
         let source = self.editor.text().to_owned();
         self.outline.sync(&source);
@@ -1309,10 +1308,10 @@ impl Widget for TypstApp {
 
         if !self.initialized {
             // First frame: compile synchronously so the very first paint
-            // (a capture's included) has rendered pages, then bring the async
-            // worker online for subsequent edits.
+            // (a capture's included) has the pages laid out, then bring the
+            // async worker online for subsequent edits.
             self.last_source = source.clone();
-            let out = compile::compile_source(&self.parts, &source, PPP);
+            let out = compile::compile_source(&self.parts, &source);
             self.apply_output(out);
             self.worker = CompileWorker::spawn(self.parts.clone());
             self.source_cache = source;
@@ -1609,6 +1608,7 @@ impl Widget for TypstApp {
 
     fn has_pending_visual_work(&self) -> bool {
         self.compiling()
+            || self.preview.has_pending_renders()
             || self
                 .children()
                 .iter()
@@ -1637,6 +1637,7 @@ impl Widget for TypstApp {
         // a stray pointer event), or a control is animating.
         self.editor.wants_animation()
             || self.compiling()
+            || self.preview.wants_frames()
             || self.status.needs_frame(ui::time::now())
             || self
                 .chrome
@@ -2081,6 +2082,8 @@ fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsE
     tilo_files::blocking::save_document(&dir, &name, bytes)
 }
 
+#[cfg(test)]
+mod long_document_tests;
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests;
