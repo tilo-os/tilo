@@ -76,7 +76,6 @@ impl DeviceRevocations for RevocationList {
 /// Whom a route trusts: its relay and this device, while neither is revoked.
 #[derive(Clone)]
 pub struct RouteTrust {
-    /// The relay's device key.
     pub relay: DeviceKey,
     /// This device's key.
     pub device: DeviceKey,
@@ -159,7 +158,6 @@ pub struct OffloadIdentity {
     pub user_public_key: [u8; 32],
     /// This device's certificate.
     pub device_cert: DeviceCert,
-    /// This device's key.
     pub device_signing_key: ed25519_dalek::SigningKey,
     /// The person's device revocations as this device knows them, read
     /// again whenever the route decides whom to trust.
@@ -169,7 +167,6 @@ pub struct OffloadIdentity {
 /// Everything a device's offload route is started from.
 #[derive(Clone)]
 pub struct DeviceOffloadConfig {
-    /// The relay.
     pub relay: OffloadRelay,
     /// This device.
     pub identity: OffloadIdentity,

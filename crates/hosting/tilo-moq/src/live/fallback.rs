@@ -499,11 +499,6 @@ impl LiveRelay {
     }
 
     /// Apply one client frame batch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session is gone or a frame is malformed or not
-    /// permitted by the session's grant.
     pub fn fallback_send(&self, id: &[u8; 16], body: &[u8]) -> Result<(), FallbackError> {
         if body.len() > MAX_SEND_BYTES {
             return Err(FallbackError::Invalid);

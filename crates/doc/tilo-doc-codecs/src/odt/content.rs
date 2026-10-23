@@ -321,7 +321,6 @@ impl BodyState {
 
 /// What a `draw:frame` event left behind.
 enum FrameOutcome {
-    /// The frame is still open.
     Open,
     /// The frame became a block (an `image`, or a verbatim `fidelity` block).
     Block,
@@ -1490,7 +1489,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn imports_block_structure_lists_tables_and_fidelity_atoms() {
-        // Phase `imports_headings_paragraphs_lists`.
         {
             let body = concat!(
                 r#"<text:h text:outline-level="2">Title</text:h>"#,
@@ -1521,7 +1519,6 @@ mod tests {
             assert_eq!(snap.blocks[2].text, "one");
             assert_eq!(snap.blocks[3].text, "two");
         }
-        // Phase `imports_named_heading_style_whitespace_and_ordered_list`.
         {
             let styles = concat!(
                 r#"<style:style style:name="Heading_20_1" style:display-name="Heading 1" style:family="paragraph" style:default-outline-level="1"/>"#,
@@ -1582,7 +1579,6 @@ mod tests {
                 "numbered list-style → ordered"
             );
         }
-        // Phase `table_roundtrips_as_editable_cells`.
         {
             let body = concat!(
                 r#"<table:table table:name="T1">"#,
@@ -1639,7 +1635,6 @@ mod tests {
                 "table survives export+import"
             );
         }
-        // Phase `cell_alignment_roundtrips`.
         {
             // A centred table cell: alignment lives on the inner paragraph in ODF.
             let styles = r#"<style:style style:name="Pc" style:family="paragraph"><style:paragraph-properties fo:text-align="center"/></style:style>"#;
@@ -1697,7 +1692,6 @@ mod tests {
                 "cell alignment round-trips"
             );
         }
-        // Phase `nested_list_items_capture_level`.
         {
             let body = concat!(
                 r#"<text:list><text:list-item><text:p>a</text:p></text:list-item>"#,
@@ -1738,7 +1732,6 @@ mod tests {
                 "top-level item has no level attr"
             );
         }
-        // Phase `list_items_import_tight_without_layout_whitespace`.
         {
             let body = "<text:list>\n  <text:list-item>\n    <text:p>a</text:p>\n  </text:list-item>\n  <text:list-item>\n    <text:p>b</text:p>\n  </text:list-item>\n</text:list>";
             let odt = minimal_odt(body);
@@ -1763,7 +1756,6 @@ mod tests {
                 "no indentation whitespace in item text: {items:?}"
             );
         }
-        // Phase `preserves_unmodeled_body_element_as_fidelity_atom`.
         {
             let body = concat!(
                 r#"<text:p>before</text:p>"#,
@@ -1824,7 +1816,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn imports_spans_links_and_colors_as_marks() {
-        // Phase `imports_spans_as_marks`.
         {
             let styles = concat!(
                 r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#,
@@ -1861,7 +1852,6 @@ mod tests {
                 p.marks
             );
         }
-        // Phase `imports_paragraph_align_and_inline_font`.
         {
             use tilo_doc::document::MarkValue;
             let styles = concat!(
@@ -1901,7 +1891,6 @@ mod tests {
                 b.marks
             );
         }
-        // Phase `imports_hyperlink_as_link_mark`.
         {
             use tilo_doc::document::MarkValue;
             // A `text:a` becomes an inline `link` mark carrying the href, so it merges with concurrent text edits instead of being atomized.
@@ -1931,7 +1920,6 @@ mod tests {
             );
             assert_eq!(link.value, MarkValue::Str("https://tilo.so/x".into()));
         }
-        // Phase `imports_link_wrapping_styled_span`.
         {
             use tilo_doc::document::MarkValue;
             let styles = r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#;
@@ -1956,7 +1944,6 @@ mod tests {
             );
             assert!(b.marks.iter().any(|m| m.name == "strong"), "{:?}", b.marks);
         }
-        // Phase `imports_text_color_as_mark`.
         {
             use tilo_doc::document::MarkValue;
             let styles = r##"<style:style style:name="C1" style:family="text"><style:text-properties fo:color="#FF0000"/></style:style>"##;
@@ -1994,7 +1981,6 @@ mod tests {
 
     #[test]
     fn imports_inline_images_with_alt_text_and_surrounding_text() {
-        // Phase `imports_image_nested_in_paragraph`.
         {
             use crate::package::ZipPackage;
             let body = concat!(
@@ -2042,7 +2028,6 @@ mod tests {
                 img.attrs
             );
         }
-        // Phase `image_alt_text_keeps_entity_references`.
         {
             use crate::package::ZipPackage;
             let body = concat!(
@@ -2066,7 +2051,6 @@ mod tests {
                 Some(&AttrVal::Str("R&D <chart> \u{1F600}".into()))
             );
         }
-        // Phase `keeps_paragraph_text_before_inline_image`.
         {
             use crate::package::ZipPackage;
             let body = "<text:p>see <draw:frame><draw:image xlink:href=\"Pictures/0.png\"/></draw:frame></text:p>";
@@ -2092,7 +2076,6 @@ mod tests {
 
     #[test]
     fn imports_and_roundtrips_document_and_run_language() {
-        // Phase `imports_run_language_as_mark`.
         {
             use tilo_doc::document::MarkValue;
             // A text style carrying `fo:language` + `fo:country` → a `lang` run mark with the reassembled BCP-47 tag.
@@ -2118,7 +2101,6 @@ mod tests {
                 b.marks
             );
         }
-        // Phase `document_and_run_language_roundtrip`.
         {
             use tilo_doc::document::MarkValue;
             // Author a document with a `de-DE` default language and a `fr`-marked run, export to `.odt`, re-import: both survive with BCP-47 reassembled from `fo:language`+`fo:country`.

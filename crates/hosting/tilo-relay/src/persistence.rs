@@ -399,7 +399,6 @@ impl State {
         // commits syncs it once per reservation instead of once per commit.
         if next > self.reserved {
             let reserved = next.saturating_add(SEQUENCE_RESERVATION_NS);
-            // Syncs the file, and after the rename the store root holding it.
             crate::store::atomic_write(&path, &reserved.to_le_bytes())?;
             // Apple's fsync leaves the drive's cache unflushed; std's
             // `sync_all` there is F_FULLFSYNC (as `retained::durable_write`).

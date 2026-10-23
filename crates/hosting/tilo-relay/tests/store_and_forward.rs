@@ -62,7 +62,6 @@ async fn a_publishes_two_offline_deltas(
     a_client
         .send(Envelope::Subscribe { workspace_id: 5 })
         .unwrap();
-    // Drain Ready.
     let _ = a_client.recv().await.expect("A Ready channel closed");
 
     // A publishes two deltas while B is offline.

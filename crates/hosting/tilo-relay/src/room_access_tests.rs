@@ -1,5 +1,3 @@
-//! `decide` over every admission mode, principal and plane.
-
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -362,7 +360,6 @@ fn decide_matrix() {
             expected: ["AAAWWWWWsdWAP", "AAAWWWWWsdWAP", "AAAWWWWWsdWAP"],
         },
         Case {
-            // The one device the spectator person joined the room with.
             name: "spectator device the room lists",
             peer: peer(spectator, [81; 32], false, Some(NOW + 1)),
             setup: Box::new(move |runtime, _| {

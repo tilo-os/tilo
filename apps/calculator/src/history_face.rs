@@ -538,8 +538,6 @@ mod tests {
         assert!(face.body.is_some(), "it is typeset, not a sentence");
     }
 
-    /// A formula typed into a curve shows the curve as it now reads, with a
-    /// plot; a surface shows its formula; neither opens or copies.
     #[test]
     fn a_graph_change_shows_the_function_it_plotted() {
         let curve = CalculatorEntries::default()

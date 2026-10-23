@@ -35,11 +35,6 @@ fn field<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N], InvalidVoic
 
 impl VoiceObject {
     /// Encode this object in the tilo-voice/1 wire layout.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidVoiceObject`] when the duration is not one frame or the
-    /// payload is empty or does not fit in [`MAX_OBJECT_BYTES`].
     pub fn encode(&self) -> Result<Vec<u8>, InvalidVoiceObject> {
         if self.duration != FRAME_SAMPLES
             || self.payload.is_empty()
@@ -62,10 +57,6 @@ impl VoiceObject {
     }
 
     /// Decode one complete, valid tilo-voice/1 object.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidVoiceObject`] when [`validate`] rejects `bytes`.
     pub fn decode(bytes: &[u8]) -> Result<Self, InvalidVoiceObject> {
         validate(bytes)?;
         Ok(Self {
@@ -82,11 +73,6 @@ impl VoiceObject {
 
 /// Validate without allocating or copying the encoded payload. Used at the
 /// relay's complete-frame boundary before subscribers can observe an object.
-///
-/// # Errors
-///
-/// Returns [`InvalidVoiceObject`] for a wrong size, version, frame duration,
-/// sample rate, channel count or declared payload length.
 pub fn validate(bytes: &[u8]) -> Result<(), InvalidVoiceObject> {
     if !(HEADER_BYTES + 1..=MAX_OBJECT_BYTES).contains(&bytes.len()) {
         return Err(InvalidVoiceObject);
@@ -107,11 +93,6 @@ pub fn validate(bytes: &[u8]) -> Result<(), InvalidVoiceObject> {
 /// Split a datagram bundle (one to [`MAX_BUNDLE_OBJECTS`] complete, individually
 /// valid objects back to back, newest first) without copying. Stream frames are
 /// always single objects, which are one-object bundles.
-///
-/// # Errors
-///
-/// Returns [`InvalidVoiceObject`] for an empty or oversized bundle, too many
-/// objects, a truncated object, or any object [`validate`] rejects.
 pub fn bundle_objects(bytes: &[u8]) -> Result<Vec<&[u8]>, InvalidVoiceObject> {
     if bytes.is_empty() || bytes.len() > MAX_OBJECT_BYTES {
         return Err(InvalidVoiceObject);

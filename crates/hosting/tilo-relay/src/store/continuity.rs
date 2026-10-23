@@ -608,7 +608,6 @@ mod tests {
                 },
                 crate::coedit::CoeditPayload::Checkpoint { channel, body },
             ] {
-                // The well-formed continuity checkpoint remains eligible.
                 let encoded = payload.encode().unwrap();
                 if matches!(payload, crate::coedit::CoeditPayload::RetainedDelta { .. })
                     || encoded != *delta

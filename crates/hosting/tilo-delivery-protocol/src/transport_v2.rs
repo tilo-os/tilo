@@ -205,7 +205,6 @@ pub struct SessionReader<R> {
     prefix_read: usize,
     payload: Vec<u8>,
     payload_read: usize,
-    /// What this session last received in each presence slot.
     presence: presence::PresenceSlots,
     /// The last delta frame this session received in each delta slot.
     deltas: delta::DeltaSlots,
@@ -229,11 +228,6 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
         }
     }
     /// The next complete envelope, or `None` at a clean end of stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns `FrameError` when the stream fails or a frame is oversized or
-    /// does not decode.
     pub async fn read_next(&mut self) -> Result<Option<EnvelopeV2>, FrameError> {
         loop {
             if let Some(next) = self.expanded.pop_front() {
@@ -474,8 +468,6 @@ mod tests {
             compact,
             "the borrowed encoding is the variant's own encoding",
         );
-        // A delta that carries a signature, and every other envelope, travel
-        // as State.
         let signed = keystroke([7; 64]);
         assert_eq!(
             encode_state(&signed).unwrap(),
@@ -496,7 +488,6 @@ mod tests {
             reader.read_next().await.unwrap(),
             Some(EnvelopeV2::State(unsigned.clone()))
         );
-        // The whole State frame of the same delta reads the same.
         let mut reader = SessionReader::new(std::io::Cursor::new(
             encode(&EnvelopeV2::State(unsigned.clone())).unwrap(),
         ));
@@ -778,7 +769,6 @@ mod tests {
             Err(FrameError::TooLarge(_))
         ));
         assert_eq!(reader.payload.len(), 1);
-        // The same size remains valid in the common state lane.
         let state = EnvelopeV2::State(Envelope::Presence {
             workspace_id: 7,
             payload: vec![0; MAX_PRIVATE_BYTES + 1],

@@ -523,8 +523,6 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
             .unwrap();
         assert!(ownership.success(), "prepare non-root identity ownership");
 
-        // Keep the bind mount private. The helper itself retains its hardened,
-        // non-configurable `/usr/libexec/tilo/tilo-enroll` path.
         let script = r#"
 set -eu
 exec 9</usr/bin/mount

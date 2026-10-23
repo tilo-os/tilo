@@ -42,7 +42,6 @@ pub(crate) enum DesktopRefusal {
 }
 
 impl DesktopGuard {
-    /// Follow the desktop `doc` holds.
     pub(crate) const fn new(doc: AutoCommit) -> Self {
         Self { doc }
     }
@@ -57,9 +56,6 @@ impl DesktopGuard {
     /// each of its changes on what `writer` did not make must be one
     /// `allows` lets them do. Takes the write in when it is admitted, and
     /// leaves the desktop as it was when it is refused.
-    ///
-    /// # Errors
-    /// The first act `writer` may not do, or a write that is not a desktop.
     pub(crate) fn decide(
         &mut self,
         mutation: &DocumentMutation,

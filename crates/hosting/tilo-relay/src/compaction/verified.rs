@@ -48,7 +48,6 @@ type BodyHash = [u8; 32];
 pub(super) struct Signatures {
     /// Reads the route and envelope of a document frame.
     payloads: Arc<dyn ShellPayloads>,
-    /// Verified bodies, as of the previous round.
     verified: HashSet<BodyHash>,
     /// Verified bodies this round has read so far.
     current: HashSet<BodyHash>,
@@ -97,7 +96,6 @@ impl<'a> Checked<'a> {
         matches!(self.piece, Piece::Sealed)
     }
 
-    /// The route and the piece.
     pub(super) fn into_parts(self) -> (Option<Route>, Piece) {
         (self.route, self.piece)
     }

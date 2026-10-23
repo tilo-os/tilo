@@ -967,7 +967,6 @@ mod tests {
         assert_eq!(person.sources, vec![[1; 16], [3; 16]]);
         assert!(!person.generated);
 
-        // Long titles are clipped to the published bounds.
         let long = "x".repeat(96);
         let many: Vec<_> = (10..26u8)
             .map(|id| action(id, &long, &format!("{id}{long}"), u64::from(id)))
@@ -993,7 +992,6 @@ mod tests {
             (Some(4), "", "")
         );
         assert!(idle.sources.is_empty());
-        // Silent past the lifetime, they are gone.
         let (expired, _) = here.post(request(7, Vec::new()), [9; 32], USER, after(start, 300), 10);
         assert_eq!(
             expired.people.iter().map(|p| p.device).collect::<Vec<_>>(),
@@ -1001,7 +999,6 @@ mod tests {
         );
     }
 
-    /// A record named like its app is said once.
     #[test]
     fn a_record_named_like_its_app_is_said_once() {
         let mut chat = action(1, "Sent a message", "Chat", 1);
@@ -1090,7 +1087,6 @@ mod tests {
                 .collect();
             let (_, job) = here.post(request(7, actions), DEVICE, USER, after(start, at), 10);
             here.clone().summarize(job.unwrap()).await;
-            // As another member reads it.
             let (reply, _) = here.post(request(7, Vec::new()), [9; 32], USER, after(start, at), 10);
             reply
                 .people

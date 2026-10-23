@@ -408,7 +408,6 @@ fn large_workbook_parse_and_serialize_keeps_every_cell() {
             total,
             "{name}: cell count preserved"
         );
-        // Spot-check a formula survived the whole round-trip.
         let last = snap
             .sheets
             .last()
@@ -479,7 +478,6 @@ fn spreadsheet_formulas_formats_and_repeats_expand_and_export() {
         assert_eq!(cells["C3"].formula, None);
         assert_eq!(cells["C3"].value, "4");
 
-        // The CRDT import sees the same formulas, and they survive export.
         let wb = imp(&XlsxCodec, &xlsx_with(sheet, None));
         let back = imp(&XlsxCodec, &XlsxCodec.export(&wb).unwrap()).materialize();
         assert_eq!(

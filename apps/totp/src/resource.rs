@@ -431,7 +431,6 @@ mod tests {
 
     /// The app on a fresh profile whose secrets live in `backend`.
     fn open(backend: Arc<dyn SecretBackend>) -> (TestApp<TotpShell>, ui::host::HostScope) {
-        // A clipboard that carries secrets, as a desktop's does.
         let (recording, _) = ui::host::HostServices::recording();
         let services = ui::host::HostServices {
             secrets: Arc::new(Store(backend)),
@@ -544,8 +543,6 @@ mod tests {
             .expect("the secret is this device's item secret for the account");
         assert_eq!(stored.expose(), SECRET.as_bytes());
 
-        // The published account carries its document actions and, from this
-        // device, its codes.
         let row = published(&mut app, &account_resource_id(account.id));
         assert_eq!(row.kind, "totp.vault.accounts");
         let ids: Vec<&str> = row
@@ -579,7 +576,6 @@ mod tests {
             "no published action names the secret"
         );
 
-        // Copying through the door puts the live code on the clipboard.
         let code = crate::totp::current_code(&Account {
             secret: SECRET.into(),
             ..account.clone()
@@ -818,7 +814,6 @@ mod tests {
             "the header carries the add button"
         );
 
-        // The header's add button opens the sheet.
         app.harness()
             .click_named("add-account")
             .expect("the header shows the add button");
@@ -831,7 +826,6 @@ mod tests {
             "pressing it opens the sheet: {opened:?}"
         );
 
-        // A click puts the caret in a field, Tab moves it on.
         type_into(&mut app, "totp-issuer", "Acme");
         app.harness().tab(false);
         let after_tab = app.harness().a11y_focus();
@@ -849,7 +843,6 @@ mod tests {
             "the click and Tab each put the caret in a field: {typed:?}; after Tab {after_tab:?}; order {focus_order:?}"
         );
 
-        // Escape closes the sheet and Enter copies the selected code.
         app.harness().key("Escape");
         settle(&mut app);
         assert!(
@@ -909,7 +902,6 @@ mod tests {
                 _ => assert!(shows("Copy code for GitHub"), "{scenario}: {frame}"),
             }
         }
-        // A live window starts on this device's own, empty, vault.
         let mut live = TestApp::<TotpShell>::new().unwrap();
         assert!(live.state().list().is_empty());
         let frame = live.harness().inspection_json().unwrap();

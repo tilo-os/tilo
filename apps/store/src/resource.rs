@@ -1124,7 +1124,6 @@ mod tests {
                 }
             }
             if page == "catalogue" {
-                // Search inside the Store is the window's filter field.
                 let targets = app.harness().targets();
                 assert!(targets.contains_key("store.search"), "{targets:?}");
             }
@@ -2615,7 +2614,6 @@ mod tests {
             let shown = frame(&mut app);
             assert!(!shown.contains("Use Flathub for my apps"));
             if scenario == "account-setup" {
-                // The catalogue's actions are the window bar's slots.
                 let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
                 assert!(
                     toolbar.actions.iter().any(|action| action.name == control),

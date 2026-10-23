@@ -784,7 +784,6 @@ mod tests {
                 .unwrap()
                 .contains("foreign devices")
         );
-        // The ordinary local Editor of the same person retains access.
         assert!(
             reopened
                 .private_command(

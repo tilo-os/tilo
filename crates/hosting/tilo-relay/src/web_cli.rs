@@ -1397,7 +1397,6 @@ mod tests {
         let mut admissions = Admissions::new(Duration::from_secs(60));
         let now = tokio::time::Instant::now();
         admissions.admit("123456".into(), now);
-        // The guest and a stranger whose request ground the same six digits.
         let (guest, stranger, unrelated) =
             (pending("123456"), pending("123456"), pending("654321"));
         let decisions = admissions.decide(&[guest.clone(), unrelated, stranger.clone()], &[], now);

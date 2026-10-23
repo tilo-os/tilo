@@ -238,10 +238,6 @@ impl Rooms {
     /// its bound into one sealed checkpoint, and commit and publish the
     /// compactions. A record whose history does not merge yet (a write it
     /// depends on has not arrived) waits for a later call.
-    ///
-    /// # Errors
-    ///
-    /// The commit or its publication fails.
     pub(super) async fn compact_sealed_histories(
         &self,
         room: &mut GovernedRoom,

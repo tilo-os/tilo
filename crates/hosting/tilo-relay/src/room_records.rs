@@ -187,10 +187,6 @@ impl RoomRecords {
     /// Every retained document body of `workspace_id`, checkpoints before
     /// the deltas retained after them, including every host commit queued
     /// before the call.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace is not hosted here or could not be read.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the guard only lives for the lookup; the value kept is a clone"
@@ -235,10 +231,6 @@ impl RoomRecords {
     /// Publish `body` on `workspace_id`'s presence as this host's own, to
     /// every device subscribed to it: how the host asks the room's members
     /// for content, as any member asks. The number of devices it reached.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is not hosted here, or the presence does not encode.
     pub(crate) async fn host_presence(
         &self,
         workspace_id: u64,
@@ -304,22 +296,12 @@ impl RoomRecords {
     /// Admit `commit` to `workspace_id` as this host's own change: ordered,
     /// retained, fanned out to every subscriber and queued for offline
     /// members. Returns its host order.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace is not hosted here or the change could not
-    /// be persisted.
     pub async fn commit(&self, workspace_id: u64, commit: HostCommit) -> Result<u64, String> {
         self.enqueue(workspace_id, commit).await?.durable().await
     }
 
     /// [`Self::commit`] without waiting for durability: the commit holds its
     /// place in the workspace's order once this returns.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace is not hosted here or the change could not
-    /// be queued.
     pub(crate) async fn enqueue(
         &self,
         workspace_id: u64,
@@ -339,11 +321,6 @@ impl RoomRecords {
     }
 
     /// [`Self::enqueue`] for a commit whose place `reservation` holds.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the workspace is not hosted here or the change could not
-    /// be queued.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the guard only lives for the lookup; the value kept is a clone"

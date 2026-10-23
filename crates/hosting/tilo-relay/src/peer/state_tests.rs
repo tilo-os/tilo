@@ -2183,7 +2183,6 @@ impl Fixture {
         replay.ok_or_else(|| PeerError::Protocol("subscribe produced no replay".into()))
     }
 
-    /// The recipient's session over its own connection.
     fn recipient_session<'a>(
         &'a self,
         state_tx: &'a mpsc::Sender<StateDelivery>,

@@ -1,5 +1,3 @@
-//! Dedicated personal-compute ALPN integration coverage.
-
 #![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
@@ -449,7 +447,6 @@ async fn compute_session_ends_a_lost_workers_job_and_replays_it_until_ack() {
     ));
 }
 
-/// Copy the tree at `from` to `to`.
 fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {

@@ -268,14 +268,12 @@ mod tests {
         type_at(&mut note, &block, 10, "big ");
         assert_eq!(anchored(&note), Some((block.clone(), 14, 19)));
 
-        // A concurrent edit on another replica moves it there too.
         let mut other = note.fork();
         type_at(&mut other, &block, 0, ">> ");
         note.sync_with(&mut other).unwrap();
         assert_eq!(anchored(&note), Some((block.clone(), 17, 22)));
         assert_eq!(anchored(&other), anchored(&note));
 
-        // An empty range or one past the text is refused.
         assert!(
             note.apply(Note::ADD_REMARK.with(note::AddRemark {
                 block: block.clone(),

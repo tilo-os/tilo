@@ -229,7 +229,6 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     .await;
     let addr2 = host2.node_addr();
 
-    // ---- B connects for the very first time, to the restarted host. ----
     let mut doc_b = catch_up_after_restart(addr2, &user, &b, WS).await;
 
     assert_eq!(doc_b.str_at(&ROOT, "note").as_deref(), Some("durable"));

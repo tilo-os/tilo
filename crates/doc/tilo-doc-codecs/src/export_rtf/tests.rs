@@ -110,7 +110,6 @@ fn rtf_export_block_structure() {
         };
         let rtf = render_rtf(&snap);
 
-        // RTF header.
         assert!(rtf.starts_with("{\\rtf1"), "starts with RTF header:\n{rtf}");
         assert!(rtf.contains("\\ansi"), "ansi declared:\n{rtf}");
         assert!(rtf.contains("\\fonttbl"), "font table present:\n{rtf}");
@@ -118,7 +117,6 @@ fn rtf_export_block_structure() {
         assert!(rtf.contains("\\b"), "bold control word present:\n{rtf}");
         // Larger heading font (H1 = 24pt → \fs48).
         assert!(rtf.contains("\\fs48"), "H1 renders at \\fs48:\n{rtf}");
-        // The text survives.
         assert!(rtf.contains("Bold"), "heading text present:\n{rtf}");
         assert_balanced(&rtf);
     }
@@ -233,14 +231,12 @@ fn rtf_export_block_structure() {
 fn rtf_export_escapes_specials_and_non_ascii() {
     // Phase `rtf_specials_are_escaped`.
     {
-        // Text containing every RTF special.
         let snap = DocSnapshot {
             blocks: vec![block("paragraph", "a{b}c\\d")],
             ..empty_snapshot()
         };
         let rtf = render_rtf(&snap);
 
-        // The specials are backslash-escaped in the body.
         assert!(rtf.contains("a\\{b\\}c\\\\d"), "specials escaped:\n{rtf}");
         // And the document is still balanced (the escaped braces don't count).
         assert_balanced(&rtf);
@@ -254,7 +250,6 @@ fn rtf_export_escapes_specials_and_non_ascii() {
         };
         let rtf = render_rtf(&snap);
         assert!(rtf.contains("caf\\u233?"), "é emitted as \\u233?:\n{rtf}");
-        // The ASCII prefix stays literal.
         assert!(rtf.contains("caf"));
         assert_balanced(&rtf);
     }
@@ -289,7 +284,6 @@ fn rtf_export_marks_map_to_control_words_and_tables() {
         };
         let rtf = render_rtf(&snap);
 
-        // The color table carries the registered color.
         assert!(rtf.contains("{\\colortbl;"), "color table present:\n{rtf}");
         assert!(
             rtf.contains("\\red255\\green0\\blue0;"),

@@ -10,9 +10,6 @@ use tilo_doc::sheet::{CellInput, Workbook};
 /// A spreadsheet format provider — the workbook analogue of [`crate::format::FormatProvider`].
 /// Import is bounded/hardened via `ZipPackage::read`; the contract is identical either side of a sandbox.
 pub trait SheetProvider: Send + Sync {
-    /// # Errors
-    /// Returns [`CodecError`] if `bytes` are malformed, exceed the package's
-    /// resource bounds, or use a construct the codec refuses to import.
     fn import(&self, bytes: &[u8], wb: &mut Workbook) -> Result<(), CodecError>;
     /// # Errors
     /// Returns [`CodecError`] if the workbook cannot be serialised into this

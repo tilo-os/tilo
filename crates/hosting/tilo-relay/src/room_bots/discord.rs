@@ -45,10 +45,6 @@ impl DiscordLink {
     /// bridge only that channel, `server=<name>`, and `mirror-channels=yes`
     /// and `map-roles=yes` to opt into changing the server beyond messages
     /// and webhooks. None without `guild`.
-    ///
-    /// # Errors
-    /// An id is not a Discord id, `channel` comes without `guild`, or an
-    /// opt-in is not `yes` or `no`.
     pub fn from_inputs(inputs: &BTreeMap<String, String>) -> Result<Option<Self>, String> {
         let snowflake = |key: &str| match inputs.get(key) {
             Some(id) if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) => {
@@ -101,10 +97,6 @@ impl DiscordLink {
 /// connecting a server is a person's decision, and in a hosted room the
 /// operator who named the server is that person. A record already connected
 /// the same way is left as it is.
-///
-/// # Errors
-/// The record is connected to another server or channel, or the room
-/// refused a change.
 pub async fn connect(
     rooms: &Rooms,
     room: &str,

@@ -130,7 +130,6 @@ impl GovernedRoom {
 
 /// What a desktop write's envelope gives the relay to decide.
 enum Readable {
-    /// The whole write.
     Whole(DocumentMutation),
     /// One segment of a write still incomplete.
     Partial,
