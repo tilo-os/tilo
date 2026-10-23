@@ -113,6 +113,21 @@ pub(super) fn seed(driver: &mut ShellDriver, mode: &str) {
         reply: tx,
     });
     driver.host_mut().pump_file_picker();
+    // The chooser lists its folder and Recent on a worker: the still is of
+    // what a person sees a moment after it opens, with the rows in.
+    let deadline = std::time::Instant::now().checked_add(std::time::Duration::from_secs(10));
+    while driver
+        .host()
+        .file_picker()
+        .is_some_and(ui::widget::FilePicker::reading)
+    {
+        if deadline.is_none_or(|deadline| std::time::Instant::now() >= deadline) {
+            eprintln!("shots: the file chooser had not listed its folder after 10 s");
+            break;
+        }
+        std::thread::yield_now();
+        driver.host_mut().pump_file_picker();
+    }
 }
 
 /// Fill the picker's fixture folder like a person's home — the usual

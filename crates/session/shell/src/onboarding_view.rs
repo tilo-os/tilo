@@ -4500,6 +4500,15 @@ impl Widget for OnboardingView {
         self.settle_journal();
         self.settle_identity_work();
 
+        // The chooser lists and checks on a worker; what it answered shows
+        // now, and a confirmed choice is taken below.
+        if self
+            .picker
+            .as_mut()
+            .is_some_and(|(_, picker)| picker.poll_lookups())
+        {
+            self.invalidation.both();
+        }
         let picker_outcome = self
             .picker
             .as_mut()
@@ -4554,15 +4563,15 @@ impl Widget for OnboardingView {
             let (initial, roots) = onboarding_picker_scope();
             self.picker = Some((
                 PickerPurpose::ImportIdentity,
-                FilePicker::new(t("onboarding-picker-import-title"), initial, roots).with_filters(
-                    vec![
+                FilePicker::new(t("onboarding-picker-import-title"), initial, roots)
+                    .with_waker(Some(crate::shell::search::invocation_wake::waker()))
+                    .with_filters(vec![
                         ui::widget::file_picker::FileFilter::new(
                             t("onboarding-picker-import-filter"),
                             &["tilo-identity", "tilo-identity-backup", "json"],
                         ),
                         ui::widget::file_picker::FileFilter::all(),
-                    ],
-                ),
+                    ]),
             ));
             self.invalidation.focus();
         }
@@ -4657,6 +4666,7 @@ impl Widget for OnboardingView {
                 self.picker = Some((
                     PickerPurpose::BackupIdentity,
                     FilePicker::new(t("onboarding-picker-backup-title"), initial, roots)
+                        .with_waker(Some(crate::shell::search::invocation_wake::waker()))
                         .with_mode(FilePickerMode::Save)
                         .with_filters(vec![ui::widget::file_picker::FileFilter::new(
                             t("onboarding-picker-backup-filter"),
@@ -6492,7 +6502,12 @@ mod tests {
             press(&view, &mut document, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &document);
             view.picker.as_mut().expect("save picker").1.click_open();
-            view.sync(&document, &automerge::ROOT);
+            // The picker checks where it saves on its worker; the frame
+            // takes its answer and hands the export to its own worker.
+            tilo_test_env::wait_until("the save picker to answer", || {
+                view.sync(&document, &automerge::ROOT);
+                view.picker.is_none()
+            });
             assert!(!view.identity_idle(), "the export is running");
             for _ in 0..3 {
                 view.sync(&document, &automerge::ROOT);
@@ -8247,6 +8262,11 @@ mod tests {
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &doc);
             view.picker.as_mut().expect("save picker").1.click_open();
+            // The picker checks where it saves on its worker first.
+            tilo_test_env::wait_until("the save picker to answer", || {
+                view.sync(&doc, &automerge::ROOT);
+                view.picker.is_none()
+            });
             sync_journaled(&mut view, &doc);
             assert_eq!(exports.load(Ordering::SeqCst), 1);
             assert!(view.backup_saved.is_some());

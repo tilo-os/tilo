@@ -125,6 +125,16 @@ fn dump(name: &str, rgba: &[u8], w: u32, h: u32) {
     eprintln!("wrote {path}");
 }
 
+/// `picker` once its worker has listed the folder, as a person sees it a
+/// moment after it opens.
+fn listed(mut picker: FilePicker) -> FilePicker {
+    tilo_test_env::wait_until("the chooser to list its folder", || {
+        picker.poll_lookups();
+        !picker.reading()
+    });
+    picker
+}
+
 #[test]
 fn file_picker_open_and_save_render() {
     let (w, h) = (900u32, 620u32);
@@ -139,11 +149,12 @@ fn file_picker_open_and_save_render() {
         let bg = [bg8.r, bg8.g, bg8.b, 0xff];
 
         // Open mode with file-type filters.
-        let mut open =
+        let mut open = listed(
             FilePicker::new("Open a file", &root, vec![root.clone()]).with_filters(vec![
                 FileFilter::new("Images", &["png", "jpg"]),
                 FileFilter::all(),
-            ]);
+            ]),
+        );
         open.set_selection(0);
         let rgba = render(&mut open, &theme, w, h, &mut renderer);
         let non_bg = rgba.chunks_exact(4).filter(|p| p[..4] != bg).count();
@@ -155,9 +166,11 @@ fn file_picker_open_and_save_render() {
         dump(&format!("file_picker_open_{theme_name}"), &rgba, w, h);
 
         // Save mode with a typed filename.
-        let mut save = FilePicker::new("Save as", &root, vec![root.clone()])
-            .with_mode(FilePickerMode::Save)
-            .with_filename("report.md");
+        let mut save = listed(
+            FilePicker::new("Save as", &root, vec![root.clone()])
+                .with_mode(FilePickerMode::Save)
+                .with_filename("report.md"),
+        );
         let rgba = render(&mut save, &theme, w, h, &mut renderer);
         let non_bg = rgba.chunks_exact(4).filter(|p| p[..4] != bg).count();
         assert!(
