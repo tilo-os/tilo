@@ -4957,6 +4957,11 @@ fn without_an_online_catalogue_home_says_why_and_offers_no_search() {
     );
     assert!(message.contains("online"), "{message}");
     assert!(!message.contains("backend"), "{message}");
+    // It names the control by what it says on every host, where the window
+    // bar shows it as a button or in its More actions menu.
+    for message in [message, super::HOME_EMPTY_MESSAGE] {
+        assert!(message.contains("Open audio file"), "{message}");
+    }
     assert!(first_run_copy(true).1);
     assert_eq!(
         home_failure_note(false, "home content needs the live backend".into()),
