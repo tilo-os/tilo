@@ -188,6 +188,7 @@
                       "enum": [
                         "paint",
                         "draw",
+                        "chart",
                         "edit-marks",
                         "remove-marks",
                         "arrange",
@@ -260,6 +261,155 @@
         "name": "of",
         "ty": "text",
         "description": "The mark or group `above` and `below` are relative to.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "chart",
+    "resource_kind": "canvas.artwork",
+    "label": "Draw chart",
+    "description": "Bar chart from numbers; use it, not hand-computed rects. Equal bars, one baseline, lengths exactly value/max of box.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "labels",
+        "ty": "array",
+        "required": true,
+        "description": "One per value.",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      {
+        "name": "values",
+        "ty": "array",
+        "required": true,
+        "description": ">= 0.",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      {
+        "name": "kind",
+        "ty": "text",
+        "description": "bar or hbar.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "box",
+        "ty": "array",
+        "description": "Bars' area x, y, w, h on its bottom (hbar: left).",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        }
+      },
+      {
+        "name": "max",
+        "ty": "number",
+        "description": "Full-bar value (default largest).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "bar_width",
+        "ty": "number",
+        "description": "Default: gap 2/3 of it.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "description": "colour",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "label_size",
+        "ty": "number",
+        "description": "label_size",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "values_shown",
+        "ty": "boolean",
+        "description": "values_shown",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "title",
+        "ty": "text",
+        "description": "title",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "id",
+        "ty": "text",
+        "description": "Prefix (default chart).",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "description": "layer",
         "schema": {
           "type": [
             "string",
@@ -662,7 +812,7 @@
                           "string",
                           "null"
                         ],
-                        "description": "`start`, `center` or `end` at `x`."
+                        "description": "`start`, `center` or `end` at `x`, or in `width`."
                       },
                       "line_height": {
                         "type": [
@@ -2131,6 +2281,7 @@
                     "enum": [
                       "paint",
                       "draw",
+                      "chart",
                       "edit-marks",
                       "remove-marks",
                       "arrange",
