@@ -1877,6 +1877,47 @@ impl skrifa::outline::OutlinePen for InkBoundsPen {
     fn close(&mut self) {}
 }
 
+/// The identity of the fonts a renderer shapes with
+/// ([`TextRenderer::font_epoch`]).
+#[derive(Clone, Debug)]
+pub struct FontEpoch(Arc<()>);
+
+impl PartialEq for FontEpoch {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for FontEpoch {}
+
+/// A renderer's fonts, locale, text scale and letter forms, to send to a
+/// thread that measures text the same way ([`TextRenderer::measuring_seed`]).
+pub struct MeasuringSeed {
+    locale: String,
+    db: cosmic_text::fontdb::Database,
+    text_scale: f32,
+    distinct_letters: bool,
+    epoch: FontEpoch,
+}
+
+impl MeasuringSeed {
+    /// The fonts of the renderer this came from.
+    pub fn epoch(&self) -> &FontEpoch {
+        &self.epoch
+    }
+
+    /// A renderer of its own for the thread this is called on.
+    pub fn into_renderer(self) -> TextRenderer {
+        let mut renderer = TextRenderer::with_font_system(FontSystem::new_with_locale_and_db(
+            self.locale,
+            self.db,
+        ));
+        renderer.set_text_scale(self.text_scale);
+        renderer.set_distinct_letters(self.distinct_letters);
+        renderer
+    }
+}
+
 pub struct TextRenderer {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
@@ -2194,6 +2235,25 @@ impl TextRenderer {
     /// cache and subsequent frames are pure hits".
     pub fn cache_stats(&self) -> (u64, u64) {
         (self.hits, self.misses)
+    }
+
+    /// The fonts this renderer shapes with, as an identity that changes
+    /// whenever they do.
+    pub fn font_epoch(&self) -> FontEpoch {
+        FontEpoch(Arc::clone(&self.layout_epoch))
+    }
+
+    /// What a renderer on another thread needs to measure text exactly as
+    /// this one does. Cheap here: the fonts are shared, and the worker builds
+    /// its font system ([`MeasuringSeed::into_renderer`]).
+    pub fn measuring_seed(&self) -> MeasuringSeed {
+        MeasuringSeed {
+            locale: self.font_system.locale().to_owned(),
+            db: self.font_system.db().clone(),
+            text_scale: self.text_scale,
+            distinct_letters: self.distinct_letters,
+            epoch: self.font_epoch(),
+        }
     }
 
     pub(crate) fn layout_epoch(&self) -> &Arc<()> {

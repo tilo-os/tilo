@@ -77,9 +77,7 @@ use crate::model::{
     AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
     ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
 };
-use crate::paginate::{
-    ChapterLayout, ChapterLayoutRequest, LayoutKey, LayoutKind, font_choice, layout_chapter,
-};
+use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice};
 use crate::paint;
 use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
@@ -785,7 +783,7 @@ impl BooksApp {
             self.book_idx = index;
             self.chapter = chapter;
             self.page = 0;
-            self.layout = None;
+            self.retire_layout();
         }
         self.view = View::Reader;
         self.composing = None;
@@ -1108,7 +1106,9 @@ pub struct BooksApp {
     shelf_annos: HashMap<String, usize>,
     /// Last-opened timestamp per book (for the "recently opened" shelf sort).
     shelf_opened: HashMap<String, u64>,
-    last_persisted: Option<(usize, usize, u16)>,
+    /// The chapter, block and page last recorded: a scroll records its
+    /// place as it reaches another block or page, not every frame it moves.
+    last_persisted: Option<(usize, usize, usize)>,
     /// The open book's stored position is still to be taken up: set when a
     /// book opens, cleared once the reader shows it there.
     adopt_position: bool,
@@ -1126,6 +1126,9 @@ pub struct BooksApp {
 
     // --- layout cache ------------------------------------------------------
     layout: Option<ChapterLayout>,
+    layouts: chapter_layouts::ChapterLayouts,
+    /// Whether the layout last drawn holds the whole chapter.
+    flow_complete: bool,
     /// Decoded cover artwork lifted into GPU-ready image handles, keyed by
     /// book id and built lazily on first shelf draw.
     cover_cache: HashMap<String, PenikoImage>,
@@ -1349,6 +1352,8 @@ impl BooksApp {
             shelf_focus_visible: false,
             file_open: ui::widget::FileOpenSurface::default(),
             layout: None,
+            layouts: chapter_layouts::ChapterLayouts::default(),
+            flow_complete: false,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
             dispatch,
@@ -1510,14 +1515,12 @@ impl BooksApp {
         let record = Rc::clone(&self.record);
         if record.settings != self.settings {
             self.settings = record.settings.clone();
-            self.layout = None; // typography changed → relayout
         }
         let new_fonts: Vec<FontEntry> = record.fonts.values().cloned().collect();
         let new_default = record.default_font.0.clone();
         if new_fonts != self.fonts || new_default != self.default_font_id {
             self.fonts = new_fonts;
             self.default_font_id = new_default;
-            self.layout = None; // a font attribute (family/size) may have changed
         }
         self.schemes = record.schemes.values().cloned().collect();
         self.library_prefs = record.prefs;
@@ -1583,11 +1586,11 @@ impl BooksApp {
             return None;
         }
         let block = self.reading_block();
-        let fraction = self.current_progress_fraction();
-        let key = (self.chapter, block, (fraction * 10_000.0).round() as u16);
+        let key = (self.chapter, block, self.page);
         if self.last_persisted == Some(key) {
             return None;
         }
+        let fraction = self.current_progress_fraction();
         let id = self.library.get(self.book_idx)?.id.clone();
         self.last_persisted = Some(key);
         let progress = Ebook::RECORD_PROGRESS.with(books::RecordProgress {
@@ -1693,28 +1696,9 @@ impl BooksApp {
         self.composing = None;
         self.note_composer.close();
         self.comment_overlay.close();
-        self.layout = None;
+        self.retire_layout();
         self.toc_scroll_to_active = true;
         self.reading_progress = fraction;
-    }
-
-    fn resolve_pending_seek_fraction(
-        &mut self,
-        layout: &ChapterLayout,
-        mode: ReadMode,
-        geom: &ReaderPageGeometry,
-    ) {
-        let Some(within) = self.pending_seek_fraction.take() else {
-            return;
-        };
-        if mode.is_continuous() {
-            self.scroll_y = (f64::from(layout.total_height) - f64::from(geom.content_h)).max(0.0)
-                * f64::from(within);
-        } else {
-            let count = layout.page_count().max(1);
-            let page = ((within * count as f32).floor() as usize).min(count - 1);
-            self.page = page - page % mode.page_stride();
-        }
     }
 
     fn progress_fraction_at(&self, point: Point) -> f32 {
@@ -1740,28 +1724,6 @@ impl BooksApp {
             }
             .clamp(0.0, 1.0)
         })
-    }
-
-    /// Move the continuous-scroll offset by `delta` px, rolling into the
-    /// neighbouring chapter when the scroll runs off either end.
-    fn scroll_continuous(&mut self, delta: f64) {
-        let (total_h, view_h) = self.flow_extent;
-        let max_scroll = (total_h - view_h).max(0.0);
-        let target = self.scroll_y + delta;
-        if target < -0.5 && self.chapter > 0 {
-            self.chapter -= 1;
-            self.selected_block = None;
-            self.pending_scroll_end = true;
-            self.scroll_y = 0.0;
-            self.layout = None;
-        } else if target > max_scroll + 0.5 && self.chapter + 1 < self.num_chapters() {
-            self.chapter += 1;
-            self.selected_block = None;
-            self.scroll_y = 0.0;
-            self.layout = None;
-        } else {
-            self.scroll_y = target.clamp(0.0, max_scroll);
-        }
     }
 
     // --- Library loading + the host file picker -----------------------------
@@ -1881,7 +1843,7 @@ impl BooksApp {
         self.composing = None;
         self.note_composer.close();
         self.comment_overlay.close();
-        self.layout = None;
+        self.retire_layout();
         self.last_persisted = None;
         self.adopt_position = true;
         self.toc_scroll_to_active = true;
@@ -2416,11 +2378,11 @@ impl BooksApp {
         let pc = self.cur_page_count.max(1);
         if self.page + stride < pc {
             self.page += stride;
-        } else if self.chapter + 1 < self.num_chapters() {
+        } else if self.flow_complete && self.chapter + 1 < self.num_chapters() {
+            self.retire_layout();
             self.chapter += 1;
             self.page = 0;
             self.selected_block = None;
-            self.layout = None;
         }
         if (self.chapter, self.page) != before {
             // The new page eases in from the right — a forward turn.
@@ -2445,7 +2407,7 @@ impl BooksApp {
             self.chapter -= 1;
             self.selected_block = None;
             self.pending_last_page = true;
-            self.layout = None;
+            self.retire_layout();
         }
         if (self.chapter, self.page) != before {
             // The new page eases in from the left — a backward turn.
@@ -2465,8 +2427,6 @@ impl BooksApp {
                 self.scroll_y = f64::from(l.pages.get(self.page).copied().unwrap_or(0.0));
             }
             self.bump_setting(doc, |s| s.mode = mode);
-            // Two-up halves the column width → relayout on the next draw.
-            self.layout = None;
         }
     }
 
@@ -2485,7 +2445,7 @@ impl BooksApp {
         self.composing = None;
         self.note_composer.close();
         self.comment_overlay.close();
-        self.layout = None;
+        self.retire_layout();
         self.toc_scroll_to_active = true;
     }
 
@@ -2575,7 +2535,7 @@ impl BooksApp {
             self.pending_jump_block = Some(a.block);
             self.clear_selection();
             self.comment_overlay.close();
-            self.layout = None;
+            self.retire_layout();
             self.notes_scroll_to_annotation = Some(id);
         }
     }
@@ -2781,7 +2741,7 @@ impl BooksApp {
         if self.library.is_empty() {
             self.view = View::Library;
         }
-        self.layout = None;
+        self.retire_layout();
     }
 
     fn on_toggle_watch_folder(&mut self, folder: &std::path::Path, doc: &AutoCommit) {
@@ -2884,7 +2844,6 @@ impl BooksApp {
         }
         if self.settings.scheme_id == id {
             self.settings.scheme_id.clear();
-            self.layout = None;
         }
     }
 
@@ -2965,7 +2924,6 @@ impl BooksApp {
         );
         if self.settings.font_id == id {
             self.settings.font_id.clear();
-            self.layout = None;
         }
         if self.default_font_id == id {
             self.default_font_id.clear();
@@ -3249,7 +3207,6 @@ impl BooksApp {
             self.edit(doc, edit);
         }
         self.settings = s;
-        self.layout = None;
     }
 
     /// Change the scheme `before` to `after`, field by field.
@@ -3576,7 +3533,7 @@ impl BooksApp {
         if self.library.is_empty() {
             self.view = View::Library;
         }
-        self.layout = None;
+        self.retire_layout();
     }
 
     /// Read what the host gives the reader: whether the window is live, the
@@ -4625,7 +4582,7 @@ impl Continuable for BooksApp {
         // The accepted passage is explicit presentation. Ordinary sync must
         // not replace it with the record's older saved reading progress.
         self.adopt_position = false;
-        self.layout = None;
+        self.retire_layout();
         self.dirty = true;
         true
     }
@@ -4652,6 +4609,9 @@ impl Widget for BooksApp {
         self.drain_opens();
         self.expire_load_toast();
         self.poll_query();
+        if self.absorb_layout_chunks() {
+            self.dirty = true;
+        }
         self.close_orphaned_editors();
         self.note_composer.sync(doc, path);
         self.comment_overlay.sync(doc, path);
@@ -5331,7 +5291,9 @@ impl Widget for BooksApp {
     /// A book being imported shows once it parses. A screenshot imports
     /// nothing, so a loading state it stages is the still it shows.
     fn has_pending_visual_work(&self) -> bool {
-        (self.live && self.import_loading.is_some()) || self.query_busy()
+        (self.live && self.import_loading.is_some())
+            || self.query_busy()
+            || (self.view == View::Reader && self.layout_pending())
     }
 
     fn needs_redraw(&self) -> bool {
@@ -5554,7 +5516,7 @@ impl BooksApp {
         // book opened here from the shelf must not then take up its stored
         // position over the place asked for.
         self.adopt_position = false;
-        self.layout = None;
+        self.retire_layout();
         self.dirty = true;
         Ok(())
     }
@@ -7223,8 +7185,25 @@ impl BooksApp {
 
         // ---- (re)compute the chapter layout -----------------------------
         let (base_family, font_mult, font_sig, base_mono) = self.body_font();
-        let layout =
-            self.resolve_chapter_layout(ctx.text, &lib, &geom, font_sig, &base_family, font_mult);
+        let layout = match lib.get(self.book_idx) {
+            Some(book) => self.resolve_chapter_layout(
+                ctx.text,
+                &chapter_layouts::LayoutInputs {
+                    book,
+                    geom: &geom,
+                    font_sig,
+                    base_family: &base_family,
+                    font_mult,
+                },
+            ),
+            None => ChapterLayout {
+                blocks: Vec::new(),
+                total_height: 0.0,
+                pages: vec![0.0],
+                key: LayoutKey::new(0, 0.0, 0.0, &self.settings, font_sig, 1.0),
+                complete: true,
+            },
+        };
         self.resolve_pending_seek_fraction(&layout, mode, &geom);
         self.cur_page_count = layout.page_count();
         self.resolve_reader_page_index(&layout, mode, &geom);
@@ -7259,11 +7238,18 @@ impl BooksApp {
             comment_group: self.comment_overlay.group(),
         };
         let (sel_anchor, comment_box) = self.draw_reader_columns(ctx, &frame, &panes, &geom, mode);
+        let line_pitch = f64::from(
+            self.settings.body_size_with(font_mult)
+                * 1.25
+                * self.settings.line_spacing
+                * ctx.text.text_scale(),
+        );
+        Self::draw_unset_text(ctx, &layout, &panes, &geom, (&palette, line_pitch));
         self.comment_overlay.set_anchor(comment_box);
         self.resolve_pending_sel_edge();
 
         // restore the layout cache (key drives reuse next frame)
-        self.layout = Some(layout);
+        self.layout = (layout.complete || !layout.blocks.is_empty()).then_some(layout);
         // restore the annotation cache before chrome reads it (the top bar's
         // bookmark state + the notes drawer both consult `self.annotations`)
         self.annotations = annos;
@@ -7306,59 +7292,6 @@ impl BooksApp {
             Some(Action::NextPage)
         } else {
             None
-        }
-    }
-
-    /// Resolve the current page/scroll index against the fresh layout:
-    /// honour a pending "jump to last page"/"jump to block" request, clamp
-    /// to the page count, align a spread to an even left page, and
-    /// (continuous mode) clamp the scroll offset and derive `self.page`
-    /// from it.
-    fn resolve_reader_page_index(
-        &mut self,
-        layout: &ChapterLayout,
-        mode: ReadMode,
-        geom: &ReaderPageGeometry,
-    ) {
-        if self.pending_last_page {
-            self.page = layout.page_count().saturating_sub(1);
-            self.pending_last_page = false;
-        }
-        if let Some(jb) = self.pending_jump_block.take() {
-            self.page = page_for_block(layout, jb);
-            if mode.is_continuous() {
-                self.scroll_y = layout
-                    .blocks
-                    .iter()
-                    .find(|b| b.index == jb)
-                    .map_or(0.0, |b| f64::from(b.top));
-            }
-        }
-        self.page = self.page.min(layout.page_count().saturating_sub(1));
-        // Spreads align to an even left page so a spread is always (2k, 2k+1).
-        if mode == ReadMode::TwoUp {
-            self.page -= self.page % 2;
-        }
-
-        // Record the flow extent so a continuous scroll (which runs before the
-        // next layout) can clamp itself, and resolve a pending end-scroll after
-        // a backward chapter roll. Keep `page` synced to the scroll so progress
-        // and the page locator stay meaningful.
-        self.flow_extent = (f64::from(layout.total_height), f64::from(geom.content_h));
-        if mode.is_continuous() {
-            let max_scroll = (f64::from(layout.total_height) - f64::from(geom.content_h)).max(0.0);
-            if self.pending_scroll_end {
-                self.scroll_y = max_scroll;
-                self.pending_scroll_end = false;
-            }
-            self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
-            self.page = layout
-                .pages
-                .iter()
-                .rposition(|&py| f64::from(py) <= self.scroll_y + 0.5)
-                .unwrap_or(0);
-        } else {
-            self.pending_scroll_end = false;
         }
     }
 
@@ -7632,65 +7565,6 @@ impl BooksApp {
             rule_y,
             slider_band,
         }
-    }
-
-    /// (Re)compute the chapter layout if the cache key changed, or fall back
-    /// to an empty layout when the book/chapter isn't available. Takes
-    /// ownership of the previous cached layout via `self.layout.take()`.
-    fn resolve_chapter_layout(
-        &mut self,
-        tr: &mut TextRenderer,
-        lib: &[Arc<Book>],
-        geom: &ReaderPageGeometry,
-        font_sig: u64,
-        base_family: &FontChoice,
-        font_mult: f32,
-    ) -> ChapterLayout {
-        let key = LayoutKey::new(
-            self.chapter,
-            geom.content_w,
-            geom.content_h,
-            &self.settings,
-            font_sig,
-            tr.text_scale(),
-        );
-        let previous = self.layout.as_ref().map(|l| l.key);
-        if previous != Some(key)
-            && let Some(book) = lib.get(self.book_idx)
-            && let Some(ch) = book.chapters.get(self.chapter)
-        {
-            // The same chapter laid out again (a resize, a new text size or
-            // font): keep the paragraph the reader was at on screen, rather
-            // than a page number that now holds other text.
-            if previous.is_some_and(|old| old.chapter == self.chapter)
-                && self.pending_jump_block.is_none()
-                && self.pending_seek_fraction.is_none()
-                && !self.pending_last_page
-                && !self.settings.mode.is_continuous()
-            {
-                self.pending_jump_block = Some(self.page_top_block);
-            }
-            self.layout = Some(layout_chapter(
-                tr,
-                &ChapterLayoutRequest {
-                    blocks: &ch.blocks,
-                    content_width: geom.content_w,
-                    content_height: geom.content_h,
-                    settings: &self.settings,
-                    chapter: self.chapter,
-                    language: &book.language,
-                    base_family,
-                    font_multiplier: font_mult,
-                    font_signature: font_sig,
-                },
-            ));
-        }
-        self.layout.take().unwrap_or_else(|| ChapterLayout {
-            blocks: Vec::new(),
-            total_height: 0.0,
-            pages: vec![0.0],
-            key,
-        })
     }
 
     /// Lay out the visible pane(s) for the current mode: one scrolling pane
@@ -10438,6 +10312,7 @@ fn draw_progress_label(ctx: &mut PaintCtx<'_>, rect: Rect, fraction: f32, color:
 mod book_card;
 use book_card::ShelfCard;
 mod catalogue_settings;
+mod chapter_layouts;
 mod query_view;
 mod search_worker;
 mod stage;
@@ -10457,3 +10332,7 @@ mod query_view_tests;
 #[cfg(test)]
 #[path = "app/shelf_tests.rs"]
 mod shelf_tests;
+
+#[cfg(test)]
+#[path = "app/scroll_tests.rs"]
+mod scroll_tests;
