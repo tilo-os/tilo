@@ -199,6 +199,8 @@ pub struct SiteStatus {
     /// Chromium `base::Time` microseconds since 1601-01-01.
     pub expires: f64,
     pub permissions: Vec<(String, String)>,
+    /// The engine can put the site's permissions back to asking.
+    pub can_reset: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,6 +379,13 @@ pub enum WebViewCommand {
     PermissionDecision {
         id: u32,
         allow: bool,
+    },
+    /// The person set a permission question aside (Escape, a click
+    /// elsewhere) without answering: the site may ask again, as when a
+    /// prompt in Chrome is dismissed. An engine that cannot tell this from
+    /// no takes it as no.
+    PermissionDismissed {
+        id: u32,
     },
     DownloadDecision {
         id: u32,

@@ -1752,7 +1752,7 @@ fn valid_site_event(value: &Value, event: &str) -> bool {
                 && value["action"].as_str().is_some_and(|s| {
                     matches!(
                         s,
-                        "status" | "clear" | "revoke" | "enable" | "disable" | "reload"
+                        "status" | "clear" | "revoke" | "reset" | "enable" | "disable" | "reload"
                     )
                 })
                 && value["message"].as_str().is_some_and(|s| s.len() <= 1024)
@@ -1812,6 +1812,7 @@ fn decode_site_event(value: &Value, event: &str) -> Option<WebViewEvent> {
                 .iter()
                 .map(|(k, v)| Some((k.clone(), v.as_str()?.into())))
                 .collect::<Option<Vec<_>>>()?,
+            can_reset: value["can_reset"].as_bool().unwrap_or(false),
         }),
         "site_result" => WebViewEvent::SiteResult {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
@@ -2069,7 +2070,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && *generation <= 9_007_199_254_740_991
                 && matches!(
                     action.as_str(),
-                    "clear" | "revoke" | "enable" | "disable" | "reload"
+                    "clear" | "revoke" | "reset" | "enable" | "disable" | "reload"
                 )
         }
         WebViewCommand::ContextMenuAction { id, command } => {
@@ -2101,6 +2102,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && url.len() <= 1 << 20
         }
         WebViewCommand::PermissionDecision { id, .. }
+        | WebViewCommand::PermissionDismissed { id }
         | WebViewCommand::DownloadDecision { id, .. }
         | WebViewCommand::CancelNativeDownload { id }
         | WebViewCommand::RetryDownload { id } => *id > 0 && i32::try_from(*id).is_ok(),
@@ -2535,6 +2537,10 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::ShowDeveloperTools => json!({"op":"devtools"}),
         WebViewCommand::PermissionDecision { id, allow } => {
             json!({"op":"permission_decision","id":id,"allow":allow})
+        }
+        // A no to a host that knows no dismissal; a dismissal to one that does.
+        WebViewCommand::PermissionDismissed { id } => {
+            json!({"op":"permission_decision","id":id,"allow":false,"dismiss":true})
         }
         WebViewCommand::DownloadDecision { id, allow } => {
             json!({"op":"download_decision","id":id,"allow":allow})

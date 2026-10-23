@@ -626,6 +626,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(action=="revoke") {
         capabilities_->Close();auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:tilo::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_BLOCK);
         SiteResult(request,origin,document->generation,action,true,"Permissions blocked. Reload to end existing media sessions.");
+      } else if(action=="reset") {
+        // Back to asking: what was blocked or allowed for the site is forgotten.
+        auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:tilo::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_DEFAULT);
+        SiteResult(request,origin,document->generation,action,true,"The site asks again for what it needs.");
       } else if(action=="enable" || action=="disable") {
         auto origins=request_filter->Snapshot()->exceptions;if(action=="disable")origins.insert(origin);else origins.erase(origin);
         if(origins.size()>1024) {SiteResult(request,origin,document->generation,action,false,"Site exception limit reached");return false;}
@@ -633,7 +637,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
       return false;
     }
-    auto state=request_filter->Snapshot();auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",actual);d->SetDouble("generation",document->generation);d->SetDouble("blocked",std::min<uint64_t>(document->blocked.load(),9007199254740991ULL));d->SetBool("global_enabled",state->enabled);d->SetBool("excepted",state->exceptions.count(actual));d->SetBool("effective",state->enabled && !state->exceptions.count(actual));
+    auto state=request_filter->Snapshot();auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",actual);d->SetDouble("generation",document->generation);d->SetDouble("blocked",std::min<uint64_t>(document->blocked.load(),9007199254740991ULL));d->SetBool("global_enabled",state->enabled);d->SetBool("excepted",state->exceptions.count(actual));d->SetBool("effective",state->enabled && !state->exceptions.count(actual));d->SetBool("can_reset",true);
     auto entry=browser_->GetHost()->GetVisibleNavigationEntry();auto ssl=entry && tilo::Origin(entry->GetURL())==actual?entry->GetSSLStatus():nullptr;
     const bool secure=ssl && ssl->IsSecureConnection() && !CefIsCertStatusError(ssl->GetCertStatus());
     d->SetString("security",actual.starts_with("http:")?"insecure":secure?"secure":"unverified");d->SetInt("certificate_status",ssl?ssl->GetCertStatus():0);d->SetInt("tls_version",ssl?ssl->GetSSLVersion():0);d->SetInt("content_status",ssl?ssl->GetContentStatus():0);
@@ -845,7 +849,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     else if(op=="key") Key(d);
     else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
-    else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"));
+    else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"),d->HasKey("dismiss") && d->GetType("dismiss")==VTYPE_BOOL && d->GetBool("dismiss"));
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
     else if(op=="devtools") { CefWindowInfo window;
       host->ShowDevTools(window,new DevToolsClient,CefBrowserSettings(),CefPoint());
@@ -1475,7 +1479,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="site_status" || op=="site_action") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("origin",VTYPE_STRING) || d->GetString("origin").length()>8192)return false;
     if(op=="site_status")return true;
-    const auto action=d->GetString("action");return number("generation") && tilo::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="enable" || action=="disable" || action=="reload");
+    const auto action=d->GetString("action");return number("generation") && tilo::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="reset" || action=="enable" || action=="disable" || action=="reload");
   }
   if(op=="text_input") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
@@ -1643,14 +1647,18 @@ int RunHost(int argc,char** argv) {
   profile=std::filesystem::canonical(profile).string();
   if(downloads_directory.empty()) downloads_directory=profile+"/downloads";
   Output writer;output=&writer;
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_MAC)
   // Chromium's pipe handler reads commands on fd 3 and replies on fd 4. Use
-  // them only when nothing else holds those descriptors.
+  // them only when nothing else holds those descriptors. Extensions are
+  // loaded, turned off and removed while the browser runs through it, on
+  // macOS as on Linux.
   if(fcntl(3,F_GETFD)<0 && fcntl(4,F_GETFD)<0) {
     // Keep every pipe end clear of 3 and 4 until it is moved there on purpose.
     auto high=[](int fd){int moved=fcntl(fd,F_DUPFD_CLOEXEC,5);close(fd);return moved;};
+    // macOS has no pipe2; each end is moved high, close-on-exec, at once.
+    auto open_pipe=[](int ends[2]){return pipe(ends)==0 && fcntl(ends[0],F_SETFD,FD_CLOEXEC)==0 && fcntl(ends[1],F_SETFD,FD_CLOEXEC)==0;};
     int commands[2],replies[2];
-    if(pipe2(commands,O_CLOEXEC)==0 && pipe2(replies,O_CLOEXEC)==0) {
+    if(open_pipe(commands) && open_pipe(replies)) {
       int chromium_reads=high(commands[0]),host_writes=high(commands[1]);
       int host_reads=high(replies[0]),chromium_writes=high(replies[1]);
       if(chromium_reads>=0 && host_writes>=0 && host_reads>=0 && chromium_writes>=0 &&
