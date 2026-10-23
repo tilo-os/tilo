@@ -3,28 +3,11 @@
 // scroll by copying what stays on screen.
 
 impl PdfApp {
-    /// Whether a pointer move to `p` changes nothing the toolbar, its zoom
-    /// stepper or the find bar draws: it is not over the toolbar and was
-    /// not over it before (whose hover it would clear), and none of them
-    /// holds the pointer or an open menu.
-    fn move_leaves_chrome_unchanged(&mut self, p: Point) -> bool {
-        use ui::widget::Widget;
-        let over = self.toolbar_rect.contains(p);
-        let unchanged = !over
-            && !self.pointer_over_toolbar
-            && !self.search_active
-            && !self.toolbar.wants_pointer_capture()
-            && !self.toolbar.traps_focus()
-            && !self.zoom_input.wants_pointer_capture();
-        self.pointer_over_toolbar = over;
-        unchanged
-    }
-
     /// Whether the pointer moving from `from` to `to` changes nothing drawn:
     /// both on the page canvas, clear of everything there that shows hover
     /// (the page bubble's reveal band, the selection bar), with nothing
-    /// floating over the canvas (a menu, a popover, the find band, a panel
-    /// in a narrow window). A finger
+    /// floating over the canvas (a menu, a panel in a narrow window). A
+    /// finger
     /// scrolling the page moves the pointer every frame; such a frame only
     /// scrolled, and repaints only what scrolled in.
     fn pointer_move_is_quiet(&self, from: Point, to: Point) -> bool {
@@ -35,8 +18,6 @@ impl PdfApp {
         }
         let canvas = self.canvas_rect;
         let floating = self.context_menu.is_some()
-            || self.marker_colours.is_some()
-            || self.search_active
             || (self.overlay_mode && (self.show_rail || self.show_sidebar));
         self.has_document
             && !floating

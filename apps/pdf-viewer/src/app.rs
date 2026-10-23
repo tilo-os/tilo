@@ -1,8 +1,9 @@
 //! `PdfApp` — the root widget for the PDF reader.
 //!
 //! It is a single full-window widget that manages its own internal layout
-//! (toolbar, thumbnail rail, page canvas, comments/outline/signatures
-//! sidebar, status bar, search strip) and draws each region itself. This
+//! (thumbnail rail, page canvas, comments/outline/signatures sidebar) and
+//! draws each region itself; its controls are slots in the window's bar
+//! ([`window_bar`]) and find is the window bar's search. This
 //! gives pixel control over the reader chrome, mirroring the custom-draw
 //! approach the toolkit uses for things like the status bar, while keeping
 //! all durable markup — annotations, comments, signatures — in the shared
@@ -44,10 +45,9 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, Transient};
-use ui::widget::tooltip::Tooltip;
 use ui::widget::{
-    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ColorSwatch,
-    ColorSwatchPicker, ContextMenu as SharedContextMenu, ControlSize, DEFAULT_PADDING,
+    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace,
+    ContextMenu as SharedContextMenu, ControlSize, DEFAULT_PADDING,
     DEFAULT_PAN_STEP as KEY_SCROLL_STEP, EmptyState, EmptyStateContent, ListRowFace, MenuItem,
     PAN_SLOP, RowAction, RowLeading, Segment, SegmentedFace, SegmentedStyle, SmallContentAlign,
     TextInput, ToggleGroup, ViewportState,
@@ -246,25 +246,6 @@ impl ContextMenu {
         widget.open_anchored(anchor, viewport);
         Self { target, widget }
     }
-}
-
-#[derive(Clone)]
-enum ToolbarHit {
-    /// A press on the bar that does nothing (a disabled control, a gap).
-    Inert,
-    /// The zoom stepper's value, edited in place.
-    ZoomValue,
-    Tool(Tool),
-    /// Open the marker-colour popover from its well.
-    MarkerColour,
-    ZoomIn,
-    ZoomOut,
-    Fit,
-    Search,
-    ToggleSidebar,
-    ToggleRail,
-    Open,
-    Save,
 }
 
 /// How the user is composing their signature in the Signatures panel: typing
@@ -490,7 +471,6 @@ pub struct PdfApp {
     /// initial CRDT sync has populated its target.
     shots_context_menu: bool,
     shots_panel: Option<SidebarTab>,
-    shots_colours: bool,
     shots_selection: bool,
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
@@ -501,7 +481,7 @@ pub struct PdfApp {
     rect: Rect,
     /// The user's fit *intent* (page / width / a pinned custom zoom). The
     /// actual zoom + scroll live in [`self.viewport`]; `fit` only records what
-    /// to re-derive when the window resizes and drives the toolbar label.
+    /// to re-derive when the window resizes and checks Fit in the window bar.
     fit: FitMode,
     /// Shared zoom/pan kernel (`ui::ViewportState`). Owns the zoom factor,
     /// the scroll offsets, the content↔screen transform and every pan/zoom
@@ -543,7 +523,7 @@ pub struct PdfApp {
     show_rail: bool,
     rail_w: f64,
     /// The shared page-preview rail (thumbnails, drag-reorder, context menu,
-    /// import). Lives on the left; toggled by the left-most toolbar button.
+    /// import). Lives on the left; toggled by the window bar's sidebar toggle.
     page_sidebar: PageSidebar,
     /// Set when the page order / page set has been edited (reorder, delete,
     /// duplicate, import) since the last save — the reader shows a save hint.
@@ -591,10 +571,12 @@ pub struct PdfApp {
     sig_pad_rect: Rect,
 
     // Search.
-    search_active: bool,
-    /// The framework find band: the query, its options, the counter and
-    /// previous/next. Matches remain derived view state below.
-    find_bar: ui::widget::FindBar,
+    /// What the window bar's search last asked to find in the document;
+    /// empty while it finds nothing. The matches below are derived from it.
+    find_query: String,
+    /// A find an action ran (it went to a search result) that the window's
+    /// search has not yet taken over, so its field shows the query.
+    own_find: Option<ui::widget::OwnFind>,
     matches: Vec<Match>,
     active_match: usize,
     search_whole_word: bool,
@@ -673,17 +655,6 @@ pub struct PdfApp {
     /// Some(pointer-x-at-press) while dragging the rail's resize grip.
     rail_drag: Option<f64>,
     context_menu: Option<ContextMenu>,
-    /// The marker-colour popover, while it is open over the toolbar.
-    marker_colours: Option<ui::widget::Popover<ColorSwatchPicker>>,
-    /// The window's command row between the pages toggle and the zoom
-    /// cluster: Open and Save, the annotation tools, the marker colour and
-    /// Fit. What does not fit goes to its More menu.
-    toolbar: ui::widget::Toolbar,
-    history: ui::widget::HistoryOpener,
-    /// The band the toolbar is laid out in (see `recompute_regions`).
-    toolbar_band: Rect,
-    /// The reader state last carried onto the toolbar (see `sync_toolbar`).
-    toolbar_synced: String,
     created_counter: i64,
     dirty: bool,
     /// Visible page/thumbnail cache misses in the last production draw.
@@ -693,15 +664,6 @@ pub struct PdfApp {
     // the smart highlight tool can snap to text without a TextRenderer.
     text_lines: std::collections::HashMap<usize, Vec<render::TextLine>>,
 
-    // Toolbar tooltip — a single hover-revealed popover; which button it is
-    // anchored to is tracked alongside it.
-    tooltip: Tooltip,
-    tooltip_anchor: Rect,
-    /// True only while the pointer sits on a toolbar button and the reveal
-    /// timer is still counting down. Drives `needs_animation_frame`, so an
-    /// idle window (no hover in progress) settles to zero frames instead of
-    /// spinning forever.
-    tooltip_pending: bool,
     /// Suppresses timed fades/reveal animation while preserving immediate
     /// state changes for users who request reduced motion.
     reduce_motion: bool,
@@ -709,15 +671,9 @@ pub struct PdfApp {
     /// paint, hit-testing and the accessibility tree read their tokens from
     /// it, so geometry and paint agree.
     layout_theme: Theme,
-    /// The zoom stepper's width, measured in the draw pass (see
-    /// `measure_toolbar`).
-    zoom_w: f64,
     /// The review panel's tab widths as their labels need them, full and
-    /// short, measured with the toolbar (`None` until then).
+    /// short, measured in the draw pass (`None` until then).
     tab_widths: Option<[[f64; 3]; 2]>,
-    /// The toolbar's zoom stepper, and whether it was built enabled.
-    zoom_input: ui::widget::NumberInput,
-    zoom_input_enabled: bool,
     /// The empty state's "Open a PDF…" pill as last painted (see
     /// `empty_open_button_rect`).
     empty_open_button: std::cell::Cell<Rect>,
@@ -725,7 +681,7 @@ pub struct PdfApp {
     file_open: ui::widget::FileOpenSurface,
 
     /// An in-flight XDG-portal file-open. When the user asks to open a
-    /// document (toolbar folder button, Ctrl+O, or the empty state's Open
+    /// document (the window bar's Open, Ctrl+O, or the empty state's Open
     /// button) the portal round-trip runs on a worker thread and hands the
     /// chosen path back over this channel, which is drained once per frame in
     /// [`Widget::sync`]. `None` when no picker is in flight — the app never
@@ -750,11 +706,6 @@ pub struct PdfApp {
     prev_overlay: Option<bool>,
 
     // Region rects (computed in apply_layout).
-    toolbar_rect: Rect,
-    /// Whether the last pointer move was over the toolbar, whose hover it
-    /// may then have to clear.
-    pointer_over_toolbar: bool,
-    search_rect: Rect,
     rail_rect: Rect,
     canvas_rect: Rect,
     sidebar_rect: Rect,
@@ -946,16 +897,13 @@ impl PdfApp {
         self.shots_context_menu = true;
     }
 
-    /// Screenshot-only: open the find bar with a query and live matches so a
-    /// still frame shows the (non-overlapping) find bar.
+    /// Screenshot-only: find a word in the document and make its third
+    /// match current, as the window bar's search does, so a still frame
+    /// shows every match with the current one told apart.
     pub fn arm_shots_search(&mut self) {
-        self.search_active = true;
-        self.find_bar.set_query("compositor");
-        ui::widget::Widget::set_focus(&mut self.find_bar, true);
-        self.drive_find_bar();
-        self.find_bar.next();
-        self.find_bar.next();
-        self.drive_find_bar();
+        use ui::widget::Findable as _;
+        let found = self.find("compositor", ui::widget::FindOptions::default());
+        self.reveal(2.min(found.len().saturating_sub(1)));
     }
 
     /// Screenshot-only: open the Signatures panel in Draw mode with a signature
@@ -1093,7 +1041,6 @@ impl PdfApp {
             shots_page_bubble: false,
             shots_context_menu: false,
             shots_panel: None,
-            shots_colours: false,
             shots_selection: false,
             annotations: Vec::new(),
             comments: Vec::new(),
@@ -1143,8 +1090,8 @@ impl PdfApp {
             signature: None,
             signature_revision: None,
             sig_pad_rect: Rect::ZERO,
-            search_active: false,
-            find_bar: ui::widget::FindBar::new(),
+            find_query: String::new(),
+            own_find: None,
             matches: Vec::new(),
             active_match: 0,
             search_whole_word: false,
@@ -1178,24 +1125,13 @@ impl PdfApp {
             pan: None,
             rail_drag: None,
             context_menu: None,
-            marker_colours: None,
-            toolbar: build_toolbar(),
-            history: ui::widget::HistoryOpener::new(),
-            toolbar_band: Rect::ZERO,
-            toolbar_synced: String::new(),
             created_counter: 100,
             dirty: true,
             pending_visuals: false,
             text_lines: std::collections::HashMap::new(),
-            tooltip: Tooltip::new(""),
-            tooltip_anchor: Rect::ZERO,
-            tooltip_pending: false,
             reduce_motion: false,
             layout_theme: Theme::dark(),
-            zoom_w: 0.0,
             tab_widths: None,
-            zoom_input: zoom_stepper(100.0, false),
-            zoom_input_enabled: false,
             empty_open_button: std::cell::Cell::new(Rect::ZERO),
             file_open: ui::widget::FileOpenSurface::default(),
             portal_rx: None,
@@ -1204,9 +1140,6 @@ impl PdfApp {
             pending_reopen: None,
             overlay_mode: false,
             prev_overlay: None,
-            toolbar_rect: Rect::ZERO,
-            pointer_over_toolbar: false,
-            search_rect: Rect::ZERO,
             rail_rect: Rect::ZERO,
             canvas_rect: Rect::ZERO,
             sidebar_rect: Rect::ZERO,
@@ -1424,9 +1357,7 @@ impl PdfApp {
     /// Test-only: open find and materialise matches for `query`.
     #[cfg(test)]
     pub(crate) fn stage_find_for_test(&mut self, query: &str) {
-        self.open_search();
-        self.find_bar.set_query(query);
-        self.recompute_matches();
+        ui::widget::Findable::find(self, query, ui::widget::FindOptions::default());
     }
 
     /// Test-only: live find hit count after [`Self::stage_find_for_test`].
@@ -1780,12 +1711,12 @@ impl PdfApp {
             .content_min_width(f64::from(m.detail_min_width))
     }
 
-    /// The strip the review panel docks in: below the toolbar, beside the
+    /// The strip the review panel docks in: the window's height, beside the
     /// page rail. The rail's width counts even while it is hidden, so
     /// hiding the rail never changes whether the panels dock.
     fn review_outer(&self) -> Rect {
         let r = self.rect;
-        let top = r.y0 + f64::from(self.layout_theme.tokens.metrics.header_height);
+        let top = r.y0;
         let (rail_min, rail_max) = self.rail_width_range();
         let x0 = (r.x0 + self.rail_w.clamp(rail_min, rail_max)).min(r.x1);
         Rect::new(x0, top.min(r.y1), r.x1, r.y1)
@@ -1838,12 +1769,9 @@ impl PdfApp {
 
     fn recompute_regions(&mut self) {
         let r = self.rect;
-        // The toolbar is always one row: commands that do not fit go to its
-        // More menu.
-        let toolbar_h = f64::from(self.layout_theme.tokens.metrics.header_height);
-        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + toolbar_h);
-        self.lay_out_toolbar();
-        let mid_top = r.y0 + toolbar_h;
+        // The controls are the window bar's: the panels and the pages take
+        // the window's whole height.
+        let mid_top = r.y0;
         // No reserved bottom strip: the page-info bubble floats over the canvas
         // (see `draw_page_bubble`), so the content spans to the window bottom.
         let mid_bottom = r.y1;
@@ -1859,16 +1787,7 @@ impl PdfApp {
         } else {
             (r.x0 + rail_w, r.x1 - sidebar_w)
         };
-        // Find is a band at the top of the page canvas.
-        let mut canvas_top = mid_top;
-        if self.search_active {
-            let find_h = self.find_bar.height(&self.layout_theme);
-            self.search_rect = Rect::new(x0, mid_top, x1, mid_top + find_h);
-            canvas_top += find_h;
-        } else {
-            self.search_rect = Rect::ZERO;
-        }
-        self.canvas_rect = Rect::new(x0, canvas_top, x1, mid_bottom);
+        self.canvas_rect = Rect::new(x0, mid_top, x1, mid_bottom);
     }
 
     // ---- viewport (zoom + pan) --------------------------------------
@@ -1883,15 +1802,6 @@ impl PdfApp {
         self.viewport.zoom()
     }
 
-    /// The zoom the toolbar shows, in percent. With no document there is
-    /// nothing being zoomed: it reads 100%, not a value fitted to the window.
-    pub(crate) fn shown_zoom_percent(&self) -> f64 {
-        if self.has_document {
-            (self.zoom() * 100.0).round()
-        } else {
-            100.0
-        }
-    }
     fn scroll_x(&self) -> f64 {
         self.viewport.scroll_x()
     }
@@ -2363,9 +2273,15 @@ impl PdfApp {
     }
 
     fn query(&self) -> &str {
-        self.find_bar.query()
+        &self.find_query
     }
 
+    /// Whether the window bar's search shows matches on the pages.
+    fn finding(&self) -> bool {
+        !self.find_query.is_empty()
+    }
+
+    #[cfg(test)]
     fn recompute_matches(&mut self) {
         let query = self.query().to_string();
         self.recompute_matches_for(&query);
@@ -2449,27 +2365,6 @@ impl PdfApp {
         }
     }
 
-    /// Step the find bar's current match by `delta` (wrapping), as its
-    /// previous / next buttons do.
-    fn step_match(&mut self, delta: isize) {
-        for _ in 0..delta.unsigned_abs() {
-            if delta < 0 {
-                self.find_bar.previous();
-            } else {
-                self.find_bar.next();
-            }
-            self.drive_find_bar();
-        }
-    }
-
-    /// Set the find bar's Whole word and Match case options.
-    fn set_find_options(&mut self, whole_word: bool, case_sensitive: bool) {
-        let mut options = self.find_bar.options();
-        options.whole_word = whole_word;
-        options.match_case = case_sensitive;
-        self.find_bar.set_options(options);
-    }
-
     /// Restore and navigate a canonical search-result resource.  An ordinal is
     /// meaningful only for the query/options that produced it, so this always
     /// rebuilds that exact bounded result set before accepting the target.
@@ -2481,20 +2376,27 @@ impl PdfApp {
         index: usize,
         page: usize,
     ) {
-        self.open_search();
-        self.set_find_options(whole_word, case_sensitive);
-        self.find_bar.set_query(query);
-        self.drive_find_bar();
+        use ui::widget::Findable as _;
+        let options = ui::widget::FindOptions {
+            match_case: case_sensitive,
+            whole_word,
+            ..ui::widget::FindOptions::default()
+        };
+        self.find(query, options);
         let matched_page = if self.raster_active() {
             self.raster_matches.get(index).map(|hit| hit.page)
         } else {
             self.matches.get(index).map(|hit| hit.page)
         };
         if matched_page == Some(page) {
-            // Step the bar to the result so its counter and the emphasised
-            // match agree.
-            self.step_match(isize::try_from(index).unwrap_or(0));
-            self.go_to_page(page);
+            self.reveal(index);
+            // The window's search shows the query and steps on from here.
+            self.own_find = Some(ui::widget::OwnFind {
+                query: query.to_owned(),
+                options,
+                current: index,
+            });
+            Self::open_search();
         } else {
             // A progressive worker may not have extracted this page yet, or a
             // source document may have changed.  Refuse to rebind a stale
@@ -3722,14 +3624,6 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    /// Pin the zoom to `zoom` (a committed value from the zoom stepper).
-    fn set_custom_zoom(&mut self, zoom: f64) {
-        let current = self.viewport.zoom();
-        if current > 0.0 {
-            self.zoom_by(zoom.clamp(ZOOM_MIN, ZOOM_MAX) / current);
-        }
-    }
-
     /// Zoom by `factor` while holding the document point under `focal`
     /// (a screen-space point) stationary, so Ctrl+wheel zooms toward the
     /// cursor and the content under it doesn't drift. The focal-tracking math
@@ -4195,10 +4089,12 @@ impl PdfApp {
                     self.selected_anno = None;
                     self.selected_sig = None;
                     self.editing = None;
-                    self.close_search();
-                    self.find_bar = ui::widget::FindBar::new();
+                    // Another document: the old one's matches go with it.
+                    self.find_query.clear();
+                    self.own_find = None;
                     self.matches.clear();
                     self.raster_matches.clear();
+                    self.active_match = 0;
                     self.raster_text.clear();
                     self.text_layers_replaced("another PDF opened");
                     self.raster_links.clear();
@@ -4328,19 +4224,17 @@ impl PdfApp {
                 {
                     self.raster_text_pending.remove(&request.page);
                     let text = self.text_for_card(request.page + 1, text);
+                    // An open search finds again over the grown text (its
+                    // content revision moved), so the counter and the
+                    // matches move together.
                     self.raster_text.insert(request.page + 1, text);
-                    if self.search_active {
-                        // The bar finds again over the grown text, so the
-                        // counter and the matches move together.
-                        self.drive_find_bar();
-                    }
                     self.text_arrived(request.page + 1);
                     // A page's text shows only through find matches or a
                     // selection on it (a press it resolved repaints for
                     // itself); read ahead under a resting pointer, it
                     // changes nothing on screen, and a scroll goes on
                     // copying.
-                    if self.search_active
+                    if self.finding()
                         || self
                             .selection
                             .is_some_and(|sel| sel.pages().contains(&(request.page + 1)))
@@ -4619,7 +4513,7 @@ include!("app_scroll_input.rs");
 
 impl Widget for PdfApp {
     ui::provides!(
-        dyn ui::widget::WindowHeader,
+        dyn ui::widget::Findable,
         dyn ui::widget::controls::ActionControls
     );
 
@@ -4679,6 +4573,10 @@ impl Widget for PdfApp {
         self.refresh_search_entries(state);
     }
 
+    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
+        self.run_window_toolbar();
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -4724,14 +4622,6 @@ impl Widget for PdfApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self
-            .history
-            .handle_event(event, self.history_rect(), ctx.scale_factor)
-        {
-            self.dirty = true;
-            *ctx.handled = true;
-            return;
-        }
         if self.context_menu.is_some() {
             let (selected_target, still_open) = {
                 match self.context_menu.as_mut() {
@@ -4784,30 +4674,19 @@ impl Widget for PdfApp {
     }
 
     fn traps_focus(&self) -> bool {
-        self.toolbar.shown_menu().is_some()
-            || self
-                .marker_colours
-                .as_ref()
-                .is_some_and(Widget::traps_focus)
-            || self
-                .context_menu
-                .as_ref()
-                .is_some_and(|menu| menu.widget.traps_focus())
+        self.context_menu
+            .as_ref()
+            .is_some_and(|menu| menu.widget.traps_focus())
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        self.toolbar
-            .modal_capture()
-            .or_else(|| self.marker_colours.as_ref().and_then(Widget::modal_capture))
-            .or_else(|| {
-                self.context_menu
-                    .as_ref()
-                    .and_then(|menu| menu.widget.modal_capture())
-            })
+        self.context_menu
+            .as_ref()
+            .and_then(|menu| menu.widget.modal_capture())
     }
 
-    /// The marker-colour popover and the context menu float in the top
-    /// layer, above the pages and the panels.
+    /// The context menu floats in the top layer, above the pages and the
+    /// panels.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -4816,11 +4695,6 @@ impl Widget for PdfApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.toolbar
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
-        if let Some(popover) = self.marker_colours.as_mut() {
-            popover.draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
         if let Some(menu) = self.context_menu.as_mut() {
             menu.widget
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
@@ -4829,7 +4703,7 @@ impl Widget for PdfApp {
 
     /// The reader paints its document chrome and pages directly, so expose the
     /// otherwise invisible structure explicitly.  The navigation controls use
-    /// the same `PdfEffect` handler as the toolbar and Ctrl+K resources;
+    /// the same `PdfEffect` handler as the window bar and Ctrl+K resources;
     /// assistive technology never takes a separate, untested shortcut.
     #[allow(
         clippy::too_many_lines,
@@ -4887,74 +4761,17 @@ impl Widget for PdfApp {
             );
         }
 
-        let layout = self.toolbar_layout();
+        // The reader's commands are the window bar's slots; what stays on
+        // the pages is the page bubble's stepping and the review panel's
+        // divider.
         let mut controls = vec![
-            button("Open PDF", "pdf.open", layout.open),
-            button("Save annotated PDF", "pdf.save", layout.save),
             button("Previous page", "pdf.previous-page", self.bubble_prev)
                 .with_state(focusable().disabled(current <= 1)),
             button("Next page", "pdf.next-page", self.bubble_next)
                 .with_state(focusable().disabled(current >= pages)),
-            button("Zoom out", "pdf.zoom-out", layout.zoom_out),
-            button("Zoom in", "pdf.zoom-in", layout.zoom_in),
-            button("Fit page or width", "pdf.fit", layout.fit),
-            button("Find in document", "pdf.search.open", layout.search),
-            AccessNode::new(Role::ToggleButton)
-                .with_name("Page thumbnails")
-                .with_action_target("pdf.toggle-rail")
-                .with_bounds(layout.toggle_rail)
-                .with_state(focusable().checked(self.show_rail)),
-            AccessNode::new(Role::ToggleButton)
-                .with_name("Review sidebar")
-                .with_action_target("pdf.toggle-sidebar")
-                .with_bounds(layout.toggle_sidebar)
-                .with_state(focusable().checked(self.show_sidebar)),
         ];
         if !self.overlay_mode {
             controls.extend(self.review.resize_accessibility());
-        }
-        controls.extend(self.history.accessibility(self.history_rect()));
-        // Commands that went to the More menu keep their nodes (zero bounds)
-        // and actions; the More button, and its menu while open, come from
-        // the toolbar itself.
-        if let Some(bar) = ui::widget::Widget::accessibility(&self.toolbar) {
-            controls.extend(bar.children.into_iter().filter(|child| {
-                child.role == Role::Menu
-                    || child.action_target.as_deref() == Some("toolbar.overflow")
-            }));
-        }
-        controls.extend(layout.tools.iter().map(|(tool, bounds)| {
-            AccessNode::new(Role::ToggleButton)
-                .with_name(tool.label())
-                .with_description(format!("Annotation tool; shortcut {}", tool.hotkey()))
-                .with_action_target(format!("pdf.tool:{}", tool.hotkey()))
-                .with_bounds(*bounds)
-                .with_state(focusable().checked(self.tool == *tool))
-        }));
-        // The marker colours are a radio group behind the well: each colour
-        // is chosen directly, whether or not the popover is showing.
-        if let Some(well) = layout.colour {
-            controls.push(
-                AccessNode::new(Role::Group)
-                    .with_name("Marker colour")
-                    .with_hashed_key("pdf.marker-colour")
-                    .with_bounds(well)
-                    .with_children(
-                        Swatch::ALL
-                            .iter()
-                            .map(|swatch| {
-                                AccessNode::new(Role::RadioButton)
-                                    .with_name(format!(
-                                        "{} annotation colour",
-                                        swatch_label(*swatch)
-                                    ))
-                                    .with_action_target(format!("pdf.swatch:{}", swatch.key()))
-                                    .with_bounds(well)
-                                    .with_state(focusable().checked(self.swatch == *swatch))
-                            })
-                            .collect(),
-                    ),
-            );
         }
 
         let page_nodes = self
@@ -5001,7 +4818,9 @@ impl Widget for PdfApp {
                 .with_state(focusable()),
         ];
 
-        if self.search_active {
+        // The window bar's search holds the query and the count; the pages
+        // list its matches, each one a place to go.
+        if self.finding() {
             let count = self.match_count();
             let result_nodes = (0..count.min(100))
                 .map(|index| {
@@ -5017,33 +4836,11 @@ impl Widget for PdfApp {
                         .with_state(focusable().selected(index == self.active_match))
                 })
                 .collect();
-            let mut find = vec![
-                AccessNode::new(Role::TextInput)
-                    .with_name("Find in document")
-                    .with_value(self.query())
-                    .with_action_target("pdf.search.input")
-                    .with_bounds(self.search_rect)
-                    .with_state(
-                        focusable().focused(ui::widget::Widget::is_focused(&self.find_bar)),
-                    ),
-            ];
-            find.extend(ui::widget::Widget::accessibility(&self.find_bar));
             content_children.push(
-                AccessNode::new(Role::Group)
-                    .with_name("Find in document")
-                    .with_children(vec![
-                        AccessNode::new(Role::Group)
-                            .with_name("Find")
-                            .with_children(find),
-                        AccessNode::new(Role::StaticText)
-                            .with_name(format!("{count} matches"))
-                            .with_hashed_key("pdf.search.count")
-                            .with_live(Politeness::Polite),
-                        AccessNode::new(Role::List)
-                            .with_name("Search results")
-                            .with_hashed_key("pdf.search.results")
-                            .with_children(result_nodes),
-                    ]),
+                AccessNode::new(Role::List)
+                    .with_name("Search results")
+                    .with_hashed_key("pdf.search.results")
+                    .with_children(result_nodes),
             );
         }
 
@@ -5191,9 +4988,9 @@ impl Widget for PdfApp {
             );
         }
         let mut window_children = vec![
-            AccessNode::new(Role::Toolbar)
-                .with_name("Document tools")
-                .with_hashed_key("pdf.toolbar")
+            AccessNode::new(Role::Group)
+                .with_name("Page controls")
+                .with_hashed_key("pdf.page-controls")
                 .with_children(controls),
             page_list,
             AccessNode::new(Role::Group)
@@ -5226,10 +5023,6 @@ impl Widget for PdfApp {
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as A11yAction;
-        if self.history.perform_semantic_action(target, action) {
-            self.dirty = true;
-            return true;
-        }
         if self.perform_review_resize(target, action) {
             return true;
         }
@@ -5252,40 +5045,6 @@ impl Widget for PdfApp {
                 self.context_menu = None;
             }
             return handled;
-        }
-        if target.starts_with("toolbar.") {
-            let handled = ui::widget::Widget::perform_semantic_action(
-                &mut self.toolbar,
-                target,
-                action,
-                state,
-                path,
-            );
-            self.drain_toolbar();
-            return handled;
-        }
-        if target.starts_with("find-") {
-            let handled = ui::widget::Widget::perform_semantic_action(
-                &mut self.find_bar,
-                target,
-                action,
-                state,
-                path,
-            );
-            self.drive_find_bar();
-            return handled;
-        }
-        if target == "pdf.search.input" {
-            match action {
-                A11yAction::Activate | A11yAction::Focus => self.open_search(),
-                A11yAction::SetValue(value) => {
-                    self.open_search();
-                    self.find_bar.set_query(value);
-                    self.drive_find_bar();
-                }
-                _ => return false,
-            }
-            return true;
         }
         if target == "pdf.signer" {
             match action {
@@ -5345,31 +5104,6 @@ impl Widget for PdfApp {
                 return true;
             }
             return false;
-        }
-        if let Some(tag) = target.strip_prefix("pdf.tool:") {
-            let tool = match tag {
-                "1" => Tool::Select,
-                "2" => Tool::Highlight,
-                "3" => Tool::Ink,
-                "4" => Tool::Note,
-                "5" => Tool::Sign,
-                "6" => Tool::Text,
-                _ => return false,
-            };
-            self.set_tool(tool);
-            return true;
-        }
-        if let Some(name) = target.strip_prefix("pdf.swatch:") {
-            self.swatch = Swatch::parse(name);
-            if let Some(id) = self.selected_anno.clone() {
-                self.perform_action(
-                    state,
-                    crate::actions::set_annotation_color_action(&id, self.swatch),
-                );
-                self.reload(state);
-            }
-            self.dirty = true;
-            return true;
         }
         if let Some(tab) = target.strip_prefix("pdf.tab:") {
             let next = match tab {
@@ -5454,63 +5188,15 @@ impl Widget for PdfApp {
             return true;
         }
 
-        match target {
-            "pdf.open" => {
-                self.request_open_via_portal();
-                return true;
-            }
-            "pdf.save" => {
-                self.request_save_via_portal();
-                return true;
-            }
-            "pdf.toggle-rail" => {
-                self.toggle_rail();
-                return true;
-            }
-            "pdf.search.open" => {
-                self.open_search();
-                return true;
-            }
-            "pdf.search.whole-word" | "pdf.search.case-sensitive" => {
-                let part = if target == "pdf.search.whole-word" {
-                    "find-WholeWord"
-                } else {
-                    "find-MatchCase"
-                };
-                self.open_search();
-                let toggled = ui::widget::Widget::perform_semantic_action(
-                    &mut self.find_bar,
-                    part,
-                    &A11yAction::Activate,
-                    state,
-                    path,
-                );
-                self.drive_find_bar();
-                return toggled;
-            }
-            "pdf.fit" => {
-                if self.fit == FitMode::Width {
-                    self.fit_page();
-                } else {
-                    self.fit_width();
-                }
-                return true;
-            }
-            "pdf.signature.use" => {
-                self.set_tool(Tool::Sign);
-                return true;
-            }
-            _ => {}
-        }
         let effect = match target {
+            "pdf.open" => PdfEffect::OpenPdf { path: None },
+            "pdf.signature.use" => PdfEffect::UseTool { tool: Tool::Sign },
             "pdf.previous-page" => PdfEffect::PreviousPage,
             "pdf.next-page" => PdfEffect::NextPage,
-            "pdf.zoom-in" => PdfEffect::ZoomIn,
-            "pdf.zoom-out" => PdfEffect::ZoomOut,
-            "pdf.toggle-sidebar" => PdfEffect::ToggleSidebar,
             _ => return false,
         };
-        self.show(&effect)
+        self.run_effect(&effect);
+        true
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -5522,15 +5208,6 @@ impl Widget for PdfApp {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.search_active
-            && self.search_rect.contains(point)
-            && let Some(cursor) = ui::widget::Widget::cursor_shape(&self.find_bar, point)
-        {
-            return Some(cursor);
-        }
-        if self.zoom_rect_contains(point) {
-            return Some(winit::window::CursorIcon::Pointer);
-        }
         if self.on_rail_grip(point) {
             return Some(winit::window::CursorIcon::ColResize);
         }
@@ -5539,18 +5216,6 @@ impl Widget for PdfApp {
         }
         self.link_under(point)
             .map(|_| winit::window::CursorIcon::Pointer)
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        self.search_active
-            .then(|| ui::widget::Widget::ime_cursor_rect(&self.find_bar))
-            .flatten()
-    }
-
-    fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        self.search_active
-            .then(|| ui::widget::Widget::ime_content(&self.find_bar))
-            .flatten()
     }
 
     fn has_pending_visual_work(&self) -> bool {
@@ -5578,12 +5243,8 @@ impl Widget for PdfApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Tick only while a hover is counting toward the tooltip's
-        // reveal delay. Once the tooltip is shown (or the pointer isn't over a
-        // button at all) no further frames are needed, so an idle window
-        // settles to zero frames instead of redrawing forever. The pointer
-        // leaving a button arrives as a real event, which repaints and clears
-        // the popover on its own.
+        // Tick only while something moves on its own, so an idle window
+        // settles to zero frames instead of redrawing forever.
         let owner_busy = self.portal_contents_rx.is_some()
             || self.pending_reopen.is_some()
             || self
@@ -5597,8 +5258,7 @@ impl Widget for PdfApp {
         // and painted without waiting for an input event. Also keep frames
         // coming while the floating page bubble is lingering /
         // fading, so it hides itself without needing a stray pointer event.
-        self.tooltip_pending
-            || owner_busy
+        owner_busy
             || self.page_bubble.needs_frame(ui::time::now())
             || self.selection_autoscroll_velocity() != 0.0
             || self.glide.is_active()
@@ -5631,7 +5291,6 @@ impl Widget for PdfApp {
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
         if reduced {
-            self.tooltip_pending = false;
             self.page_bubble = ui::StatusBubble::new().with_linger(Duration::ZERO);
         } else {
             self.page_bubble = ui::StatusBubble::new();
@@ -5686,7 +5345,9 @@ impl PdfApp {
             PdfEffect::FitWidth => self.fit_width(),
             PdfEffect::ToggleSidebar => self.toggle_sidebar(),
             PdfEffect::TogglePages => self.toggle_rail(),
-            PdfEffect::Find => self.open_search(),
+            PdfEffect::Find => Self::open_search(),
+            PdfEffect::UseTool { tool } => self.set_tool(*tool),
+            PdfEffect::SetMarkerColour { colour } => self.set_marker_colour(*colour),
             PdfEffect::GoTo { page } => self.go_to_page(*page),
             PdfEffect::MarkHighlight | PdfEffect::MarkUnderline | PdfEffect::MarkStrikeout => {
                 self.markup_style = match effect {
@@ -5967,23 +5628,13 @@ impl PdfApp {
 mod content_import;
 mod scroll_damage;
 mod selection;
+mod window_bar;
 use scroll_damage::CanvasShown;
 use selection::{PendingPress, PendingSelectionEffect, SelectionStart, TextPos, TextSelection};
-
-impl ui::widget::WindowHeader for PdfApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        self.history.set_control(control);
-        self.dirty = true;
-    }
-}
 
 impl ui::widget::controls::ActionControls for PdfApp {
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         ui::widget::semantic_action_bindings(self.accessibility())
-    }
-
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.history.take()
     }
 }
 
@@ -6005,6 +5656,7 @@ impl ui::widget::Findable for PdfApp {
     ) -> Vec<ui::widget::FindMatch> {
         self.search_case_sensitive = options.match_case;
         self.search_whole_word = options.whole_word;
+        query.clone_into(&mut self.find_query);
         // Finding again over grown text keeps the emphasised match; a new
         // query reveals its first one.
         let current = self.active_match;
@@ -6030,7 +5682,12 @@ impl ui::widget::Findable for PdfApp {
         self.dirty = true;
     }
 
+    fn take_own_find(&mut self) -> Option<ui::widget::OwnFind> {
+        self.own_find.take()
+    }
+
     fn clear_find(&mut self) {
+        self.find_query.clear();
         self.matches.clear();
         self.raster_matches.clear();
         self.active_match = 0;
@@ -6575,8 +6232,18 @@ mod tests {
             assert!(!app.has_document);
             assert!((app.shown_zoom_percent() - 100.0).abs() < f64::EPSILON);
         }
-        let (app, _st) = app_with_state();
+        let (mut app, _st) = app_with_state();
         assert!((app.shown_zoom_percent() - (app.zoom() * 100.0).round()).abs() < f64::EPSILON);
+
+        // The page pill shows the zoom as a segment of its own, beside the
+        // page, which a zoom leaves as it was.
+        let (page, zoom) = app.page_pill_labels();
+        assert_eq!(zoom, format!("{:.0}%", (app.zoom() * 100.0).round()));
+        app.zoom_by(1.5);
+        let (page_after, zoom_after) = app.page_pill_labels();
+        assert_eq!(page_after, page, "a zoom leaves the page segment as it was");
+        assert_eq!(zoom_after, format!("{:.0}%", (app.zoom() * 100.0).round()));
+        assert_ne!(zoom_after, zoom, "the zoom segment follows the zoom");
     }
 
     /// The empty reader staged as screenshot `scenario` shows it.
@@ -6641,7 +6308,7 @@ mod tests {
     )]
     #[test]
     fn semantic_targets_and_global_search_address_stable_pages() {
-        eprintln!("phase accessibility_exposes_reader_state_and_routes_toolbar_operations");
+        eprintln!("phase accessibility_exposes_reader_state_and_routes_page_stepping");
         {
             use ui::a11y::Action;
             use ui::widget::Widget as _;
@@ -6656,16 +6323,16 @@ mod tests {
             assert!(any_access_node(&tree, &|node| node
                 .action_target
                 .as_deref()
-                == Some("pdf.zoom-in")));
+                == Some("pdf.next-page")));
 
-            let sidebar_before = app.show_sidebar;
+            app.go_to_page(1);
             assert!(app.perform_semantic_action(
-                "pdf.toggle-sidebar",
+                "pdf.next-page",
                 &Action::Activate,
                 &mut Edits::lend(&mut state.doc),
                 &state.root,
             ));
-            assert_ne!(app.show_sidebar, sidebar_before);
+            assert_eq!(app.current_page, 2, "Next page steps through the document");
         }
 
         eprintln!("phase stable_page_semantic_target_follows_a_reordered_page");
@@ -6773,9 +6440,7 @@ mod tests {
                 "a reply search hit resolves to the durable thread"
             );
 
-            app.open_search();
-            app.find_bar.set_query("sandbox");
-            app.recompute_matches();
+            app.stage_find_for_test("sandbox");
             app.sync_settled(&mut state.doc, &state.root);
             let find_provider = searched(&app);
             let find_address = find_provider
@@ -6792,8 +6457,7 @@ mod tests {
                     .iter()
                     .any(|action| action.id == "go-to-match")
             );
-            app.find_bar.set_query("filesystem");
-            app.recompute_matches();
+            app.stage_find_for_test("filesystem");
             assert!(
                 resolve(&app, &state.doc, &find_address.resource).is_none(),
                 "a stale find ordinal cannot be rebound to the next query"
@@ -7290,9 +6954,7 @@ mod tests {
             );
 
             // Search: whole-word + case toggles narrow results.
-            app.open_search();
-            app.find_bar.set_query("sandbox");
-            app.recompute_matches();
+            app.stage_find_for_test("sandbox");
             let loose = app.matches.len();
             assert!(loose > 0, "search finds 'sandbox' in the sample");
             full_frame(
@@ -7307,7 +6969,7 @@ mod tests {
                 app.matches.len() <= loose,
                 "whole-word never yields more matches"
             );
-            app.close_search();
+            ui::widget::Findable::clear_find(&mut *app);
 
             // Contents (outline) tab renders the document's section list.
             app.sidebar_tab = SidebarTab::Outline;
@@ -7342,9 +7004,7 @@ mod tests {
             );
             assert!(narrow.overlay_mode, "compact viewport uses overlay panels");
 
-            narrow.open_search();
-            narrow.find_bar.set_query("sandbox");
-            narrow.recompute_matches();
+            narrow.stage_find_for_test("sandbox");
             full_frame(&mut narrow, 390.0, 844.0, Some(&shot("narrow-search.png")));
             assert!(narrow.match_count() > 0, "find remains usable when compact");
 
@@ -7435,9 +7095,7 @@ mod tests {
                 let layer = text_layer(reader, st, 1);
                 first_word(&layer.text, 4).expect("a searchable word")
             };
-            app.open_search();
-            app.find_bar.set_query(&word);
-            app.recompute_matches();
+            app.stage_find_for_test(&word);
             {
                 let (reader, st) = Framed::split(&mut app);
                 settle_until(reader, st, |app| app.raster_text_pending.is_empty());
@@ -7448,7 +7106,7 @@ mod tests {
             );
             let p_search = shot("real_search_hit.png");
             full_frame(&mut app, 1280.0, 800.0, Some(p_search.as_str()));
-            app.close_search();
+            ui::widget::Findable::clear_find(&mut *app);
 
             // --- place a highlight + a signature and shoot the annotated page. ---
             app.tool = Tool::Highlight;
@@ -7570,7 +7228,8 @@ mod tests {
         app.fit_page();
         full_frame(&mut app, 1440.0, 810.0, None);
         assert!(app.ph() * app.zoom() < app.canvas_rect.height());
-        app.set_custom_zoom(1.75);
+        let zoom = app.zoom();
+        app.zoom_by(1.75 / zoom);
         full_frame(&mut app, 1600.0, 900.0, None);
         assert!((app.zoom() - 1.75).abs() < 0.01);
         app.fit_width();
@@ -7933,34 +7592,25 @@ mod tests {
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn chrome_layout_reflows_find_bar_contents_bubble_and_rail() {
-        // Find is a band at the top of the page canvas: between the rail and
-        // the review panel, above the pages, at the bar's own height.
-        eprintln!("phase find_band_tops_the_canvas_column");
+    fn chrome_layout_reflows_contents_bubble_and_rail() {
+        // The controls are the window bar's: the pages and the panels start
+        // at the top of the window, and finding moves nothing.
+        eprintln!("phase pages_take_the_whole_height_under_the_window_bar");
         {
             let (mut app, _st) = app_with_state();
-            app.open_search();
-            let band = app.search_rect;
-            let theme = app.layout_theme.clone();
+            let canvas = app.canvas_rect;
             assert!(
-                (band.height() - app.find_bar.height(&theme)).abs() < 1e-9,
-                "the band is the bar's height"
+                (canvas.y0 - app.rect.y0).abs() < 1e-9,
+                "the pages start at the top"
             );
             assert!(
-                (band.x0 - app.canvas_rect.x0).abs() < 1e-9
-                    && (band.x1 - app.canvas_rect.x1).abs() < 1e-9,
-                "the band spans the canvas column"
+                (app.rail_rect.y0 - app.rect.y0).abs() < 1e-9
+                    && (app.sidebar_rect.y0 - app.rect.y0).abs() < 1e-9,
+                "the panels start at the top"
             );
-            assert!(
-                (band.y1 - app.canvas_rect.y0).abs() < 1e-9,
-                "the pages start under the band"
-            );
-            assert!(
-                band.x0 >= app.rail_rect.x1 - 0.01 && band.x1 <= app.sidebar_rect.x0 + 0.01,
-                "the band leaves the rail and the review panel alone"
-            );
-            app.close_search();
-            assert_eq!(app.search_rect, Rect::ZERO, "closing removes the band");
+            app.stage_find_for_test("sandbox");
+            app.recompute_regions();
+            assert_eq!(app.canvas_rect, canvas, "finding adds no band");
         }
 
         // A long bookmark tree must remain navigable rather than being silently
@@ -8383,24 +8033,24 @@ mod tests {
         eprintln!("phase search_finds_and_jumps");
         {
             let (mut app, _st) = app_with_state();
-            app.find_bar.set_query("filesystem");
-            app.recompute_matches();
+            app.stage_find_for_test("filesystem");
             assert!(!app.matches.is_empty());
             // Active match drives the current page.
             let p = app.matches[0].page;
             assert_eq!(app.current_page, p);
-            // Stepping wraps around.
+            // Stepping, as the window bar's search does, makes the next
+            // match current.
             let first = app.active_match;
-            app.step_match(1);
             if app.matches.len() > 1 {
-                assert_ne!(app.active_match, first);
+                ui::widget::Findable::reveal(&mut app, first + 1);
+                assert_eq!(app.active_match, first + 1);
             }
         }
 
         eprintln!("phase search_toggles_change_match_logic");
         {
             let (mut app, _st) = app_with_state();
-            app.find_bar.set_query("the");
+            app.stage_find_for_test("the");
             app.search_case_sensitive = false;
             app.search_whole_word = false;
             app.recompute_matches();
@@ -9654,9 +9304,7 @@ mod tests {
             app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             app.recompute_regions();
             app.sync_viewport_frame();
-            app.open_search();
-            app.find_bar.set_query(&word);
-            app.recompute_matches();
+            app.stage_find_for_test(&word);
             settle_until(&mut app, &mut st, |app| app.raster_text_pending.is_empty());
             assert!(
                 !app.raster_matches.is_empty(),
@@ -9794,28 +9442,6 @@ mod tests {
             full_frame(&mut frame, 960.0 * f64::from(scale), 810.0, None);
             assert!((frame.rail_rect.width() - 112.0 * f64::from(scale)).abs() < 0.01);
         }
-    }
-
-    #[test]
-    fn history_shares_the_toolbar_and_keeps_its_semantic_door() {
-        use ui::widget::{HistoryControl, WindowHeader, controls::ActionControls};
-        let (mut app, mut state) = app_with_state();
-        app.set_history_control(Some(HistoryControl::Closed));
-        app.recompute_regions();
-        let history = app.history_rect();
-        assert!(history.width() > 0.0);
-        assert!(app.toolbar_layout().toggle_sidebar.x1 < history.x0);
-        assert!(app.perform_semantic_action(
-            ui::widget::HISTORY_CONTROL_ID,
-            &ui::a11y::Action::Activate,
-            &mut Edits::lend(&mut state.doc),
-            &state.root,
-        ));
-        assert!(app.take_control_invocation().is_some());
-        assert!(app.take_control_invocation().is_none());
-        app.set_history_control(None);
-        app.recompute_regions();
-        assert_eq!(app.history_rect(), Rect::ZERO);
     }
 
     #[test]

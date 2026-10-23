@@ -2,11 +2,9 @@
 // routines and the pure layout helpers that both `draw` and event
 // hit-testing rely on, so a click always lands where the pixel is.
 //
-// Everything around the pages is composed from the toolkit: the toolbar
-// band, its buttons, segmented tool strip, swatches and zoom stepper are
-// framework faces; find is the framework `FindBar`; the review panel stands
-// on the inspector region and its tabs, rows, cards, avatars and buttons are
-// library faces. Only the document itself (pages, markup, the selection and
+// The reader's controls are the window bar's slots (`app/window_bar.rs`) and
+// find is the window bar's search; the review panel stands on the inspector
+// region and its tabs, rows, cards, avatars and buttons are library faces. Only the document itself (pages, markup, the selection and
 // find highlights over its glyphs) is painted here, from theme values.
 
 /// Measured heights for a single comment card (shared by scroll layout + draw).
@@ -54,46 +52,6 @@ struct SidebarHits<'a> {
     edit_rect: &'a mut Rect,
 }
 
-/// Where every toolbar control stands. The pages toggle leads the row; the
-/// zoom stepper, find and the review-panel toggle close it; the commands
-/// between are the shared [`ui::widget::Toolbar`], so a command that does not
-/// fit is a zero rect here and a row of its More menu.
-struct ToolbarLayout {
-    toggle_rail: Rect,
-    open: Rect,
-    save: Rect,
-    /// Each tool's toggle, zero while it waits in the More menu.
-    tools: Vec<(Tool, Rect)>,
-    /// The marker-colour well, while it is in the row.
-    colour: Option<Rect>,
-    /// The zoom stepper, and its step-out / step-in ends.
-    zoom: Rect,
-    zoom_out: Rect,
-    zoom_in: Rect,
-    fit: Rect,
-    search: Rect,
-    toggle_sidebar: Rect,
-}
-
-/// The controls at the toolbar row's two ends, and the band between them.
-struct ToolbarFixed {
-    toggle_rail: Rect,
-    band: Rect,
-    zoom: Rect,
-    zoom_out: Rect,
-    zoom_in: Rect,
-    search: Rect,
-    toggle_sidebar: Rect,
-}
-
-/// The toolbar's item indices, in the order `build_toolbar` pushes them.
-const TB_OPEN: usize = 0;
-const TB_SAVE: usize = 1;
-/// The first tool toggle; the tools follow in `Tool::ALL` order.
-const TB_TOOLS: usize = 3;
-const TB_COLOUR: usize = TB_TOOLS + Tool::ALL.len();
-const TB_FIT: usize = TB_COLOUR + 2;
-
 /// The glyph a tool's toggle shows.
 fn tool_icon(tool: Tool) -> Icon {
     match tool {
@@ -106,60 +64,6 @@ fn tool_icon(tool: Tool) -> Icon {
     }
 }
 
-/// What the marker-colour well is called: the colour the next mark takes.
-fn marker_colour_name(swatch: Swatch) -> String {
-    format!("Marker colour: {}", swatch_label(swatch))
-}
-
-/// The reader's command row. Overflow takes the lowest priority first and,
-/// among equals, the trailing command first: Open and Save have shortcuts and
-/// leave first, Fit next; the tools and the colour they mark in stay longest.
-/// The commands run nothing themselves: the reader drains
-/// [`ui::widget::Toolbar::take_activated`] through [`toolbar_command`].
-fn build_toolbar() -> ui::widget::Toolbar {
-    let mut bar = ui::widget::Toolbar::new(ui::widget::toolbar::Orientation::Horizontal)
-        .push_icon(Icon::FolderOpen, "Open PDF", || {})
-        .push_icon(Icon::Download, "Save annotated PDF", || {})
-        .with_priority(1)
-        .push_separator();
-    for tool in Tool::ALL {
-        bar = bar
-            .push_icon_toggle(tool_icon(tool), tool.label(), tool == Tool::Select, || {})
-            .with_priority(3);
-    }
-    bar.push_swatch(
-        render::swatch_color(Swatch::Yellow),
-        &marker_colour_name(Swatch::Yellow),
-        || {},
-    )
-    .with_priority(3)
-    .push_spacer()
-    .push_button(fit_label(FitMode::Page), || {})
-    .with_priority(2)
-}
-
-/// The command behind the toolbar item at `index`.
-fn toolbar_command(index: usize) -> Option<ToolbarHit> {
-    match index {
-        TB_OPEN => Some(ToolbarHit::Open),
-        TB_SAVE => Some(ToolbarHit::Save),
-        TB_COLOUR => Some(ToolbarHit::MarkerColour),
-        TB_FIT => Some(ToolbarHit::Fit),
-        i if (TB_TOOLS..TB_COLOUR).contains(&i) => {
-            Tool::ALL.get(i - TB_TOOLS).copied().map(ToolbarHit::Tool)
-        }
-        _ => None,
-    }
-}
-
-/// The Fit button's label: it names what pressing it does.
-fn fit_label(fit: FitMode) -> &'static str {
-    match fit {
-        FitMode::Page => "Fit width",
-        _ => "Fit page",
-    }
-}
-
 /// The review panel's tab labels, full and short.
 fn tab_labels(short: bool) -> [&'static str; 3] {
     if short {
@@ -169,153 +73,12 @@ fn tab_labels(short: bool) -> [&'static str; 3] {
     }
 }
 
-/// A fresh zoom stepper: an inline `− 100 % +` control for the toolbar.
-fn zoom_stepper(percent: f64, enabled: bool) -> ui::widget::NumberInput {
-    ui::widget::NumberInput::new(percent)
-        .with_range(ZOOM_MIN * 100.0, ZOOM_MAX * 100.0)
-        .with_step(10.0)
-        .with_suffix("%")
-        .with_accessible_name("Zoom")
-        .with_id("pdf-zoom")
-        .compact()
-        .with_enabled(enabled)
-}
-
 impl PdfApp {
     // ---- pure layout ------------------------------------------------
 
-    fn toolbar_layout(&self) -> ToolbarLayout {
-        let fixed = self.toolbar_fixed();
-        let item = |index: usize| self.toolbar.item_rect(index).unwrap_or(Rect::ZERO);
-        let tools = Tool::ALL
-            .iter()
-            .enumerate()
-            .map(|(i, tool)| (*tool, item(TB_TOOLS + i)))
-            .collect();
-        ToolbarLayout {
-            toggle_rail: fixed.toggle_rail,
-            open: item(TB_OPEN),
-            save: item(TB_SAVE),
-            tools,
-            colour: self.toolbar.item_rect(TB_COLOUR),
-            zoom: fixed.zoom,
-            zoom_out: fixed.zoom_out,
-            zoom_in: fixed.zoom_in,
-            fit: item(TB_FIT),
-            search: fixed.search,
-            toggle_sidebar: fixed.toggle_sidebar,
-        }
-    }
-
-    /// The controls at the row's two ends, and the band between them that
-    /// the command toolbar takes. Pure geometry from `toolbar_rect`.
-    fn toolbar_fixed(&self) -> ToolbarFixed {
-        let tb = self.toolbar_rect;
-        let theme = &self.layout_theme;
-        let control = ButtonFace::height(ControlSize::Regular, theme)
-            .max(f64::from(theme.tokens.metrics.min_pointer_target));
-        let inset = f64::from(theme.tokens.spacing.s3);
-        let related = f64::from(theme.tokens.spacing.rhythm.related);
-        let cluster = f64::from(theme.tokens.spacing.rhythm.section);
-        let cy = tb.center().y;
-        let row =
-            |x0: f64, width: f64| Rect::new(x0, cy - control / 2.0, x0 + width, cy + control / 2.0);
-        let trailing = if self.history.is_shown() {
-            self.history_rect().x0 - related
-        } else {
-            tb.x1 - inset
-        };
-        let toggle_sidebar = row(trailing - control, control);
-        let search = row(toggle_sidebar.x0 - related - control, control);
-        let zoom = row(search.x0 - cluster - self.zoom_w, self.zoom_w);
-        let zoom_out = Rect::new(zoom.x0, zoom.y0, zoom.x0 + zoom.height(), zoom.y1);
-        let zoom_in = Rect::new(zoom.x1 - zoom.height(), zoom.y0, zoom.x1, zoom.y1);
-        let toggle_rail = row(tb.x0 + inset, control);
-        // The commands start a cluster's gap after the pages toggle and end
-        // one sibling step before the stepper, so Fit reads with the zoom.
-        let band_x0 = toggle_rail.x1 + cluster;
-        let band_x1 = (zoom.x0 - f64::from(theme.tokens.spacing.s3)).max(band_x0);
-        ToolbarFixed {
-            toggle_rail,
-            band: Rect::new(band_x0, toggle_rail.y0, band_x1, toggle_rail.y1),
-            zoom,
-            zoom_out,
-            zoom_in,
-            search,
-            toggle_sidebar,
-        }
-    }
-
-    fn history_rect(&self) -> Rect {
-        if !self.history.is_shown() {
-            return Rect::ZERO;
-        }
-        let theme = &self.layout_theme;
-        let side = ButtonFace::height(ControlSize::Regular, theme)
-            .max(f64::from(theme.tokens.metrics.min_pointer_target));
-        let x1 = self.toolbar_rect.x1 - f64::from(theme.tokens.spacing.s3);
-        Rect::from_center_size(
-            Point::new(x1 - side / 2.0, self.toolbar_rect.center().y),
-            (side, side),
-        )
-    }
-
-    /// Carry the reader's state onto the toolbar's commands (which tool is
-    /// armed, the marker colour, the Fit label, what is enabled). Touches the
-    /// toolbar only when something changed, so an open More menu keeps its
-    /// hover.
-    fn sync_toolbar(&mut self) {
-        let has_doc = self.has_document;
-        let can_save = has_doc && self.raster_active();
-        let signature = format!(
-            "{has_doc}:{can_save}:{}:{}:{:?}:{}:{}",
-            self.pending_open.is_none(),
-            self.pages_dirty,
-            self.tool,
-            self.swatch.key(),
-            fit_label(self.fit),
-        );
-        if signature == self.toolbar_synced {
-            return;
-        }
-        self.toolbar_synced = signature;
-        let bar = &mut self.toolbar;
-        // A pending open owns the document slot; a second picker would only
-        // compete with it.
-        bar.set_enabled(TB_OPEN, self.pending_open.is_none());
-        bar.set_enabled(TB_SAVE, can_save);
-        // Unsaved page edits (reorder, delete, duplicate, import): Save
-        // carries the toolkit's dot.
-        bar.set_dot(TB_SAVE, can_save && self.pages_dirty);
-        for (i, tool) in Tool::ALL.iter().enumerate() {
-            bar.set_active(TB_TOOLS + i, *tool == self.tool);
-            bar.set_enabled(TB_TOOLS + i, has_doc);
-        }
-        bar.set_swatch(
-            TB_COLOUR,
-            render::swatch_color(self.swatch),
-            &marker_colour_name(self.swatch),
-        );
-        bar.set_enabled(TB_COLOUR, has_doc);
-        bar.set_label(TB_FIT, fit_label(self.fit));
-        bar.set_enabled(TB_FIT, has_doc);
-    }
-
-    /// Place the command toolbar in its band from the cached measurements
-    /// (the layout pass has no renderer).
-    fn lay_out_toolbar(&mut self) {
-        self.sync_toolbar();
-        self.toolbar_band = self.toolbar_fixed().band;
-        let theme = self.layout_theme.clone();
-        self.toolbar.lay_out_at(self.toolbar_band, &theme);
-    }
-
-    /// Measure the zoom stepper and the review panel's tabs in `theme`, and
-    /// the command toolbar with them, so the pure layout above places them at
-    /// the width they paint at. Re-lays the regions out when the stepper's
-    /// width changed (a theme or text-scale change).
-    fn measure_toolbar(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let zoom = self.zoom_input.preferred_width(theme, tr);
+    /// Measure the review panel's tabs in `theme`, so the pure layout
+    /// places them at the width they paint at.
+    fn measure_tabs(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         // Tabs pack from the leading edge, each as wide as its label.
         let tab_widths = [false, true].map(|short| {
             let segments = tab_labels(short).map(Segment::new);
@@ -330,83 +93,6 @@ impl PdfApp {
             [0, 1, 2].map(|i| rects.get(i).map_or(0.0, Rect::width))
         });
         self.tab_widths = Some(tab_widths);
-        if (zoom - self.zoom_w).abs() > 0.5 {
-            self.zoom_w = zoom;
-            self.recompute_regions();
-            self.sync_viewport_frame();
-        }
-        self.sync_toolbar();
-        self.toolbar.lay_out_in(self.toolbar_band, tr, theme);
-    }
-
-    /// Every tooltip-able toolbar button as `(label, anchor-rect)`. Used both
-    /// to draw the hover popover and to resolve which button is under the
-    /// pointer. Labels name the command and its keyboard shortcut.
-    fn toolbar_tooltips(&self) -> Vec<(String, Rect)> {
-        let lay = self.toolbar_layout();
-        let mut out: Vec<(String, Rect)> = Vec::new();
-        out.push((
-            if self.show_rail {
-                "Hide pages".to_string()
-            } else {
-                "Show pages".to_string()
-            },
-            lay.toggle_rail,
-        ));
-        out.push(("Open PDF (Ctrl+O)".to_string(), lay.open));
-        out.push(("Save annotated PDF (Ctrl+S)".to_string(), lay.save));
-        if self.has_document {
-            for (t, r) in &lay.tools {
-                out.push((format!("{} ({})", t.label(), t.hotkey()), *r));
-            }
-            if let Some(r) = lay.colour {
-                out.push((marker_colour_name(self.swatch), r));
-            }
-        }
-        out.push(("Find in document (Ctrl+F)".to_string(), lay.search));
-        out.push((
-            if self.show_sidebar {
-                "Hide review panel (B)".to_string()
-            } else {
-                "Show review panel (B)".to_string()
-            },
-            lay.toggle_sidebar,
-        ));
-        out
-    }
-
-    /// Resolve the tooltip for the current pointer position and advance its
-    /// reveal timing. Called once per frame from the toolbar draw so the
-    /// popover appears after the configured hover delay.
-    fn resolve_tooltip(&mut self) {
-        let hovered = self
-            .toolbar_tooltips()
-            .into_iter()
-            .find(|(_, r)| r.contains(self.last_mouse));
-        let hovering = hovered.is_some();
-        match hovered {
-            Some((label, anchor)) => {
-                if self.tooltip.label() == label {
-                    self.tooltip_anchor = anchor;
-                    // Advance time so the reveal delay can elapse across frames.
-                    self.tooltip.tick(std::time::Duration::from_millis(120));
-                } else {
-                    // Fresh anchor — rebuild and restart the hover timer.
-                    self.tooltip = Tooltip::new(label);
-                    self.tooltip.on_hover_enter(std::time::Duration::ZERO);
-                    self.tooltip_anchor = anchor;
-                }
-            }
-            None => {
-                if self.tooltip.label() != "" {
-                    self.tooltip.on_hover_leave();
-                    self.tooltip = Tooltip::new("");
-                }
-            }
-        }
-        // Animate only while a hover is still counting toward the reveal delay;
-        // a shown or absent tooltip needs no further frames.
-        self.tooltip_pending = hovering && !self.tooltip.is_visible();
     }
 
     /// The review panel's tab strip: across the top of the panel, one
@@ -498,11 +184,10 @@ impl PdfApp {
             self.page_bubble.poke(ui::time::now());
         }
         self.bubble_shown_page = self.current_page;
-        self.measure_toolbar(tr, theme);
-        if self.shots_colours && self.has_document {
-            self.shots_colours = false;
-            self.open_marker_colours();
-        }
+        self.measure_tabs(tr, theme);
+        // A key (a tool's hotkey, B, Ctrl+plus) changes what the window bar
+        // shows without a sync.
+        ui::window_toolbar::declare(Some(self.window_toolbar()));
         if self.shots_selection {
             self.stage_shots_selection(tr);
         }
@@ -530,10 +215,6 @@ impl PdfApp {
             self.refresh_text_lines(tr);
         }
         tr.set_text_scale(chrome_text_scale);
-
-        // Resolve which toolbar button (if any) the pointer is hovering and
-        // advance the tooltip reveal timer before the toolbar paints.
-        self.resolve_tooltip();
 
         // Resolve sidebar scroll + any reveal request before painting it.
         self.prepare_sidebar_scroll(tr);
@@ -573,7 +254,7 @@ impl PdfApp {
         let (page_imgs, thumb_imgs, page_tiles) = self.rasterize_visible();
 
         // Pages are fixed-layout (see above); the no-document surface is
-        // reader chrome and keeps the chrome scale like the toolbar.
+        // reader chrome and keeps the chrome scale.
         if self.has_document {
             tr.set_text_scale(1.0);
         }
@@ -589,9 +270,6 @@ impl PdfApp {
             grips.draw(scene, base, theme);
         }
         self.draw_page_bubble(scene, base, tr, theme);
-        if self.search_active {
-            self.draw_find_bar(scene, base, tr, theme);
-        }
 
         // On a narrow window the panels float above the canvas behind a scrim.
         if self.overlay_mode && (self.show_rail || self.show_sidebar) {
@@ -614,12 +292,10 @@ impl PdfApp {
         if let Some(rect) = free_text_edit {
             self.edit_rect = rect;
         }
-        self.draw_toolbar(scene, base, tr, theme);
         self.stage_shots_context_menu();
         // The context menu paints in the top layer (`draw_overlay`). File
         // open/save is the host desktop's portal picker (HIG §5), so there is
         // no in-app dialog to draw here.
-        self.draw_tooltip(scene, base, tr, theme);
         // A transient toast (save confirmation, copy confirmation) on top.
         self.draw_toast(scene, base, tr, theme);
 
@@ -655,11 +331,8 @@ impl PdfApp {
                 .status_note
                 .as_deref()
                 .is_some_and(|note| !note.is_empty())
-                || self.tooltip.is_visible()
-                || self.search_active
                 || self.editing.is_some()
                 || self.context_menu.is_some()
-                || self.marker_colours.is_some()
                 || (self.overlay_mode && (self.show_rail || self.show_sidebar)),
         }
     }
@@ -815,11 +488,19 @@ impl PdfApp {
         let thumbs = self.rail_thumbnails(&mut thumb_imgs);
         let mut ahead_of_scroll = Vec::new();
         for (i, _) in &prefetch {
-            if !self.raster_images.contains_key(&(*i, page_bucket)) {
+            // A page drawn from tiles once it scrolls in needs only the
+            // placeholder its tiles arrive over, never a whole bitmap too
+            // large for one.
+            let bucket = if self.drawn_from_tiles(*i) {
+                placeholder_bucket
+            } else {
+                page_bucket
+            };
+            if !self.raster_images.contains_key(&(*i, bucket)) {
                 // Marked drawn so the bitmap the scroll is about to need is
                 // not the one evicted for it.
-                let _ = self.raster_images.best(*i, page_bucket);
-                ahead_of_scroll.push((*i, page_bucket));
+                let _ = self.raster_images.best(*i, bucket);
+                ahead_of_scroll.push((*i, bucket));
             }
         }
         // Order: the screen first, then thumbnails, then what lies ahead.
@@ -963,13 +644,13 @@ impl PdfApp {
     /// [`crate::tiles::TILE_MIN_PAGE_PX`]. The placement follows the page's
     /// card mapping, so tiles line up with text and markup overlays.
     fn tile_placement(&self, i: usize, origin: Point) -> Option<crate::tiles::PagePlacement> {
+        if !self.drawn_from_tiles(i) {
+            return None;
+        }
         let size = self.display_page_size(i)?;
         let map = self.page_map(i + 1);
         let z = self.zoom();
         let device = map.scale * z * RASTER_SS;
-        if size.0 * device <= crate::tiles::TILE_MIN_PAGE_PX || !(size.0 * device).is_finite() {
-            return None;
-        }
         let level = crate::tiles::level_for(device);
         let scale = f64::from(crate::tiles::level_scale(level));
         Some(crate::tiles::PagePlacement {
@@ -979,6 +660,16 @@ impl PdfApp {
             origin: (origin.x + map.offset.0 * z, origin.y + map.offset.1 * z),
             screen_per_px: map.scale * z / scale,
         })
+    }
+
+    /// Whether 0-based page `i` is drawn from tiles at this zoom: its
+    /// whole-page bitmap would pass [`crate::tiles::TILE_MIN_PAGE_PX`].
+    fn drawn_from_tiles(&self, i: usize) -> bool {
+        let Some(size) = self.display_page_size(i) else {
+            return false;
+        };
+        let width = size.0 * self.page_map(i + 1).scale * self.zoom() * RASTER_SS;
+        width > crate::tiles::TILE_MIN_PAGE_PX && width.is_finite()
     }
 
     /// Displayed size (points, recorded rotation applied) of 0-based page `i`.
@@ -1118,22 +809,6 @@ impl PdfApp {
                 self.text_lines.insert(page_num, lines);
             }
         }
-    }
-
-    fn draw_tooltip(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        if !self.tooltip.is_visible() || self.tooltip.label().is_empty() {
-            return;
-        }
-        let label = self.tooltip.label().to_string();
-        ui::widget::tooltip::draw_hover_tooltip(
-            scene,
-            base,
-            tr,
-            theme,
-            self.tooltip_anchor,
-            &label,
-            self.rect,
-        );
     }
 
     // ---- canvas -----------------------------------------------------
@@ -1486,6 +1161,27 @@ impl PdfApp {
         }
     }
 
+    /// The find highlights on page `page_num`, in its page space: one band
+    /// per line a match covers, and whether the match is the current one,
+    /// which paints emphasised.
+    fn found_bands(&self, page_num: usize) -> Vec<(PtRect, bool)> {
+        let Some(layer) = self.raster_text.get(&page_num) else {
+            return Vec::new();
+        };
+        self.raster_matches
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.page == page_num)
+            .flat_map(|(i, m)| {
+                let current = i == self.active_match;
+                layer
+                    .bands_for_range(m.char_start, m.char_start + m.char_len)
+                    .into_iter()
+                    .map(move |band| (band, current))
+            })
+            .collect()
+    }
+
     /// Draw the raster text-layer overlays for one page: every find match
     /// over exactly its glyphs (the current one emphasised) and the live
     /// selection in your selection tint. All rectangles come from the real
@@ -1516,20 +1212,14 @@ impl PdfApp {
             render::draw_region_marquee(scene, base, theme, to_screen(&region.rect()));
         }
 
+        // Find matches, one highlight per line a match covers.
+        for (band, current) in self.found_bands(page_num) {
+            ui::widget::paint_find_match(scene, base, to_screen(&band), current, theme);
+        }
+
         let Some(layer) = self.raster_text.get(&page_num) else {
             return;
         };
-
-        // Find matches, one highlight per line a match covers.
-        for (i, m) in self.raster_matches.iter().enumerate() {
-            if m.page != page_num {
-                continue;
-            }
-            let current = i == self.active_match;
-            for band in layer.bands_for_range(m.char_start, m.char_start + m.char_len) {
-                ui::widget::paint_find_match(scene, base, to_screen(&band), current, theme);
-            }
-        }
 
         // Live selection, the part of it on this page.
         if let Some((a, b)) = self
@@ -1678,90 +1368,6 @@ impl PdfApp {
         self.page_sidebar = sb;
     }
 
-    // ---- toolbar ----------------------------------------------------
-
-    /// The window's toolbar row: no fill of its own (it stands on the content
-    /// ground) and one hairline under it. The pages toggle, the zoom stepper,
-    /// find and the review-panel toggle hold the ends; the shared toolbar
-    /// holds the commands between and moves what does not fit into More.
-    fn draw_toolbar(
-        &mut self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tb = self.toolbar_rect;
-        ui::widget::toolbar::paint_band(scene, base, theme, tb);
-        let lay = self.toolbar_layout();
-        let hover = |r: Rect| r.contains(self.last_mouse);
-        let has_doc = self.has_document;
-
-        // The panel toggles and find are toggles: on while their panel shows.
-        let buttons = [
-            (
-                lay.toggle_rail,
-                Icon::PanelLeft,
-                "Show or hide pages",
-                self.show_rail,
-            ),
-            (
-                lay.search,
-                Icon::Search,
-                "Find in document",
-                self.search_active,
-            ),
-            (
-                lay.toggle_sidebar,
-                Icon::PanelRight,
-                "Show or hide the review panel",
-                self.show_sidebar,
-            ),
-        ];
-        for (rect, icon, name, on) in buttons {
-            let face = ButtonFace::icon_only(rect, icon, name)
-                .toggled(on && has_doc)
-                .hovered(hover(rect) && has_doc)
-                .disabled(!has_doc);
-            Button::paint(scene, base, tr, theme, &face);
-        }
-
-        // The zoom stepper.
-        let shown_zoom = self.shown_zoom_percent();
-        if self.zoom_input_enabled != has_doc {
-            self.zoom_input = zoom_stepper(shown_zoom, has_doc);
-            self.zoom_input_enabled = has_doc;
-        }
-        if !self.zoom_input.is_editing() {
-            self.zoom_input.set_value(shown_zoom);
-        }
-        self.zoom_input.apply_layout_external(lay.zoom);
-        self.zoom_input
-            .draw(scene, base, tr, theme, &PresenceCtx::empty());
-
-        // The commands. Their More menu opens inside the window.
-        let presence = PresenceCtx::empty();
-        presence.viewport.set(Some(self.rect));
-        self.toolbar.draw(scene, base, tr, theme, &presence);
-        self.history
-            .paint(scene, base, tr, theme, self.history_rect());
-    }
-
-    // ---- find bar ---------------------------------------------------
-
-    /// The framework find band at the top of the page canvas.
-    fn draw_find_bar(
-        &mut self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.find_bar.layout(self.search_rect, theme, tr);
-        self.find_bar
-            .paint(scene, base, tr, theme, &PresenceCtx::empty());
-    }
-
     // ---- review panel -----------------------------------------------
 
     fn draw_sidebar(
@@ -1857,7 +1463,7 @@ impl PdfApp {
             })
             .collect();
         hits.extend(clipped);
-        // The inline editor's rect is routed before any tab or toolbar hit,
+        // The inline editor's rect is routed before any tab hit,
         // so it is clipped the same way: an editor scrolled under the tab
         // strip must not swallow the press meant for the tab covering it.
         let visible_edit = edit_rect.intersect(body);
@@ -2990,11 +2596,32 @@ impl PdfApp {
 
     // ---- floating page bubble ---------------------------------------
 
-    /// The floating page-info overlay: a small `‹ Page X of Y ›` pill over
-    /// the bottom-centre of the canvas. It appears on a page change (poked
-    /// from `draw_all`) or while the pointer hovers the bottom-centre band,
-    /// then fades. Its chevrons step pages; its rects are captured for hover
-    /// and click.
+    /// The zoom the page pill shows, in percent. With no document there is
+    /// nothing being zoomed: it reads 100%, not a value fitted to the window.
+    pub(crate) fn shown_zoom_percent(&self) -> f64 {
+        if self.has_document {
+            (self.zoom() * 100.0).round()
+        } else {
+            100.0
+        }
+    }
+
+    /// What the page pill's two segments say: the page, and the zoom.
+    pub(crate) fn page_pill_labels(&self) -> (String, String) {
+        (
+            format!("Page {} of {}", self.current_page, self.doc.page_count()),
+            format!("{:.0}%", self.shown_zoom_percent()),
+        )
+    }
+
+    /// The floating page-info overlay over the bottom-centre of the canvas:
+    /// a pill whose first segment is `‹ Page X of Y ›` and whose second,
+    /// past a rule, is the zoom. It appears on a page change (poked from
+    /// `draw_all`) or while the pointer hovers the bottom-centre band, then
+    /// fades. Its chevrons step pages; its rects are captured for hover and
+    /// click. Each segment is its own text run, so a zoom reshapes only the
+    /// percentage, and the zoom segment is as wide as the widest zoom, so
+    /// the pill keeps its place while zooming.
     fn draw_page_bubble(
         &mut self,
         scene: &mut Scene,
@@ -3010,12 +2637,19 @@ impl PdfApp {
         }
         let now = ui::time::now();
         let canvas = self.canvas_rect;
-        let label = format!("Page {} of {}", self.current_page, self.doc.page_count());
+        let (label, zoom_label) = self.page_pill_labels();
         let control = f64::from(theme.tokens.metrics.min_pointer_target);
-        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, tr, theme, control);
+        let (page_w, pill_h) = ui::status_bubble::pill_size(&label, tr, theme, control);
+        let zoom_style = theme.text(TextRole::Label).numeric();
+        let widest = format!("{:.0}%", ZOOM_MAX * 100.0);
+        let pad = f64::from(theme.tokens.spacing.s3);
+        let zoom_w = f64::from(tr.measure_style(&widest, None, &zoom_style).0) + 2.0 * pad;
+        let pill_w = page_w + zoom_w;
         let cx = canvas.center().x;
         let by = canvas.y1 - f64::from(theme.tokens.spacing.rhythm.group) - pill_h;
         let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
+        let page_rect = Rect::new(rect.x0, rect.y0, rect.x0 + page_w, rect.y1);
+        let zoom_rect = Rect::new(page_rect.x1, rect.y0, rect.x1, rect.y1);
 
         // Reveal zone: a band across the bottom-centre of the canvas (plus the
         // pill itself), so approaching the bottom edge surfaces the indicator.
@@ -3033,7 +2667,7 @@ impl PdfApp {
         // Capture geometry for hover + click hit-testing (the chevron slots).
         self.bubble_rect = rect;
         self.bubble_prev = Rect::new(rect.x0, rect.y0, rect.x0 + control, rect.y1);
-        self.bubble_next = Rect::new(rect.x1 - control, rect.y0, rect.x1, rect.y1);
+        self.bubble_next = Rect::new(page_rect.x1 - control, rect.y0, page_rect.x1, rect.y1);
 
         scene.push_layer(
             Fill::NonZero,
@@ -3042,8 +2676,35 @@ impl PdfApp {
             base,
             &rect.inflate(reach, reach),
         );
-        ui::status_bubble::draw_pill(scene, base, tr, theme, rect, &label);
-        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        ui::widget::floating_surface::paint(scene, base, rect, theme);
+        let ground = ui::chrome::panel_ground(theme);
+        let ink = theme.on_ground(ground);
+        for (segment, text, style) in [
+            (page_rect, label.as_str(), theme.text(TextRole::Label)),
+            (zoom_rect, zoom_label.as_str(), zoom_style),
+        ] {
+            let (tw, th) = tr.measure_style(text, None, &style);
+            let x = segment.x0 + (segment.width() - f64::from(tw)) / 2.0;
+            let y =
+                ui::text_metrics::centered_text_top(segment.y0, segment.height(), f64::from(th));
+            tr.draw_style(
+                scene,
+                text,
+                ink.text_primary,
+                base.pre_translate(vello::kurbo::Vec2::new(x, y)),
+                None,
+                &style,
+            );
+        }
+        ui::surface::vertical_separator(
+            scene,
+            base,
+            page_rect.x1,
+            rect.y0,
+            rect.y1,
+            f64::from(theme.tokens.spacing.s2),
+            ground,
+        );
         let icon = f64::from(theme.tokens.metrics.icon_sm);
         for (slot, glyph, enabled) in [
             (self.bubble_prev, Icon::ChevronLeft, self.current_page > 1),

@@ -676,7 +676,7 @@ impl PdfApp {
     /// the current page first.
     fn evict_text_layers(&mut self) {
         if self.raster_text.len() <= MAX_TEXT_LAYERS
-            || self.search_active
+            || self.finding()
             || !self.raster_matches.is_empty()
         {
             return;

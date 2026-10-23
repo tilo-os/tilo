@@ -1113,7 +1113,7 @@ fn zooming_across_every_breakpoint_never_shows_a_blank_page() {
 const MAX_MEASURED_LEAVES: usize = 2;
 
 /// Text runs a zoom frame may shape: a zoom step shapes one, the new
-/// percentage the bar shows.
+/// percentage the page pill shows.
 const MAX_TEXT_SHAPED: u64 = 2;
 
 /// Draw objects a zoom frame may encode: the chrome, the visible pages and
@@ -1494,6 +1494,15 @@ fn scrolling_with_text_selected_still_only_scrolls() {
     let mut damage = ui::app::SurfaceDamage::copying();
     let mut scene = vello::Scene::new();
     app.init_layout();
+    // The wheel scrolls what is under the pointer: the pages.
+    app.surface_input(
+        &surface,
+        winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(640.0, 450.0),
+        },
+        false,
+    );
     for _ in 0..60 {
         scene.reset();
         app.surface_frame_with_damage(&surface, &mut scene, &mut damage);

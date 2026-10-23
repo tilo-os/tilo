@@ -33,6 +33,16 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    /// Arm `colour` for the next mark. A selected mark takes it too, as an
+    /// edit of the record.
+    fn set_marker_colour(&mut self, colour: Swatch) {
+        self.swatch = colour;
+        if let Some(id) = self.selected_anno.as_deref() {
+            self.submit(crate::actions::set_annotation_color_action(id, colour));
+        }
+        self.dirty = true;
+    }
+
     fn toggle_sidebar(&mut self) {
         self.show_sidebar = !self.show_sidebar;
         // On a narrow window the panels are mutually-exclusive overlays.
@@ -50,33 +60,10 @@ impl PdfApp {
         self.reflow();
     }
 
-    fn open_search(&mut self) {
-        if !self.search_active {
-            self.search_active = true;
-            self.reflow();
-        }
-        ui::widget::Widget::set_focus(&mut self.find_bar, true);
-        self.find_bar.focus_query();
-        if !self.query().is_empty() {
-            self.recompute_matches();
-        }
-        self.dirty = true;
-    }
-
-    /// Close the find band. The query is kept, so opening find again offers
-    /// it, selected.
-    fn close_search(&mut self) {
-        if self.search_active {
-            self.search_active = false;
-            let query = self.query().to_owned();
-            self.find_bar = ui::widget::FindBar::new();
-            if !query.is_empty() {
-                self.find_bar.set_query(&query);
-            }
-            self.matches.clear();
-            self.raster_matches.clear();
-            self.reflow();
-        }
+    /// Open the window bar's search on the document: it finds in the pages
+    /// through [`ui::widget::Findable`].
+    fn open_search() {
+        ui::window_toolbar::open_search(ui::window_toolbar::SearchOpening::Find);
     }
 
     fn fit_page(&mut self) {
@@ -115,225 +102,6 @@ impl PdfApp {
             (p.x - origin.x) / self.zoom(),
             (p.y - origin.y) / self.zoom(),
         )
-    }
-
-    fn toolbar_hit(&self, p: Point) -> Option<ToolbarHit> {
-        if !self.toolbar_rect.contains(p) {
-            return None;
-        }
-        let lay = self.toolbar_layout();
-        let has_doc = self.has_document;
-        if lay.open.contains(p) {
-            // A pending open owns the document slot; starting a second picker
-            // would only create a competing request.  Consume the press while
-            // the chrome is visibly disabled.
-            if !self.opening() {
-                return Some(ToolbarHit::Open);
-            }
-            return Some(ToolbarHit::Inert);
-        }
-        // Everything else acts on an open document; without one the
-        // controls are disabled and a press on them does nothing.
-        if !has_doc {
-            return Some(ToolbarHit::Inert);
-        }
-        if lay.save.contains(p) {
-            return Some(ToolbarHit::Save);
-        }
-        for (t, r) in &lay.tools {
-            if r.contains(p) {
-                return Some(ToolbarHit::Tool(*t));
-            }
-        }
-        if lay.colour.is_some_and(|r| r.contains(p)) {
-            return Some(ToolbarHit::MarkerColour);
-        }
-        if lay.zoom_out.contains(p) {
-            return Some(ToolbarHit::ZoomOut);
-        }
-        if lay.zoom_in.contains(p) {
-            return Some(ToolbarHit::ZoomIn);
-        }
-        if lay.zoom.contains(p) {
-            return Some(ToolbarHit::ZoomValue);
-        }
-        if lay.fit.contains(p) {
-            return Some(ToolbarHit::Fit);
-        }
-        if lay.search.contains(p) {
-            return Some(ToolbarHit::Search);
-        }
-        if lay.toggle_rail.contains(p) {
-            return Some(ToolbarHit::ToggleRail);
-        }
-        if lay.toggle_sidebar.contains(p) {
-            return Some(ToolbarHit::ToggleSidebar);
-        }
-        // A click anywhere else on the toolbar is still "consumed" so it
-        // doesn't fall through to the canvas behind it.
-        Some(ToolbarHit::Inert)
-    }
-
-    fn apply_toolbar(&mut self, hit: &ToolbarHit) {
-        match hit {
-            ToolbarHit::Tool(t) => self.set_tool(*t),
-            ToolbarHit::MarkerColour => self.open_marker_colours(),
-            ToolbarHit::ZoomIn => self.zoom_by(1.15),
-            ToolbarHit::ZoomOut => self.zoom_by(1.0 / 1.15),
-            ToolbarHit::Fit => {
-                // Fit page → fit width; fit width or a custom zoom → fit page.
-                match self.fit {
-                    FitMode::Page => self.fit_width(),
-                    _ => self.fit_page(),
-                }
-            }
-            ToolbarHit::Search => {
-                if self.search_active {
-                    self.close_search();
-                } else {
-                    self.open_search();
-                }
-            }
-            ToolbarHit::ToggleRail => self.toggle_rail(),
-            ToolbarHit::ToggleSidebar => self.toggle_sidebar(),
-            ToolbarHit::Open => self.request_open_via_portal(),
-            ToolbarHit::Save => self.request_save_via_portal(),
-            // The stepper's value is edited in place by the stepper itself.
-            ToolbarHit::ZoomValue | ToolbarHit::Inert => {}
-        }
-    }
-
-    /// Open the marker-colour popover under its well: the five marker
-    /// colours, the armed one chosen.
-    fn open_marker_colours(&mut self) {
-        // From the well in the row, or from the More menu's end of the row
-        // when the well waits there.
-        let band = self.toolbar_band;
-        let well = self
-            .toolbar_layout()
-            .colour
-            .unwrap_or_else(|| Rect::new(band.x1 - band.height(), band.y0, band.x1, band.y1));
-        let swatches = Swatch::ALL
-            .iter()
-            .map(|s| ColorSwatch::named(render::swatch_color(*s), swatch_label(*s)));
-        let mut picker = ColorSwatchPicker::new(swatches, Swatch::ALL.len());
-        if let Some(i) = Swatch::ALL.iter().position(|s| *s == self.swatch) {
-            picker = picker.with_selected(i);
-        }
-        self.marker_colours = Some(
-            ui::widget::Popover::with_content(picker)
-                .anchored(well)
-                .side(ui::widget::PopoverSide::Below)
-                .with_viewport(self.rect)
-                .open(true),
-        );
-        self.dirty = true;
-    }
-
-    /// Run `f` with an event context for a control the reader positions
-    /// itself (the find bar, the zoom stepper, an inline field). A throwaway
-    /// leaf satisfies the context's layout node; local controls never write
-    /// the passed document.
-    fn with_local_ctx<R>(
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut ui::widget::Edits<'_>,
-        f: impl FnOnce(&mut ui::widget::EventCtx<'_>) -> R,
-    ) -> Option<R> {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).ok()?;
-        let mut handled = false;
-        let mut focus_target = None;
-        Some(f(&mut ui::widget::EventCtx {
-            scale_factor: scale,
-            modifiers: &modifiers,
-            state: state.reborrow(),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        }))
-    }
-
-    /// Feed one event to the find bar, then carry what it asked for (a new
-    /// query, an option, a step, closing) to the document.
-    fn route_find_bar(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut ui::widget::Edits<'_>,
-    ) -> bool {
-        let bar = &mut self.find_bar;
-        let took = Self::with_local_ctx(scale, modifiers, state, |ctx| bar.route(event, ctx))
-            .unwrap_or(false);
-        self.drive_find_bar();
-        took
-    }
-
-    /// Carry the find bar's pending requests to the document; close the band
-    /// when the bar asked to close.
-    fn drive_find_bar(&mut self) {
-        let mut bar = std::mem::take(&mut self.find_bar);
-        bar.drive(self);
-        let close = bar.close_requested();
-        self.find_bar = bar;
-        if close {
-            self.close_search();
-        }
-        self.dirty = true;
-    }
-
-    /// Feed one event to the command toolbar, then run the command it
-    /// activated (by pointer, keyboard or its More menu).
-    fn route_toolbar(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut ui::widget::Edits<'_>,
-    ) -> bool {
-        let bar = &mut self.toolbar;
-        let took = Self::with_local_ctx(scale, modifiers, state, |ctx| {
-            ui::widget::Widget::handle_event(bar, event, ctx);
-            *ctx.handled
-        })
-        .unwrap_or(false);
-        self.drain_toolbar();
-        took
-    }
-
-    /// Run the command the toolbar activated last, if any.
-    fn drain_toolbar(&mut self) {
-        if let Some(hit) = self.toolbar.take_activated().and_then(toolbar_command) {
-            self.apply_toolbar(&hit);
-        }
-        self.dirty = true;
-    }
-
-    /// Feed one event to the zoom stepper and apply a value the person
-    /// committed (typed and confirmed, or stepped).
-    fn route_zoom_input(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut ui::widget::Edits<'_>,
-    ) {
-        let input = &mut self.zoom_input;
-        let _ = Self::with_local_ctx(scale, modifiers, state, |ctx| {
-            input.handle_event(event, ctx);
-        });
-        if let Some(percent) = self.zoom_input.take_changed() {
-            self.set_custom_zoom(percent / 100.0);
-        }
-        self.dirty = true;
-    }
-
-    /// Whether `p` is over the toolbar's zoom stepper.
-    fn zoom_rect_contains(&self, p: Point) -> bool {
-        self.has_document && self.toolbar_layout().zoom.contains(p)
     }
 
     /// A drag on the docked review panel's leading edge, or a key on its
@@ -720,22 +488,7 @@ impl PdfApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                let chrome_unchanged = self.move_leaves_chrome_unchanged(p);
                 self.on_cursor_moved(event, p, scale_factor, modifiers, state);
-                let dirty = self.dirty;
-                self.route_toolbar(event, scale_factor, modifiers, state);
-                if self.search_active {
-                    self.route_find_bar(event, scale_factor, modifiers, state);
-                }
-                if self.has_document {
-                    self.route_zoom_input(event, scale_factor, modifiers, state);
-                }
-                // The chrome's routing repaints after any event it sees; a
-                // move away from it leaves the frame to the pages, which a
-                // scroll then copies instead of repainting.
-                if chrome_unchanged {
-                    self.dirty = dirty;
-                }
             }
 
             WindowEvent::MouseInput {
@@ -750,22 +503,7 @@ impl PdfApp {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } if ui::widget::Widget::wants_pointer_capture(&self.toolbar) => {
-                self.route_toolbar(event, scale_factor, modifiers, state);
-                *handled = true;
-            }
-
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
             } => {
-                if self.search_active {
-                    self.route_find_bar(event, scale_factor, modifiers, state);
-                }
-                if self.zoom_input.is_editing() {
-                    self.route_zoom_input(event, scale_factor, modifiers, state);
-                }
                 self.on_left_release(event, scale_factor, modifiers, state, handled);
             }
 
@@ -809,16 +547,6 @@ impl PdfApp {
             WindowEvent::Ime(_) if self.editing.is_some() => {
                 self.drive_editor(event, scale_factor, modifiers, state);
                 self.dirty = true;
-                *handled = true;
-            }
-
-            WindowEvent::Ime(_) if self.zoom_input.is_editing() => {
-                self.route_zoom_input(event, scale_factor, modifiers, state);
-                *handled = true;
-            }
-
-            WindowEvent::Ime(_) if self.search_active => {
-                self.route_find_bar(event, scale_factor, modifiers, state);
                 *handled = true;
             }
 
@@ -1006,8 +734,8 @@ impl PdfApp {
         self.on_left_press_rail_and_canvas(p, state, handled);
     }
 
-    /// The inline editor, an open context menu, the toolbar, the find bar,
-    /// the page bubble and the sidebar — each intercepts a left press before
+    /// The inline editor, an open context menu, the page bubble and the
+    /// sidebar — each intercepts a left press before
     /// it reaches the rail or the canvas. Returns whether one of them already
     /// consumed the click.
     fn on_left_press_editor_and_menus(
@@ -1032,42 +760,6 @@ impl PdfApp {
                 return true;
             }
             self.commit_edit(state);
-        }
-        // A press anywhere else ends typing a zoom value (committing it).
-        let on_zoom = self.zoom_rect_contains(p);
-        if self.zoom_input.is_editing() && !on_zoom {
-            let input = &mut self.zoom_input;
-            let _ = Self::with_local_ctx(scale_factor, modifiers, state, |_| {
-                ui::widget::Widget::set_focus(input, false);
-            });
-            if let Some(percent) = self.zoom_input.take_changed() {
-                self.set_custom_zoom(percent / 100.0);
-            }
-        }
-        // The commands between the row's ends are the shared toolbar's: it
-        // presses, activates on release and opens its More menu.
-        if self.toolbar_band.contains(p) {
-            self.route_toolbar(event, scale_factor, modifiers, state);
-            *handled = true;
-            return true;
-        }
-        if let Some(hit) = self.toolbar_hit(p) {
-            if matches!(hit, ToolbarHit::ZoomValue) {
-                ui::widget::Widget::set_focus(&mut self.zoom_input, true);
-                self.route_zoom_input(event, scale_factor, modifiers, state);
-            }
-            self.apply_toolbar(&hit);
-            *handled = true;
-            return true;
-        }
-        if self.search_active {
-            let inside = self.search_rect.contains(p);
-            ui::widget::Widget::set_focus(&mut self.find_bar, inside);
-            if inside {
-                self.route_find_bar(event, scale_factor, modifiers, state);
-                *handled = true;
-                return true;
-            }
         }
         if self.apply_page_bubble(p) {
             *handled = true;
@@ -1360,10 +1052,6 @@ impl PdfApp {
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
-        if self.toolbar.shown_menu().is_some() {
-            *handled = self.route_toolbar(event, scale, modifiers, state);
-            return;
-        }
         if self.on_key_editing(event, key_event, modifiers, scale, state, handled) {
             return;
         }
@@ -1371,9 +1059,6 @@ impl PdfApp {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
 
-        if self.on_key_search(event, modifiers, ctrl, scale, state, handled) {
-            return;
-        }
         if self.on_key_ctrl_shortcuts(key_event, ctrl, handled) {
             return;
         }
@@ -1432,47 +1117,6 @@ impl PdfApp {
         true
     }
 
-    fn on_key_search(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-        ctrl: bool,
-        scale: f64,
-        state: &mut ui::widget::Edits<'_>,
-        handled: &mut bool,
-    ) -> bool {
-        if self.zoom_input.is_editing() {
-            self.route_zoom_input(event, scale, modifiers, state);
-            *handled = true;
-            return true;
-        }
-        if !self.search_active {
-            return false;
-        }
-        let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = event
-        else {
-            return false;
-        };
-        if ctrl
-            && let Key::Character(c) = &key_event.logical_key
-            && c.as_str().eq_ignore_ascii_case("f")
-        {
-            ui::widget::Widget::set_focus(&mut self.find_bar, true);
-            self.find_bar.focus_query();
-            self.dirty = true;
-            *handled = true;
-            return true;
-        }
-        if !ui::widget::Widget::is_focused(&self.find_bar) {
-            return false;
-        }
-        self.route_find_bar(event, scale, modifiers, state);
-        *handled = true;
-        true
-    }
-
     /// Ctrl/Cmd shortcuts: open, find, zoom (+ / − / 0), copy, save. Handled
     /// up front so the bare-key fallbacks below can keep their own meanings.
     /// Returns whether one of them consumed this key.
@@ -1495,7 +1139,7 @@ impl PdfApp {
                 true
             }
             "f" | "F" => {
-                self.open_search();
+                Self::open_search();
                 *handled = true;
                 true
             }

@@ -8,7 +8,7 @@ fn sample_app() -> (PdfApp, ui::State) {
     let mut st = crate::scenarios::sample_state();
     app.sync_settled(&mut st.doc, &st.root);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    app.measure_toolbar(
+    app.measure_tabs(
         &mut ui::text_render::TextRenderer::new(),
         &ui::theme::Theme::dark(),
     );
@@ -115,15 +115,13 @@ impl Rig {
         );
     }
 
-    /// Arm `tool` by clicking its real toolbar button, and assert the
-    /// click landed.
-    fn arm_via_toolbar(&mut self, tool: Tool, why: &str) {
-        let lay = self.app.toolbar_layout();
-        let (_, rect) = lay.tools.iter().find(|(t, _)| *t == tool).unwrap();
-        let btn = centre(*rect);
-        self.move_to((btn.x, btn.y));
-        self.press();
-        self.release();
+    /// Arm `tool` from its item in the window bar's Tools menu, and assert
+    /// it is armed.
+    fn arm_via_window_bar(&mut self, tool: Tool, why: &str) {
+        self.app
+            .run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
+                id: super::window_bar::tool_id(tool),
+            });
         assert_eq!(self.app.tool, tool, "{why}");
     }
 
@@ -173,27 +171,6 @@ impl Rig {
         self.app
             .draw_sidebar(&mut scene, Affine::IDENTITY, tr, &theme, &mut er)
     }
-}
-
-/// Every toolbar control as `(name, rect)`, hidden (zero) pieces skipped.
-fn toolbar_controls(lay: &ToolbarLayout) -> Vec<(String, Rect)> {
-    let mut out = vec![
-        ("open".to_string(), lay.open),
-        ("save".to_string(), lay.save),
-        ("zoom".to_string(), lay.zoom),
-        ("fit".to_string(), lay.fit),
-        ("search".to_string(), lay.search),
-        ("toggle_rail".to_string(), lay.toggle_rail),
-        ("toggle_sidebar".to_string(), lay.toggle_sidebar),
-    ];
-    for (t, r) in &lay.tools {
-        out.push((format!("{t:?}"), *r));
-    }
-    if let Some(r) = lay.colour {
-        out.push(("marker colour".to_string(), r));
-    }
-    out.retain(|(_, r)| r.width() > 0.0 && r.height() > 0.0);
-    out
 }
 
 #[test]
@@ -265,144 +242,15 @@ fn signature_pad_controls_and_ink_follow_the_scaled_pointer() {
 }
 
 #[test]
-fn toolbar_arms_tools_recolours_and_lays_out_symmetric_wrapping_rows() {
-    let (mut app, _st) = sample_app();
-    let lay = app.toolbar_layout();
-    for (tool, r) in lay.tools {
-        let hit = app.toolbar_hit(centre(r)).expect("a toolbar hit");
-        app.apply_toolbar(&hit);
-        assert_eq!(app.tool, tool, "clicking {tool:?} should arm it");
-    }
-
-    // A swatch recolours the selected (seeded) highlight.
-    let (mut app, mut st) = sample_app();
-    let hl = app
-        .annotations
-        .iter()
-        .find(|a| matches!(a.kind, AnnoKind::Markup { .. }))
-        .unwrap()
-        .clone();
-    app.selected_anno = Some(hl.id.clone());
-    app.tool = Tool::Highlight;
-    assert!(
-        Widget::perform_semantic_action(
-            &mut app,
-            &format!("pdf.swatch:{}", Swatch::Green.key()),
-            &ui::a11y::Action::Activate,
-            &mut Edits::lend(&mut st.doc),
-            &automerge::ROOT,
-        ),
-        "the published marker-colour action recolours the selection"
-    );
-    assert_eq!(app.swatch, Swatch::Green);
-    let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
-    assert_eq!(after.color, Swatch::Green);
-    assert!(
-        crate::markup::PdfMarkup::of(&st.doc)
-            .list_annotations()
-            .iter()
-            .any(|a| a.id == hl.id && a.color == Swatch::Green),
-        "the recolour landed in the shared document"
-    );
-
-    // The first and last toolbar controls sit the same distance from their
-    // window edges (the right cluster used to be inset 16 against 12).
+fn an_idle_reader_asks_for_no_animation_frames() {
+    // A freshly synced viewer with the pointer at its default (0,0) must
+    // not ask for animation frames, or the loop would spin at ~60Hz while
+    // idle.
     let (app, _st) = sample_app();
-    let lay = app.toolbar_layout();
-    let left = lay.toggle_rail.x0 - app.toolbar_rect.x0;
-    let right = app.toolbar_rect.x1 - lay.toggle_sidebar.x1;
-    assert!(
-        (left - right).abs() < 0.01,
-        "left inset {left} != right inset {right}"
-    );
-
-    // The bar is one row at every width: at 1280px every command stands
-    // in it; at 480px the commands that do not fit go to the More menu
-    // instead of wrapping. The canvas starts under the row, no two
-    // controls overlap and every control stays inside the bar.
-    let (mut app, _st) = sample_app();
-    app.tool = Tool::Highlight;
-    let header = f64::from(app.layout_theme.tokens.metrics.header_height);
-    for (width, overflows) in [(1280.0, false), (480.0, true)] {
-        app.rect = Rect::new(0.0, 0.0, width, 900.0);
-        app.recompute_regions();
-        let lay = app.toolbar_layout();
-        let tb = app.toolbar_rect;
-        assert!((tb.height() - header).abs() < 1e-9, "one row at {width}px");
-        assert!(
-            (app.canvas_rect.y0 - tb.y1).abs() < 1e-9,
-            "the canvas starts under the bar at {width}px"
-        );
-        assert_eq!(
-            app.toolbar.has_overflow(),
-            overflows,
-            "More menu at {width}px"
-        );
-        let controls = toolbar_controls(&lay);
-        for (name, r) in &controls {
-            assert!(
-                r.x0 >= tb.x0 && r.x1 <= tb.x1 && r.y0 >= tb.y0 && r.y1 <= tb.y1,
-                "{name} {r:?} lies inside the toolbar {tb:?} at {width}px"
-            );
-        }
-        for (i, (a_name, a)) in controls.iter().enumerate() {
-            for (b_name, b) in controls.iter().skip(i + 1) {
-                let o = a.intersect(*b);
-                assert!(
-                    o.width() <= 0.0 || o.height() <= 0.0,
-                    "{a_name} {a:?} overlaps {b_name} {b:?} at {width}px"
-                );
-            }
-        }
-        if !overflows {
-            assert_eq!(
-                controls.len(),
-                Tool::ALL.len() + 8,
-                "every control stands in the row at {width}px"
-            );
-        }
-    }
-
-    // A freshly synced viewer with the pointer at its default (0,0) — which
-    // sits inside the toolbar rect but over no button — must not ask for
-    // animation frames, or the loop would spin at ~60Hz while idle.
-    let (mut app, _st) = sample_app();
-    // resolve_tooltip runs inside the draw; drive it directly.
-    app.resolve_tooltip();
     assert!(
         !app.needs_animation_frame(),
         "idle app must settle to zero animation frames"
     );
-}
-
-#[test]
-fn narrow_toolbar_keeps_the_tools_and_moves_file_commands_into_more() {
-    let (mut app, _st) = sample_app();
-    let well = app.toolbar_layout().colour.expect("the colour well");
-    let hit = app.toolbar_hit(centre(well)).expect("a toolbar hit");
-    app.apply_toolbar(&hit);
-    assert!(app.marker_colours.is_some(), "the well opens the popover");
-
-    // An 800px window keeps every tool and the colour in the row; Open
-    // and Save, which have shortcuts, are the first into the More menu,
-    // and every command stays reachable from it.
-    let (mut app, mut st) = sample_app();
-    app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-    app.recompute_regions();
-    let lay = app.toolbar_layout();
-    assert!(lay.tools.iter().all(|(_, r)| r.width() > 0.0));
-    assert!(lay.colour.is_some());
-    assert!(lay.open.width() <= 0.0, "Open folds first");
-    assert!(app.toolbar.has_overflow());
-    app.toolbar.open_overflow();
-    assert!(app.toolbar.shown_menu().is_some());
-    // The open menu owns input; Escape closes it.
-    let handled = ui::testing::Dispatch::new()
-        .doc(&mut st.doc)
-        .send(&mut app, &key_event(Key::Named(NamedKey::Escape)))
-        .handled;
-    assert!(handled, "the menu took the key");
-    assert!(app.toolbar.shown_menu().is_none(), "Escape closes it");
 }
 
 /// Scrolling and zooming through the real `handle_event` dispatch, not the
@@ -670,14 +518,9 @@ fn sidebar_hits_toggle_delete_clip_to_the_body_and_draw_every_tab() {
         assert!(!rig.app.signatures.iter().any(|s| s.id == id));
     }
 
-    // Every sidebar tab and the find bar draw without panicking, and the
-    // bar exposes both option toggles.
+    // Every sidebar tab draws without panicking.
     let (mut app, _st) = sample_app();
     let theme = ui::theme::Theme::dark();
-    app.open_search();
-    app.find_bar.set_query("the");
-    app.drive_find_bar();
-    app.recompute_regions();
     for tab in [
         SidebarTab::Comments,
         SidebarTab::Outline,
@@ -688,60 +531,7 @@ fn sidebar_hits_toggle_delete_clip_to_the_body_and_draw_every_tab() {
         app.prepare_sidebar_scroll(&mut tr);
         let mut er = Rect::ZERO;
         let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
-        app.draw_find_bar(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        let node = ui::widget::Widget::accessibility(&app.find_bar).unwrap();
-        let names: Vec<String> = node
-            .children
-            .iter()
-            .filter_map(|child| child.name.clone())
-            .collect();
-        assert!(
-            names.iter().any(|n| n == "Whole word") && names.iter().any(|n| n == "Match case"),
-            "the find bar exposes both option toggles ({tab:?}): {names:?}"
-        );
     }
-}
-
-#[test]
-#[serial]
-fn find_strip_focus_selection_cut_and_ime_go_through_the_shared_input() {
-    let none = Modifiers::default();
-    let mut rig = Rig::new();
-    rig.key(ctrl_mods(), character("f"));
-    assert!(rig.app.search_active, "Ctrl+F opens the find bar");
-    assert!(
-        ui::widget::Widget::is_focused(&rig.app.find_bar),
-        "the query takes focus"
-    );
-    rig.key(none, Key::Named(NamedKey::Escape));
-    assert!(!rig.app.search_active, "Escape closes the find bar");
-    assert!(
-        !ui::widget::Widget::is_focused(&rig.app.find_bar),
-        "closing releases focus"
-    );
-
-    let mut rig = Rig::new();
-    rig.app.open_search();
-    for ch in ["s", "a", "n", "d"] {
-        rig.key(none, character(ch));
-    }
-    assert_eq!(rig.app.query(), "sand");
-    rig.key(ctrl_mods(), character("a"));
-    rig.key(ctrl_mods(), character("x"));
-    assert_eq!(rig.app.query(), "", "Ctrl+X cuts the selected query");
-    assert_eq!(
-        rig.app.match_count(),
-        0,
-        "derived matches refresh after cut"
-    );
-
-    let mut rig = Rig::new();
-    rig.app.open_search();
-    rig.feed(
-        none,
-        &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
-    );
-    assert_eq!(rig.app.query(), "東京");
 }
 
 #[test]
@@ -776,10 +566,10 @@ fn a_browser_types_into_a_new_note_through_ime_commits() {
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
-    // A highlight drag across page one, with the tool armed by its real
-    // toolbar button, adds an annotation to the shared document.
+    // A highlight drag across page one, with the tool armed from the
+    // window bar, adds an annotation to the shared document.
     let mut rig = Rig::new();
-    rig.arm_via_toolbar(Tool::Highlight, "clicking the toolbar arms the tool");
+    rig.arm_via_window_bar(Tool::Highlight, "the window bar arms the tool");
     let origin = rig.app.page_origins()[0];
     let zoom = rig.app.zoom();
     let before = rig.app.annotations.len();
@@ -802,7 +592,7 @@ fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
     // The Note tool drops a note whose body is typed and committed through
     // the real keyboard path.
     let mut rig = Rig::new();
-    rig.arm_via_toolbar(Tool::Note, "clicking the toolbar arms the note tool");
+    rig.arm_via_window_bar(Tool::Note, "the window bar arms the note tool");
     let origin = rig.app.page_origins()[0];
     let zoom = rig.app.zoom();
     let comments_before = rig.app.comments.len();
@@ -1027,21 +817,26 @@ fn inline_editor_commits_replies_discards_empty_notes_and_handles_clipboard_chor
     }
 }
 
-/// The Open affordance goes to the **host portal**, never an in-app
+/// The window bar's Open goes to the **host portal**, never an in-app
 /// picker, under a recording host so no real dialog is spawned. A chosen
 /// file loads through the per-frame drain in `sync`; a cancel is a no-op.
 #[test]
 #[serial(pdfium)]
 fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
+    let open = || ui::window_toolbar::ToolbarEvent::Action {
+        id: super::window_bar::OPEN.into(),
+    };
     let (mut app, _) = sample_app();
-    let open = app.toolbar_layout().open;
     assert!(
-        matches!(app.toolbar_hit(centre(open)), Some(ToolbarHit::Open)),
-        "the folder button hit-tests to the Open action"
+        app.window_toolbar()
+            .actions
+            .iter()
+            .any(|action| action.id == super::window_bar::OPEN && action.enabled),
+        "the window bar offers Open"
     );
     let (services, recorder) = ui::host::HostServices::recording();
     ui::host::scoped(&services, || {
-        app.apply_toolbar(&ToolbarHit::Open);
+        app.run_window_bar_event(&open());
     });
     assert!(
         app.portal_rx.is_some(),
@@ -1062,8 +857,16 @@ fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
     let path = std::path::PathBuf::from(concat!(env!("OUT_DIR"), "/sample.pdf"));
     let (services, recorder) = ui::host::HostServices::recording();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
+    // With no document open the bar's menu still offers Open.
+    assert!(
+        app.window_toolbar()
+            .actions
+            .iter()
+            .any(|action| action.id == super::window_bar::OPEN && action.enabled),
+        "the bar offers Open with no document"
+    );
     ui::host::scoped(&services, || {
-        app.apply_toolbar(&ToolbarHit::Open);
+        app.run_window_bar_event(&open());
     });
     app.sync_settled(&mut st.doc, &st.root);
     assert!(
@@ -1088,7 +891,7 @@ fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
     let (services, recorder) = ui::host::HostServices::recording();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
     ui::host::scoped(&services, || {
-        app.apply_toolbar(&ToolbarHit::Open);
+        app.run_window_bar_event(&open());
     });
     assert!(
         app.portal_rx.is_some(),
