@@ -1028,13 +1028,19 @@ impl Apply for SystemdApply {
     fn session_process(&mut self, session: &Session) -> Option<SessionProcess> {
         let main = self.session_pid(session)?;
         // Type=simple returns once forked; wait for the switch to the slot user.
+        // A process still root is systemd setting the session up (PAM can
+        // outlast the wait on a slow board), not yet the session to judge.
+        let switched = || {
+            proc_field(main, "Uid:").is_some_and(|uid| uid.split_whitespace().next() != Some("0"))
+        };
         for _ in 0..20 {
-            if proc_field(main, "Uid:")
-                .is_some_and(|uid| uid.split_whitespace().next() != Some("0"))
-            {
+            if switched() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if !switched() {
+            return None;
         }
         // Prefer the compositor itself, tilo-session's child.
         let children =
