@@ -45,6 +45,7 @@ use vello::peniko::ImageData as PenikoImage;
 mod applications;
 mod clipboard_client;
 mod cloud_browse;
+mod directory_refresh;
 mod drives;
 mod entry_rows;
 mod mounted_cloud;
@@ -630,6 +631,7 @@ pub struct FileExplorerWidget {
     is_loading: bool,
     /// Reads the archive being browsed off the window's thread.
     archive_listing: crate::archive::Listing,
+    directory_refresh: directory_refresh::DirectoryRefresh,
     /// Files being read out of archives to be opened.
     archive_members: ArchiveMembers,
     /// Archives waiting for the folder Extract to… asks for.
@@ -1847,6 +1849,10 @@ impl FileExplorerWidget {
             archive_listing: {
                 let wake = ui::WakeHandle::new();
                 crate::archive::Listing::new(move || wake.wake())
+            },
+            directory_refresh: {
+                let wake = ui::WakeHandle::new();
+                directory_refresh::DirectoryRefresh::new(move || wake.wake())
             },
             extract_chooser: None,
             archive_members: {
@@ -3643,33 +3649,6 @@ impl FileExplorerWidget {
         self.load(path);
     }
 
-    fn read_directory(&self, path: &Path) -> Result<Vec<Entry>, String> {
-        if crate::recent::is_location(path) {
-            return Ok(self.recent_entries());
-        }
-        if crate::applications::is_location(path) {
-            return Ok(self.applications_entries());
-        }
-        if self.hosted_clipboard() && fileops::is_trash_dir(path) {
-            let mut entries = read_dir_sync(path)?;
-            if let Some(user_trash) = host_fs::trash::user_trash_dir()
-                && user_trash != path
-            {
-                match std::fs::symlink_metadata(&user_trash) {
-                    Ok(_) => entries.extend(read_dir_sync(&user_trash)?),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.to_string()),
-                }
-            }
-            return Ok(entries);
-        }
-        if self.startup_accounts.is_some() {
-            crate::model::read_dir_with_workspace_roots(path, &self.workspace_roots)
-        } else {
-            read_dir_sync(path)
-        }
-    }
-
     /// Re-read `path` into the view without touching history (shared by
     /// navigate/back/forward/refresh).
     fn load(&mut self, path: PathBuf) {
@@ -3701,6 +3680,7 @@ impl FileExplorerWidget {
         let watched = self.watched_directory(&path);
         self.directory_watch.point_at(watched.as_deref());
         self.directory_changed = false;
+        self.directory_refresh.stop();
         // The new directory's watch decides whether and how often it is
         // polled; the next sync schedules that.
         self.next_metadata_refresh = None;
@@ -3798,6 +3778,7 @@ impl FileExplorerWidget {
     /// rename/move metadata; ordinary files fall back to their path. Scroll
     /// and transient operation status remain untouched.
     fn refresh_metadata_if_due(&mut self, now: Instant) -> bool {
+        let refreshed = self.take_directory_refresh();
         // The first sync after construction starts the watches; changes made
         // before a watch started are covered by one more read.
         let watched = self.watched_directory(&self.current_path);
@@ -3840,18 +3821,23 @@ impl FileExplorerWidget {
         let change_readable = self.directory_changed
             && now
                 >= self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len());
-        if !(directory_polled || change_readable)
-            || self.renaming.is_some()
-            || self.pin_drag.is_some()
-        {
-            return identities_changed || catalog_changed;
+        let changed = refreshed || identities_changed || catalog_changed;
+        if !(directory_polled || change_readable) || self.directory_read_deferred() {
+            return changed;
         }
         // Drain before reading: a change after this point wakes the window
         // again and is read next time.
         let _ = self.directory_watch.take_changes();
         self.directory_changed = false;
         self.last_directory_read = now;
-        self.refresh_metadata_preserving_view() || identities_changed || catalog_changed
+        self.start_directory_refresh();
+        changed
+    }
+
+    /// A rename or pin drag defers reading the listing, and a read under way
+    /// covers every change before it started.
+    fn directory_read_deferred(&self) -> bool {
+        self.renaming.is_some() || self.pin_drag.is_some() || self.directory_refresh.is_reading()
     }
 
     /// The directory to watch for `path`'s listing: `None` for listings that
@@ -3914,58 +3900,11 @@ impl FileExplorerWidget {
     /// this path because their xattr response changes row metadata but is not
     /// navigation.
     fn refresh_metadata_preserving_view(&mut self) -> bool {
-        let selected = self
-            .selection
-            .selected()
-            .into_iter()
-            .filter_map(|index| self.entries.get(index))
-            .map(|entry| (entry.record_id, entry.path.clone()))
-            .collect::<Vec<_>>();
-        let primary = self
-            .selection
-            .primary()
-            .and_then(|index| self.entries.get(index))
-            .map(|entry| (entry.record_id, entry.path.clone()));
-        let Ok(mut entries) = self.read_directory(&self.current_path) else {
-            // A transient unmount/reconnect must not replace a still-useful
-            // view with an error page. Explicit Refresh remains the path that
-            // surfaces directory errors to the user.
-            return false;
-        };
-        if !self.show_hidden {
-            entries.retain(|entry| !entry.name.starts_with('.'));
-        }
-        if !self.is_recent_view() {
-            sort_entries(self.sort_by, self.sort_order, &mut entries);
-        }
-        if entries == self.entries {
-            return false;
-        }
-        let matches_key = |entry: &Entry, key: &(Option<[u8; 16]>, PathBuf)| {
-            key.0.map_or_else(
-                || entry.path == key.1,
-                |record| entry.record_id == Some(record),
-            )
-        };
-        let selected_indices = entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| {
-                selected
-                    .iter()
-                    .any(|key| matches_key(entry, key))
-                    .then_some(index)
-            })
-            .collect::<Vec<_>>();
-        let primary_index = primary
-            .as_ref()
-            .and_then(|key| entries.iter().position(|entry| matches_key(entry, key)));
-        self.entries = entries;
-        self.selection
-            .replace_indices(selected_indices, primary_index);
-        self.retain_shown_selection();
-        self.structure_dirty = true;
-        true
+        // A transient unmount/reconnect must not replace a still-useful
+        // view with an error page. Explicit Refresh remains the path that
+        // surfaces directory errors to the user.
+        self.read_directory(&self.current_path)
+            .is_ok_and(|entries| self.show_refreshed_entries(entries))
     }
 
     /// Single/double click handler retained for tests + the command path.
@@ -9803,12 +9742,12 @@ impl FileExplorerWidget {
     /// change asked for once its gap has passed
     /// ([`Self::refresh_metadata_if_due`]).
     fn listing_deadline(&self) -> Option<Instant> {
-        // A rename or pin drag defers the read; its end is input of its own,
-        // and a due deadline here would only spin until then.
-        let read_deferred = self.renaming.is_some() || self.pin_drag.is_some();
-        let changed_directory = (self.directory_changed && !read_deferred).then(|| {
-            self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
-        });
+        // A deferred read ends on input of its own or when the read under way
+        // wakes the window; a due deadline here would only spin until then.
+        let changed_directory =
+            (self.directory_changed && !self.directory_read_deferred()).then(|| {
+                self.last_directory_read + metadata_refresh::change_read_gap(self.entries.len())
+            });
         [self.next_metadata_refresh, changed_directory]
             .into_iter()
             .flatten()
@@ -10070,8 +10009,10 @@ impl Widget for FileExplorerWidget {
         let sprang = self.spring_open_if_due(ui::time::now());
         // A folder's item count came in: the list shows it.
         let counted = self.folder_counts.take_arrived();
-        let listed =
-            self.take_archive_listing() | self.poll_extract_chooser() | self.open_read_members();
+        let listed = self.take_archive_listing()
+            | self.take_directory_refresh()
+            | self.poll_extract_chooser()
+            | self.open_read_members();
         self.structure_dirty |= notice_expired | counted;
         self.poll_share_result()
             | received

@@ -669,40 +669,16 @@ impl FileExplorerWidget {
             .map_or_else(|| self.recent.clone(), ui::framework::Setting::get)
     }
 
-    /// The Recent listing: every remembered path that still exists, in
-    /// recency order.
+    #[cfg(test)]
     pub(super) fn recent_entries(&self) -> Vec<Entry> {
+        recent_entries_of(&self.recent_paths())
+    }
+
+    pub(super) fn recent_paths(&self) -> Vec<PathBuf> {
         self.recent_list()
             .items()
             .iter()
-            .filter_map(|item| {
-                let meta = std::fs::metadata(&item.path).ok()?;
-                let is_dir = meta.is_dir();
-                Some(Entry {
-                    name: item.path.file_name().map_or_else(
-                        || item.path.display().to_string(),
-                        |name| name.to_string_lossy().into_owned(),
-                    ),
-                    path: item.path.clone(),
-                    is_dir,
-                    size: meta.len(),
-                    modified: meta.modified().ok().map(chrono::DateTime::from),
-                    mime: if is_dir {
-                        "inode/directory".into()
-                    } else {
-                        tilo_mime::from_path_or_octet_stream(&item.path).to_string()
-                    },
-                    sync_state: None,
-                    content_hash: None,
-                    record_id: None,
-                    availability: None,
-                    share: None,
-                    history: None,
-                    app: None,
-                    rich_metadata: None,
-                    observed: host_fs::ObservedObject::from_metadata(&meta),
-                })
-            })
+            .map(|item| item.path.clone())
             .collect()
     }
 
@@ -761,4 +737,40 @@ impl FileExplorerWidget {
         ));
         spec
     }
+}
+
+/// The Recent listing: every remembered path that still exists, in recency
+/// order.
+pub(super) fn recent_entries_of(paths: &[PathBuf]) -> Vec<Entry> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            let meta = std::fs::metadata(path).ok()?;
+            let is_dir = meta.is_dir();
+            Some(Entry {
+                name: path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                ),
+                path: path.clone(),
+                is_dir,
+                size: meta.len(),
+                modified: meta.modified().ok().map(chrono::DateTime::from),
+                mime: if is_dir {
+                    "inode/directory".into()
+                } else {
+                    tilo_mime::from_path_or_octet_stream(path).to_string()
+                },
+                sync_state: None,
+                content_hash: None,
+                record_id: None,
+                availability: None,
+                share: None,
+                history: None,
+                app: None,
+                rich_metadata: None,
+                observed: host_fs::ObservedObject::from_metadata(&meta),
+            })
+        })
+        .collect()
 }
