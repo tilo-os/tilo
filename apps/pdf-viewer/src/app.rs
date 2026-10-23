@@ -1982,15 +1982,11 @@ impl PdfApp {
             match ev {
                 PageSidebarEvent::Select(i) => self.go_to_page(i + 1),
                 PageSidebarEvent::Reorder { from, to } => {
-                    let Some(id) = self.resource_page_ids.get(from).cloned() else {
+                    let Some(action) =
+                        crate::actions::reorder_page_plan_action(&self.resource_page_ids, from, to)
+                    else {
                         continue;
                     };
-                    let after = if to == 0 {
-                        None
-                    } else {
-                        self.resource_page_ids.get(to - 1).map(String::as_str)
-                    };
-                    let action = crate::actions::move_page_plan_action(&id, after);
                     self.perform_action(state, action);
                 }
                 PageSidebarEvent::Duplicate(i) => {
