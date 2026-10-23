@@ -11,6 +11,7 @@ pub mod media_caps;
 pub(crate) mod native_media;
 pub mod private_messages;
 pub mod protocol;
+pub(crate) mod sealed_picture;
 pub use tilo_endpoint_reachability as reachability;
 pub mod replica;
 pub mod streaming;

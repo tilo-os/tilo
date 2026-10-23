@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use channel_crypto::ChannelContentKeys;
-use collab_types::{ChannelId, ContentRetention, EncryptionMetadata};
+use collab_types::ChannelId;
 use media::StreamCodec;
 use tilo_lock::MutexRecover as _;
 use tilo_moq::client::{Client, ReceivedPicture};
@@ -72,14 +72,14 @@ pub fn windows_channel(room: RoomId) -> ChannelId {
 }
 
 /// What sealed picture `sequence` of window `tab`, hosted on the device
-/// whose key is `host`, is bound to: opened as another window's, another
-/// host's or another place in the stream, it does not authenticate.
+/// whose key is `host`, is bound to.
 pub fn picture_artifact(host: &[u8; 32], tab: u64, sequence: u64) -> collab_types::ArtifactId {
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"tilo-room-window-picture-v1\0");
-    hash.update(host);
-    hash.update(&tab.to_le_bytes());
-    collab_types::live_artifact_id(hash.finalize().as_bytes(), PICTURE_KIND, sequence)
+    crate::network::sealed_picture::artifact(
+        b"tilo-room-window-picture-v2\0",
+        &[host, &tab.to_le_bytes()],
+        PICTURE_KIND,
+        sequence,
+    )
 }
 
 /// The carrier's codec for a stream's, when it carries that codec.
@@ -110,8 +110,6 @@ fn carrier_capabilities() -> media::realtime::CodecCapabilities {
     }
 }
 
-/// Seal `plaintext` as picture `sequence` of window `tab` hosted on `host`:
-/// the epoch of the key, little-endian, then the sealed bytes.
 fn seal(
     keys: &ChannelContentKeys,
     host: &[u8; 32],
@@ -119,20 +117,9 @@ fn seal(
     sequence: u64,
     plaintext: &[u8],
 ) -> Option<Vec<u8>> {
-    let (metadata, sealed) = keys
-        .seal_content(
-            picture_artifact(host, tab, sequence),
-            ContentRetention::Delta,
-            plaintext,
-        )
-        .ok()?;
-    let mut payload = Vec::with_capacity(sealed.len().saturating_add(8));
-    payload.extend_from_slice(&metadata.epoch.to_le_bytes());
-    payload.extend_from_slice(&sealed);
-    Some(payload)
+    crate::network::sealed_picture::seal(keys, picture_artifact(host, tab, sequence), plaintext)
 }
 
-/// Open a payload [`seal`] made, or `None` when it does not authenticate.
 fn open(
     keys: &ChannelContentKeys,
     channel: ChannelId,
@@ -141,15 +128,12 @@ fn open(
     sequence: u64,
     payload: &[u8],
 ) -> Option<Vec<u8>> {
-    let (epoch, sealed) = payload.split_first_chunk::<8>()?;
-    let metadata = EncryptionMetadata::content_key(
-        u64::from_le_bytes(*epoch),
+    crate::network::sealed_picture::open(
+        keys,
         channel,
-        ContentRetention::Delta,
-    );
-    keys.open_content(picture_artifact(host, tab, sequence), &metadata, sealed)
-        .ok()
-        .map(|plaintext| plaintext.to_vec())
+        picture_artifact(host, tab, sequence),
+        payload,
+    )
 }
 
 /// One window's stream on its way onto the carrier.

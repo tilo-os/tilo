@@ -8,6 +8,8 @@
 //! decodes. A layer nobody shows is not encoded. A picture that stops
 //! changing (a still screen) is sent again as a keyframe every
 //! [`REPEAT`], so someone who starts showing it later sees it at once.
+//! Each picture leaves sealed with the keys of the call's record
+//! ([`super::call_seal`]), which the relay does not hold.
 //!
 //! **Receiving.** The pictures of others the app shows arrive on the carrier
 //! and wait in the call's [`Inbox`] until the app collects them; a stream
@@ -244,7 +246,8 @@ fn even_rgba(width: u32, height: u32, rgba: Arc<[u8]>) -> Option<Frame> {
 }
 
 /// The carrier a call sends on now: it changes when the call reconnects.
-pub(crate) type CurrentClient = Arc<dyn Fn() -> Option<Arc<Client>> + Send + Sync>;
+pub(crate) type CurrentClient =
+    Arc<dyn Fn() -> Option<(Arc<Client>, Option<super::call_seal::Sealing>)> + Send + Sync>;
 
 /// Where a call's camera pictures come from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -497,7 +500,8 @@ fn encode(source: Source, fps: u32, feed: &Feed, current: &CurrentClient, previe
             Next::Fresh(frame) => (frame, false),
             Next::Repeat(frame) => (frame, true),
         };
-        let client = current();
+        let (client, sealing) = current().unzip();
+        let sealing = sealing.flatten();
         // A new carrier starts every layer over with a keyframe.
         let id = client.as_ref().map(|client| Arc::as_ptr(client) as usize);
         if carrier != id {
@@ -584,7 +588,14 @@ fn encode(source: Source, fps: u32, feed: &Feed, current: &CurrentClient, previe
                 let Some(client) = client.as_ref().filter(|_| remote.contains(layer)) else {
                     continue;
                 };
-                match client.send_picture(source, &object) {
+                // Until this device holds the call's keys nothing leaves it.
+                let Some(sealed) = sealing
+                    .as_ref()
+                    .and_then(|sealing| super::call_seal::seal(sealing, source, &object))
+                else {
+                    continue;
+                };
+                match client.send_picture(source, &sealed) {
                     // Nobody shows this layer any more.
                     Err(ClientError::Muted) if own != Some(*layer) => unwanted.push(*layer),
                     Ok(()) | Err(ClientError::Muted) => {}
