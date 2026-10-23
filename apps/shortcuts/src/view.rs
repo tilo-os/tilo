@@ -2020,7 +2020,9 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
         }
     }
     if permissions.is_empty() {
-        body = body.push(Box::new(caption("shortcuts-grant-none")));
+        body = body.push(Box::new(
+            caption("shortcuts-grant-none").with_id("shortcuts-grant-none"),
+        ));
     } else {
         for permission in &permissions {
             body = body.push(Box::new(Text::new(&format!(

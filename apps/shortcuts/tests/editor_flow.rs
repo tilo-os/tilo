@@ -759,3 +759,35 @@ fn inspection_node<'a>(
         .iter()
         .find_map(|child| inspection_node(child, id))
 }
+
+/// The save review tells a first-time user what saving agrees to: the
+/// shortcut may use only the app actions listed, and a shortcut that lists
+/// none says plainly that it can't touch their apps.
+#[test]
+fn the_save_review_says_what_saving_allows() {
+    let (_host, _guard, mut app) = open();
+    app.invoke(Workbench::DRAFT_SHORTCUT.with(json!({
+        "id": "no-actions", "name": "Only a branch", "steps": [{"id": "branch", "step": "if", "cond": {"truthy": {"literal": true}}, "then": []}]
+    })))
+    .unwrap();
+    act(&mut app, "review-save", &Action::Activate);
+    let explain = ui::i18n!("shortcuts-grant-explain");
+    assert!(
+        explain.contains("app actions listed") && explain.contains("person running it"),
+        "{explain}"
+    );
+    let none = ui::i18n!("shortcuts-grant-none");
+    assert!(none.contains("can't read or change"), "{none}");
+    for (id, text) in [
+        ("shortcuts-grant-explain", explain),
+        ("shortcuts-grant-none", none),
+    ] {
+        app.harness()
+            .expect(
+                &SemanticExpectation::named(id)
+                    .name(text)
+                    .within(tilo_test_env::hang_bound()),
+            )
+            .unwrap_or_else(|error| panic!("the review shows {id}: {error}"));
+    }
+}
