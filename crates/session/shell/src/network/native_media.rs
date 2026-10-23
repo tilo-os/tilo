@@ -3,6 +3,7 @@
 //! this device to the relay's voice carrier. Workers hold opaque local
 //! tickets; only the actor talks to the relay.
 mod authority;
+mod call_seal;
 mod devices;
 mod observer;
 mod output;

@@ -83,6 +83,7 @@ impl MediaFactory for Factory {
         let devices = self.devices.clone();
         let runtime = self.runtime.clone();
         let camera = self.camera.clone();
+        let channel = super::call_seal::CallChannel::of(&target);
         Box::pin(async move {
             let mut preparing = AbortTask(runtime.spawn(async move {
                 // From here until the call ends the observations it reads
@@ -160,6 +161,7 @@ impl MediaFactory for Factory {
                     publishers: Vec::new(),
                     publications_revision: None,
                     heard: Heard::default(),
+                    channel,
                     video: Video {
                         choice: camera,
                         ..Video::default()
@@ -492,6 +494,8 @@ struct Session {
     /// The carrier's reading revision the decoders were last matched to.
     publications_revision: Option<u64>,
     heard: Heard,
+    /// Whose keys seal the call's pictures.
+    channel: Option<super::call_seal::CallChannel>,
     video: Video,
 }
 
@@ -510,6 +514,11 @@ struct Video {
     showing: BTreeSet<String>,
     /// This device's person, as the grant names them.
     own: Option<String>,
+    /// The publication this device sends, as the grant names it.
+    publication: Option<String>,
+    /// What the encoders seal with; `None` until this device holds the
+    /// call's keys.
+    sealing: Arc<Mutex<Option<super::call_seal::Sealing>>>,
     inbox: video::Inbox,
 }
 impl Video {
@@ -628,7 +637,7 @@ impl Session {
         let revision = ticket.revision();
         if self.video.applied != Some((carrier, revision)) {
             let shown = &self.video.shown;
-            let (wanted, own) = ticket
+            let (wanted, own, publication) = ticket
                 .inspect_current(|_, grant| {
                     let mut wanted: std::collections::BTreeMap<String, Vec<_>> =
                         std::collections::BTreeMap::new();
@@ -650,9 +659,10 @@ impl Session {
                             wanted.insert(participant.namespace.clone(), tracks);
                         }
                     }
-                    Ok((wanted, own))
+                    Ok((wanted, own, grant.publication.clone()))
                 })
                 .unwrap_or_default();
+            self.video.publication = publication;
             // This person's own camera tile is fed on this device.
             let own_layer = own.as_ref().and_then(|own| {
                 shown
@@ -676,10 +686,29 @@ impl Session {
             self.video.applied = Some((carrier, revision));
         }
         self.take_own_camera();
+        self.receive_pictures(client);
+    }
+    /// The pictures of others the app shows, opened with the call's keys,
+    /// into its inbox; and the keys this device's encoders seal with.
+    fn receive_pictures(&mut self, client: &Client) {
+        let pictures = self.video.camera.is_some()
+            || self.video.screen.is_some()
+            || !self.video.showing.is_empty();
+        let keys = self
+            .channel
+            .filter(|_| pictures)
+            .and_then(super::call_seal::CallChannel::keys);
+        *self.video.sealing.lock() = keys
+            .clone()
+            .zip(self.video.publication.clone())
+            .map(|(keys, publication)| super::call_seal::Sealing { keys, publication });
         let ticket = &self.runtime.ticket;
         for _ in 0..video::RECEIVE_PER_TICK {
             let Some(received) = client.try_recv_picture() else {
                 break;
+            };
+            let (Some(keys), Some(channel)) = (&keys, self.channel) else {
+                continue;
             };
             let namespace = &received.publisher.namespace;
             let Some(person) = ticket
@@ -695,10 +724,19 @@ impl Session {
             else {
                 continue;
             };
-            let Ok(object) = received.object.encode() else {
+            let Some(opened) = super::call_seal::open(
+                keys,
+                channel.channel(),
+                namespace,
+                received.source,
+                received.object,
+            ) else {
                 continue;
             };
-            let keyframe = received.object.keyframe;
+            let Ok(object) = opened.encode() else {
+                continue;
+            };
+            let keyframe = opened.keyframe;
             self.video.inbox.admit(
                 Picture {
                     person,
@@ -750,7 +788,11 @@ impl Session {
     /// The carrier the call sends on now, for an encoder thread.
     fn current_client(&self) -> video::CurrentClient {
         let running = Arc::downgrade(&self.runtime);
-        Arc::new(move || running.upgrade()?.client.lock().clone())
+        let sealing = self.video.sealing.clone();
+        Arc::new(move || {
+            let client = running.upgrade()?.client.lock().clone()?;
+            Some((client, sealing.lock().clone()))
+        })
     }
     /// Drop the playout and decoder of every publication the carrier no
     /// longer reads: someone left, or came back as a new incarnation.
