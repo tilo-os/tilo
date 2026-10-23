@@ -55,7 +55,9 @@ pub mod vision;
 mod web_apps;
 pub mod worker;
 
-pub use apps::{AppCatalogue, AppError, Replica, ReplicaActor, Seed, component_apps};
+pub use apps::{
+    AppCatalogue, AppError, Replica, ReplicaActor, Seed, agent_only_apps, component_apps,
+};
 pub use control::{
     AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone, GrantRecord,
     Spawner, SupervisorHost, SupervisorSnapshot, Witness,

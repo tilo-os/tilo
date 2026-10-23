@@ -30,7 +30,7 @@ fields = [
   { path = "draft.html_body", type = "Option<String>" },
   { path = "draft.calendar_ics", type = "Option<String>" },
   { path = "draft.attachments", type = "Vec<DraftAttachment>" },
-  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:32d3007b3b137974" },
+  { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:b86bfc65e3faa1c9" },
   { path = "draft.shown_as", type = "Option<String>", readonly = true },
   { path = "outbox", type = "Outbox<Outgoing>", unit = true },
   { path = "server", type = "Outbox<ServerUpdate>", unit = true },
@@ -147,7 +147,7 @@ params = [
 
 [[resources.verbs]]
 id = "deliver-message"
-kind = "outside"
+kind = "undoable"
 params = [
   { name = "from", required = true, schema = { type = "string" } },
   { name = "to", required = false, schema = { type = ["string", "null"] } },
@@ -163,7 +163,7 @@ params = [
 
 [[resources.verbs]]
 id = "draft-message"
-kind = "outside"
+kind = "undoable"
 params = [
   { name = "to", required = true, schema = { type = "string" } },
   { name = "subject", required = true, schema = { type = "string" } },
@@ -173,7 +173,7 @@ params = [
 
 [[resources.verbs]]
 id = "draft-reply"
-kind = "outside"
+kind = "undoable"
 params = [
   { name = "message", required = true, schema = { type = "string" } },
   { name = "body", required = true, schema = { type = "string" } },

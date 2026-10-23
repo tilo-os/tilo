@@ -490,7 +490,7 @@ impl Mail {
     /// fetched from a server would arrive: for a scenario, an event a room
     /// hands on, or a worker with no account. A reply joins the
     /// conversation it answers. Nothing is sent. Answers its id.
-    #[action(answers, audience = "agents")]
+    #[action(answers, local, audience = "agents")]
     pub fn deliver_message(
         &mut self,
         cx: &mut ActionCx,
@@ -504,7 +504,7 @@ impl Mail {
     /// Writes the draft a person reviews and sends: who it goes to, its
     /// subject and text. Nothing is sent; a draft already being written is
     /// left alone.
-    #[action(audience = "agents")]
+    #[action(local, audience = "agents")]
     pub fn draft_message(
         &mut self,
         #[param("Recipients, comma-separated")] to: String,
@@ -520,7 +520,7 @@ impl Mail {
     /// Writes a reply to a message held in the mailbox as the draft, the
     /// original quoted below it, for a person to review and send. Nothing
     /// is sent.
-    #[action(audience = "agents")]
+    #[action(local, audience = "agents")]
     pub fn draft_reply(
         &mut self,
         #[param("The id of the held message it answers")] message: String,

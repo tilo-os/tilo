@@ -573,22 +573,49 @@ impl Mail {
                 .map(|(id, held, _)| (id, held))
                 .collect(),
         };
-        if chosen.is_empty() {
+        // The draft being written is the mailbox's, not a held message: it is
+        // exported with every message or the Drafts folder, marked a draft.
+        let draft = self.written_draft().filter(|_| {
+            message.is_none_or(|m| m.trim().is_empty())
+                && folder.is_none_or(|folder| folder == Folder::Drafts)
+        });
+        if chosen.is_empty() && draft.is_none() {
             return Err("there is no held mail to export".into());
         }
+        let exported = chosen.len() + usize::from(draft.is_some());
         let (bytes, media_type, extension) = match format.as_str() {
-            "md" | "markdown" => (markdown(&chosen).into_bytes(), "text/markdown", "md"),
+            "md" | "markdown" => {
+                let mut text = markdown(&chosen);
+                if let Some(draft) = &draft {
+                    if !text.is_empty() {
+                        text.push_str("\n---\n\n");
+                    }
+                    text.push_str(&draft_markdown(draft));
+                }
+                (text.into_bytes(), "text/markdown", "md")
+            }
             "json" => {
-                let all: Vec<_> = chosen
+                let mut all: Vec<_> = chosen
                     .iter()
                     .map(|(id, held)| self.whole(id, held))
                     .collect();
+                if let Some(draft) = &draft {
+                    all.push(serde_json::json!({
+                        "draft": true,
+                        "folder": Folder::Drafts.as_key(),
+                        "to": draft.to,
+                        "cc": draft.cc,
+                        "bcc": draft.bcc,
+                        "subject": draft.subject,
+                        "body": draft.body,
+                    }));
+                }
                 let text = serde_json::to_string_pretty(&all)
                     .map_err(|error| format!("the mail does not encode: {error}"))?;
                 (text.into_bytes(), "application/json", "json")
             }
             "eml" => match chosen.as_slice() {
-                [(_, held)] => (eml(held)?, "message/rfc822", "eml"),
+                [(_, held)] if draft.is_none() => (eml(held)?, "message/rfc822", "eml"),
                 _ => {
                     return Err(
                         "an .eml file holds one message: name it, or export as md or json".into(),
@@ -608,9 +635,35 @@ impl Mail {
             "content": content,
             "format": extension,
             "media_type": media_type,
-            "messages": chosen.len(),
+            "messages": exported,
+            "drafts": usize::from(draft.is_some()),
             "bytes": bytes.len(),
         }))
+    }
+
+    /// The mailbox's draft as it is written now — its body the text being
+    /// written when it was not saved yet — or `None` when nothing is in it.
+    fn written_draft(&self) -> Option<WrittenDraft> {
+        let draft = &self.draft;
+        let body = if draft.body.trim().is_empty() {
+            draft
+                .rich_body
+                .as_ref()
+                .map(tilo_document::RichText::text)
+                .unwrap_or_default()
+        } else {
+            draft.body.clone()
+        };
+        let written = [&draft.to, &draft.cc, &draft.subject, &body]
+            .iter()
+            .any(|field| !field.trim().is_empty());
+        written.then(|| WrittenDraft {
+            to: draft.to.clone(),
+            cc: draft.cc.clone(),
+            bcc: draft.bcc.clone(),
+            subject: draft.subject.clone(),
+            body,
+        })
     }
 
     /// Show the held mail in the window's mailbox, beside what its servers
@@ -645,6 +698,40 @@ fn line(id: &Id, held: &HeldMessage, state: &MessageState) -> serde_json::Value 
         "conversation": held.conversation,
         "snippet": held.snippet(),
     })
+}
+
+/// The mailbox's draft, as an export carries it.
+struct WrittenDraft {
+    to: String,
+    cc: String,
+    bcc: String,
+    subject: String,
+    body: String,
+}
+
+/// The draft as a Markdown section, marked a draft.
+fn draft_markdown(draft: &WrittenDraft) -> String {
+    let mut out = String::new();
+    let subject = if draft.subject.trim().is_empty() {
+        "(no subject)"
+    } else {
+        draft.subject.trim()
+    };
+    let _ = writeln!(out, "## {subject} (draft)\n");
+    let _ = writeln!(out, "- Folder: Drafts");
+    if !draft.to.is_empty() {
+        let _ = writeln!(out, "- To: {}", draft.to);
+    }
+    if !draft.cc.is_empty() {
+        let _ = writeln!(out, "- Cc: {}", draft.cc);
+    }
+    if !draft.bcc.is_empty() {
+        let _ = writeln!(out, "- Bcc: {}", draft.bcc);
+    }
+    out.push('\n');
+    out.push_str(draft.body.trim_end());
+    out.push('\n');
+    out
 }
 
 /// Messages as one Markdown file: a section per message.
