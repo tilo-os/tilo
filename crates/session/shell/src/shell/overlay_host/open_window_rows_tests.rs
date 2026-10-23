@@ -59,6 +59,9 @@ impl SearchProvider for HostApps {
     fn app_row(&self, app_id: &str) -> Option<SearchResult> {
         (app_id == "Alacritty").then(alacritty_row)
     }
+    fn row_icon(&self, _: &SearchResult) -> Option<ui::icons::Icon> {
+        Some(ui::icons::Icon::SquareTerminal)
+    }
 }
 
 /// One Alacritty window, showing `~/src`, in the workspace in front.
@@ -184,4 +187,20 @@ fn shift_enter_on_the_window_opens_a_new_window_of_its_app_here() {
         Some(ActivationModifier::Shift),
     );
     assert_eq!(starts(), [OpenTarget::Here(700)]);
+}
+
+#[test]
+fn the_window_wears_its_apps_icon() {
+    let mut host = host();
+    let doc = AutoCommit::new();
+    search(&mut host, &doc, "alacritty");
+    let icon_of = |label: &str| {
+        host.palette
+            .visible_entries()
+            .iter()
+            .find(|entry| entry.label == label)
+            .and_then(|entry| entry.icon)
+    };
+    assert_eq!(icon_of("~/src"), Some(ui::icons::Icon::SquareTerminal));
+    assert_eq!(icon_of("~/src"), icon_of("Alacritty"));
 }
