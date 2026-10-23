@@ -465,6 +465,7 @@ impl WordProcessorWidget {
             page_w,
             margin_left: self.margins.left,
             margin_right: self.margins.right,
+            margin_scale: self.page_margin_scale,
             indent_left: self.caret_block_indent(),
             indent_first: self.caret_block_first_line_indent(),
             tab_stops: self.caret_block_tab_stops(),

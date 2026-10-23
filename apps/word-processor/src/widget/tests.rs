@@ -8871,3 +8871,51 @@ fn a_double_click_selects_the_whole_word_and_its_drag_grows_by_words() {
     send(wp, state, &ui::synthetic_input::mouse_release());
     assert_eq!(span(wp), (Some(0), 19));
 }
+
+/// On a narrow window's editing sheet the margins stand in proportion to the
+/// page: the ruler's margin and indent markers stand where the text does.
+#[test]
+fn a_narrow_sheets_ruler_marks_the_text_where_it_stands() {
+    let (mut state, mut wp) = bound();
+    wp.model_mut()
+        .insert_str(&mut edits(&mut state.doc), "para");
+    wp.dispatch_block_attr(
+        &mut edits(&mut state.doc),
+        "indent",
+        crate::actions::AttrVal::Float(24.0),
+    );
+    let mut framed = mount(state, wp, 420, 760);
+    let (wp, _) = Framed::split(&mut framed);
+    let (page_x, page_w) = (wp.page_rect.x0, wp.page_rect.width());
+    assert!(
+        page_w < MAX_PAGE_W,
+        "a narrow window edits on a narrower sheet"
+    );
+    let (_, shown) = pagination::responsive_page_geometry(
+        wp.page_rect.x0 - 12.0,
+        wp.page_rect.x1 + 12.0,
+        1.0,
+        wp.margins,
+        true,
+        false,
+    );
+    let markers = wp.ruler_markers(page_x, page_w);
+    let at = |marker: RulerMarker| {
+        markers
+            .iter()
+            .find(|(kind, _)| *kind == marker)
+            .map_or_else(|| panic!("{marker:?} is on the ruler"), |(_, x)| *x)
+    };
+    assert!(
+        (at(RulerMarker::MarginLeft) - (page_x + shown.left)).abs() < 1e-6,
+        "the left margin marker stands at the text's left edge"
+    );
+    assert!(
+        (at(RulerMarker::MarginRight) - (page_x + page_w - shown.right)).abs() < 1e-6,
+        "the right margin marker stands at the text's right edge"
+    );
+    assert!(
+        (at(RulerMarker::IndentLeft) - (page_x + shown.left + 24.0)).abs() < 1e-6,
+        "the indent marker stands at the indented text"
+    );
+}
