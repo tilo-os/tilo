@@ -1360,6 +1360,17 @@ pub struct TextRequest {
     pub page: usize,
 }
 
+/// The text layers a viewer would like ready before anyone reaches for
+/// them (the page under the pointer, the pages a selection spans), most
+/// important first. Like a [`RenderBatch`] it replaces the viewer's
+/// previous one, and it is served after every page render, tile and asked
+/// text, so reading ahead never delays pixels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextBatch {
+    pub document_id: u64,
+    pub pages: Vec<usize>,
+}
+
 /// A request for one page's link areas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinksRequest {
@@ -1499,6 +1510,10 @@ pub enum RasterCommand {
     /// One tile taken off a batch by the worker.
     Tile(TileRequest),
     Text(TextRequest),
+    /// Replace the session's queued read-ahead text layers with this batch.
+    Texts(TextBatch),
+    /// One read-ahead text layer taken off a batch by the worker.
+    ViewText(TextRequest),
     Links(LinksRequest),
     Reconcile(ReconcileRequest),
     Save(SaveRequest),
@@ -1707,6 +1722,8 @@ struct QueueState {
     view_renders: SessionBatches<RenderRequest>,
     tiles: SessionBatches<TileRequest>,
     texts: VecDeque<QueuedCommand>,
+    /// Each session's current read-ahead text batch.
+    view_texts: SessionBatches<TextRequest>,
     reconciles: HashMap<u64, ReconcileRequest>,
     reconcile_order: VecDeque<u64>,
     saves: HashMap<u64, SaveRequest>,
@@ -1907,6 +1924,17 @@ impl RasterHandle {
         self.enqueue(RasterCommand::Text(request))
     }
 
+    /// Replace this viewer's read-ahead text layers with `batch`, most
+    /// important first; an empty batch cancels them. Served after all
+    /// other page work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker has stopped or is unavailable.
+    pub fn request_texts(&self, batch: TextBatch) -> Result<(), RasterSubmitError> {
+        self.enqueue(RasterCommand::Texts(batch))
+    }
+
     /// Queue reading one page's link areas, coalescing duplicate pages. Link
     /// reads share the bounded page-work queue with text extraction.
     pub fn request_links(&self, request: LinksRequest) -> Result<(), RasterSubmitError> {
@@ -2040,6 +2068,7 @@ impl RasterHandle {
             && state.view_renders.is_empty()
             && state.tiles.is_empty()
             && state.texts.is_empty()
+            && state.view_texts.is_empty()
             && state.open_events.is_empty()
             && state.events.is_empty())
     }
@@ -2173,6 +2202,27 @@ impl RasterHandle {
                 state
                     .tiles
                     .push(self.session.id, request, crate::tiles::MAX_TILE_BATCH);
+            }
+            RasterCommand::Texts(batch) => {
+                let mut seen = HashSet::new();
+                let texts: VecDeque<TextRequest> = batch
+                    .pages
+                    .into_iter()
+                    .filter(|page| seen.insert(*page))
+                    .map(|page| TextRequest {
+                        document_id: batch.document_id,
+                        page,
+                    })
+                    .take(MAX_PENDING_PAGE_REQUESTS)
+                    .collect();
+                state.view_texts.replace(self.session.id, texts);
+            }
+            // A single read-ahead text is only ever taken off a batch by the
+            // worker.
+            RasterCommand::ViewText(request) => {
+                state
+                    .view_texts
+                    .push(self.session.id, request, MAX_PENDING_PAGE_REQUESTS);
             }
             RasterCommand::Text(request) => {
                 if !state.texts.iter().any(|queued| {
@@ -2381,7 +2431,17 @@ fn next_page_work(state: &mut QueueState) -> Option<QueuedCommand> {
             .or_else(|| pop_view_render(state))
             .or_else(|| pop_tile(state))
             .or_else(|| state.texts.pop_front())
-    };
+    }
+    // Reading ahead waits for every pixel and every text someone asked for.
+    .or_else(|| {
+        state
+            .view_texts
+            .pop()
+            .map(|(session_id, request)| QueuedCommand {
+                session_id,
+                command: RasterCommand::ViewText(request),
+            })
+    });
     if command.is_some() {
         state.prefer_text = !state.prefer_text;
     }
@@ -2462,6 +2522,7 @@ impl<T: PartialEq> SessionBatches<T> {
 
 fn drop_session_view_renders(state: &mut QueueState, session_id: u64) {
     state.view_renders.drop_session(session_id);
+    state.view_texts.drop_session(session_id);
 }
 
 /// The next queued page render of a viewer's batch.
@@ -2742,8 +2803,10 @@ impl SourceWorker {
                 _ => RasterEvent::TileFailed { request },
             },
             // Batches are unpacked at admission and never reach the worker.
-            RasterCommand::Tiles(_) | RasterCommand::Renders(_) => return,
-            RasterCommand::Text(request) => match active
+            RasterCommand::Tiles(_) | RasterCommand::Renders(_) | RasterCommand::Texts(_) => {
+                return;
+            }
+            RasterCommand::Text(request) | RasterCommand::ViewText(request) => match active
                 .get_mut(&session_id)
                 .and_then(|documents| documents.get_mut(&request.document_id))
             {

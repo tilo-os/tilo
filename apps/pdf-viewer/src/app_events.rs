@@ -485,6 +485,10 @@ impl PdfApp {
             }
             return true;
         }
+        // A new press ends any gesture still waiting for page text, and
+        // catches a glide.
+        self.pending_press = None;
+        self.glide.stop();
         if let Some((page, pt)) = self.hit_page(p) {
             match self.tool {
                 // Select arms one of three gestures. Over real text on a raster
@@ -500,25 +504,39 @@ impl PdfApp {
                         self.clear_selection();
                         self.selected_anno = Some(id.clone());
                         self.marker_drag = Some(ui::MarkerDrag::begin(id, pt, (nx, ny)));
+                    } else if self.shift_down && self.raster_active() && self.extend_selection_to(p)
+                    {
+                        // Shift extends the live selection to the press.
                     } else if self.shift_down && self.raster_active() {
-                        // Shift + Select drags a rubber-band image-region marquee
-                        // to copy; it never pans or selects text.
+                        // With nothing selected, Shift + Select drags a
+                        // rubber-band image-region marquee to copy; it never
+                        // pans or selects text.
                         self.clear_selection();
                         self.region = Some(RegionSelect {
                             page,
                             start: pt,
                             cur: pt,
                         });
-                    } else if self.raster_active() && self.begin_selection(page, pt, p) {
-                        // Text selection armed; motion extends it, release ends it.
+                    } else if self.raster_active() {
+                        match self.begin_selection(page, pt, p) {
+                            // Motion extends it, release ends it.
+                            SelectionStart::Armed => {}
+                            SelectionStart::Waiting => {
+                                // The page's text is on its way: the press
+                                // becomes a selection or a pan when it lands.
+                                self.clear_selection();
+                                self.pending_press = Some(PendingPress {
+                                    page,
+                                    pt,
+                                    press: p,
+                                    scroll: (self.scroll_x(), self.scroll_y()),
+                                    released: None,
+                                });
+                            }
+                            SelectionStart::NoText => self.begin_pan(p),
+                        }
                     } else {
-                        self.clear_selection();
-                        self.pan = Some(PanState {
-                            start: p,
-                            scroll_x0: self.scroll_x(),
-                            scroll_y0: self.scroll_y(),
-                            moved: false,
-                        });
+                        self.begin_pan(p);
                     }
                     self.dirty = true;
                 }
@@ -573,7 +591,19 @@ impl PdfApp {
         true
     }
 
-    /// Resolve a right-click into a context menu over a deletable item.
+    /// Clear the selection and start panning from a press at `p`.
+    fn begin_pan(&mut self, p: Point) {
+        self.clear_selection();
+        self.pan = Some(PanState {
+            start: p,
+            scroll_x0: self.scroll_x(),
+            scroll_y0: self.scroll_y(),
+            moved: false,
+        });
+    }
+
+    /// Resolve a right-click (or a held finger) into a context menu: over
+    /// a deletable item its Delete menu, over page text Copy and Select all.
     fn open_context_menu(&mut self, p: Point) -> bool {
         if let Some((page, pt)) = self.hit_page(p)
             && let Some(target) = self.delete_target_at(page, pt)
@@ -581,6 +611,9 @@ impl PdfApp {
             let anchor = self.delete_menu_anchor(&target, p);
             self.context_menu = Some(ContextMenu::delete(target, anchor, self.rect));
             self.dirty = true;
+            return true;
+        }
+        if self.tool == Tool::Select && self.select_for_menu(p) {
             return true;
         }
         // A right-click elsewhere just dismisses any open menu.
@@ -628,13 +661,21 @@ impl PdfApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let chrome_unchanged = self.move_leaves_chrome_unchanged(p);
                 self.on_cursor_moved(event, p, scale_factor, modifiers, state);
+                let dirty = self.dirty;
                 self.route_toolbar(event, scale_factor, modifiers, state);
                 if self.search_active {
                     self.route_find_bar(event, scale_factor, modifiers, state);
                 }
                 if self.has_document {
                     self.route_zoom_input(event, scale_factor, modifiers, state);
+                }
+                // The chrome's routing repaints after any event it sees; a
+                // move away from it leaves the frame to the pages, which a
+                // scroll then copies instead of repainting.
+                if chrome_unchanged {
+                    self.dirty = dirty;
                 }
             }
 
@@ -677,8 +718,8 @@ impl PdfApp {
                 self.on_right_press(state, handled);
             }
 
-            WindowEvent::MouseWheel { delta, .. } => {
-                self.on_mouse_wheel(delta, scale_factor, modifiers, handled);
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                self.on_mouse_wheel(delta, *phase, scale_factor, modifiers, handled);
             }
 
             // Touchpad pinch: zoom toward the cursor. Upstream winit emits
@@ -738,11 +779,16 @@ impl PdfApp {
         modifiers: winit::event::Modifiers,
         state: &mut ui::widget::Edits<'_>,
     ) {
+        let from = self.last_mouse;
         self.last_mouse = p;
+        self.hover_text(p);
         if self.on_cursor_moved_chrome_drags(event, p, scale_factor, modifiers, state) {
             return;
         }
         self.on_cursor_moved_page_drags(p);
+        if !self.pointer_move_is_quiet(from, p) {
+            self.dirty = true;
+        }
     }
 
     /// The signature pad, the inline editor, a sticky-note marker drag, and
@@ -834,14 +880,18 @@ impl PdfApp {
             return;
         }
 
-        // Text selection drag (Select tool over real text). Map the
-        // pointer onto the selection's page even past the card edge so
+        // A press waiting for its page's text: it resolves as soon as the
+        // text is here.
+        if self.pending_press.is_some() {
+            self.resolve_pending_press(p);
+            return;
+        }
+
+        // Text selection drag (Select tool over real text): onto whichever
+        // page the pointer is over, or nearest, even past the card edge so
         // the drag can reach the end of a line.
-        if let Some(sel) = self.selection
-            && sel.dragging
-        {
-            let pt = self.page_point(sel.page, p);
-            self.update_selection(sel.page, pt);
+        if self.selection.is_some_and(|sel| sel.dragging) {
+            self.update_selection_at(p);
             return;
         }
 
@@ -875,8 +925,8 @@ impl PdfApp {
                     }
                 }
             }
+            self.dirty = true;
         }
-        self.dirty = true;
     }
 
     /// `WindowEvent::MouseInput` (left, pressed): the inline editor / open
@@ -1013,6 +1063,13 @@ impl PdfApp {
             *handled = true;
             return;
         }
+        // A selection grip (on a touchscreen) takes its end first.
+        if self.tool == Tool::Select && self.canvas_rect.contains(p) && self.take_selection_grip(p)
+        {
+            self.pending_press = None;
+            *handled = true;
+            return;
+        }
         // The floating selection HUD (Copy / highlight / Note) intercepts
         // the click before it reaches the page — the same bar the ebook
         // reader draws, via the shared `ui` component.
@@ -1119,7 +1176,18 @@ impl PdfApp {
             *handled = true;
             return;
         }
-        if self.selection.is_some_and(|s| s.dragging) {
+        if self
+            .pending_press
+            .is_some_and(|pending| pending.released.is_none())
+        {
+            // A press released before its page's text came: a click now,
+            // or a drag carried out when the text comes.
+            if let Some(pending) = self.release_pending_press(self.last_mouse) {
+                self.click_page(state, pending.page, pending.pt);
+            }
+            self.dirty = true;
+            *handled = true;
+        } else if self.selection.is_some_and(|s| s.dragging) {
             // End a text-selection drag. A bare click (no drag) selects
             // nothing textual, so also let it pick markup underneath.
             let was_active = self.selection.is_some_and(|s| s.is_active());
@@ -1166,80 +1234,6 @@ impl PdfApp {
             self.open_context_menu(p);
             *handled = true;
         }
-    }
-
-    /// `WindowEvent::MouseWheel`: the page rail / sidebar scroll it under the
-    /// pointer, Ctrl+wheel zooms, otherwise it pans the canvas.
-    fn on_mouse_wheel(
-        &mut self,
-        delta: &MouseScrollDelta,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) {
-        let p = self.last_mouse;
-        let (raw_x, raw_y) = match delta {
-            MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
-            MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
-        };
-        let mods = modifiers.state();
-        let ctrl = mods.control_key() || mods.super_key();
-        tracing::debug!(
-            kind = match delta {
-                MouseScrollDelta::LineDelta(..) => "line",
-                MouseScrollDelta::PixelDelta(..) => "pixel",
-            },
-            raw_x,
-            raw_y,
-            ctrl,
-            shift = mods.shift_key(),
-            "pdf MouseWheel"
-        );
-
-        // Wheel over the page rail scrolls its thumbnail list.
-        if self.show_rail && self.rail_rect.contains(p) {
-            if self.page_sidebar.on_wheel(-raw_y) {
-                self.dirty = true;
-            }
-            *handled = true;
-            return;
-        }
-
-        // Wheel over the sidebar scrolls its list.
-        if self.show_sidebar && self.sidebar_rect.contains(p) {
-            // (sidebar_max_scroll needs the text renderer, so just
-            // nudge and let the next draw clamp it.)
-            self.sidebar_scroll = (self.sidebar_scroll - raw_y).max(0.0);
-            self.dirty = true;
-            *handled = true;
-            return;
-        }
-
-        if ctrl {
-            // Ctrl+wheel zooms, centred on the cursor.
-            let factor = if raw_y > 0.0 {
-                1.0 + raw_y / 240.0
-            } else {
-                1.0 / (1.0 - raw_y / 240.0)
-            };
-            self.zoom_at(factor, p);
-            *handled = true;
-            return;
-        }
-
-        // Shift+wheel (or a horizontal wheel) pans horizontally;
-        // otherwise vertical. Either axis only moves if it can. The
-        // clamp lives in the shared kernel's `pan_by`.
-        if mods.shift_key() && self.is_overflowing_x() {
-            self.viewport.pan_by(-raw_y, 0.0);
-        } else {
-            self.viewport.pan_by(-raw_x, -raw_y);
-        }
-        self.current_page = self.nearest_page();
-        // Only the view moved: the frame can scroll what is on screen
-        // (`collect_damage`) instead of repainting the window.
-        self.scrolled = true;
-        *handled = true;
     }
 
     /// Feed one raw event into a hand-positioned, local [`TextInput`]. A
@@ -1470,6 +1464,10 @@ impl PdfApp {
                 } else {
                     false
                 }
+            }
+            "a" | "A" if self.select_all() => {
+                *handled = true;
+                true
             }
             "s" | "S" => {
                 self.request_save_via_portal();

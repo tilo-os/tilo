@@ -743,7 +743,7 @@ fn zoom_script(fit: f64, top: f64) -> Vec<ZoomStep> {
         ZoomStep::CtrlWheel(-12.0),
         frames(1.05),
     ));
-    for key in ["Ctrl+=", "Ctrl+-"] {
+    for key in ["=", "-"] {
         for _ in 0..frames(1.15) {
             steps.push(ZoomStep::Key(key));
             steps.extend([ZoomStep::Idle; 3]);
@@ -787,6 +787,9 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
     let probes = probe_grid(w, h);
     let period = Duration::from_micros(16_667);
     let mut samples = Vec::with_capacity(script.len());
+    // Whole frames, as shown, where `PDF_ZOOM_SHOTS` names.
+    let shots = std::env::var_os("PDF_ZOOM_SHOTS").map(std::path::PathBuf::from);
+    let mut shot_tiled = false;
     let mut next = ui::time::now();
     for step in script {
         next += period;
@@ -811,6 +814,22 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
         }
         let (paper_px, sampled_px) = paper_showing(&app, &pixels, w, &probes);
         let card_w = app.pw() * app.zoom();
+        if let Some(dir) = shots.as_ref() {
+            let tiled = card_w > crate::tiles::TILE_MIN_PAGE_PX;
+            if samples.len() % 24 == 0 || tiled != shot_tiled {
+                shot_tiled = tiled;
+                shoot_frame(
+                    &app,
+                    (w, h),
+                    &dir.join(format!(
+                        "zoom-{:03}-{:.0}pct{}.png",
+                        samples.len(),
+                        app.zoom() * 100.0,
+                        if tiled { "-tiled" } else { "" }
+                    )),
+                );
+            }
+        }
         samples.push(ZoomSample {
             cpu_ms,
             zoom: app.zoom(),
@@ -829,6 +848,26 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
         }
     }
     Some(samples)
+}
+
+/// Write the whole frame `app` shows, rendered on the CPU, to `path`.
+fn shoot_frame(app: &Framed<PdfApp>, (w, h): (u32, u32), path: &std::path::Path) {
+    use image::ImageEncoder as _;
+    let mut pixels = vec![0u8; w as usize * h as usize * 4];
+    {
+        let mut target = tilo_cpu_raster::Target::new(&mut pixels, w, h, w as usize * 4)
+            .expect("a frame-sized target");
+        tilo_cpu_raster::CpuRasterizer::default().render(
+            Framed::harness(app).scene().encoding(),
+            &mut target,
+            None,
+            tilo_cpu_raster::color::AlphaColor::from_rgba8(10, 12, 16, 255),
+        );
+    }
+    let file = std::fs::File::create(path).expect("create the shot");
+    image::codecs::png::PngEncoder::new(std::io::BufWriter::new(file))
+        .write_image(&pixels, w, h, image::ExtendedColorType::Rgba8)
+        .expect("write the shot");
 }
 
 /// Deliver one zoom step's input, as the window would.
@@ -850,7 +889,12 @@ fn send_zoom_step(harness: &mut ui::headless::FrameHarness, step: ZoomStep) {
             });
             harness.set_modifiers(&[]);
         }
-        ZoomStep::Key(key) => harness.key(key),
+        ZoomStep::Key(key) => {
+            // Ctrl held, as the zoom shortcuts are typed.
+            harness.set_modifiers(&["ctrl".to_owned()]);
+            harness.key(key);
+            harness.set_modifiers(&[]);
+        }
         ZoomStep::Idle => {}
     }
 }
@@ -952,8 +996,8 @@ fn zooming_across_every_breakpoint_never_shows_a_blank_page() {
             .windows(2)
             .filter(|w| w[0].tiled != w[1].tiled)
             .count()
-            >= 4,
-        "the zoom crosses the tile threshold in and out, by pinch and by wheel"
+            >= 6,
+        "the zoom crosses the tile threshold in and out, by pinch, wheel and keyboard"
     );
     for (i, s) in samples.iter().enumerate() {
         assert!(s.sampled_px > 0, "frame {i} looked at the pages");
@@ -1013,4 +1057,356 @@ fn zoom_report(samples: &[ZoomSample]) -> String {
         );
         out
     })
+}
+
+/// How a person scrolls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScrollInput {
+    /// A mouse wheel spun steadily: a notch every fourth frame.
+    Wheel,
+    /// Two fingers on a touchpad flicking: ten frames of fast pixel deltas,
+    /// then the fingers lift and nothing comes for fifty.
+    Fling,
+    /// A finger on the screen dragging the page up, lifting, and again.
+    TouchDrag,
+}
+
+/// The input of frame `frame` of `input`, as the window gets it.
+fn send_scroll_input(
+    app: &mut ui::App,
+    surface: &Window,
+    fingers: &mut ui::interaction::TouchPointerEmulator,
+    input: ScrollInput,
+    frame: usize,
+    at: vello::kurbo::Point,
+) {
+    use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
+    let mut send = |event| {
+        app.surface_input(surface, event, false);
+    };
+    let wheel = |delta, phase| WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta,
+        phase,
+    };
+    let pixel = |dy| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, dy));
+    match input {
+        ScrollInput::Wheel => {
+            if frame.is_multiple_of(4) {
+                send(wheel(
+                    MouseScrollDelta::LineDelta(0.0, -1.0),
+                    TouchPhase::Moved,
+                ));
+            }
+        }
+        ScrollInput::Fling => match frame % 60 {
+            0 => send(wheel(pixel(-36.0), TouchPhase::Started)),
+            1..=9 => send(wheel(pixel(-36.0), TouchPhase::Moved)),
+            10 => send(wheel(pixel(0.0), TouchPhase::Ended)),
+            _ => {}
+        },
+        ScrollInput::TouchDrag => {
+            let step = frame % 60;
+            let y = at.y + 200.0 - 20.0 * step.min(20) as f64;
+            match step {
+                0 => finger(app, surface, fingers, TouchPhase::Started, (at.x, y)),
+                1..=19 => finger(app, surface, fingers, TouchPhase::Moved, (at.x, y)),
+                20 => finger(app, surface, fingers, TouchPhase::Ended, (at.x, y)),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// One finger's contact update at `at`, turned into pointer events as the
+/// live window's runner turns it.
+fn finger(
+    app: &mut ui::App,
+    surface: &Window,
+    fingers: &mut ui::interaction::TouchPointerEmulator,
+    phase: winit::event::TouchPhase,
+    at: (f64, f64),
+) {
+    let contact = winit::event::Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase,
+        location: winit::dpi::PhysicalPosition::new(at.0, at.1),
+        force: None,
+        id: 0,
+    };
+    let events = fingers.events(&contact, |_| false);
+    for event in events {
+        app.surface_input(
+            surface,
+            event.window_event(winit::event::DeviceId::dummy()),
+            false,
+        );
+    }
+}
+
+/// One frame of a driven scroll by some input: its UI time, the GPU time
+/// of the frame as the window presents it (copying what stays on screen,
+/// rendering the damage), and how far it moved the document (what the
+/// host copied up; 0 for a frame repainted whole).
+struct InputFrame {
+    ui_ms: f64,
+    gpu_ms: f64,
+    moved_px: f64,
+    /// Whether the frame drew anything (an idle frame between wheel
+    /// notches presents nothing).
+    drew: bool,
+    /// Whether it repainted the whole window.
+    whole: bool,
+    /// The area it repainted, in pixels.
+    damage_px: f64,
+}
+
+/// Scroll the reader on `path` for `frames` 60 Hz frames by `input` in a
+/// live 1280×800 window presenting through a copying host on the GPU.
+fn drive_input(
+    path: &std::path::Path,
+    input: ScrollInput,
+    frames: usize,
+    painter: Painter,
+) -> Option<Vec<InputFrame>> {
+    let size = (1280, 800);
+    let surface = Window(size.0, size.1);
+    let (mut app, mut damage, mut scene) = settled_window(path, &surface)?;
+    let at = vello::kurbo::Point::new(640.0, 450.0);
+    let ground = vello::peniko::Color::from_rgb8(10, 12, 16);
+    let mut cpu = (painter == Painter::Cpu).then(|| CpuSurface::new(size));
+    let mut presented =
+        (painter == Painter::Gpu).then(|| ui::offscreen::OffscreenRenderer::new(size.0, size.1));
+    if let Some(presented) = presented.as_mut() {
+        presented.render_gpu_wait(&scene, ground);
+    }
+    if let Some(cpu) = cpu.as_mut() {
+        cpu.present(&scene, None);
+    }
+    let period = Duration::from_micros(16_667);
+    let mut out = Vec::with_capacity(frames);
+    let mut fingers = ui::interaction::TouchPointerEmulator::default();
+    let mut next = ui::time::now();
+    for frame in 0..frames {
+        next += period;
+        let t = ui::time::now();
+        send_scroll_input(&mut app, &surface, &mut fingers, input, frame, at);
+        scene.reset();
+        app.surface_frame_with_damage(&surface, &mut scene, &mut damage);
+        let ui_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let t = ui::time::now();
+        let frame = damage.take_copying();
+        if let Some(presented) = presented.as_mut() {
+            match &frame {
+                Some((moves, rects)) => {
+                    presented.render_copies_and_damage_gpu_wait(&scene, ground, moves, rects);
+                }
+                None => presented.render_gpu_wait(&scene, ground),
+            }
+        }
+        if let Some(cpu) = cpu.as_mut() {
+            cpu.present(
+                &scene,
+                frame
+                    .as_ref()
+                    .map(|(moves, rects)| (moves.as_slice(), rects.as_slice())),
+            );
+        }
+        let (moved_px, drew) = frame.as_ref().map_or((0.0, true), |(moves, rects)| {
+            let moved = moves
+                .first()
+                .map_or(0.0, |copy| f64::from(copy.dy.unsigned_abs()));
+            (moved, !moves.is_empty() || !rects.is_empty())
+        });
+        // Repainted whole: no damage list, or damage over most of the
+        // window (the canvas without the chrome around it).
+        let window = f64::from(size.0) * f64::from(size.1);
+        let damage_px = frame.as_ref().map_or(window, |(_, rects)| {
+            rects.iter().map(vello::kurbo::Rect::area).sum::<f64>()
+        });
+        let whole = damage_px >= 0.6 * window;
+        let gpu_ms = t.elapsed().as_secs_f64() * 1000.0;
+        out.push(InputFrame {
+            ui_ms,
+            gpu_ms,
+            moved_px,
+            drew,
+            whole,
+            damage_px,
+        });
+        let now = ui::time::now();
+        if next > now {
+            std::thread::sleep(next - now);
+        } else {
+            next = now;
+        }
+    }
+    Some(out)
+}
+
+/// p50 / p95 / max of `values`, in a line.
+fn quantiles(mut values: Vec<f64>) -> String {
+    let p50 = percentile(&mut values, 0.5);
+    let p95 = percentile(&mut values, 0.95);
+    let max = values.last().copied().unwrap_or(0.0);
+    format!("p50 {p50:5.2} p95 {p95:5.2} max {max:5.2}")
+}
+
+/// Measurement: ten seconds of scrolling by wheel, touchpad fling and touch
+/// drag through the heavy fixture, each frame's UI work and its scene
+/// rasterised on the GPU, the first 0.3 s apart from the rest. Set
+/// `PDF_SCROLL_INPUTS=1`; run it on lavapipe, pinned to the cores to test.
+#[test]
+#[serial_test::serial(pdfium)]
+fn measure_scroll_inputs() {
+    const FRAMES: usize = 600;
+    const EARLY: usize = 18;
+    if std::env::var_os("PDF_SCROLL_INPUTS").is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = heavy_pdf(dir.path(), 40);
+    for input in [
+        ScrollInput::Wheel,
+        ScrollInput::Fling,
+        ScrollInput::TouchDrag,
+    ] {
+        // The GPU (lavapipe where there is none), or with
+        // `PDF_SCROLL_PAINTER=cpu` the CPU renderer the desktop draws with
+        // on a machine without one.
+        let painter = if std::env::var("PDF_SCROLL_PAINTER").as_deref() == Ok("cpu") {
+            Painter::Cpu
+        } else {
+            Painter::Gpu
+        };
+        let Some(frames) = drive_input(&path, input, FRAMES, painter) else {
+            return;
+        };
+        // Frames that drew: an idle frame between wheel notches presents
+        // nothing and costs nothing.
+        let total = |f: &&InputFrame| f.ui_ms + f.gpu_ms;
+        let drawn = |frames: &[InputFrame]| -> Vec<f64> {
+            frames
+                .iter()
+                .filter(|f| f.drew)
+                .map(|f| total(&f))
+                .collect()
+        };
+        let (early, late) = frames.split_at(EARLY);
+        let moving_late = late.iter().filter(|f| f.moved_px > 0.0).count();
+        let per_second: Vec<String> = frames
+            .chunks(60)
+            .map(|second| {
+                let mut ms = drawn(second);
+                format!("{:.1}", percentile(&mut ms, 0.95))
+            })
+            .collect();
+        eprintln!(
+            "INPUT {input:?}: scrolled {:.0}px, drew {} frames, moved on {moving_late} of the {} frames after 0.3 s\n  first 0.3 s  {}\n  after 0.3 s  {}\n  p95 per second: {}",
+            frames.iter().map(|f| f.moved_px).sum::<f64>(),
+            frames.iter().filter(|f| f.drew).count(),
+            late.len(),
+            quantiles(drawn(early)),
+            quantiles(drawn(late)),
+            per_second.join(" "),
+        );
+        if std::env::var_os("PDF_SCROLL_TRACE").is_some() {
+            for (i, f) in frames.iter().enumerate().take(120) {
+                eprintln!(
+                    "  {i:3} ui {:6.2} gpu {:6.2} moved {:5.1}",
+                    f.ui_ms, f.gpu_ms, f.moved_px
+                );
+            }
+        }
+    }
+}
+
+/// A touchpad flick or a finger lifted while moving leaves the page gliding
+/// to a stop, as every Tilo scroll surface does, and every frame of the
+/// drag and the glide only scrolls: the window repaints what scrolled in,
+/// never all of itself.
+#[test]
+#[serial_test::serial(pdfium)]
+fn a_lifted_gesture_glides_and_every_frame_only_scrolls() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = heavy_pdf(dir.path(), 12);
+    for input in [ScrollInput::TouchDrag, ScrollInput::Fling] {
+        let Some(frames) = drive_input(&path, input, 60, Painter::None) else {
+            return;
+        };
+        // Fingers on the surface: frames 0..10 (a flick), 0..20 (a drag).
+        let lifted = if input == ScrollInput::Fling { 11 } else { 21 };
+        let gliding = frames[lifted..].iter().filter(|f| f.moved_px > 0.0).count();
+        assert!(
+            gliding >= 10,
+            "{input:?}: the page glides on after the lift ({gliding} frames moved)"
+        );
+        let glide: Vec<f64> = frames[lifted..]
+            .iter()
+            .map(|f| f.moved_px)
+            .filter(|px| *px > 0.0)
+            .collect();
+        assert!(
+            glide.last() < glide.first(),
+            "{input:?}: and slows to a stop: {glide:?}"
+        );
+        // The first frame takes in the pointer arriving over the page.
+        let whole = frames[1..].iter().filter(|f| f.drew && f.whole).count();
+        let wholes: Vec<String> = (1..frames.len())
+            .filter(|i| frames[*i].drew && frames[*i].whole)
+            .map(|i| {
+                format!(
+                    "{i}: moved {} damage {}",
+                    frames[i].moved_px, frames[i].damage_px
+                )
+            })
+            .collect();
+        assert_eq!(
+            whole, 0,
+            "{input:?}: no frame repaints the whole window: {wholes:?}"
+        );
+    }
+}
+
+/// Text left selected does not stop the pages scrolling by copying: the
+/// selection's bands move with the text, and its bar repaints where it was
+/// and where it is.
+#[test]
+#[serial_test::serial(pdfium)]
+fn scrolling_with_text_selected_still_only_scrolls() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = heavy_pdf(dir.path(), 12);
+    let Some(mut reader) = open_settled(&path) else {
+        return;
+    };
+    assert!(reader.select_all(), "the document's text is selected");
+    let size = (1280, 800);
+    let surface = Window(size.0, size.1);
+    let mut app = ui::App::new(crate::scenarios::record_state(), Box::new(reader));
+    let mut damage = ui::app::SurfaceDamage::copying();
+    let mut scene = vello::Scene::new();
+    app.init_layout();
+    for _ in 0..60 {
+        scene.reset();
+        app.surface_frame_with_damage(&surface, &mut scene, &mut damage);
+        std::thread::sleep(Duration::from_millis(16));
+    }
+    let _ = damage.take();
+    let mut copied = 0;
+    for _ in 0..20 {
+        wheel_down(&mut app, &surface, 24.0);
+        scene.reset();
+        app.surface_frame_with_damage(&surface, &mut scene, &mut damage);
+        if damage
+            .take_copying()
+            .is_some_and(|(moves, _)| !moves.is_empty())
+        {
+            copied += 1;
+        }
+        std::thread::sleep(Duration::from_millis(16));
+    }
+    assert!(
+        copied >= 18,
+        "scroll frames with a selection copy what stays on screen ({copied} of 20)"
+    );
 }

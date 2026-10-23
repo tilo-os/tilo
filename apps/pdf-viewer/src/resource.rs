@@ -934,6 +934,9 @@ impl ResourceSurface<PdfMarkup, PdfEffect> for PdfApp {
             PdfEffect::LookPage { page, size } => self
                 .look_page(page, size)
                 .map(ui::framework::Effected::Done),
+            PdfEffect::SelectText { .. } | PdfEffect::CopySelection => {
+                self.selection_effect(&effect, || cx.reply())
+            }
             effect => self.answer_effect(&effect, || cx.reply()),
         }
     }

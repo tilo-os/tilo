@@ -488,6 +488,7 @@ impl PdfApp {
     // ---- orchestration ---------------------------------------------
 
     fn draw_all(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        self.canvas_hover_zones.clear();
         self.current_page = self.nearest_page();
         // A page change (not the initial open) briefly floats the page bubble.
         if self.has_document
@@ -583,6 +584,10 @@ impl PdfApp {
 
         // The floating selection HUD over the page (shared `ui` component).
         self.draw_selection_hud(scene, base, tr, theme);
+        // On a touchscreen, the grips that move either end of the selection.
+        if let Some(grips) = self.selection_grips() {
+            grips.draw(scene, base, theme);
+        }
         self.draw_page_bubble(scene, base, tr, theme);
         if self.search_active {
             self.draw_find_bar(scene, base, tr, theme);
@@ -640,13 +645,15 @@ impl PdfApp {
             } else {
                 Rect::ZERO
             },
+            hud: self.sel_hud.as_ref().map_or(Rect::ZERO, |hud| {
+                ui::widget::floating_surface::painted_bounds(hud.rect(), theme)
+            }),
             floating: self
                 .status_note
                 .as_deref()
                 .is_some_and(|note| !note.is_empty())
                 || self.tooltip.is_visible()
                 || self.search_active
-                || self.selection.is_some()
                 || self.editing.is_some()
                 || self.context_menu.is_some()
                 || self.marker_colours.is_some()
@@ -1121,13 +1128,12 @@ impl PdfApp {
     /// Ask the PDF worker for the engine text layer of the pages currently in
     /// view; the layers land in `self.raster_text` as they arrive.
     fn refresh_raster_text(&mut self) {
-        // The engine text layer only feeds the selection + search-hit overlays
-        // and is expensive to extract (hundreds of ms per page). On an idle or
-        // scroll frame — no selection, no search hits — skip it entirely so
-        // opening a document and scrolling stay smooth. A selection that starts
-        // on a page whose layer isn't here yet asks for it inside
-        // `begin_selection`; a search asks for every page in
-        // `recompute_matches`, so the visible ones are usually here already.
+        // The engine text layer feeds the selection and search-hit overlays.
+        // It is read on the worker, below the window's thread, and kept
+        // (bounded by `evict_text_layers`) once here: a press needs the
+        // page's layer, which `hover_text` asks for ahead of it. While a
+        // selection, search hits or a highlight drag is live, every page on
+        // screen asks for its layer so the overlays follow the scroll.
         let need = self.selection.is_some()
             || !self.raster_matches.is_empty()
             || self
@@ -1135,7 +1141,6 @@ impl PdfApp {
                 .as_ref()
                 .is_some_and(|drag| drag.tool == Tool::Highlight);
         if !need {
-            self.raster_text.clear();
             return;
         }
         let Some(document) = self.raster_document.as_ref() else {
@@ -1580,12 +1585,12 @@ impl PdfApp {
             }
         }
 
-        // Live selection.
-        if let Some(sel) = self.selection
-            && sel.page == page_num
-            && sel.is_active()
+        // Live selection, the part of it on this page.
+        if let Some((a, b)) = self
+            .selection
+            .filter(TextSelection::is_active)
+            .and_then(|sel| sel.range_on(page_num, layer.chars.len()))
         {
-            let (a, b) = sel.range();
             let bands: Vec<Rect> = layer.bands_for_range(a, b).iter().map(to_screen).collect();
             render::draw_selection_bands(scene, base, theme, &bands);
         }
@@ -1605,7 +1610,8 @@ impl PdfApp {
     ) {
         self.sel_hud = None;
         let Some(sel) = self.selection else { return };
-        if sel.dragging || !sel.is_active() || self.editing.is_some() {
+        if sel.dragging || !sel.is_active() || self.editing.is_some() || self.context_menu.is_some()
+        {
             return;
         }
         let Some(bounds_rect) = self.selection_screen_bounds() else {
@@ -1616,25 +1622,7 @@ impl PdfApp {
         // for the seeded screenshot path — with no PDF open there is no raster
         // text layer, so this only fires for a staged selection.
         if !self.raster_active() {
-            let z = self.zoom();
-            let origins = self.page_origins();
-            if let Some(sel) = self.selection
-                && let Some(origin) = origins.get(sel.page.saturating_sub(1))
-            {
-                let bands: Vec<Rect> = self
-                    .selection_page_bands()
-                    .iter()
-                    .map(|r| {
-                        Rect::new(
-                            origin.x + r.x * z,
-                            origin.y + r.y * z,
-                            origin.x + (r.x + r.w) * z,
-                            origin.y + (r.y + r.h) * z,
-                        )
-                    })
-                    .collect();
-                render::draw_selection_bands(scene, base, theme, &bands);
-            }
+            render::draw_selection_bands(scene, base, theme, &self.selection_screen_bands());
         }
         // Anchor above the top edge of the selection, horizontally centred on it.
         let anchor = Point::new(
@@ -1656,15 +1644,25 @@ impl PdfApp {
             base,
             tr,
             theme,
+            // One menu for the selection whatever made it: keyboard
+            // shortcuts shown where a keyboard is the way in.
             &ui::HudControls {
                 swatches: &swatches,
                 show_note: true,
                 show_delete: false,
+                show_select_all: true,
+                shortcuts: self.interaction.modality != ui::interaction::InputModality::Touch,
             },
-            ui::HudPlacement::new(anchor, self.canvas_rect).below(bounds_rect.y1),
+            // Clear of the end grip's knob, where it shows.
+            ui::HudPlacement::new(anchor, self.canvas_rect).below(
+                self.selection_grips().map_or(bounds_rect.y1, |grips| {
+                    grips.reach_below().max(bounds_rect.y1)
+                }),
+            ),
             self.last_mouse,
         );
 
+        self.canvas_hover_zones.push(hud.rect());
         self.sel_hud = Some(hud);
     }
 
@@ -3076,6 +3074,7 @@ impl PdfApp {
         // pill itself), so approaching the bottom edge surfaces the indicator.
         let reach = f64::from(theme.tokens.spacing.s8);
         let zone = Rect::new(rect.x0 - reach, rect.y0 - reach, rect.x1 + reach, canvas.y1);
+        self.canvas_hover_zones.push(zone);
         let over = self.shots_page_bubble || zone.contains(self.last_mouse);
         self.page_bubble.set_hover(over, now);
 
