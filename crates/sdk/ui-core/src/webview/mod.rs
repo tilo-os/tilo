@@ -397,6 +397,37 @@ pub enum WebViewCommand {
     PermissionDismissed {
         id: u32,
     },
+    /// What an installed extension may do with the Browser's tabs: its API
+    /// permissions and the sites it may read and script. The engine answers
+    /// the extension's tab APIs within them.
+    ExtensionAccess {
+        id: String,
+        permissions: Vec<String>,
+        hosts: Vec<String>,
+        /// What its service worker shows the engine to be known as its.
+        token: Option<String>,
+    },
+    /// An extension that left the profile: it is told nothing more.
+    ExtensionForget {
+        id: String,
+    },
+    /// The Browser's own extension, which tells the engine which tab a page
+    /// is among the ids extensions know tabs by.
+    ExtensionIdentity {
+        id: String,
+    },
+    /// This tab shows an extension's popup or settings page over the page
+    /// used last: to extensions it is no tab, and that page is its window.
+    /// `action` names the extension whose toolbar button opened it, which
+    /// may then script that page, as in Chrome.
+    ExtensionPanel {
+        action: Option<String>,
+    },
+    /// The person clicked an extension's toolbar button over this page: the
+    /// extension hears of it (`action.onClicked`) and may script the page.
+    ExtensionClick {
+        id: String,
+    },
     DownloadDecision {
         id: u32,
         allow: bool,

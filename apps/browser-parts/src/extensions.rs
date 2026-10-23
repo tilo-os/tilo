@@ -863,7 +863,7 @@ fn asks_for_more(allowed: &[String], now: &[String]) -> bool {
 /// The Browser's own extension, which turns the others on and off as
 /// Chrome's extensions page does: turning one off keeps what it stored, its
 /// settings and logins, where Chromium's `DevTools` can only uninstall it.
-const MANAGER_FILES: [(&str, &str); 3] = [
+const MANAGER_FILES: [(&str, &str); 5] = [
     (
         "manifest.json",
         include_str!("../assets/extension-manager/manifest.json"),
@@ -876,6 +876,11 @@ const MANAGER_FILES: [(&str, &str); 3] = [
         "manage.js",
         include_str!("../assets/extension-manager/manage.js"),
     ),
+    (
+        "worker.js",
+        include_str!("../assets/extension-manager/worker.js"),
+    ),
+    ("tab.js", include_str!("../assets/extension-manager/tab.js")),
 ];
 
 /// Where the manager extension is, written beside the profile's extensions
@@ -899,7 +904,102 @@ pub fn manager_id(dir: &Path) -> Option<String> {
 
 /// What the engine starts with: the manager, then the extensions turned on.
 pub fn startup_paths() -> Vec<PathBuf> {
-    manager_dir().into_iter().chain(approved_paths()).collect()
+    let approved = approved_paths();
+    // The engine reads an extension's worker as it loads it.
+    for path in &approved {
+        prepare_tabs(path);
+    }
+    manager_dir().into_iter().chain(approved).collect()
+}
+
+/// The script that gives an extension the tab APIs Chromium does not give it
+/// here: the engine answers them (`extension_tabs.h` in the engine host).
+const TABS_SCRIPT: &str = include_str!("../../browser/chromium/src/extension_tabs.js");
+const TABS_FILE: &str = "tilo-extension-tabs.js";
+const WORKER_FILE: &str = "tilo-worker.js";
+const WORKER_MARK: &str = "// The extension's own worker: ";
+
+/// Give the extension at `root` the tab APIs. Its service worker becomes one
+/// that runs the tab script first, then the extension's own, and the tab
+/// script carries a token by which the engine knows the worker as this
+/// extension's (no other extension or page can read it). Returns the token,
+/// or `None` for an extension without a worker: the engine knows its pages
+/// by their address.
+pub fn prepare_tabs(root: &Path) -> Option<String> {
+    let manifest_path = root.join("manifest.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&read_manifest(&manifest_path).ok()?).ok()?;
+    let background = manifest.get_mut("background")?.as_object_mut()?;
+    let worker = background.get("service_worker")?.as_str()?.to_owned();
+    let module = background.get("type").and_then(serde_json::Value::as_str) == Some("module");
+    let own = if worker == WORKER_FILE {
+        std::fs::read_to_string(root.join(WORKER_FILE))
+            .ok()?
+            .lines()
+            .next()?
+            .strip_prefix(WORKER_MARK)?
+            .to_owned()
+    } else {
+        worker.trim_start_matches('/').to_owned()
+    };
+    let safe = |path: &str| {
+        !path.is_empty()
+            && !path.contains(['\\', '\'', '"', '\n', '\r', ':', '?', '#'])
+            && path.split('/').all(|part| !part.is_empty() && part != "..")
+    };
+    if !safe(&own) || !root.join(&own).is_file() {
+        return None;
+    }
+    let token = std::fs::read_to_string(root.join(TABS_FILE))
+        .ok()
+        .and_then(|text| tabs_token(&text))
+        .or_else(new_token)?;
+    let script = format!("globalThis.__tiloBridgeToken = \"{token}\";\n{TABS_SCRIPT}");
+    let wrapper = if module {
+        format!("{WORKER_MARK}{own}\nimport '/{TABS_FILE}';\nimport '/{own}';\n")
+    } else {
+        format!("{WORKER_MARK}{own}\nimportScripts('/{TABS_FILE}', '/{own}');\n")
+    };
+    for (name, text) in [(TABS_FILE, &script), (WORKER_FILE, &wrapper)] {
+        if std::fs::read_to_string(root.join(name)).ok().as_deref() != Some(text.as_str()) {
+            std::fs::write(root.join(name), text).ok()?;
+        }
+    }
+    if worker != WORKER_FILE {
+        background.insert("service_worker".into(), WORKER_FILE.into());
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).ok()?).ok()?;
+    }
+    Some(token)
+}
+
+/// The worker token the extension's tab script carries.
+pub fn tabs_token_of(root: &Path) -> Option<String> {
+    tabs_token(&std::fs::read_to_string(root.join(TABS_FILE)).ok()?)
+}
+
+fn tabs_token(script: &str) -> Option<String> {
+    let token = script
+        .lines()
+        .next()?
+        .strip_prefix("globalThis.__tiloBridgeToken = \"")?
+        .strip_suffix("\";")?;
+    (token.len() == 48 && token.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| token.to_owned())
+}
+
+fn new_token() -> Option<String> {
+    use ring::rand::SecureRandom as _;
+    let mut bytes = [0u8; 24];
+    ring::rand::SystemRandom::new().fill(&mut bytes).ok()?;
+    Some(
+        bytes
+            .iter()
+            .fold(String::with_capacity(48), |mut token, byte| {
+                use std::fmt::Write as _;
+                let _ = write!(token, "{byte:02x}");
+                token
+            }),
+    )
 }
 
 fn approved_in(root: &Path) -> Vec<PathBuf> {
@@ -1219,6 +1319,80 @@ pub fn chrome_id(extension: &ExtensionInfo) -> Option<String> {
             .to_vec()
     };
     Some(crate::crx::extension_id(&bytes))
+}
+
+#[cfg(test)]
+mod tabs_tests {
+    use super::*;
+
+    fn extension(manifest: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("manifest.json"), manifest).unwrap();
+        for (name, text) in files {
+            let path = root.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn an_extensions_worker_runs_the_tab_script_first_with_its_token() {
+        let root = extension(
+            r#"{"manifest_version":3,"background":{"service_worker":"bg/main.js"}}"#,
+            &[("bg/main.js", "self.mine = 1;")],
+        );
+        let token = prepare_tabs(root.path()).expect("a worker is given the tab APIs");
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.path().join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["background"]["service_worker"], WORKER_FILE);
+        let wrapper = std::fs::read_to_string(root.path().join(WORKER_FILE)).unwrap();
+        assert!(
+            wrapper.ends_with("importScripts('/tilo-extension-tabs.js', '/bg/main.js');\n"),
+            "{wrapper}"
+        );
+        let script = std::fs::read_to_string(root.path().join(TABS_FILE)).unwrap();
+        assert!(script.starts_with(&format!("globalThis.__tiloBridgeToken = \"{token}\";\n")));
+        assert!(script.ends_with(TABS_SCRIPT));
+        assert_eq!(tabs_token_of(root.path()).as_deref(), Some(token.as_str()));
+        // Again, as at every start: the same token, the extension's own
+        // worker still run.
+        assert_eq!(prepare_tabs(root.path()), Some(token));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(WORKER_FILE)).unwrap(),
+            wrapper
+        );
+    }
+
+    #[test]
+    fn a_module_worker_imports_the_tab_script_first() {
+        let root = extension(
+            r#"{"background":{"service_worker":"/worker.js","type":"module"}}"#,
+            &[("worker.js", "export {};")],
+        );
+        assert!(prepare_tabs(root.path()).is_some());
+        assert!(
+            std::fs::read_to_string(root.path().join(WORKER_FILE))
+                .unwrap()
+                .ends_with("import '/tilo-extension-tabs.js';\nimport '/worker.js';\n")
+        );
+    }
+
+    #[test]
+    fn an_extension_without_a_worker_or_with_a_strange_one_is_left_as_it_is() {
+        let none = extension(r#"{"action":{"default_popup":"p.html"}}"#, &[]);
+        assert_eq!(prepare_tabs(none.path()), None);
+        for worker in ["../outside.js", "missing.js", "a'b.js", "https://x/y.js"] {
+            let root = extension(
+                &format!(r#"{{"background":{{"service_worker":"{worker}"}}}}"#),
+                &[],
+            );
+            assert_eq!(prepare_tabs(root.path()), None, "{worker}");
+            assert!(!root.path().join(WORKER_FILE).exists());
+        }
+    }
 }
 
 #[cfg(test)]

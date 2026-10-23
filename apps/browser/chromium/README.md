@@ -381,10 +381,42 @@ explicit internal-URL rejection at the Browser boundary, and native-engine
 blank/canonical URL, cancellation/recovery, history refusal, and renderer
 termination followed by Reload.
 
+## Extensions and tabs
+
+Chromium finds an extension's tabs through the tab strips of its own windows.
+Every page here is an offscreen (Alloy-style) browser no window holds, so
+`chrome.tabs.query` and `chrome.windows.getAll` find nothing, `scripting` and
+`tabs.sendMessage` find no tab by its id, and a toolbar click has nowhere to
+come from. Content scripts, declarative network rules and messages from
+content scripts (with `sender.tab`) work without help.
+
+`src/extension_tabs.h` answers the rest from the host's own tabs:
+
+- `src/extension_tabs.js` runs in each extension's service worker (the Browser
+  makes the worker run it first, `extensions.rs` `prepare_tabs`) and in its
+  own pages (a document script). It answers `tabs`, `windows`,
+  `action.onClicked` and `scripting` by asking the host at
+  `https://extension-bridge.tilo.invalid/`, which the host serves itself. A
+  page of the extension is known by its frame's address, its worker by a token
+  written into it; a page cannot show either.
+- Tabs carry the id Chromium's extension APIs know them by, the one in
+  `sender.tab.id`. The Browser's own extension (`extension-manager`, with a
+  content script in every page) asks it for each page on first use.
+- What a tab shows an extension follows Chrome: its address and title with
+  `tabs`, access to the site, or a click on the extension's button over it
+  (`activeTab`), which also lets it script the page until the page navigates.
+- `scripting.executeScript` runs in the extension's own world in the page,
+  where its content scripts run. Where it has none, the host makes a world
+  that gets a content script's `runtime`, `storage` and `i18n`
+  (`src/extension_content.js`), through a binding only that world has.
+- A click or a tab event reaches a worker through the DevTools pipe, which
+  wakes it if it sleeps; the host attaches only while it delivers, so an idle
+  worker still sleeps. `tests/extension_tabs.py` covers each of these.
+
 ## Remaining integration work
 
-- Browser UI extension management and Chrome extension behavior remain separate
-  integration work; this host does not claim extension installation support.
+- Extensions' context menu items, keyboard shortcuts (`commands`), side panels
+  and `tabs.captureVisibleTab` are not offered.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs

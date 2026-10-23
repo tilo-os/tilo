@@ -24,8 +24,9 @@ inline bool DevToolsMethodAllowed(const std::string& method) {
   return allowed.count(method)>0;
 }
 inline constexpr size_t kMaxDevToolsMessage=1024*1024;
-inline constexpr size_t kMaxPendingDevTools=64;
-struct DevToolsOwner {int tab=0;int request_id=0;};
+inline constexpr size_t kMaxPendingDevTools=128;
+// A tab's request, or (`internal`) one the host made itself.
+struct DevToolsOwner {int tab=0;int request_id=0;int internal=0;};
 // Host-wide CDP ids to the tab request awaiting each reply.
 class DevToolsPending {
  public:
@@ -34,6 +35,13 @@ class DevToolsPending {
     if(pending_.size()>=kMaxPendingDevTools) return std::nullopt;
     next_=next_%2147483647+1;
     pending_[next_]={tab,request_id};
+    return next_;
+  }
+  std::optional<int> AddInternal(int handle) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(pending_.size()>=kMaxPendingDevTools) return std::nullopt;
+    next_=next_%2147483647+1;
+    pending_[next_]={0,0,handle};
     return next_;
   }
   std::optional<DevToolsOwner> Take(int id) {
