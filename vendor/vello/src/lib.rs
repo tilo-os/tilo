@@ -1681,6 +1681,10 @@ pub(crate) fn sparse_coarse_adaptive_selection(
 }
 
 #[cfg(feature = "wgpu")]
+/// How many waits [`Renderer::settle_bump_budget`] gives a counter readback
+/// whose callback another thread's poll is running.
+const SETTLE_POLLS: usize = 10_000;
+
 impl Renderer {
     /// Run every GPU pipeline's first dispatch now, spread over this device and up to
     /// `helpers` more opened by `open_device`, each driven from its own thread.
@@ -3668,9 +3672,14 @@ impl Renderer {
         let mut overflowed = self.unsettled_bump_overflow.take();
         // A one-shot readback has already waited for the rendered texture,
         // but the tiny counter buffer's map callback can become observable a
-        // poll later. Give it a bounded blocking settle so "not ready yet" is
-        // never mistaken for "the frame fit".
-        for _ in 0..4 {
+        // poll later, and on a device other threads poll too (the process
+        // shares one) it runs on whichever thread's poll took it: this
+        // thread's wait can return while another thread is still running
+        // the callback. Keep waiting until it has landed, so "not ready yet"
+        // is never mistaken for "the frame fit". The GPU work is done by
+        // then, so the wait is short; the bound only keeps a device that
+        // never answers (one that was lost) from holding the thread.
+        for _ in 0..SETTLE_POLLS {
             let _ = device.poll(wgpu::PollType::wait_indefinitely());
             let (changed, frame_overflowed) = self.budget.collect(device, &mut self.engine);
             overflowed |= frame_overflowed;
@@ -3680,6 +3689,7 @@ impl Renderer {
             if !self.budget.has_pending_readback() {
                 break;
             }
+            std::thread::yield_now();
         }
         overflowed
     }
