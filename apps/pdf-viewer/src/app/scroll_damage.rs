@@ -18,6 +18,9 @@ pub(super) struct CanvasShown {
     /// which stay put while the content moves under them.
     pub(super) thumbs: [Option<Rect>; 2],
     pub(super) bubble: Rect,
+    /// The selection's bar, which stands where the selection was when it
+    /// was drawn while the pages scroll under it.
+    pub(super) hud: Rect,
     /// Whether anything else floated over the canvas (a toast, a tooltip,
     /// a find bar, the selection's controls, an editor, the scrim).
     pub(super) floating: bool,
@@ -46,8 +49,7 @@ impl PdfApp {
             && drawing.zoom.to_bits() == presented.zoom.to_bits()
             && drawing.canvas == presented.canvas
             && drawing.rect == presented.rect
-            && drawing.transform == presented.transform
-            && drawing.current_page == presented.current_page;
+            && drawing.transform == presented.transform;
         if !only_view {
             return whole(regions);
         }
@@ -70,6 +72,9 @@ impl PdfApp {
             if frame.bubble.area() > 0.0 {
                 still.push(frame.bubble.expand());
             }
+            if frame.hud.area() > 0.0 {
+                still.push(frame.hud.expand());
+            }
         }
         let delta = vello::kurbo::Vec2::new(
             presented.scroll.0 - drawing.scroll.0,
@@ -87,6 +92,15 @@ impl PdfApp {
             regions.push(drawing.canvas);
         }
         regions.extend(still);
+        // The page rail and the outline mark the current page.
+        if drawing.current_page != presented.current_page {
+            if self.show_rail {
+                regions.push(self.rail_rect);
+            }
+            if self.show_sidebar {
+                regions.push(self.sidebar_rect);
+            }
+        }
         // Pages whose pixels arrived repaint where they are now drawn.
         let card_size = vello::kurbo::Size::new(self.pw(), self.ph()) * self.zoom();
         let unit = self.stack_unit();

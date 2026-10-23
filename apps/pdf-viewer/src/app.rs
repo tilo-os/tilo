@@ -231,33 +231,6 @@ struct PanState {
     moved: bool,
 }
 
-/// A text selection over the real engine text layer (raster backend only). The
-/// anchor is where the drag began; the caret follows the pointer. Both are
-/// glyph indices into that page's [`PageText`]; selection stays within one page.
-#[derive(Clone, Copy)]
-struct TextSelection {
-    page: usize,
-    anchor: usize,
-    caret: usize,
-    /// True while the pointer button is held and the drag is live.
-    dragging: bool,
-}
-
-impl TextSelection {
-    /// The selected glyph run as a half-open `[start, end)` index range.
-    fn range(&self) -> (usize, usize) {
-        let lo = self.anchor.min(self.caret);
-        let hi = self.anchor.max(self.caret) + 1;
-        (lo, hi)
-    }
-
-    /// Whether the selection spans at least one glyph (a bare click selects
-    /// nothing).
-    fn is_active(&self) -> bool {
-        self.anchor != self.caret
-    }
-}
-
 /// A rubber-band region selection over a page (Shift + drag with the Select
 /// tool). On release its pixels are cropped from the page bitmap and copied to
 /// the clipboard as an image. Both corners are in page-point space.
@@ -660,10 +633,29 @@ pub struct PdfApp {
     /// The unit the in-flight text-selection drag snaps to (from the click
     /// ladder): character, whole word, or whole visual line.
     sel_gran: Granularity,
-    /// The glyph range `[lo, hi)` of the unit the drag anchored on (the
+    /// The text range `[lo, hi)` of the unit the drag anchored on (the
     /// double-clicked word / triple-clicked line). The drag keeps this unit
     /// inside the selection and grows by whole units (see [`ui::extend_span_drag`]).
-    sel_anchor_range: (usize, usize),
+    sel_anchor_range: (TextPos, TextPos),
+    /// A press on page text that waits for the page's text layer.
+    pending_press: Option<PendingPress>,
+    /// A copy that waits for the text of pages the selection spans.
+    pending_copy: bool,
+    /// A selection effect that waits for the text of the pages it reads.
+    pending_selection_effect: Option<PendingSelectionEffect>,
+    /// The page under the pointer, whose text is read ahead of a press.
+    text_hover: Option<usize>,
+    /// The text layers last asked ahead of need (0-based pages).
+    raster_text_batch: Vec<usize>,
+    /// When the last frame of an edge autoscroll of a selection drag ran.
+    selection_autoscroll_at: Option<ui::time::Instant>,
+    /// Where on the page canvas the last frame drew something that shows
+    /// the pointer's hover (see `pointer_move_is_quiet`).
+    canvas_hover_zones: Vec<Rect>,
+    /// The glide a lifted touchpad or touchscreen gesture leaves the page in.
+    glide: ui::ScrollMomentum,
+    /// How the window is being used (touch or pointer) and its target size.
+    interaction: ui::interaction::InteractionEnvironment,
     /// A live image-region marquee (Shift + Select drag), if any.
     region: Option<RegionSelect>,
     /// Whether Shift is currently held (drives the region-copy marquee).
@@ -774,6 +766,9 @@ pub struct PdfApp {
 
     // Region rects (computed in apply_layout).
     toolbar_rect: Rect,
+    /// Whether the last pointer move was over the toolbar, whose hover it
+    /// may then have to clear.
+    pointer_over_toolbar: bool,
     search_rect: Rect,
     rail_rect: Rect,
     canvas_rect: Rect,
@@ -1018,13 +1013,12 @@ impl PdfApp {
         let idx = text.get(..byte).map_or(0, |prefix| prefix.chars().count()) + 2;
         let (s, e) = layer.word_range(idx);
         self.selection = Some(TextSelection {
-            page: 1,
-            anchor: s,
-            caret: e.saturating_sub(1),
+            anchor: TextPos::new(1, s),
+            caret: TextPos::new(1, e),
             dragging: false,
         });
         self.sel_gran = Granularity::Word;
-        self.sel_anchor_range = (s, e);
+        self.sel_anchor_range = (TextPos::new(1, s), TextPos::new(1, e));
     }
 
     /// Screenshot helper: import a distinctive generated image as a new page
@@ -1175,7 +1169,16 @@ impl PdfApp {
             selection: None,
             drag_select: DragSelect::new(),
             sel_gran: Granularity::Char,
-            sel_anchor_range: (0, 0),
+            sel_anchor_range: (TextPos::new(0, 0), TextPos::new(0, 0)),
+            pending_press: None,
+            pending_copy: false,
+            pending_selection_effect: None,
+            text_hover: None,
+            raster_text_batch: Vec::new(),
+            selection_autoscroll_at: None,
+            canvas_hover_zones: Vec::new(),
+            glide: ui::ScrollMomentum::new(),
+            interaction: ui::interaction::InteractionEnvironment::default(),
             region: None,
             shift_down: false,
             source_path: None,
@@ -1217,6 +1220,7 @@ impl PdfApp {
             overlay_mode: false,
             prev_overlay: None,
             toolbar_rect: Rect::ZERO,
+            pointer_over_toolbar: false,
             search_rect: Rect::ZERO,
             rail_rect: Rect::ZERO,
             canvas_rect: Rect::ZERO,
@@ -2018,9 +2022,35 @@ impl PdfApp {
     fn go_to_page(&mut self, page: usize) {
         let page = page.clamp(1, self.doc.page_count());
         let target_y = (page - 1) as f64 * self.stack_unit() * self.viewport.zoom();
+        self.glide.stop();
         self.viewport.set_scroll(self.viewport.scroll_x(), target_y);
         self.current_page = page;
         self.dirty = true;
+    }
+
+    /// Carry a glide on to `now`: the page moves by what the glide covered
+    /// since the last frame, and stops at either end of the document.
+    fn advance_glide(&mut self, now: ui::time::Instant) {
+        // Whole device pixels, so each glide frame is a copy of what stays
+        // on screen and the strip that scrolled in, never a repaint.
+        let dy = self
+            .glide
+            .advance_whole_pixels(now, ui::scroll_copy::host_device_scale());
+        if dy == 0.0 {
+            return;
+        }
+        let before = self.scroll_y();
+        self.viewport.pan_by(0.0, dy);
+        if self.scroll_y().to_bits() == before.to_bits() {
+            self.glide.stop();
+            return;
+        }
+        self.current_page = self.nearest_page();
+        // Only the view moved, as for a wheel.
+        self.scrolled = true;
+        if self.selection.is_some_and(|sel| sel.dragging) {
+            self.update_selection_at(self.last_mouse);
+        }
     }
 
     /// Scroll the document by a screen-space delta (arrow-key / wheel nudge),
@@ -2467,188 +2497,6 @@ impl PdfApp {
             self.status_note = Some("Find result is no longer available".into());
         }
         self.dirty = true;
-    }
-
-    // ---- text selection (raster backend) ----------------------------
-    //
-    // A real PDF's glyph geometry lives in `raster_text` (filled each draw for
-    // the visible pages). Selection maps pointer positions to glyph indices via
-    // that layer, exactly the geometry the raster page bitmap is drawn from, so
-    // a highlighted run lines up with the printed text.
-
-    /// Try to begin a text selection at page-point `pt` on `page`. Returns
-    /// `true` when the point lands on a glyph (selection armed); `false` when
-    /// there is no text there, so the caller can fall back to panning.
-    /// Begin a text selection at page-point `pt` on `page`. Routed through the
-    /// shared [`ui::gesture::DragSelect`] click ladder, so a single click places
-    /// the caret, a double-click selects the word under it, and a triple-click
-    /// selects the whole visual line — behaving identically to every text field
-    /// and the ebook reader. `press` is the screen point (for the multi-click
-    /// distance test). Returns whether a selection was armed (i.e. the press
-    /// landed on real glyph text); when it did not, the caller falls back to a
-    /// pan so empty page area still scrolls.
-    fn begin_selection(&mut self, page: usize, pt: (f64, f64), press: Point) -> bool {
-        let Some(layer) = self.ensure_raster_text(page) else {
-            return false;
-        };
-        let Some(idx) = layer.char_at(pt.0, pt.1) else {
-            return false;
-        };
-        let intent = self.drag_select.press(press, false);
-        match intent.granularity {
-            Granularity::Word | Granularity::Line => {
-                let (s, e) = if intent.granularity == Granularity::Word {
-                    layer.word_range(idx)
-                } else {
-                    layer.row_range(idx)
-                };
-                if e > s {
-                    self.selection = Some(TextSelection {
-                        page,
-                        anchor: s,
-                        caret: e - 1,
-                        dragging: true,
-                    });
-                    self.sel_gran = intent.granularity;
-                    self.sel_anchor_range = (s, e);
-                } else {
-                    self.arm_char_selection(page, idx);
-                }
-            }
-            Granularity::Char => self.arm_char_selection(page, idx),
-        }
-        self.dirty = true;
-        true
-    }
-
-    /// Arm a fresh character-granularity selection collapsed at glyph `idx`.
-    fn arm_char_selection(&mut self, page: usize, idx: usize) {
-        self.selection = Some(TextSelection {
-            page,
-            anchor: idx,
-            caret: idx,
-            dragging: true,
-        });
-        self.sel_gran = Granularity::Char;
-        self.sel_anchor_range = (idx, idx + 1);
-    }
-
-    /// The engine text layer for 1-based `page`, extracting it on demand and
-    /// caching it into `raster_text` if the (deferred) per-frame refresh hasn't
-    /// built it yet. This lets a text selection start on a freshly-opened or
-    /// just-scrolled-to page without the reader having eagerly paid the
-    /// extraction cost on every prior frame. `None` when no raster backend.
-    fn ensure_raster_text(&mut self, page: usize) -> Option<Arc<PageText>> {
-        if let Some(layer) = self.raster_text.get(&page) {
-            return Some(layer.clone());
-        }
-        if let Some(document) = self.raster_document.as_ref()
-            && page > 0
-            && self.raster_text_pending.insert(page - 1)
-        {
-            if !self.raster_handle.as_ref().is_some_and(|handle| {
-                handle
-                    .request_text(TextRequest {
-                        document_id: document.id,
-                        page: page - 1,
-                    })
-                    .is_ok()
-            }) {
-                self.raster_text_pending.remove(&(page - 1));
-                self.status_note = Some("PDF text worker is unavailable".to_string());
-            }
-            self.dirty = true;
-        }
-        None
-    }
-
-    /// Extend the live selection to the pointer at page-point `pt`. Only tracks
-    /// motion on the selection's own page (selection stays single-page). A
-    /// character drag walks the caret glyph-by-glyph; a word/line drag (after a
-    /// double/triple click) keeps the anchored unit inside the selection and
-    /// grows by whole units through the shared [`ui::extend_span_drag`] rule.
-    fn update_selection(&mut self, page: usize, pt: (f64, f64)) {
-        let Some(sel) = self.selection else { return };
-        if !sel.dragging || sel.page != page {
-            return;
-        }
-        let Some(layer) = self.raster_text.get(&page) else {
-            return;
-        };
-        let Some(idx) = layer
-            .char_at(pt.0, pt.1)
-            .or_else(|| layer.nearest_char(pt.0, pt.1))
-        else {
-            return;
-        };
-        let (anchor, caret) = match self.sel_gran {
-            Granularity::Char => (sel.anchor, idx),
-            Granularity::Word | Granularity::Line => {
-                let (unit_lo, unit_hi) = if self.sel_gran == Granularity::Word {
-                    layer.word_range(idx)
-                } else {
-                    layer.row_range(idx)
-                };
-                let (a_lo, a_hi) = self.sel_anchor_range;
-                let (a, c) = ui::extend_span_drag(a_lo, a_hi, idx, unit_lo, unit_hi);
-                let lo = a.min(c);
-                let hi = a.max(c).max(lo + 1);
-                (lo, hi - 1)
-            }
-        };
-        if let Some(s) = self.selection.as_mut() {
-            s.anchor = anchor;
-            s.caret = caret;
-        }
-        self.dirty = true;
-    }
-
-    /// End the drag. A selection that never grew past its anchor (a bare click)
-    /// is dropped so a single click doesn't leave a one-glyph highlight behind.
-    fn finish_selection(&mut self) {
-        self.drag_select.release();
-        if let Some(s) = self.selection.as_mut() {
-            s.dragging = false;
-            if !s.is_active() {
-                self.selection = None;
-            }
-        }
-        self.dirty = true;
-    }
-
-    fn clear_selection(&mut self) {
-        if self.selection.take().is_some() {
-            self.dirty = true;
-        }
-    }
-
-    /// The selected text, if a run is selected and its page's glyph layer is
-    /// available.
-    fn selection_text(&self) -> Option<String> {
-        let sel = self.selection?;
-        if !sel.is_active() {
-            return None;
-        }
-        let layer = self.raster_text.get(&sel.page)?;
-        let (a, b) = sel.range();
-        let s = layer.text_for_range(a, b);
-        (!s.trim().is_empty()).then_some(s)
-    }
-
-    /// Copy the current selection to the system clipboard, surfacing a toast.
-    fn copy_selection(&mut self) -> bool {
-        if let Some(text) = self.selection_text() {
-            ui::clipboard_copy(&text);
-            let n = text.chars().count();
-            self.status_note = Some(format!(
-                "Copied {n} character{}",
-                if n == 1 { "" } else { "s" }
-            ));
-            self.dirty = true;
-            true
-        } else {
-            false
-        }
     }
 
     /// Crop the active image-region marquee out of its page bitmap and copy it
@@ -3827,99 +3675,6 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    /// The live selection's page-point bands (real engine glyph boxes), for
-    /// creating highlights from a text selection.
-    fn selection_page_bands(&self) -> Vec<PtRect> {
-        let Some(sel) = self.selection else {
-            return Vec::new();
-        };
-        if !sel.is_active() {
-            return Vec::new();
-        }
-        let Some(layer) = self.raster_text.get(&sel.page) else {
-            return Vec::new();
-        };
-        let (a, b) = sel.range();
-        layer.bands_for_range(a, b)
-    }
-
-    /// The live selection's bands mapped to screen space, for anchoring the HUD.
-    fn selection_screen_bounds(&self) -> Option<Rect> {
-        let sel = self.selection?;
-        if !sel.is_active() {
-            return None;
-        }
-        let origins = self.page_origins();
-        let origin = origins.get(sel.page.saturating_sub(1))?;
-        let z = self.zoom();
-        let mut acc: Option<Rect> = None;
-        for r in self.selection_page_bands() {
-            let sr = Rect::new(
-                origin.x + r.x * z,
-                origin.y + r.y * z,
-                origin.x + (r.x + r.w) * z,
-                origin.y + (r.y + r.h) * z,
-            );
-            acc = Some(match acc {
-                Some(a) => a.union(sr),
-                None => sr,
-            });
-        }
-        acc
-    }
-
-    /// Highlight the live text selection in `swatch` — one highlight annotation
-    /// per selection band — then clear the selection.
-    fn highlight_selection(&mut self, state: &mut ui::widget::Edits<'_>, swatch: Swatch) -> bool {
-        let Some(sel) = self.selection else {
-            return false;
-        };
-        let bands = self.selection_page_bands();
-        if bands.is_empty() {
-            return false;
-        }
-        let (start, end) = sel.range();
-        let chars = self
-            .raster_text
-            .get(&sel.page)
-            .and_then(|t| t.source_range(start, end));
-        let a = Annotation {
-            chars,
-            ..Annotation::new(
-                sel.page,
-                AnnoKind::Markup {
-                    style: self.markup_style,
-                    quads: bands,
-                },
-                swatch,
-                self.author.clone(),
-            )
-        };
-        self.swatch = swatch;
-        self.selected_anno = Some(a.id.clone());
-        self.author_annotation(state, &a);
-        self.clear_selection();
-        self.reload(state);
-        self.dirty = true;
-        true
-    }
-
-    /// Attach a sticky note to the start of the live selection and open its
-    /// editor (mirrors the ebook reader's note-from-selection flow).
-    fn note_from_selection(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
-        let bands = self.selection_page_bands();
-        let Some(first) = bands.first().copied() else {
-            return false;
-        };
-        let Some(sel) = self.selection else {
-            return false;
-        };
-        let page = sel.page;
-        self.clear_selection();
-        self.create_note(state, page, (first.x, first.y));
-        true
-    }
-
     /// Route a shared-HUD action to this reader's commands.
     fn apply_hud_action(&mut self, action: ui::HudAction, state: &mut ui::widget::Edits<'_>) {
         match action {
@@ -3932,6 +3687,9 @@ impl PdfApp {
             }
             ui::HudAction::Note => {
                 self.note_from_selection(state);
+            }
+            ui::HudAction::SelectAll => {
+                self.select_all();
             }
             ui::HudAction::Delete => {}
         }
@@ -4357,12 +4115,12 @@ impl PdfApp {
                     self.selected_anno = None;
                     self.selected_sig = None;
                     self.editing = None;
-                    self.selection = None;
                     self.close_search();
                     self.find_bar = ui::widget::FindBar::new();
                     self.matches.clear();
                     self.raster_matches.clear();
                     self.raster_text.clear();
+                    self.text_layers_replaced("another PDF opened");
                     self.raster_links.clear();
                     self.raster_links_pending.clear();
                     self.text_lines.clear();
@@ -4414,9 +4172,11 @@ impl PdfApp {
                     // work must be eligible for submission again.
                     self.raster_render_pending.clear();
                     self.raster_text_pending.clear();
+                    self.raster_text_batch.clear();
                     self.raster_links_pending.clear();
                     self.raster_tile_batch.clear();
                     self.raster_render_batch.clear();
+                    self.text_requests_dropped();
                     self.dirty = true;
                 }
                 RasterEvent::Rendered { request, image }
@@ -4493,7 +4253,19 @@ impl PdfApp {
                         // counter and the matches move together.
                         self.drive_find_bar();
                     }
-                    self.dirty = true;
+                    self.text_arrived(request.page + 1);
+                    // A page's text shows only through find matches or a
+                    // selection on it (a press it resolved repaints for
+                    // itself); read ahead under a resting pointer, it
+                    // changes nothing on screen, and a scroll goes on
+                    // copying.
+                    if self.search_active
+                        || self
+                            .selection
+                            .is_some_and(|sel| sel.pages().contains(&(request.page + 1)))
+                    {
+                        self.dirty = true;
+                    }
                 }
                 RasterEvent::LinksRead { request, links }
                     if self
@@ -4502,8 +4274,9 @@ impl PdfApp {
                         .is_some_and(|doc| doc.id == request.document_id) =>
                 {
                     self.raster_links_pending.remove(&request.page);
+                    // Links are only hit-tested, never drawn: their arrival
+                    // repaints nothing.
                     self.raster_links.insert(request.page + 1, links);
-                    self.dirty = true;
                 }
                 RasterEvent::LinksFailed { request, .. }
                     if self
@@ -4522,10 +4295,10 @@ impl PdfApp {
                         .is_some_and(|doc| doc.id == request.document_id) =>
                 {
                     self.raster_text_pending.remove(&request.page);
-                    self.status_note = Some(format!(
-                        "Couldn’t read text on page {}: {error}",
-                        request.page + 1
-                    ));
+                    self.raster_text_batch.retain(|page| *page != request.page);
+                    let why = format!("Couldn’t read text on page {}: {error}", request.page + 1);
+                    self.text_failed(request.page + 1, &why);
+                    self.status_note = Some(why);
                     self.dirty = true;
                 }
                 RasterEvent::Reconciled {
@@ -4550,6 +4323,7 @@ impl PdfApp {
                     self.raster_links.clear();
                     self.raster_links_pending.clear();
                     self.raster_text_pending.clear();
+                    self.text_layers_replaced("the pages changed");
                     if let Some(document) = self.raster_document.as_mut() {
                         document.page_sizes = page_sizes;
                         document.geometries = geometries;
@@ -4756,6 +4530,7 @@ fn ensure_pdf_extension(path: std::path::PathBuf) -> std::path::PathBuf {
 
 include!("app_draw.rs");
 include!("app_events.rs");
+include!("app_scroll_input.rs");
 
 impl Widget for PdfApp {
     ui::provides!(
@@ -4782,6 +4557,10 @@ impl Widget for PdfApp {
         self.drain_raster_events(state);
         self.drain_opens();
         self.follow_cancellation();
+        // A selection drag held at the canvas's edge scrolls on its own,
+        // and a lifted gesture glides.
+        self.autoscroll_selection(ui::time::now());
+        self.advance_glide(ui::time::now());
         self.follow_reopen();
         self.follow_signature();
         self.reopen_pinned_source();
@@ -5702,7 +5481,35 @@ impl Widget for PdfApp {
         // and painted without waiting for an input event. Also keep frames
         // coming while the floating page bubble is lingering /
         // fading, so it hides itself without needing a stray pointer event.
-        self.tooltip_pending || owner_busy || self.page_bubble.needs_frame(ui::time::now())
+        self.tooltip_pending
+            || owner_busy
+            || self.page_bubble.needs_frame(ui::time::now())
+            || self.selection_autoscroll_reach() != 0.0
+            || self.glide.is_active()
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: ui::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            self.dirty = true;
+        }
+    }
+
+    /// A finger on a selection grip drags that end of the selection; on
+    /// the page it scrolls, as on any page.
+    fn touch_claim(&self, point: Point) -> ui::interaction::TouchClaim {
+        if self.tool == Tool::Select
+            && self
+                .selection_grips()
+                .is_some_and(|grips| grips.grip_at(point).is_some())
+        {
+            ui::interaction::TouchClaim::Drag
+        } else {
+            ui::interaction::TouchClaim::Pointer
+        }
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -5781,8 +5588,13 @@ impl PdfApp {
                 index,
                 page,
             } => self.go_to_search_result(query, *whole_word, *case_sensitive, *index, *page),
+            PdfEffect::SelectAll => {
+                self.select_all();
+            }
             PdfEffect::OpenPdf { .. }
             | PdfEffect::SaveAs { .. }
+            | PdfEffect::SelectText { .. }
+            | PdfEffect::CopySelection
             | PdfEffect::ReadText { .. }
             | PdfEffect::LookPage { .. } => {
                 return false;
@@ -6036,7 +5848,9 @@ impl PdfApp {
 }
 
 mod scroll_damage;
+mod selection;
 use scroll_damage::CanvasShown;
+use selection::{PendingPress, PendingSelectionEffect, SelectionStart, TextPos, TextSelection};
 
 #[cfg(test)]
 mod records_tests;
@@ -6049,6 +5863,8 @@ mod links_tests;
 
 #[cfg(test)]
 mod scroll_tests;
+#[cfg(test)]
+mod selection_tests;
 
 #[cfg(test)]
 mod tests {
@@ -6088,7 +5904,9 @@ mod tests {
 
     /// The reader launched on `path` on a fresh profile, as
     /// `pdf-viewer PATH` opens it.
-    fn launched(path: &std::path::Path) -> ui::framework::testing::TestApp<crate::PdfViewerShell> {
+    pub(super) fn launched(
+        path: &std::path::Path,
+    ) -> ui::framework::testing::TestApp<crate::PdfViewerShell> {
         settled(
             ui::framework::testing::TestApp::launched(&[path.to_str().expect("utf-8 path")])
                 .expect("the reader launches on the file"),
@@ -7672,9 +7490,8 @@ mod tests {
         app.raster_text
             .insert(1, std::sync::Arc::new(PageText::from_glyphs(glyphs)));
         app.selection = Some(TextSelection {
-            page: 1,
-            anchor: 0,
-            caret: upto,
+            anchor: TextPos::new(1, 0),
+            caret: TextPos::new(1, upto + 1),
             dragging: false,
         });
     }
@@ -7767,6 +7584,17 @@ mod tests {
         (72.0 + i as f64 * 9.0 + 4.0, 126.0)
     }
 
+    /// Page-point `pt` of displayed page `page`, on screen.
+    fn on_screen(app: &PdfApp, page: usize, pt: (f64, f64)) -> Point {
+        let origin = app.page_origins()[page - 1];
+        Point::new(origin.x + pt.0 * app.zoom(), origin.y + pt.1 * app.zoom())
+    }
+
+    /// A one-page selection's glyphs, `[lo, hi)`.
+    fn glyphs_of(sel: TextSelection) -> (usize, usize) {
+        (sel.start().glyph, sel.end().glyph)
+    }
+
     #[test]
     fn multi_click_selection_snaps_to_words_and_lines() {
         eprintln!("phase double_click_selects_the_word_through_the_selection_path");
@@ -7777,7 +7605,7 @@ mod tests {
             let scr = Point::new(pt.0, pt.1);
 
             // First press → release: a single click places a collapsed caret only.
-            assert!(app.begin_selection(1, pt, scr));
+            assert_eq!(app.begin_selection(1, pt, scr), SelectionStart::Armed);
             assert!(
                 !app.selection.unwrap().is_active(),
                 "one click selects no text"
@@ -7786,9 +7614,9 @@ mod tests {
 
             // Second press at the same spot within the multi-click window is a
             // double-click → the whole word under the pointer is selected.
-            assert!(app.begin_selection(1, pt, scr));
+            assert_eq!(app.begin_selection(1, pt, scr), SelectionStart::Armed);
             let sel = app.selection.expect("the double-click armed a selection");
-            let (lo, hi) = sel.range();
+            let (lo, hi) = glyphs_of(sel);
             assert_eq!(
                 app.raster_text[&1].text_for_range(lo, hi),
                 "hello",
@@ -7810,9 +7638,9 @@ mod tests {
             app.finish_selection();
             app.begin_selection(1, pt, scr); // double-click "hello"
             // Drag into "world" (glyph 7) — the selection grows to whole words.
-            app.update_selection(1, glyph_pt(7));
+            app.update_selection_at(on_screen(&app, 1, glyph_pt(7)));
             let sel = app.selection.expect("selection live");
-            let (lo, hi) = sel.range();
+            let (lo, hi) = glyphs_of(sel);
             assert_eq!(
                 app.raster_text[&1].text_for_range(lo, hi),
                 "hello world",
@@ -7833,7 +7661,7 @@ mod tests {
             app.finish_selection();
             app.begin_selection(1, pt, scr); // third click
             let sel = app.selection.expect("selection live");
-            let (lo, hi) = sel.range();
+            let (lo, hi) = glyphs_of(sel);
             assert_eq!(
                 app.raster_text[&1].text_for_range(lo, hi),
                 "hello world",
@@ -9454,8 +9282,7 @@ mod tests {
         }
     }
 
-    #[serial(clipboard)]
-    #[serial(pdfium)]
+    #[serial(clipboard, pdfium)]
     #[test]
     fn raster_text_layer_selects_copies_and_searches_real_glyphs() {
         // End-to-end text selection over the real pdfium glyph layer: press on a
@@ -9477,9 +9304,10 @@ mod tests {
                 app.raster_text.is_empty(),
                 "no eager text layer before a selection"
             );
-            assert!(
-                !app.begin_selection(1, (100.0, 100.0), Point::new(100.0, 100.0)),
-                "nothing to select until the layer arrives"
+            assert_eq!(
+                app.begin_selection(1, (100.0, 100.0), Point::new(100.0, 100.0)),
+                SelectionStart::Waiting,
+                "the press waits for the layer"
             );
             assert!(
                 app.raster_text_pending.contains(&0),
@@ -9504,11 +9332,12 @@ mod tests {
             let start = printable[0].rect.center();
             let end = printable[printable.len().min(6) - 1].rect.center();
 
-            assert!(
+            assert_eq!(
                 app.begin_selection(1, start, Point::new(start.0, start.1)),
+                SelectionStart::Armed,
                 "pressing on a glyph starts a selection"
             );
-            app.update_selection(1, end);
+            app.update_selection_at(on_screen(&app, 1, end));
             let sel = app.selection.expect("a selection is armed");
             assert!(
                 sel.is_active(),
