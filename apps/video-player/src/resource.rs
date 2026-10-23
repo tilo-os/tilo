@@ -166,15 +166,21 @@ mod tests {
         }
     }
 
+    /// Press the window bar's sidebar toggle, as the desktop hands it over.
+    fn toggle_sidebar(app: &mut TestApp<VideoPlayerShell>) {
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        app.settle();
+    }
+
     #[test]
     fn library_controls_reach_the_player_through_the_door() {
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        activate(&mut app, "video-player.library");
+        toggle_sidebar(&mut app);
         assert!(surface(&mut app, |player| player.library_visible()));
         activate(&mut app, "video-player.library.tab.recent");
         activate(&mut app, "video-player.library.close");
         assert!(!surface(&mut app, |player| player.library_visible()));
-        activate(&mut app, "video-player.library");
+        toggle_sidebar(&mut app);
         assert_eq!(
             surface(&mut app, |player| player.library_tab_name()),
             "recent",

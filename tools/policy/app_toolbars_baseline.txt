@@ -2,7 +2,6 @@
 # (tools/policy/check_app_toolbars.py). Counts only shrink.
 history-in-row 2 apps/maps/src/app.rs
 history-in-row 2 apps/typst-editor/src/chrome.rs
-history-in-row 2 apps/video-player/src/app.rs
 nav-header-actions 1 apps/file-explorer/src/files_app/cloud_browse.rs
 nav-header-actions 1 apps/file-explorer/src/files_app/window_bar.rs
 nav-header-actions 1 apps/notes/src/app/window_bar.rs
@@ -40,4 +39,3 @@ toolbar-band 1 apps/photos/src/app/chrome.rs
 toolbar-band 1 apps/word-processor/src/ruler.rs
 window-header 1 apps/maps/src/app.rs
 window-header 1 apps/typst-editor/src/app.rs
-window-header 1 apps/video-player/src/app.rs
