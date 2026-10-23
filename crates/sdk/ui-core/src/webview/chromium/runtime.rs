@@ -128,11 +128,6 @@ impl SearchRoots {
     }
 
     /// The first installed host.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RuntimeMissing`] naming every place checked when none holds
-    /// the host.
     pub fn locate(&self) -> Result<PathBuf, RuntimeMissing> {
         let candidates = self.candidates();
         candidates
@@ -150,10 +145,6 @@ fn non_empty(value: Option<OsString>) -> Option<OsString> {
 }
 
 /// The engine host of the running process.
-///
-/// # Errors
-///
-/// Returns [`RuntimeMissing`] when the engine runtime is not installed.
 pub fn locate() -> Result<PathBuf, RuntimeMissing> {
     SearchRoots::current().locate()
 }

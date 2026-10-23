@@ -725,8 +725,6 @@ impl FrameHarness {
 
     /// Observe the ordinary mounted component through a transparent root decorator.
     /// The decorator participates in the same custody, layout, dispatch and draw loop.
-    /// # Errors
-    /// Preserves the ordinary component mounting and history validation errors.
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_component_with_decorator(
         component: crate::application::AppComponent,
@@ -909,8 +907,6 @@ impl FrameHarness {
     ///
     /// Capture scenarios use this at an explicit save boundary instead of
     /// depending on a wall-clock debounce or mutating a status widget.
-    /// # Errors
-    /// Returns the record writer's durable storage failure.
     pub fn flush_component_records(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let result = self
@@ -3009,9 +3005,6 @@ impl FrameHarness {
     }
 
     /// Deliver a trusted shell operation through the mounted app adapter.
-    ///
-    /// # Errors
-    /// Returns the app's refusal, or an unavailable error without a mounted app.
     pub fn device_shell_operation(
         &mut self,
         operation: &crate::floating_surface::DeviceShellOperation,
@@ -4286,10 +4279,6 @@ impl FrameHarness {
     }
 
     /// Run the normal frame pipeline until requested visual work completes.
-    ///
-    /// # Errors
-    /// Returns an error instead of capturing an unfinished placeholder when
-    /// the work does not complete within `timeout`.
     pub fn wait_for_visuals(&mut self, timeout: crate::time::Duration) -> Result<(), String> {
         self.invalidate_local();
         if self.wait_until(timeout, |driver| !driver.root.has_pending_visual_work()) {
@@ -4300,10 +4289,6 @@ impl FrameHarness {
     }
 
     /// Wait until a retained widget with `name` is present in the live layout.
-    ///
-    /// # Errors
-    ///
-    /// Returns a timeout error naming the missing target.
     pub fn wait_for_named(
         &mut self,
         name: &str,
@@ -4691,7 +4676,6 @@ impl FrameHarness {
             return;
         }
         self.remember_app_focus();
-        // Clear an unfinished preedit in its original bound owner, without commit.
         self.send(&WindowEvent::Ime(winit::event::Ime::Preedit(
             String::new(),
             None,
@@ -5438,11 +5422,6 @@ impl FrameHarness {
     /// with no target is reached by its accessible name through
     /// [`a11y_node_named`](Self::a11y_node_named) and
     /// [`perform_a11y_action`](Self::perform_a11y_action).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a missing target or an action that neither the
-    /// widget nor the app-level generic fallback supports.
     pub fn perform_named(
         &mut self,
         name: &str,
@@ -5457,10 +5436,6 @@ impl FrameHarness {
     /// Perform an action against a synthetic semantic child owned by a named
     /// retained widget. The child target is the stable opaque value exposed
     /// as `action_target` in inspection output.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a missing owner or unsupported child action.
     pub fn perform_semantic_named(
         &mut self,
         name: &str,
@@ -5997,10 +5972,6 @@ impl FrameHarness {
     }
 
     /// Pretty JSON form used by the standard `--headless-drive` inspector.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if serializing the pure-data snapshot fails.
     pub fn inspection_json(&self) -> Result<String, serde_json::Error> {
         self.drain_component_wakes();
         serde_json::to_string_pretty(&self.inspection())
@@ -6134,7 +6105,6 @@ impl FrameHarness {
             &resources,
         );
         resources.extend(semantics.action_resources());
-        // Search belongs to this window host, including semantic callers.
         resources.push(crate::search::search_resource());
         resources
     }
@@ -8805,11 +8775,6 @@ impl FrameHarness {
     }
 
     /// Touch the centre of a named widget.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `name` is absent or its widget has no tappable
-    /// layout rectangle.
     pub fn tap_named(&mut self, name: &str) -> Result<(), String> {
         self.invalidate_local();
         let center = self.named_center(name)?;
@@ -8837,10 +8802,6 @@ impl FrameHarness {
     /// Click the centre of the named widget. `Err` names the target when it
     /// is not in the tree, so a stale scenario fails loudly instead of
     /// quietly doing nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the widget is not found or has a zero-sized rect.
     pub fn click_named(&mut self, name: &str) -> Result<(), String> {
         self.invalidate_local();
         let center = self.named_center(name)?;
@@ -9043,8 +9004,6 @@ impl FrameHarness {
         self.profiler = None;
     }
 
-    // -- Retained relayout diagnostics -------------------------------------
-
     /// Whether this frame must rebuild the layout tree regardless of what the
     /// widgets report: the test override first, then `TILO_UI_FULL_RELAYOUT`.
     fn full_relayout_forced_now(&self) -> bool {
@@ -9158,10 +9117,6 @@ impl FrameHarness {
     /// Compare the retained composition's geometry against a fresh rebuild of
     /// the same state. Runs one forced full relayout, so it is a test and
     /// diagnostics hook, not something a live host calls per frame.
-    ///
-    /// # Errors
-    /// Describes the first node (in traversal order) whose child count,
-    /// location or size differs, or the layout error of the rebuild.
     pub fn verify_retained_geometry(&mut self) -> Result<(), String> {
         self.invalidate_local();
         use crate::widget::layout::composition_geometry;
@@ -10875,7 +10830,6 @@ mod tests {
 
     #[test]
     fn a_capture_settles_animations_and_lands_on_the_window_ground() {
-        // Case `capture_waits_until_the_animation_schedule_is_idle`.
         {
             let (entrance, until) = Entrance::new();
             let mut harness = FrameHarness::new(State::new(), Box::new(entrance), (200, 100));
@@ -10886,7 +10840,6 @@ mod tests {
             assert!(crate::time::now() >= until, "it ran the animation out");
         }
 
-        // Case `a_virtual_executor_clock_does_not_cut_the_settle_short`.
         {
             let pumped = crate::background::Pumped::new();
             let _entered = pumped.background().enter();
@@ -10897,7 +10850,6 @@ mod tests {
             assert!(crate::time::now() >= until, "it ran the animation out");
         }
 
-        // Case `the_corner_pixel_is_the_content_ground`.
         {
             for theme in [Theme::dark(), Theme::light()] {
                 let harness = FrameHarness::new_with_theme(
@@ -11393,7 +11345,6 @@ mod tests {
 
     #[test]
     fn headless_focus_and_key_activation_route_to_the_right_target() {
-        // Case `anonymous_headless_focus_survives_rebuild_without_state_transfer`.
         {
             let mut driver = FrameHarness::new_with_controlled_inputs(
                 State::new(),
@@ -11429,7 +11380,6 @@ mod tests {
             let _ = old;
         }
 
-        // Case `anonymous_headless_unrelated_focused_siblings_have_no_input_target`.
         {
             let root = Column::new()
                 .push(Box::new(crate::widget::layout::AnonymousFocusProbe::new(
@@ -11451,7 +11401,6 @@ mod tests {
             assert!(driver.focused.is_none());
         }
 
-        // Case `function_keys_do_not_type_their_names_into_a_focused_field`.
         {
             let mut driver = FrameHarness::new(
                 State::new(),
@@ -11517,7 +11466,6 @@ mod tests {
             );
         }
 
-        // Case `enter_and_space_activate_a_focused_button_once_per_press`.
         {
             let activations: std::rc::Rc<std::cell::Cell<usize>> =
                 std::rc::Rc::new(std::cell::Cell::new(0));
@@ -11536,7 +11484,6 @@ mod tests {
             assert_eq!(activations.get(), 2, "Space activates only on key press");
         }
 
-        // Case `consumed_enter_does_not_run_the_focused_activation_fallback`.
         {
             let activations = std::rc::Rc::new(std::cell::Cell::new(0));
             let control = ConsumingActivationControl {
@@ -12360,7 +12307,6 @@ mod tests {
                 disabled.native_app_audit().issues
             );
 
-            // A password field's show/hide control is bound like the field.
             let secret = FrameHarness::new(
                 State::new(),
                 Box::new(
@@ -12385,7 +12331,6 @@ mod tests {
             );
         }
 
-        // Case `quick_button_handler_is_a_certified_searchable_action`.
         {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             let invoked = calls.clone();
@@ -12405,7 +12350,6 @@ mod tests {
             assert_eq!(calls.get(), 1);
         }
 
-        // Case `accessibility_audit_checks_controls_and_synthetic_identity_contracts`.
         {
             let mut issues = Vec::new();
             let root = AccessNode::new(Role::Group).with_children(vec![
@@ -12463,7 +12407,6 @@ mod tests {
 
     #[test]
     fn headless_spec_parses_every_shape_and_rejects_malformed_input() {
-        // Case `spec_parses_every_action_shape`.
         {
             let spec = parse_spec(
             r#"{"viewport":[800,600],"audit":true,"audit_report":"/tmp/a.json","dump":"/tmp/d.json","targets":"/tmp/t.json",
@@ -12526,13 +12469,11 @@ mod tests {
             ));
         }
 
-        // Case `an_unknown_action_is_rejected_rather_than_ignored`.
         {
             let err = parse_spec(r#"{"actions":[{"teleport":"x"}]}"#).unwrap_err();
             assert!(err.contains("teleport"), "{err}");
         }
 
-        // Case `action_descriptions_locate_failures_without_echoing_entered_values`.
         {
             let typed = action_description(&Action::Type("private value".into()));
             assert_eq!(typed, "type 13 character(s)");
@@ -12552,7 +12493,6 @@ mod tests {
             assert_eq!(expected, "expect \"items\" / \"row:42\"");
         }
 
-        // Case `malformed_headless_viewports_and_actions_are_rejected`.
         {
             for raw in [
                 r#"{"viewport":[0,600]}"#,
@@ -12569,14 +12509,12 @@ mod tests {
             }
         }
 
-        // Case `unknown_headless_fields_fail_instead_of_doing_nothing`.
         {
             let error = parse_spec(r#"{"steps":[]}"#).unwrap_err();
             assert!(error.contains("unknown field \"steps\""), "{error}");
             assert!(error.contains("actions"), "{error}");
         }
 
-        // Case `headless_outputs_create_explicit_nested_parent_directories`.
         {
             let temp = tempfile::tempdir().expect("temporary output root");
             let output = temp.path().join("artifacts/audit/inspect.json");
@@ -12607,7 +12545,6 @@ mod tests {
             driver.click_named(&name).expect("click lands");
         }
 
-        // Case `touch_profile_enlarges_and_activates_the_same_button`.
         {
             use std::cell::Cell;
             use std::rc::Rc;
@@ -12639,7 +12576,6 @@ mod tests {
             );
         }
 
-        // Case `host_touch_routing_reaches_pointer_only_controls_and_cancels_swipes`.
         {
             use automerge::ReadDoc;
 
@@ -12691,7 +12627,6 @@ mod tests {
             assert_eq!(value.as_bool(), Some(true));
         }
 
-        // Case `pointer_and_touch_preserve_keyboard_family_and_discovered_devices`.
         {
             let mut driver = FrameHarness::new(
                 State::new(),
@@ -12720,7 +12655,6 @@ mod tests {
             assert_eq!(touch.pointer_precision, crate::PointerPrecision::Coarse);
         }
 
-        // Case `clicking_a_missing_target_is_an_error`.
         {
             let mut driver =
                 FrameHarness::new(State::new(), Box::new(Button::new("b", "B")), (400, 200));
@@ -12728,7 +12662,6 @@ mod tests {
             assert!(err.contains("no_such_widget"), "{err}");
         }
 
-        // Case `wait_action_succeeds_for_a_named_widget_and_reports_bounded_timeout`.
         {
             let mut driver = FrameHarness::new(
                 State::new(),
@@ -12779,7 +12712,6 @@ mod tests {
                 crate::permissions::UserId("fixture-user".into()),
             );
             let rect = driver.targets()["field"];
-            // Inside "hello", clear of the field's padding.
             let (x, y) = (rect.x0 + 24.0, rect.center().y);
             for _ in 0..taps {
                 driver.tap_at(x, y);
@@ -12805,7 +12737,6 @@ mod tests {
 
     #[test]
     fn semantic_actions_use_the_widget_path_and_report_mismatches() {
-        // Case `semantic_set_value_and_focus_update_the_inspection_tree`.
         {
             let input = TextInput::local()
                 .with_id("name-input")
@@ -12839,7 +12770,6 @@ mod tests {
             assert!(semantics.state.focused);
         }
 
-        // Case `semantic_activate_uses_the_widget_action_path`.
         {
             use std::cell::Cell;
             use std::rc::Rc;
@@ -12864,7 +12794,6 @@ mod tests {
             assert_eq!(fired.get(), 1);
         }
 
-        // Case `unsupported_semantic_action_fails_loudly`.
         {
             let mut driver = FrameHarness::new(
                 State::new(),
@@ -12878,7 +12807,6 @@ mod tests {
             assert!(error.contains("save"), "{error}");
         }
 
-        // Case `semantic_expectation_reports_all_mismatches_and_addresses_model_rows`.
         {
             let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
             let tree = TreeView::new(root).with_expanded([1]).with_id("items-tree");
@@ -12928,7 +12856,6 @@ mod tests {
             assert!(timeout.contains("Still wrong"), "{timeout}");
         }
 
-        // Case `semantic_tree_row_actions_use_stable_model_ids`.
         {
             let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
             let tree = TreeView::new(root)
@@ -12980,7 +12907,6 @@ mod tests {
 
     #[test]
     fn inspection_and_dump_reflect_geometry_semantics_and_document() {
-        // Case `inspection_combines_widget_geometry_and_redacted_semantics`.
         {
             let root = Column::new()
                 .push(Box::new(
@@ -13014,7 +12940,6 @@ mod tests {
             assert!(!json.contains("swordfish"), "secret leaked: {json}");
         }
 
-        // Case `inspection_retains_virtualized_semantic_children`.
         {
             let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
             let tree = TreeView::new(root)
@@ -13040,7 +12965,6 @@ mod tests {
             );
         }
 
-        // Case `dump_json_reflects_the_document`.
         {
             use automerge::transaction::Transactable;
             let mut state = State::new();
@@ -13057,7 +12981,6 @@ mod tests {
 
     #[test]
     fn local_control_results_report_refusal_confirmation_and_success() {
-        // Case `local_control_result_does_not_broadcast_into_component_siblings`.
         {
             use crate::application_test_support::ProbeHost;
             use crate::widget::{Column, TileHost};
@@ -13091,7 +13014,6 @@ mod tests {
             }
         }
 
-        // Case `bound_local_control_result_reports_permission_refusal_and_success`.
         {
             use crate::application_test_support::{ProbeHost, runner_inputs};
             for accepted in [false, true] {
@@ -13135,7 +13057,6 @@ mod tests {
             }
         }
 
-        // Case `local_control_result_keeps_confirmation_as_refusal`.
         {
             let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
             probe.confirmation = true;
@@ -13156,7 +13077,6 @@ mod tests {
             );
         }
 
-        // Case `local_control_result_reports_completed_and_accepted`.
         {
             use crate::widget::control_result_probe::Probe;
             for accepted in [false, true] {
@@ -13190,7 +13110,6 @@ mod tests {
             }
         }
 
-        // Case `local_control_result_reports_fresh_permission_refusal_without_mutation`.
         {
             use crate::widget::control_result_probe::Probe;
             let (probe, observed) = Probe::new(false);
@@ -13695,7 +13614,6 @@ mod a11y_driver_tests {
 
     #[test]
     fn a11y_driver_names_focuses_and_activates_widgetless_elements() {
-        // Case `a_headless_test_can_name_an_element_that_has_no_widget`.
         {
             let (d, _a) = driver();
             for name in ["alpha", "beta", "gamma"] {
@@ -13707,7 +13625,6 @@ mod a11y_driver_tests {
             assert_eq!(d.a11y_node_named("delta"), None);
         }
 
-        // Case `a_headless_test_can_activate_one_element_inside_a_canvas`.
         {
             // The whole point: before, a canvas could be described in a headless
             // test but only clicked at coordinates, which activates whatever
@@ -13725,7 +13642,6 @@ mod a11y_driver_tests {
             );
         }
 
-        // Case `focusing_an_element_moves_the_exported_focus_onto_it`.
         {
             let (mut d, _a) = driver();
             let gamma = d.a11y_node_named("gamma").unwrap();
@@ -13739,7 +13655,6 @@ mod a11y_driver_tests {
 
     #[test]
     fn a11y_node_references_survive_relayout_or_report_gone() {
-        // Case `a_node_reference_survives_a_relayout`.
         {
             // The gap this closes: the host throws its TaffyTree away and rebuilds
             // it on every relayout, and ids used to be derived from taffy's
@@ -13755,7 +13670,6 @@ mod a11y_driver_tests {
                 .collect();
             assert!(before.len() >= 4, "the canvas and its items are exported");
 
-            // A layout pass, exactly as any frame does.
             d.relayout();
 
             let after: Vec<(String, accesskit::NodeId)> = d
@@ -13769,7 +13683,6 @@ mod a11y_driver_tests {
             );
         }
 
-        // Case `an_id_taken_before_a_relayout_still_operates_the_same_element`.
         {
             // Stability is only worth anything if the id still *works*: an AT holds
             // its reference across frames and then acts on it.
@@ -13787,7 +13700,6 @@ mod a11y_driver_tests {
             );
         }
 
-        // Case `a_held_reference_follows_its_element_when_an_earlier_one_is_removed`.
         {
             // Identity keys, observed. Removing an earlier element renumbers every
             // element after it. Keyed by ordinal, a reference an assistive
@@ -13816,7 +13728,6 @@ mod a11y_driver_tests {
             );
         }
 
-        // Case `an_id_that_names_nothing_is_reported_not_silently_retargeted`.
         {
             let (mut d, activated) = driver();
             let real = d.a11y_node_named("alpha").unwrap();
@@ -14030,7 +13941,6 @@ mod undo_driver_tests {
                 "the shortcut and the control land in the same place"
             );
 
-            // And redo, through the control.
             via_click
                 .click_named("redo_button")
                 .expect("redo became available");
@@ -14298,7 +14208,6 @@ mod dispatched_action_driver_tests {
 
     #[test]
     fn dispatched_actions_are_undoable_through_every_input_path() {
-        // Case `lazy_status_preserves_transaction_boundary_without_a_consumer`.
         {
             use automerge::transaction::Transactable;
             let author = crate::permissions::UserId("lazy-status-author".into());
@@ -14366,7 +14275,6 @@ mod dispatched_action_driver_tests {
             assert_eq!(body(&mut d), "a", "redo put the action back");
         }
 
-        // Case `committed_text_uses_the_real_ime_path_as_one_edit`.
         {
             let mut d = action_driver();
 
@@ -14736,7 +14644,6 @@ mod prepared_driver_tests {
     }
     #[test]
     fn prepared_driver_publishes_undo_status_and_guards_wakes() {
-        // Case `prepared_driver_selected_undo_status_preserves_outer_publication`.
         {
             let (host, mut driver, bound, checkout) = prepared();
             let outer = Observations::default();
@@ -14786,7 +14693,6 @@ mod prepared_driver_tests {
             assert_eq!(driver.undo_status(), outer_baseline);
         }
 
-        // Case `prepared_driver_wakes_are_installed_before_callbacks_and_stale_wakes_are_rejected`.
         {
             let mut outer_scope = crate::WakeScope::new();
             let outer_wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

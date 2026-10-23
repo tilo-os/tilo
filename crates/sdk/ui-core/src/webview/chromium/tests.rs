@@ -570,7 +570,6 @@ fn protocol_frames_reject_malformed_and_oversized_input() {
             decode_event(&export),
             Some(WebViewEvent::DownloadUpdated { url, retryable: false, .. }) if url.is_empty()
         ));
-        // A page that made its own address long, then reloaded.
         let long = format!("https://example.test/?{}", "a".repeat(70_000));
         let outcome = json!({"event":"navigation_outcome","request_id":1,"url":long});
         assert!(validate_event(&outcome).is_ok());
@@ -1863,7 +1862,6 @@ fn owners_serve_until_idle_and_replace_dead_owners_sockets() {
             server.serve_until_idle();
             done.store(true, Ordering::Release);
         });
-        // The client still browses through the departed owner's server.
         client.send(WebViewCommand::Navigate("https://after-owner.test/".into()));
         wait_for_command(&profile, "the client's navigation", |command| {
             command["url"] == "https://after-owner.test/"
@@ -1924,7 +1922,6 @@ fn a_second_process_browses_through_the_first_processs_host() {
         assert!(client.runtime.link.is_some());
         assert_host_spawns(&profile, 1);
         std::fs::write(profile.join("release"), b"").unwrap();
-        // Released, the owner still serves its client.
         client.send(WebViewCommand::Navigate(
             "https://still-served.test/".into(),
         ));
