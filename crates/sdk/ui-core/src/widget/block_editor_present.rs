@@ -574,4 +574,82 @@ mod tests {
         assert_eq!(carry_byte("abcdef", "adef", 3), 1);
         assert_eq!(carry_byte("abcdef", "abcdef", 2), 2);
     }
+
+    /// A collaborator's caret on the first line labels itself below the
+    /// line: above it are the host's title and dates, which the tag must
+    /// not cover. On a later line the tag rises above the caret as usual.
+    #[test]
+    fn a_caret_tag_on_the_first_line_hangs_below_it() {
+        use crate::widget::Widget as _;
+        use vello::kurbo::{Affine, Point};
+        const TOP: f64 = 120.0;
+        let theme = crate::theme::Theme::dark();
+        let mut editor = editor_with(vec![
+            BlockContent::paragraph("a", "Hello from A"),
+            BlockContent::paragraph("b", "and more"),
+        ]);
+        let mut taffy = taffy::TaffyTree::<()>::new();
+        let mut map = std::collections::HashMap::new();
+        let node = editor.build_layout(&mut taffy, &theme, &mut map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .expect("block editor layout");
+        editor.apply_layout(&taffy, node, Point::ZERO);
+        let render = |editor: &mut BlockEditor, caret_in: Option<&str>| {
+            let mut presence = crate::presence::PresenceCtx::empty();
+            if let Some(block) = caret_in {
+                presence.carets.insert(
+                    super::super::block_presence_key(block),
+                    vec![(crate::permissions::UserId("ada".into()), 5)],
+                );
+            }
+            let mut text = crate::text_render::TextRenderer::new();
+            let mut scene = vello::Scene::new();
+            editor.draw(
+                &mut scene,
+                Affine::translate((0.0, TOP)),
+                &mut text,
+                &theme,
+                &presence,
+            );
+            crate::offscreen::OffscreenRenderer::new(400, 400)
+                .render(&scene, vello::peniko::Color::BLACK)
+        };
+        let plain = render(&mut editor, None);
+        // Rows the caret's tag paints, in surface pixels: wider than the
+        // caret bar where they differ from the editor with no one in it.
+        let tag_rows = |editor: &mut BlockEditor, block: &str| {
+            render(editor, Some(block))
+                .chunks_exact(4 * 400)
+                .zip(plain.chunks_exact(4 * 400))
+                .enumerate()
+                .filter(|(_, (row, before))| {
+                    row.chunks_exact(4)
+                        .zip(before.chunks_exact(4))
+                        .filter(|(p, q)| p != q)
+                        .count()
+                        > 20
+                })
+                .map(|(y, _)| f64::from(u32::try_from(y).unwrap()))
+                .collect::<Vec<_>>()
+        };
+        let first = tag_rows(&mut editor, "a");
+        assert!(!first.is_empty(), "the first line's caret tag is drawn");
+        assert!(
+            first.iter().all(|&y| y >= TOP),
+            "nothing above the editor is covered: rows {first:?}"
+        );
+        let second_top = TOP + editor.blocks()[1].line.get_rect().y0;
+        let second = tag_rows(&mut editor, "b");
+        assert!(
+            second.iter().any(|&y| y < second_top),
+            "a later line's tag rises above its caret: rows {second:?}, line at {second_top}"
+        );
+    }
 }

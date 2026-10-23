@@ -3896,6 +3896,14 @@ impl FrameHarness {
             crate::retained_present::PanFrame::Replayed
         };
         crate::retained_present::take_replayed();
+        // A frame that draws every window paints every caret tag again; one
+        // that shows windows' last drawings keeps the tags they painted.
+        if !matches!(
+            pan_frame,
+            crate::retained_present::PanFrame::Replayed | crate::retained_present::PanFrame::Moved
+        ) {
+            self.presence.clear_caret_tags();
+        }
         self.pan_frames = self.pan_frames.wrapping_add(1);
         let replay_scope = crate::retained_present::PanReplay::begin(pan_frame, self.pan_frames);
         self.scene_capture_protected = true;
@@ -4071,7 +4079,9 @@ impl FrameHarness {
         }
         self.draw_tooltip(transform);
         // Other people's pointers over everything: they point at whatever
-        // is under them, a popover or the bar as much as a window.
+        // is under them, a popover or the bar as much as a window. A pointer
+        // right beside its person's caret leaves the name to the caret's tag.
+        let pointers = self.pointers_beside_caret_tags(transform);
         crate::presence::draw_peer_cursors(
             &mut self.scene,
             transform,
@@ -4083,7 +4093,7 @@ impl FrameHarness {
             ),
             &mut self.text,
             &self.theme,
-            &self.placed_pointers,
+            &pointers,
         );
         self.presence.pop_viewport(previous_viewport);
         drop(replay_scope);
@@ -9004,6 +9014,33 @@ impl FrameHarness {
     /// The pointers [`Self::set_placed_pointers`] last kept.
     pub fn placed_pointers(&self) -> &[crate::presence::PeerCursor] {
         &self.placed_pointers
+    }
+
+    /// The placed pointers as the last frame drew them: without the name of
+    /// one right beside the caret tag of the same person.
+    pub fn drawn_placed_pointers(&self) -> Vec<crate::presence::PeerCursor> {
+        self.pointers_beside_caret_tags(self.capture_draw_transform())
+    }
+
+    /// [`Self::drawn_placed_pointers`]. Caret tags are noted in scene
+    /// coordinates; `transform` is the one the frame drew them with.
+    fn pointers_beside_caret_tags(&self, transform: Affine) -> Vec<crate::presence::PeerCursor> {
+        let mut pointers = self.placed_pointers.clone();
+        if pointers.is_empty() {
+            return pointers;
+        }
+        let to_surface = transform.inverse();
+        let tags: Vec<_> = self
+            .presence
+            .caret_tags()
+            .into_iter()
+            .map(|tag| crate::presence::CaretTag {
+                at: to_surface * tag.at,
+                ..tag
+            })
+            .collect();
+        crate::presence::hide_names_beside_caret_tags(&mut pointers, &tags);
+        pointers
     }
 
     /// Read-only view of the collaborator presence drawn by this harness.
