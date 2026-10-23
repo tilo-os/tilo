@@ -261,7 +261,7 @@ impl CapnpBrokerState {
         if !requires_store_witness(app, &offered.action) {
             return Ok(None);
         }
-        let mut binding = run.native.clone().ok_or("native task binding absent")?;
+        let mut binding = run.native.clone();
         binding.revision = runtime_collab::native_task_revision(lease)
             .ok_or("invalid native lease")?
             .1;
@@ -269,7 +269,7 @@ impl CapnpBrokerState {
         self.authorize_task_action(
             run,
             &crate::services::NativeTaskActionRequirement {
-                binding: Some(binding.clone()),
+                binding: binding.clone(),
                 app: app.into(),
                 resource_kind: offered.resource_kind.clone(),
                 resource: offered.resource.clone(),

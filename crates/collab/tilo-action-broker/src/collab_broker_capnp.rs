@@ -1804,7 +1804,7 @@ struct PendingTaskRun {
     lease: String,
     action_context: tilo_actions::ActionContext,
     terminal: bool,
-    native: Option<crate::services::NativeTaskBinding>,
+    native: crate::services::NativeTaskBinding,
 }
 
 /// The application's terminal answer to a directed invocation.
@@ -6882,11 +6882,9 @@ impl CapnpBrokerState {
             .filter(|run| {
                 run.peer_id == peer_id
                     && run.agent_id == agent_id
-                    && (run.lease == lease
-                        || (run.native.is_some()
-                            && runtime_collab::native_task_revision(&run.lease)
-                                .zip(runtime_collab::native_task_revision(lease))
-                                .is_some_and(|(old, new)| old.0 == new.0)))
+                    && runtime_collab::native_task_revision(&run.lease)
+                        .zip(runtime_collab::native_task_revision(lease))
+                        .is_some_and(|(old, new)| old.0 == new.0)
                     && !run.terminal
             })
             .cloned()
@@ -6991,7 +6989,7 @@ impl CapnpBrokerState {
             .asks_for_argument(contract_argument.as_deref().or(argument));
         // A run pauses for its person where an action asks first
         // (`native_task_confirmation`).
-        let binding = run.native.clone().ok_or("not a run of an issue")?;
+        let binding = run.native.clone();
         let requirement = crate::services::NativeTaskActionRequirement {
             binding: run.native.clone(),
             app: surface.app_id.clone(),
@@ -7168,7 +7166,7 @@ impl CapnpBrokerState {
             subscribers.remove(&peer_id);
         }
         if let Ok(mut runs) = self.pending_task_runs.lock() {
-            runs.retain(|_, run| run.native.is_none() || run.peer_id != peer_id);
+            runs.retain(|_, run| run.peer_id != peer_id);
         }
     }
 
@@ -10881,7 +10879,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         // A replacement stream needs the canonical approved run again, even
         // when the authenticated connection itself did not change.
         if let Ok(mut runs) = self.state.pending_task_runs.lock() {
-            runs.retain(|_, run| run.peer_id != self.peer_id || run.native.is_none());
+            runs.retain(|_, run| run.peer_id != self.peer_id);
         }
         self.state.local_turn.notify_one();
         let client: task_run_stream::Client = capnp_rpc::new_client(TaskRunStreamServer {
@@ -11059,16 +11057,14 @@ impl channel_handle::Server for CapnpChannelHandle {
             let run = state
                 .task_run_for(peer_id, &agent_id, request.get_run_id(), &lease)
                 .map_err(capnp::Error::failed)?;
-            if run.native.is_some() {
-                let status = state
-                    .native_task_status(&run, &lease)
-                    .map_err(capnp::Error::failed)?;
-                if let Some(control) = status.control {
-                    results.get().set_control_json(
-                        &serde_json::to_string(&control)
-                            .map_err(|error| capnp::Error::failed(error.to_string()))?,
-                    );
-                }
+            let status = state
+                .native_task_status(&run, &lease)
+                .map_err(capnp::Error::failed)?;
+            if let Some(control) = status.control {
+                results.get().set_control_json(
+                    &serde_json::to_string(&control)
+                        .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                );
             }
             Ok(())
         })
@@ -13132,7 +13128,7 @@ impl task_run_stream::Server for TaskRunStreamServer {
                 instruction: run.instruction,
                 subject: run.subject,
                 run_id: run.run_id,
-                presentation_version: runtime_collab::native_task_revision(&run.lease).map(|_| 1),
+                presentation_version: Some(1),
                 lease: run.lease,
                 planning: run.planning,
                 execution_budget: run.execution_budget,

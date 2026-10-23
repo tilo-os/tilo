@@ -17,7 +17,7 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
         }
         let contacts = self.0.direct_contacts(
             tilo_desktop_model::RoomId::parse(room).ok_or("invalid room")?,
-            &tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
+            &tilo_peer_state::caller_authority::CallerAuthority::Person {
                 caller: caller.clone(),
             },
             std::time::SystemTime::now(),
@@ -79,7 +79,7 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
             let expected = owner
                 .direct_contacts(
                     room,
-                    &tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Person {
+                    &tilo_peer_state::caller_authority::CallerAuthority::Person {
                         caller: env.cert.clone(),
                     },
                     std::time::SystemTime::now(),

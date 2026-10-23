@@ -44,11 +44,11 @@ pub mod durability;
 
 pub mod topology;
 
+pub mod caller_authority;
 pub mod document_import;
 pub mod legacy_policy;
 pub mod workspace_checkpoint;
 pub mod workspace_membership;
-pub mod workspace_task;
 
 mod admission;
 pub mod resources;

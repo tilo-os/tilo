@@ -139,13 +139,13 @@ const ISSUE: &str = "tasks.tracker/issues/1";
 /// run approved by `starter`.
 fn approve_task(starter: &DeviceCert) -> NativeTaskActionRequirement {
     NativeTaskActionRequirement {
-        binding: Some(super::NativeTaskBinding {
+        binding: super::NativeTaskBinding {
             task_id: ISSUE.into(),
             agent_id: "scribe".into(),
             epoch: 1,
             revision: 0,
             starter: Some(hex::encode(starter.user_public_key)),
-        }),
+        },
         app: "so.tilo.notes".into(),
         resource_kind: "document".into(),
         resource: "notes:release".into(),
@@ -178,16 +178,14 @@ impl CheckRun for NativeTaskActionRequirement {
         room: &str,
         now: std::time::SystemTime,
     ) -> Result<(), String> {
-        let binding = self.binding.as_ref();
+        let binding = &self.binding;
         let run = TrackerRun {
-            issue: binding.map_or_else(|| ISSUE.into(), |binding| binding.task_id.clone()),
+            issue: binding.task_id.clone(),
             title: "Inspect notes".into(),
             instruction: "Inspect notes".into(),
             agent: "scribe".into(),
             epoch: 1,
-            starter: binding
-                .and_then(|binding| binding.starter.clone())
-                .unwrap_or_default(),
+            starter: binding.starter.clone().unwrap_or_default(),
             active: true,
             budget: None,
             subject: None,
@@ -206,11 +204,8 @@ fn assert_exact_binding(
     requirement: &NativeTaskActionRequirement,
 ) {
     requirement.check_run(peer, room, now).unwrap();
-    let mut unbound = requirement.clone();
-    unbound.binding = None;
-    assert!(unbound.check_run(peer, room, now).is_err());
     let mut stale = requirement.clone();
-    stale.binding.as_mut().unwrap().epoch = 2;
+    stale.binding.epoch = 2;
     assert!(stale.check_run(peer, room, now).is_err());
     let mut privileged = requirement.clone();
     privileged.need.privileged = true;
@@ -253,7 +248,7 @@ fn assert_independent_task_grants(
         .unwrap();
     requirement.check_run(peer, room, now).unwrap();
     let mut other_requirement = requirement.clone();
-    other_requirement.binding.as_mut().unwrap().task_id = other;
+    other_requirement.binding.task_id = other;
     assert!(other_requirement.check_run(peer, room, now).is_err());
 }
 
