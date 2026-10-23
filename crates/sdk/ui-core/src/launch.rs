@@ -18,6 +18,8 @@ mod capture_settings;
 #[cfg(feature = "native")]
 use app_log::init_app_log;
 pub use capture_settings::capture_appearance;
+mod scenario;
+pub use scenario::HostSource;
 mod shot_frame;
 pub use shot_frame::ShotFrame;
 // Writing a PNG needs the offscreen renderer's blocking GPU readback, which
@@ -185,6 +187,7 @@ pub struct LaunchSpec {
     allowed_live_options: &'static [&'static str],
     max_positionals: usize,
     scenarios: &'static [&'static str],
+    host_sources: &'static [HostSource],
     without_identity: bool,
 }
 
@@ -220,6 +223,7 @@ impl LaunchSpec {
             allowed_live_options: &[],
             max_positionals: 0,
             scenarios: &[],
+            host_sources: &[],
             without_identity: false,
         }
     }
@@ -1353,31 +1357,7 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     if args.headless.is_some() && !spec.headless_enabled {
         return Err(LaunchError::HeadlessUnsupported);
     }
-    if let Some(scenario) = args.scenario.as_deref()
-        && !spec.scenarios.contains(&scenario)
-    {
-        return Err(LaunchError::Scenario(unknown_scenario(
-            scenario,
-            spec.scenarios,
-        )));
-    }
-    Ok(())
-}
-
-/// The refusal of an undeclared `--scenario`, listing the declared ones.
-fn unknown_scenario(name: &str, declared: &[&str]) -> String {
-    if declared.is_empty() {
-        format!("unknown screenshot scenario {name:?}; this app declares no scenarios")
-    } else {
-        format!(
-            "unknown screenshot scenario {name:?}; expected one of {}",
-            declared
-                .iter()
-                .map(|name| format!("{name:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    }
+    scenario::check(args, spec)
 }
 
 /// How long a capture waits for the window to settle (animations finished,
@@ -2810,7 +2790,7 @@ mod prepared_launch_tests {
         Ok(())
     }
 
-    fn prepare(
+    pub(super) fn prepare(
         definition: &crate::application::ApplicationDefinition,
         args: &LaunchArgs,
     ) -> Result<PreparedComponentInputs, LaunchError> {

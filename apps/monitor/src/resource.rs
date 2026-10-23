@@ -124,6 +124,7 @@ pub struct MonitorShell;
 impl ResourceApp for MonitorShell {
     type Resource = Monitor;
     const ID: &'static str = "so.tilo.monitor";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
     const TITLE: &'static str = "System Monitor";
     const ICON: Option<&'static str> = Some("monitor");
 
