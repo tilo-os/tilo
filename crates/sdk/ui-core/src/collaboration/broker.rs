@@ -40,6 +40,8 @@ pub(super) mod committed_document;
 #[path = "directory_client.rs"]
 mod directory_client;
 // The managed sender itself is Unix-only (host_worker), and so is its transport.
+#[path = "inbound_document.rs"]
+mod inbound_document;
 #[cfg(unix)]
 #[path = "managed_sender_transport.rs"]
 mod managed_sender_transport;
@@ -48,6 +50,11 @@ pub(crate) mod native_initial;
 #[path = "native_media.rs"]
 mod native_media;
 pub use committed_document::CommittedDocument;
+#[cfg(test)]
+use inbound_document::Refusal;
+use inbound_document::{
+    DecryptFailure, UndeliveredDocument, decrypt_document_payload, signed_document_event,
+};
 
 use crate::time::{Duration, Instant};
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -7873,116 +7880,6 @@ fn complete_document_event(
 /// Shared per-route key state: the op stream opens with it, sends seal
 /// with it, and key refreshes update it.
 type SharedRouteKeys = std::sync::Arc<std::sync::Mutex<super::route_keys::RouteKeys>>;
-
-/// Why an inbound document envelope was not delivered.
-#[derive(Debug)]
-enum UndeliveredDocument {
-    /// No key for it yet; it was held for when keys arrive.
-    Held,
-    /// Refused, and why.
-    Refused(Refusal),
-}
-
-impl std::fmt::Display for UndeliveredDocument {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Held => f.write_str("held until this device has the channel's keys"),
-            Self::Refused(error) => error.fmt(f),
-        }
-    }
-}
-
-/// Open a live envelope into a document event, or hold it on the route
-/// while this device waits for the channel's keys.
-fn signed_document_event(
-    arrived: Arrived,
-    encryption: &SharedRouteKeys,
-) -> Result<CollabEvent, UndeliveredDocument> {
-    match decrypt_document_payload(&arrived.envelope, encryption, arrived.admission) {
-        Ok(decrypted_payload) => Ok(CollabEvent::Document {
-            envelope: Box::new(arrived.envelope),
-            from_user_id: arrived.from_user_id,
-            decrypted_payload,
-        }),
-        Err(DecryptFailure::Later) => {
-            if let Ok(mut keys) = encryption.lock() {
-                keys.hold_inbound(arrived);
-            }
-            Err(UndeliveredDocument::Held)
-        }
-        Err(DecryptFailure::Refused(error)) => Err(UndeliveredDocument::Refused(error)),
-    }
-}
-
-enum DecryptFailure {
-    Later,
-    Refused(Refusal),
-}
-
-/// Why an inbound document envelope is refused on its route.
-#[derive(Debug)]
-enum Refusal {
-    /// The route's keys were poisoned by a panic while held.
-    KeysPoisoned,
-    /// The clear storage class it was retained under does not describe
-    /// what it contains.
-    RetentionMismatch,
-    /// The route can never open it.
-    Unopened(super::route_keys::Never),
-    /// Its document frame does not decode.
-    Malformed(collab_types::DocumentMutationError),
-}
-
-impl std::fmt::Display for Refusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::KeysPoisoned => f.write_str("the route's keys are poisoned"),
-            Self::RetentionMismatch => {
-                f.write_str("retained under a storage class that does not describe it")
-            }
-            Self::Unopened(never) => never.fmt(f),
-            Self::Malformed(error) => write!(f, "malformed document frame: {error}"),
-        }
-    }
-}
-
-/// Open an envelope's typed payload under the broker's `admission` for it.
-fn decrypt_document_payload(
-    envelope: &SignedOp,
-    encryption: &SharedRouteKeys,
-    admission: OpAdmission,
-) -> Result<Option<Vec<u8>>, DecryptFailure> {
-    let refused = DecryptFailure::Refused;
-    let malformed = |error| DecryptFailure::Refused(Refusal::Malformed(error));
-    let opened = encryption
-        .lock()
-        .map_err(|_| refused(Refusal::KeysPoisoned))?
-        .open(envelope, admission);
-    match opened {
-        Ok(Some(plaintext)) => {
-            let plaintext = plaintext.to_vec();
-            collab_types::DocumentFrame::decode(&plaintext).map_err(malformed)?;
-            // The clear storage class hosts retained the op under must
-            // describe what it actually contains.
-            if envelope
-                .encryption
-                .and_then(|metadata| metadata.retention())
-                .is_some_and(|retention| {
-                    retention != collab_types::ContentRetention::of_frame(&plaintext)
-                })
-            {
-                return Err(refused(Refusal::RetentionMismatch));
-            }
-            Ok(Some(plaintext))
-        }
-        Ok(None) => {
-            collab_types::DocumentFrame::decode(&envelope.payload).map_err(malformed)?;
-            Ok(None)
-        }
-        Err(super::route_keys::Unopened::Later) => Err(DecryptFailure::Later),
-        Err(super::route_keys::Unopened::Never(never)) => Err(refused(Refusal::Unopened(never))),
-    }
-}
 
 /// Translate an SDK [`runtime_collab::PresenceEvent`] into a
 /// `CollabEvent`. Extracted so the unit test can exercise it without a broker.
