@@ -432,6 +432,9 @@ speakers-run-waiting-for-microphones = Erlaube es auf jedem Gerät, das fragt, o
 # Navigation: sidebar sections, categories and the page heading
 settings-nav-name = Einstellungskategorien
 settings-pane-reading = Dieses Gerät wird gelesen…
+settings-found-title = Passende Einstellungen
+settings-found-open = Öffnen
+settings-found-show = Anzeigen
 upd-reading = Updates dieses Geräts werden gelesen…
 perm-reading = Das Gerät wird gelesen…
 settings-section-connectivity = Verbindungen

@@ -538,14 +538,7 @@ impl NotificationsPane {
                 semantic_status_pill(&status_label, status_tone),
             ));
         }
-        content.push(
-            self.cx
-                .row(t("notif-dnd"))
-                .described(t("notif-dnd-desc"))
-                .id("notifications.dnd")
-                .of(&self.prefs, NotificationPrefs::paths().do_not_disturb)
-                .toggle(),
-        );
+        content.push(dnd(&self.cx, &self.prefs));
         // Quiet hours sit with it: the same silence, on a schedule.
         content.extend(self.focus_rows());
         section(&t("notif-dnd-title"), rows(content))
@@ -555,18 +548,8 @@ impl NotificationsPane {
         section(
             &t("notif-banners-title"),
             rows(vec![
-                self.cx
-                    .row(t("notif-show-banners"))
-                    .described(t("notif-show-banners-desc"))
-                    .id("notifications.banners")
-                    .of(&self.prefs, NotificationPrefs::paths().show_banners)
-                    .toggle(),
-                self.cx
-                    .row(t("notif-previews"))
-                    .described(t("notif-previews-desc"))
-                    .id("notifications.previews")
-                    .of(&self.prefs, NotificationPrefs::paths().show_previews)
-                    .toggle(),
+                banners(&self.cx, &self.prefs),
+                previews(&self.cx, &self.prefs),
             ]),
         )
     }
@@ -586,31 +569,10 @@ impl NotificationsPane {
                 Some(value_row(&t("notif-sounds"), &t("notif-sounds-missing")))
             }
         };
-        let mut content = vec![
-            self.cx
-                .row(t("notif-lock-screen"))
-                .described(t("notif-lock-screen-desc"))
-                .id("notifications.lock_screen")
-                .of(&self.prefs, NotificationPrefs::paths().show_on_lock_screen)
-                .toggle(),
-        ];
+        let mut content = vec![lock_screen(&self.cx, &self.prefs)];
         content.extend(sounds_row);
-        content.push(
-            self.cx
-                .row(t("notif-play-sounds"))
-                .described(t("notif-play-sounds-desc"))
-                .id("notifications.sounds")
-                .of(&self.prefs, NotificationPrefs::paths().play_sounds)
-                .toggle(),
-        );
-        content.push(
-            self.cx
-                .row(t("notif-badges"))
-                .described(t("notif-badges-desc"))
-                .id("notifications.badges")
-                .of(&self.prefs, NotificationPrefs::paths().show_badges)
-                .toggle(),
-        );
+        content.push(play_sounds(&self.cx, &self.prefs));
+        content.push(badges(&self.cx, &self.prefs));
         section(&t("notif-delivery-title"), rows(content))
     }
 
@@ -620,14 +582,7 @@ impl NotificationsPane {
         let focus = NotificationPrefs::paths().focus;
         let focus_time = |minutes: &u16| focus_time_label(*minutes).to_owned();
         let times = || FOCUS_TIMES.iter().map(|(_, minutes)| *minutes);
-        let mut content = vec![
-            self.cx
-                .row(t("notif-focus-enabled"))
-                .described(t("notif-focus-enabled-desc"))
-                .id("notifications.focus.enabled")
-                .of(&self.prefs, focus.enabled)
-                .toggle(),
-        ];
+        let mut content = vec![quiet_hours(&self.cx, &self.prefs)];
         if self.prefs().focus.enabled {
             content.extend([
                 self.cx
@@ -735,6 +690,62 @@ impl NotificationsPane {
             ]),
         )
     }
+}
+
+pub(crate) fn dnd(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-dnd"))
+        .described(t("notif-dnd-desc"))
+        .id("notifications.dnd")
+        .of(prefs, NotificationPrefs::paths().do_not_disturb)
+        .toggle()
+}
+
+pub(crate) fn banners(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-show-banners"))
+        .described(t("notif-show-banners-desc"))
+        .id("notifications.banners")
+        .of(prefs, NotificationPrefs::paths().show_banners)
+        .toggle()
+}
+
+pub(crate) fn previews(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-previews"))
+        .described(t("notif-previews-desc"))
+        .id("notifications.previews")
+        .of(prefs, NotificationPrefs::paths().show_previews)
+        .toggle()
+}
+
+pub(crate) fn lock_screen(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-lock-screen"))
+        .described(t("notif-lock-screen-desc"))
+        .id("notifications.lock_screen")
+        .of(prefs, NotificationPrefs::paths().show_on_lock_screen)
+        .toggle()
+}
+
+pub(crate) fn play_sounds(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-play-sounds"))
+        .described(t("notif-play-sounds-desc"))
+        .id("notifications.sounds")
+        .of(prefs, NotificationPrefs::paths().play_sounds)
+        .toggle()
+}
+
+pub(crate) fn badges(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-badges"))
+        .described(t("notif-badges-desc"))
+        .id("notifications.badges")
+        .of(prefs, NotificationPrefs::paths().show_badges)
+        .toggle()
+}
+
+pub(crate) fn quiet_hours(cx: &PaneCx, prefs: &Followed<NotificationPrefs>) -> Item {
+    cx.row(t("notif-focus-enabled"))
+        .described(t("notif-focus-enabled-desc"))
+        .id("notifications.focus.enabled")
+        .of(prefs, NotificationPrefs::paths().focus.enabled)
+        .toggle()
 }
 
 impl Widget for NotificationsPane {

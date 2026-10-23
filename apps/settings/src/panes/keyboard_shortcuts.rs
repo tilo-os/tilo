@@ -349,13 +349,7 @@ impl ShortcutPane {
                     if let Some(reason) = &self.refusal_shown {
                         body.push(note(reason));
                     }
-                    body.push(
-                        self.cx
-                            .row(t("settings-shortcuts-vim"))
-                            .id("shortcuts.vim_mode")
-                            .of(&self.controls, DesktopControls::paths().vim_mode)
-                            .toggle(),
-                    );
+                    body.push(vim_mode(&self.cx, &self.controls));
                     body.push(note(&app_tab_chords_note()));
                 }
                 body.extend(
@@ -457,6 +451,13 @@ impl ShortcutPane {
         );
         section_action(&t("settings-paste-title"), choose, rows(body))
     }
+}
+
+pub(crate) fn vim_mode(cx: &PaneCx, controls: &Followed<DesktopControls>) -> Item {
+    cx.row(t("settings-shortcuts-vim"))
+        .id("shortcuts.vim_mode")
+        .of(controls, DesktopControls::paths().vim_mode)
+        .toggle()
 }
 
 impl Widget for ShortcutPane {

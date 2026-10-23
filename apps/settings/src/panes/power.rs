@@ -1031,13 +1031,7 @@ impl PowerPane {
 
     fn idle_card(&self) -> SettingsSection {
         let paths = PowerPrefs::paths();
-        let mut body = vec![
-            self.cx
-                .row(t("power-suspend-idle"))
-                .id("power.auto_suspend")
-                .of(&self.prefs, paths.auto_suspend)
-                .toggle(),
-        ];
+        let mut body = vec![auto_suspend(&self.cx, &self.prefs)];
         body.extend(self.suspend_timers());
         body.extend([
             self.timeout(
@@ -1123,6 +1117,13 @@ impl PowerPane {
         }
         Some(section(&t("power-devices-title"), rows(entries)))
     }
+}
+
+pub(crate) fn auto_suspend(cx: &PaneCx, prefs: &Followed<PowerPrefs>) -> Item {
+    cx.row(t("power-suspend-idle"))
+        .id("power.auto_suspend")
+        .of(prefs, PowerPrefs::paths().auto_suspend)
+        .toggle()
 }
 
 impl Widget for PowerPane {

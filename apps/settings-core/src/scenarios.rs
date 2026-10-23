@@ -27,8 +27,11 @@ pub const WIDE_VIEWPORT: (u32, u32) = (1200, 760);
 /// The phone-sized viewport of the narrow scenarios.
 pub const NARROW_VIEWPORT: (u32, u32) = (440, 820);
 
-/// The query the `search` scenario types into the sidebar's field.
+/// The query the `search` scenario types into the window bar's search.
 pub const SEARCH_QUERY: &str = "light";
+/// The query the `search-keys` scenario types: switches of one page and
+/// settings another page draws its own way.
+pub const SEARCH_KEYS_QUERY: &str = "keys";
 
 const CODEC_SCENARIOS: &[&str] = &[
     "codecsdemo-off",
@@ -67,6 +70,7 @@ const SPEAKERS_LAYOUT_DRAG: &str = "speakers-layout-drag";
 const NARROW: &str = "narrow";
 const NARROW_LIST: &str = "narrow-list";
 const SEARCH: &str = "search";
+const SEARCH_KEYS: &str = "search-keys";
 const ACCOUNT_FORM: &str = "account-form";
 const ACCOUNTS_NARROW: &str = "accounts-narrow";
 const ACCOUNTS_LINKING: &str = "accounts-linking";
@@ -82,6 +86,7 @@ pub fn names() -> &'static [&'static str] {
                 NARROW,
                 NARROW_LIST,
                 SEARCH,
+                SEARCH_KEYS,
                 ACCOUNT_FORM,
                 ACCOUNTS_NARROW,
                 ACCOUNTS_LINKING,
@@ -550,8 +555,9 @@ pub enum Staged {
     Pane(Category),
     /// The narrow category list, one back-tap from `category`.
     List(Category),
-    /// `category` with the sidebar filtered by [`SEARCH_QUERY`].
-    Search(Category),
+    /// `category` searched for the query: the sidebar narrowed to the pages
+    /// it finds, and the settings it finds shown as their rows.
+    Search(Category, &'static str),
     /// `category`'s content with the keyboard on the control with this id,
     /// as Tab leaves it.
     Focused(Category, &'static str),
@@ -580,7 +586,8 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         }
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
-        Some(SEARCH) => Staged::Search(Category::Appearance),
+        Some(SEARCH) => Staged::Search(Category::Appearance, SEARCH_QUERY),
+        Some(SEARCH_KEYS) => Staged::Search(Category::Accessibility, SEARCH_KEYS_QUERY),
         Some(ACCOUNT_FORM | ACCOUNTS_NARROW | ACCOUNTS_LINKING | ACCOUNTS_LINKED) => {
             Staged::Pane(Category::ExternalAccounts)
         }
@@ -780,7 +787,10 @@ mod tests {
             staged(Some("narrow-list")),
             Staged::List(Category::RegionFormats)
         );
-        assert_eq!(staged(Some("search")), Staged::Search(Category::Appearance));
+        assert_eq!(
+            staged(Some("search")),
+            Staged::Search(Category::Appearance, SEARCH_QUERY)
+        );
         assert_eq!(viewport(Some("accounts-narrow")), NARROW_VIEWPORT);
     }
 }
