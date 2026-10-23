@@ -2554,8 +2554,13 @@ impl Mount {
             }
         };
         // How much of the frame was repainted, for the frame metrics.
-        let window = u64::from(viewport.width) * u64::from(viewport.height);
-        let render_stage = match (&repaint, rasterized.saturating_mul(100) / window.max(1)) {
+        // An empty viewport counts as wholly repainted.
+        let window = u64::from(viewport.width).saturating_mul(u64::from(viewport.height));
+        let percent = rasterized
+            .saturating_mul(100)
+            .checked_div(window)
+            .unwrap_or(100);
+        let render_stage = match (&repaint, percent) {
             (ui::retained_raster::Repaint::Full(unknown), _) => {
                 use ui::retained_raster::Unknown;
                 use ui::scene_parts::Unproven;
