@@ -309,6 +309,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
             "chooses how later frames draw; reaches nothing a frame reads",
         ),
         (
+            "track_scene_parts",
+            "chooses whether later draws record their damage parts; reaches nothing a frame reads, and a host with no parts repaints whole",
+        ),
+        (
             "settle_replayed_draws",
             "draws again a frame that only moved laid-out content, as a polled frame would",
         ),
