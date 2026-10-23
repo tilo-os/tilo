@@ -11,7 +11,7 @@ max <= 6 MB, ratcheted per app. Two gates hold it:
   runs it on the tapps it has just built and signed, which are the affected
   apps only. It fails when an app is over its budget or has none.
 - **The fleet, nightly.** `fleet ENTRIES_JSON` reads the public registry's
-  `entries` index (Perf / scheduled, footprint group). Each budgeted app's
+  `entries` index (t's perf-footprint, footprint group). Each budgeted app's
   newest tapp is held to its budget, and the median, p90 and max of those
   apps are held to the fleet ceilings.
 

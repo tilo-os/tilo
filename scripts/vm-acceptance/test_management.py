@@ -121,19 +121,6 @@ class ManagementTest(unittest.TestCase):
         with self.assertRaisesRegex(VmError, "not a clean checkout"):
             management.source_commit(self.source)
 
-    def test_workflow_builds_exact_target_and_fixture_clients_separately(self):
-        workflow = (Path(__file__).resolve().parents[2] /
-                    ".forgejo/workflows/vm-acceptance.yml").read_text()
-        self.assertIn('bridge=$(python3 scripts/vm-acceptance/management.py "$commit" "$target")',
-                      workflow)
-        self.assertLess(workflow.index("- name: Check out the ref under test"),
-                        workflow.index("- name: Build tilo-vm"))
-        self.assertIn('(cd "$WORK/src" && cargo build --locked -p tilo-vm)', workflow)
-        self.assertIn("if: steps.plan.outputs.bridge == 'true'", workflow)
-        self.assertIn('git worktree add --detach "$WORK/base-cli" "$COMMIT"', workflow)
-        self.assertIn('(cd "$WORK/base-cli" && cargo build --locked -p tilo-vm)', workflow)
-        self.assertIn('[[ $BRIDGE != true ]] || args+=(--bootstrap-tilo-vm', workflow)
-
     @patch("management.subprocess.run")
     def test_declared_equal_protocol_preserves_no_swap(self, command):
         command.return_value.stdout = "pub const PROTOCOL_VERSION: u32 = 9;"

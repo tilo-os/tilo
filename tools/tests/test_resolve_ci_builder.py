@@ -80,7 +80,7 @@ class BuilderResolutionTests(unittest.TestCase):
         self.assertNotIn('credentials:', shared)
         self.assertNotIn('enable-openid-connect:', shared)
         callers = (
-            'vm-acceptance.yml',
+            'build-env-tools.yml',
         )
         for name in callers:
             workflow = (ROOT / '.forgejo/workflows' / name).read_text()

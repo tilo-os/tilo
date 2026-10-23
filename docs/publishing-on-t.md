@@ -401,7 +401,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 | ~~`host-session-e2e.yml`~~ | called by release-desktop, dispatch, PR | none | `disk-100g` x86_64, KVM | test result | moved to t (above) |
 | ~~`release-local-model-catalog.yml`~~ | dispatch on main | `TILO_MODEL_CATALOG_SIGNING_KEY` (raw seed), `REGISTRY_TOKEN` | builder image | signed catalog in generic packages | moved to t (above) |
 | ~~`release-verifier-bundles.yml`~~ | dispatch | none | x86_64 and arm64 | artifacts | ported: `verifier-bundle-<arch>` (above) |
-| `perf-scheduled.yml`, `vm-acceptance.yml` (results) | daily | `REGISTRY_TOKEN` to append results | various | `tilo-perf-results` packages | scheduled checks with `cache = false` and a token that may only write that package |
+| ~~`perf-scheduled.yml`, `vm-acceptance.yml`~~ (results) | daily | `REGISTRY_TOKEN` to append results | various | `tilo-perf-results` packages | retired: `perf-<group>` and `perf-scheduled`, `vm-acceptance` and `vm-acceptance-perf`, with `cache = false` and `TILO_PACKAGES_TOKEN`; the prebuilt cohort is `vm-acceptance-cohort` |
 | ~~`cloud-promotion.yml`~~ | weekly drift report, dispatch | `INFRA_PROMOTION_TOKEN` | Git history | a promotion pull request on the infra repository | replaced by `cloud-deploy`, which deploys every new stable head through the forge's API, so it pushes nothing itself |
 | ~~`check.yml`~~ (`checks` job) | push main | `REGISTRY_TOKEN` as a Git write token | | the CI receipt as a Git note | t's own commit statuses replace the receipt |
 
