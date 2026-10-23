@@ -36,7 +36,6 @@
 "apps/notes/src/app.rs" = 5000
 "apps/osk/src/widget.rs" = 5500
 "apps/pdf-viewer/src/app.rs" = 10000
-"apps/pdf-viewer/src/app_draw.rs" = 3500
 "apps/pdf-viewer/src/source.rs" = 3500
 "apps/remote/src/app.rs" = 3500
 "apps/settings-rare/src/panes/accounts.rs" = 5000

@@ -211,8 +211,7 @@ fn cli_note_survives_other_document_and_restart() {
         "a-edit",
         &a,
         vec![
-            json!({"perform": {"target": "pdf_app", "semantic_target": "pdf.tool:4", "action": "activate"}}),
-            json!({"expect": {"target": "pdf_app", "semantic_target": "pdf.tool:4", "checked": true}}),
+            json!({"invoke": {"resource": "pdf.document", "action": "use-tool", "args": {"tool": "note"}}}),
             json!({"click_at": [f64::midpoint(x0, x1), f64::midpoint(y0, y1)]}),
             json!({"type": marker}),
             json!({"key": "Enter"}),

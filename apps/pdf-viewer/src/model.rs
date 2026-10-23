@@ -120,7 +120,10 @@ impl Document {
 // Tools
 // ----------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a press on the page does: select text, or author one kind of
+/// markup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Tool {
     Select,
     Highlight,

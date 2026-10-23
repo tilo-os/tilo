@@ -4,7 +4,6 @@ header-row 1 apps/git-client/src/app.rs
 header-row 1 apps/video-editor/src/app/layout.rs
 history-in-row 4 apps/git-client/src/app.rs
 history-in-row 2 apps/maps/src/app.rs
-history-in-row 2 apps/pdf-viewer/src/app.rs
 history-in-row 2 apps/typst-editor/src/chrome.rs
 history-in-row 2 apps/video-editor/src/app.rs
 history-in-row 1 apps/video-editor/src/app/layout.rs
@@ -34,8 +33,6 @@ own-search 1 apps/logs/src/app.rs
 own-search 1 apps/maps/src/offline_panel.rs
 own-search 1 apps/notes/src/app.rs
 own-search 1 apps/passwords/src/window.rs
-own-search 2 apps/pdf-viewer/src/app.rs
-own-search 1 apps/pdf-viewer/src/app_events.rs
 own-search 2 apps/sheets/src/app.rs
 own-search 1 apps/store/src/app.rs
 own-search 1 apps/terminal/src/view.rs
@@ -43,12 +40,10 @@ own-search 2 apps/word-processor/src/find_bar.rs
 toolbar-row 1 apps/git-client/src/app.rs
 # The composer's formatting strip, inside the New message sheet over the mailbox.
 toolbar-row 1 apps/mail/src/compose.rs
-toolbar-row 1 apps/pdf-viewer/src/app_draw.rs
 toolbar-row 1 apps/typst-editor/src/chrome.rs
 # Books' shelf header: sort, Hide finished, Settings and Open book in a row of
 # its own; sort and Hide finished become the window bar's views and menu items.
 toolbar-band 1 apps/ebook/src/app.rs
-toolbar-band 1 apps/pdf-viewer/src/app_draw.rs
 toolbar-band 1 apps/typst-editor/src/app.rs
 toolbar-band 1 apps/video-editor/src/app.rs
 # The browser's address row; the hairline under it is the page's edge.
@@ -61,7 +56,6 @@ toolbar-band 1 apps/photos/src/app/chrome.rs
 toolbar-band 1 apps/word-processor/src/ruler.rs
 window-header 1 apps/git-client/src/app.rs
 window-header 1 apps/maps/src/app.rs
-window-header 1 apps/pdf-viewer/src/app.rs
 window-header 1 apps/typst-editor/src/app.rs
 window-header 1 apps/video-editor/src/app.rs
 window-header 1 apps/video-player/src/app.rs

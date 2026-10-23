@@ -93,11 +93,10 @@ fn capture_waits_for_production_visual_work() {
 }
 
 #[test]
-fn scaled_review_keeps_one_header_and_docked_panels() {
+fn scaled_review_draws_no_header_and_keeps_docked_panels() {
     use ui::Widget;
     let mut app = TestApp::<PdfViewerShell>::capture_at(None, (1440, 810)).expect("review capture");
     let theme = ui::Theme::dark().with_ui_scale(1.5);
-    let header = f64::from(theme.tokens.metrics.header_height);
     app.harness().set_theme(theme);
     app.harness().relayout();
     let reader = app.surface_mut::<pdf_viewer::PdfApp>();
@@ -115,8 +114,8 @@ fn scaled_review_keeps_one_header_and_docked_panels() {
         .expect("page canvas")
         .to_rect();
     assert!(
-        (canvas.y0 - header).abs() < 0.01,
-        "canvas starts below the single toolbar"
+        canvas.y0.abs() < 0.01,
+        "the pages start at the top: the controls are the window bar's"
     );
     assert!(
         (canvas.x0 - 168.0).abs() < 0.01,

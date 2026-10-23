@@ -5,7 +5,7 @@
 //! selection, the active tool, and the sidebar tab — stays out of the
 //! document: those are [`PdfEffect`]s. Every change of the markup the
 //! on-page affordances make (the selection HUD's highlight swatches, the
-//! toolbar colour swatch, the comment rail's edit / reply / resolve / delete
+//! window bar's marker colours, the comment rail's edit / reply / resolve / delete
 //! buttons, the note-marker drag, the page rail) is one of the typed field
 //! edits or verbs built here and submitted through the resource's
 //! dispatcher: the same values the palette and agents invoke.
@@ -19,7 +19,7 @@ use ui::tilo_resource;
 use ui::tilo_resource::{Edit, Effect, Id, Invoke};
 
 use crate::markup::{PagePlanEntry, PdfMarkup};
-use crate::model::{Annotation, FormEntry, GeomSpace, PtRect, Signature, Swatch};
+use crate::model::{Annotation, FormEntry, GeomSpace, PtRect, Signature, Swatch, Tool};
 use crate::resource::{NewAnnotation, NewComment, NewNote, NewSignature, pdf_markup};
 
 /// The action palette is refreshed frequently. Keep that contextual snapshot
@@ -78,7 +78,7 @@ pub fn outline_resource_id(ctx: &PdfResourceCtx, index: usize) -> Option<String>
 
 /// What the reader does that changes no markup: moving through the
 /// document and its view, the highlight tool's style, and opening and saving
-/// files. Every caller — a toolbar button, the palette, an agent — reaches
+/// files. Every caller — a window bar slot, the palette, an agent — reaches
 /// the reader's handler as one of these.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "pdf_viewer.effects")]
@@ -108,8 +108,27 @@ pub enum PdfEffect {
     #[effect(view)]
     TogglePages,
     /// Find in document
+    ///
+    /// Opens the window's search on the document.
     #[effect(view, idempotent)]
     Find,
+    /// Use tool
+    ///
+    /// Arms what a press on the page does: select text, highlight, draw,
+    /// add a note, add text or sign.
+    #[effect(view, idempotent)]
+    UseTool {
+        #[param("select, highlight, ink, note, text or sign")]
+        tool: Tool,
+    },
+    /// Marker colour
+    ///
+    /// The colour the next mark takes; a selected mark takes it too.
+    #[effect(view, idempotent)]
+    SetMarkerColour {
+        #[param("yellow, green, pink, blue or purple")]
+        colour: Swatch,
+    },
     /// Mark text as highlight
     #[effect(view, idempotent)]
     MarkHighlight,

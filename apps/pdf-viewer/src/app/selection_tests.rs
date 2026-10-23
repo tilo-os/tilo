@@ -23,7 +23,7 @@ fn line_text(page: usize, line: usize) -> String {
 }
 
 /// A PDF of `pages` pages of plain text lines, in reading order.
-fn text_pdf(dir: &std::path::Path, pages: usize) -> std::path::PathBuf {
+pub(super) fn text_pdf(dir: &std::path::Path, pages: usize) -> std::path::PathBuf {
     use std::fmt::Write as _;
     let mut objects: Vec<String> = Vec::new();
     objects.push("<< /Type /Catalog /Pages 2 0 R >>".into());
@@ -408,7 +408,8 @@ fn a_right_click_selects_the_word_and_the_selection_menu_copies_and_selects_all(
 #[serial(pdfium)]
 #[test]
 fn a_held_finger_selects_a_word_and_its_grips_move_the_ends() {
-    let Some((_dir, mut app)) = reader(1, Theme::dark()) else {
+    // Two pages, so the document is taller than the window and scrolls.
+    let Some((_dir, mut app)) = reader(2, Theme::dark()) else {
         return;
     };
     Framed::harness_mut(&mut app)
