@@ -2606,6 +2606,32 @@ impl WorkspaceControlHandle {
 pub struct OpEvent {
     pub op: Vec<u8>,
     pub from_user_id: String,
+    /// The broker's verdict for the op on its channel.
+    pub admission: OpAdmission,
+}
+
+pub use collab_types::inbound::OpAdmission;
+
+#[cfg(feature = "client")]
+impl From<collab_capnp::OpAdmission> for OpAdmission {
+    fn from(admission: collab_capnp::OpAdmission) -> Self {
+        match admission {
+            collab_capnp::OpAdmission::Unstated => Self::Unstated,
+            collab_capnp::OpAdmission::CleartextAdmitted => Self::CleartextAdmitted,
+            collab_capnp::OpAdmission::EncryptionRequired => Self::EncryptionRequired,
+        }
+    }
+}
+
+#[cfg(feature = "client")]
+impl From<OpAdmission> for collab_capnp::OpAdmission {
+    fn from(admission: OpAdmission) -> Self {
+        match admission {
+            OpAdmission::Unstated => Self::Unstated,
+            OpAdmission::CleartextAdmitted => Self::CleartextAdmitted,
+            OpAdmission::EncryptionRequired => Self::EncryptionRequired,
+        }
+    }
 }
 
 /// Client-pulled op stream. Each `.read()` is a single RPC.
@@ -2641,17 +2667,33 @@ impl OpStream {
                 "collaboration stream carried a retired unsigned frame",
             )));
         }
-        Ok(OpEvent { op, from_user_id })
+        // An enumerant this client does not know is a newer broker's: it
+        // says nothing this client can apply.
+        let admission = r
+            .get_admission()
+            .map_or(OpAdmission::Unstated, OpAdmission::from);
+        Ok(OpEvent {
+            op,
+            from_user_id,
+            admission,
+        })
     }
 }
 
-/// One piece of content off a [`BlobStream`].
+#[cfg(feature = "client")]
+pub use collab_capnp::BlobState;
+
+/// News of content off a [`BlobStream`]: content that arrived, or where a
+/// want of it has got to.
 #[derive(Debug, Clone)]
+#[cfg(feature = "client")]
 pub struct BlobEvent {
     /// blake3 hex the content is addressed by, in every store on every
     /// machine.
     pub hash: String,
+    /// The content, when `state` is [`BlobState::Arrived`]; empty otherwise.
     pub bytes: Vec<u8>,
+    pub state: BlobState,
 }
 
 /// Client-pulled stream of arrived document content. Each `.read()` is a
@@ -2664,7 +2706,7 @@ pub struct BlobStream {
 
 #[cfg(feature = "client")]
 impl BlobStream {
-    /// Pull the next piece of arrived content. The caller MUST verify the
+    /// Pull the next news of content. The caller MUST verify arrived
     /// bytes against `hash` before storing them — the key is the content's
     /// identity, so bytes hashing to something else aren't what was asked for.
     ///
@@ -2683,7 +2725,9 @@ impl BlobStream {
             .map_err(|e| capnp::Error::failed(format!("invalid utf8 blob hash: {e}")))?
             .to_owned();
         let bytes = r.get_bytes()?.to_vec();
-        Ok(BlobEvent { hash, bytes })
+        // A state this schema does not know yet is still not the content.
+        let state = r.get_state().unwrap_or(BlobState::Fetching);
+        Ok(BlobEvent { hash, bytes, state })
     }
 }
 

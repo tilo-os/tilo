@@ -79,7 +79,6 @@ mod tests {
             assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"));
         }
 
-        // Phase `guid_identity_ignores_case_and_braces`.
         {
             assert!(super::same_guid(
                 "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}",

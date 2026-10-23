@@ -231,7 +231,6 @@ struct StaticFace {
 /// The open sheet's controls and the state they are bound to.
 pub(super) struct Sheet {
     pub(super) presses: Presses,
-    /// The Who field's text, bound both ways.
     pub(super) name: LocalState<String>,
     /// The join field's text, bound both ways.
     pub(super) link: LocalState<String>,
@@ -442,7 +441,6 @@ impl Sheet {
         }
     }
 
-    /// Close the Who field's suggestions.
     pub(super) fn close_suggestions(&mut self) {
         if let Some(field) = self.who_field() {
             field.close();
@@ -825,7 +823,6 @@ impl Sheet {
     }
 }
 
-/// The sheet's title for `mode`.
 fn title(state: &PeerSyncSnapshot, mode: Option<Mode>) -> String {
     match mode {
         Some(Mode::Pairing) => t("pairing-title"),

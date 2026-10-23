@@ -458,7 +458,6 @@ mod tests {
         // for `x`; the caret model counts characters, so it must be 4.
         let line = "ééé x";
         assert_eq!(line_matches(line, &q("x")), vec![(4, 1)]);
-        // And the reported column really does index the char the user sees.
         let chars: Vec<char> = line.chars().collect();
         assert_eq!(chars[4], 'x');
     }
@@ -489,8 +488,6 @@ mod tests {
         assert!(line_matches("anything", &q("")).is_empty());
         assert!(q("").is_empty());
     }
-
-    // ---- the walk ------------------------------------------------------
 
     /// Run a walk synchronously and collect every message it emitted.
     fn run(root: &Path, query: &Query) -> (Vec<Hit>, Option<(usize, bool)>) {
@@ -590,7 +587,6 @@ mod tests {
 
     #[test]
     fn search_walk_stops_on_cancel_or_closed_receiver_and_streams_in_background() {
-        // Each phase builds a fresh fixture tree and cancel flag.
         a_cancelled_walk_stops_early();
         a_dropped_receiver_ends_the_walk();
         the_background_job_streams_results_and_finishes();

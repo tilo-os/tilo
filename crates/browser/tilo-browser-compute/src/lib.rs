@@ -2,9 +2,6 @@
 use tilo_image_codec::{DecodeError, DecodedImage};
 
 /// Admit source metadata before decoding, then validate the requested result.
-///
-/// # Errors
-/// Returns a codec error for malformed or excessive input/output.
 pub fn decode(encoded: &[u8], max_dimension: u32) -> Result<DecodedImage, DecodeError> {
     let limits = tilo_image_codec::AdmissionLimits::default();
     limits.admit(encoded)?;

@@ -201,10 +201,6 @@ impl PresenceSlots {
 
 /// Encode one [`super::EnvelopeV2::PresenceBatch`] frame, length prefix
 /// included, without copying the items.
-///
-/// # Errors
-///
-/// Returns a postcard error if the batch exceeds the state frame bound.
 pub fn encode_presence_batch(
     workspace_id: u64,
     items: &[PresenceItem],
@@ -267,7 +263,6 @@ mod tests {
             item.middle.len()
         );
         assert_eq!(reader.expand(item).unwrap(), second.to_vec());
-        // A shorter and a longer payload in the same slot.
         for next in [
             &b"author|x|teal"[..],
             b"author|user|key|x=1|y=2|z=3|ts=33|teal",

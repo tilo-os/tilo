@@ -495,7 +495,6 @@ mod tests {
 
     #[test]
     fn vision_model_discovery_preparation_and_parsing_are_bounded() {
-        // Phase `discovers_only_explicit_loopback_vision_model`.
         {
             assert!(discover_local_capability(&config(true, "http://127.0.0.1:8100/v1")).is_some());
             assert!(
@@ -505,7 +504,6 @@ mod tests {
                 discover_local_capability(&config(true, "http://192.168.1.9:8100/v1")).is_none()
             );
         }
-        // Phase `preparation_hashes_original_and_limits_pixels`.
         {
             let image =
                 DynamicImage::ImageRgba8(RgbaImage::from_pixel(3_200, 2_000, Rgba([5, 7, 9, 255])));
@@ -518,7 +516,6 @@ mod tests {
                 hex::encode(Sha256::digest(b"original photo bytes"))
             );
         }
-        // Phase `parsing_rejects_unknown_fields_and_bounds_model_text`.
         {
             assert!(parse_analysis(r#"{"description":"x","unexpected":true}"#).is_err());
             let parsed = parse_analysis(&format!(
@@ -529,7 +526,6 @@ mod tests {
             assert_eq!(parsed.description.chars().count(), MAX_DESCRIPTION_CHARS);
             assert_eq!(parsed.labels, vec!["cat"]);
         }
-        // Phase `parsing_accepts_only_the_openai_content_field_from_an_envelope`.
         {
             let parsed = parse_analysis(
                 r#"{"choices":[{"message":{"content":"{\"description\":\"A dog\",\"labels\":[\"dog\"],\"ocr\":\"\"}"}}]}"#,
@@ -538,7 +534,6 @@ mod tests {
             assert_eq!(parsed.description, "A dog");
             assert_eq!(parsed.labels, vec!["dog"]);
         }
-        // Phase `pet_labels_are_model_output_and_face_clusters_cannot_escape_the_batch`.
         {
             let parsed =
                 parse_analysis(r#"{"description":"","labels":["dog"],"pets":["dog"],"ocr":""}"#)

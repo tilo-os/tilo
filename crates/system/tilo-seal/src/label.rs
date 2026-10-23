@@ -20,7 +20,6 @@ pub enum Label {
     RelayEnrollResponse,
     /// A secret sealed to one device of the personal device fabric.
     DeviceFabricSecret,
-    /// A password-protected portable identity backup.
     IdentityBackup,
     /// A password-protected installer migration package and its content chunks.
     MigrationPackage,

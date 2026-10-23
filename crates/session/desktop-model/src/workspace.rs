@@ -572,7 +572,6 @@ impl Workspace {
         self.person_authority(person).bounded_by(bound)
     }
 
-    /// What `user` may do at `node` for an action of `kind`, at `now`.
     #[must_use]
     pub fn answer_at(&self, user: &str, node: &TreePath, kind: ActionKind, now: u64) -> Answer {
         self.person_authority(user)

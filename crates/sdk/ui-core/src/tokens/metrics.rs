@@ -37,7 +37,6 @@ pub struct Metrics {
     pub min_pointer_target: f32,
     /// A utility Panel such as quick settings.
     pub panel_width_utility: f32,
-    /// A roster or list Panel.
     pub panel_width_list: f32,
     /// A sheet carrying a form.
     pub panel_width_sheet: f32,
@@ -149,7 +148,6 @@ pub struct Metrics {
     pub icon_control: f32,
     /// The leading app or location icon of a bar.
     pub icon_bar: f32,
-    /// An avatar leading a one-line row.
     pub avatar_inline: f32,
     /// An avatar leading a two-line row: the row grows to
     /// [`Self::row_avatar`].
@@ -180,7 +178,6 @@ pub struct Metrics {
     pub row_arrow: f32,
     /// A slider at a row's trailing end (an app's volume).
     pub row_slider_width: f32,
-    /// The narrowest a row's slider gets.
     pub row_slider_min_width: f32,
     /// A row's slider with its value beside it (the output volume).
     pub row_slider_valued_width: f32,
@@ -428,7 +425,6 @@ mod tests {
         }
         let theme = crate::Theme::dark().with_ui_scale(2.0);
         assert!((theme.tokens.metrics.readable_width - 1440.0).abs() < 1e-3);
-        // A readable column still fits beside a docked sidebar's content.
         assert!(base.reading_measure <= base.readable_width);
         assert!(base.chooser_width < base.content_min_width);
     }

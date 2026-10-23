@@ -129,6 +129,9 @@ pub struct ChapterLayout {
     /// Absolute y at which each page begins. `pages.len()` == page count.
     pub pages: Vec<f32>,
     pub key: LayoutKey,
+    /// Whether every block is set. A layout still arriving holds the
+    /// chapter's first blocks, and only page breaks already decided.
+    pub complete: bool,
 }
 
 impl ChapterLayout {
@@ -1207,27 +1210,100 @@ fn list_marker(block: &Block) -> Option<String> {
 }
 
 pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>) -> ChapterLayout {
-    let text_scale = tr.text_scale();
-    let key = LayoutKey::new(
-        request.chapter,
-        request.content_width,
-        request.content_height,
-        request.settings,
-        request.font_signature,
-        text_scale,
-    );
-    let body = request.settings.body_size_with(request.font_multiplier);
-    let settings = request.settings;
-    let base_mono = matches!(request.base_family, FontChoice::Monospace);
-    let mut laid: Vec<LaidBlock> = Vec::with_capacity(request.blocks.len());
-    let mut y = 0.0f32;
+    let mut layouter = ChapterLayouter::new(request, tr.text_scale());
+    let mut blocks = Vec::with_capacity(request.blocks.len());
+    while let Some(block) = layouter.next_block(tr) {
+        blocks.push(block);
+    }
+    ChapterLayout {
+        blocks,
+        total_height: layouter.height(),
+        pages: layouter.finish_pages(),
+        key: layouter.key(),
+        complete: true,
+    }
+}
 
-    for (index, block) in request.blocks.iter().enumerate() {
-        let st = style_for(block, body, text_scale);
-        y += st.space_before;
+/// Lays a chapter out one block at a time, breaking pages as it goes, so a
+/// caller can hand over each stretch as soon as it is set. Every page break
+/// it has taken is final: [`Self::take_pages`] returns only those.
+pub struct ChapterLayouter<'a> {
+    request: &'a ChapterLayoutRequest<'a>,
+    key: LayoutKey,
+    text_scale: f32,
+    body: f32,
+    base_mono: bool,
+    next: usize,
+    y: f32,
+    paginator: Paginator,
+}
+
+impl<'a> ChapterLayouter<'a> {
+    pub fn new(request: &'a ChapterLayoutRequest<'a>, text_scale: f32) -> Self {
+        Self {
+            request,
+            key: LayoutKey::new(
+                request.chapter,
+                request.content_width,
+                request.content_height,
+                request.settings,
+                request.font_signature,
+                text_scale,
+            ),
+            text_scale,
+            body: request.settings.body_size_with(request.font_multiplier),
+            base_mono: matches!(request.base_family, FontChoice::Monospace),
+            next: 0,
+            y: 0.0,
+            paginator: Paginator::new(request.content_height),
+        }
+    }
+
+    pub fn key(&self) -> LayoutKey {
+        self.key
+    }
+
+    /// The flow's height so far: the bottom of the last block set.
+    pub fn height(&self) -> f32 {
+        self.y
+    }
+
+    /// Set the next block, or `None` once the chapter is done. The text
+    /// renderer must be at the text scale this layouter was made for.
+    pub fn next_block(&mut self, tr: &mut TextRenderer) -> Option<LaidBlock> {
+        let index = self.next;
+        let block = self.request.blocks.get(index)?;
+        self.next += 1;
+        let laid = self.lay_block(tr, index, block);
+        self.y = laid.bottom.max(self.y);
+        self.paginator.push(&laid);
+        Some(laid)
+    }
+
+    /// Page starts decided since the last call.
+    pub fn take_pages(&mut self) -> Vec<f32> {
+        self.paginator.take_decided()
+    }
+
+    /// Every page start not yet taken, once the chapter is done; a chapter
+    /// with nothing to break has the one page at the top.
+    pub fn finish_pages(&mut self) -> Vec<f32> {
+        let pages = self.paginator.take_decided();
+        if self.paginator.handed == 0 && pages.is_empty() {
+            return vec![0.0];
+        }
+        pages
+    }
+
+    fn lay_block(&self, tr: &mut TextRenderer, index: usize, block: &Block) -> LaidBlock {
+        let request = self.request;
+        let settings = request.settings;
+        let text_scale = self.text_scale;
+        let st = style_for(block, self.body, text_scale);
+        let y = self.y + st.space_before;
 
         if let Block::Math { expr, source, .. } = block {
-            let laid_block = laid_math_block(
+            return laid_math_block(
                 tr,
                 &MathBlockInput {
                     index,
@@ -1235,20 +1311,14 @@ pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>)
                     expression: expr,
                     source,
                     style: &st,
-                    body_size: body,
+                    body_size: self.body,
                     content_width: request.content_width,
                 },
             );
-            y = laid_block.bottom;
-            laid.push(laid_block);
-            continue;
         }
 
         if st.kind == LayoutKind::Separator {
-            let laid_block = laid_separator_block(index, y, &st);
-            y = laid_block.bottom;
-            laid.push(laid_block);
-            continue;
+            return laid_separator_block(index, y, &st);
         }
 
         let built = build_words(
@@ -1259,13 +1329,11 @@ pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>)
                 settings,
                 language: request.language,
                 base_family: request.base_family,
-                base_mono,
+                base_mono: self.base_mono,
                 line_height: st.size * 1.25 * settings.line_spacing * text_scale,
             },
         );
         let line_height = built.line_height;
-
-        let block_top = y;
         let lines = compose_block_lines(
             tr,
             &BlockComposition {
@@ -1275,42 +1343,29 @@ pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>)
                 settings,
                 content_width: request.content_width,
                 base_family: request.base_family,
-                block_top,
+                block_top: y,
                 line_height,
             },
         );
-
-        let bullet = list_marker(block);
         let height = lines.len() as f32 * line_height;
-        laid.push(LaidBlock {
+        LaidBlock {
             index,
             kind: st.kind,
-            top: block_top,
-            bottom: block_top + height,
+            top: y,
+            bottom: y + height,
             size: st.size,
             line_height,
             indent: st.indent,
             lines,
-            bullet,
+            bullet: list_marker(block),
             math: None,
             char_len: built.char_count,
             text: built.canonical_text,
             hard_breaks: built.hard_breaks,
-        });
-        y += height;
-    }
-
-    let pages = paginate(&laid, request.content_height);
-
-    ChapterLayout {
-        blocks: laid,
-        total_height: y,
-        pages,
-        key,
+        }
     }
 }
 
-/// Slice the flow into page-start offsets at line boundaries.
 /// One row of the flattened page-breaking grid: either a whole `Separator`
 /// block, or a single line of a text block (retaining enough paragraph
 /// structure — `line`/`line_count` — to enforce TeX-like break constraints).
@@ -1324,17 +1379,50 @@ struct Row {
     kind: LayoutKind,
 }
 
-fn paginate(blocks: &[LaidBlock], page_h: f32) -> Vec<f32> {
-    if blocks.is_empty() || page_h <= 1.0 {
-        return vec![0.0];
+/// Slices the flow into page-start offsets at line boundaries as its blocks
+/// arrive in order. A break is decided once the row that overflows the page
+/// is known; every rule looks back from that row, never past it, so a break
+/// taken early is the one the whole chapter would take.
+struct Paginator {
+    page_h: f32,
+    rows: Vec<Row>,
+    blocks: usize,
+    /// The row the open page starts at, once there is one.
+    page_row: Option<usize>,
+    pages: Vec<f32>,
+    /// How many of `pages` were handed out.
+    handed: usize,
+}
+
+impl Paginator {
+    fn new(page_h: f32) -> Self {
+        Self {
+            page_h,
+            rows: Vec::new(),
+            blocks: 0,
+            page_row: None,
+            pages: Vec::new(),
+            handed: 0,
+        }
     }
 
-    // Flatten to row boxes while retaining enough paragraph structure to
-    // enforce TeX-like page-break constraints.
-    let mut rows = Vec::new();
-    for (block_index, b) in blocks.iter().enumerate() {
+    fn take_decided(&mut self) -> Vec<f32> {
+        let fresh = self.pages.get(self.handed..).unwrap_or_default().to_vec();
+        self.handed = self.pages.len();
+        fresh
+    }
+
+    fn push(&mut self, b: &LaidBlock) {
+        let block_index = self.blocks;
+        self.blocks += 1;
+        if self.page_h <= 1.0 {
+            if self.pages.is_empty() {
+                self.pages.push(0.0);
+            }
+            return;
+        }
         if b.kind == LayoutKind::Separator {
-            rows.push(Row {
+            self.rows.push(Row {
                 y: b.top,
                 height: b.bottom - b.top,
                 block: block_index,
@@ -1344,7 +1432,7 @@ fn paginate(blocks: &[LaidBlock], page_h: f32) -> Vec<f32> {
             });
         } else {
             for (line, l) in b.lines.iter().enumerate() {
-                rows.push(Row {
+                self.rows.push(Row {
                     y: l.y,
                     height: b.line_height,
                     block: block_index,
@@ -1354,70 +1442,90 @@ fn paginate(blocks: &[LaidBlock], page_h: f32) -> Vec<f32> {
                 });
             }
         }
+        self.advance();
     }
-    rows.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
 
-    let Some(&first) = rows.first() else {
-        return vec![0.0]; // unreachable: a non-empty block always yields >=1 row
-    };
-    let mut pages = vec![first.y];
-    let mut page_row = 0;
-    while page_row < rows.len() {
-        let Some(&start_row) = rows.get(page_row) else {
-            break;
+    fn advance(&mut self) {
+        let rows = &self.rows;
+        let mut page_row = if let Some(row) = self.page_row {
+            row
+        } else {
+            let Some(first) = rows.first() else {
+                return;
+            };
+            self.pages.push(first.y);
+            0
         };
-        let page_start = start_row.y;
-        let Some(overflow) = (page_row..rows.len()).find(|&index| {
-            rows.get(index)
-                .is_some_and(|r| r.y + r.height - page_start > page_h + 0.5)
-        }) else {
-            break;
-        };
-        let mut break_at = overflow;
-        let Some(&row) = rows.get(break_at) else {
-            break;
-        };
+        while page_row < rows.len() {
+            let Some(&start_row) = rows.get(page_row) else {
+                break;
+            };
+            let page_start = start_row.y;
+            let Some(overflow) = (page_row..rows.len()).find(|&index| {
+                rows.get(index)
+                    .is_some_and(|r| r.y + r.height - page_start > self.page_h + 0.5)
+            }) else {
+                break;
+            };
+            let mut break_at = overflow;
+            let Some(&row) = rows.get(break_at) else {
+                break;
+            };
 
-        // Keep at least two lines of an ordinary text block on either side of
-        // a page boundary whenever that can be achieved on this page.
-        if matches!(
-            row.kind,
-            LayoutKind::Paragraph | LayoutKind::Quote | LayoutKind::Verse { .. } | LayoutKind::List
-        ) && row.line_count >= 4
-            && (row.line == 1 || row.line_count - row.line == 1)
-        {
-            break_at -= 1;
-        }
-
-        // A heading is semantically attached to the text following it. If it
-        // would become the final item on a page, carry the complete heading to
-        // the next page as long as it did not itself begin this page.
-        if break_at > page_row
-            && let Some(&prev) = rows.get(break_at - 1)
-            && let Some(&cur) = rows.get(break_at)
-            && prev.kind == LayoutKind::Heading
-            && prev.block != cur.block
-        {
-            let heading_block = prev.block;
-            let heading_start = (page_row..break_at)
-                .find(|&index| rows.get(index).is_some_and(|r| r.block == heading_block))
-                .unwrap_or(break_at - 1);
-            if heading_start > page_row {
-                break_at = heading_start;
+            // Keep at least two lines of an ordinary text block on either side of
+            // a page boundary whenever that can be achieved on this page.
+            if matches!(
+                row.kind,
+                LayoutKind::Paragraph
+                    | LayoutKind::Quote
+                    | LayoutKind::Verse { .. }
+                    | LayoutKind::List
+            ) && row.line_count >= 4
+                && (row.line == 1 || row.line_count - row.line == 1)
+            {
+                break_at -= 1;
             }
-        }
 
-        // An indivisible item taller than a page has no legal alternative.
-        if break_at <= page_row {
-            break_at = overflow.max(page_row + 1);
+            // A heading is semantically attached to the text following it. If it
+            // would become the final item on a page, carry the complete heading to
+            // the next page as long as it did not itself begin this page.
+            if break_at > page_row
+                && let Some(&prev) = rows.get(break_at - 1)
+                && let Some(&cur) = rows.get(break_at)
+                && prev.kind == LayoutKind::Heading
+                && prev.block != cur.block
+            {
+                let heading_block = prev.block;
+                let heading_start = (page_row..break_at)
+                    .find(|&index| rows.get(index).is_some_and(|r| r.block == heading_block))
+                    .unwrap_or(break_at - 1);
+                if heading_start > page_row {
+                    break_at = heading_start;
+                }
+            }
+
+            // An indivisible item taller than a page has no legal alternative.
+            if break_at <= page_row {
+                break_at = overflow.max(page_row + 1);
+            }
+            let Some(&brk) = rows.get(break_at) else {
+                break;
+            };
+            self.pages.push(brk.y);
+            page_row = break_at;
         }
-        let Some(&brk) = rows.get(break_at) else {
-            break;
-        };
-        pages.push(brk.y);
-        page_row = break_at;
+        self.page_row = Some(page_row);
     }
-    pages
+}
+
+#[cfg(test)]
+fn paginate(blocks: &[LaidBlock], page_h: f32) -> Vec<f32> {
+    let mut paginator = Paginator::new(page_h);
+    for block in blocks {
+        paginator.push(block);
+    }
+    let pages = paginator.take_decided();
+    if pages.is_empty() { vec![0.0] } else { pages }
 }
 
 /// Width of a single space at `size` in `family`, derived by differencing.
@@ -1513,10 +1621,8 @@ mod tests {
             );
             assert!(layout.total_height > 0.0);
             assert!(layout.page_count() >= 1);
-            // The long paragraph wrapped into multiple lines.
             let para_block = &layout.blocks[1];
             assert!(para_block.lines.len() >= 2, "paragraph should wrap");
-            // Lines are monotonically increasing in y.
             let ys: Vec<f32> = para_block.lines.iter().map(|l| l.y).collect();
             assert!(ys.windows(2).all(|w| w[1] > w[0]));
         }
@@ -1579,7 +1685,6 @@ mod tests {
                 &FontChoice::SansSerif,
             );
             assert!(layout.page_count() >= 3, "lots of text -> several pages");
-            // Page starts strictly increase.
             assert!(layout.pages.windows(2).all(|w| w[1] > w[0]));
         }
 
@@ -1626,7 +1731,6 @@ mod tests {
                 b.text, "alpha beta gamma",
                 "canonical text joins words with spaces"
             );
-            // Each run carries a char range that indexes into the canonical text.
             let runs: Vec<&LineRun> = b.lines.iter().flat_map(|l| l.runs.iter()).collect();
             assert_eq!(runs.len(), 3);
             for r in &runs {

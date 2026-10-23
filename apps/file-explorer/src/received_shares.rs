@@ -59,11 +59,6 @@ pub fn read_link(input: impl std::io::Read) -> Result<String, String> {
 }
 
 /// Admit a copied bearer link through the inherited recipient service.
-///
-/// # Errors
-///
-/// Returns a localized error when the service is unavailable, refuses the
-/// link, or returns an invalid response.
 pub async fn admit_link(uri: String) -> Result<RecipientSubscriptionStatusV1, String> {
     transact(RecipientControlOperationV1::AdmitV2 { uri })
         .await

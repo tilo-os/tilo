@@ -918,13 +918,11 @@ mod tests {
 
     #[test]
     fn offer_addresses_round_trip_and_stay_distinct_per_publisher() {
-        // Case `an_address_with_a_path_in_it_round_trips`.
         {
             let a = ActionAddress::new("files.entry:/var/workspace/a.b/plan.md", "rename");
             assert_eq!(decode_address(&encode_address(&a)), Some(a));
         }
 
-        // Case `duplicate_addresses_from_two_live_publishers_remain_distinct`.
         {
             let entry = |peer_id: u64| tilo_actions::remote::CatalogueRow {
                 provider: peer_id.to_string(),
@@ -971,7 +969,6 @@ mod tests {
             );
         }
 
-        // Case `broker_prefixed_shell_launch_is_still_recognised_as_an_open`.
         {
             let address = ActionAddress::new("app.so.tilo.diffmerge", OPEN_ACTION);
             let offer = Offer {
@@ -1004,7 +1001,6 @@ mod tests {
         reason = "each case keeps its original fixture and assertions"
     )]
     fn a_quoted_literal_is_the_value_that_tells_same_verb_operations_apart() {
-        // Case `one_quoted_literal_is_an_argument_and_two_are_not`.
         {
             assert_eq!(
                 quoted_literal(r#"rename it to "launch.md""#),
@@ -1020,7 +1016,6 @@ mod tests {
             assert_eq!(quoted_literal(r#"rename it to "launch.md"#), None);
         }
 
-        // Case `a_supplied_value_tells_two_same_verb_operations_apart`.
         {
             let offers = vec![
                 offer(
@@ -1151,8 +1146,6 @@ mod tests {
             }
         }
     }
-
-    // -- telling two operations of one verb apart -------------------------
 
     fn offer(
         app: &'static str,

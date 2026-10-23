@@ -118,7 +118,6 @@ pub fn legacy_commands() -> Vec<String> {
     legacy_command_names(&legacy_vm::apps::Registry::load(&paths.apps()))
 }
 
-/// [`legacy_commands`] for one registry.
 pub fn legacy_command_names(registry: &legacy_vm::apps::Registry) -> Vec<String> {
     let mut names: Vec<String> = registry
         .apps

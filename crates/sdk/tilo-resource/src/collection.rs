@@ -158,7 +158,6 @@ pub struct Collection<T> {
 /// migration may rewrite it in place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Quarantined {
-    /// The item's id.
     pub id: Id,
     /// Why it does not read, where in the item.
     pub reason: String,
@@ -781,7 +780,6 @@ pub(crate) type EditAt<'a> =
 /// A new item from its JSON form, and the id it carries.
 pub(crate) type ParseItem<'a> =
     dyn Fn(&serde_json::Value) -> Result<(Option<Id>, Box<dyn Stores + 'a>), ModelError> + 'a;
-/// An edit of a value as a whole.
 pub(crate) type EditWhole<'a> =
     dyn Fn(&mut Doc, Slot<'_>, &[Segment], &EditOp) -> Result<(), ModelError> + 'a;
 /// Write the item at a position over the one it was, in an entry's slot.
@@ -859,7 +857,6 @@ pub(crate) fn edit_entries(
 pub(crate) struct EntryWrites<'a> {
     /// Whether the item now would store as the one it was.
     pub(crate) same: &'a dyn Fn(usize, usize) -> bool,
-    /// Store the item now into a slot.
     pub(crate) store: &'a StoreAt<'a>,
     /// Write the item now over the value of the entry that held it.
     pub(crate) changed: &'a WriteChanged<'a>,
@@ -997,7 +994,6 @@ fn touched_entry(
     Ok(Touched::Fresh { entry, order })
 }
 
-/// The JSON form's schema of a collection of items of the schema `item`.
 #[inline(never)]
 fn entries_schema(item: serde_json::Value) -> serde_json::Value {
     let mut properties = serde_json::Map::new();
@@ -1308,7 +1304,6 @@ impl<T: Model> Model for Collection<T> {
     const SHAPE: crate::Shape = crate::Shape::Collection(&T::SHAPE);
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
-    // Run by one set of functions for every collection, over `T`'s table.
     const TABLE: &'static ModelTable = &CollectionOf::<T>::TABLE;
     crate::model::leaf_paths!();
     crate::__table_functions!();
@@ -1316,8 +1311,6 @@ impl<T: Model> Model for Collection<T> {
         Ok(Self::default())
     }
 }
-
-// --- A collection through its item type's table -----------------------------
 
 /// A collection's entries, whatever its item type: what the collection
 /// functions below reach into one with.
@@ -1469,7 +1462,6 @@ impl<T: 'static> Entries for Collection<T> {
 
 /// What `Collection<T>`'s table reaches into one with.
 pub struct CollectionDesc {
-    /// `T`'s table.
     item: &'static ModelTable,
     entries: for<'a> fn(&'a dyn Any) -> Option<&'a dyn Entries>,
     entries_mut: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn Entries>,
@@ -1484,7 +1476,6 @@ pub struct CollectionDesc {
     item_staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
 }
 
-/// The [`CollectionDesc`] of `Collection<T>`.
 pub struct CollectionOf<T>(std::marker::PhantomData<T>);
 
 impl<T: Model> CollectionOf<T> {

@@ -66,9 +66,6 @@ impl Chat {
     /// the room's channels; with a channel, what it is about. Its messages
     /// are kept in parts beside the record: a caller reads them from the
     /// chain the window publishes, or with `read-room`.
-    ///
-    /// # Errors
-    /// When `item` names nothing in the chat.
     pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
             return Ok(serde_json::json!({
@@ -112,10 +109,6 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "agent-long-thread",
     "agent-work",
     "bridged",
-    "agent-task",
-    "agent-task-compact",
-    "agent-task-queued",
-    "agent-task-queued-compact",
     "narrow",
     "history",
     "compact",
@@ -240,13 +233,6 @@ impl ResourceApp for ChatShell {
             }
         }
         Ok(())
-    }
-
-    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        match scenario {
-            Some("agent-task-compact" | "agent-task-queued-compact") => (420, 680),
-            _ => (1280, 800),
-        }
     }
 
     /// Every scenario but `starter` starts from the demo workspace, read by
@@ -422,6 +408,7 @@ fn bridged_post() -> (Id, crate::record::Message) {
             persona: Some(crate::record::ShownPersona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
+                linked: None,
             }),
         }),
         ..crate::record::Message::default()

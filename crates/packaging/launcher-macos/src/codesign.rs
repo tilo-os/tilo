@@ -243,10 +243,6 @@ pub fn classify(path: &Path, trust: &TrustRequirement) -> MacLaunchMode {
 /// Check that the process `pid` — normally spawned suspended — is running
 /// code that validly satisfies `trust`'s identity requirement, is not
 /// ad-hoc, and enables App Sandbox.
-///
-/// # Errors
-///
-/// Returns a description of the first check that failed.
 pub fn verify_process(pid: libc::pid_t, trust: &TrustRequirement) -> Result<(), String> {
     // SAFETY: an immutable framework constant initialised at load.
     let key = unsafe { kSecGuestAttributePid };
@@ -316,10 +312,6 @@ pub fn verify_process(pid: libc::pid_t, trust: &TrustRequirement) -> Result<(), 
 /// Ad-hoc sign an unsigned executable in place. Apple silicon refuses to
 /// exec code with no signature at all; ad-hoc is the least that runs, and it
 /// earns nothing in [`decide`].
-///
-/// # Errors
-///
-/// Returns the failure to run `codesign`, or its diagnostics when it fails.
 pub fn adhoc_sign(path: &Path) -> std::io::Result<()> {
     let output = Command::new("/usr/bin/codesign")
         .args(["--sign", "-", "--"])

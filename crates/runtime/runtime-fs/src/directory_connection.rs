@@ -164,8 +164,6 @@ fn join_worker(thread: JoinHandle<io::Result<()>>) -> io::Result<()> {
 impl DirectoryConnection {
     /// Close the queue and observe the exact RPC worker and transport outcome.
     /// Requires sole custody after all FUSE callbacks and handles have retired.
-    /// # Errors
-    /// Fails if owners remain, the worker lock is poisoned, or worker retirement fails.
     pub fn retire(self) -> io::Result<()> {
         let mut inner = Arc::try_unwrap(self.0)
             .map_err(|_| io::Error::other("retained source still has active owners"))?;
@@ -185,8 +183,6 @@ impl DirectoryConnection {
         self.0.live.store(false, Ordering::Release);
         let _ = self.0.transport.shutdown(std::net::Shutdown::Both);
     }
-    /// # Errors
-    /// Fails on socket or worker startup errors, invalid source capability, or startup timeout.
     pub fn connected(stream: UnixStream) -> io::Result<Self> {
         let transport = stream.try_clone()?;
         let (calls, receive) = tokio::sync::mpsc::channel::<Call>(LIMIT);
@@ -259,8 +255,6 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns actual custody release/transport failure.
     pub fn release_cursor(&self, cursor: u64) -> io::Result<()> {
         match self.call(Request::ReleaseCursor(cursor))? {
             Response::Empty => Ok(()),
@@ -285,8 +279,6 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn check_scope(&self, id: u64) -> io::Result<()> {
         match self.call(Request::Check(id))? {
             Response::Empty => Ok(()),
@@ -344,29 +336,21 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns actual capability release/transport failure.
     pub fn retire_history_read_handoff(&self, id: u64, ticket: [u8; 16]) -> io::Result<()> {
         self.empty(Request::RetireHistoryReadHandoff(id, ticket))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn arm_history_read_handoff(&self, id: u64, challenge: [u8; 32]) -> io::Result<[u8; 16]> {
         match self.call(Request::ArmHistoryRead(id, challenge))? {
             Response::Bytes(ticket) => ticket.try_into().map_err(|_| refused()),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns actual capability release/transport failure.
     pub fn release_history_read(&self, id: u64) -> io::Result<()> {
         match self.call(Request::ReleaseHistoryRead(id))? {
             Response::Empty => Ok(()),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn metadata(&self, directory: u64) -> io::Result<DirectoryStat> {
         match self.call(Request::Metadata(directory))? {
             Response::DirectoryStat(value) => Ok(value),
@@ -394,8 +378,6 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns observed transport/custody release failure.
     pub fn release_pin(&self, id: u64) -> io::Result<()> {
         match self.call(Request::ReleasePin(id))? {
             Response::Empty => Ok(()),
@@ -411,8 +393,6 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn statfs(
         &self,
         directory: u64,
@@ -435,34 +415,24 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn stat(&self, directory: u64, name: &EntryName) -> io::Result<Option<DirectoryStat>> {
         match self.call(Request::Stat(directory, name.clone()))? {
             Response::Stat(value) => Ok(value),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn list(&self, directory: u64, cursor: u64) -> io::Result<DirectoryRows> {
         match self.call(Request::List(directory, cursor))? {
             Response::Rows(value) => Ok(value),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn directory(&self, directory: u64, name: &EntryName) -> io::Result<u64> {
         self.handle(Request::Directory(directory, name.clone()))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn open(&self, directory: u64, name: &EntryName, mode: OpenMode) -> io::Result<u64> {
         self.handle(Request::Open(directory, name.clone(), mode, None))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn open_expected(
         &self,
         directory: u64,
@@ -472,8 +442,6 @@ impl DirectoryConnection {
     ) -> io::Result<u64> {
         self.handle(Request::Open(directory, name.clone(), mode, Some(expected)))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn set_created_permissions(
         &self,
         directory: u64,
@@ -491,16 +459,12 @@ impl DirectoryConnection {
             mode,
         ))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn set_temporary_permissions(&self, id: u64, mode: u32) -> io::Result<()> {
         if mode & !0o7777 != 0 {
             return Err(refused());
         }
         self.empty(Request::SetTemporaryPermissions(id, mode))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn retire_created(
         &self,
         directory: u64,
@@ -512,19 +476,13 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn create_file(&self, directory: u64, name: &EntryName) -> io::Result<u64> {
         self.handle(Request::Create(directory, name.clone(), false))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn create_directory(&self, directory: u64, name: &EntryName) -> io::Result<u64> {
         self.handle(Request::Create(directory, name.clone(), true))
     }
 
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn recoveries(
         &self,
         directory: u64,
@@ -538,8 +496,6 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn restore_captured(
         &self,
         directory: u64,
@@ -551,8 +507,6 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn atomic_save(
         &self,
         directory: u64,
@@ -570,8 +524,6 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn rename_replace(
         &self,
         directory: u64,
@@ -580,8 +532,6 @@ impl DirectoryConnection {
     ) -> io::Result<u64> {
         self.handle(Request::RenameReplace(directory, name.clone(), new.clone()))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn rename_no_replace(
         &self,
         directory: u64,
@@ -591,8 +541,6 @@ impl DirectoryConnection {
         self.handle(Request::Rename(directory, name.clone(), new.clone()))
     }
     /// Reserve genuine work under this connected source; wire IDs grant no rights.
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn prepare_replacement(
         &self,
         parent: u64,
@@ -612,34 +560,24 @@ impl DirectoryConnection {
             old,
         ))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn retire_pending_handoff(&self, id: u64, ticket: [u8; 16]) -> io::Result<()> {
         match self.call(Request::RetirePendingHandoff(id, ticket))? {
             Response::Empty => Ok(()),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn arm_pending_handoff(&self, id: u64, challenge: [u8; 32]) -> io::Result<[u8; 16]> {
         match self.call(Request::ArmPendingHandoff(id, challenge))? {
             Response::Bytes(bytes) => bytes.as_slice().try_into().map_err(|_| refused()),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn acknowledged_committed_job(&self, pending: u64) -> io::Result<u64> {
         self.handle(Request::AcknowledgedCommittedJob(pending))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn acknowledged_committed_pin(&self, pending: u64) -> io::Result<u64> {
         self.handle(Request::AcknowledgedCommittedPin(pending))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn observe_pending_replacement(
         &self,
         pending: u64,
@@ -649,48 +587,34 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn check_pending_replacement(&self, pending: u64) -> io::Result<()> {
         self.empty(Request::CheckPendingReplacement(pending))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn start_pending_replacement(&self, pending: u64, receipt: &[u8]) -> io::Result<u64> {
         if receipt.is_empty() || receipt.len() > crate::external_history::LIMIT {
             return Err(crate::native_reply::bounded_refusal());
         }
         self.handle(Request::StartPendingReplacement(pending, receipt.to_vec()))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn cancel_pending_replacement(&self, pending: u64) -> io::Result<()> {
         self.empty(Request::CancelPendingReplacement(pending))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn release_pending_replacement(&self, pending: u64) -> io::Result<()> {
         self.empty(Request::ReleasePendingReplacement(pending))
     }
     /// Retain actual remote capture custody for a completed genuine job.
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn pin_replacement(&self, job: u64) -> io::Result<u64> {
         match self.call(Request::ReplacementPin(job))? {
             Response::Handle(id) => Ok(id),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn created_temporary(&self, job: u64) -> io::Result<u64> {
         match self.call(Request::CreatedTemporary(job))? {
             Response::Handle(id) => Ok(id),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn check_created_temporary(&self, id: u64) -> io::Result<()> {
         self.empty(Request::CheckCreatedTemporary(id))
     }
@@ -707,42 +631,30 @@ impl DirectoryConnection {
             Err(error) => Outcome::Unknown(error.to_string()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn prepare_created_replacement(&self, id: u64) -> io::Result<u64> {
         match self.call(Request::PrepareCreatedReplacement(id))? {
             Response::Handle(pending) => Ok(pending),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn retire_created_temporary(&self, id: u64) -> io::Result<u64> {
         match self.call(Request::RetireCreatedTemporary(id))? {
             Response::Handle(job) => Ok(job),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn release_created_temporary(&self, id: u64) -> io::Result<()> {
         self.empty(Request::ReleaseCreatedTemporary(id))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn commit_replacement_pin(&self, pin: u64, receipt: &[u8]) -> io::Result<()> {
         if receipt.is_empty() || receipt.len() > crate::external_history::LIMIT {
             return Err(refused());
         }
         self.empty(Request::CommitReplacementPin(pin, receipt.to_vec()))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn check_replacement_pin(&self, pin: u64) -> io::Result<()> {
         self.empty(Request::CheckReplacementPin(pin))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn observe_replacement_pin(
         &self,
         pin: u64,
@@ -752,31 +664,21 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn release_replacement_pin(&self, pin: u64) -> io::Result<()> {
         self.empty(Request::ReleaseReplacementPin(pin))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn poll(&self, job: u64) -> io::Result<JobPoll> {
         match self.call(Request::Poll(job))? {
             Response::Poll(value) => Ok(value),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn cancel(&self, job: u64) -> io::Result<()> {
         self.empty(Request::Cancel(job))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn release_directory(&self, directory: u64) -> io::Result<()> {
         self.empty(Request::ReleaseDirectory(directory))
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn release_job(&self, job: u64) -> io::Result<()> {
         self.empty(Request::ReleaseJob(job))
     }
@@ -792,16 +694,12 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn metadata_handle(&self, id: u64) -> io::Result<Metadata> {
         match self.call(Request::HandleStat(id))? {
             Response::Metadata(value) => Ok(value),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn read(&self, id: u64, offset: u64, len: u32) -> io::Result<Vec<u8>> {
         if len > crate::MAX_READ_CHUNK {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -811,8 +709,6 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn write(&self, id: u64, offset: u64, bytes: &[u8]) -> io::Result<u32> {
         if bytes.len() > crate::MAX_WRITE_CHUNK as usize {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -823,8 +719,6 @@ impl DirectoryConnection {
         }
     }
     /// One non-idempotent append; a failed transport may have an unknown effect.
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn append(&self, id: u64, bytes: &[u8]) -> io::Result<u32> {
         if bytes.len() > crate::MAX_WRITE_CHUNK as usize {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -834,16 +728,12 @@ impl DirectoryConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn flush(&self, id: u64) -> io::Result<()> {
         match self.call(Request::Flush(id))? {
             Response::Empty => Ok(()),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn release(&self, id: u64) -> io::Result<()> {
         match self.call(Request::Release(id))? {
             Response::Empty => Ok(()),

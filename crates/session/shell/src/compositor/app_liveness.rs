@@ -200,7 +200,6 @@ impl Watches {
 /// frame could not be shown, handed from the tile to the compositor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
-    /// Keep waiting for the app of this window.
     Wait(u64),
     /// End the app of this window, all its processes.
     CloseApp(u64),

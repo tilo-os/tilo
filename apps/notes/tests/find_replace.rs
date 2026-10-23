@@ -1,4 +1,3 @@
-//! The shared find overlay replaces current or all matches through Notes actions.
 use notes::{actions, read};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;

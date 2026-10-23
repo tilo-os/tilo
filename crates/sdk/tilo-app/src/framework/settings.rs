@@ -128,6 +128,10 @@ pub(crate) struct ViewStorage {
     held_sections: RefCell<HashMap<TypeId, Rc<dyn Any>>>,
     /// Those sections, as the door reaches them.
     section_doors: RefCell<Vec<Rc<dyn RecordDoor>>>,
+    /// The records another provider keeps, by id, with that provider
+    /// ([`Records::kept_by`](super::Records::kept_by)): views show them and
+    /// bind to them, the window neither publishes nor runs their actions.
+    kept_by: RefCell<HashMap<String, &'static str>>,
     /// The store of the app's records in the room, for the records it
     /// keeps beside its own: not in a view of a past version.
     room: Option<super::chain::RoomRecords>,
@@ -187,6 +191,7 @@ impl ViewStorage {
             sections: RefCell::default(),
             held_sections: RefCell::default(),
             section_doors: RefCell::default(),
+            kept_by: RefCell::default(),
             room: hosted.room,
             chains: super::chain::Chains::default(),
         })
@@ -220,12 +225,19 @@ impl ViewStorage {
         &self,
         me: Option<&str>,
         payload: &[u8],
+        live: &mut ui_core::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, String> {
-        self.chains.answer(me, payload)
+        self.chains.answer(me, payload, live)
     }
 
     pub(crate) fn storage(&self) -> &AppStorage {
         &self.storage
+    }
+
+    /// The store of the app's records in the workspace; `None` in a view of
+    /// a past version.
+    pub(crate) fn room_store(&self) -> Option<&ui_core::record::RecordStore> {
+        self.room.as_ref().map(|room| &room.store)
     }
 
     /// This device's id, in a live window.
@@ -280,7 +292,26 @@ impl ViewStorage {
                 .map(|door| door.publish()),
         );
         resources.extend(self.chains.doors().iter().map(|door| door.publish()));
+        let kept_by = self.kept_by.borrow();
+        if !kept_by.is_empty() {
+            for resource in &mut resources {
+                if let Some(provider) = kept_by.get(resource.id.as_str()) {
+                    run_by(resource, provider);
+                }
+            }
+        }
         resources
+    }
+
+    /// Mark the record `id` as kept by `provider`
+    /// ([`Records::kept_by`](super::Records::kept_by)).
+    pub(crate) fn keep_by(&self, id: &str, provider: &'static str) {
+        self.kept_by.borrow_mut().insert(id.to_owned(), provider);
+    }
+
+    /// The provider keeping the record `id`, when another one does.
+    pub(crate) fn kept_provider(&self, id: &str) -> Option<&'static str> {
+        self.kept_by.borrow().get(id).copied()
     }
 
     /// Answer one published action of those records, invoked by someone
@@ -296,6 +327,9 @@ impl ViewStorage {
             .map(super::person::PersonState::doors)
             .unwrap_or_default();
         doors.extend(self.section_doors.borrow().iter().cloned());
+        // Another provider runs what it keeps; the window never does.
+        let kept_by = self.kept_by.borrow();
+        doors.retain(|door| !kept_by.contains_key(door.id()));
         let me = self
             .person
             .as_ref()
@@ -446,5 +480,16 @@ impl ViewStorage {
         let mut list = self.followed.borrow_mut();
         current.append(&mut list);
         *list = current;
+    }
+}
+
+/// `resource`'s actions as `provider` runs them, its parts' too.
+fn run_by(resource: &mut tilo_actions::Resource, provider: &'static str) {
+    resource.actions = std::mem::take(&mut resource.actions)
+        .into_iter()
+        .map(|spec| spec.run_by(provider))
+        .collect();
+    for child in &mut resource.children {
+        run_by(child, provider);
     }
 }

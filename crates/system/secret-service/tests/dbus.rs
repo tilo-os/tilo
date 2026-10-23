@@ -88,7 +88,6 @@ impl World {
         }
     }
 
-    /// A client connected as `identity`.
     async fn client(&self, identity: &str) -> Connection {
         let core = Core::new(
             Arc::clone(&self.store),

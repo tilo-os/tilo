@@ -212,12 +212,9 @@ impl DesktopChromeSource for PageChrome {
 }
 
 impl PageChrome {
-    /// Whether this desktop's person may ask for `command` on the active
-    /// workspace: the desktop's one policy
-    /// ([`tilo_desktop_model::commands::may_command`]), asked before a
-    /// control is offered and again before the change is applied.
     fn may(&self, command: &DesktopCommand) -> Result<(), String> {
-        let standing = self.shared.standing_of(&self.room.author);
+        let members = self.shared.members.borrow();
+        let standing = self.shared.standing_of(&self.room.author, members.as_ref());
         let authors = self.room.authors.borrow();
         self.handle.read(|tree| {
             let workspace = tree
@@ -231,20 +228,21 @@ impl PageChrome {
     /// Whether this desktop's person may add a workspace to the room, by the
     /// desktop's one policy.
     fn may_create_workspace(&self) -> Result<(), String> {
-        let standing = self.shared.standing_of(&self.room.author);
+        let members = self.shared.members.borrow();
+        let standing = self.shared.standing_of(&self.room.author, members.as_ref());
         tilo_desktop_model::commands::may_create_workspace(&standing)
             .map_err(|refusal| refusal.to_string())
     }
 
     /// What this desktop's person may change about the active workspace.
     fn offered_edits(&self) -> OfferedEdits {
-        let standing = self.shared.standing_of(&self.room.author);
+        let members = self.shared.members.borrow();
+        let standing = self.shared.standing_of(&self.room.author, members.as_ref());
         let authors = self.room.authors.borrow();
         self.handle
             .read(|tree| offered_edits(&standing, &authors, tree))
     }
 
-    /// Who is here, placed in `tree`.
     fn people(&self, tree: &DesktopTree) -> Vec<tilo_desktop::here::Person> {
         here_people(&self.here, &self.shared, tree)
     }
@@ -471,15 +469,15 @@ pub(crate) struct BrowserShell {
     menu_shown: Cell<bool>,
     offers: HostOffers,
     requests: HostRequests,
-    /// The menu behind the bar's workspace name.
     workspace_menu: WorkspaceMenu,
-    /// The card behind the bar's own avatar.
     profile: ProfileCard,
     /// The People popover the bar's avatars open.
     people: CollaboratorsOverlay,
     people_open: bool,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
+    /// Asks again while the card shows a code, until the account links.
+    linking: tilo_app::linked_accounts::LinkingRecheck,
     /// The person whose recent summary the popover shows.
     expanded: Option<String>,
     /// The pointer, in logical pixels, for the popover's targets.
@@ -574,6 +572,7 @@ impl BrowserShell {
             people: CollaboratorsOverlay::default(),
             people_open: false,
             linked_seen: Cell::new(0),
+            linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             expanded: None,
             cursor: None,
             shortcuts: ShortcutConfig::default(),
@@ -1039,6 +1038,12 @@ impl BrowserShell {
     /// room's host run them, and show the linked accounts again when an
     /// answer changed them. Whether anything changed.
     fn follow_room_actions(&mut self) -> bool {
+        // Before the requests are taken, so the asks it makes go out now.
+        self.linking.follow(
+            &self.chrome.shared.linked,
+            self.profile.is_open(),
+            ui::time::now(),
+        );
         let asked = self.chrome.shared.room_actions.take_requests();
         let changed = !asked.is_empty();
         self.requests
@@ -1085,7 +1090,6 @@ impl BrowserShell {
         true
     }
 
-    /// Give the active workspace `name`.
     fn rename_workspace(&self, name: String) {
         let unchanged = self.handle.read(|tree| {
             tree.active_workspace()
@@ -1908,6 +1912,7 @@ impl Widget for BrowserShell {
             self.navigator
                 .next_wake_deadline(&self.navigator_frame, ui::time::now()),
         )
+        .chain(self.linking.due())
         .min()
     }
 
@@ -1959,6 +1964,7 @@ mod tests {
             person,
             role,
             layout_shared: true,
+            members: None,
         }
     }
 
@@ -1982,7 +1988,6 @@ mod tests {
         assert_eq!(offers("owner", Some(Role::Owner)), all);
         // Until the room has answered, nothing is offered to take back.
         assert_eq!(offers(GUEST, None), none);
-        // A desktop of one's own is theirs.
         let own = crate::desktop::Standing::default();
         assert_eq!(offered_edits(&own.of(GUEST), &authors, &tree), all);
     }
@@ -2012,6 +2017,32 @@ mod tests {
         }
     }
 
+    /// A window whose opener has left the room holds nobody: once the
+    /// room's members are heard without them, it offers its close.
+    #[test]
+    fn a_window_of_someone_who_left_offers_its_close() {
+        let (tree, authors) = lounge();
+        let shared = crate::desktop::Shared::default();
+        shared.authors.borrow_mut().clone_from(&authors);
+        shared.standing.set(Some(Role::Editor));
+        let mut person = |id: &str| (id.to_owned(), (1, 2, 3));
+        shared
+            .members
+            .replace(Some([GUEST, OTHER_GUEST].map(str::to_owned).into()));
+        assert!(
+            !shared
+                .holders(&tree, GUEST, "Lounge", &mut person)
+                .is_empty(),
+            "the other guest is still here"
+        );
+        shared.members.replace(Some([GUEST.to_owned()].into()));
+        let held = shared.holders(&tree, GUEST, "Lounge", &mut person);
+        assert!(
+            held.values().all(|holder| holder.name != OTHER_GUEST),
+            "the other guest left: {held:?}"
+        );
+    }
+
     /// A public room shares no member's layout: once it said so, every
     /// window on the visitor's desktop is theirs to close (nothing is ever
     /// undone), and the workspace's name and desks are offered to nobody.
@@ -2030,7 +2061,7 @@ mod tests {
         );
         for role in [Role::Editor, Role::Moderator] {
             shared.standing.set(Some(role));
-            let edits = offered_edits(&shared.standing_of(GUEST), &authors, &tree);
+            let edits = offered_edits(&shared.standing_of(GUEST, None), &authors, &tree);
             assert_eq!(edits, OfferedEdits::default(), "{role:?}");
         }
     }

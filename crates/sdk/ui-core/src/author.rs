@@ -17,7 +17,6 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{AvatarFace, ChipFace, ChipLead};
 
-/// Who an item is by.
 #[derive(Clone, Copy, Debug)]
 pub enum Author<'a> {
     /// A person, by name and identity (which picks their colour), with the
@@ -155,7 +154,6 @@ pub fn service_label(service: &str) -> String {
 }
 
 impl<'a> Author<'a> {
-    /// The name the author is shown under.
     #[must_use]
     pub fn shown_name(&self) -> &'a str {
         match *self {
@@ -181,14 +179,18 @@ impl<'a> Author<'a> {
         let Self::Bot {
             bot_name,
             appearance: Some(appearance),
+            linked,
             ..
         } = *self
         else {
             return self.shown_name().to_owned();
         };
+        // A persona linked to a member shows that member's own name: the
+        // one it looks like is the one it is.
         if !members
             .iter()
             .any(|member| looks_alike(member, &appearance.name))
+            || linked.is_some_and(|person| looks_alike(person, &appearance.name))
         {
             return appearance.name.clone();
         }
@@ -369,6 +371,7 @@ mod tests {
             Some(Persona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
+                linked: None,
             }),
         )
         .unwrap()
@@ -431,17 +434,29 @@ mod tests {
         let alice = alice();
         assert_eq!(bridge(Some(&alice)).label(&["Bo"]), "alice");
         assert_eq!(bridge(Some(&alice)).label(&["Alice"]), "alice · Discord");
-        // Cyrillic "а" is a confusable of Latin "a".
         let cyrillic = Appearance::new("\u{430}lice", None, alice.persona.clone()).unwrap();
         assert_eq!(
             bridge(Some(&cyrillic)).label(&["alice"]),
             "\u{430}lice · Discord"
         );
-        // Without a persona, the bot's own name is the suffix.
         let bare = Appearance::new("alice", None, None).unwrap();
         assert_eq!(
             bridge(Some(&bare)).label(&["Alice"]),
             "alice · Discord Bridge"
+        );
+        // Linked to the member it looks like, it is that member.
+        let linked = |person| Author::Bot {
+            bot_name: "Discord Bridge",
+            installed_by: "Ada",
+            appearance: Some(&alice),
+            linked: Some(person),
+            image: None,
+        };
+        assert_eq!(linked("Alice").label(&["Alice"]), "alice");
+        assert_eq!(
+            linked("Bo").label(&["Alice", "Bo"]),
+            "alice · Discord",
+            "a persona linked to one member still may not look like another"
         );
         assert!(looks_alike("paypal", "pаypаl"));
         assert!(!looks_alike("alice", "bob"));

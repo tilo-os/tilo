@@ -120,10 +120,6 @@ impl GovernorSuccession {
     /// current, native device of theirs certified to own workspaces, to
     /// govern in its place. `previous` is checked by signature only: an
     /// expired governor still needs a successor.
-    ///
-    /// # Errors
-    ///
-    /// Why the succession is refused.
     pub fn verify_at(&self, now_ns: u64) -> Result<(), SuccessionError> {
         let evidence = |error: &dyn std::fmt::Display| SuccessionError::Evidence(error.to_string());
         verify_device_cert(&self.previous).map_err(|error| evidence(&error))?;
@@ -264,7 +260,6 @@ mod tests {
             GovernorSuccession::sign(laptop.clone(), revocation, server, &root),
             Err(SuccessionError::Successor)
         );
-        // Without the revocation of the device it replaces there is none.
         assert_eq!(
             GovernorSuccession::sign(laptop, revoke(&root, &phone), phone, &root),
             Err(SuccessionError::Mismatch)
@@ -298,7 +293,6 @@ mod tests {
             current_governor(&[a_to_d, a_to_b.clone()], a.device_public_key),
             lowest
         );
-        // A cycle ends where it started over.
         let b_to_a =
             GovernorSuccession::sign(b.clone(), revoke(&root, &b), a.clone(), &root).unwrap();
         assert_eq!(

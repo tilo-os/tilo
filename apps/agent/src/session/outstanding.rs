@@ -103,10 +103,6 @@ impl Session {
 
     /// Read every cancellation answer that has arrived, without waiting.
     /// `Ok(true)` once the host has said the task is cancelled.
-    ///
-    /// # Errors
-    ///
-    /// When the broker refused to answer a poll, as the old in-line poll did.
     pub(super) fn cancellation_known(&mut self) -> Result<bool> {
         let polls = std::mem::take(&mut self.outstanding.cancel.polls);
         for (request_id, at) in polls {

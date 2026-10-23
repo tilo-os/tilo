@@ -97,7 +97,6 @@ pub struct Config {
     /// Device-local PCRs applied after `PolicyAuthorize`. These cannot be part of
     /// a release prediction because their values depend on the machine.
     pub platform_pcrs: Vec<u32>,
-    /// Public half of the PCR-prediction signing key.
     pub pcr_public_key: String,
     /// Public half of the key that authorises floor advances. Defaults to the PCR-prediction
     /// key (same trust domain — the image publisher), but production custody should separate

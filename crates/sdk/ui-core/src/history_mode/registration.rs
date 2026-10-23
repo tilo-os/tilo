@@ -213,9 +213,6 @@ impl HistoryRegistration {
     }
 
     /// Build a registration with exactly one source for each declared scope.
-    ///
-    /// # Errors
-    /// Returns an error for invalid scopes, missing presentations or foreign sources.
     pub fn new(
         definition: &'static HistoryDefinition,
         sources: Vec<HistorySourceRegistration>,
@@ -234,9 +231,6 @@ impl HistoryRegistration {
         Ok(registration)
     }
     /// Attach the trusted source owner, never a service available to a preview.
-    ///
-    /// # Errors
-    /// Returns an error if the named scope is not installed in this registration.
     pub fn with_asset_source(
         mut self,
         scope: &'static str,
@@ -262,9 +256,6 @@ impl HistoryRegistration {
             .all(|source| matches!(source, HistorySourceRegistration::CheckedFiles { .. }))
     }
     /// Validate the declared scope and source correspondence.
-    ///
-    /// # Errors
-    /// Returns an error for invalid scopes, missing presentations or foreign sources.
     pub fn validate(&self) -> Result<(), HistoryRegistrationError> {
         use std::collections::HashSet;
         let mut keys = HashSet::new();

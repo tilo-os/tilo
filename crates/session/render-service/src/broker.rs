@@ -16,7 +16,6 @@ pub const BROKER_FD_ENV: &str = "TILO_RENDER_BROKER_FD";
 /// (`shell __render-service`).
 pub const MODE: &str = "__render-service";
 
-/// From the broker.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToService {
     /// A new app connection; its channel comes with this message.
@@ -30,7 +29,6 @@ pub enum ToService {
     Drop { connection: u64 },
 }
 
-/// To the broker.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FromService {
     /// The device is open and the pipelines are built: send apps.

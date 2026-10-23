@@ -1,4 +1,3 @@
-//! The real default loan, original Passwords decision and private native D-Bus.
 use super::*;
 use crate::shell::in_process::messaging::sms_first;
 use std::collections::HashMap;
@@ -261,6 +260,7 @@ fn empty_native_messages_sim_choice_protected_review_receive_reply_and_revoke() 
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("sms-apps"),
+        Some(rig.root.path().join("sms-apps").join("person")),
         &rig.owner.principal,
         socket,
     )
@@ -488,6 +488,8 @@ fn receive_reply(
     account: &ServiceAccount,
     evidence: &Mutex<Evidence>,
 ) -> (String, MessagesEffect) {
+    // The account published reaches the app's copy over its route.
+    carry_accounts(apps);
     effect(
         &mut mounted.harness,
         &MessagesEffect::OpenPerson {
@@ -583,6 +585,7 @@ fn restart(
     drop(apps);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("sms-apps"),
+        Some(rig.root.path().join("sms-apps").join("person")),
         &rig.owner.principal,
         rig.root.path().join("sms-first.sock"),
     )

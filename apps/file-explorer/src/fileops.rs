@@ -110,8 +110,6 @@ impl FolderFailure {
     }
 }
 
-// --- trash ----------------------------------------------------------------
-
 pub use host_fs::trash::{is_trash_dir, trash_dir};
 
 /// Ensure the trash files directory exists, so opening an empty trash shows an
@@ -138,34 +136,18 @@ pub fn trash_entries_snapshot() -> Option<Vec<PathBuf>> {
 }
 
 /// Permanently remove everything in the trash. Returns how many items were purged.
-///
-/// # Errors
-///
-/// Returns an error if the platform trash is unavailable, or listing or
-/// purging its items fails.
 pub fn empty_trash() -> Result<usize, String> {
     host_fs::trash::empty()
 }
 
 /// Restore the trashed items backing `entries` to their original locations.
 /// Returns how many were restored.
-///
-/// # Errors
-///
-/// Returns an error if the platform trash is unavailable, or listing or
-/// restoring the matched items fails (e.g. the original location no longer
-/// exists).
 pub fn restore_entries(entries: &[PathBuf]) -> Result<usize, String> {
     host_fs::trash::restore(entries)
 }
 
 /// Permanently delete the trashed items backing `entries` (file + info).
 /// Returns how many were purged.
-///
-/// # Errors
-///
-/// Returns an error if the platform trash is unavailable, or listing or
-/// purging the matched items fails.
 pub fn purge_entries(entries: &[PathBuf]) -> Result<usize, String> {
     host_fs::trash::purge(entries)
 }
@@ -224,11 +206,6 @@ fn suffixed_name(stem: &str, extension: Option<&str>, suffix: u32) -> String {
 }
 
 /// Create a new folder named `name` (deduplicated) inside `parent`.
-///
-/// # Errors
-///
-/// Returns an error if `name` is empty, a path expression (`/`, `.` or `..`),
-/// or if creating the directory fails (e.g. `parent` is not writable).
 pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
     let name = match leaf_name(name) {
         Ok(name) => name,
@@ -241,12 +218,6 @@ pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 /// Rename `path` to `new_name` within the same directory.
-///
-/// # Errors
-///
-/// Returns an error if `new_name` is empty or a path expression, if `path`
-/// has no parent directory, if a file already exists at the destination name,
-/// or if the OS rename fails.
 pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     let new_name = leaf_name(new_name)?;
     let parent = path
@@ -301,11 +272,6 @@ pub fn move_to_trash(path: &Path) -> Result<Option<PathBuf>, String> {
 
 /// Recursively copy `src` into the directory `dest_dir`, choosing a
 /// non-colliding name. Returns the created destination path.
-///
-/// # Errors
-///
-/// Returns an error if `src` has no file name, or the recursive copy fails
-/// (a read/write/permission error partway through the tree).
 pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     transfer_into_with(src, dest_dir, false, &mut NoopTransferObserver)
 }
@@ -313,9 +279,6 @@ pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
 /// Copy a mounted source into an independent, owner-writable local file.
 /// Permissions are applied to newly created files in private staging, never
 /// to the source or a published destination. Directories retain their modes.
-///
-/// # Errors
-/// Returns an error if staging, copying or publication fails.
 pub fn import_mounted_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     transfer_into_with(src, dest_dir, false, &mut MountedImportObserver)
 }
@@ -352,9 +315,6 @@ pub use cap_std::fs::{Dir as SourceDirectory, OpenOptions as SourceOpenOptions};
 pub trait TransferObserver {
     /// Open a leaf of a retained source directory. A host may implement its
     /// platform's nonblocking open without putting platform flags in the app.
-    ///
-    /// # Errors
-    /// Returns a source opening or admission failure.
     fn open_source(
         &mut self,
         parent: &SourceDirectory,
@@ -415,9 +375,6 @@ pub trait TransferObserver {
     }
 
     /// Revalidate current authority before restoring a Cut source.
-    ///
-    /// # Errors
-    /// Refuses restoration when source or retained staging authority is lost.
     fn before_source_restore(&mut self, _source: &Path, _staged: &Path) -> std::io::Result<()> {
         Ok(())
     }
@@ -1302,7 +1259,6 @@ mod tests {
             shown.chars().next().is_some_and(char::is_uppercase),
             "{shown}"
         );
-        // Files' own reasons are copy already.
         assert_eq!(
             readable_error("A file with that name already exists"),
             "A file with that name already exists"
@@ -1826,7 +1782,6 @@ mod tests {
         {
             let d = tmp();
             let root = d.path();
-            // Free name is returned verbatim.
             assert_eq!(
                 unique_destination(root, "a.txt").unwrap(),
                 root.join("a.txt")
@@ -1841,7 +1796,6 @@ mod tests {
                 unique_destination(root, "a.txt").unwrap(),
                 root.join("a 3.txt")
             );
-            // Extension-less names.
             fs::create_dir(root.join("folder")).unwrap();
             assert_eq!(
                 unique_destination(root, "folder").unwrap(),
@@ -1873,7 +1827,6 @@ mod tests {
             assert!(renamed.ends_with("new.txt"));
             assert!(!f.exists());
             assert!(renamed.exists());
-            // Collision is refused.
             fs::write(d.path().join("taken.txt"), b"x").unwrap();
             assert!(rename(&renamed, "taken.txt").is_err());
             assert!(rename(&renamed, "..").is_err());
@@ -1893,7 +1846,6 @@ mod tests {
             assert_eq!(fs::read(copied.join("inner.txt")).unwrap(), b"hello");
             // Original still present (copy, not move).
             assert!(src.join("inner.txt").exists());
-            // A second copy into the same dir dedups the folder name.
             let copied2 = copy_into(&src, &destdir).unwrap();
             assert_eq!(copied2.file_name().unwrap().to_string_lossy(), "dir 2");
         }

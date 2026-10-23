@@ -304,17 +304,9 @@ impl From<UiTextRole> for TextRole {
 /// Compile a validated serialized graph into ordinary Tilo widgets.
 pub trait UiDocumentExt {
     /// Build the retained widget subtree represented by this graph.
-    ///
-    /// # Errors
-    ///
-    /// Returns a schema validation error before any widget is constructed.
     fn build(&self, theme: &Theme) -> Result<Element, UiGraphError>;
 
     /// Build with process-local services such as screen navigation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a schema validation error before any widget is constructed.
     fn build_with(&self, theme: &Theme, context: &UiBuildContext) -> Result<Element, UiGraphError>;
 }
 
@@ -822,10 +814,6 @@ const UI_GRAPH_HISTORY_LIMIT: usize = 100;
 
 impl UiGraphHandle {
     /// Create a live handle after validating its complete source graph.
-    ///
-    /// # Errors
-    ///
-    /// Returns the graph's validation error.
     pub fn new(document: UiDocument) -> Result<Self, UiGraphError> {
         document.validate()?;
         Ok(Self {
@@ -842,10 +830,6 @@ impl UiGraphHandle {
     }
 
     /// Parse and validate a live graph handle from JSON.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JSON or graph validation error.
     pub fn from_json(source: &str) -> Result<Self, UiGraphError> {
         Self::new(UiDocument::from_json(source)?)
     }
@@ -853,10 +837,6 @@ impl UiGraphHandle {
     /// Load a screen from the host's live graph directory when one is set,
     /// otherwise from the embedded source. The native runner fills that
     /// directory from `TILO_UI_GRAPH_DIR`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JSON, I/O, or graph validation error.
     pub fn from_embedded_or_live(screen: &str, embedded: &str) -> Result<Self, UiGraphError> {
         if let Some(dir) = crate::host::environment().ui_graph_dir.clone() {
             let path = dir.join(format!("{screen}.json"));
@@ -869,10 +849,6 @@ impl UiGraphHandle {
     ///
     /// Successful in-process edits are written back to the same path so the
     /// builder, `tilo-app ui apply`, and the running app share one document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O, JSON, or graph validation error.
     pub fn open_live(path: impl Into<PathBuf>) -> Result<Self, UiGraphError> {
         let path = path.into();
         let source = std::fs::read_to_string(&path)
@@ -924,10 +900,6 @@ impl UiGraphHandle {
     ///
     /// External edits become the new history baseline. Returns `true` when the
     /// in-memory document changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O, JSON, lock, or validation error.
     pub fn poll_live_source(&self) -> Result<bool, UiGraphError> {
         let path = {
             let state = self.inner.read().map_err(|_| UiGraphError::Poisoned)?;
@@ -971,10 +943,6 @@ impl UiGraphHandle {
     }
 
     /// Apply a batch of tagged edits and persist when this handle is live.
-    ///
-    /// # Errors
-    ///
-    /// Returns a lock, edit, validation, or I/O error.
     pub fn apply_edits(&self, edits: Vec<UiGraphEdit>) -> Result<(), UiGraphError> {
         self.edit(|candidate| candidate.apply_edits(edits))
     }
@@ -993,10 +961,6 @@ impl UiGraphHandle {
     }
 
     /// Serialize the current source document as formatted JSON.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph lock or serialization error.
     pub fn to_json_pretty(&self) -> Result<String, UiGraphError> {
         self.document()?.to_json_pretty()
     }
@@ -1015,10 +979,6 @@ impl UiGraphHandle {
     }
 
     /// Validate and atomically replace the complete source graph.
-    ///
-    /// # Errors
-    ///
-    /// Returns a validation or graph lock error.
     pub fn replace(&self, document: UiDocument) -> Result<(), UiGraphError> {
         document.validate()?;
         let mut state = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
@@ -1134,11 +1094,6 @@ impl UiGraphHandle {
 
     /// Mutate one source node, validate the complete candidate graph, then
     /// publish it atomically. A failed edit leaves the live graph unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph lock, unknown-node, concurrent-edit, or validation
-    /// error.
     pub fn update_node(
         &self,
         id: &str,
@@ -1162,11 +1117,6 @@ impl UiGraphHandle {
     ///
     /// This is intended for property typing and drag gestures; use
     /// [`Self::update_node`] for discrete operations.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph lock, unknown-node, concurrent-edit, or validation
-    /// error.
     pub fn update_node_grouped(
         &self,
         id: &str,
@@ -1234,19 +1184,11 @@ impl UiGraphHandle {
     }
 
     /// Compile the live graph into ordinary retained widgets.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph validation or widget-construction error.
     pub fn widget(&self, theme: &Theme) -> Result<LiveUi, UiGraphError> {
         self.widget_with(theme, UiBuildContext::default())
     }
 
     /// Build a live graph with process-local services such as routing.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph validation or widget-construction error.
     pub fn widget_with(
         &self,
         theme: &Theme,
@@ -1666,10 +1608,6 @@ pub struct UiGraphEditor {
 
 impl UiGraphEditor {
     /// Build an editor around an existing live graph.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph lock, validation, or widget-construction error.
     pub fn new(handle: UiGraphHandle, theme: Theme) -> Result<Self, UiGraphError> {
         let document = handle.document()?;
         let graph_revision = handle.revision().unwrap_or_default();
@@ -3319,7 +3257,6 @@ mod tests {
                 .is_none(),
             "the input never writes the document"
         );
-        // What every input over the path shows is the app's value.
         title.set("Atlas II".to_owned());
         Widget::sync(root.as_mut(), &doc, &ROOT);
         assert_eq!(

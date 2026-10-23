@@ -384,7 +384,6 @@ pub struct Roster {
     /// Person ids (a user root key in lowercase hex), sorted and distinct:
     /// a person on two devices is in the call once.
     pub people: Vec<String>,
-    /// Those of `people` whose camera is on, sorted and distinct.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cameras: Vec<String>,
     /// Those of `people` who share a screen, sorted and distinct.

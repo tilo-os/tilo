@@ -34,11 +34,6 @@ impl BoundedStatePeer {
 }
 impl PeerRead<'_> {
     /// The current governed member for the device `source`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`BoundedPeerError`] if `source` is not a current member or a
-    /// limit is reached.
     pub fn member(
         &self,
         source: [u8; 32],

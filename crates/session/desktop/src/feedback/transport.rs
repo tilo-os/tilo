@@ -640,7 +640,12 @@ impl Host {
         let namespace = blake3::hash(&serde_json::to_vec(&pin.destination)?);
         let key = StorageKey::package(format!("so.tilo.feedback-authority.{}", namespace.to_hex()));
         let lease = store.lease(&key)?;
-        store.flush(Some(&key))?;
+        // Durable on the store's own thread where this one must not wait;
+        // reading needs no flush.
+        match store.flush_where_allowed(&key) {
+            Ok(()) | Err(durable_store::StoreError::Pending(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
         let revision = match store.read(&key)? {
             Some(stored) => {
                 if stored.bytes.len() > 4096 {

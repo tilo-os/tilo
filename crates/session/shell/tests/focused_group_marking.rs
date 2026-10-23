@@ -199,7 +199,6 @@ fn the_focus_light_follows_the_pointer_and_only_shows_with_two_windows() {
 
     // Phase `a_workspace_with_one_window_lights_nothing`.
     {
-        // Same builder, trimmed to a single group on a single strip.
         let (mut t, s_a, s_b) = tree();
         {
             let ws = &mut t.desktop.workspaces[0];

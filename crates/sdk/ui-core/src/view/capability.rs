@@ -14,12 +14,10 @@ pub trait ViewState: Widget {
     fn restore_view_state(&mut self, _view: &super::ViewContribution) {}
 }
 
-/// `widget`'s view contribution.
 pub fn view_state(widget: &(impl Widget + ?Sized)) -> Option<super::ViewContribution> {
     capability::<dyn ViewState>(widget)?.view_state()
 }
 
-/// Restore `widget`'s presentation from `view`.
 pub fn restore_view_state(widget: &mut (impl Widget + ?Sized), view: &super::ViewContribution) {
     if let Some(state) = capability_mut::<dyn ViewState>(widget) {
         state.restore_view_state(view);

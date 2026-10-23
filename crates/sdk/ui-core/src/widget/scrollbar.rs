@@ -515,8 +515,6 @@ impl Scrollbar {
         }
     }
 
-    // --- axis helpers --------------------------------------------------
-
     fn axis_len(&self, r: Rect) -> f64 {
         if self.vertical { r.height() } else { r.width() }
     }
@@ -529,8 +527,6 @@ impl Scrollbar {
     fn cursor_axis(&self, p: Point) -> f64 {
         if self.vertical { p.y } else { p.x }
     }
-
-    // --- geometry ------------------------------------------------------
 
     /// The thumb rect within `track` for the given `metrics`, or `None`
     /// when there's no meaningful content to represent. The owner is
@@ -557,8 +553,6 @@ impl Scrollbar {
             Rect::new(lo, track.y0, lo + thumb_len, track.y1)
         })
     }
-
-    // --- interaction ---------------------------------------------------
 
     /// Set the hover state directly; returns `true` when it changed (so the
     /// owner can schedule a redraw only on an edge).
@@ -786,7 +780,6 @@ mod tests {
 
     #[test]
     fn thumb_geometry_follows_content_ratio_offset_and_axis() {
-        // Case `thumb_shrinks_as_content_grows`.
         {
             let bar = Scrollbar::vertical();
             let short = bar
@@ -804,7 +797,6 @@ mod tests {
             );
         }
 
-        // Case `thumb_clamped_to_minimum`.
         {
             let bar = Scrollbar::vertical();
             let thumb = bar
@@ -813,7 +805,6 @@ mod tests {
             assert!(thumb.height() >= MIN_THUMB_LEN - 1e-6);
         }
 
-        // Case `thumb_tracks_offset_top_to_bottom`.
         {
             let bar = Scrollbar::vertical();
             let m0 = ScrollMetrics::new(1200.0, 300.0, 0.0);
@@ -825,7 +816,6 @@ mod tests {
             assert!((bottom.y1 - 300.0).abs() < 1e-3, "got {}", bottom.y1);
         }
 
-        // Case `horizontal_axis_uses_x`.
         {
             let mut bar = Scrollbar::horizontal();
             let track = Rect::new(0.0, 92.0, 300.0, 100.0);
@@ -847,7 +837,6 @@ mod tests {
 
     #[test]
     fn thumb_and_track_presses_drag_and_page_within_bounds() {
-        // Case `press_thumb_begins_drag_and_move_updates_offset`.
         {
             let mut bar = Scrollbar::vertical();
             let m = ScrollMetrics::new(1200.0, 300.0, 0.0); // max_scroll = 900
@@ -864,7 +853,6 @@ mod tests {
             assert!(!bar.is_dragging());
         }
 
-        // Case `drag_offset_clamped_at_ends`.
         {
             let mut bar = Scrollbar::vertical();
             let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
@@ -883,7 +871,6 @@ mod tests {
             assert!((off - 0.0).abs() < 1e-6, "clamped to 0: {off}");
         }
 
-        // Case `press_track_below_thumb_pages_down`.
         {
             let mut bar = Scrollbar::vertical();
             let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
@@ -901,7 +888,6 @@ mod tests {
             assert!(!bar.is_dragging(), "track click is not a drag");
         }
 
-        // Case `press_track_above_thumb_pages_up_clamped`.
         {
             let mut bar = Scrollbar::vertical();
             // Already at top → paging up clamps to 0.
@@ -918,7 +904,6 @@ mod tests {
             let _ = thumb; // silence unused in the top branch
         }
 
-        // Case `hover_edge_detection`.
         {
             let mut bar = Scrollbar::vertical();
             let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
@@ -935,7 +920,6 @@ mod tests {
             assert!(!bar.is_hovered());
         }
 
-        // Case `press_misses_when_content_fits`.
         {
             let mut bar = Scrollbar::vertical();
             // content fits viewport → max_scroll 0, thumb fills the track.

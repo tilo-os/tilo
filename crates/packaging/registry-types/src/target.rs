@@ -93,7 +93,6 @@ pub fn is_runtime_package_id(package_id: &str) -> bool {
 /// `tilo_app_package::LANGUAGE_PACK_ID_PREFIX`.
 pub const LANGUAGE_PACK_PACKAGE_PREFIX: &str = "so.tilo.language-pack.";
 
-/// Whether `package_id` names a language pack.
 #[must_use]
 pub fn is_language_pack_package_id(package_id: &str) -> bool {
     package_id
@@ -213,10 +212,6 @@ fn valid_runtime_version(version: &str) -> bool {
 
 impl RegistryTarget {
     /// Check the target is one this registry schema accepts.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first [`TargetError`] found.
     pub fn validate(&self) -> Result<(), TargetError> {
         self.validate_interfaces()?;
         if self.platform == TILO_OS_PLATFORM

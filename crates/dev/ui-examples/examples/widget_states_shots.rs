@@ -1605,6 +1605,7 @@ impl Widget for ToastProbe {
                 ToastKind::Success,
             )
             .closable(true),
+            tilo_ui::time::now(),
         );
     }
     fn name(&self) -> &'static str {

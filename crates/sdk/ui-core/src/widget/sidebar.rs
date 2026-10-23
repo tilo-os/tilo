@@ -161,8 +161,6 @@ impl SidebarDrawer {
         }
     }
 
-    // --- builders -----------------------------------------------------------
-
     #[must_use]
     pub fn side(mut self, side: SidebarSide) -> Self {
         self.side = side;
@@ -351,8 +349,6 @@ impl SidebarDrawer {
         self.resolve_extent(self.rail_width)
     }
 
-    // --- state --------------------------------------------------------------
-
     /// Docked at/above the (resolved) breakpoint; always an overlay for
     /// [`Self::overlay_only`].
     pub fn layout_for(&self, width: f64) -> SplitLayout {
@@ -417,8 +413,6 @@ impl SidebarDrawer {
         self.animating || self.flap.is_animating(self.layout)
     }
 
-    // --- geometry -----------------------------------------------------------
-
     /// The sidebar panel. An overlay drawer floats `s2` inside the outer
     /// rect; its contents lay out inside this rect.
     pub fn sidebar_rect(&self) -> Rect {
@@ -458,8 +452,6 @@ impl SidebarDrawer {
             SidebarSide::Right => Rect::new(r.x0, r.y0, rail.x0, r.y1),
         }
     }
-
-    // --- the header row and the toggle --------------------------------------
 
     /// The window's header row across the top of `area`, with this drawer's
     /// toggle in it: at the leading corner for a sidebar, the trailing one
@@ -947,9 +939,6 @@ impl SidebarDrawer {
         }
     }
 
-    // --- hit-testing --------------------------------------------------------
-
-    /// Whether `p` is over the drawer panel.
     pub fn sidebar_contains(&self, p: Point) -> bool {
         self.sidebar_rect.width() > 0.0 && self.sidebar_rect.contains(p)
     }
@@ -970,8 +959,6 @@ impl SidebarDrawer {
             false
         }
     }
-
-    // --- drawing ------------------------------------------------------------
 
     /// Paint the panel the drawer's contents stand on and return the theme
     /// to draw them with. Docked, it is the window region
@@ -1357,7 +1344,6 @@ mod tests {
 
     #[test]
     fn sidebar_docks_wide_overlays_narrow_and_mirrors_sides() {
-        // Case `wide_docks_and_insets_content_right_side`.
         {
             let mut d = SidebarDrawer::new().right().docked_width(300.0);
             let content = d.resolve(wide());
@@ -1370,7 +1356,6 @@ mod tests {
             assert!((d.sidebar_rect().width() - 300.0).abs() < 0.5);
         }
 
-        // Case `narrow_overlays_closed_by_default_full_width_content`.
         {
             let mut d = SidebarDrawer::new().right().overlay_width(320.0);
             let content = d.resolve(narrow());
@@ -1384,7 +1369,6 @@ mod tests {
             );
         }
 
-        // Case `left_side_mirrors_right`.
         {
             let mut d = SidebarDrawer::new().left().docked_width(280.0);
             let content = d.resolve(wide());
@@ -1393,7 +1377,6 @@ mod tests {
             assert!((d.sidebar_rect().x0 - wide().x0).abs() < 0.5);
         }
 
-        // Case `rail_leaves_a_thin_strip_when_collapsed_docked`.
         {
             let mut d = SidebarDrawer::new()
                 .left()
@@ -1408,7 +1391,6 @@ mod tests {
             assert!((d.content_rect().x0 - wide().x0 - 280.0).abs() < 0.5);
         }
 
-        // Case `a_hidden_sidebar_stays_hidden_across_a_narrow_window`.
         {
             let mut d = SidebarDrawer::new().right();
             d.resolve(wide());
@@ -1428,7 +1410,6 @@ mod tests {
     fn overlay_drawer_floats_slides_with_scrim_and_dismisses_on_scrim_only() {
         let theme = Theme::dark();
         let gap = f64::from(theme.tokens.spacing.s2);
-        // Case `toggle_open_overlay_paints_scrim_and_floats_in`.
         {
             let mut d = SidebarDrawer::new().right().overlay_width(320.0);
             d.scale_for(&theme);
@@ -1445,7 +1426,6 @@ mod tests {
             assert!((d.sidebar_rect().y0 - gap).abs() < 0.5);
         }
 
-        // Case `scrim_tap_dismisses_overlay_but_a_tap_on_the_drawer_does_not`.
         {
             let mut d = SidebarDrawer::new().right().overlay_width(320.0);
             d.resolve(narrow());
@@ -1460,7 +1440,6 @@ mod tests {
             assert!(!d.is_open());
         }
 
-        // Case `overlay_flap_slides_across_frames_from_the_tick_path`.
         {
             let mut d = SidebarDrawer::new().right().overlay_width(320.0);
             d.resolve(narrow());
@@ -1493,7 +1472,6 @@ mod tests {
             assert!((d.reveal() - 1.0).abs() < 0.01);
         }
 
-        // Case `reduce_motion_snaps_instead_of_sliding`.
         {
             let mut calm = Theme::dark();
             calm.reduce_motion = true;
@@ -1506,7 +1484,6 @@ mod tests {
             assert!(!d.is_animating());
         }
 
-        // Case `panel_and_toggle_paint_from_tokens`.
         {
             let mut d = SidebarDrawer::new().overlay_width(320.0);
             d.resolve(narrow());
@@ -1591,7 +1568,6 @@ mod tests {
         let node = d.toggle_accessibility().expect("a node");
         assert_eq!(node.name.as_deref(), Some("Show sidebar"));
 
-        // A click on the toggle opens the drawer, under the header row.
         let p = face.toggle.center();
         let device = DeviceId::dummy();
         route(
@@ -1620,7 +1596,6 @@ mod tests {
             "the row stays live"
         );
 
-        // The system shortcut closes it, as in every app.
         let key = crate::synthetic_input::key_input(
             &winit::keyboard::Key::Character("L".into()),
             ElementState::Pressed,

@@ -203,9 +203,6 @@ pub struct ServiceLaunch {
 }
 /// Use the normal signed sandbox pipeline, with the actual provider as PID 1.
 /// Linux completes descendant teardown before that init becomes waitable.
-/// # Errors
-/// Refuses changed installation, relaxed confinement, failed provider shutdown
-/// or an unavailable namespace witness. No permission or trust is created.
 pub fn run(
     launch: ServiceLaunch,
     authority: Arc<dyn ServiceAuthority>,
@@ -1582,7 +1579,6 @@ mod tests {
         let mut running = Running::start();
         let descendant = running.orphan_handle();
         let outer = i32::try_from(running.outer).unwrap();
-        // The original outer process is still owned and unreaped here.
         assert_eq!(unsafe { libc::kill(outer, libc::SIGKILL) }, 0);
         let status = running.worker.take().unwrap().join().unwrap().unwrap();
         assert!(!status.success());

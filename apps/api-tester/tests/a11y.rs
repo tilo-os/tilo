@@ -353,7 +353,6 @@ fn tab_traverses_every_control_in_order() {
         "Tab reaches a table row's remove button"
     );
 
-    // Shift+Tab reverses.
     d.set_modifiers(&["shift".into()]);
     let back = d.tab(true);
     assert!(back.is_some(), "Shift+Tab moves focus backward");
@@ -449,16 +448,36 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
         before.y0 - top < 300.0,
         "three parameter rows fit above the response: divider {before:?}, send y={top}"
     );
+    assert!(
+        reset_disabled(d),
+        "nothing was resized, so there is nothing to reset"
+    );
     d.perform_named("api.request-divider", &ui::a11y::Action::Focus)
         .unwrap();
     d.key("ArrowDown");
     assert!(d.targets()["api.request-divider"].y0 > before.y0);
+    d.relayout();
+    assert!(!reset_disabled(d), "a moved divider can be reset");
     d.resize((800, 480)).unwrap();
     assert!(d.targets()["api.request-divider"].y1 < 380.0);
     d.resize((1280, 800)).unwrap();
     assert!(d.targets()["api.request-divider"].y0 > before.y0);
     d.click_named("api.reset-request-area").unwrap();
     assert_eq!(d.targets()["api.request-divider"], before);
+    d.relayout();
+    assert!(
+        reset_disabled(d),
+        "reset, the area has nothing left to reset"
+    );
+}
+
+/// Whether the header's Reset request area is disabled.
+fn reset_disabled(d: &FrameHarness) -> bool {
+    d.controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some("Reset request area"))
+        .expect("Reset request area is a control")
+        .disabled
 }
 
 fn click_tab(d: &mut FrameHarness, index: u32) {
@@ -745,7 +764,6 @@ fn pointer_and_keyboard_send_use_the_live_request() {
             value: "prod_sk_9f8c1a2b3d4e5f60".into(),
         })
         .unwrap();
-        // The request's own credential, also kept on this device, names it.
         app.effect(&ApiTesterEffect::SetCredential {
             secret: "{{token}}".into(),
         })

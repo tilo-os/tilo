@@ -154,13 +154,11 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
             assert!(asked.is_waiting());
             assert_eq!(asked.draft.action_label, "Append");
             assert_eq!(asked.draft.fields[0].value.line(), "Draft line");
-            // Asking again waits on the same question.
             assert!(append(&agent, &run, 9100, "Draft line").await.is_err());
             assert_eq!(held(&f).unwrap().id, asked.id);
             let snapshot = f.native.owner.workspace_task_snapshot(room()).unwrap();
             assert_eq!(snapshot.tasks[0].status, WorkspaceTaskStatus::InProgress);
 
-            // The person changes the text and confirms.
             answer(
                 &f,
                 &asked.id,

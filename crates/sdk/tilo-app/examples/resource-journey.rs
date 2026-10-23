@@ -178,7 +178,6 @@ mod tests {
             "a refused action writes no history"
         );
 
-        // Use the shared input control, then the same semantic door as a script.
         app.harness()
             .perform_named(
                 "draft",
@@ -191,7 +190,6 @@ mod tests {
             "ada"
         );
 
-        // A task's flag is a field edit at its path.
         let id = app.state().tasks.ids().next().cloned().expect("task id");
         let done = Checklist::paths().tasks.item(&id).done;
         let wrong: serde_json::Value = serde_json::from_str(

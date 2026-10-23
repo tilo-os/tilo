@@ -100,9 +100,7 @@ pub struct ProfileModel {
     /// The stable identity the avatar's colour and initials derive from
     /// when the person chose no colour.
     pub identity: String,
-    /// The person's colour.
     pub colour: Option<Color>,
-    /// The person may change their name here.
     pub can_rename: bool,
     /// The person has not named themselves yet (`name` is their login
     /// account's): the card asks, once, for the name people here should
@@ -150,7 +148,6 @@ pub enum ProfileChoice {
     Link(String),
     /// Unlink the person's account with this connector's service.
     Unlink(String),
-    /// Say this availability from now on.
     Availability(ui::Availability),
     /// Say this short status (empty clears it).
     Status(String),
@@ -641,7 +638,6 @@ impl ProfileCard {
         }
     }
 
-    /// The linked accounts the card shows.
     pub fn linked(&self) -> &[LinkedAccount] {
         self.model.as_ref().map_or(&[], |model| &model.linked)
     }

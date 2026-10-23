@@ -510,7 +510,6 @@ fn mcp_process_owns_and_reaps_its_children() {
             !matches!(reply, Response::Denied(_)),
             "the actual identity worker answered: {reply:?}"
         );
-        // Another accepted connection stops inside a partial handshake.
         let mut partial = UnixStream::connect(session.identity_socket()).unwrap();
         partial.write_all(&[0]).unwrap();
         drop(session);

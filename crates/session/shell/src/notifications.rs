@@ -1985,12 +1985,6 @@ impl ServerHandle {
 ///
 /// **Production** passes `zbus::Connection::session()`. **Tests** pass an
 /// in-process p2p connection; `request_name` is best-effort there since p2p connections have no broker.
-///
-/// # Errors
-///
-/// Returns an error if registering [`NotificationService`] at
-/// [`OBJECT_PATH`] fails. A failed [`BUS_NAME`] request is logged, not
-/// propagated.
 #[cfg(target_os = "linux")]
 pub async fn serve_notifications(
     connection: zbus::Connection,
@@ -2096,7 +2090,6 @@ mod tests {
             assert_ne!(c, 0);
             assert!(c > a, "ids must be monotonic: {a} then {c}");
         }
-        // Phase `incoming_round_trips_through_bridge`.
         {
             let b = NotificationBridge::new();
             assert_eq!(b.pending_incoming_len(), 0);
@@ -2120,18 +2113,15 @@ mod tests {
             let drained = b.drain_incoming();
             assert_eq!(drained.len(), 1);
             assert_eq!(drained[0].summary, "Hi");
-            // Drain is destructive.
             assert_eq!(b.pending_incoming_len(), 0);
             assert!(b.drain_incoming().is_empty());
         }
-        // Phase `close_request_round_trips`.
         {
             let b = NotificationBridge::new();
             b.request_close(42);
             assert_eq!(b.drain_close_requests(), vec![42]);
             assert!(b.drain_close_requests().is_empty());
         }
-        // Phase `closed_and_action_events_round_trip`.
         {
             let b = NotificationBridge::new();
             b.note_closed(7, CloseReason::Expired);
@@ -2139,13 +2129,11 @@ mod tests {
             assert_eq!(b.drain_closed_events(), vec![(7, CloseReason::Expired)]);
             assert_eq!(b.drain_action_events(), vec![(7, "default".to_string())]);
         }
-        // Phase `close_reason_codes_match_spec`.
         {
             assert_eq!(CloseReason::Expired.code(), 1);
             assert_eq!(CloseReason::Dismissed.code(), 2);
             assert_eq!(CloseReason::Closed.code(), 3);
         }
-        // Phase `pair_actions_unflattens_and_drops_dangling_key`.
         {
             let actions = vec![
                 "default".to_string(),
@@ -2163,18 +2151,15 @@ mod tests {
                 ]
             );
         }
-        // Phase `parse_urgency_defaults_to_normal`.
         {
             let hints: HashMap<String, OwnedValue> = HashMap::new();
             assert_eq!(parse_urgency(&hints), 1);
         }
-        // Phase `parse_urgency_reads_critical_byte`.
         {
             let mut hints: HashMap<String, OwnedValue> = HashMap::new();
             hints.insert("urgency".to_string(), OwnedValue::from(2u8));
             assert_eq!(parse_urgency(&hints), 2);
         }
-        // Phase `tilo_hints_are_bounded_before_they_reach_chrome`.
         {
             let mut hints = HashMap::new();
             hints.insert("x-tilo-badge-count".into(), OwnedValue::from(u32::MAX));
@@ -2228,7 +2213,6 @@ mod tests {
 
     #[test]
     fn continuity_projection_commands_and_routes_are_allowlisted_and_expire() {
-        // Phase `continuity_projection_redacts_and_local_only_never_registers`.
         {
             let bridge = NotificationBridge::new();
             assert!(
@@ -2253,7 +2237,6 @@ mod tests {
             assert!(projected.body.is_empty());
             assert!(projected.body_redacted);
         }
-        // Phase `continuity_commands_are_live_allowlisted_and_retire_once`.
         {
             let bridge = NotificationBridge::new();
             let id = bridge
@@ -2290,7 +2273,6 @@ mod tests {
                 2_001,
             ));
         }
-        // Phase `continuity_routes_expire_and_restart_epoch_invalidates_them`.
         {
             let first = NotificationBridge::new();
             let id = first
@@ -2334,7 +2316,6 @@ mod tests {
 
     #[test]
     fn remote_inbox_keys_dedupes_prunes_and_bounds_by_source() {
-        // Phase `remote_inbox_keys_identical_ids_by_authenticated_source`.
         {
             let bridge = NotificationBridge::new();
             let projection = remote_projection(9, "Same id");
@@ -2346,7 +2327,6 @@ mod tests {
             assert_eq!(bridge.remote_continuity_len(), 1);
             assert!(!bridge.retire_remote_continuity("attacker", remote_projection(9, "x").id));
         }
-        // Phase `remote_inbox_dedupes_and_replaces_one_source_record`.
         {
             let bridge = NotificationBridge::new();
             let first = remote_projection(2, "First");
@@ -2364,7 +2344,6 @@ mod tests {
             };
             assert_eq!(notification.projection.title, "Replacement");
         }
-        // Phase `offline_source_is_pruned_without_retiring_online_sibling`.
         {
             let bridge = NotificationBridge::new();
             let id = remote_projection(12, "Shared id").id;
@@ -2396,7 +2375,6 @@ mod tests {
             );
             assert!(bridge.retire_remote_continuity("tablet", id));
         }
-        // Phase `remote_inbox_is_bounded_and_evicts_oldest`.
         {
             let bridge = NotificationBridge::new();
             for index in 0..=MAX_CONTINUITY_NOTIFICATIONS {
@@ -2419,7 +2397,6 @@ mod tests {
 
     #[test]
     fn remote_records_route_live_actions_expire_and_fail_closed() {
-        // Phase `remote_commands_validate_live_action_and_route_exact_origin`.
         {
             let bridge = NotificationBridge::new();
             let projection = remote_projection(3, "Action");
@@ -2453,7 +2430,6 @@ mod tests {
             );
             assert_eq!(bridge.remote_continuity_len(), 0);
         }
-        // Phase `remote_expiry_and_retire_emit_local_removal`.
         {
             let bridge = NotificationBridge::new();
             let projection = remote_projection(4, "Expires");
@@ -2470,7 +2446,6 @@ mod tests {
                 }]
             );
         }
-        // Phase `remote_record_carries_provenance_and_is_never_projectable`.
         {
             let bridge = NotificationBridge::new();
             assert!(bridge.receive_continuity_projection(
@@ -2487,7 +2462,6 @@ mod tests {
             assert_eq!(notification.source_label, "Quinten's phone");
             assert!(!notification.is_projectable());
         }
-        // Phase `malformed_sharing_hint_fails_closed`.
         {
             let hints = HashMap::from([(
                 "x-tilo-device-sharing".to_string(),
@@ -2502,7 +2476,6 @@ mod tests {
 
     #[test]
     fn flatpak_identity_requires_matching_scope_runtime_and_install() {
-        // Phase `systemd_escape_and_scope_match_handle_flatpak_ids_without_indexing`.
         {
             assert_eq!(systemd_escape("org.example.App"), "org.example.App");
             assert_eq!(systemd_escape("org.example App"), "org.example\\x20App");
@@ -2515,7 +2488,6 @@ mod tests {
                 "org.example App"
             ));
         }
-        // Phase `foreign_flatpak_identity_requires_matching_runtime_cgroup_and_install`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let app_id = "org.example.Chat";
@@ -2767,7 +2739,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     async fn dbus_server_round_trips_notifications_with_attribution() {
-        // Phase `notify_round_trips_with_caller_attribution`.
         {
             let bridge = NotificationBridge::new();
             let callers = CallerMap::new();
@@ -2823,7 +2794,6 @@ mod tests {
             assert_eq!(caller.workspace_id, WorkspaceId(7));
             assert_eq!(caller.app_id.as_str(), "org.example.app");
         }
-        // Phase `replaces_id_is_preserved`.
         {
             let bridge = NotificationBridge::new();
             let (_server, client) = bring_up_pair(bridge.clone(), CallerMap::new()).await;
@@ -2846,7 +2816,6 @@ mod tests {
             assert_eq!(inc[0].dbus_id, 99);
             assert_eq!(inc[0].expire_timeout, 0, "never-expire timeout preserved");
         }
-        // Phase `close_notification_enqueues_close_request`.
         {
             let bridge = NotificationBridge::new();
             let (_server, client) = bring_up_pair(bridge.clone(), CallerMap::new()).await;
@@ -2858,7 +2827,6 @@ mod tests {
                 .expect("call CloseNotification");
             assert_eq!(bridge.drain_close_requests(), vec![5]);
         }
-        // Phase `get_capabilities_and_server_information`.
         {
             let bridge = NotificationBridge::new();
             let (_server, client) = bring_up_pair(bridge, CallerMap::new()).await;

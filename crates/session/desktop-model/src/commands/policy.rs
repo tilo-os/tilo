@@ -22,7 +22,7 @@
 use tilo_action_policy::Role;
 
 use super::DesktopCommand;
-use crate::ownership::{Authors, made_by};
+use crate::ownership::{Authors, made_by, released};
 use crate::workspace::Workspace;
 
 /// Who asks, and the role the room holds them to.
@@ -36,6 +36,10 @@ pub struct Standing<'a> {
     /// Whether the room shares its members' layout. A public room does
     /// not: what a member arranges stays on their own desktop.
     pub layout_shared: bool,
+    /// The room's current members, by person id, when known: what someone
+    /// no longer among them made is released, theirs to close and move
+    /// ([`crate::ownership::released`]).
+    pub members: Option<&'a std::collections::BTreeSet<String>>,
 }
 
 impl Standing<'_> {
@@ -119,7 +123,7 @@ fn write(standing: &Standing<'_>) -> Result<(), Refusal> {
 }
 
 /// Whether `standing` may close, move or reorder the window `tab`: they
-/// opened it, or they govern the workspace.
+/// opened it, whoever did has left the room, or they govern the workspace.
 ///
 /// # Errors
 ///
@@ -129,7 +133,11 @@ pub fn may_rearrange_window(
     authors: &Authors,
     tab: u64,
 ) -> Result<(), Refusal> {
-    if !standing.layout_shared || standing.governs() || made_by(authors, tab, standing.person) {
+    if !standing.layout_shared
+        || standing.governs()
+        || made_by(authors, tab, standing.person)
+        || (standing.writes() && released(authors, tab, standing.members))
+    {
         Ok(())
     } else {
         Err(Refusal::Others {
@@ -140,7 +148,7 @@ pub fn may_rearrange_window(
 }
 
 /// Whether `standing` may rename, move or remove the strip `strip`: they
-/// made it, or they govern the workspace.
+/// made it, whoever did has left the room, or they govern the workspace.
 ///
 /// # Errors
 ///
@@ -150,7 +158,10 @@ pub fn may_manage_strip(
     authors: &Authors,
     strip: u64,
 ) -> Result<(), Refusal> {
-    if standing.layout_shared && made_by(authors, strip, standing.person) {
+    if standing.layout_shared
+        && (made_by(authors, strip, standing.person)
+            || (standing.writes() && released(authors, strip, standing.members)))
+    {
         Ok(())
     } else {
         govern(standing, Governed::Desks)
@@ -230,22 +241,26 @@ mod tests {
         person: "guest",
         role: Some(Role::Editor),
         layout_shared: true,
+        members: None,
     };
     const OTHER_GUEST: &str = "other-guest";
     const MEMBER: Standing<'static> = Standing {
         person: "member",
         role: Some(Role::Editor),
         layout_shared: true,
+        members: None,
     };
     const MODERATOR: Standing<'static> = Standing {
         person: "moderator",
         role: Some(Role::Moderator),
         layout_shared: true,
+        members: None,
     };
     const OWNER: Standing<'static> = Standing {
         person: "owner",
         role: Some(Role::Owner),
         layout_shared: true,
+        members: None,
     };
 
     fn tab(id: u64) -> Tab {
@@ -317,6 +332,7 @@ mod tests {
             person: "guest",
             role: None,
             layout_shared: true,
+            members: None,
         };
         assert!(asks(&unknown, &rename).is_err());
     }
@@ -355,6 +371,35 @@ mod tests {
         };
         assert_eq!(may_command(&MEMBER, &authors, &workspace, &rename), Ok(()));
         assert!(may_command(&GUEST, &authors, &workspace, &rename).is_err());
+    }
+
+    /// A window whose opener has left the room holds nobody: whoever
+    /// writes there closes or moves it. While the members are not known,
+    /// or while the opener is still a member, it stays theirs.
+    #[test]
+    fn a_window_of_someone_who_left_is_anyones_to_close() {
+        let theirs = DesktopCommand::CloseTab {
+            location: at(2, 200),
+        };
+        let still_here: std::collections::BTreeSet<String> =
+            ["guest", OTHER_GUEST].map(str::to_owned).into();
+        let left: std::collections::BTreeSet<String> = ["guest"].map(str::to_owned).into();
+        let guest = |members| Standing { members, ..GUEST };
+        assert!(asks(&guest(None), &theirs).is_err(), "members not known");
+        assert!(asks(&guest(Some(&still_here)), &theirs).is_err());
+        assert_eq!(asks(&guest(Some(&left)), &theirs), Ok(()));
+        let viewer = Standing {
+            role: Some(Role::Viewer),
+            ..guest(Some(&left))
+        };
+        assert!(
+            asks(&viewer, &theirs).is_err(),
+            "someone who only looks closes nothing"
+        );
+        // The room's own windows are nobody's to release.
+        let (workspace, mut authors) = lounge();
+        authors.remove(&2);
+        assert!(may_command(&guest(Some(&left)), &authors, &workspace, &theirs).is_err());
     }
 
     #[test]
@@ -401,10 +446,12 @@ mod tests {
     fn in_a_room_that_shares_no_layout_a_visitors_desktop_is_their_own() {
         let visitor = Standing {
             layout_shared: false,
+            members: None,
             ..GUEST
         };
         let moderator = Standing {
             layout_shared: false,
+            members: None,
             ..MODERATOR
         };
         // Every window on their desktop is theirs, someone else's included:
@@ -440,6 +487,7 @@ mod tests {
         assert_eq!(may_create_workspace(&OWNER), Ok(()));
         let visitor = Standing {
             layout_shared: false,
+            members: None,
             ..OWNER
         };
         assert_eq!(may_create_workspace(&visitor), Err(Refusal::HostsLayout));
@@ -457,6 +505,7 @@ mod tests {
             person: "viewer",
             role: Some(Role::Viewer),
             layout_shared: true,
+            members: None,
         };
         assert_eq!(asks(&viewer, &open), Err(Refusal::ReadOnly));
     }

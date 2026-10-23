@@ -7,6 +7,12 @@
 //! [`crate::files_app`]), so a user with no templates never sees an empty menu.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Wake, Waker};
+use std::thread::Thread;
+
+use ui::lock::MutexRecover as _;
 
 /// The Templates directory: `$XDG_TEMPLATES_DIR` when set (and non-empty),
 /// otherwise `~/Templates`. `None` only when there is no home directory.
@@ -24,6 +30,7 @@ pub fn templates_dir() -> Option<PathBuf> {
 /// dotfiles are skipped), sorted by name for a stable menu order. An absent or
 /// unreadable directory yields an empty list.
 pub fn list_templates(dir: &Path) -> Vec<PathBuf> {
+    ui::storage::waiting::refused("listing the Templates folder");
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir(dir) {
         for entry in rd.flatten() {
@@ -39,6 +46,139 @@ pub fn list_templates(dir: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// The template files of one Templates folder, as the menus and the
+/// published rows read them.
+///
+/// On the compositor's frame loop, which never waits on the disk, a worker
+/// thread lists the folder and lists it again when its watch reports a
+/// change (or, while the folder does not exist, when one of its ancestors
+/// changes), and the window reads the last list from memory. Elsewhere, in a
+/// test or a standalone window, the folder is listed when asked.
+pub(crate) struct Catalog {
+    dir: Option<PathBuf>,
+    wake: ui::WakeHandle,
+    /// The worker, started the first time the catalog is read on a frame
+    /// loop: a window built before its thread became one still reads it
+    /// from memory there.
+    live: std::cell::OnceCell<Option<Live>>,
+}
+
+/// The worker's last list, and how to stop it.
+struct Live {
+    shared: Arc<Shared>,
+    worker: Thread,
+}
+
+struct Shared {
+    templates: Mutex<Vec<PathBuf>>,
+    stopped: AtomicBool,
+}
+
+impl Catalog {
+    /// The catalog of `dir`, or an empty one for `None`. `wake` wakes the
+    /// window when a worker's list changes.
+    pub(crate) fn new(dir: Option<PathBuf>, wake: ui::WakeHandle) -> Self {
+        let catalog = Self {
+            dir,
+            wake,
+            live: std::cell::OnceCell::new(),
+        };
+        // On a frame loop the worker starts at once, so the first menu
+        // already has the list.
+        if ui::storage::waiting::forbidden() {
+            let _ = catalog.live();
+        }
+        catalog
+    }
+
+    fn live(&self) -> Option<&Live> {
+        self.live
+            .get_or_init(|| {
+                let dir = self.dir.clone()?;
+                Live::start(dir, self.wake.clone())
+            })
+            .as_ref()
+    }
+
+    /// The template files, sorted by name. Listed when asked, except on a
+    /// frame loop, where the worker's last list is read.
+    pub(crate) fn templates(&self) -> Vec<PathBuf> {
+        if ui::storage::waiting::forbidden() || self.live.get().is_some() {
+            return self
+                .live()
+                .map(|live| live.shared.templates.lock_recover().clone())
+                .unwrap_or_default();
+        }
+        self.dir.as_deref().map(list_templates).unwrap_or_default()
+    }
+}
+
+impl Live {
+    fn start(dir: PathBuf, wake: ui::WakeHandle) -> Option<Self> {
+        let shared = Arc::new(Shared {
+            templates: Mutex::new(Vec::new()),
+            stopped: AtomicBool::new(false),
+        });
+        let kept = Arc::clone(&shared);
+        let worker = std::thread::Builder::new()
+            .name("files-templates".into())
+            .spawn(move || keep_listing(&dir, &kept, &wake))
+            .inspect_err(|error| tracing::warn!(%error, "templates worker did not start"))
+            .ok()?;
+        Some(Self {
+            shared,
+            worker: worker.thread().clone(),
+        })
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        // The worker may be listing: it is not waited for, only told to stop.
+        self.shared.stopped.store(true, Ordering::Release);
+        self.worker.unpark();
+    }
+}
+
+/// Unparks the worker when its watch has news.
+struct Unpark(Thread);
+
+impl Wake for Unpark {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+fn keep_listing(dir: &Path, shared: &Shared, wake: &ui::WakeHandle) {
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut watch = crate::directory_watch::AwaitedDirectoryWatch::with_waker(waker);
+    // Watch before listing, so a change between the two is listed again
+    // rather than lost.
+    let _ = watch.point_at(Some(dir));
+    while !shared.stopped.load(Ordering::Acquire) {
+        let listed = list_templates(dir);
+        let changed = {
+            let mut templates = shared.templates.lock_recover();
+            let changed = *templates != listed;
+            *templates = listed;
+            changed
+        };
+        if changed {
+            wake.wake();
+        }
+        while !watch.take_changes() {
+            if shared.stopped.load(Ordering::Acquire) {
+                return;
+            }
+            std::thread::park();
+        }
+    }
 }
 
 /// The menu label for a template file: `New <stem>` (the extension is dropped
@@ -100,6 +240,15 @@ mod tests {
             assert!(list_templates(&d.path().join("nope")).is_empty());
         }
 
+        // --- phase: a_catalog_off_the_frame_loop_lists_when_asked ---
+        {
+            let d = tempfile::tempdir().unwrap();
+            let catalog = Catalog::new(Some(d.path().to_path_buf()), ui::WakeHandle::detached());
+            assert!(catalog.templates().is_empty());
+            fs::write(d.path().join("Note.md"), b"").unwrap();
+            assert_eq!(catalog.templates(), [d.path().join("Note.md")]);
+        }
+
         // --- phase: menu_label_drops_extension ---
         {
             assert_eq!(menu_label(Path::new("/t/Document.md")), "New Document");
@@ -124,5 +273,58 @@ mod tests {
                 "Document 2.md"
             );
         }
+    }
+
+    /// On the frame loop, which never waits on the disk, the catalog is listed by its worker, kept current by a watch (here
+    /// on a folder created only after the catalog started), and read from
+    /// memory.
+    #[test]
+    fn a_catalog_on_the_frame_loop_is_kept_by_its_worker() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("Templates");
+        let catalog = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
+                    let catalog = Catalog::new(Some(dir.clone()), ui::WakeHandle::detached());
+                    // Reading it waits on nothing: this would panic otherwise.
+                    assert!(catalog.templates().is_empty());
+                    catalog
+                })
+                .join()
+                .unwrap()
+        });
+        assert!(
+            catalog.live.get().is_some_and(Option::is_some),
+            "the frame loop's catalog has a worker"
+        );
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("Letter.md"), b"").unwrap();
+        tilo_test_env::wait_until("the worker to list the new template", || {
+            catalog.templates() == [dir.join("Letter.md")]
+        });
+    }
+
+    /// A window built before its thread became the frame loop's (one
+    /// restored at startup) still never lists the folder on that thread.
+    #[test]
+    fn a_catalog_built_before_the_frame_loop_is_read_there_from_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Memo.md"), b"").unwrap();
+        let catalog = Catalog::new(Some(dir.path().to_path_buf()), ui::WakeHandle::detached());
+        let catalog = std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
+                    // This would panic were the folder listed here.
+                    let _ = catalog.templates();
+                    catalog
+                })
+                .join()
+                .unwrap()
+        });
+        tilo_test_env::wait_until("the worker to list the template", || {
+            catalog.templates() == [dir.path().join("Memo.md")]
+        });
     }
 }

@@ -1148,8 +1148,6 @@ fn graph_pointer_path_drives_views_drawer_and_row_controls() {
 
     // phase narrow_graph2d_bar_toggle_opens_the_drawer
     {
-        // The window bar's sidebar toggle at a narrow width opens the
-        // collapsed Functions drawer.
         let mut app = CalculatorApp::new();
         app.set_mode(Mode::Graph2d);
         app.area = Rect::new(0.0, 0.0, 560.0, 720.0);

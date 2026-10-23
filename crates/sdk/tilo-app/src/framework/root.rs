@@ -2155,7 +2155,7 @@ impl ResourceRoot {
     fn start_record_operation(
         &self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
-        doc: &ui_core::widget::Edits<'_>,
+        doc: &mut ui_core::widget::Edits<'_>,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         let Some(request) = op.unscoped() else {
             return Ok(None);
@@ -2167,7 +2167,7 @@ impl ResourceRoot {
                 .record_action(self.dispatch.me(), request.payload)?
         } else if request.type_id == super::chain::CHAIN_ACTION_TYPE {
             self.storage
-                .chain_action(self.dispatch.me(), request.payload)?
+                .chain_action(self.dispatch.me(), request.payload, doc)?
         } else if request.type_id == super::person::HISTORY_TYPE {
             self.storage.person_history(request.payload)?
         } else {
@@ -2972,7 +2972,6 @@ mod search_tests {
                 text: "April".into(),
                 ..Default::default()
             },
-            // A flat id that lies in the inbox, read as a message row.
             SearchEntry {
                 anchor: Some("msg:3".into()),
                 title: "Invoice reminder".into(),
@@ -3235,7 +3234,6 @@ mod search_tests {
         ));
         assert_eq!(declared, [ScopeDecl::new("folder:inbox", "Inbox")]);
 
-        // Picking a hit opens the app at it.
         app.harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
                 let mut doc = ui_core::automerge::AutoCommit::new();
@@ -3249,7 +3247,6 @@ mod search_tests {
             .unwrap();
         OPENED.with_borrow(|opened| assert_eq!(opened.as_slice(), ["folder:inbox/msg:1"]));
 
-        // An agent opens it through the same door.
         app.call("open", serde_json::json!({ "anchor": "folder:sent/msg:2" }))
             .unwrap();
         OPENED.with_borrow(|opened| {

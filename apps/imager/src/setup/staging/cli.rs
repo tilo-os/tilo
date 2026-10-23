@@ -266,10 +266,8 @@ mod tests {
         v.iter().map(|x| (*x).to_string()).collect()
     }
 
-    /// CLI parsing.
     #[test]
     fn staging_cli_parses_only_exact_strict_forms() {
-        // Phase `parses_stage_and_remove_forms_strictly`.
         {
             let a = parse(&s(&[
                 "--manifest",
@@ -296,13 +294,11 @@ mod tests {
             assert!(parse(&s(&["--manifest"])).is_err());
         }
 
-        // Phase `only_the_exact_mode_argument_enters_the_cli`.
         {
             assert_eq!(maybe_run_staging_request(&s(&["imager"])).unwrap(), None);
             assert!(maybe_run_staging_request(&s(&["imager", STAGING_REQUEST_ARG])).is_err());
         }
 
-        // Phase `remove_without_a_record_is_an_error_not_a_request`.
         {
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("req.json");

@@ -523,7 +523,7 @@ pub(crate) mod tests {
             &identity,
             "Already imported",
             [10, 40, 60],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         runtime_identity::set_active_identity(&identity, "primary").unwrap();

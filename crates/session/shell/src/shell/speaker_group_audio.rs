@@ -18,7 +18,6 @@ const SINK_NODE_NAME: &str = media::audio::SPEAKER_GROUP_SINK;
 const SINK_WAIT: Duration = Duration::from_millis(1500);
 const SINK_POLL: Duration = Duration::from_millis(50);
 
-/// Which audio a tap moves into the group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TapSelection {
     /// Everything this device plays, including streams started later.

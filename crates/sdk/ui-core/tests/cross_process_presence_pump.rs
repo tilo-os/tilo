@@ -1,5 +1,3 @@
-//! Two-App proof that typed cross-process presence reaches the App pump.
-
 use std::thread;
 use std::time::Duration;
 

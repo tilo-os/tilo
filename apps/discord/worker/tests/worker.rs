@@ -1,6 +1,3 @@
-//! The worker against fake-discord, driven in-process over pipes the way
-//! the connector host drives the binary.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

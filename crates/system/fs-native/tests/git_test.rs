@@ -155,7 +155,6 @@ fn spawn_capturer(
         );
         // Objects published so far, in application order.
         let mut published: HashSet<PathBuf> = HashSet::new();
-        // Journal entries already shown to the scheduler.
         let mut seen = 0usize;
         let mut last = false;
         loop {

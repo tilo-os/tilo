@@ -293,7 +293,9 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
         } else {
             match serde_json::from_str::<ToolRequest>(&line) {
                 Ok(request) if request.protocol == TOOL_PROTOCOL_VERSION => {
-                    if let Some(reply) = drive_reply(&request, caller.as_deref()) {
+                    if let Some(reply) = drive_reply(&request, caller.as_deref())
+                        .or_else(|| app_reply(&request, caller.as_deref()))
+                    {
                         reply
                     } else {
                         match handler(request) {
@@ -349,6 +351,58 @@ fn drive_reply(request: &ToolRequest, caller: Option<&str>) -> Option<ToolReply>
             accepted: true,
             message: "opened".into(),
             drives,
+            ..ToolReply::default()
+        },
+        Err(message) => ToolReply {
+            accepted: false,
+            message,
+            ..ToolReply::default()
+        },
+    })
+}
+
+/// The person's apps, for Files' Applications place, and the requests made
+/// from it and from the Store ([`crate::shell::app_list`]); `None` for every
+/// other intent. The list is the person's own view of their apps, so only
+/// Files is answered it; an uninstall is asked of the person in the shell's
+/// sheet whoever requests it, and only Files and the Store may request one.
+fn app_reply(request: &ToolRequest, caller: Option<&str>) -> Option<ToolReply> {
+    use crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+    const STORE: &str = "so.tilo.store";
+    let from_files = caller == Some(SYSTEM_FILE_MANAGER);
+    let answer = match &request.intent {
+        ToolIntent::Applications if from_files => Ok(crate::shell::app_list::listed()
+            .iter()
+            .map(crate::shell::app_list::AppListItem::entry)
+            .filter(os_actions::AppEntry::fits)
+            .take(os_actions::MAX_LISTED_APPS)
+            .collect()),
+        ToolIntent::OpenApplication { app } if from_files => request
+            .intent
+            .validate()
+            .and_then(|()| {
+                crate::shell::state::RoomId::parse(&request.workspace_id)
+                    .ok_or_else(|| "invalid workspace identity".to_string())
+            })
+            .and_then(|room| crate::shell::app_list::open(app, room))
+            .map(|()| Vec::new()),
+        ToolIntent::UninstallApplication { app } if from_files || caller == Some(STORE) => {
+            request.intent.validate().map(|()| {
+                crate::shell::app_list::ask(app);
+                Vec::new()
+            })
+        }
+        ToolIntent::Applications
+        | ToolIntent::OpenApplication { .. }
+        | ToolIntent::UninstallApplication { .. } => Err("not available to this app".to_string()),
+        _ => return None,
+    };
+    Some(match answer {
+        Ok(applications) => ToolReply {
+            accepted: true,
+            message: "opened".into(),
+            applications,
+            ..ToolReply::default()
         },
         Err(message) => ToolReply {
             accepted: false,
@@ -412,7 +466,6 @@ mod tests {
 
     #[test]
     fn workspace_tool_intents_are_typed_and_confined_to_the_active_room() {
-        // Phase `service_accepts_only_versioned_typed_requests`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("tools.sock");
@@ -450,7 +503,6 @@ mod tests {
             assert_eq!(seen.lock().unwrap().len(), 1);
         }
 
-        // Phase `workspace_route_opens_exact_tab_for_active_room`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -478,7 +530,6 @@ mod tests {
             assert_eq!(state.ws_settings_tab, WsTab::Permissions);
         }
 
-        // Phase `workspace_route_cannot_switch_or_target_another_room`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -500,7 +551,6 @@ mod tests {
 
     #[test]
     fn terminal_intents_run_their_command_in_terminal_or_open_it_plainly() {
-        // Phase `files_directory_runs_a_login_shell_there`.
         {
             let intent = ToolIntent::Terminal {
                 directory: Some("/home/u/Projects".into()),
@@ -510,7 +560,6 @@ mod tests {
             };
             assert_eq!(argv.last().map(String::as_str), Some("/home/u/Projects"));
         }
-        // Phase `container_shell_runs_the_engine_cli`.
         {
             let intent = ToolIntent::ContainerShell {
                 container: "web".into(),
@@ -521,7 +570,6 @@ mod tests {
                 Route::TerminalCommand(vec!["distrobox".into(), "enter".into(), "web".into()])
             );
         }
-        // Phase `plain_terminal_and_tools_open_their_package`.
         {
             assert_eq!(
                 route(&ToolIntent::Terminal { directory: None }),
@@ -546,7 +594,6 @@ mod tests {
 
     #[test]
     fn identity_backup_intents_open_the_trusted_flow_only_for_this_workspace() {
-        // Phase `identity_backup_route_opens_trusted_flow_for_current_workspace`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -575,7 +622,6 @@ mod tests {
             assert_eq!(opens, 1);
         }
 
-        // Phase `identity_backup_route_cannot_target_another_workspace`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),

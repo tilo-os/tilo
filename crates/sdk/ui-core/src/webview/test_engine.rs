@@ -10,8 +10,8 @@
 use std::sync::{Arc, Mutex};
 
 use super::{
-    Frame, FrameSlot, MediaElementInfo, PageFailure, PageReply, PageRequest, WebViewCommand,
-    WebViewEngine, WebViewEvent,
+    Frame, FrameSlot, MediaElementInfo, PageFailure, PageNavigation, PageReply, PageRequest,
+    WebViewCommand, WebViewEngine, WebViewEvent,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -206,7 +206,18 @@ impl TestEngine {
             },
             message: "Done".into(),
             url,
-            navigated: false,
+            navigation: if matches!(
+                request,
+                PageRequest::Click { .. }
+                    | PageRequest::Press { .. }
+                    | PageRequest::Fill { .. }
+                    | PageRequest::Select { .. }
+                    | PageRequest::Submit { .. }
+            ) {
+                PageNavigation::Possible
+            } else {
+                PageNavigation::None
+            },
             loading: false,
         })
     }
@@ -663,7 +674,6 @@ mod tests {
                 can_go_back: false,
                 can_go_forward: false
             }));
-            // Draining twice yields nothing new.
             assert!(engine.drain_events().is_empty());
 
             let frame = engine

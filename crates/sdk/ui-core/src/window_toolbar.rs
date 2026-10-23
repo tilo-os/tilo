@@ -435,6 +435,18 @@ pub enum ToolbarEvent {
     },
     /// The window's search closed: stop highlighting or narrowing.
     SearchClose,
+    /// The document's find options changed: find again under them. Sent
+    /// before the query when they differ from the defaults a search opens
+    /// with.
+    SearchOptions {
+        options: crate::widget::FindOptions,
+    },
+    /// Replace the current match in the document with `with`, or every
+    /// match (`all`), and find again.
+    SearchReplace {
+        with: String,
+        all: bool,
+    },
     /// The window's History control was pressed: open History, or close it
     /// while it shows.
     History,
@@ -488,6 +500,24 @@ pub struct WindowOffer {
     /// The History control; none where the app has no History.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<HistoryOffer>,
+    /// What the document's find offers beyond matching (replacing, a regular
+    /// expression, hex), when the search acts on a document.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::widget::FindAbilities::is_plain"
+    )]
+    pub find: crate::widget::FindAbilities,
+}
+
+/// What an app's chord asks of its window's search: Find (Ctrl+F, ⌘F), or
+/// Find and Replace (Ctrl+H, ⌘⌥F), which opens it with the replacement
+/// field holding the keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchOpening {
+    #[default]
+    Find,
+    Replace,
 }
 
 impl SearchOffer {
@@ -687,12 +717,14 @@ impl ToolbarEvent {
             Self::Commit { text }
             | Self::Edit { text }
             | Self::Action { id: text }
-            | Self::Search { query: text } => cut(text),
+            | Self::Search { query: text }
+            | Self::SearchReplace { with: text, .. } => cut(text),
             Self::ToggleSidebar
             | Self::Back
             | Self::Forward
             | Self::SearchStep { .. }
             | Self::SearchClose
+            | Self::SearchOptions { .. }
             | Self::History => {}
         }
         self
@@ -719,7 +751,7 @@ thread_local! {
     static EVENTS: RefCell<VecDeque<ToolbarEvent>> = const { RefCell::new(VecDeque::new()) };
     static HOSTED: Cell<bool> = const { Cell::new(false) };
     static EDIT_REQUESTED: Cell<bool> = const { Cell::new(false) };
-    static SEARCH_REQUESTED: Cell<bool> = const { Cell::new(false) };
+    static SEARCH_REQUESTED: Cell<Option<SearchOpening>> = const { Cell::new(None) };
     /// The window of the app its host is running, while it runs one.
     static WINDOW: RefCell<Option<crate::hosted_window::HostedWindow>> =
         const { RefCell::new(None) };
@@ -764,6 +796,17 @@ fn window() -> Option<crate::hosted_window::HostedWindow> {
     WINDOW.with(|current| current.borrow().clone())
 }
 
+/// Which window this module's calls act on now: the one a host lent the app
+/// it is running, or `None` for the process's own window.
+pub(crate) fn current_window() -> Option<usize> {
+    WINDOW.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map(crate::hosted_window::HostedWindow::identity)
+    })
+}
+
 /// Declare the window's slots (`None`: none). Cheap when nothing changed.
 pub fn declare(toolbar: Option<WindowToolbar>) {
     if let Some(window) = window() {
@@ -780,6 +823,17 @@ pub fn declare(toolbar: Option<WindowToolbar>) {
             REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
         }
     });
+}
+
+/// Take the slots back, as [`declare`] with `None` does, unless the thread
+/// is ending and they are gone already (a widget dropped with its thread).
+pub(crate) fn retract() {
+    let changed = DECLARED
+        .try_with(|declared| declared.borrow_mut().take().is_some())
+        .unwrap_or(false);
+    if changed {
+        let _ = REVISION.try_with(|revision| revision.set(revision.get().wrapping_add(1)));
+    }
 }
 
 /// The slots last declared on this thread.
@@ -853,24 +907,24 @@ pub fn take_edit_request() -> bool {
 }
 
 /// Ask the bar to open the window's search, as a click on its control does:
-/// the app's Ctrl+F while the bar hosts its window and it has something to
-/// search in place.
-pub fn open_search() {
+/// the app's Ctrl+F (or, for `SearchOpening::Replace`, its Ctrl+H) while the
+/// bar hosts its window and it has something to search in place.
+pub fn open_search(opening: SearchOpening) {
     if let Some(window) = window() {
-        window.open_search();
+        window.open_search(opening);
         return;
     }
-    SEARCH_REQUESTED.with(|cell| cell.set(true));
+    SEARCH_REQUESTED.with(|cell| cell.set(Some(opening)));
 }
 
-/// Whether the app asked to open the window's search since the last call
-/// (the runner, to tell the shell).
+/// How the app asked to open the window's search since the last call, if it
+/// did (the runner, to tell the shell).
 #[must_use]
-pub fn take_search_request() -> bool {
+pub fn take_search_request() -> Option<SearchOpening> {
     if let Some(window) = window() {
         return window.take_search_request();
     }
-    SEARCH_REQUESTED.with(|cell| cell.replace(false))
+    SEARCH_REQUESTED.with(Cell::take)
 }
 
 /// Hand the app what the person did in the bar (the runner, from the
@@ -1049,6 +1103,17 @@ mod tests {
             },
             ToolbarEvent::SearchStep { forward: false },
             ToolbarEvent::SearchClose,
+            ToolbarEvent::SearchOptions {
+                options: crate::widget::FindOptions {
+                    match_case: true,
+                    whole_word: false,
+                    mode: crate::widget::FindMode::Regex,
+                },
+            },
+            ToolbarEvent::SearchReplace {
+                with: "dog".into(),
+                all: true,
+            },
             ToolbarEvent::History,
         ] {
             let wire = serde_json::to_string(&event).unwrap();
@@ -1056,7 +1121,7 @@ mod tests {
             deliver(event);
         }
         let taken = take_events();
-        assert_eq!(taken.len(), 8);
+        assert_eq!(taken.len(), 10);
         assert_eq!(taken[0], ToolbarEvent::Back);
         assert!(take_events().is_empty());
         let wire = serde_json::to_string(&browser()).unwrap();
@@ -1079,6 +1144,11 @@ mod tests {
                 total: 40,
             }),
             history: Some(HistoryOffer::Open),
+            find: crate::widget::FindAbilities {
+                replace: true,
+                regex: true,
+                hex: false,
+            },
         };
         let wire = serde_json::to_string(&offer).unwrap();
         assert_eq!(serde_json::from_str::<WindowOffer>(&wire).unwrap(), offer);
@@ -1091,9 +1161,15 @@ mod tests {
             crate::widget::FilterCount::from(offer.count.unwrap()),
             crate::widget::FilterCount::new(12, 40)
         );
-        assert!(!take_search_request());
-        open_search();
-        assert!(take_search_request());
-        assert!(!take_search_request(), "one ask per Ctrl+F");
+        assert_eq!(take_search_request(), None);
+        open_search(SearchOpening::Find);
+        assert_eq!(take_search_request(), Some(SearchOpening::Find));
+        assert_eq!(take_search_request(), None, "one ask per Ctrl+F");
+        open_search(SearchOpening::Replace);
+        assert_eq!(
+            take_search_request(),
+            Some(SearchOpening::Replace),
+            "Ctrl+H asks for the replacement field"
+        );
     }
 }

@@ -36,10 +36,6 @@ pub enum Refusal {
 /// Check the exact frozen route immediately before the journal/send boundary.
 /// The current binding must come from the host's account-owned adapter and
 /// certified device authority, never from user-supplied action parameters.
-///
-/// # Errors
-/// Refuses missing/disabled accounts, wrong service/device, revoked or stale
-/// linking and unavailable transports. No alternate route is returned.
 pub fn check(
     store: &AccountStore,
     route: &Route,

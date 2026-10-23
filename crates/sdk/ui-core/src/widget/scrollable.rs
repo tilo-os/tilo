@@ -901,7 +901,6 @@ impl Scrollable {
         } else {
             self.viewport_w * PAGE_FRACTION
         };
-        // Stop once the thumb has reached/passed the press point.
         let reached = if hold.vertical {
             match self.vertical_thumb() {
                 Some(thumb) => {
@@ -2262,7 +2261,6 @@ mod tests {
             "the clip ends with the content's placement"
         );
 
-        // A view inside another narrows to what both show.
         let outer = Rect::new(0.0, 0.0, 400.0, 100.0);
         crate::widget::with_layout_clip(outer, || {
             scroll.apply_layout(&taffy, node, Point::new(10.0, 20.0));
@@ -2275,7 +2273,6 @@ mod tests {
 
     #[test]
     fn focus_reveal_scrolls_to_new_focus_with_context_but_respects_manual_scroll() {
-        // Case `focus_reveal_keeps_context_above_a_form_control_visible`.
         {
             let mut scroll = vertical(900.0).with_child(Box::new(EventSpy {
                 rect: Rect::new(12.0, 520.0, 188.0, 568.0),
@@ -2301,7 +2298,6 @@ mod tests {
             );
         }
 
-        // Case `focus_reveal_scrolls_new_focus_but_preserves_manual_scroll`.
         {
             use crate::{LocalState, widget::TextInput};
             let mut input = TextInput::from_state(&LocalState::new(String::new())).with_id("last");
@@ -2465,7 +2461,6 @@ mod tests {
 
     #[test]
     fn draw_publishes_the_viewport_and_cursor_motion_is_coalesced_until_scroll() {
-        // Case `ordinary_draw_publishes_and_restores_the_content_viewport`.
         {
             let observed = Rc::new(Cell::new(None));
             let mut scroll = Scrollable::new_vertical().with_child(Box::new(EventSpy {
@@ -2489,7 +2484,6 @@ mod tests {
             assert_eq!(presence.viewport.get(), Some(outer));
         }
 
-        // Case `duplicate_cursor_motion_is_coalesced_without_becoming_an_action`.
         {
             let mut s = vertical(1200.0);
             let position = winit::dpi::PhysicalPosition::new(40.0, 80.0);
@@ -2505,7 +2499,6 @@ mod tests {
             );
         }
 
-        // Case `scrolling_invalidates_duplicate_cursor_coalescing`.
         {
             let mut s = vertical(1200.0);
             let position = winit::dpi::PhysicalPosition::new(40.0, 80.0);
@@ -2669,7 +2662,6 @@ mod tests {
 
     #[test]
     fn content_insets_keep_the_child_clear_of_footer_lanes_and_the_bar() {
-        // Case `bottom_content_inset_blocks_pointer_and_focus_from_invisible_content`.
         {
             let pointer_events = Rc::new(Cell::new(0));
             let activations = Rc::new(Cell::new(0));
@@ -2750,7 +2742,6 @@ mod tests {
             assert!(focus_target.is_some(), "visible content remains focusable");
         }
 
-        // Case `bottom_content_inset_keeps_overflow_out_of_a_sticky_footer_lane`.
         {
             const INSET: f32 = 12.0;
             let mut scroll = Scrollable::new_vertical().with_bottom_content_inset(INSET);
@@ -2775,7 +2766,6 @@ mod tests {
             );
         }
 
-        // Case `bottom_content_inset_does_not_create_overflow_when_content_already_fits`.
         {
             let mut scroll = Scrollable::new_vertical().with_bottom_content_inset(12.0);
             scroll.set_viewport_rect(Rect::new(20.0, 30.0, 420.0, 330.0));
@@ -2789,7 +2779,6 @@ mod tests {
             assert_eq!(scroll.offset_y(), 0.0, "fitting content has no max scroll");
         }
 
-        // Case `the_scrollbar_gutter_insets_the_child_so_the_bar_never_overlaps_it`.
         {
             use std::collections::HashMap;
             let theme = Theme::dark();
@@ -2868,7 +2857,6 @@ mod tests {
 
     #[test]
     fn thumb_geometry_tracks_ratio_offset_minimum_and_visibility() {
-        // Case `thumb_length_scales_with_viewport_over_content_ratio`.
         {
             let short = vertical(600.0).vertical_thumb().expect("bar shown at 2x");
             let tall = vertical(1200.0).vertical_thumb().expect("bar shown at 4x");
@@ -2887,7 +2875,6 @@ mod tests {
             );
         }
 
-        // Case `thumb_never_shorter_than_minimum`.
         {
             let thumb = vertical(100_000.0).vertical_thumb().expect("bar shown");
             assert!(
@@ -2898,24 +2885,20 @@ mod tests {
             );
         }
 
-        // Case `thumb_hidden_when_content_fits`.
         {
             let s = vertical(150.0);
             assert!(s.thumb_rect(ScrollAxis::Vertical).is_none());
             assert!(s.vertical_track().is_none());
-            // Exactly fitting is still hidden.
             let s = vertical(300.0);
             assert!(s.thumb_rect(ScrollAxis::Vertical).is_none());
         }
 
-        // Case `thumb_hidden_when_scrollbar_disabled`.
         {
             let mut s = vertical(1200.0);
             s = s.with_scrollbar(false);
             assert!(s.thumb_rect(ScrollAxis::Vertical).is_none());
         }
 
-        // Case `thumb_tracks_offset`.
         {
             let mut s = vertical(1200.0);
             let top = s.vertical_thumb().unwrap();
@@ -2938,7 +2921,6 @@ mod tests {
 
     #[test]
     fn thumb_drags_and_track_presses_scroll_by_offset_and_page() {
-        // Case `dragging_thumb_updates_offset`.
         {
             let mut s = vertical(1200.0); // max_scroll = 900
             let thumb = s.vertical_thumb().unwrap();
@@ -2966,7 +2948,6 @@ mod tests {
             assert!(!s.vbar.is_dragging(), "release ends the drag");
         }
 
-        // Case `clicking_track_pages_toward_click`.
         {
             let mut s = vertical(1200.0);
             let thumb = s.vertical_thumb().unwrap();
@@ -2987,7 +2968,6 @@ mod tests {
             );
         }
 
-        // Case `horizontal_thumb_drag_updates_offset_x`.
         {
             let mut s = both(1200.0, 1200.0);
             let track = s.horizontal_track().expect("h-bar shown");
@@ -3010,7 +2990,6 @@ mod tests {
             assert!(!s.hbar.is_dragging(), "release ends the h-drag");
         }
 
-        // Case `holding_track_pages_repeatedly_then_settles_at_click`.
         {
             let mut s = vertical(3000.0); // viewport 300, max_scroll 2700
             let bar_x = s.rect.x1 - BAR_MARGIN - BAR_THICKNESS / 2.0;
@@ -3038,8 +3017,6 @@ mod tests {
                 "a live hold captures the pointer"
             );
 
-            // Force several ticks by advancing the injected clock past the
-            // repeat interval each time.
             let mut prev = after_first;
             let mut steps = 0;
             for _ in 0..40 {
@@ -3075,7 +3052,6 @@ mod tests {
 
     #[test]
     fn keyboard_scrolling_and_focusability_require_scrollable_focus() {
-        // Case `accessibility_reports_group_role_and_no_name`.
         {
             use crate::a11y::Role;
             let s = vertical(1200.0);
@@ -3088,7 +3064,6 @@ mod tests {
             assert_eq!(node.value, None);
         }
 
-        // Case `focusable_only_when_it_can_scroll`.
         {
             assert!(
                 Widget::is_focusable(&vertical(1200.0)),
@@ -3103,7 +3078,6 @@ mod tests {
             assert!(!Widget::is_focusable(&hidden));
         }
 
-        // Case `keyboard_pages_home_end_and_lines_when_focused`.
         {
             let mut s = vertical(1200.0); // viewport 300, max_scroll 900
             s.set_focus(true);
@@ -3151,7 +3125,6 @@ mod tests {
             );
         }
 
-        // Case `keyboard_ignored_when_unfocused`.
         {
             let mut s = vertical(1200.0);
             assert!(!s.is_focused());
@@ -3165,7 +3138,6 @@ mod tests {
 
     #[test]
     fn wheel_scrolls_vertically_and_horizontally() {
-        // Case `wheel_still_scrolls_with_scrollbar_present`.
         {
             let mut s = vertical(1200.0);
             let before = s.offset_y();
@@ -3174,7 +3146,6 @@ mod tests {
             assert!(s.offset_y() > before, "wheel down increases offset");
         }
 
-        // Case `shift_wheel_scrolls_horizontally`.
         {
             use winit::keyboard::ModifiersState;
             let mut s = both(1200.0, 1200.0);
@@ -3199,7 +3170,6 @@ mod tests {
             assert_eq!(s.offset_y(), 0.0, "shift+wheel leaves Y untouched");
         }
 
-        // Case `tilt_wheel_scrolls_horizontally_without_shift`.
         {
             let mut s = both(1200.0, 1200.0);
             let tilt = WindowEvent::MouseWheel {
@@ -3533,7 +3503,6 @@ mod tests {
 
     #[test]
     fn height_constraints_decide_scrollability_under_indefinite_parents() {
-        // Case `with_height_pins_viewport_under_indefinite_parent`.
         {
             let h = viewport_height_under_indefinite_parent(
                 Scrollable::new_vertical()
@@ -3547,7 +3516,6 @@ mod tests {
             );
         }
 
-        // Case `pinned_height_makes_pane_scrollable_under_indefinite_parent`.
         {
             let (vh, scrolled) = can_scroll_under_indefinite_parent(
                 Scrollable::new_vertical()
@@ -3561,7 +3529,6 @@ mod tests {
             );
         }
 
-        // Case `max_height_keeps_short_documents_compact_and_long_ones_scrollable`.
         {
             let short = viewport_height_under_indefinite_parent(
                 Scrollable::new_vertical()
@@ -3585,7 +3552,6 @@ mod tests {
             assert!(scrolled, "a capped long document must remain scrollable");
         }
 
-        // Case `default_scrollable_cannot_scroll_under_indefinite_parent`.
         {
             let (_vh, scrolled) = can_scroll_under_indefinite_parent(
                 Scrollable::new_vertical().with_child(tall_child()),
@@ -3601,7 +3567,6 @@ mod tests {
 
     #[test]
     fn scroll_offset_persists_reclamps_and_needs_no_remeasure() {
-        // Case `scroll_is_layout_dirty_but_needs_no_remeasure`.
         {
             use std::collections::HashMap;
             let theme = Theme::dark();
@@ -3647,7 +3612,6 @@ mod tests {
             );
         }
 
-        // Case `persisted_offset_survives_a_rebuild_into_a_fresh_scrollable`.
         {
             let cell = Rc::new(Cell::new((0.0f32, 0.0f32)));
 
@@ -3671,7 +3635,6 @@ mod tests {
             assert_eq!(c.offset_y(), 0.0, "an unbound Scrollable is unaffected");
         }
 
-        // Case `persisted_offset_reclamps_and_rewrites_when_content_shrinks`.
         {
             let cell = Rc::new(Cell::new((0.0f32, 0.0f32)));
             let mut s = Scrollable::new_vertical().with_persisted_offset(cell.clone());
@@ -3746,7 +3709,6 @@ mod tests {
         assert_eq!(rounded.vertical_track(), Some(v_square));
         assert_eq!(rounded.horizontal_track(), Some(h_square));
 
-        // A vertical bar alone runs a radius short of the bottom corner.
         theme.surface = Some(crate::theme::SurfaceShape::rounded(
             Rect::new(0.0, 0.0, 300.0, 300.0),
             radius,
@@ -3762,7 +3724,6 @@ mod tests {
 
     #[test]
     fn overlay_bar_fades_with_activity_and_damages_its_last_frame() {
-        // Case `overlay_bar_fades_in_on_activity_and_out_when_idle`.
         {
             let mut s = vertical(1200.0);
             s.last_activity = None; // as freshly constructed
@@ -3800,7 +3761,6 @@ mod tests {
             );
         }
 
-        // Case `terminal_fade_frame_damages_the_track_after_draw_omits_the_thumb`.
         {
             let mut s = vertical(1200.0);
             s.last_activity = Some(
@@ -3808,7 +3768,6 @@ mod tests {
                     .checked_sub(Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS + 1))
                     .expect("the test duration is far shorter than the monotonic clock"),
             );
-            // Model the preceding submitted frame, where the thumb was visible.
             s.bar_visible_last_draw.set(true);
             let mut scene = Scene::new();
             s.draw_scrollbars(&mut scene, Affine::IDENTITY, &Theme::dark());
@@ -3831,7 +3790,6 @@ mod tests {
             );
         }
 
-        // Case `overlay_fade_pins_visible_when_pinned_or_reduced_motion_or_persistent`.
         {
             let mut s = vertical(1200.0);
             s.wake();
@@ -3858,7 +3816,6 @@ mod tests {
             );
         }
 
-        // Case `needs_animation_frame_only_while_fading_or_repeating`.
         {
             let s = vertical(1200.0);
             assert!(
@@ -3885,7 +3842,6 @@ mod tests {
         // Fresh curves are read in the instant they start: a descheduled
         // runner cannot age them.
         crate::time::testing::with_monotonic_time(crate::time::now(), || {
-            // Case `opaque_hold_sleeps_until_fade_start_without_losing_initial_damage`.
             {
                 let mut s = vertical(1200.0);
                 s.wake();
@@ -3908,7 +3864,6 @@ mod tests {
                 );
             }
 
-            // Case `opaque_hold_boundaries_preserve_fade_and_terminal_clear`.
             {
                 let mut s = vertical(1200.0);
                 let start = crate::time::now();
@@ -3940,7 +3895,6 @@ mod tests {
                 assert_eq!(s.fade_start_deadline_at(start), None);
             }
 
-            // Case `opaque_hold_preserves_earlier_child_deadline`.
             {
                 let now = crate::time::now();
                 let mut child = vertical(1200.0);
@@ -3954,7 +3908,6 @@ mod tests {
                 );
             }
 
-            // Case `opaque_hold_removal_preserves_independent_momentum_demand`.
             {
                 let mut s = vertical(1200.0);
                 s.fling(0.0, 120.0);

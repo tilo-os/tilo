@@ -1305,11 +1305,6 @@ pub struct TextFlowRegion {
 
 impl TextFlowRegion {
     /// Build a closed polygon. Points are local to the Text widget's origin.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for fewer than three points, non-finite coordinates,
-    /// or a polygon whose bounding box has no area.
     pub fn polygon(points: impl IntoIterator<Item = Point>) -> Result<Self, TextFlowRegionError> {
         use std::hash::{Hash, Hasher};
 
@@ -1882,6 +1877,47 @@ impl skrifa::outline::OutlinePen for InkBoundsPen {
     fn close(&mut self) {}
 }
 
+/// The identity of the fonts a renderer shapes with
+/// ([`TextRenderer::font_epoch`]).
+#[derive(Clone, Debug)]
+pub struct FontEpoch(Arc<()>);
+
+impl PartialEq for FontEpoch {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for FontEpoch {}
+
+/// A renderer's fonts, locale, text scale and letter forms, to send to a
+/// thread that measures text the same way ([`TextRenderer::measuring_seed`]).
+pub struct MeasuringSeed {
+    locale: String,
+    db: cosmic_text::fontdb::Database,
+    text_scale: f32,
+    distinct_letters: bool,
+    epoch: FontEpoch,
+}
+
+impl MeasuringSeed {
+    /// The fonts of the renderer this came from.
+    pub fn epoch(&self) -> &FontEpoch {
+        &self.epoch
+    }
+
+    /// A renderer of its own for the thread this is called on.
+    pub fn into_renderer(self) -> TextRenderer {
+        let mut renderer = TextRenderer::with_font_system(FontSystem::new_with_locale_and_db(
+            self.locale,
+            self.db,
+        ));
+        renderer.set_text_scale(self.text_scale);
+        renderer.set_distinct_letters(self.distinct_letters);
+        renderer
+    }
+}
+
 pub struct TextRenderer {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
@@ -2201,6 +2237,25 @@ impl TextRenderer {
         (self.hits, self.misses)
     }
 
+    /// The fonts this renderer shapes with, as an identity that changes
+    /// whenever they do.
+    pub fn font_epoch(&self) -> FontEpoch {
+        FontEpoch(Arc::clone(&self.layout_epoch))
+    }
+
+    /// What a renderer on another thread needs to measure text exactly as
+    /// this one does. Cheap here: the fonts are shared, and the worker builds
+    /// its font system ([`MeasuringSeed::into_renderer`]).
+    pub fn measuring_seed(&self) -> MeasuringSeed {
+        MeasuringSeed {
+            locale: self.font_system.locale().to_owned(),
+            db: self.font_system.db().clone(),
+            text_scale: self.text_scale,
+            distinct_letters: self.distinct_letters,
+            epoch: self.font_epoch(),
+        }
+    }
+
     pub(crate) fn layout_epoch(&self) -> &Arc<()> {
         self.sync_distinct_letters();
         &self.layout_epoch
@@ -2373,7 +2428,6 @@ impl TextRenderer {
             }
             return cached;
         }
-        // Paint may already have shaped this string under the same key.
         let shape_key = input.key(max_width, self.generation, self.text_scale);
         if let Some(shaped) = self
             .shape_cache
@@ -3721,7 +3775,6 @@ mod tests {
 
     #[test]
     fn renderer_font_system_pins_families_weights_and_fallbacks() {
-        // Case `explicit_catalog_constructs_the_production_renderer_and_caches`.
         {
             let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
                 crate::font_catalog::checkout_root(),
@@ -3736,7 +3789,6 @@ mod tests {
             assert_eq!(renderer.misses, 1);
         }
 
-        // Case `product_font_system_pins_every_generic_family`.
         {
             let font_system = crate::font_catalog::fixture_font_system();
             let database = font_system.db();
@@ -3748,7 +3800,6 @@ mod tests {
             );
         }
 
-        // Case `shipped_fallback_policy_shapes_representative_scripts`.
         {
             let mut renderer = crate::font_catalog::fixture_renderer();
             let style = TextStyle::new(18.0);
@@ -3797,7 +3848,6 @@ mod tests {
             let fams = tr.system_families();
             assert!(!fams.is_empty(), "the system font db exposes some families");
 
-            // Both generic families measure to a positive advance for real text.
             let (ws, _) = tr.measure_font(
                 "Reading",
                 20.0,
@@ -3858,7 +3908,7 @@ mod tests {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let style = TextStyle::new(18.0);
@@ -3910,7 +3960,7 @@ mod tests {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let name = "NotoSansMath-Regular.ttf";
@@ -3939,7 +3989,7 @@ mod tests {
             )
             .unwrap_err()
             .to_string();
-        assert!(error.contains("bytes, found"), "{error}");
+        assert!(error.contains("SHA-256 mismatch"), "{error}");
         assert_eq!(
             renderer.generation, generation,
             "a refused font changes nothing"
@@ -3956,7 +4006,7 @@ mod tests {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let math = TextStyle::new(18.0).with_family(FontChoice::Named(UI_MATH_FAMILY.to_owned()));
@@ -4069,7 +4119,7 @@ mod tests {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let style = TextStyle::new(18.0);
@@ -4126,7 +4176,6 @@ mod tests {
     )]
     #[test]
     fn line_breaking_follows_script_rules_hyphenation_and_polygon_flow() {
-        // Case `custom_hyphenator_inserts_source_mapped_discretionary_breaks`.
         {
             let style = TextStyle::new(18.0).with_hyphenator(Arc::new(EveryThirdByte));
             let map = style.hyphenation.offset_map("customizable");
@@ -4143,7 +4192,6 @@ mod tests {
             }
         }
 
-        // Case `polygon_flow_computes_conservative_spans_and_clips_paint`.
         {
             use vello_encoding::DrawTag;
 
@@ -4199,7 +4247,6 @@ mod tests {
             assert!(begin.zip(end).is_some_and(|(begin, end)| begin < end));
         }
 
-        // Case `wrap_lines_uses_cjk_opportunities_without_spaces`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "東京京都大阪名古屋";
@@ -4210,7 +4257,6 @@ mod tests {
             assert!(lines.iter().all(|line| !line.is_empty()));
         }
 
-        // Case `wrap_lines_respects_non_breaking_space`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "10\u{a0}km away";
@@ -4220,7 +4266,6 @@ mod tests {
             assert_eq!(lines.join(" "), text);
         }
 
-        // Case `wrap_lines_uses_dictionary_breaks_for_thai`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "ทุกสองสัปดาห์";
@@ -4231,7 +4276,6 @@ mod tests {
             assert_eq!(lines.concat(), text);
         }
 
-        // Case `measure_and_draw_use_dictionary_breaks_for_thai`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let style = TextStyle::new(18.0);
@@ -4259,7 +4303,6 @@ mod tests {
             assert_eq!(rows.len(), 3, "paint geometry must match measured wrapping");
         }
 
-        // Case `automatic_hyphenation_wraps_and_paints_only_exercised_breaks`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "extensive";
@@ -4314,7 +4357,6 @@ mod tests {
             assert_eq!((w1, h1), (w2, h2), "cached value must equal recomputed");
         }
 
-        // Case `measure_cache_keys_on_size`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let _ = tr.measure("abc", 12.0, None);
@@ -4325,7 +4367,6 @@ mod tests {
             assert_eq!(misses, 2);
         }
 
-        // Case `hyphenation_policy_participates_in_measurement_cache_identity`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "extensive";
@@ -4359,7 +4400,6 @@ mod tests {
 
     #[test]
     fn style_is_shared_by_measurement_and_drawing_including_backgrounds() {
-        // Case `style_line_height_controls_layout_and_cache_identity`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let compact = TextStyle::new(20.0).with_line_height(1.2);
@@ -4379,7 +4419,6 @@ mod tests {
             assert_eq!(misses, 2);
         }
 
-        // Case `style_is_shared_by_measurement_and_drawing`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let style = TextStyle::new(18.0)
@@ -4504,7 +4543,6 @@ mod tests {
 
     #[test]
     fn elide_and_clamp_truncate_at_grapheme_boundaries() {
-        // Case `elide_returns_text_unchanged_when_it_fits`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let s = "short";
@@ -4514,7 +4552,6 @@ mod tests {
             assert!(!out.ends_with('\u{2026}'), "no ellipsis when it fits");
         }
 
-        // Case `elide_truncates_and_appends_ellipsis`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let s = "the quick brown fox jumps over the lazy dog";
@@ -4536,7 +4573,6 @@ mod tests {
             );
         }
 
-        // Case `elide_never_splits_a_grapheme_and_drops_space_before_the_ellipsis`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             // "e" + combining acute, repeated: a char-wise cut could strand the
@@ -4561,7 +4597,6 @@ mod tests {
             }
         }
 
-        // Case `elide_keeps_the_longest_prefix_that_fits`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let s = "the quick brown fox jumps over the lazy dog";
@@ -4584,7 +4619,6 @@ mod tests {
             }
         }
 
-        // Case `elide_measures_in_the_given_style`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let s = "fn render_scene(scene: &mut Scene, transform: Affine)";
@@ -4603,7 +4637,6 @@ mod tests {
             assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
         }
 
-        // Case `clamp_to_lines_caps_line_count_and_elides_last`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
@@ -4623,7 +4656,6 @@ mod tests {
             );
         }
 
-        // Case `clamp_to_lines_degenerate_cases`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             assert!(
@@ -4640,7 +4672,6 @@ mod tests {
             assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
         }
 
-        // Case `clamp_to_lines_no_overflow_keeps_all`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let lines = tr.clamp_to_lines("two words", &TextStyle::new(14.0), 1000.0, 3);
@@ -4817,7 +4848,6 @@ mod tests {
 
     #[test]
     fn font_features_and_variation_axes_shape_and_measure() {
-        // Case `advanced_features_are_part_of_shaping_and_measurement`.
         {
             let mut renderer = crate::font_catalog::fixture_renderer();
             let base = TextStyle::new(32.0).with_family(FontChoice::Serif);
@@ -4857,7 +4887,6 @@ mod tests {
             assert_eq!(misses, 2, "feature settings must not collide in the cache");
         }
 
-        // Case `feature_numeric_and_variation_builders_replace_their_own_settings`.
         {
             let style = TextStyle::new(20.0)
                 .with_font_feature(OpenTypeTag::KERNING, 0)
@@ -4900,7 +4929,6 @@ mod tests {
             );
         }
 
-        // Case `variable_axes_are_normalized_in_the_faces_native_axis_order`.
         {
             let renderer = crate::font_catalog::fixture_renderer();
             let face = renderer
@@ -4935,7 +4963,6 @@ mod tests {
 
     #[test]
     fn text_and_ui_scale_apply_once_to_metrics_and_caches() {
-        // Case `text_scale_one_is_metric_identity_and_invalid_values_are_safe`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let base = tr.measure("Accessible calendar", 18.0, None);
@@ -4950,7 +4977,6 @@ mod tests {
             assert_eq!(tr.text_scale, 0.5, "undersized scales are bounded");
         }
 
-        // Case `text_scale_changes_measure_and_shape_cache_together`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let base = tr.measure("Calendar", 20.0, None);
@@ -4990,7 +5016,6 @@ mod tests {
             );
         }
 
-        // Case `custom_canvas_styles_remain_renderer_relative_at_supported_scales`.
         {
             for scale in [1.0, 1.25, 1.5, 2.0] {
                 let mut renderer = crate::font_catalog::fixture_renderer();
@@ -5023,7 +5048,6 @@ mod tests {
             }
         }
 
-        // Case `resolved_styles_keep_metrics_and_glyph_geometry_across_renderer_scales`.
         {
             let text = "Tracked resolved text";
             let mut resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
@@ -5082,7 +5106,6 @@ mod tests {
             }
         }
 
-        // Case `resolved_theme_style_applies_ui_and_text_scale_once`.
         {
             let role = crate::tokens::TextRole::Caption;
             let base = crate::theme::Theme::dark().text(role).size;
@@ -5095,7 +5118,6 @@ mod tests {
             let (_, height) = renderer.measure_style("Scale once", None, &resolved);
             assert!((height - base * 1.25 * 2.0 * resolved.line_height).abs() < 0.001);
 
-            // Content text ignores the renderer's accessibility scale too.
             let content = TextStyle::content(19.0);
             let (_, content_height) = renderer.measure_style("Page", None, &content);
             assert!((content_height - 19.0 * content.line_height).abs() < 0.001);

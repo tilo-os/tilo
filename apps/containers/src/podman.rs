@@ -165,8 +165,6 @@ fn podman_connection_label() -> String {
     format!("Podman {version}, rootless")
 }
 
-// --- podman ps -------------------------------------------------------
-
 #[derive(Deserialize)]
 struct PsEntry {
     #[serde(default, rename = "Id")]
@@ -255,8 +253,6 @@ fn list_containers() -> Option<Vec<Container>> {
     Some(containers)
 }
 
-// --- podman stats ----------------------------------------------------
-
 #[derive(Deserialize)]
 struct StatEntry {
     #[serde(default, rename = "ID")]
@@ -342,8 +338,6 @@ fn parse_size(s: &str) -> u64 {
     (value * mult) as u64
 }
 
-// --- podman images ---------------------------------------------------
-
 #[derive(Deserialize)]
 struct ImageEntry {
     #[serde(default, rename = "Id")]
@@ -396,8 +390,6 @@ fn split_reference(reference: &str) -> (String, String) {
         _ => (reference.to_string(), "latest".to_string()),
     }
 }
-
-// --- podman volume ls ------------------------------------------------
 
 #[derive(Deserialize)]
 struct VolumeEntry {
@@ -457,8 +449,6 @@ fn volume_usage() -> Vec<String> {
         .collect()
 }
 
-// --- distrobox -------------------------------------------------------
-
 /// distrobox boxes are plain containers with the `manager:distrobox` label.
 /// `distrobox list` is the canonical reader; when the CLI is absent we fall
 /// back to filtering podman's container list by label.
@@ -485,8 +475,6 @@ fn list_distroboxes() -> Vec<DistroBox> {
     }
     boxes
 }
-
-// --- lifecycle actions ----------------------------------------------
 
 /// Run a lifecycle verb against a container by id. Returns the command's
 /// stderr on failure (for surfacing a toast); `Ok(())` on success or when no
@@ -767,10 +755,6 @@ fn finish(cmd: Command) -> Result<(), String> {
 }
 
 /// Run one finite podman operation with bounded diagnostics and a deadline.
-///
-/// # Errors
-///
-/// Returns bounded runner failures or the command's capped stderr.
 pub fn run_once(args: &[String]) -> Result<(), String> {
     let mut command = Command::new("podman");
     command.args(args);

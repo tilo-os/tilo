@@ -1362,7 +1362,6 @@ mod original_budget_tests {
         assert!(!media.join("home-bounded.sealed").exists());
         assert_eq!(std::fs::read_dir(&media).unwrap().count(), 0);
         assert_eq!(std::fs::read(source.join("document")).unwrap(), document);
-        // The same production sink succeeds with sufficient admitted budget.
         let grant = MediaGrant::open(&media)
             .unwrap()
             .limit_original_reservation(2 * 1024 * 1024)

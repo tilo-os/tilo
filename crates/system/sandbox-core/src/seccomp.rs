@@ -76,11 +76,6 @@ pub fn host_target_arch() -> Result<TargetArch, SeccompError> {
 /// Compile a deny-list to a BPF program: default-allow, every matching rule
 /// answered with `EPERM`. A syscall mapped to an empty rule list is denied
 /// unconditionally; otherwise any one matching rule denies the call.
-///
-/// # Errors
-///
-/// Returns [`SeccompError`] for an unsupported architecture or a rule set
-/// seccompiler refuses to compile.
 #[cfg(target_os = "linux")]
 pub fn deny_list_program(
     rules: BTreeMap<i64, Vec<SeccompRule>>,
@@ -98,11 +93,6 @@ pub fn deny_list_program(
 /// kills the whole process with `SIGSYS`. A syscall mapped to an empty rule
 /// list is allowed unconditionally; otherwise any one matching rule allows
 /// the call.
-///
-/// # Errors
-///
-/// Returns [`SeccompError`] for an unsupported architecture or a rule set
-/// seccompiler refuses to compile.
 #[cfg(target_os = "linux")]
 pub fn allow_list_program(
     rules: BTreeMap<i64, Vec<SeccompRule>>,
@@ -218,7 +208,6 @@ pub const IO_URING_SYSCALLS: &[libc::c_long] = &[
 /// grants. The default grants nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SyscallGrants {
-    /// [`IO_URING_SYSCALLS`] are allowed.
     pub io_uring: bool,
 }
 
@@ -409,20 +398,12 @@ fn baseline_rules(
 }
 
 /// The baseline policy for `profile` as a BPF program, ready to install.
-///
-/// # Errors
-///
-/// Returns [`SeccompError`] if the rules or their compilation fail.
 #[cfg(target_os = "linux")]
 pub fn baseline_program(profile: SeccompProfile) -> Result<BpfProgram, SeccompError> {
     baseline_program_with(profile, SyscallGrants::default())
 }
 
 /// The baseline policy for `profile`, minus the syscalls `grants` allows.
-///
-/// # Errors
-///
-/// Returns [`SeccompError`] if the rules or their compilation fail.
 #[cfg(target_os = "linux")]
 pub fn baseline_program_with(
     profile: SeccompProfile,
@@ -480,10 +461,6 @@ pub const PARSER_DENIES: &[libc::c_long] = &[
 /// The policy for a helper that parses untrusted documents (PDF engines,
 /// thumbnailers): the [`SeccompProfile::TiloDefault`] baseline, including
 /// write-xor-execute, plus [`PARSER_DENIES`].
-///
-/// # Errors
-///
-/// Returns [`SeccompError`] if the rules or their compilation fail.
 #[cfg(target_os = "linux")]
 pub fn parser_program() -> Result<BpfProgram, SeccompError> {
     let mut rules = baseline_rules(SeccompProfile::TiloDefault, SyscallGrants::default())?;
@@ -535,10 +512,6 @@ const SIGNAL_TARGET_SYSCALLS: &[libc::c_long] = &[
 /// before the driver's program is executed. Installing it is what makes that
 /// program run confined; what it may then reach is decided by Landlock and
 /// the namespaces it was started in.
-///
-/// # Errors
-///
-/// Returns [`SeccompError`] if the rules or their compilation fail.
 #[cfg(target_os = "linux")]
 pub fn driver_program(own_pid: u32) -> Result<BpfProgram, SeccompError> {
     let mut rules = baseline_rules(SeccompProfile::TiloDefault, SyscallGrants::default())?;
@@ -749,10 +722,6 @@ pub fn ci_rules(profile: CiProfile) -> Result<BTreeMap<i64, Vec<SeccompRule>>, S
 /// [`clone3_compat_program`]: seccomp cannot read `clone3`'s flags, so
 /// `clone3` answers `ENOSYS` and glibc falls back to `clone`, whose flags
 /// this filter checks.
-///
-/// # Errors
-///
-/// Returns [`SeccompError`] if the rules or their compilation fail.
 #[cfg(target_os = "linux")]
 pub fn ci_program(profile: CiProfile) -> Result<BpfProgram, SeccompError> {
     deny_list_program(ci_rules(profile)?)
@@ -841,11 +810,6 @@ mod byte_codec_tests {
 ///
 /// Takes the profile explicitly rather than defaulting, so every call
 /// site has decided whether the program is allowed to generate code.
-///
-/// # Errors
-///
-/// Returns [`SeccompError`] if the filter's rules or its BPF compilation
-/// fail to build.
 #[cfg(target_os = "linux")]
 pub fn compile_baseline(profile: SeccompProfile) -> Result<Vec<u8>, SeccompError> {
     Ok(program_bytes(&baseline_program(profile)?))
@@ -899,11 +863,6 @@ pub mod testing {
     ///   10 = a mapping that should have been refused succeeded
     ///   11 = a mapping that should have been allowed was refused
     ///   12 = the filter itself would not install
-    ///
-    /// # Panics
-    ///
-    /// Panics if the filter does not compile, `fork` fails, or the child
-    /// does not exit normally.
     #[allow(
         clippy::expect_used,
         reason = "a test probe: a failure to set the experiment up is the test failing"
@@ -1008,11 +967,6 @@ pub mod testing {
     ///   21 = another namespace kind reached the kernel
     ///   22 = `chroot` got the wrong answer
     ///   12 = the filter itself would not install
-    ///
-    /// # Panics
-    ///
-    /// Panics if the filter does not compile, `fork` fails, or the child
-    /// does not exit normally.
     #[allow(
         clippy::expect_used,
         reason = "a test probe: a failure to set the experiment up is the test failing"
@@ -1081,7 +1035,6 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn seccomp_baselines_compile_serialise_and_select_write_exec_rules() {
-        // Phase `baseline_compiles_and_blob_alignment`.
         {
             let bytes = compile_baseline(SeccompProfile::TiloDefault).expect("compile");
             assert!(!bytes.is_empty(), "empty BPF");
@@ -1092,7 +1045,6 @@ mod tests {
                 bytes.len()
             );
         }
-        // Phase `write_baseline_creates_blob`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = write_baseline_to(dir.path(), SeccompProfile::TiloDefault).unwrap();
@@ -1103,7 +1055,6 @@ mod tests {
                 compile_baseline(SeccompProfile::TiloDefault).unwrap()
             );
         }
-        // Phase `jit_profile_is_the_only_one_that_drops_the_write_exec_rules`.
         {
             let strict = compile_baseline(SeccompProfile::TiloDefault).unwrap();
             let jit = compile_baseline(SeccompProfile::TiloJit).unwrap();
@@ -1118,7 +1069,6 @@ mod tests {
             assert!(!jit.is_empty());
             assert_eq!(jit.len() % 8, 0);
         }
-        // Phase `compile_deny_list_is_the_serialised_program`.
         {
             let mut rules = BTreeMap::new();
             rules.insert(libc::SYS_ptrace, Vec::new());
@@ -1265,7 +1215,6 @@ mod tests {
                 "11 = pthread creation was refused, 12 = a filter would not install"
             );
         }
-        // Phase `strict_profile_refuses_writable_executable_memory_in_the_kernel`.
         {
             assert_eq!(
                 testing::probe_mappings_under(SeccompProfile::TiloDefault),
@@ -1274,7 +1223,6 @@ mod tests {
                  12 = the filter would not install"
             );
         }
-        // Phase `jit_profile_still_permits_writable_executable_memory`.
         {
             for profile in [SeccompProfile::TiloJit, SeccompProfile::TiloWebEngine] {
                 assert_eq!(
@@ -1286,7 +1234,6 @@ mod tests {
                 );
             }
         }
-        // Phase `baseline_refuses_kernel_introspection_and_fault_injection_syscalls`.
         {
             let program = baseline_program(SeccompProfile::TiloDefault).expect("compile filter");
             // SAFETY: the child installs a filter, invokes raw syscalls with inert
@@ -1323,7 +1270,6 @@ mod tests {
             assert!(libc::WIFEXITED(status));
             assert_eq!(libc::WEXITSTATUS(status), 0);
         }
-        // Phase `parser_program_refuses_sockets_and_exec_in_the_kernel`.
         {
             let program = parser_program().expect("compile filter");
             // SAFETY: the child installs a filter, invokes raw syscalls with inert

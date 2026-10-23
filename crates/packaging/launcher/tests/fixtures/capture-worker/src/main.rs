@@ -1,4 +1,3 @@
-//! Finite real syscall fixture for the public capture launch pipeline.
 use std::{
     fs,
     io::{Read, Write},

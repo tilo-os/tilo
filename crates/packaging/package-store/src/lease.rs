@@ -31,10 +31,6 @@ use crate::layout::{Layout, default_user_root};
 /// of the user's store; trees elsewhere (the image's store) are never
 /// removed and need no lease. Keep the guard until the sandbox that mounts
 /// the tree has exited, and check the tree is still there after taking it.
-///
-/// # Errors
-///
-/// Returns the error from creating or locking the lease file.
 pub fn hold_payload(payload_root: &Path) -> io::Result<Option<FileLock>> {
     match default_user_root() {
         Some(root) => hold_payload_in(&Layout::new(root), payload_root),

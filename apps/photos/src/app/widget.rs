@@ -489,7 +489,20 @@ impl Widget for PhotosApp {
         self.chrome.inspector.scale_for(theme);
         self.sync_inspector();
         let beside = self.chrome.inspector.resolve(self.rect);
-        let inspector_inset = (self.rect.x1 - beside.x1).max(0.0);
+        let mut inspector_inset = (self.rect.x1 - beside.x1).max(0.0);
+        // A panel floating over an empty view would hide what the empty
+        // state offers (Open, on an empty library): it stands in the part
+        // the panel leaves, where that still holds it.
+        if self.empty_state.is_some()
+            && self.chrome.inspector.is_overlay()
+            && self.chrome.inspector.is_open()
+        {
+            let covered =
+                self.chrome.inspector.resolved_overlay_width() + f64::from(theme.tokens.spacing.s2);
+            if self.rect.width() - covered >= f64::from(theme.tokens.metrics.grid_min_width) {
+                inspector_inset = covered;
+            }
+        }
         // The layout tree points at the People buttons, and the framework
         // syncs again before it measures; rebuilding them only here keeps
         // those pointers alive until the next tree replaces them.

@@ -332,9 +332,7 @@ pub enum Resolution {
     Ours,
     /// Auto-resolved: only `theirs` changed this base region.
     Theirs,
-    /// A conflict the user has resolved by taking ours.
     TookOurs,
-    /// A conflict the user has resolved by taking theirs.
     TookTheirs,
     /// A conflict the user has resolved by taking both (ours then theirs).
     TookBoth,
@@ -891,13 +889,11 @@ mod tests {
                 merged: None,
                 conflict_sides: Some((vec!["OURS"], vec!["THEIRS"])),
                 takes: vec![
-                    // Taking theirs changes the output.
                     Take {
                         resolution: Resolution::TookTheirs,
                         fully_resolved: Some(true),
                         merged: vec!["a", "THEIRS", "c"],
                     },
-                    // Taking both concatenates ours then theirs.
                     Take {
                         resolution: Resolution::TookBoth,
                         fully_resolved: None,

@@ -329,7 +329,6 @@ mod tests {
 
         let vault = SecretServiceMlsVault::open(root.clone()).unwrap();
 
-        // The derivation every device's sealed channel state depends on.
         assert_eq!(
             hex::encode(vault.channel_state_key_bytes()),
             "9e51a75e84b0a7930f1865b7c7a8e92e60cab50b0b054df9b72029b7604a1ae5"

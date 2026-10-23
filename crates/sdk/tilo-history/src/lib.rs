@@ -131,14 +131,12 @@ fn framework(locale: &str) -> Rc<Catalogue> {
 /// Who did something, as the reader names them.
 #[derive(Clone, Copy, Debug)]
 pub struct Who<'a> {
-    /// The actor's display name.
     pub actor: &'a str,
     pub kind: ActorKind,
     /// The display name of the person the actor acted for.
     pub for_person: Option<&'a str>,
     /// Whether the person the actor acted for is the reader.
     pub for_reader: bool,
-    /// Whether the actor is the reader.
     pub is_reader: bool,
 }
 
@@ -202,7 +200,6 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// The app's own messages, in the reader's locale.
     #[must_use]
     pub fn with_app(mut self, app: &'a dyn Messages) -> Self {
         self.app = Some(app);

@@ -396,7 +396,6 @@ mod tests {
             ((0, 0), (1280, 800), (2560, 1600)),
             ((1280, 200), (1920, 1080), (1920, 1080)),
         ]);
-        // Below the panel's bottom edge, left of the monitor.
         let scene = logical_to_scene(&p, (100.0, 900.0));
         assert_eq!(scene, (200.0, 1800.0));
     }

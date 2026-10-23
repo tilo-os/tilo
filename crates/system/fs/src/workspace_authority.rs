@@ -140,10 +140,6 @@ impl PersistedContentPeer {
     }
 
     /// Decode the bounded workspace ticket, when this endpoint has one.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stored ticket is malformed.
     pub fn decoded_ticket(&self) -> anyhow::Result<Option<Ticket>> {
         self.ticket.as_deref().map(Ticket::decode).transpose()
     }
@@ -306,10 +302,6 @@ impl WorkspaceAuthorityEnvelope {
     }
 
     /// Verify this envelope's workspace, governor, and signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when identity, encoding, or signature validation fails.
     pub fn verify(&self, expected_workspace: uuid::Uuid, governor: [u8; 32]) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.workspace == expected_workspace,
@@ -416,11 +408,6 @@ impl WorkspaceAuthority {
     /// Equal revisions are accepted only when byte-identical, making retries
     /// idempotent while refusing equivocation at one revision.
     /// Verify and atomically publish a monotonic authority revision.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid signatures, revision regression,
-    /// equivocation, serialization, durable-write, or lock failures.
     pub fn apply(&self, next: WorkspaceAuthorityEnvelope) -> anyhow::Result<bool> {
         next.verify(self.workspace, self.governor)?;
         let mut current = self
@@ -654,11 +641,6 @@ pub fn serve_local_content_peer(
 
 #[cfg(unix)]
 /// Register a discovered direct Files endpoint with the local daemon.
-///
-/// # Errors
-///
-/// Returns an error when the local socket exchange fails or the daemon
-/// rejects the endpoint.
 pub async fn register_local_content_peer(
     socket: &std::path::Path,
     endpoint: iroh_base::EndpointAddr,
@@ -688,11 +670,6 @@ pub async fn register_local_content_peer(
 /// confused with an endpoint refresh.
 #[cfg(unix)]
 /// Remove every locally registered endpoint for one relay service.
-///
-/// # Errors
-///
-/// Returns an error when the local socket exchange fails or the daemon
-/// rejects the removal.
 pub async fn remove_local_content_peers(
     socket: &std::path::Path,
     relay_service_id: [u8; 32],
@@ -764,10 +741,6 @@ pub fn serve_local_authority(
 /// first gate; the signed envelope remains the authority gate.
 #[cfg(unix)]
 /// Submit or query a local workspace authority service.
-///
-/// # Errors
-///
-/// Returns an error when the local socket exchange fails.
 pub async fn local_authority_request(
     socket: &std::path::Path,
     request: AuthorityRequest,
@@ -783,11 +756,6 @@ pub async fn local_authority_request(
 const AUTHORITY_FRAMING: Framing = Framing::little_endian(MAX_AUTHORITY_FRAME);
 
 /// Write one bounded authority control frame.
-///
-/// # Errors
-///
-/// Returns an error when serialization, the frame bound, or the stream write
-/// fails.
 pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize + Sync>(
     writer: &mut W,
     value: &T,
@@ -797,11 +765,6 @@ pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin + Send, T: Serialize +
 }
 
 /// Read and decode one bounded authority control frame.
-///
-/// # Errors
-///
-/// Returns an error when the stream, frame bound, or payload decoding fails,
-/// including when the stream closes before the frame.
 pub async fn read_frame<R: tokio::io::AsyncRead + Unpin + Send, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> anyhow::Result<T> {
@@ -876,7 +839,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn peer_catalog_and_acl_tombstones_persist_and_reject_replay() {
-        // Phase `persisted_peer_catalog_refreshes_and_reclaims_oldest_entry`.
         {
             let temp = tempfile::tempdir().unwrap();
             for byte in 1..=u8::try_from(MAX_PERSISTED_CONTENT_PEERS).unwrap() {
@@ -925,7 +887,6 @@ mod tests {
             let evicted = iroh::SecretKey::from_bytes(&[2; 32]).public();
             assert!(!peers.iter().any(|peer| peer.endpoint.id == evicted));
         }
-        // Phase `newer_tombstone_replaces_live_acl_and_rejects_replay`.
         {
             let temp = tempfile::tempdir().unwrap();
             let governor = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
@@ -1139,7 +1100,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn authenticated_discovery_updates_live_routes_and_rebinds() {
-        // Phase `local_publisher_serializes_concurrent_revisions`.
         {
             let temp = tempfile::tempdir().unwrap();
             let governor = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
@@ -1199,7 +1159,6 @@ mod tests {
             assert_eq!(left_response, right_response);
             task.abort();
         }
-        // Phase `authenticated_discovery_handoff_updates_live_hydrator`.
         {
             let temp = tempfile::tempdir().unwrap();
             let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
@@ -1247,7 +1206,6 @@ mod tests {
             task.abort();
             endpoint.close().await;
         }
-        // Phase `authenticated_removal_drops_live_and_durable_relay_content_routes`.
         {
             let temp = tempfile::tempdir().unwrap();
             let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)
@@ -1311,7 +1269,6 @@ mod tests {
             endpoint.close().await;
             restarted_endpoint.close().await;
         }
-        // Phase `distinct_nas_endpoint_persists_owner_ticket_and_requests_rebind`.
         {
             let temp = tempfile::tempdir().unwrap();
             let endpoint = iroh::endpoint::Endpoint::bind(iroh::endpoint::presets::N0)

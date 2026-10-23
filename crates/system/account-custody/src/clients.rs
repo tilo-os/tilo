@@ -83,9 +83,6 @@ pub struct ClientTable {
 
 impl ClientTable {
     /// Parse a table in the format of `oauth-clients.toml`.
-    ///
-    /// # Errors
-    /// The TOML error, when the text is not a valid table.
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
     }
@@ -101,7 +98,6 @@ impl ClientTable {
         })
     }
 
-    /// The entry of `issuer`.
     pub fn client(&self, issuer: OAuthIssuer) -> &ClientEntry {
         match issuer {
             OAuthIssuer::Google => &self.google,
@@ -294,7 +290,6 @@ mod tests {
                 .is_empty()
         );
         assert!(!table.is_configured(OAuthUse::mail(OAuthIssuer::Dropbox)));
-        // Gmail and Drive are the same Google client.
         let (gmail, gmail_client) = table.config(GMAIL).unwrap();
         let (drive, drive_client) = table.config(OAuthCloud::GoogleDrive.oauth_use()).unwrap();
         assert_eq!(gmail_client, drive_client);
@@ -311,7 +306,6 @@ mod tests {
             .remove("TILO_OAUTH_HUGGINGFACE_CLIENT_ID");
         let chatgpt = OAuthUse::new(OAuthIssuer::OpenAi, Capability::Models);
         let (provider, client) = table.config(chatgpt).expect("ChatGPT is configured");
-        // OpenAI matches the whole redirect URI it registered.
         assert_eq!(client.redirect_ports, RedirectPorts::Registered(vec![1455]));
         assert_eq!(client.redirect.host, "localhost");
         assert_eq!(client.redirect.path, "/auth/callback");

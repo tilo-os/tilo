@@ -83,7 +83,6 @@ impl TrustedInputMethod {
     }
 }
 
-/// Who owns the seat's input method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputMethodOwner {
     Nobody,
@@ -249,7 +248,6 @@ pub fn engine_installed(engine: InputMethodEngine) -> bool {
 pub struct ComposerLaunch {
     pub program: PathBuf,
     pub args: Vec<String>,
-    /// Variables set for the child.
     pub env: Vec<(String, String)>,
     /// The only variables inherited from the compositor. Everything else —
     /// the privileged socket's name, X11 displays, Tilo session state — stays
@@ -296,7 +294,6 @@ pub fn composer_launch(
     let dir = config_home.join("fcitx5");
     ComposerLaunch {
         program: PathBuf::from(COMPOSER_EXECUTABLE),
-        // Replace a composer a previous session left on the bus.
         args: vec![
             "--replace".into(),
             "--disable".into(),
@@ -367,7 +364,6 @@ mod tests {
                 expected,
                 "{preference:?} {input:?}"
             );
-            // Whatever hides it, a keyboard that can be shown keeps running.
             if expected {
                 assert!(
                     osk_service_wanted(preference, input),

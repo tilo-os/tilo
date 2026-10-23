@@ -586,7 +586,6 @@ mod tests {
 
     #[test]
     fn background_state_is_validated_and_denials_are_not_grants() {
-        // Phase `state_is_bounded_and_values_are_validated`.
         {
             let backend = BackgroundBackend {
                 #[cfg(target_os = "linux")]
@@ -614,7 +613,6 @@ mod tests {
             assert!(!backend.set_app_state("org.example.Bad", 3));
             assert!(!valid_commandline(&vec!["bad\nargv".into()]));
         }
-        // Phase `denial_result_is_not_a_fabricated_grant`.
         {
             let results = allowed_result(false);
             assert_eq!(crate::portal::option::<u32>(&results, "result"), Some(0));
@@ -623,7 +621,6 @@ mod tests {
 
     #[test]
     fn autostart_is_private_package_scoped_and_workspace_bound() {
-        // Phase `autostart_state_is_private_and_contains_package_ids_only`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.json");
@@ -642,11 +639,9 @@ mod tests {
                 0o600
             );
         }
-        // Phase `session_start_chooses_only_the_active_workspace`.
         {
             let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
             let active = tree.desktop.active_workspace().unwrap().id;
-            // A second workspace models a restored multi-workspace session.
             let second = crate::shell::state::Workspace::new(
                 crate::shell::state::WorkspaceId(active.0 + 100),
                 "other",

@@ -1000,12 +1000,10 @@ mod tests {
         assert_eq!(surface.fields[0].stored, "value");
         assert_eq!(surface.fields[1].stored, "collection");
         assert!(surface.fields[2].readonly);
-        // A changed operation vocabulary still shows as drift.
         let ops = surface.fields[1].ops.clone().unwrap();
         assert!(ops.as_str().unwrap().starts_with("sha256:"));
         book["fields"][1]["ops"]["title"] = "Other ops".into();
         assert_ne!(filed(&book)["fields"][1]["ops"], ops);
-        // Writing what was read writes the same bytes.
         assert_eq!(render(&[value["resources"][0].clone()]).unwrap(), text);
     }
 

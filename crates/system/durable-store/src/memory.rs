@@ -221,9 +221,6 @@ impl MemoryStore {
     }
 
     /// Report the host's outcome for a drained write.
-    ///
-    /// # Errors
-    /// Refuses a revision that is not awaiting acknowledgement from this store.
     pub fn acknowledge(
         &self,
         revision: Revision,
@@ -457,7 +454,6 @@ mod tests {
 
     #[test]
     fn memory_stores_pass_conformance_with_unique_namespaces() {
-        // Phase `immediate_store_passes_conformance`.
         {
             let store = MemoryStore::new();
             crate::conformance::run(&crate::conformance::Subject {
@@ -465,7 +461,6 @@ mod tests {
                 settle: &|| {},
             });
         }
-        // Phase `queued_store_passes_conformance_with_a_committing_host`.
         {
             let store = MemoryStore::queued();
             let settle = || {
@@ -478,7 +473,6 @@ mod tests {
                 settle: &settle,
             });
         }
-        // Phase `default_namespaces_are_unique_per_store`.
         {
             assert_ne!(
                 MemoryStore::new().namespace(),
@@ -493,7 +487,6 @@ mod tests {
 
     #[test]
     fn queued_writes_are_durable_only_after_acknowledgement_and_survive_hydration() {
-        // Phase `queued_writes_are_durable_only_after_their_acknowledgement`.
         {
             let store = MemoryStore::queued();
             let first = store
@@ -527,7 +520,6 @@ mod tests {
                 Err(StoreError::UnknownRevision(_))
             ));
         }
-        // Phase `failed_acknowledgement_widens_the_next_write_to_a_replacement`.
         {
             let store = MemoryStore::queued();
             let base = store
@@ -556,7 +548,6 @@ mod tests {
             assert!(store.flush(None).is_ok());
             assert_eq!(store.read(&key()).unwrap().unwrap().bytes, b"base+1+2");
         }
-        // Phase `hydration_never_discards_unacknowledged_writes`.
         {
             let store = MemoryStore::queued();
             let stored = Stored {

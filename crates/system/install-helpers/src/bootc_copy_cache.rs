@@ -36,7 +36,6 @@ pub trait Host {
         PathBuf::from("/run/tilo-installer/vm-bootc-copy-cache.enabled")
     }
 
-    /// The directory holding the receipt.
     fn receipt_dir(&self) -> PathBuf {
         PathBuf::from("/var/lib/tilo-installer/vm-copy-cache")
     }

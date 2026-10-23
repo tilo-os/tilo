@@ -305,7 +305,6 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
         );
         assert_eq!(under_lock.unwrap(), inspection.payload_bytes);
 
-        // Approval keeps the thin form for installers.
         storage
             .save_payload_blobs(&std::fs::read(published.objects.join("package.tapp")).unwrap())
             .unwrap();

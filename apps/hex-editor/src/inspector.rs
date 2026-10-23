@@ -319,7 +319,6 @@ mod tests {
                 Some("255"),
                 None,
             ),
-            // Binary and octal of one byte.
             (
                 "bin",
                 &[0b1010_0101],
@@ -348,7 +347,6 @@ mod tests {
                 Some(0),
             ),
             ("short u8", &[0x01], Endian::Little, "u8", Some("1"), None),
-            // The width marks consumed bytes.
             ("u64 width", &[0; 8], Endian::Little, "u64", None, Some(8)),
             ("u16 width", &[0; 8], Endian::Little, "u16", None, Some(2)),
         ];

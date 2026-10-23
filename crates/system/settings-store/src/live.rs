@@ -530,10 +530,6 @@ mod tests {
         assert!(follower.changed_sections(&live).is_empty());
     }
 
-    /// The compositor's chain for a hand edit of settings.json: the
-    /// session takes the copy in (the host's watch, or the view's own poll of
-    /// the copy), the live document and the host view both carry it, and the keyboard
-    /// settings read after the change type the new layout.
     #[test]
     fn a_hand_edited_keyboard_layout_reaches_the_live_document_and_its_readers() {
         let dir = crate::test_dir();

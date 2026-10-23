@@ -91,7 +91,6 @@ mod tests {
     }
     #[test]
     fn shader_cache_codec_round_trips_and_rejects_every_corruption() {
-        // Case `persisted_shader_round_trip_and_compiler_invalidation`.
         {
             let bytes = encode(&[1; 32], &sample()).unwrap();
             let entries = decode(&bytes, &[1; 32]).unwrap();
@@ -100,7 +99,6 @@ mod tests {
             assert!(decode(&bytes, &[2; 32]).is_none());
         }
 
-        // Case `rejects_truncation_bit_corruption_and_trailing_data`.
         {
             let bytes = encode(&[1; 32], &sample()).unwrap();
             for length in 0..bytes.len() {
@@ -116,7 +114,6 @@ mod tests {
             assert!(decode(&extended, &[1; 32]).is_none());
         }
 
-        // Case `rejects_duplicate_keys_empty_shaders_and_oversized_entries`.
         {
             let mut duplicate = sample();
             duplicate.extend(sample());
@@ -128,7 +125,6 @@ mod tests {
             assert!(encode(&[1; 32], &entry).is_none());
         }
 
-        // Case `rejects_valid_checksum_over_invalid_structure`.
         {
             let mut bytes = encode(&[1; 32], &sample()).unwrap();
             bytes[72..76].copy_from_slice(&u32::MAX.to_le_bytes());

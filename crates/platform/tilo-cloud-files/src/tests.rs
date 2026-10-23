@@ -1,4 +1,3 @@
-//! Exercise unsupported behavior on the native test host as well.
 use super::*;
 use std::sync::atomic::AtomicBool;
 

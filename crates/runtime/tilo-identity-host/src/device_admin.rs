@@ -33,10 +33,6 @@ pub enum PairRole {
 
 impl PairRole {
     /// The role `text` names: `personal-device` or `home-peer`.
-    ///
-    /// # Errors
-    ///
-    /// When it names neither.
     pub fn parse(text: &str) -> Result<Self, String> {
         match text.trim() {
             "personal-device" => Ok(Self::PersonalDevice),
@@ -73,7 +69,6 @@ impl PairRole {
 /// A device found nearby, as `tilo-enroll discover` reports it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Candidate {
-    /// The device's key, lowercase hex.
     pub device_node_id: String,
     /// The relay service node id it announced, lowercase hex.
     pub relay_service_node_id: String,
@@ -83,7 +78,6 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// The candidate as discovery answers it, for `role`.
     #[must_use]
     pub fn answer(&self, role: PairRole) -> serde_json::Value {
         serde_json::json!({
@@ -97,11 +91,6 @@ impl Candidate {
 }
 
 /// The device a finished `tilo-enroll discover[-device]` reports.
-///
-/// # Errors
-///
-/// Why none was found, as the program said it, or that its answer is not a
-/// device.
 pub fn discovered(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Candidate, String> {
     if !success {
         return Err(command_error(stderr, "no new device was found nearby"));
@@ -118,11 +107,9 @@ pub fn discovered(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Candida
     })
 }
 
-/// An approval of a discovered device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Approval {
     pub role: PairRole,
-    /// The device's key, in lowercase hex.
     pub device: String,
     /// The relay service node id it announced, in lowercase hex.
     pub service: String,
@@ -192,6 +179,105 @@ pub fn approval_args(
             args.push("--workspace-id".into());
             args.push(id.to_string().into());
         }
+    }
+    args
+}
+
+/// What of the identity's key this device holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyHolding {
+    /// All of it: this device certifies the devices it pairs itself.
+    Whole,
+    /// None, or one share: the devices it pairs are certified by the
+    /// person's devices that hold the key ([`crate::certification_ceremony`]),
+    /// `threshold` of the key's `total` devices together.
+    Part {
+        person: [u8; 32],
+        threshold: u16,
+        total: u16,
+    },
+}
+
+/// What of the identity at `paths` this device holds, without opening its
+/// secret.
+///
+/// # Errors
+///
+/// When this account has no identity, or its record cannot be read.
+pub fn key_holding(paths: &PersonPaths) -> Result<KeyHolding, String> {
+    if IdentityPaths::under(&paths.root).user_privkey.exists() {
+        return Ok(KeyHolding::Whole);
+    }
+    let record = runtime_identity::resolve_active_identity(&paths.dir)
+        .ok_or("this account has no identity yet")?;
+    let metadata = runtime_identity::load_metadata_from_path(&record)
+        .map_err(|error| format!("could not read your identity: {error}"))?;
+    Ok(if metadata.single_device {
+        KeyHolding::Whole
+    } else {
+        KeyHolding::Part {
+            person: metadata.group_public_key,
+            threshold: metadata.threshold,
+            total: metadata.total_shares,
+        }
+    })
+}
+
+/// The certificate to propose for `candidate`, a personal device of
+/// `person`, valid from about `now_ns`; and the relay service it announced.
+///
+/// # Errors
+///
+/// When the candidate's keys are malformed.
+pub fn proposed_certificate(
+    person: [u8; 32],
+    candidate: &Candidate,
+    now_ns: u64,
+) -> Result<(tilo_user_identity::DeviceCert, [u8; 32]), String> {
+    let key = |text: &str| -> Result<[u8; 32], String> {
+        hex::decode(text)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| "the discovered device has a malformed key".to_string())
+    };
+    Ok((
+        tilo_user_identity::DeviceCert {
+            user_public_key: person,
+            device_public_key: key(&candidate.device_node_id)?,
+            device_label: candidate.label.clone(),
+            capabilities: crate::enrollment::EnrollmentRole::PersonalDevice.preset(),
+            // As a certificate issued here: a minute back, for a new device
+            // whose clock trails.
+            issued_at_ns: now_ns.saturating_sub(60 * 1_000_000_000),
+            expires_at_ns: None,
+            signature: [0; 64],
+        },
+        key(&candidate.relay_service_node_id)?,
+    ))
+}
+
+/// `tilo-enroll`'s arguments that pair `approval`'s personal device with the
+/// certificate at `approved_cert`, which the person's key holders signed.
+/// No administrator is involved: this device signs nothing as the identity.
+#[must_use]
+pub fn approved_args(
+    approval: &Approval,
+    paths: &PersonPaths,
+    approved_cert: &Path,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![PairRole::PersonalDevice.approve_command().into()];
+    for (flag, value) in [
+        ("--identity-root", paths.root.as_os_str()),
+        ("--identity-dir", paths.dir.as_os_str()),
+        ("--expected-device", std::ffi::OsStr::new(&approval.device)),
+        (
+            "--expected-service",
+            std::ffi::OsStr::new(&approval.service),
+        ),
+        ("--approved-cert", approved_cert.as_os_str()),
+    ] {
+        args.push(flag.into());
+        args.push(value.to_owned());
     }
     args
 }
@@ -285,10 +371,6 @@ fn fingerprint(key: &[u8; 32]) -> String {
 }
 
 /// The revocation reason `text` names.
-///
-/// # Errors
-///
-/// When it names none.
 pub fn revocation_reason(text: &str) -> Result<RevocationReason, String> {
     match text.trim().to_ascii_lowercase().as_str() {
         "lost" => Ok(RevocationReason::Lost),

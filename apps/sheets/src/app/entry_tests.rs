@@ -124,7 +124,6 @@ fn arrows_finish_a_typed_entry_but_move_the_caret_in_an_edit() {
     assert!(app.grid.is_editing());
     press(&mut app, &mut doc, NamedKey::Escape);
 
-    // Shift+Tab and Shift+Enter commit and step back.
     app.grid.select_only((2, 22)); // C23
     type_chars(&mut app, &mut doc, "x");
     assert!(feed(

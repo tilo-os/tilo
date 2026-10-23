@@ -369,7 +369,7 @@ pub use effect::{
     ChosenFile, DocumentVersion, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected,
     JobProgress, Jobs, Progress, Projection,
 };
-pub use env::RecordEnv;
+pub use env::{RecordEnv, WindowDocument};
 pub use form::{Form, FormSubmit};
 pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_room};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
@@ -377,7 +377,7 @@ pub use live::Live;
 pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;
-pub use record::{OtherRecord, Records};
+pub use record::{Declare, OtherRecord, Records};
 pub use root::{reserved_action_ids, with_surface};
 pub use rows::LiveRow;
 pub use saves::Saves;

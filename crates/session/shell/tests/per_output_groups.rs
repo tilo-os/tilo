@@ -509,7 +509,6 @@ fn a_new_window_opens_on_the_display_with_focus() {
     for fixture in ["docked-laptop", "vertical-stack"] {
         let mut desk = Desk::fixture(fixture);
         assert_eq!(desk.focused_display(), Some(0), "{fixture}");
-        // The pointer crossing onto the second display takes focus with it.
         let second = desk.display(1);
         desk.point_at(Point::new(second.center().x, second.center().y));
         assert_eq!(desk.focused_display(), Some(1), "{fixture}");
@@ -591,10 +590,8 @@ fn the_chord_moves_the_focused_group_to_the_neighbouring_display() {
         );
         assert_takes_its_new_displays_height(&mut desk, fixture, moving);
 
-        // And back.
         desk.press(NamedKey::ArrowLeft, chord);
         assert_eq!(desk.display_of(moving), Some(0), "{fixture}");
-        // The plain reorder chord still reorders, within the display.
         let before = desk.strip_order();
         desk.press(
             NamedKey::ArrowLeft,
@@ -884,7 +881,6 @@ impl Collaborator {
         let mut tree = WorkspaceTree::default();
         tree.set_salt_override(SALT.wrapping_add(1));
         tree.join_room("Joined", room).expect("joins the room");
-        // The desk's invite names it as the room's governor.
         assert!(tree.pin_room_authority(room, PeerOrigin::peer_id("docked-laptop")));
         let mut collaborator = Self { tree, room };
         collaborator.receive(desk);
@@ -933,7 +929,6 @@ fn display_changes_never_reorder_a_collaborators_strip() {
         assert_eq!(collaborator.strip_order(), shared, "{fixture}: unplug");
         assert_eq!(desk.strip_order(), shared, "{fixture}: unplug");
 
-        // Replugged, then a group sent to the other display.
         desk.replug();
         desk.focus(ON_SECOND[1]);
         desk.focus(ON_PRIMARY[2]);
@@ -992,7 +987,6 @@ fn renumbered_outputs_return_every_group_to_its_monitor() {
     for fixture in ["docked-laptop", "vertical-stack"] {
         let mut desk = Desk::fixture(fixture);
         assert_groups_on_their_monitors(&mut desk, fixture);
-        // What `state.json` holds.
         let saved = serde_json::to_string(&*desk.fb.chrome().tree()).expect("the state saves");
 
         // Replugged on each other's ports while running.
@@ -1002,7 +996,6 @@ fn renumbered_outputs_return_every_group_to_its_monitor() {
         assert_groups_on_their_monitors(&mut desk, &format!("{fixture}, port swap"));
         assert_every_group_stays_on_its_display(&mut desk, fixture);
 
-        // Restarted from the saved state with the outputs renumbered.
         let mut tree: WorkspaceTree = serde_json::from_str(&saved).expect("the saved state loads");
         tree.set_salt_override(SALT);
         let outputs = desk.outputs.clone();
@@ -1140,7 +1133,6 @@ fn dragging_a_group_onto_another_display_moves_it_there() {
         );
         assert_takes_its_new_displays_height(&mut desk, how, moving);
         assert_every_group_stays_on_its_display(&mut desk, how);
-        // Nothing overlaps on either display.
         let layout = desk.layout();
         for (i, (a, ra, da)) in layout.iter().enumerate() {
             for (b, rb, db) in layout.iter().skip(i + 1) {

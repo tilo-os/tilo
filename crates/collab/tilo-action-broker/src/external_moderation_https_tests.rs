@@ -321,7 +321,6 @@ mod https_completion {
                     .apply(store::Reports::DRAFT_REPORT.with("org.example.app"))
                     .unwrap();
             }
-            // Use the Store's real resource action and typed collaborative text edit.
             reports
                 .apply(
                     tilo_resource::Invoke::edit(
@@ -455,7 +454,6 @@ mod https_completion {
             }));
             target.handle.publish_action_directory(&room.route.app_id, capnp_rpc::new_client(StoreDirectory)).await.unwrap();
             let descriptor = descriptor("submit-report");
-            // A reliable target binding captures an already-live UUID stream.
             let stream = target.handle.subscribe_stable_invocations().await.unwrap();
             let (_, binding) = target.handle.resolve_published_action_for_invocation(988, "moderation-r1", &descriptor.resource, &descriptor.action).await.unwrap();
             let operation = approved_operation(&server, "The description is misleading", None);
@@ -604,7 +602,6 @@ mod https_completion {
                         signed.actor_pubkey_hex
                     );
                     registry_types::verify_moderation_mutation(signed).unwrap();
-                    // The exact retained continuation returns its receipt without duplicating the write.
                     let retry = target
                         .handle
                         .external_moderation(&request, delivered.invocation_uuid)

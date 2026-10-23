@@ -993,7 +993,6 @@ mod tests {
 
     #[test]
     fn permission_dialog_semantics_focus_and_owner_only_always() {
-        // Case `accessibility_reports_modal_dialog_with_request_name`.
         {
             use crate::a11y::Role;
             let p = PermissionPrompt::new("org.gnome.gedit".into(), "Camera access".into(), true);
@@ -1011,7 +1010,6 @@ mod tests {
             assert_eq!(node.children[3].name.as_deref(), Some("Deny"));
         }
 
-        // Case `non_owner_prompt_exposes_always_as_disabled_and_traps_focus`.
         {
             let p = prompt_at(false);
             let node = Widget::accessibility(&p).expect("prompt is semantic");
@@ -1022,7 +1020,6 @@ mod tests {
             assert_eq!(p.synthetic_accessibility_rect(&[3]), Some(p.deny_rect()));
         }
 
-        // Case `keyboard_focus_defaults_to_deny_and_at_can_activate_an_exact_choice`.
         {
             let mut p = prompt_at(false);
             Widget::set_focus(&mut p, true);
@@ -1064,7 +1061,6 @@ mod tests {
             assert_eq!(p.pending_choice, None);
         }
 
-        // Case `build_layout_emits_fixed_height_node`.
         {
             // The overlay-host depends on this being exactly `PROMPT_HEIGHT` so
             // the strip's content shifts down by the right amount.
@@ -1144,7 +1140,6 @@ mod tests {
 
     #[test]
     fn permission_buttons_set_exactly_their_pending_choice() {
-        // Case `click_allow_sets_pending_choice_to_allow`.
         {
             let mut p = prompt_at(false);
             let center = p.allow_rect().center();
@@ -1153,7 +1148,6 @@ mod tests {
             assert_eq!(p.pending_choice, Some(PromptChoice::Allow));
         }
 
-        // Case `click_session_sets_pending_choice_to_session`.
         {
             let mut p = prompt_at(false);
             let center = p.session_rect().center();
@@ -1162,7 +1156,6 @@ mod tests {
             assert_eq!(p.pending_choice, Some(PromptChoice::Session));
         }
 
-        // Case `always_button_disabled_for_non_owner_drops_clicks`.
         {
             let mut p = prompt_at(false);
             let center = p.always_rect().center();
@@ -1171,7 +1164,6 @@ mod tests {
             assert_eq!(p.pending_choice, None);
         }
 
-        // Case `always_button_active_for_owner_sets_choice_to_always`.
         {
             let mut p = prompt_at(true);
             let center = p.always_rect().center();
@@ -1180,7 +1172,6 @@ mod tests {
             assert_eq!(p.pending_choice, Some(PromptChoice::Always));
         }
 
-        // Case `deny_click_sets_pending_choice_to_deny`.
         {
             let mut p = prompt_at(false);
             let center = p.deny_rect().center();
@@ -1189,7 +1180,6 @@ mod tests {
             assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
         }
 
-        // Case `click_outside_button_rects_does_not_set_choice`.
         {
             // Click on the icon (left edge of the bar), far from any
             // button rect.

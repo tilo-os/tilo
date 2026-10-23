@@ -210,7 +210,6 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         layout(&mut app);
         assert_eq!(app.state.doc.base_heads(), heads);
         assert_eq!(app.state.doc.pending_ops(), ops);
-        // Opening the panel then closing the actual entry preserves the editor.
         let close = named(&mut app, "History");
         app.dispatch_a11y_action(close, &crate::a11y::Action::Activate);
         layout(&mut app);
@@ -8167,7 +8166,6 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
             "old retained raw handle cannot route to B"
         );
         drop(lease);
-        // Legitimate presentation reparenting stays in A's exact incarnation.
         crate::widget::controls::install_control_custody(
             &mut tile,
             &right,

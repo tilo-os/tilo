@@ -362,25 +362,6 @@ impl App {
         }
     }
 
-    fn send_owned_document(
-        &mut self,
-        route: RouteSpec,
-        request: CollabRequest,
-    ) -> Result<(), crate::collaboration::CollabSendError> {
-        #[cfg(test)]
-        if let Some(refusal) = self.document_routes.refuse_for_test.clone() {
-            return Err(refusal);
-        }
-        #[cfg(test)]
-        let observation = (route.clone(), request.clone());
-        self.collaboration
-            .manager
-            .try_send_to_route(route, request)?;
-        #[cfg(test)]
-        self.document_routes.sent.push(observation);
-        Ok(())
-    }
-
     /// Ordinary background/history publication remains best effort. Only a
     /// directed terminal requires the explicit complete-queue result below.
     #[cfg(any(test, feature = "native"))]
@@ -404,7 +385,7 @@ impl App {
         if self.document_routes.witness.is_none() {
             return Err("the admitted document route is unavailable");
         }
-        let mut blocked = current
+        let blocked = current
             .iter()
             .any(|owner| {
                 !self.document_routes.owners.iter().any(|entry| {
@@ -415,88 +396,13 @@ impl App {
                 })
             })
             .then_some("a live document owner has no usable publication route");
-        let mut sends = vec![];
-        for entry in &mut self.document_routes.owners {
-            if entry.opening {
-                if !self
-                    .collaboration
-                    .manager
-                    .document_route_publishable(&entry.route)
-                {
-                    // Its whole document goes out once the route opens.
-                    continue;
-                }
-                entry.opening = false;
-            }
-            let Some(owner) = entry.owners.first() else {
-                blocked.get_or_insert("a document route has no owner");
-                continue;
-            };
-            if entry.owners.iter().any(|other| !owner.same_document(other)) {
-                entry.pending.failure = Some("Multiple different document owners claim this collaboration route. Synchronization is stopped.".into());
-                blocked.get_or_insert("document owners conflict on the publication route");
-                continue;
-            }
-            let publication = owner.prepare_publication(
-                &self.state.doc,
-                &entry.sent_heads,
-                entry.needs_snapshot,
-                entry.pending.failure.is_some(),
-            );
-            let (mutation, authorization, heads) = match publication {
-                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unchanged) => continue,
-                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unfinished) => {
-                    blocked.get_or_insert("an owned document has unfinished changes");
-                    continue;
-                }
-                Ok(crate::history_mode::owner::OwnedDocumentPublication::Blocked) => {
-                    blocked.get_or_insert("a changed document requires synchronization recovery");
-                    continue;
-                }
-                Ok(crate::history_mode::owner::OwnedDocumentPublication::Changed {
-                    mutation,
-                    authorization,
-                    heads,
-                }) => (mutation, authorization, heads),
-                Err(_) => {
-                    blocked.get_or_insert("an owned document is unreadable");
-                    continue;
-                }
-            };
-            let request = CollabRequest::Document {
-                mutation,
-                authorization,
-            };
-            sends.push((entry.route.clone(), request, heads));
+        let published = self
+            .document_routes
+            .publish_owned(&mut self.collaboration.manager, &self.state.doc);
+        if published.status_changed {
+            self.layout.layout_dirty = true;
         }
-        for (route, request, heads) in sends {
-            let result = self.send_owned_document(route.clone(), request);
-            let failure = outbound_failure(&result);
-            if result.is_err() {
-                blocked.get_or_insert("the document command could not enter the transport queue");
-            }
-            let Some(entry) = self
-                .document_routes
-                .owners
-                .iter_mut()
-                .find(|entry| entry.route == route)
-            else {
-                continue;
-            };
-            // Only an accepted change moves the route's frontier; a refused
-            // one is offered again on the next publication.
-            if result.is_ok() {
-                entry.sent_heads = heads;
-                entry.needs_snapshot = false;
-            }
-            if let Some(failure) = failure
-                && entry.outbound_failure.as_ref() != failure.as_ref()
-            {
-                entry.outbound_failure = failure;
-                self.layout.layout_dirty = true;
-            }
-        }
-        blocked.map_or(Ok(()), Err)
+        blocked.or(published.blocked).map_or(Ok(()), Err)
     }
 
     /// A local mutation may already exist. Suppress its terminal and retire the
@@ -529,80 +435,7 @@ impl App {
     }
 
     fn drain_document_routes_after_refresh(&mut self) {
-        let mut changed = false;
-        for entry in &mut self.document_routes.owners {
-            let Some(owner) = entry.owners.first() else {
-                continue;
-            };
-            if entry.owners.iter().any(|other| !owner.same_document(other)) {
-                entry.pending.failure = Some("Multiple different document owners claim this collaboration route. Synchronization is stopped.".into());
-                continue;
-            }
-            while let Some(mutation) = entry.pending.front() {
-                // Remote history is already held by its sender and the owner;
-                // republishing it as our Incremental is a pure echo. When every
-                // local change had already been queued before this merge, the
-                // merged frontier counts as published. Otherwise unsent local
-                // changes interleave and the next publication keeps them.
-                use automerge::transaction::Transactable as _;
-                let (store, checkout) = owner.store_checkout();
-                let fully_sent = !entry.needs_snapshot
-                    && store
-                        .read_checked(&checkout.id, |doc| {
-                            doc.pending_ops() == 0
-                                && crate::history_mode::sorted_heads(doc.base_heads())
-                                    == entry.sent_heads
-                        })
-                        .unwrap_or(false);
-                // A peer's whole document that this replica merges and is
-                // still ahead of: the sender lacks something only we hold.
-                let sender_heads = match mutation {
-                    collab_types::DocumentMutation::Snapshot(bytes) if entry.answers_snapshots => {
-                        automerge::AutoCommit::load(bytes)
-                            .ok()
-                            .map(|mut sent| crate::history_mode::sorted_heads(sent.get_heads()))
-                    }
-                    _ => None,
-                };
-                match owner.merge_remote(mutation) {
-                    Ok(Some(applied)) => {
-                        entry.pending.pop_applied();
-                        changed |= applied;
-                        if let Some(sender_heads) = sender_heads
-                            && store
-                                .read_checked(&checkout.id, |doc| {
-                                    crate::history_mode::sorted_heads(doc.base_heads())
-                                })
-                                .is_ok_and(|heads| heads != sender_heads)
-                        {
-                            entry.needs_snapshot = true;
-                        }
-                        if applied {
-                            store.schedule_committed_history(&checkout.id);
-                            if fully_sent
-                                && let Ok(heads) = store.read_checked(&checkout.id, |doc| {
-                                    crate::history_mode::sorted_heads(doc.base_heads())
-                                })
-                            {
-                                entry.sent_heads = heads;
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(error) => {
-                        let reason = format!(
-                            "Remote document could not be applied: {error}. Synchronization needs recovery."
-                        );
-                        if error.is_invalid_mutation() {
-                            entry.pending.quarantine_invalid_front(reason);
-                            continue;
-                        }
-                        entry.pending.failure = Some(reason);
-                        break;
-                    }
-                }
-            }
-        }
+        let mut changed = self.document_routes.merge_owned();
         while let Some(mutation) = self.document_routes.primary.front() {
             match self.state.merge_remote_committed(mutation) {
                 Ok(Some(applied)) => {
@@ -683,21 +516,25 @@ impl App {
             return;
         }
         self.refresh_document_routes();
-        let Some(witness) = self.document_routes.witness.as_ref() else {
+        if self.document_routes.witness.is_none() {
             return;
-        };
+        }
         // Signature/role/replay verification remains the SDK's responsibility.
         // This door additionally checks deterministic artifact, attestation and
         // encrypted channel against the actual installed route before decoding.
-        let owned = self
+        if let Some(refused) = self
             .document_routes
-            .owners
-            .iter()
-            .enumerate()
-            .find_map(|(index, entry)| {
-                validated_route_payload_with(&entry.route, envelope, decrypted_payload)
-                    .map(|payload| (index, entry.route.clone(), payload))
-            });
+            .admit_owned(envelope, decrypted_payload)
+        {
+            if refused {
+                self.layout.layout_dirty = true;
+            }
+            self.drain_document_routes_after_refresh();
+            return;
+        }
+        let Some(witness) = self.document_routes.witness.as_ref() else {
+            return;
+        };
         let primary = validated_route_payload_with(&witness.route, envelope, decrypted_payload)
             .and_then(|payload| {
                 let active = !self.document_routes.retired_route(&witness.route)
@@ -716,11 +553,7 @@ impl App {
                     };
                 active.then(|| (witness.route.clone(), payload))
             });
-        let (owned, route, payload) = if let Some((index, route, payload)) = owned {
-            (Some(index), route, payload)
-        } else if let Some((route, payload)) = primary {
-            (None, route, payload)
-        } else {
+        let Some((route, payload)) = primary else {
             return;
         };
         let mutation = match decode_routed_mutation(&route, payload, decrypted_payload) {
@@ -730,19 +563,231 @@ impl App {
                 return;
             }
         };
-        let queue = if let Some(index) = owned {
-            let Some(entry) = self.document_routes.owners.get_mut(index) else {
-                return;
-            };
-            &mut entry.pending
-        } else {
-            &mut self.document_routes.primary
-        };
+        let queue = &mut self.document_routes.primary;
         let accepted = queue.admit(mutation);
         if !accepted {
             self.layout.layout_dirty = true;
             tracing::warn!(status = ?queue.failure, "collab: routed document deferred queue refused update; resynchronization required");
         }
         self.drain_document_routes_after_refresh();
+    }
+}
+
+/// What publishing a holder's records reported.
+pub(super) struct Published {
+    /// Why some record's changes are not reaching peers, if any.
+    pub(super) blocked: Option<&'static str>,
+    /// A route's user-visible status changed.
+    pub(super) status_changed: bool,
+}
+
+impl crate::history_mode::routes::OwnerDocumentRoutes {
+    /// Publish what changed in every held record through `manager`: a
+    /// route's whole document once it opens or a peer asks, its changes
+    /// since what the transport last accepted otherwise. `outer` is the
+    /// window's document, which an owner of the window's own record reads.
+    pub(super) fn publish_owned(
+        &mut self,
+        manager: &mut crate::collaboration::CollaborationManager,
+        outer: &automerge::AutoCommit,
+    ) -> Published {
+        let mut blocked = None;
+        let mut status_changed = false;
+        let mut sends = vec![];
+        for entry in &mut self.owners {
+            if entry.opening {
+                if !manager.document_route_publishable(&entry.route) {
+                    // Its whole document goes out once the route opens.
+                    continue;
+                }
+                entry.opening = false;
+            }
+            let Some(owner) = entry.owners.first() else {
+                blocked.get_or_insert("a document route has no owner");
+                continue;
+            };
+            if entry.owners.iter().any(|other| !owner.same_document(other)) {
+                entry.pending.failure = Some("Multiple different document owners claim this collaboration route. Synchronization is stopped.".into());
+                blocked.get_or_insert("document owners conflict on the publication route");
+                continue;
+            }
+            let publication = owner.prepare_publication(
+                outer,
+                &entry.sent_heads,
+                entry.needs_snapshot,
+                entry.pending.failure.is_some(),
+            );
+            let (mutation, authorization, heads) = match publication {
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unchanged) => continue,
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unfinished) => {
+                    blocked.get_or_insert("an owned document has unfinished changes");
+                    continue;
+                }
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Blocked) => {
+                    blocked.get_or_insert("a changed document requires synchronization recovery");
+                    continue;
+                }
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Changed {
+                    mutation,
+                    authorization,
+                    heads,
+                }) => (mutation, authorization, heads),
+                Err(_) => {
+                    blocked.get_or_insert("an owned document is unreadable");
+                    continue;
+                }
+            };
+            let request = CollabRequest::Document {
+                mutation,
+                authorization,
+            };
+            sends.push((entry.route.clone(), request, heads));
+        }
+        for (route, request, heads) in sends {
+            #[cfg(test)]
+            let result = if let Some(refusal) = self.refuse_for_test.clone() {
+                Err(refusal)
+            } else {
+                let observation = (route.clone(), request.clone());
+                let result = manager.try_send_to_route(route.clone(), request);
+                if result.is_ok() {
+                    self.sent.push(observation);
+                }
+                result
+            };
+            #[cfg(not(test))]
+            let result = manager.try_send_to_route(route.clone(), request);
+            let failure = outbound_failure(&result);
+            if result.is_err() {
+                blocked.get_or_insert("the document command could not enter the transport queue");
+            }
+            let Some(entry) = self.owners.iter_mut().find(|entry| entry.route == route) else {
+                continue;
+            };
+            // Only an accepted change moves the route's frontier; a refused
+            // one is offered again on the next publication.
+            if result.is_ok() {
+                entry.sent_heads = heads;
+                entry.needs_snapshot = false;
+            }
+            if let Some(failure) = failure
+                && entry.outbound_failure.as_ref() != failure.as_ref()
+            {
+                entry.outbound_failure = failure;
+                status_changed = true;
+            }
+        }
+        Published {
+            blocked,
+            status_changed,
+        }
+    }
+
+    /// Merge what peers sent into every held record. Whether a record
+    /// changed.
+    pub(super) fn merge_owned(&mut self) -> bool {
+        let mut changed = false;
+        for entry in &mut self.owners {
+            let Some(owner) = entry.owners.first() else {
+                continue;
+            };
+            if entry.owners.iter().any(|other| !owner.same_document(other)) {
+                entry.pending.failure = Some("Multiple different document owners claim this collaboration route. Synchronization is stopped.".into());
+                continue;
+            }
+            while let Some(mutation) = entry.pending.front() {
+                // Remote history is already held by its sender and the owner;
+                // republishing it as our Incremental is a pure echo. When every
+                // local change had already been queued before this merge, the
+                // merged frontier counts as published. Otherwise unsent local
+                // changes interleave and the next publication keeps them.
+                use automerge::transaction::Transactable as _;
+                let (store, checkout) = owner.store_checkout();
+                let fully_sent = !entry.needs_snapshot
+                    && store
+                        .read_checked(&checkout.id, |doc| {
+                            doc.pending_ops() == 0
+                                && crate::history_mode::sorted_heads(doc.base_heads())
+                                    == entry.sent_heads
+                        })
+                        .unwrap_or(false);
+                // A peer's whole document that this replica merges and is
+                // still ahead of: the sender lacks something only we hold.
+                let sender_heads = match mutation {
+                    collab_types::DocumentMutation::Snapshot(bytes) if entry.answers_snapshots => {
+                        automerge::AutoCommit::load(bytes)
+                            .ok()
+                            .map(|mut sent| crate::history_mode::sorted_heads(sent.get_heads()))
+                    }
+                    _ => None,
+                };
+                match owner.merge_remote(mutation) {
+                    Ok(Some(applied)) => {
+                        entry.pending.pop_applied();
+                        changed |= applied;
+                        if let Some(sender_heads) = sender_heads
+                            && store
+                                .read_checked(&checkout.id, |doc| {
+                                    crate::history_mode::sorted_heads(doc.base_heads())
+                                })
+                                .is_ok_and(|heads| heads != sender_heads)
+                        {
+                            entry.needs_snapshot = true;
+                        }
+                        if applied {
+                            store.schedule_committed_history(&checkout.id);
+                            if fully_sent
+                                && let Ok(heads) = store.read_checked(&checkout.id, |doc| {
+                                    crate::history_mode::sorted_heads(doc.base_heads())
+                                })
+                            {
+                                entry.sent_heads = heads;
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        let reason = format!(
+                            "Remote document could not be applied: {error}. Synchronization needs recovery."
+                        );
+                        if error.is_invalid_mutation() {
+                            entry.pending.quarantine_invalid_front(reason);
+                            continue;
+                        }
+                        entry.pending.failure = Some(reason);
+                        break;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Queue `envelope` for the held record whose route it came on, if any:
+    /// `Some` whether its queue refused it, `None` when no held record's
+    /// route carried it.
+    pub(super) fn admit_owned(
+        &mut self,
+        envelope: &collab_types::SignedOp,
+        decrypted_payload: Option<&[u8]>,
+    ) -> Option<bool> {
+        let (index, route, payload) =
+            self.owners.iter().enumerate().find_map(|(index, entry)| {
+                validated_route_payload_with(&entry.route, envelope, decrypted_payload)
+                    .map(|payload| (index, entry.route.clone(), payload))
+            })?;
+        let mutation = match decode_routed_mutation(&route, payload, decrypted_payload) {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                tracing::warn!(%error, "collab: invalid routed document mutation");
+                return Some(false);
+            }
+        };
+        let entry = self.owners.get_mut(index)?;
+        let refused = !entry.pending.admit(mutation);
+        if refused {
+            tracing::warn!(status = ?entry.pending.failure, "collab: routed document deferred queue refused update; resynchronization required");
+        }
+        Some(refused)
     }
 }

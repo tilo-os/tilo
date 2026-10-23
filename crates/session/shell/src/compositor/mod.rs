@@ -50,6 +50,7 @@ pub(crate) mod diagnostic_actions;
 #[cfg(target_os = "linux")]
 pub mod dictation;
 pub mod dictation_status;
+pub mod downloaded_programs;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;

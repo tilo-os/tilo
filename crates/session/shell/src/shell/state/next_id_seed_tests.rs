@@ -26,7 +26,6 @@ impl Drop for SaltGuard {
 fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
     // Phase `next_id_is_seeded_above_every_used_id`.
     {
-        // Phase `next_id_seeds_above_max_used_id_on_load`.
         {
             let _guard = SaltGuard::new();
             NEXT_ID_PEER_SALT.store(0, AtomicOrdering::Relaxed);
@@ -153,7 +152,6 @@ fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
             // export only ships the *incremental* appends.
             let base_heads = tree_a.current_heads();
 
-            // Peer B switches to its own salt and appends a workspace.
             NEXT_ID_PEER_SALT.store(0x2222, AtomicOrdering::Relaxed);
             NEXT_ID.store(1, AtomicOrdering::Relaxed);
             let id_b = tree_b.append_empty_workspace("PeerB");

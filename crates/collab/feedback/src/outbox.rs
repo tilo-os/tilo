@@ -43,13 +43,14 @@ pub struct Outbox {
 
 impl Outbox {
     /// Restore immutable pending submissions from the host's durable store.
-    ///
-    /// # Errors
-    /// Refuses concurrent ownership, corrupt/oversized data, or pending writes
-    /// that the host has not committed. No malformed record is silently skipped.
     pub fn open(store: Rc<dyn DurableStore>, key: StorageKey) -> Result<Self, Error> {
         let lease = store.lease(&key)?;
-        store.flush(Some(&key))?;
+        // What is stored becomes durable on the store's own thread where this
+        // one must not wait (the compositor's loop); reading needs no flush.
+        match store.flush_where_allowed(&key) {
+            Ok(()) | Err(durable_store::StoreError::Pending(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
         let snapshot: Snapshot = match store.read(&key)? {
             Some(stored) => {
                 if stored.bytes.len() > MAX_BYTES {
@@ -83,9 +84,6 @@ impl Outbox {
 
     /// Persist an approved payload before the transport may see it. Queueing the
     /// identical id/payload twice is idempotent; reusing an id for edits fails.
-    ///
-    /// # Errors
-    /// Refuses invalid/conflicting submissions, a full outbox or a storage error.
     pub fn queue(&mut self, submission: Submission) -> Result<(), Error> {
         submission.validate()?;
         if let Some(existing) = self.snapshot.entries.get(&submission.id) {

@@ -259,10 +259,35 @@ pub struct PageReply {
     /// Structured findings: the element at a point, how a settle went, log
     /// entries. Always page content, so never trusted as instructions.
     pub data: Option<serde_json::Value>,
-    /// The request started a main-frame navigation.
-    pub navigated: bool,
-    /// That navigation had not finished loading when the engine answered.
+    /// Whether the request led the page away from its document.
+    pub navigation: PageNavigation,
+    /// The navigation it started had not finished loading when the engine
+    /// answered.
     pub loading: bool,
+}
+
+/// Whether a page request led the page to another document, as far as the
+/// engine can tell when it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageNavigation {
+    /// The request ran none of the page's code, so it cannot have.
+    None,
+    /// The page began a main-frame navigation while it handled the request.
+    Started,
+    /// It had not by the time it handled the request, and may still: a
+    /// navigation the page starts later arrives as its own document request in
+    /// the network log.
+    Possible,
+}
+
+impl PageNavigation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Started => "started",
+            Self::Possible => "possible",
+        }
+    }
 }
 
 /// Why a page request did nothing. `code` is stable, such as
@@ -355,6 +380,18 @@ pub(crate) fn decode_result(
             _ => Some(bounded("outline", MAX_OUTLINE_BYTES)?),
         };
         let navigated = value["navigated"].as_bool()?;
+        // An engine from before `navigation` only knew whether one began soon after.
+        let navigation = match value["navigation"].as_str() {
+            Some("none") => PageNavigation::None,
+            Some("started") => PageNavigation::Started,
+            Some("possible") => PageNavigation::Possible,
+            Some(_) => return None,
+            None if navigated => PageNavigation::Started,
+            None => PageNavigation::Possible,
+        };
+        if navigated != (navigation == PageNavigation::Started) {
+            return None;
+        }
         let data = match &value["data"] {
             serde_json::Value::Null => None,
             data @ serde_json::Value::Object(_) => {
@@ -370,7 +407,7 @@ pub(crate) fn decode_result(
             message,
             outline,
             data,
-            navigated,
+            navigation,
             loading: navigated && value["loading"].as_bool()?,
         })
     } else {
@@ -550,10 +587,18 @@ mod tests {
                 "url":"https://a.test/","message":"Read","outline":"- button \"Go\" [ref=d1e1]","navigated":false,"loading":false});
             let (id, reply) = decode_result(&ok).unwrap();
             assert_eq!(id, 3);
+            let reply = reply.unwrap();
+            assert_eq!(reply.outline.as_deref(), Some("- button \"Go\" [ref=d1e1]"));
+            assert_eq!(reply.navigation, PageNavigation::Possible);
+            let read = serde_json::json!({"event":"page_result","request_id":3,"ok":true,
+                "url":"https://a.test/","message":"Read","outline":null,"navigation":"none","navigated":false,"loading":false});
             assert_eq!(
-                reply.unwrap().outline.as_deref(),
-                Some("- button \"Go\" [ref=d1e1]")
+                decode_result(&read).unwrap().1.unwrap().navigation,
+                PageNavigation::None
             );
+            let contradicts = serde_json::json!({"event":"page_result","request_id":3,"ok":true,
+                "url":"https://a.test/","message":"Read","outline":null,"navigation":"started","navigated":false,"loading":false});
+            assert!(decode_result(&contradicts).is_none());
             let failed = serde_json::json!({"event":"page_result","request_id":4,"ok":false,
                 "code":"stale_element","message":"Read the page again"});
             assert_eq!(

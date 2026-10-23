@@ -193,7 +193,6 @@ fn config_identity_path() -> Option<std::path::PathBuf> {
     identity_record_in(&crate::host::environment().paths.config_dir()?)
 }
 
-/// [`config_identity_path`] under the config directory `config`.
 #[cfg(feature = "local-daemons")]
 fn identity_record_in(config: &std::path::Path) -> Option<std::path::PathBuf> {
     runtime_identity::resolve_active_identity(&config.join("tilo").join("identity"))

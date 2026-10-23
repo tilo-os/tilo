@@ -78,7 +78,6 @@ pub enum Error {
 }
 
 impl Error {
-    /// A `Pack` failure with `message`.
     pub fn pack(message: impl Into<String>) -> Self {
         Self::Pack(message.into())
     }

@@ -294,7 +294,6 @@ mod tests {
             store.read_local(id, &m, 1000..2_500_000).await.unwrap(),
             &large[1000..2_500_000]
         );
-        // Chunks are found where they live, checked against their hash.
         let first = m.chunks()[0];
         let chunk = store.local(Hash::from(first.hash)).await.unwrap();
         assert_eq!(chunk.len(), first.len as usize);

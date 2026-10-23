@@ -149,7 +149,6 @@ impl<T: crate::motion::Animatable> FrameSpring<T> {
         self.drawn = value;
     }
 
-    /// Sample the motion for the frame at `now`.
     fn step(&mut self, now: Instant) {
         self.drawn = self.motion.get(now);
         self.at = now;
@@ -1271,7 +1270,6 @@ impl WindowGroup {
         self.pending_search_open.take()
     }
 
-    /// The window's search, as it stands.
     #[must_use]
     pub fn window_search(&self) -> &super::WindowSearch {
         &self.search
@@ -1281,8 +1279,19 @@ impl WindowGroup {
     /// offers a document or a list, else the platform search narrowed to
     /// the app (what the control always did).
     pub fn open_search(&mut self, source: crate::tokens::MotionSource) {
+        self.open_search_as(source, crate::window_toolbar::SearchOpening::Find);
+    }
+
+    /// [`Self::open_search`] as `opening` asks: for the replace chord, with
+    /// the replacement holding the keyboard.
+    pub fn open_search_as(
+        &mut self,
+        source: crate::tokens::MotionSource,
+        opening: crate::window_toolbar::SearchOpening,
+    ) {
         let active = self.bar.active_id();
-        let offered = self.window_offer(active).map(|offer| offer.search.into());
+        let offer = self.window_offer(active).copied();
+        let offered = offer.map(|offer| offer.search.into());
         let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) else {
             return;
         };
@@ -1300,10 +1309,14 @@ impl WindowGroup {
             });
             return;
         }
-        if offered.is_some() {
+        if let Some(offer) = offer {
             self.search.open_remote(in_place, source);
+            self.search.set_remote_abilities(offer.find);
         } else {
             self.search.open(in_place, source);
+        }
+        if opening == crate::window_toolbar::SearchOpening::Replace {
+            self.search.focus_replacement();
         }
         self.search_tab = Some(active);
         self.search_active = true;
@@ -1355,6 +1368,7 @@ impl WindowGroup {
         {
             self.search
                 .set_remote_count(offer.count.map(super::FilterCount::from));
+            self.search.set_remote_abilities(offer.find);
         }
         if control_changed {
             self.style_dirty = true;
@@ -1364,17 +1378,25 @@ impl WindowGroup {
     }
 
     /// The app of tab `id`, in a process of its own, asked for the window's
-    /// search (its Ctrl+F): open it, or give the open one the keyboard.
-    /// Only the tab the window shows searches. Returns whether it did.
-    pub fn open_search_for_app(&mut self, id: u64) -> bool {
+    /// search (its Ctrl+F, or its Ctrl+H for `SearchOpening::Replace`): open
+    /// it, or give the open one the keyboard. Only the tab the window shows
+    /// searches. Returns whether it did.
+    pub fn open_search_for_app(
+        &mut self,
+        id: u64,
+        opening: crate::window_toolbar::SearchOpening,
+    ) -> bool {
         if id != self.bar.active_id() || !self.navigation_bar_visible() {
             return false;
         }
         if self.search.is_open() {
-            self.search.take_keyboard();
+            match opening {
+                crate::window_toolbar::SearchOpening::Find => self.search.take_keyboard(),
+                crate::window_toolbar::SearchOpening::Replace => self.search.focus_replacement(),
+            }
             return true;
         }
-        self.open_search(crate::tokens::MotionSource::Keyboard);
+        self.open_search_as(crate::tokens::MotionSource::Keyboard, opening);
         self.search.is_open() || self.pending_search_open.is_some()
     }
 
@@ -1452,38 +1474,33 @@ impl WindowGroup {
         }
     }
 
-    /// Whether `event` is Find (Ctrl+F, ⌘F) and this window can search in
-    /// place: the window opens its search, or gives the open one the
+    /// Whether `event` is Find (Ctrl+F, ⌘F), or Find and Replace (Ctrl+H,
+    /// ⌘⌥F), and this window can search in place (for replacing, a
+    /// document): the window opens its search, or gives the open one the
     /// keyboard, instead of the app opening a find of its own.
     fn takes_find(&mut self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Character(key),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
+        let Some(opening) = super::window_search::search_chord(
+            event,
+            modifiers.state(),
+            crate::platform::PlatformConventions::default(),
+        ) else {
             return false;
         };
-        let state = modifiers.state();
-        if !key.eq_ignore_ascii_case("f")
-            || state.shift_key()
-            || state.alt_key()
-            || !crate::platform::PlatformConventions::default().command_modifier_down(state)
-            || !self.focused
-            || !self.navigation_bar_visible()
-        {
+        if !self.focused || !self.navigation_bar_visible() {
             return false;
         }
+        let replace = opening == crate::window_toolbar::SearchOpening::Replace;
         if self.search.is_open() {
             if self.search.has_keyboard() {
-                // Find again widens: the search's own key handling.
+                // Find again widens, and the replace chord goes to the
+                // replacement: the search's own key handling.
                 return false;
             }
-            self.search.take_keyboard();
+            if replace {
+                self.search.focus_replacement();
+            } else {
+                self.search.take_keyboard();
+            }
             return true;
         }
         let active = self.bar.active_id();
@@ -1493,10 +1510,11 @@ impl WindowGroup {
                 .active_host_mut()
                 .map_or(super::InPlace::Nothing, TileHost::in_place_search),
         };
-        if in_place == super::InPlace::Nothing {
+        if in_place == super::InPlace::Nothing || (replace && in_place != super::InPlace::Document)
+        {
             return false;
         }
-        self.open_search(crate::tokens::MotionSource::Keyboard);
+        self.open_search_as(crate::tokens::MotionSource::Keyboard, opening);
         true
     }
 
@@ -2095,8 +2113,9 @@ impl WindowGroup {
         self.bar.tooltip_target_at(p)
     }
 
-    /// Paint the menus of the bar's slots (the overflow's, the
-    /// suggestions), for a host that draws the windows' top layer itself.
+    /// Paint the bar's top layer (its slots' menus, the overflow's and the
+    /// suggestions, and the search's options), for a host that draws the
+    /// windows' top layer itself.
     pub fn draw_bar_popups(
         &mut self,
         scene: &mut Scene,
@@ -2107,6 +2126,8 @@ impl WindowGroup {
     ) {
         if self.navigation_bar_visible() {
             self.bar
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+            self.search
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -3877,7 +3898,6 @@ mod tests {
     #[test]
     fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
         let mut group = make_group();
-        // The bar, its search control and the active tab.
         assert_eq!(group.children().len(), 3);
         group.set_external_navigation(true);
         let mut tree = TaffyTree::new();
@@ -4425,7 +4445,6 @@ mod tests {
 
     #[test]
     fn opening_card_holds_the_place_only_for_a_worthwhile_wait() {
-        // Case `the_paint_probe_reports_an_untouched_scene_as_empty`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -4438,7 +4457,6 @@ mod tests {
             );
         }
 
-        // Case `a_group_paints_nothing_while_the_wait_is_still_too_short_to_be_one`.
         {
             let mut g = group_opening("Files", false, false);
             assert!(
@@ -4449,7 +4467,6 @@ mod tests {
             );
         }
 
-        // Case `a_group_holds_the_window_place_once_the_wait_is_worth_naming`.
         {
             let mut g = group_opening("Files", false, true);
             assert!(
@@ -4478,7 +4495,6 @@ mod tests {
             );
         }
 
-        // Case `a_group_with_a_live_window_is_never_holding_a_place`.
         {
             let tabs: Vec<(TabDescriptor, TileContent)> = vec![
                 (
@@ -4604,7 +4620,6 @@ mod tests {
 
     #[test]
     fn opening_card_retires_when_any_tab_window_has_drawn() {
-        // Case `every_tab_in_a_group_is_asked_whether_its_window_has_drawn`.
         {
             let (g, latched, asked) = group_of_two(true, true);
 
@@ -4624,7 +4639,6 @@ mod tests {
             );
         }
 
-        // Case `a_drawn_window_behind_another_tab_retires_its_opening_card`.
         {
             let (g, _latched, _asked) = group_of_two(true, true);
             let _ = Widget::presented(&g);
@@ -4641,7 +4655,6 @@ mod tests {
             );
         }
 
-        // Case `a_window_that_has_not_drawn_still_holds_its_place`.
         {
             let (g, latched, _asked) = group_of_two(true, false);
             let _ = Widget::presented(&g);
@@ -4701,7 +4714,6 @@ mod tests {
             .unwrap();
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
-        // The window's maximize control stands at the bar's trailing end.
         let click_pt = g.bar.window_controls().maximize.center();
 
         let moved = WindowEvent::CursorMoved {
@@ -4719,7 +4731,6 @@ mod tests {
 
     #[test]
     fn maximize_toggles_rebuild_layout_and_drain_once() {
-        // Case `maximize_click_on_the_window_control_toggles_maximized`.
         {
             let (mut g, taffy, group_node, moved, press) = open_maximize_chip();
 
@@ -4745,7 +4756,6 @@ mod tests {
             assert!(!g.maximized, "a second click restores it");
         }
 
-        // Case `maximize_toggle_marks_structure_dirty_for_layout_rebuild`.
         {
             use taffy::prelude::TaffyMaxContent;
 
@@ -4778,7 +4788,6 @@ mod tests {
             assert!(!g.take_structure_dirty(), "structure_dirty drains on poll");
         }
 
-        // Case `active_tab_switch_marks_structure_dirty_for_layout_rebuild`.
         {
             use std::collections::HashMap;
             use taffy::Style;
@@ -4809,7 +4818,6 @@ mod tests {
                 "active-tab switch must report structure dirty so the new tile gets a node",
             );
 
-            // Once the host rebuilds for the new active tab, it drains clean.
             let mut taffy2 = TaffyTree::<()>::new();
             let mut node_map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let _ = g.build_layout(&mut taffy2, &theme, &mut node_map2);
@@ -4819,7 +4827,6 @@ mod tests {
             );
         }
 
-        // Case `take_pending_maximize_change_drains_on_tab_bar_toggle`.
         {
             use std::collections::HashMap;
             use taffy::Style;
@@ -5017,7 +5024,6 @@ mod tests {
             g.get_rect().width()
         }
 
-        // Case `the_live_width_is_laid_out_in_whole_pixels_off_the_share_grid`.
         {
             let theme = Theme::dark();
             let mut g = make_group();
@@ -5058,7 +5064,6 @@ mod tests {
             assert_eq!(g.edge_highlight(), None);
         }
 
-        // Case `a_cancelled_drag_puts_the_width_back`.
         {
             let mut g = make_group();
             g.set_strip_usable_px(1200.0);
@@ -5071,7 +5076,6 @@ mod tests {
             assert_eq!(g.take_pending_width_change(), None);
         }
 
-        // Case `width_limits_are_the_floor_without_an_app_minimum`.
         {
             let mut g = make_group();
             g.set_strip_usable_px(1200.0);
@@ -5080,7 +5084,6 @@ mod tests {
             assert_eq!(limits.max, max_group_px(1200.0));
         }
 
-        // Case `cursor_shape_is_ew_resize_over_either_edge_band`.
         {
             let theme = Theme::dark();
             let mut g = make_group();
@@ -5123,7 +5126,6 @@ mod tests {
             );
         }
 
-        // Case `the_share_persists_across_displays`.
         {
             // A width a person set is a share, kept on every display (the
             // default width stops growing past what reads well instead).
@@ -5146,7 +5148,6 @@ mod tests {
 
     #[test]
     fn tab_bar_requests_reorder_search_and_pin_keep_hosts_aligned() {
-        // Case `take_pending_tab_reorder_drains_after_a_reorder`.
         {
             use std::collections::HashMap;
             use taffy::Style;
@@ -5269,7 +5270,6 @@ mod tests {
             }
         }
 
-        // Case `search_active_toggles_when_bar_publishes_pending_search`.
         {
             // Click-to-toggle: seeding `pending_search` and re-draining flips
             // the flag; doing it again flips it back.
@@ -5290,7 +5290,6 @@ mod tests {
             );
         }
 
-        // Case `ctrl_shift_p_toggles_pin_on_active_tab`.
         {
             use crate::theme::Theme;
             use std::collections::HashMap;
@@ -5335,7 +5334,6 @@ mod tests {
                 "first Ctrl+Shift+P must pin the active tab",
             );
 
-            // Second press toggles back off.
             let handled = ctrl_shift.send(&mut g, &event).handled;
             assert!(handled, "second Ctrl+Shift+P press is also claimed");
             assert!(
@@ -5362,7 +5360,6 @@ mod tests {
         // One instant for the whole test: each case backdates its own
         // timestamps, so a descheduled runner cannot move them.
         crate::time::testing::with_monotonic_time(crate::time::now(), || {
-            // Case `start_spawn_animation_records_timestamp_and_pumps_frames`.
             {
                 let mut g = make_group();
                 assert!(g.spawned_at.is_none(), "fresh group has no spawn timestamp");
@@ -5377,7 +5374,6 @@ mod tests {
                 );
             }
 
-            // Case `reduced_motion_spawn_snaps_without_pumping_frames`.
             {
                 let mut g = make_group();
                 g.reduce_motion = true;
@@ -5394,7 +5390,6 @@ mod tests {
                 );
             }
 
-            // Case `spawn_fade_window_clears_after_duration`.
             {
                 let mut g = make_group();
                 g.spawned_at = Some(
@@ -5408,7 +5403,6 @@ mod tests {
                 );
             }
 
-            // Case `spawn_animation_advances_eased_progress_over_time`.
             {
                 let mut g = make_group();
                 // No spawn in flight — the drawn alpha pins to 1.0.
@@ -5460,7 +5454,6 @@ mod tests {
                 );
             }
 
-            // Case `insert_detached_tab_plays_tile_spawn_animation`.
             {
                 let mut group = WindowGroup::new(0, vec![], 0, WindowWidth::Normal);
                 let host = TileHost::new(TileContent::Stub {
@@ -5509,7 +5502,6 @@ mod tests {
             g.get_rect()
         }
 
-        // Case `maximize_layout_jumps_and_the_draw_rect_starts_at_the_tile`.
         {
             let theme = Theme::dark();
             let mut g = make_group();
@@ -5554,7 +5546,6 @@ mod tests {
             );
         }
 
-        // Case `a_second_maximize_keeps_velocity`.
         {
             let theme = Theme::dark();
             let mut g = make_group();
@@ -5588,7 +5579,6 @@ mod tests {
             );
         }
 
-        // Case `reduced_motion_maximize_snaps`.
         {
             let theme = Theme::dark();
             let mut g = make_group();
@@ -5615,7 +5605,6 @@ mod tests {
 
     #[test]
     fn width_spring_opens_closes_and_resizes_from_the_current_value() {
-        // Case `opening_grows_the_slot_from_zero`.
         {
             let mut g = make_group();
             g.set_strip_usable_px(1200.0);
@@ -5649,7 +5638,6 @@ mod tests {
             );
         }
 
-        // Case `a_new_resize_keeps_velocity`.
         {
             let mut g = make_group();
             g.set_strip_usable_px(1200.0);
@@ -5692,7 +5680,6 @@ mod tests {
             );
         }
 
-        // Case `an_opening_slot_settles_when_only_its_own_rebuilds_step_it`.
         {
             // The row steps the slot spring only while it rebuilds the
             // layout, and rebuilds only when a group asks for it. Frames at
@@ -5724,7 +5711,6 @@ mod tests {
             }
         }
 
-        // Case `a_tick_that_rebuilt_but_did_not_paint_does_not_freeze_the_slot`.
         {
             // The host's frame: rebuild when a widget asks (the row steps
             // the spring in its build, a frame may take two passes), then a
@@ -5761,7 +5747,6 @@ mod tests {
             );
         }
 
-        // Case `closing_collapses_the_slot_and_keeps_drawing`.
         {
             let mut g = group_opening("Files", false, false);
             g.set_strip_usable_px(1200.0);
@@ -5797,7 +5782,6 @@ mod tests {
             );
         }
 
-        // Case `reduced_motion_cuts_to_the_target`.
         {
             let mut g = make_group();
             g.set_strip_usable_px(1200.0);
@@ -5916,7 +5900,6 @@ mod tests {
                 );
             }
 
-            // Case `closing_host_stays_until_fade_complete`.
             {
                 use crate::theme::Theme;
                 use std::collections::HashMap;
@@ -6011,7 +5994,6 @@ mod tests {
                     .unwrap();
                 g.apply_layout(&taffy, group_node, Point::ZERO);
 
-                // Simulates pressing the pill's × on the sole tab.
                 g.bar_mut().start_closing(1);
 
                 // First handle_event drains `pending_close` into `closing_hosts`;
@@ -6050,7 +6032,6 @@ mod tests {
         // One instant for the whole test: each case backdates its own
         // timestamps, so a descheduled runner cannot move them.
         crate::time::testing::with_monotonic_time(crate::time::now(), || {
-            // Case `group_close_complete_true_after_fade_duration`.
             {
                 let mut g = make_group();
                 g.set_closing_at_for_tests(
@@ -6110,7 +6091,6 @@ mod tests {
                 );
             }
 
-            // Case `group_needs_animation_frame_while_closing`.
             {
                 let mut g = make_group();
                 assert!(
@@ -6133,7 +6113,6 @@ mod tests {
                 );
             }
 
-            // Case `window_group_needs_animation_frame_during_close`.
             {
                 let mut g = make_group();
                 assert!(
@@ -6414,7 +6393,6 @@ mod window_bar_tests {
             let mut taffy = TaffyTree::<()>::new();
             let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let node = g.build_layout(&mut taffy, theme, &mut map);
-            // The strip gives a maximized group the work area.
             let mut style = taffy.style(node).cloned().unwrap_or_default();
             style.size = Size {
                 width: Dimension::length(f32_of_f64(W)),

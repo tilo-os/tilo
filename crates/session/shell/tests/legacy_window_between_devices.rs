@@ -138,11 +138,6 @@ async fn a_legacy_window_streams_between_two_devices() {
     stream_a_window(Viewer::OwnDevice).await;
 }
 
-/// A host window (a terminal, any Wayland or X client) in a room that
-/// shares its layout, viewed by another member of the room: it streams live
-/// to that member's device alone, end-to-end encrypted over the direct
-/// route, read only, so the member's input never reaches the window; the
-/// room's other members receive none of it. Prints its latency and bitrate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_room_member_views_a_host_window_live_and_read_only() {
     stream_a_window(Viewer::RoomMember).await;

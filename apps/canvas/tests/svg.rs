@@ -1,5 +1,3 @@
-//! SVG in and out, and working from a reference picture, through the host
-//! door an agent uses.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -100,7 +98,6 @@ fn an_svg_imports_as_one_group_of_marks() {
     assert!(refused.contains("SVG"), "{refused}");
 }
 
-/// What `export-svg` writes imports back as the same drawing.
 #[test]
 fn exported_svg_imports_back_as_the_same_marks() {
     let mut app = TestApp::<App>::new().expect("the app opens");

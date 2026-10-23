@@ -45,7 +45,6 @@ pub struct RunGroup {
 }
 
 impl RunGroup {
-    /// The group of shortcut run `run`.
     #[must_use]
     pub fn shortcut(run: RunId) -> Self {
         Self {

@@ -337,10 +337,6 @@ struct JsHostInfo {
 /// origin), the origin to dial WebTransport at when it is not the page's
 /// and, for a development certificate, its SHA-256 for
 /// `serverCertificateHashes`. Resolves to JSON.
-///
-/// # Errors
-///
-/// Rejects when the host is unreachable or answers badly.
 #[wasm_bindgen(js_name = hostInfo)]
 pub async fn host_info(post: Function) -> Result<String, JsError> {
     let info: tilo_relay_protocol::web::HostInfo =
@@ -358,10 +354,6 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
 /// answer to the pairing invite `inviteHex` (16 bytes as hex) the person's
 /// link named, if any. Calls `onPairingCode(code)` once the host queued the
 /// request. Resolves to `{cert, hostCert}` JSON for [`WasmPeer::start`].
-///
-/// # Errors
-///
-/// Rejects when the request is denied, expires, or the host misbehaves.
 #[wasm_bindgen(js_name = certifyDevice)]
 #[allow(
     clippy::arc_with_non_send_sync,
@@ -486,10 +478,6 @@ fn request_id(text: &str) -> Result<[u8; 32], JsError> {
 /// What `invitation` (the signed invitation's bytes) offers at the host
 /// `post` reaches: `{kind: 'invitation', room, workspaceId, name, role,
 /// expiresAtNs}`, or `{kind: 'refused', reason}`. Resolves to JSON.
-///
-/// # Errors
-///
-/// Rejects when the host is not reached or answers badly.
 #[wasm_bindgen(js_name = inspectInvitation)]
 pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<String, JsError> {
     let reply = tilo_browser_peer::invite::join(
@@ -508,11 +496,6 @@ pub async fn inspect_invitation(post: Function, invitation: Vec<u8>) -> Result<S
 /// once. Resolves to JSON
 /// `{reply, cert}`: the host's answer (`waiting`, `admitted`, `declined`,
 /// `refused`) and the device certificate the page then connects with.
-///
-/// # Errors
-///
-/// Rejects when the host is not reached, answers badly, or a key does not
-/// sign.
 #[wasm_bindgen(js_name = askToJoin)]
 pub async fn ask_to_join(
     post: Function,
@@ -549,10 +532,6 @@ pub async fn ask_to_join(
 /// [`ask_to_join`] as a device already certified elsewhere (`certificate`,
 /// `{cert}` JSON as `certifyDevice` resolves to: a device a person paired
 /// from another of theirs) rather than by a root the page holds.
-///
-/// # Errors
-///
-/// As [`ask_to_join`], and when `custody` does not hold the certified key.
 #[wasm_bindgen(js_name = askToJoinAs)]
 pub async fn ask_to_join_as(
     post: Function,
@@ -625,10 +604,6 @@ async fn ask_as(
 
 /// Where join request `requestIdHex` of device `devicePublicKeyHex` stands:
 /// JSON as [`ask_to_join`]'s `reply`.
-///
-/// # Errors
-///
-/// Rejects when the host is not reached or answers badly.
 #[wasm_bindgen(js_name = joinStatus)]
 pub async fn join_status(
     post: Function,
@@ -649,10 +624,6 @@ pub async fn join_status(
 
 /// The canonical encoding of a certificate (JSON in): what a native device
 /// keeps on disk.
-///
-/// # Errors
-///
-/// Throws for JSON that is not a certificate.
 #[wasm_bindgen(js_name = deviceCertCanonical)]
 pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
     let cert: DeviceCert = serde_json::from_str(cert_json).map_err(js_error)?;
@@ -662,10 +633,6 @@ pub fn device_cert_canonical(cert_json: &str) -> Result<Vec<u8>, JsError> {
 /// Certify this page's device key (`custody`) with the user root the page
 /// holds, for the host at `post`, whose certificate must be a host of that
 /// root. Resolves to `{cert, hostCert}` JSON, as [`certify_device`] does.
-///
-/// # Errors
-///
-/// Rejects when the host is unreachable or not a host of this root.
 #[wasm_bindgen(js_name = certifyWithRoot)]
 pub async fn certify_with_root(
     post: Function,
@@ -691,10 +658,6 @@ pub async fn certify_with_root(
 /// invite, requestedAtMs, country}]` JSON, keys, digest and invite as hex
 /// (`invite` null for a request no invite asked for, `country` null when the
 /// host does not know it).
-///
-/// # Errors
-///
-/// Rejects when the host is unreachable or refuses.
 #[wasm_bindgen(js_name = pendingPairings)]
 pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, JsError> {
     let root = PageSigner::from_js(&root)?;
@@ -724,10 +687,6 @@ pub async fn pending_pairings(post: Function, root: JsValue) -> Result<String, J
 /// Pair (`approved`) or turn away the waiting device `digest_hex` at the
 /// host at `post`, with the member root the page holds. Resolves to the
 /// certificate issued (JSON), or null when turned away.
-///
-/// # Errors
-///
-/// Rejects when the request is gone, or the host is unreachable or refuses.
 #[wasm_bindgen(js_name = answerPairing)]
 pub async fn answer_pairing(
     post: Function,
@@ -1101,10 +1060,6 @@ pub fn encode_live_preview_end(record_json: &str) -> Result<Vec<u8>, JsError> {
 
 /// Decode and validate one relayed live frame to JSON
 /// (`{kind: 'presence'|'preview'|'previewEnd', …}`).
-///
-/// # Errors
-///
-/// Throws for a frame that is not canonical or out of bounds.
 #[wasm_bindgen(js_name = decodeLiveFrame)]
 pub fn decode_live_frame(frame: &[u8]) -> Result<String, JsError> {
     let decoded = match LiveFrame::decode(frame).map_err(js_error)? {
@@ -1205,7 +1160,6 @@ struct JsVoiceParticipant {
     user: String,
     namespace: String,
     publishes: bool,
-    /// Its camera is on.
     camera: bool,
     /// It shares a screen.
     screen: bool,
@@ -1704,10 +1658,6 @@ impl WasmPeer {
     }
 
     /// Join a room (uuid).
-    ///
-    /// # Errors
-    ///
-    /// Throws for a room that is not a uuid, or a closed session.
     #[wasm_bindgen(js_name = joinRoom)]
     pub fn join_room(&self, room: &str) -> Result<(), JsError> {
         let workspace_id = workspace(room)?;
@@ -1741,11 +1691,6 @@ impl WasmPeer {
     /// Administer the host's rooms as this device: `request` is a
     /// `RoomsRequest` as JSON (serde's external tagging, byte arrays as
     /// arrays of numbers); resolves to the `RoomsReply` as JSON.
-    ///
-    /// # Errors
-    ///
-    /// Rejects for a malformed request, without a connection, or when the
-    /// host is not reached.
     pub async fn rooms(&self, request: String) -> Result<String, JsError> {
         let request: tilo_relay_protocol::rooms::RoomsRequest =
             serde_json::from_str(&request).map_err(js_error)?;
@@ -2027,11 +1972,6 @@ impl WasmPeer {
     /// only) and resolve to who is here there: a JSON array of `{device,
     /// user, label, window, status, recent, sources, generated, updated_ms}` with keys and
     /// ids in hex. An empty array only fetches.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed or out-of-bounds actions, or when the host is not
-    /// reached or this device is not admitted to `room`.
     #[wasm_bindgen(js_name = here)]
     pub async fn here(
         &self,
@@ -2106,11 +2046,6 @@ impl WasmPeer {
     /// `surface` (16 hex) that `publisher` (64 hex) streams in `room`. With
     /// no events it only asks whether this device may drive the window.
     /// Resolves `false` when it may not.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed arguments, or when the host is not reached, the
-    /// window is gone or its session is not reachable.
     #[wasm_bindgen(js_name = legacyInput)]
     pub async fn legacy_input(
         &self,
@@ -2152,11 +2087,6 @@ impl WasmPeer {
     /// array of `SurfaceStreamStart` labels such as `["h264","vp9"]`), so
     /// sessions stream their legacy windows in `room` in one every member
     /// plays. Resolves `false` when the host predates codec adverts.
-    ///
-    /// # Errors
-    ///
-    /// Rejects malformed arguments, or when the host is not reached or
-    /// refuses the advert.
     #[wasm_bindgen(js_name = legacyCodecs)]
     pub async fn legacy_codecs(&self, room: String, codecs: String) -> Result<bool, JsError> {
         let request = tilo_relay_protocol::legacy_window::CodecsRequest {
@@ -2306,10 +2236,6 @@ impl WasmPeer {
     }
 
     /// Resolve once every published document is durable on the host.
-    ///
-    /// # Errors
-    ///
-    /// Rejects when the host refused a change or the session closed.
     pub async fn flush(&self) -> Result<(), JsError> {
         let (reply, receipt) = tokio::sync::oneshot::channel();
         self.handle
@@ -2324,19 +2250,11 @@ impl WasmPeer {
     }
 
     /// Reconnect now (also after a failure).
-    ///
-    /// # Errors
-    ///
-    /// Throws once the session is closed.
     pub fn reconnect(&self) -> Result<(), JsError> {
         self.handle.reconnect().map_err(js_error)
     }
 
     /// Ask the host for the joined rooms' shared state again.
-    ///
-    /// # Errors
-    ///
-    /// Throws once the session is closed.
     pub fn refresh(&self) -> Result<(), JsError> {
         self.handle.refresh().map_err(js_error)
     }

@@ -58,7 +58,6 @@ async fn admit(rooms: &Rooms, room: &str, owner: &DeviceCert, seed: u8) -> Devic
     cert
 }
 
-/// The owner grants `person` the governance action `action` of `room`.
 async fn grant(rooms: &Rooms, room: &str, owner: &DeviceCert, person: &DeviceCert, action: &str) {
     let who = hex::encode(person.user_public_key);
     let grant = Grant::new(

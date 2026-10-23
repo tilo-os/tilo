@@ -174,7 +174,6 @@ pub struct ContactsApp {
     /// target id parks here while "Save changes?" is asked.
     pending_switch: Option<ContactId>,
 
-    // ---- the window ----
     rect: Rect,
     shell: NavShell,
     shared: Shared,
@@ -1442,7 +1441,6 @@ impl ContactsApp {
         }
     }
 
-    /// Open a contact's actions at `anchor`.
     fn open_menu_at(&mut self, menu: PendingMenu, anchor: Rect) {
         let mut built = ContextMenu::new();
         let open = match menu {

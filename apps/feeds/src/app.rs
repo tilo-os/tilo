@@ -492,8 +492,6 @@ impl Core {
         self.selected.as_ref().and_then(|id| self.store.article(id))
     }
 
-    // --- titles ----------------------------------------------------------
-
     /// The overview's title: what the chosen place is called.
     pub(crate) fn filter_title(&self) -> String {
         match &self.filter {
@@ -524,8 +522,6 @@ impl Core {
             .map(|f| f.title.clone())
             .unwrap_or_default()
     }
-
-    // --- places and selection --------------------------------------------
 
     pub(crate) fn set_filter(&mut self, filter: Filter) {
         self.filter = filter;
@@ -659,8 +655,6 @@ impl Core {
         }
     }
 
-    // --- action model -----------------------------------------------------
-
     /// Submit one field edit or verb through the library's door, now: the
     /// single mutation path, shared with the palette and agents. One event's
     /// submissions are one undo step.
@@ -678,8 +672,6 @@ impl Core {
         }
     }
 
-    // --- reading settings -------------------------------------------------
-
     /// Change the reading settings and persist them, so the change survives
     /// restarts and converges with collaborators.
     pub(crate) fn bump_setting(
@@ -692,8 +684,6 @@ impl Core {
         }
     }
 
-    // --- folders and subscriptions -----------------------------------------
-
     /// Add a folder through the same verb the palette uses; it is shown
     /// once the library holds it.
     fn add_folder(&mut self, name: &str, doc: &mut ui::widget::Edits<'_>) {
@@ -704,6 +694,20 @@ impl Core {
         let known = self.store.folders.ids().cloned().collect();
         self.awaited.push(Awaited::Folder(name.to_owned(), known));
         self.perform(doc, Library::NEW_FOLDER.with(name));
+    }
+
+    /// Why refreshing every subscription is not possible now, as a code and
+    /// the reason a person reads: nothing is subscribed, or a refresh is
+    /// already running. The Refresh effect and its header button both follow
+    /// it.
+    pub(crate) fn refresh_unavailable(&self) -> Option<(&'static str, &'static str)> {
+        if self.store.feeds.is_empty() {
+            Some(("no_subscriptions", "There are no subscriptions to refresh"))
+        } else if self.refresh.in_progress() {
+            Some(("refreshing", "A refresh is already running"))
+        } else {
+            None
+        }
     }
 
     /// Start a refresh of every subscription. Only enqueues on the worker:
@@ -920,8 +924,6 @@ impl Core {
         added
     }
 
-    // --- menus --------------------------------------------------------------
-
     /// Open a menu of `actions` under `anchor`; `row` is the row it acts on.
     fn open_menu(
         &mut self,
@@ -1112,8 +1114,6 @@ impl Core {
         }
     }
 
-    // --- dialogs ------------------------------------------------------------
-
     fn open_modal(&mut self, modal: FeedsModal) {
         self.menu = None;
         self.pending_modal = Some(modal);
@@ -1184,8 +1184,6 @@ impl Core {
             );
         }
     }
-
-    // --- fetch results ------------------------------------------------------
 
     /// Fold what the fetch worker produced into the store and the refresh
     /// progress, without touching the document (safe while painting).
@@ -1324,8 +1322,6 @@ impl Core {
         self.drain_open_link();
     }
 
-    // --- links --------------------------------------------------------------
-
     pub(crate) fn open_selected_link(&mut self) {
         if let Some(url) = self.open_article().map(|a| a.url.clone())
             && !url.is_empty()
@@ -1366,8 +1362,6 @@ impl Core {
             self.set_toast(format!("{}: {error}", ui::i18n!("feeds-open-link-failed")));
         }
     }
-
-    // --- requests -----------------------------------------------------------
 
     /// Apply what a retained control asked for.
     fn apply(&mut self, request: Request, doc: &mut ui::widget::Edits<'_>) {
@@ -1522,9 +1516,17 @@ struct HeaderActions<'a> {
 impl HeaderActions<'_> {
     fn button(&self, id: &str, icon: Icon, label: &str, request: Request) -> HeaderButton {
         let requests = Rc::clone(self.requests);
+        // Refreshing fetches from the feeds' sites; every other header
+        // button opens something here or makes an edit, decided as one.
+        let button = Button::icon_only(id, icon, label);
+        let fetches = matches!(request, Request::Refresh);
+        let push = move || requests.borrow_mut().push(request.clone());
         HeaderButton::new(
-            Button::icon_only(id, icon, label)
-                .on_effect(move || requests.borrow_mut().push(request.clone())),
+            if fetches {
+                button.on_effect(push)
+            } else {
+                button.on_own_device_effect(push)
+            },
             self.core,
         )
     }
@@ -1539,7 +1541,12 @@ impl HeaderActions<'_> {
                     "Refresh all feeds",
                     Request::Refresh,
                 )
-                .enabled_when(|core| !core.store.feeds.is_empty() && !core.refresh.in_progress()),
+                .enabled_when(|core| core.refresh_unavailable().is_none())
+                // Disabled, it says why on hover and to a screen reader.
+                .named_by(|core| {
+                    core.refresh_unavailable()
+                        .map_or("Refresh all feeds", |(_, reason)| reason)
+                }),
             ),
             Box::new(self.button(
                 "feeds.new-folder",
@@ -1661,7 +1668,6 @@ pub struct FeedsApp {
     article_actions: bool,
     /// The reading settings, open under their header button.
     settings_panel: Option<Popover<Column>>,
-    /// The open dialog.
     pub(crate) modal: Option<FeedsModal>,
     /// The dialog opened or closed: the retained tree must be rebuilt.
     overlays_dirty: bool,
@@ -1754,8 +1760,6 @@ impl FeedsApp {
         }
     }
 
-    // --- capture staging ----------------------------------------------------
-
     /// Stage a screenshot scenario once the window has its final size:
     ///
     /// * `"sidebar-open"` — the sidebar drawer open over a narrow window.
@@ -1845,14 +1849,10 @@ impl FeedsApp {
         };
     }
 
-    // --- framework host ---------------------------------------------------------
-
     /// Attach the framework dispatcher when hosted as a resource surface.
     pub(crate) fn attach_framework(&self, dispatcher: ui::framework::Dispatcher<Library>) {
         self.core.borrow_mut().dispatcher = Some(dispatcher);
     }
-
-    // --- observation --------------------------------------------------------------
 
     /// The open article.
     pub fn selected_article(&self) -> Option<Id> {
@@ -1904,8 +1904,6 @@ impl FeedsApp {
     pub(crate) fn settings_panel_open(&self) -> bool {
         self.settings_panel.as_ref().is_some_and(Popover::is_open)
     }
-
-    // --- the loop -------------------------------------------------------------------
 
     /// Present the dialog the core asked for.
     fn take_pending_modal(&mut self) {
@@ -2185,8 +2183,18 @@ impl ui::widget::Decorator for FeedsApp {
         }
     }
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
-        for child in Widget::children_mut(self) {
-            child.settle(edits, path);
+        // The shell settles itself, not only its children: that is where it
+        // runs what the person pressed in the window's bar (Show sidebar, a
+        // header button). Without an overlay the root's children are the
+        // shell's own, so the overlays settle on their own after it.
+        Widget::settle(&mut self.shell, edits, path);
+        if let Some(mount) = self.mount {
+            if let (Some(modal), Some(_)) = (self.modal.as_mut(), mount.dialog) {
+                Widget::settle(&mut modal.dialog, edits, path);
+            }
+            if let (Some(panel), Some(_)) = (self.settings_panel.as_mut(), mount.panel) {
+                Widget::settle(panel, edits, path);
+            }
         }
         self.core.borrow_mut().flush_doc_writes(edits);
         self.core.borrow_mut().drain_import(edits);
@@ -2654,14 +2662,7 @@ impl FeedsApp {
         core.refresh_reply = Some(reply);
     }
     pub(crate) fn refresh_unavailable(&self) -> Option<(&'static str, &'static str)> {
-        let core = self.core.borrow();
-        if core.store.feeds.is_empty() {
-            Some(("no_subscriptions", "There are no subscriptions to refresh"))
-        } else if core.refresh.in_progress() {
-            Some(("refreshing", "A refresh is already running"))
-        } else {
-            None
-        }
+        self.core.borrow().refresh_unavailable()
     }
     pub(crate) fn request_import(&self) {
         self.core.borrow_mut().request_import();

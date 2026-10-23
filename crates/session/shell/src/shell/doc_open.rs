@@ -580,11 +580,6 @@ pub fn open_with_app(path: &Path, chrome: &Chrome, app_id: &str) -> Result<Opene
 
 /// Make `app_id` the person's default for `path`'s type: by MIME type when
 /// the app claims it, else by extension.
-///
-/// # Errors
-///
-/// A message naming the app when it claims neither, or the choice could not
-/// be saved.
 pub fn set_personal_default(path: &Path, app_id: &str) -> Result<(), String> {
     let candidates = launcher::resource_candidates();
     let resolver = desktop_policy::DefaultAppResolver::new(&candidates);

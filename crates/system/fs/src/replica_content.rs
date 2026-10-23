@@ -162,11 +162,6 @@ async fn read_version(store: &ContentStore, request: &Request) -> Response {
 ///
 /// `Ok(None)` too when no replica is serving there. The bytes are what the
 /// replica answered: check them against a hash you trust.
-///
-/// # Errors
-///
-/// Returns an error when the replica is there but the exchange fails or
-/// times out.
 pub fn read(cache_dir: &Path, content: [u8; 32], max_bytes: u64) -> io::Result<Option<Vec<u8>>> {
     use std::os::unix::net::UnixStream;
     let mut stream = match UnixStream::connect(socket_path(cache_dir)) {
@@ -260,7 +255,6 @@ mod tests {
         // File-backed versions are read from their files, never sent here.
         assert_eq!(ask(&cache_dir, large_version, u64::MAX).await, None);
 
-        // Many at once all get answered, a few reads at a time.
         let asks = (0..64)
             .map(|_| ask(&cache_dir, small_version, u64::MAX))
             .collect::<Vec<_>>();
@@ -274,7 +268,6 @@ mod tests {
     fn without_a_replica_serving_nothing_is_held() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(read(root.path(), [1; 32], u64::MAX).unwrap(), None);
-        // A socket nobody listens on any more.
         drop(std::os::unix::net::UnixListener::bind(socket_path(root.path())).unwrap());
         assert_eq!(read(root.path(), [1; 32], u64::MAX).unwrap(), None);
     }

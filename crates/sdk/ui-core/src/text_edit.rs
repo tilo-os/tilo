@@ -206,8 +206,6 @@ impl EditCore {
         }
     }
 
-    // --- admission filter --------------------------------------------------
-
     /// Install (or clear) the per-character admission filter.
     pub fn set_filter(&mut self, filter: Option<CharFilter>) {
         self.filter = filter;
@@ -260,7 +258,6 @@ impl EditCore {
     pub fn selected_range(&self) -> Option<Range<usize>> {
         self.has_selection().then(|| self.sel.range())
     }
-    /// The selected slice of `text`.
     pub fn selected<'a>(&self, text: &'a str) -> Option<&'a str> {
         text.get(self.selected_range()?)
     }
@@ -379,8 +376,6 @@ impl EditCore {
         self.set_selection(s, e);
     }
 
-    // --- edits -------------------------------------------------------------
-
     /// Insert `s` through the admission filter, replacing any selection.
     /// Returns the byte-space [`Edit`] and moves the caret to just after the
     /// inserted text. An insert the filter empties (or an empty `s`) is a
@@ -473,8 +468,6 @@ impl EditCore {
             inserted: String::new(),
         }
     }
-
-    // --- IME composition ---------------------------------------------------
 
     /// The composition in progress (empty when none).
     pub fn preedit(&self) -> &str {
@@ -662,7 +655,6 @@ impl CaretWord {
             .map(|(range, word)| (range.clone(), word.as_str()))
     }
 
-    /// The word under the caret once it has settled at `now`.
     pub fn settled(&self, now: Instant) -> Option<(Range<usize>, &str)> {
         let since = self.since?;
         (now.saturating_duration_since(since) >= SUGGESTION_SETTLE)
@@ -691,7 +683,6 @@ impl TypingRun {
     pub fn touch(&mut self) {
         self.touch_at(crate::motion::frame_now());
     }
-    /// An edit landed at `at`.
     pub fn touch_at(&mut self, at: Instant) {
         self.last_edit = Some(at);
     }
@@ -827,7 +818,6 @@ mod tests {
             "plain left collapses to the selection's near edge"
         );
 
-        // Select all, then a word.
         let t = "alpha beta";
         let mut c = EditCore::new();
         c.select_all(t);
@@ -854,7 +844,6 @@ mod tests {
 
     #[test]
     fn edits_insert_and_delete_by_char_word_selection_and_grapheme() {
-        // Case `insert_at_caret_and_over_selection`.
         {
             let t = "abc";
             let mut c = EditCore::at(1);
@@ -870,7 +859,6 @@ mod tests {
             assert_eq!(apply(t, &e), "aXYbc");
             assert_eq!(c.caret(), 3, "caret sits after the insert");
 
-            // Insert over a selection replaces it.
             let t2 = "aXYbc";
             let mut c2 = EditCore::new();
             c2.set_selection(1, 3); // "XY"
@@ -880,9 +868,7 @@ mod tests {
             assert!(!c2.has_selection());
         }
 
-        // Case `backspace_char_word_and_selection`.
         {
-            // Char-wise.
             let t = "abc";
             let mut c = EditCore::at(2);
             let e = c.delete_backward(t, false);
@@ -891,19 +877,16 @@ mod tests {
             // No-op at the start.
             let mut c0 = EditCore::at(0);
             assert!(c0.delete_backward(t, false).is_noop());
-            // Word-wise.
             let tw = "hello world";
             let mut cw = EditCore::at(tw.len());
             let ew = cw.delete_backward(tw, true);
             assert_eq!(apply(tw, &ew), "hello ");
-            // Over a selection.
             let mut cs = EditCore::new();
             cs.set_selection(0, 5);
             let es = cs.delete_backward(tw, false);
             assert_eq!(apply(tw, &es), " world");
         }
 
-        // Case `delete_forward_char_word_and_end`.
         {
             let t = "abc";
             let mut c = EditCore::at(1);
@@ -918,7 +901,6 @@ mod tests {
             assert_eq!(apply(tw, &ew), "world");
         }
 
-        // Case `delete_treats_emoji_sequence_as_one_character`.
         {
             let text = "A👩‍👩‍👧‍👦B";
             let after_emoji = text.len() - 1;
@@ -1061,7 +1043,6 @@ mod tests {
             assert_eq!(apply(&text, &edit), "<>", "Delete removes {cluster:?}");
             assert_eq!(forward.caret(), start);
 
-            // Shift-select across the cluster covers all of it.
             let mut select = EditCore::at(start);
             select.motion(&text, Motion::Right, true);
             assert_eq!(select.range(), start..end);
@@ -1078,7 +1059,6 @@ mod tests {
         assert_eq!(core.caret(), 11);
         assert!(!core.has_selection());
 
-        // Plain arrows collapse a selection to its edge, word arrows too.
         core.set_selection(0, 5);
         core.motion(&text, Motion::WordRight, false);
         assert_eq!((core.caret(), core.has_selection()), (5, false));
@@ -1090,7 +1070,6 @@ mod tests {
         digits.set_filter(Some(|ch: char| ch.is_ascii_digit()));
         let mut text = String::from("12");
         digits.set_selection(0, 2);
-        // A wholly rejected insert leaves the selection alone.
         assert!(digits.insert("ab").is_noop());
         assert_eq!(digits.range(), 0..2);
         type_into(&mut digits, &mut text, "a3b4");
@@ -1117,7 +1096,6 @@ mod tests {
         assert_eq!(core.from_display(&text, 2), 1, "inside maps to the caret");
         assert_eq!(core.from_display(&text, 2 + comp), 2);
 
-        // An IME cursor inside a cluster snaps to the cluster start.
         core.set_preedit("e\u{301}x", Some((1, 1)));
         assert_eq!(core.display_caret(&text), 1);
 
@@ -1202,11 +1180,9 @@ mod tests {
         let settled = start + SUGGESTION_SETTLE;
         assert_eq!(word.settled(settled), Some((6..11, "wrold")));
 
-        // Moving inside the same word keeps it settled.
         assert!(!word.observe(text, Selection::collapsed(11), settled));
         assert!(word.settled(settled).is_some());
 
-        // Editing the word restarts the wait.
         let edited = "don't wrolds  x";
         assert!(word.observe(edited, Selection::collapsed(12), settled));
         assert!(word.settled(settled).is_none());

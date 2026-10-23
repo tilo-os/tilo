@@ -139,8 +139,6 @@ fn search_engine_choices(current: &str) -> Vec<(String, String)> {
     choices
 }
 
-// === Preferences ================================================
-
 /// Durable browser preferences, as the browser document holds them.
 ///
 /// Defaults: ad-blocking on, clear-on-exit off, `DuckDuckGo` for both
@@ -183,8 +181,6 @@ impl Default for Settings {
         }
     }
 }
-
-// === Widget ==========================================================
 
 /// The browser's settings surface: a scrollable column of preference
 /// controls. Typed actions mutate durable settings; local mirrors only
@@ -627,7 +623,6 @@ mod tests {
                 assert!(settings.valid().is_ok(), "{kept} is accepted");
             }
         }
-        // Kept, the field still says what was typed, and the caret stays put.
         let presentation = SettingsPresentation::from_settings(&Settings::default());
         presentation.homepage.set("example.com".into());
         presentation.reflect(&Settings {
@@ -635,7 +630,6 @@ mod tests {
             ..Settings::default()
         });
         assert_eq!(presentation.homepage.with(Clone::clone), "example.com");
-        // Another homepage, set elsewhere, is shown.
         presentation.reflect(&Settings {
             homepage: "https://other.example/".into(),
             ..Settings::default()
@@ -662,7 +656,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn settings_presentation_is_local_per_instance_and_action_bound() {
-        // Phase `presentation_seeds_local_values_without_document_writes`.
         {
             let settings = Settings {
                 adblock_enabled: true,
@@ -683,7 +676,6 @@ mod tests {
             );
         }
 
-        // Phase `presentation_reflects_action_applied_values`.
         {
             let presentation = SettingsPresentation::from_settings(&Settings::default());
             let settings = Settings {
@@ -694,7 +686,6 @@ mod tests {
             assert!(!presentation.adblock.with(|value| *value));
         }
 
-        // Phase `destructive_controls_have_no_document_fallback_paths`.
         {
             let mut pane = SettingsPane::new();
             let doc = AutoCommit::new();
@@ -709,7 +700,6 @@ mod tests {
             );
         }
 
-        // Phase `presentation_is_per_instance`.
         {
             let first = SettingsPresentation::from_settings(&Settings::default());
             let second = SettingsPresentation::from_settings(&Settings::default());
@@ -718,7 +708,6 @@ mod tests {
             assert!(second.adblock.with(|value| *value));
         }
 
-        // Phase `pane_lays_out_and_toggle_has_a_canonical_action_binding`.
         {
             // Drive the real five-pass path: build_layout → compute_layout →
             // apply_layout, then flip the ad-block toggle through the live

@@ -30,7 +30,6 @@ pub enum WindowMenuAction {
     MoveToWorkspace(WorkspaceId),
     /// A new tab of the same app, beside this one.
     NewTab,
-    /// Detach the tab into a new window immediately to the right.
     SplitRight,
     /// Detach the tab into a new window at the end of the strip.
     MoveToNewGroup,
@@ -112,7 +111,6 @@ pub struct WindowMenuFacts {
     pub tab_count: usize,
     pub maximized: bool,
     pub full_screen: bool,
-    /// The other strips of the window's workspace, by the name each shows.
     pub strips: Vec<(StripId, String)>,
     /// The other workspaces the window could move to, by name.
     pub workspaces: Vec<(WorkspaceId, String)>,
@@ -487,7 +485,6 @@ mod tests {
         assert_eq!(shortcut("New tab").as_deref(), Some("Super+T"));
         assert_eq!(shortcut("Close tab").as_deref(), Some("Super+W"));
 
-        // The menu widget shows each shortcut on its row.
         let menu = build_window_menu(&rows);
         let shown: Vec<_> = menu
             .items()
@@ -527,7 +524,6 @@ mod tests {
         }
         assert_eq!(WindowMenuAction::from_semantic_key("tabmenu:nope"), None);
 
-        // With nowhere to go, the rows stay, disabled.
         let alone = WindowMenuFacts {
             tab_count: 1,
             ..WindowMenuFacts::default()

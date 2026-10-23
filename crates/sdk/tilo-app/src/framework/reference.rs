@@ -25,9 +25,6 @@ pub(crate) const OPEN: &str = tilo_actions::remote::APPLICATION_OPEN_ACTION;
 pub const LEAD: ChipLead = ChipLead::Glyph(ui_core::icons::Icon::Link);
 
 /// The workspace this window is in, or why nothing opens from it.
-///
-/// # Errors
-/// The window is in no workspace.
 pub fn room() -> Result<String, String> {
     let room = ui_core::collaboration::local_cluster_id();
     if room.is_nil() {

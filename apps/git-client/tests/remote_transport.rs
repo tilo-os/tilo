@@ -1,5 +1,3 @@
-//! Checks the transports compiled into the production Git backend.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -410,7 +408,6 @@ fn app_remote_operations_stay_responsive_and_report_outcomes() {
     remote_failure_is_reported_to_the_caller_and_visible_status();
 }
 
-/// The published row of the remote `name`.
 fn remote_row(name: &str) -> String {
     format!("git_client.remote:{}", hex::encode(name))
 }

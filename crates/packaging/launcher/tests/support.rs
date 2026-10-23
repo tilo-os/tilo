@@ -1,5 +1,3 @@
-//! Shared fixtures for the launcher integration tests.
-
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

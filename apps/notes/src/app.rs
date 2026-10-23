@@ -43,6 +43,7 @@ use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{OutEvent, PageSidebar, SidebarTransfer};
 use crate::status_bar::{SaveStatus, StatusBarState, StatusModel, count_words};
 
+mod asset_reads;
 mod effects;
 mod window_bar;
 
@@ -384,6 +385,10 @@ pub struct NotesApp {
     /// collaborator's device: the record content arrival count when the
     /// notebook was last read for them. Read again once it has moved.
     canonical_assets_waiting: Option<u64>,
+    /// The read of pictures the window does not hold yet, and the record
+    /// content arrival count it started at.
+    asset_reads: asset_reads::AssetReads,
+    asset_read_looked: u64,
     /// View/legacy callback intents that must wait for a mutable bound record admission.
     pending_events: Vec<OutEvent>,
     /// Last mouse position in logical coords. Used to hit-test
@@ -597,18 +602,9 @@ impl NotesApp {
         sidebar.sync_from_workspace(&workspace);
         let mut main = MainPanel::new();
         main.set_local_author(Some(author.0.clone()));
-        let content = crate::notebook::content();
-        let looked = ui::collaboration::record_content::arrivals();
-        let snapshot =
-            crate::notebook::image_snapshot(&workspace.images, |digest| content.read(digest));
-        let waiting = snapshot.len() < workspace.images.len();
-        let manifest = workspace.images.clone();
         let mut app = Self::build_widget(workspace, sidebar, main);
-        if let Ok(mut assets) = app.canonical_assets.write() {
-            *assets = snapshot;
-        }
-        app.canonical_assets_waiting = waiting.then_some(looked);
-        app.canonical_asset_manifest = manifest;
+        // The pictures are read like any later ones, without waiting here.
+        app.refresh_canonical_assets();
         app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
         app.projection_adopted = true;
@@ -746,6 +742,8 @@ impl NotesApp {
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
             canonical_asset_manifest: ui::tilo_resource::Map::new(),
             canonical_assets_waiting: None,
+            asset_reads: asset_reads::AssetReads::new(),
+            asset_read_looked: 0,
             pending_events: Vec::new(),
             last_mouse: Point::ZERO,
             bound_page: None,
@@ -978,6 +976,16 @@ impl NotesApp {
                 part("notes-toasts", self.rect, toasts, Vec::new()),
             ],
         ))
+    }
+
+    /// Whether a popup of the window is open: one of the shell's, the page
+    /// tree's menu, or the editor's.
+    fn popup_open(&self) -> bool {
+        self.sidebar.menu_is_open()
+            || self.main.has_editor_popup()
+            || Widget::modal_capture(&self.shell).is_some()
+            || Widget::modal_capture(&self.main).is_some()
+            || Widget::modal_capture(self.sidebar.tree()).is_some()
     }
 
     /// A press on the failed save's toast: "Try again" asks the host to
@@ -1654,6 +1662,11 @@ impl NotesApp {
         self.self_dirty = true;
     }
 
+    /// Wake the window through `wake` when the notebook's pictures are read.
+    pub(crate) fn wake_asset_reads_through(&mut self, wake: ui::WakeHandle) {
+        self.asset_reads.wake_through(wake);
+    }
+
     /// Attach the framework dispatcher when hosted as a surface.
     pub(crate) fn attach_framework(
         &mut self,
@@ -2066,54 +2079,6 @@ impl NotesApp {
     /// change through the one page-tree action route. Kept callable from sync
     /// because semantic actions target `MainPanel` directly and naturally
     /// request a subsequent sync rather than travelling through `handle_event`.
-    /// Keep the image snapshot in step with the notebook's asset references,
-    /// and pick up referenced bytes that arrive from a collaborator's device
-    /// after the reference did. Their arrival syncs the window and moves the
-    /// record content's arrival count; nothing looks for them on a timer.
-    fn refresh_canonical_assets(&mut self) {
-        let manifest = self.workspace.images.clone();
-        let looked = ui::collaboration::record_content::arrivals();
-        let retry = self
-            .canonical_assets_waiting
-            .is_some_and(|seen| seen != looked);
-        if manifest == self.canonical_asset_manifest && !retry {
-            return;
-        }
-        let content = crate::notebook::content();
-        let snapshot = crate::notebook::image_snapshot(&manifest, |digest| content.read(digest));
-        let arrived = self
-            .canonical_assets
-            .read()
-            .is_ok_and(|assets| snapshot.keys().any(|key| !assets.contains_key(key)));
-        let mut waiting = true;
-        if let Ok(mut assets) = self.canonical_assets.write() {
-            // Bytes this window put in itself (a paste) stay while the
-            // notebook still names them, even where the store would not
-            // serve them back.
-            assets.retain(|key, _| {
-                key.strip_prefix("asset:")
-                    .is_some_and(|digest| manifest.contains_key(digest))
-            });
-            assets.extend(snapshot);
-            waiting = manifest
-                .keys()
-                .any(|digest| !assets.contains_key(&format!("asset:{digest}")));
-        }
-        self.canonical_asset_manifest = manifest;
-        self.canonical_assets_waiting = waiting.then_some(looked);
-        if arrived {
-            // The image store remembers a failed load, and an image block is
-            // laid out (and asked for) in the frame it appears, before its
-            // bytes were in the snapshot: forget the failures so the images
-            // that were placeholders are fetched again.
-            if let Some(store) = self.main.image_store()
-                && store.forget_failed()
-            {
-                self.self_dirty = true;
-            }
-        }
-    }
-
     fn drain_title_rename(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(new_title) = self.main.take_title_rename() else {
             return;
@@ -3047,13 +3012,25 @@ impl Widget for NotesApp {
         if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.handled) {
             return;
         }
-        if self.handle_save_status_press(event, ctx.handled) {
-            return;
-        }
-        self.transfer_toasts.handle_event(event, ctx);
-        self.take_toast_undo();
-        if *ctx.handled {
-            return;
+        // An open popup (a dropdown's list, a menu, the editor's block
+        // menu) takes the pointer before the save bubble and the toasts in
+        // the corner it may reach over.
+        let popup_holds_pointer = self.popup_open()
+            && matches!(
+                event,
+                WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::Touch(_)
+            );
+        if !popup_holds_pointer {
+            if self.handle_save_status_press(event, ctx.handled) {
+                return;
+            }
+            self.transfer_toasts.handle_event(event, ctx);
+            self.take_toast_undo();
+            if *ctx.handled {
+                return;
+            }
         }
         if self.handle_shell(event, ctx) {
             return;
@@ -3433,6 +3410,9 @@ impl NotesApp {
     /// as well as after input.
     fn drain_header_requests(&mut self) {
         if self.header.new_note.take() {
+            // As Ctrl+N does: the new note opens with its title taking the
+            // keyboard, so the name comes first.
+            self.name_next_created = true;
             self.pending_events
                 .push(OutEvent::CreateChild { parent: None });
             self.self_dirty = true;

@@ -1009,7 +1009,6 @@ mod tests {
         assert_eq!(map_tablet_position((0.0, 0.0), output), (2560.0, 0.0));
         assert_eq!(map_tablet_position((0.5, 0.5), output), (3520.0, 540.0));
         assert_eq!(map_tablet_position((1.0, 1.0), output), (4480.0, 1080.0));
-        // Out-of-range samples from the tablet edge stay on that output.
         assert_eq!(map_tablet_position((1.2, -0.1), output), (4480.0, 0.0));
     }
 

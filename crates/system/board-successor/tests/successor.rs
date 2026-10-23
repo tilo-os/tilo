@@ -398,7 +398,6 @@ fn existing_bootc_auth_precedence_private_snapshot_and_cleanup() {
                 .to_string_lossy()
                 .starts_with("tilo-board-verifier-")
         );
-        // The commands see exactly this snapshot.
         let seen = registry
             .run(&[
                 "/bin/sh",

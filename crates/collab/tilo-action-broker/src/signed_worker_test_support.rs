@@ -303,7 +303,6 @@ pub async fn join_worker(
     )
 }
 
-/// A device certificate for `key`, signed by `root`.
 pub fn signed_device(
     root: &SigningKey,
     key: &SigningKey,

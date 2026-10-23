@@ -362,7 +362,6 @@ mod tests {
         recorder.end_tick();
         assert!(!recorder.is_enabled(), "recording stops with the profile");
 
-        // The summary is written last, off the loop.
         let summary_path = dir.join("summary.json");
         tilo_test_env::wait_until("the profile to complete", || summary_path.exists());
         let frames = std::fs::read_to_string(dir.join("frames.csv")).unwrap();

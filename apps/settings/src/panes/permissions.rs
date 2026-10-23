@@ -1406,7 +1406,6 @@ mod tests {
             settings.replace_area(PermissionsArea::over(Arc::new(StalledReader(stalled))));
         })
         .expect("the Settings window is mounted");
-        // Tall enough that every card of the pane is laid out and inspected.
         app.harness().resize((1280, 4096)).unwrap();
 
         crate::effects::show_pane(&mut app, crate::categories::Category::Permissions);
@@ -1562,7 +1561,6 @@ mod tests {
     /// Read-only pane, owner routing, scope kinds and one pill per grant.
     #[test]
     fn permissions_pane_is_read_only_and_routes_workspace_access() {
-        // Case `is_read_only_except_for_one_live_context_route`.
         {
             // The pane still cannot mutate state.json. Its only button asks the
             // shell to reveal the active workspace's authoritative controls.
@@ -1573,7 +1571,6 @@ mod tests {
             }
         }
 
-        // Case `workspace_access_is_explicitly_routed_to_its_owner`.
         {
             // System Settings never pretends it can edit a workspace. The one
             // live control is an explicit route to the current workspace's
@@ -1585,7 +1582,6 @@ mod tests {
             assert_eq!(labels, vec!["Open workspace access"]);
         }
 
-        // Case `cap_view_maps_each_scope_to_its_kind`.
         {
             let g = |scope, verb| {
                 cap_view(&CapOverride::grant(Subject::app("a"), scope, verb)).map(|v| v.kind)
@@ -1635,7 +1631,6 @@ mod tests {
                 "{}",
                 action.detail
             );
-            // Read vs write is reflected in the file detail.
             let rw = cap_view(&CapOverride::grant(
                 Subject::app("a"),
                 Scope::FsPath("/w".into()),
@@ -1655,7 +1650,6 @@ mod tests {
             );
         }
 
-        // Case `populated_pane_renders_a_row_per_grant`.
         {
             // Two grants → the workspace's group carries a row for each, its
             // kind marked and how long it lasts as its value, built from the
@@ -1665,7 +1659,6 @@ mod tests {
             let mut rows = 0;
             count_grant_rows(pane.as_ref(), &mut rows);
             assert_eq!(rows, 2, "one row per grant");
-            // Intro + one workspace + enforcement groups are all present.
             assert!(count_named(pane.as_ref(), "Section") >= 3);
         }
     }
@@ -1673,7 +1666,6 @@ mod tests {
     /// Real grants, missing/empty/malformed state and omitted workspaces.
     #[test]
     fn permission_state_is_reported_truthfully() {
-        // Case `projection_reads_the_real_grants_from_state_json`.
         {
             // The projection is exactly what `build_view` renders from, so
             // asserting on it asserts on the production path.
@@ -1696,7 +1688,6 @@ mod tests {
             assert!(file.detail.contains("read-only"));
         }
 
-        // Case `missing_state_never_claims_that_no_grants_exist`.
         {
             // No state document means the panel cannot make a claim about grants.
             let mut pane = build_view(&cx(), None);
@@ -1716,7 +1707,6 @@ mod tests {
             );
         }
 
-        // Case `valid_empty_state_is_the_only_path_that_claims_no_grants`.
         {
             let mut pane = build_view(&cx(), Some(r#"{"workspaces":[]}"#));
             build_layout_of(&mut pane);
@@ -1726,7 +1716,6 @@ mod tests {
             assert!(!labels.contains(&"Workspace access can't be checked".to_string()));
         }
 
-        // Case `workspace_without_app_grants_is_omitted`.
         {
             // A workspace whose only grant names a person holds no *app*
             // grant and must not render a card.
@@ -1747,7 +1736,6 @@ mod tests {
             );
         }
 
-        // Case `malformed_document_is_reported_as_unavailable_not_empty`.
         {
             assert!(project("not json {").is_err());
             let mut pane = build_view(&cx(), Some("not json {"));

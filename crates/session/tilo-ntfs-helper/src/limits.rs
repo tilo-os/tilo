@@ -73,9 +73,6 @@ fn child_output(capacity: u64, operation: &NativeOperation, read_limit: u64) -> 
 }
 /// Run only from a single-threaded CLI before starting threads.
 /// No successful result survives timeout, truncation, child failure or protocol failure.
-///
-/// # Errors
-/// Returns refusal when the OS boundary or native child fails.
 pub fn run(
     file: &File,
     capacity: u64,
@@ -396,7 +393,6 @@ mod tests {
     use super::*;
     #[test]
     fn child_limits_survive_cancellation_and_framing_refuses_bad_results() {
-        // Phase `cancellation_signal_cannot_interrupt_child_reaping`.
         {
             let mut attempts = 0;
             let result = retry_interrupted(|| {
@@ -418,7 +414,6 @@ mod tests {
             assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
             assert_eq!(attempts, 1);
         }
-        // Phase `parent_peer_monitor_refuses_cancel_and_disconnect`.
         {
             use std::os::unix::net::UnixStream;
             let (parent, mut peer) = UnixStream::pair().unwrap();
@@ -436,7 +431,6 @@ mod tests {
             frame(&mut output, &serde_json::json!({"fact": 1})).unwrap();
             assert_eq!(output, b"\x0a\0\0\0{\"fact\":1}");
         }
-        // Phase `child_framing_refuses_trailing_unknown_and_oversized_results`.
         {
             let valid = serde_json::json!({"done":{"schema":2,"status":0,"stats":{"bytes":0,"calls":0,"writes":0}}});
             let encode = |value: &serde_json::Value| {

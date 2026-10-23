@@ -1,9 +1,4 @@
-//! Calls through the native voice service, and two participants converging on
-//! one room over the real sync path.
-
 use super::*;
-
-// --- sidebar mute/deafen (were dead outside a call) -----------------
 
 #[test]
 fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
@@ -93,7 +88,6 @@ fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
             !buttons.iter().any(|(label, ..)| *label == "Follow host"),
             "the non-functional Follow-host toggle was removed"
         );
-        // The genuinely-wired controls remain.
         assert!(buttons.iter().any(|(l, ..)| *l == "Unmute"));
         assert!(buttons.iter().any(|(l, ..)| *l == "Leave"));
     }
@@ -324,8 +318,6 @@ fn microphone_intent_waits_for_local_service_and_never_writes_membership() {
     assert_eq!(doc.save(), before);
 }
 
-// --- call controls under reduced permissions ------------------------
-
 #[test]
 fn leave_remains_available_after_downgrade() {
     use ui::permissions::{PermissionContext, Role};
@@ -346,10 +338,6 @@ fn leave_remains_available_after_downgrade() {
 }
 
 // --- header Call button (was unreachable without a voice channel) ---
-
-// --- Follow-host control removal ------------------------------------
-
-// --- reaction round-trip through the picker (test gap) --------------
 
 #[test]
 fn emoji_search_enter_picks_the_best_match() {
@@ -433,7 +421,6 @@ fn two_participants_converge_on_messages_and_edits() {
 
         let mut a = peer("u_alice", "Alice", "AL", 0);
         let mut b = peer("u_bob", "Bob", "BO", 1);
-        // The room's message parts, which both hold.
         let parts = crate::testing::Room::default();
         a.attach_room(&parts);
         b.attach_room(&parts);
@@ -560,14 +547,12 @@ fn two_participants_converge_on_messages_and_edits() {
 
         let mut a = peer("u_alice", "Alice", "AL", 0);
         let mut b = peer("u_bob", "Bob", "BO", 1);
-        // The room's message parts, which both hold.
         let parts = crate::testing::Room::default();
         a.attach_room(&parts);
         b.attach_room(&parts);
         a.reload(&doc_a);
         b.reload(&doc_b);
 
-        // Alice posts, then Bob sees the original body.
         a.insert_text(&mut ui::widget::Edits::lend(&mut doc_a), "shipping friday");
         a.send_focused(&mut ui::widget::Edits::lend(&mut doc_a));
         exchange(&mut doc_a, &mut doc_b);
@@ -835,4 +820,120 @@ fn whoever_the_call_hears_rings_and_a_quiet_face_settles() {
     app.refresh_native_streams();
     render_frame(&mut app, 1280.0, 800.0);
     assert!(app.speaking.animating, "a pause eases the ring out");
+}
+
+/// Answer every voice request this app sent with `snapshot`, as its voice
+/// service would; returns the commands it sent.
+fn answer_voice(
+    app: &mut ChatApp,
+    snapshot: &ui::native_media::Snapshot,
+) -> Vec<ui::native_media::Command> {
+    use ui::widget::Collaborative as _;
+    let mut sent = Vec::new();
+    for request in app.take_collab_requests() {
+        if let ui::collaboration::CollabRequest::NativeMediaCommand {
+            request_id,
+            command,
+        } = request
+        {
+            sent.push(command.command);
+            app.handle_collab_event(&ui::collaboration::CollabEvent::NativeMediaCommandResult {
+                request_id,
+                result: Ok(snapshot.clone()),
+            });
+        }
+    }
+    sent
+}
+
+/// A connected call in the room's voice channel.
+fn connected_call() -> (ChatApp, crate::testing::Room, ui::native_media::Snapshot) {
+    let (mut app, mut doc) = app_with_doc();
+    app.on_hit(
+        Hit::Channel("c_standup".into()),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    let mut live = ui::native_media::Snapshot::unavailable();
+    live.state = ui::native_media::State::Live;
+    live.issue = None;
+    live.muted = true;
+    let sent = answer_voice(&mut app, &live);
+    assert!(
+        sent.iter()
+            .any(|command| matches!(command, ui::native_media::Command::Join { .. })),
+        "opening the voice channel joins its call"
+    );
+    assert_eq!(
+        app.native_voice.snapshot.state,
+        ui::native_media::State::Live
+    );
+    (app, doc, live)
+}
+
+#[test]
+fn opening_the_voice_channel_of_the_call_one_is_in_shows_it_without_joining_again() {
+    let (mut app, mut doc, live) = connected_call();
+    app.on_hit(
+        Hit::Channel("c_standup".into()),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert_eq!(
+        app.native_voice.snapshot.state,
+        ui::native_media::State::Live,
+        "the call stays connected: no Joining"
+    );
+    let sent = answer_voice(&mut app, &live);
+    assert!(
+        !sent
+            .iter()
+            .any(|command| matches!(command, ui::native_media::Command::Join { .. })),
+        "no second join: {sent:?}"
+    );
+    assert!(app.call.active && app.call.channel == "c_standup");
+}
+
+#[test]
+fn a_muted_microphone_on_a_device_without_one_says_so() {
+    use ui::Widget as _;
+    let (mut app, mut doc, live) = connected_call();
+    let mute_name = |app: &ChatApp| {
+        app.accessibility()
+            .expect("Chat's semantics")
+            .children
+            .into_iter()
+            .find(|node| {
+                node.action_target.as_deref() == Some(Hit::CallMute.semantic_id().as_str())
+            })
+            .and_then(|node| node.name)
+    };
+    render_frame(&mut app, 1280.0, 720.0);
+    assert_ne!(
+        mute_name(&app).as_deref(),
+        Some("No microphone"),
+        "a device that has not tried its microphone offers to unmute"
+    );
+    // Unmuting finds no microphone: the call goes on, muted.
+    app.on_hit(Hit::CallMute, &mut ui::widget::Edits::lend(&mut doc));
+    let mut missing = live;
+    missing.issue = Some(ui::native_media::Issue::SourceLost);
+    answer_voice(&mut app, &missing);
+    assert!(app.call.active && app.call.muted);
+    render_frame(&mut app, 1280.0, 720.0);
+    assert_eq!(
+        mute_name(&app).as_deref(),
+        Some("No microphone"),
+        "the muted microphone names why"
+    );
+    let (rect, _) = app
+        .hits
+        .iter()
+        .rev()
+        .find(|(_, hit)| matches!(hit, Hit::CallMute))
+        .cloned()
+        .expect("the call's microphone control");
+    assert_eq!(
+        app.hover_tooltip_target(rect.center()).map(|(_, tip)| tip),
+        Some("No microphone".to_owned()),
+        "and its tooltip says so"
+    );
 }

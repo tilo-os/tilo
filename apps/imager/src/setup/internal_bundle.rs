@@ -143,8 +143,6 @@ impl InternalBundle {
     }
 
     /// Check the prepared account requirement against this selected image's proof.
-    /// # Errors
-    /// Refuses protected custody when the authenticated target lacks its protocol.
     pub fn require_account_protocol(&self, required: Option<u32>) -> Result<(), String> {
         if required.is_some_and(|protocol| {
             self.manifest
@@ -587,7 +585,6 @@ pub(crate) mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn live_cmdline_profile_and_root_floor_are_closed_contracts() {
-        // Phase `python_compatible_positive`.
         {
             assert!(validate_internal_bundle(SHARED_FIXTURE.as_bytes()).is_ok());
             assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
@@ -596,7 +593,6 @@ pub(crate) mod tests {
             assert_eq!(bundle.purpose(), "tilo-internal-installer");
         }
 
-        // Phase `shared_fixture_is_the_live_cmdline`.
         {
             let text = cmdline();
             let tokens: Vec<_> = text.split_ascii_whitespace().collect();
@@ -617,7 +613,6 @@ pub(crate) mod tests {
             assert!(!text.contains("tilo.unlock="));
         }
 
-        // Phase `minimised_root_fits_its_live_floor_partition`.
         {
             let data = fixture();
             let root = &data["components"][1];
@@ -634,7 +629,6 @@ pub(crate) mod tests {
             assert!(bundle.component_by_role("target-root").is_none());
             assert_eq!(bundle.efi_path(), "/EFI/BOOT/BOOTX64.EFI");
             assert_eq!(bundle.uki_sha256(), "a".repeat(64));
-            // A root that fills its partition exactly is still a valid bundle.
             let mut full = fixture();
             full["components"][1]["byte_size"] = json!(LIVE_ROOT_FLOOR_BYTES);
             full["source_image_bytes"] = json!(21504 + LIVE_ROOT_FLOOR_BYTES);
@@ -644,7 +638,6 @@ pub(crate) mod tests {
             assert!(validate_internal_bundle(&bytes(&full)).is_err());
         }
 
-        // Phase `cmdline_profile_is_closed`.
         {
             let base = cmdline();
             for tail in [
@@ -711,7 +704,6 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `device_bound_cmdlines_are_rejected`.
         {
             let base = cmdline();
             let auto = "root=tilo-auto";
@@ -731,7 +723,6 @@ pub(crate) mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn bundle_schema_rejects_corrupt_ambiguous_or_positional_records() {
-        // Phase `rejects_single_field_schema_corruptions`.
         {
             let cases = [
                 ("/schema", json!(1)),
@@ -796,7 +787,6 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `rejects_ambiguous_or_unbounded_json`.
         {
             let raw = String::from_utf8(bytes(&fixture())).unwrap();
             assert!(raw.contains("\"schema\":2"));
@@ -824,7 +814,6 @@ pub(crate) mod tests {
             assert!(validate_internal_bundle(&raw).is_err());
         }
 
-        // Phase `accepts_both_architectures_and_rejects_nested_unknown_or_duplicate_keys`.
         {
             let mut value = fixture();
             value["architecture"] = json!("aarch64");
@@ -848,7 +837,6 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `representation_manifest_must_be_an_object`.
         {
             let value = fixture();
             assert!(validate_internal_bundle(&bytes(&value)).is_ok());
@@ -859,7 +847,6 @@ pub(crate) mod tests {
             assert!(validate_internal_bundle(&bytes(&array)).is_err());
         }
 
-        // Phase `representation_component_must_be_an_object`.
         {
             let mut value = fixture();
             assert!(validate_internal_bundle(&bytes(&value)).is_ok());
@@ -870,7 +857,6 @@ pub(crate) mod tests {
             assert!(validate_internal_bundle(&bytes(&value)).is_err());
         }
 
-        // Phase `representation_boot_binding_must_be_an_object`.
         {
             let mut value = fixture();
             assert!(validate_internal_bundle(&bytes(&value)).is_ok());
@@ -892,7 +878,6 @@ pub(crate) mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn windows_unicode_ancestors_are_exact_bounded_and_lossless() {
-        // Phase `windows_unicode_ancestors_retain_exact_names`.
         {
             for name in [
                 "André",
@@ -934,7 +919,6 @@ pub(crate) mod tests {
             assert!(windows_path(&format!("C:\\{}", vec!["é"; 65].join("\\"))).is_err());
         }
 
-        // Phase `windows_unicode_raw_collection_is_bounded`.
         {
             let mut consumed = 0;
             let raw = std::iter::repeat(b'a' as u16).inspect(|_| consumed += 1);
@@ -942,7 +926,6 @@ pub(crate) mod tests {
             assert_eq!(consumed, 4097);
         }
 
-        // Phase `windows_unicode_unpaired_surrogates_are_preserved`.
         {
             let name = vec![0xd800, b'a' as u16, 0xdc00, 0xd83d, 0xde00];
             let mut raw: Vec<_> = "C:\\".encode_utf16().collect();
@@ -950,7 +933,6 @@ pub(crate) mod tests {
             assert_eq!(windows_directory_path(raw).unwrap().names, vec![name]);
         }
 
-        // Phase `windows_unicode_os_string_bridge_is_lossless`.
         #[cfg(windows)]
         {
             use std::{
@@ -980,7 +962,6 @@ pub(crate) mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn windows_names_cannot_alias_escape_or_broaden_authenticated_files() {
-        // Phase `windows_unicode_raw_namespaces_and_separators_are_refused`.
         {
             assert!(windows_path("C:\\Users\\ordinary").is_ok());
             for path in [
@@ -1006,7 +987,6 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `windows_unicode_leaf_aliases_and_control_units_are_refused`.
         {
             assert!(windows_path("C:\\Users\\ordinary").is_ok());
             for name in [
@@ -1048,7 +1028,6 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `windows_unicode_ancestors_do_not_broaden_authenticated_filenames`.
         {
             assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
             for name in ["é.img", "用户.img", "e\u{301}.img", "😀.img"] {

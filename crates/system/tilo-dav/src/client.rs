@@ -389,7 +389,6 @@ mod tests {
 
     #[test]
     fn requests_carry_depth_auth_and_write_preconditions() {
-        // Phase `propfind_sends_depth_props_and_basic_auth`.
         {
             let server = Responder::start(vec![Reply::status(207).body(LISTING)]);
             let response = client()
@@ -413,7 +412,6 @@ mod tests {
             );
             assert!(request.body_text().contains("<D:getetag/>"));
         }
-        // Phase `conditional_writes_carry_their_preconditions`.
         {
             let server = Responder::start(vec![
                 Reply::status(201).header("ETag", "\"v1\""),
@@ -500,7 +498,6 @@ mod tests {
 
     #[test]
     fn responses_are_bounded_hostile_bodies_refused_and_redirects_contained() {
-        // Phase `bodies_are_bounded_with_and_without_content_length`.
         {
             let server = Responder::start(vec![
                 Reply::status(200).body(vec![b'x'; 64]),
@@ -519,7 +516,6 @@ mod tests {
             let exact = client.get(server.url()).unwrap().read_bounded(64).unwrap();
             assert_eq!(exact.len(), 64);
         }
-        // Phase `hostile_multistatus_bodies_are_refused`.
         {
             let doctype = r#"<?xml version="1.0"?><!DOCTYPE m [<!ENTITY a "aaaa">]><multistatus xmlns="DAV:"/>"#;
             let server = Responder::start(vec![
@@ -538,7 +534,6 @@ mod tests {
                 Err(Error::Xml(XmlError::NotMultistatus))
             ));
         }
-        // Phase `refused_redirects_reach_the_caller_and_never_the_target`.
         {
             let target = Responder::silent();
             let location = format!("{}/stolen", target.url());
@@ -554,7 +549,6 @@ mod tests {
             assert!(server.next_request().header("authorization").is_some());
             target.assert_untouched();
         }
-        // Phase `transport_failures_are_errors_not_statuses`.
         {
             let closed = Responder::silent();
             let url = closed.url();

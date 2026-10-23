@@ -68,7 +68,6 @@ struct Viewer {
 }
 
 impl WorkspaceEnvironments {
-    /// Sessions routed in this workspace.
     #[must_use]
     pub fn session_count(&self) -> usize {
         self.sessions.len()

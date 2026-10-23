@@ -92,7 +92,6 @@ mod integration_tests {
 
     #[test]
     fn speech_through_the_trait_object_coalesces_stops_and_keeps_settings() {
-        // Phase `focus_storm_coalesces_to_latest`.
         {
             // Simulate a fast Tab through a toolbar: five focus changes arrive before anything is
             // spoken. Only the last should survive (interrupt semantics).
@@ -105,7 +104,6 @@ mod integration_tests {
             q.drive(&mut spk);
             assert_eq!(spk.spoken(), &["Close button".to_string()]);
         }
-        // Phase `error_survives_focus_change_then_both_spoken`.
         {
             let mut q = SpeechQueue::new();
             q.push(Utterance::new("Permission denied").with_priority(Priority::Important));
@@ -117,7 +115,6 @@ mod integration_tests {
                 &["Permission denied".to_string(), "Allow button".to_string()]
             );
         }
-        // Phase `stop_clears_queue_and_silences`.
         {
             // The "silence key": stop() on the speaker + clear() on the queue.
             let mut q = SpeechQueue::new();
@@ -134,7 +131,6 @@ mod integration_tests {
             assert!(q.is_empty());
             assert_eq!(spk.stop_count(), 1);
         }
-        // Phase `rate_and_voice_round_trip_through_trait_object`.
         {
             let mut spk: Box<dyn Speaker> = Box::new(NullSpeaker::new());
             spk.set_rate(1.5);

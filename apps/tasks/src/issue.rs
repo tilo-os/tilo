@@ -347,7 +347,11 @@ fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 link.resource.clone(),
                 link.label.clone(),
             );
-            row = row.push(Box::new(cx.reference(&link.app, None, &reference)));
+            row = row.push(Box::new(cx.reference(
+                &link.app,
+                link.record.as_deref(),
+                &reference,
+            )));
         }
         column = column
             .push(Box::new(

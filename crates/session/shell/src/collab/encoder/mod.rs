@@ -80,7 +80,6 @@ impl EncoderKind {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FrameStats {
     pub encode_wallclock: Duration,
-    /// Was this frame a keyframe?
     pub keyframe: bool,
     /// Bytes emitted for this frame.
     pub bytes: usize,
@@ -193,7 +192,6 @@ pub struct EncoderInit {
 }
 
 impl EncoderInit {
-    /// An SDR configuration for `codec`.
     pub const fn sdr(
         codec: Codec,
         width: u32,

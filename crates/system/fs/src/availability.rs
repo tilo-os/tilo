@@ -684,11 +684,6 @@ impl AvailabilityRegistry {
 
     /// Insert or replace a record and durably commit the complete registry.
     /// Invalid ancestry leaves both memory and disk unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the candidate registry is invalid or its atomic
-    /// persistence fails.
     pub fn put(&mut self, record: RecordAvailability) -> Result<(), AvailabilityError> {
         let id = record.record_id;
         let previous = self.records.insert(id, record);
@@ -720,11 +715,6 @@ impl AvailabilityRegistry {
     /// Persist a freshly verified remote receipt and rebuild the aggregate UI
     /// projection from distinct, unexpired devices. Exact replay and an older
     /// receipt from the same device fail closed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for unknown records, self/stale/replayed receipts,
-    /// version mismatches, observation overflow, or persistence failure.
     pub fn observe_replica(
         &mut self,
         record_id: FileRecordId,
@@ -765,11 +755,6 @@ impl AvailabilityRegistry {
     }
 
     /// Effective policy, including any pinned stable directory ancestor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when ancestry contains a cycle or names a missing
-    /// parent record.
     pub fn effective_policy(
         &self,
         record_id: FileRecordId,
@@ -1087,7 +1072,6 @@ mod tests {
 
     #[test]
     fn availability_registry_persists_by_stable_record_id_and_rejects_tampering() {
-        // Phase `registry_survives_restart_and_is_keyed_by_stable_record_id`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability/state.json");
@@ -1105,7 +1089,6 @@ mod tests {
             assert_eq!(reopened.get(id), Some(&record));
             assert_eq!(reopened.records().count(), 1);
         }
-        // Phase `other_schema_versions_fail_registry_open`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability.json");
@@ -1123,7 +1106,6 @@ mod tests {
                 Err(AvailabilityError::UnsupportedVersion(1))
             ));
         }
-        // Phase `tampered_persisted_receipt_fails_registry_open`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability.json");
@@ -1143,7 +1125,6 @@ mod tests {
                 Err(AvailabilityError::StaleReplicaObservation)
             ));
         }
-        // Phase `a_rename_cannot_change_availability_identity`.
         {
             let temp = TempDir::new().unwrap();
             let path = temp.path().join("availability.json");
@@ -1166,7 +1147,6 @@ mod tests {
             );
             assert_eq!(registry.records().count(), 1);
         }
-        // Phase `malformed_ancestry_and_progress_are_rejected_without_mutation`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
@@ -1194,7 +1174,6 @@ mod tests {
 
     #[test]
     fn pins_follow_descendants_moves_and_namespace_reconciliation() {
-        // Phase `directory_pin_applies_to_future_descendants_and_survives_move`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
@@ -1226,7 +1205,6 @@ mod tests {
                 Some(AvailabilityPolicy::Automatic)
             );
         }
-        // Phase `explicit_pin_presence_drives_periodic_namespace_reconciliation`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
@@ -1289,7 +1267,6 @@ mod tests {
                 EvictionDecision::Allowed
             );
         }
-        // Phase `every_local_retention_reason_blocks_normal_eviction`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
@@ -1323,7 +1300,6 @@ mod tests {
                 EvictionDecision::Denied(EvictionBlocker::RetainedVersions)
             );
         }
-        // Phase `normal_eviction_fails_closed_without_an_acceptable_replica_ack`.
         {
             let temp = TempDir::new().unwrap();
             let mut registry = AvailabilityRegistry::open(temp.path().join("a.json")).unwrap();
@@ -1372,7 +1348,6 @@ mod tests {
 
     #[test]
     fn projection_round_trips_every_ui_dimension() {
-        // Phase `availability_projection_round_trips_every_ui_dimension`.
         {
             let record = rich_record();
             let projection = record.projection_with_policy(AvailabilityPolicy::Pinned);
@@ -1397,7 +1372,6 @@ mod tests {
             );
             assert_eq!(projection.freshness.replicas_observed_at_ms, Some(7_900));
         }
-        // Phase `replica_counts_are_unknown_without_current_version_evidence`.
         {
             let mut record = rich_record();
             let old_version = FileVersionId::new();
@@ -1410,7 +1384,6 @@ mod tests {
             let projection = record.projection();
             assert_eq!(projection.replicas, ProjectedReplicaEvidence::Unknown);
 
-            // Unknown is distinct from a valid observation that found zero peers.
             record.freshness.replicas_observed_at_ms = Some(9_000);
             record.replicas.reachable = 0;
             record.replicas.durable = 0;
@@ -1478,7 +1451,6 @@ mod tests {
             assert!(projection.transfer.error_truncated);
             assert!(projection.to_xattr_bytes().unwrap().len() <= MAX_AVAILABILITY_XATTR_BYTES);
         }
-        // Phase `parser_rejects_oversize_future_and_inconsistent_values`.
         {
             assert!(matches!(
                 AvailabilityProjectionV1::parse_xattr(&vec![

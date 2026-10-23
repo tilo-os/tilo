@@ -107,13 +107,23 @@ impl VoiceAudio {
             .map_err(|_| AudioError::Codec)?;
         Self::from_output_bound(pipeline, source, Some(remote_fd))
     }
+    /// A software output: no driver can hold its transition, so it has no
+    /// startup deadline and becomes ready whenever it reaches Playing.
     #[cfg(test)]
     fn from_output(pipeline: gst::Pipeline, source: gst_app::AppSrc) -> Result<Self, AudioError> {
-        Self::from_output_bound(pipeline, source, None)
+        Self::start_output(pipeline, source, None, None)
     }
     fn from_output_bound(
         pipeline: gst::Pipeline,
         source: gst_app::AppSrc,
+        remote_fd: Option<OwnedFd>,
+    ) -> Result<Self, AudioError> {
+        Self::start_output(pipeline, source, Some(CAPTURE_STARTUP_TIMEOUT), remote_fd)
+    }
+    fn start_output(
+        pipeline: gst::Pipeline,
+        source: gst_app::AppSrc,
+        startup_deadline: Option<Duration>,
         remote_fd: Option<OwnedFd>,
     ) -> Result<Self, AudioError> {
         let permit = Permit::acquire()?;
@@ -122,7 +132,8 @@ impl VoiceAudio {
         source.set_property("max-bytes", 1920u64);
         source.set_property("block", false);
         source.set_property_from_str("leaky-type", "downstream");
-        let pipeline = DevicePipeline::start(pipeline, remote_fd, None, false, permit)?;
+        let pipeline =
+            DevicePipeline::start(pipeline, startup_deadline, remote_fd, None, false, permit)?;
         Ok(Self {
             output: pipeline,
             output_source: source,
@@ -170,20 +181,27 @@ impl VoiceAudio {
         let source = element("pipewiresrc")?;
         configure_pipewire(&source, serial, remote_fd.as_fd())?;
         source.set_property("do-timestamp", true);
-        self.start_capture_element_bound(&source, still_current, Some(remote_fd))
+        self.start_capture_element_bound(
+            &source,
+            still_current,
+            Some(CAPTURE_STARTUP_TIMEOUT),
+            Some(remote_fd),
+        )
     }
+    /// A software capture: like [`Self::from_output`], no startup deadline.
     #[cfg(test)]
     fn start_capture_element(
         &mut self,
         source: &gst::Element,
         still_current: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<(), AudioError> {
-        self.start_capture_element_bound(source, still_current, None)
+        self.start_capture_element_bound(source, still_current, None, None)
     }
     fn start_capture_element_bound(
         &mut self,
         source: &gst::Element,
         still_current: Arc<dyn Fn() -> bool + Send + Sync>,
+        startup_deadline: Option<Duration>,
         remote_fd: Option<OwnedFd>,
     ) -> Result<(), AudioError> {
         if self.closed {
@@ -241,6 +259,7 @@ impl VoiceAudio {
         self.stop_capture();
         let pipeline = DevicePipeline::start(
             pipeline,
+            startup_deadline,
             remote_fd,
             Some(still_current.clone()),
             true,
@@ -289,10 +308,7 @@ impl VoiceAudio {
             self.stop_capture();
             return Err(error);
         }
-        if !capture.pipeline.ready()
-            && now.saturating_duration_since(capture.pipeline.started_at())
-                >= CAPTURE_STARTUP_TIMEOUT
-        {
+        if capture.pipeline.startup_expired(now) {
             self.stop_capture();
             return Err(AudioError::DeviceLost);
         }
@@ -1013,8 +1029,12 @@ mod tests {
         let (fd, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
         let (done, completed) = std::sync::mpsc::channel();
         let caller = std::thread::spawn(move || {
-            let result =
-                audio.start_capture_element_bound(&source, Arc::new(|| true), Some(fd.into()));
+            let result = audio.start_capture_element_bound(
+                &source,
+                Arc::new(|| true),
+                None,
+                Some(fd.into()),
+            );
             done.send((audio, result)).unwrap();
         });
         wait_for_gate(&gate);
@@ -1192,8 +1212,19 @@ mod tests {
             .downcast::<gst_app::AppSrc>()
             .unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        tilo_test_env::wait_until("the software output to start", || audio.output_ready());
+        wait_for_output(&audio, "the software output to start");
         audio
+    }
+
+    fn wait_for_output(audio: &VoiceAudio, what: &str) {
+        let failure = tilo_test_env::wait_for(what, || {
+            if audio.output_ready() {
+                Some(None)
+            } else {
+                audio.output.failure().map(Some)
+            }
+        });
+        assert_eq!(failure, None, "{what}: the output failed instead");
     }
 
     fn observed_output() -> (VoiceAudio, gst_app::AppSink) {
@@ -1210,7 +1241,7 @@ mod tests {
             .downcast::<gst_app::AppSink>()
             .unwrap();
         let audio = VoiceAudio::from_output(pipeline, source).unwrap();
-        tilo_test_env::wait_until("the observed output to start", || audio.output_ready());
+        wait_for_output(&audio, "the observed output to start");
         (audio, sink)
     }
 
@@ -1246,10 +1277,19 @@ mod tests {
             .build();
         source.set_caps(Some(&raw_caps()));
         let observed = source.clone();
+        let (fd, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         audio
-            .start_capture_element(&source.upcast(), Arc::new(|| true))
+            .start_capture_element_bound(
+                &source.upcast(),
+                Arc::new(|| true),
+                Some(CAPTURE_STARTUP_TIMEOUT),
+                Some(fd.into()),
+            )
             .unwrap();
         let worker = audio.capture_stop_handle().unwrap();
+        tilo_test_env::wait_until("the capture's Playing transition to begin", || {
+            observed.current_state() != gst::State::Null
+        });
         assert!(
             !audio.capture_active(),
             "requested Playing is not observed microphone audio"
@@ -1727,7 +1767,6 @@ mod tests {
         pcm.extend(voiced(150));
         let packets = encoder.encode(&pcm);
         assert!(packets.len() >= 200, "{}", packets.len());
-        // The encoder was in DTX right up to the onset...
         assert!(
             transmitted(&packets[25..50]).0 <= 3,
             "not in DTX before the onset"

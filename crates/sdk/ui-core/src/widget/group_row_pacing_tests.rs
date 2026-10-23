@@ -257,7 +257,6 @@ fn lifted_fingers_throw_the_strip_and_it_coasts_to_rest() {
         "the throw starts at the fingers' speed: {last_step} then {glide:?}"
     );
     assert!(
-        // Coming to rest lands the last quarter pixel at once.
         glide
             .windows(2)
             .skip(1)

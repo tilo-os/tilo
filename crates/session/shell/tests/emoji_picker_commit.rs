@@ -291,7 +291,6 @@ impl Harness {
         loop {
             let delivered = self.tick(field);
             if !delivered.is_empty() {
-                // Let the field read what the commit sent.
                 self.pump();
                 return delivered;
             }
@@ -1227,7 +1226,6 @@ fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
         if let Some((x, y)) = caret {
             text_input.set_cursor_rectangle(x, y, 2, 18);
         } else {
-            // Re-enabling resets what the field declared.
             text_input.disable();
             text_input.commit();
             text_input.enable();

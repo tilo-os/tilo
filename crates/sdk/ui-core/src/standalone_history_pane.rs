@@ -381,7 +381,6 @@ mod tests {
 
     #[test]
     fn history_pane_selection_is_exact_and_never_commits_or_echoes() {
-        // Case `semantic_activation_selects_without_committing_pending_edits`.
         {
             let mut pane = StandaloneHistoryPane::new();
             let entry = entry(1);
@@ -415,7 +414,6 @@ mod tests {
             assert_eq!(doc.pending_ops(), pending);
         }
 
-        // Case `removed_selection_clears_detail_instead_of_selecting_replacement_row`.
         {
             let mut pane = StandaloneHistoryPane::new();
             pane.set_entries(&[entry(1), entry(2)]);
@@ -428,7 +426,6 @@ mod tests {
             assert_eq!(pane.take_intent(), Some(HistoryPaneIntent::ClearSelection));
         }
 
-        // Case `controller_selection_is_exact_and_never_echoes_as_input`.
         {
             let mut pane = StandaloneHistoryPane::new();
             pane.set_entries(&[entry(1), entry(2), entry(3)]);
@@ -458,7 +455,6 @@ mod tests {
 
     #[test]
     fn history_pane_range_selection_compares_the_exact_before_state() {
-        // Case `complete_selected_range_materializes_the_state_before_all_three_changes`.
         {
             use crate::history_source::{HistorySource, compare_entries, entry_id_from_hash};
             use automerge::ReadDoc;
@@ -525,7 +521,6 @@ mod tests {
             );
         }
 
-        // Case `changed_interior_selection_emits_a_fresh_comparison`.
         {
             let mut pane = StandaloneHistoryPane::new();
             pane.set_entries(&[entry(1), entry(2), entry(3)]);
@@ -551,7 +546,6 @@ mod tests {
             assert_eq!(pane.take_intent(), None);
         }
 
-        // Case `range_selection_compares_stable_ids_and_clear_discards_queued_activation`.
         {
             let mut pane = StandaloneHistoryPane::new();
             pane.set_entries(&[entry(1), entry(2)]);

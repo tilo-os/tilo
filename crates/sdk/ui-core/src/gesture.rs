@@ -666,7 +666,6 @@ mod tests {
             "shift press is not a double-click"
         );
 
-        // The drag reflects press and release.
         let mut g = DragSelect::new();
         assert!(g.drag().is_none());
         g.press(Point::ZERO, false);
@@ -692,7 +691,6 @@ mod tests {
             }]
         );
 
-        // Two-finger spreading motion is a pinch.
         let mut arena = TouchGestureArena::new();
         arena.on_touch(1, Point::new(40.0, 50.0), GesturePhase::Begin);
         arena.on_touch(2, Point::new(60.0, 50.0), GesturePhase::Begin);
@@ -702,7 +700,6 @@ mod tests {
             [TouchGestureEvent::Pinch { scale, .. }] if *scale > 1.5
         ));
 
-        // A multi-finger swipe is reported once, at the last release.
         let mut arena = TouchGestureArena::new();
         arena.on_touch(1, Point::new(100.0, 80.0), GesturePhase::Begin);
         arena.on_touch(2, Point::new(100.0, 120.0), GesturePhase::Begin);
@@ -816,14 +813,12 @@ mod tests {
         );
         assert_eq!(g.on_scroll(120.0, 0.0, GesturePhase::Update, true), None);
 
-        // A notched wheel is ignored.
         let mut g = NavGestureRecognizer::new();
         assert_eq!(g.on_scroll(500.0, 0.0, GesturePhase::Update, false), None);
     }
 
     #[test]
     fn edge_pull_navigates_once_and_only_from_a_screen_edge() {
-        // Left edge pull goes back, right edge pull goes forward.
         let w = 1000.0;
         let mut g = NavGestureRecognizer::new();
         assert_eq!(g.on_touch(1, 10.0, 300.0, GesturePhase::Begin, w), None);
@@ -846,7 +841,6 @@ mod tests {
             None
         );
 
-        // An edge pull fires once.
         let mut g = NavGestureRecognizer::new();
         g.on_touch(1, 8.0, 300.0, GesturePhase::Begin, w);
         assert_eq!(

@@ -457,10 +457,6 @@ impl Deployment {
 }
 
 /// The booted and the staged deployment in `bootc status --format json`.
-///
-/// # Errors
-/// Output that is not bootc's status, or a deployment whose identity is
-/// malformed.
 pub fn deployments(json: &str) -> Result<(Option<Deployment>, Option<Deployment>)> {
     let status: Value = serde_json::from_str(json)
         .map_err(|error| Error::Pack(format!("malformed bootc status: {error}")))?;
@@ -555,9 +551,6 @@ pub struct Components(pub Vec<Component>);
 
 impl Components {
     /// Read the manifest.
-    ///
-    /// # Errors
-    /// Text that is not the manifest.
     pub fn parse(text: &str) -> Result<Self> {
         let table: toml::Table = text
             .parse()
@@ -610,7 +603,6 @@ impl Components {
         Ok(Self(components))
     }
 
-    /// The component that installs `path`.
     pub fn owner(&self, path: &str) -> Option<&Component> {
         self.0.iter().find(|component| {
             component.files.iter().any(|to| {
@@ -656,7 +648,6 @@ pub struct Change {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
-    /// New or different in the staged image.
     Written,
     /// Gone from the staged image.
     Removed,
@@ -1227,7 +1218,6 @@ pub struct State {
     pub image: String,
     /// The last phase applied; `None` before any, or after a failure.
     pub applied: Option<Phase>,
-    /// Part of the update waits for a desktop restart.
     pub desktop_pending: bool,
     /// Part of the update waits for a restart of the machine.
     pub reboot_required: bool,
@@ -1342,7 +1332,6 @@ pub trait LiveHost {
     fn reload_user(&self, user: &str) -> Result<()>;
     /// Restart `unit` if it runs, in `user`'s manager or the system's.
     fn try_restart(&self, user: Option<&str>, unit: &str) -> Result<()>;
-    /// Whether `unit` failed.
     fn unit_failed(&self, user: Option<&str>, unit: &str) -> bool;
     /// Start `unit` without waiting for it.
     fn start_no_block(&self, unit: &str);

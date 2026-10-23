@@ -520,7 +520,12 @@ fn the_shells_secret_prompts_are_never_captured() {
         use shell::onboarding_view::OnboardingVisualState;
         let identity = tempfile::tempdir().expect("identity dir");
         let mut fb = FrameBuilder::new((W, H));
-        fb.enable_host_desktop_onboarding(identity.path().to_path_buf());
+        {
+            // The view takes this login's home and identity root from the
+            // environment once, here; other tests change both under the lock.
+            let _env = tilo_test_env::lock();
+            fb.enable_host_desktop_onboarding(identity.path().to_path_buf());
+        }
         for (state, secret) in [
             (OnboardingVisualState::Intro, false),
             (OnboardingVisualState::Existing, false),

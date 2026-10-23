@@ -213,7 +213,7 @@
     },
     {
       "id": "so.tilo.totp",
-      "name": "TOTP",
+      "name": "Authenticator",
       "category": "Utility",
       "version": "0.1.0",
       "module": "totp"

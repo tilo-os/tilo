@@ -15,14 +15,16 @@ pub(super) const OPEN_FILE: &str = "open-file";
 impl MusicApp {
     /// The window bar's slots for what the window shows now.
     fn window_toolbar(&self) -> WindowToolbar {
-        let mut toolbar = WindowToolbar {
-            sidebar: Some(self.drawer.is_open()),
-            location: Some(ToolbarLocation {
-                label: self.view_title(),
-                ..ToolbarLocation::default()
-            }),
-            ..WindowToolbar::default()
-        };
+        // The shell's own: the sidebar's toggle, Back in a narrow window.
+        let mut toolbar = self
+            .bar
+            .as_ref()
+            .map(ui::widget::WindowBarLink::slots)
+            .unwrap_or_default();
+        toolbar.location = Some(ToolbarLocation {
+            label: self.view_title(),
+            ..ToolbarLocation::default()
+        });
         if self.nav.can_go_back() {
             toolbar
                 .leading
@@ -43,13 +45,16 @@ impl MusicApp {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 
-    /// Run what the person did in the window's bar: the sidebar's toggle
-    /// and Back here, Open audio file as the library's action, through the
+    /// Run what the person did in the window's bar: the shell's own buttons
+    /// through the shell, Back here, Open audio file as the library's action, through the
     /// window's controls.
     pub(super) fn take_window_toolbar_events(&mut self) {
         for event in ui::window_toolbar::take_events() {
+            if self.bar.as_ref().is_some_and(|bar| bar.event(&event)) {
+                self.dirty = true;
+                continue;
+            }
             match event {
-                ToolbarEvent::ToggleSidebar => self.toggle_sidebar(),
                 ToolbarEvent::Action { id } if id == BACK => self.back_requested.set(true),
                 ToolbarEvent::Action { id } if id == OPEN_FILE => {
                     if let Some(invocation) = Self::open_file_invocation() {

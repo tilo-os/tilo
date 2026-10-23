@@ -117,7 +117,6 @@ impl Presence {
         self.open || self.progress(now) > 0.0
     }
 
-    /// Whether it is still moving at `now`.
     #[track_caller]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.openness.is_moving(now)

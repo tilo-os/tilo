@@ -6083,7 +6083,6 @@ mod tests {
             3,
             42,
             Some(crate::chrome::ActivityFocus {
-                task_id: None,
                 author: Some("Ada".into()),
                 group_id: Some("issue:42".into()),
                 entry_id: None,

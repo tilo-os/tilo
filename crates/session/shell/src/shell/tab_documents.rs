@@ -254,7 +254,7 @@ mod tests {
             state.remember_local_app_record(TAB_A, 8123);
         }
         let saved = tree.read().local_app_records.clone();
-        let (mut host, _) = crate::shell::build_tilo_overlay_host_with_records(
+        let (host, _) = crate::shell::build_tilo_overlay_host_with_records(
             tree.clone(),
             false,
             RecordStore::in_memory(),
@@ -334,30 +334,47 @@ mod tests {
     }
 
     /// A disk whose documents open only when the test says so, as one stuck
-    /// behind its journal would. While held, `prepare_shared` declines and
-    /// remembers who asked; a lease, which is where the `mkdir` and the
-    /// gate files would happen on the caller's thread, is noted.
+    /// behind its journal would. While held, a lease or read is told the
+    /// document is still opening, as the store answers a loop that declined
+    /// waiting, and a call that would wait on the disk anyway is noted.
     struct HeldDisk {
         inner: app_state::FsStore,
-        held: std::sync::Mutex<Option<Vec<(durable_store::StorageKey, durable_store::ReadyWake)>>>,
-        /// A lease was taken, on the caller's thread, while the disk was held.
-        leased_while_held: std::sync::atomic::AtomicBool,
+        held: std::sync::atomic::AtomicBool,
+        /// The wake the loop installed when it declined waiting.
+        wake: std::sync::Mutex<Option<durable_store::ReadyWake>>,
+        /// A call that waits on the disk was made while it was held.
+        waited_while_held: std::sync::atomic::AtomicBool,
     }
 
     impl HeldDisk {
         fn hold(&self) {
-            *self.held.lock().unwrap() = Some(Vec::new());
+            self.held.store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
-        /// Let the disk go: what was asked for opens on the store's thread.
+        /// Let the disk go and wake the loop: what it asks for next opens on
+        /// the store's thread.
         fn release(&self) {
-            let asked = self.held.lock().unwrap().take().unwrap_or_default();
-            for (key, ready) in asked {
-                match self.inner.prepare_shared(&key, &ready) {
-                    Ok(()) => ready(),
-                    Err(durable_store::StoreError::Opening(_)) => {}
-                    Err(error) => panic!("opening {key} failed: {error}"),
-                }
+            self.held.store(false, std::sync::atomic::Ordering::Relaxed);
+            let wake = self.wake.lock().unwrap().clone();
+            if let Some(wake) = wake {
+                wake();
+            }
+        }
+
+        fn opening(
+            &self,
+            key: &durable_store::StorageKey,
+        ) -> Result<(), durable_store::StoreError> {
+            if self.held.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(durable_store::StoreError::Opening(key.to_string()));
+            }
+            Ok(())
+        }
+
+        fn note_wait(&self) {
+            if self.held.load(std::sync::atomic::Ordering::Relaxed) {
+                self.waited_while_held
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
@@ -370,6 +387,7 @@ mod tests {
             &self,
             key: &durable_store::StorageKey,
         ) -> Result<Option<durable_store::Stored>, durable_store::StoreError> {
+            self.opening(key)?;
             self.inner.read(key)
         }
         fn write(
@@ -391,6 +409,7 @@ mod tests {
             &self,
             key: Option<&durable_store::StorageKey>,
         ) -> Result<(), durable_store::StoreError> {
+            self.note_wait();
             self.inner.flush(key)
         }
         fn flush_without_waiting(
@@ -406,34 +425,29 @@ mod tests {
             &self,
             key: &durable_store::StorageKey,
         ) -> Result<durable_store::Lease, durable_store::StoreError> {
+            self.opening(key)?;
             self.inner.lease(key)
         }
         fn lease_shared(
             &self,
             key: &durable_store::StorageKey,
         ) -> Result<durable_store::SharedLease, durable_store::StoreError> {
-            if self.held.lock().unwrap().is_some() {
-                self.leased_while_held
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-            }
+            self.opening(key)?;
             self.inner.lease_shared(key)
         }
-        fn prepare_shared(
-            &self,
-            key: &durable_store::StorageKey,
-            ready: &durable_store::ReadyWake,
-        ) -> Result<(), durable_store::StoreError> {
-            if let Some(asked) = self.held.lock().unwrap().as_mut() {
-                asked.push((key.clone(), std::sync::Arc::clone(ready)));
-                return Err(durable_store::StoreError::Opening(key.to_string()));
-            }
-            self.inner.prepare_shared(key, ready)
+        fn decline_waiting(&self, ready: durable_store::ReadyWake) {
+            *self.wake.lock().unwrap() = Some(std::sync::Arc::clone(&ready));
+            self.inner.decline_waiting(ready);
+        }
+        fn declined_waiting_here(&self) -> bool {
+            self.inner.declined_waiting_here()
         }
         fn claim(
             &self,
             key: &durable_store::StorageKey,
             claimant: &str,
         ) -> Result<bool, durable_store::StoreError> {
+            self.note_wait();
             self.inner.claim(key, claimant)
         }
         fn records(
@@ -441,6 +455,7 @@ mod tests {
             package: &str,
             workspace: &str,
         ) -> Result<Vec<String>, durable_store::StoreError> {
+            self.note_wait();
             self.inner.records(package, workspace)
         }
         fn local_path(&self, key: &durable_store::StorageKey) -> Option<std::path::PathBuf> {
@@ -469,8 +484,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("temp dir");
         let disk = std::rc::Rc::new(HeldDisk {
             inner: app_state::FsStore::new(tmp.path()),
-            held: std::sync::Mutex::new(None),
-            leased_while_held: std::sync::atomic::AtomicBool::new(false),
+            held: std::sync::atomic::AtomicBool::new(false),
+            wake: std::sync::Mutex::new(None),
+            waited_while_held: std::sync::atomic::AtomicBool::new(false),
         });
         let store = RecordStore::new(ui::record::RecordSet::open_in(
             std::rc::Rc::clone(&disk) as std::rc::Rc<dyn durable_store::DurableStore>,
@@ -508,9 +524,9 @@ mod tests {
         let record = RecordId::for_tab(tab);
         assert!(
             !disk
-                .leased_while_held
+                .waited_while_held
                 .load(std::sync::atomic::Ordering::Relaxed),
-            "a record's document was opened on the loop while the disk was held"
+            "the loop waited on the disk while it was held"
         );
         assert!(
             !store.is_ready(&record),
@@ -524,16 +540,17 @@ mod tests {
             "an opening document is not a failed creation"
         );
 
+        // Released, the document opens on the store's own thread; each wake
+        // has the next frame ask again, and the one after the document has
+        // opened creates the record in it.
         disk.release();
-        tilo_test_env::recv(
-            "the store to wake the loop once the document is open",
-            &woken,
-        );
-        host.update(&shell_doc, &automerge::ROOT);
-        assert!(
-            store.is_ready(&record),
-            "the woken frame creates the record"
-        );
+        while !store.is_ready(&record) {
+            tilo_test_env::recv(
+                "the store to wake the loop once the document is open",
+                &woken,
+            );
+            host.update(&shell_doc, &automerge::ROOT);
+        }
         store
             .await_submitted(&record)
             .unwrap_or_else(|error| panic!("the new record's writer failed: {error}"));

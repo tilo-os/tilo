@@ -81,12 +81,6 @@ impl Stamp {
 /// are read. It does not verify the signed target policy; the privileged
 /// unsealer does that against its pinned release authority before releasing
 /// any secret.
-///
-/// # Errors
-///
-/// The sidecar or package is not a bounded no-follow regular file reached
-/// through a plain path, it changes while it is read, the sidecar is malformed
-/// or edited, or it names another package digest.
 pub fn preflight_handoff(sidecar_path: &Path, package_path: &Path) -> io::Result<()> {
     let _sealed = read_prepared_handoff(sidecar_path, package_path)?;
     Ok(())
@@ -97,12 +91,6 @@ pub fn preflight_handoff(sidecar_path: &Path, package_path: &Path) -> io::Result
 /// This returns the decoded sidecar a privileged caller should hand to unseal,
 /// so the policy that is authenticated is exactly the one this preflight read.
 /// It does not authenticate the policy signature.
-///
-/// # Errors
-///
-/// The sidecar or package is not a bounded no-follow regular file reached
-/// through a plain path, it changes while it is read, the sidecar is malformed
-/// or edited, or it names another package digest.
 pub fn read_prepared_handoff(
     sidecar_path: &Path,
     package_path: &Path,

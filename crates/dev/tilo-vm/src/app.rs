@@ -1030,8 +1030,6 @@ impl App {
         ))
     }
 
-    // ---- status ---------------------------------------------------------------
-
     #[expect(
         clippy::too_many_lines,
         reason = "one linear report, section by section"
@@ -1171,8 +1169,6 @@ impl App {
         outcome.next = next;
         Ok(outcome)
     }
-
-    // ---- doctor ---------------------------------------------------------------
 
     fn doctor(&mut self) -> Outcome {
         let facts = HostFacts::probe(&mut self.runner);
@@ -1334,8 +1330,6 @@ impl App {
             ));
         }
     }
-
-    // ---- vm -------------------------------------------------------------------
 
     fn vm(&mut self, command: VmCommand) -> Result<Outcome, CliError> {
         match command {
@@ -3909,8 +3903,6 @@ impl App {
         .next(&["tilo-vm status"]))
     }
 
-    // ---- slots ----------------------------------------------------------------
-
     fn slot(&mut self, command: SlotCommand) -> Result<Outcome, CliError> {
         // A typo in the set name needs no VM to be reported.
         if let SlotCommand::Apps(SlotAppsCommand::Install { set, .. }) = &command {
@@ -4132,8 +4124,6 @@ impl App {
             other => other,
         }
     }
-
-    // ---- swap -----------------------------------------------------------------
 
     /// Use the imported replacement's mount logic for the ordinary VM swap.
     fn handoff_daemon(
@@ -4997,8 +4987,6 @@ impl App {
         }
         Ok(imported.hash)
     }
-
-    // ---- driving --------------------------------------------------------------
 
     fn seat(&mut self, command: SeatCommand) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(None)?;
@@ -7443,7 +7431,6 @@ mod tests {
                 "{error}"
             );
             assert!(error.hint().contains("--raw"), "{}", error.hint());
-            // Reads and --raw get past the guard, to the missing VM.
             for command in [
                 ssh(false, "systemctl status tilo-vmd --no-pager"),
                 ssh(false, "tilo-vmd --version"),
@@ -7971,7 +7958,6 @@ mod tests {
                 report.next
             );
         }
-        // The same keys as a failed command's own error.
         let failed = CliError::NoVm {
             registry: "r".into(),
         }
@@ -8084,7 +8070,6 @@ mod tests {
         )
         .unwrap();
 
-        // Phase `registered_with_its_address_and_key`.
         {
             // Nothing answers on port 1: registered, but not usable yet.
             let added = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
@@ -8105,7 +8090,6 @@ mod tests {
                 added.next
             );
         }
-        // Phase `again_changes_nothing_and_bad_addresses_are_refused`.
         {
             let again = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
             assert_eq!(again.data["added"], json!(false));
@@ -8118,7 +8102,6 @@ mod tests {
                 .err()
                 .unwrap();
             assert!(error.to_string().contains("no such file"), "{error}");
-            // As root, vm add makes the device's key itself.
             let error = app
                 .vm_add(&AddArgs {
                     grant_sudo: true,
@@ -8145,7 +8128,6 @@ mod tests {
                 error.hint()
             );
         }
-        // Phase `the_device_adapter_has_no_power_control`.
         {
             let device = hypervisor::adapter("device").unwrap();
             assert!(!device.powers_on());
@@ -8161,7 +8143,6 @@ mod tests {
                 }
             );
         }
-        // Phase `removing_it_forgets_it_and_its_key_only`.
         {
             let removed = app.vm_rm("opi", false).unwrap();
             assert!(

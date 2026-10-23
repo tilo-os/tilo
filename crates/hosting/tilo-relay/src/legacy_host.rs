@@ -131,10 +131,6 @@ impl LegacyWorker {
     }
 
     /// Serve one legacy stream the relay opened.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream fails or a frame is malformed.
     pub async fn serve<S, R>(
         &self,
         member: MemberIdentity,
@@ -261,10 +257,6 @@ where
 
 /// Ask the relay to launch a legacy app for the member whose `session` this
 /// worker hosts.
-///
-/// # Errors
-///
-/// Returns an error when the stream to the relay fails.
 pub async fn request_legacy_launch(
     connection: &iroh::endpoint::Connection,
     workspace_id: u64,
@@ -358,7 +350,6 @@ mod tests {
         // A second app in the same VM is not a second VM.
         assert!(worker.admit(&alice, [2; 16], LegacyGuestOs::Linux));
         assert!(!worker.admit(&alice, [3; 16], LegacyGuestOs::Windows));
-        // Another member's quota is their own.
         assert!(worker.admit(&member(2), [4; 16], LegacyGuestOs::Windows));
         worker.release(&alice, &[1; 16]);
         worker.release(&alice, &[2; 16]);

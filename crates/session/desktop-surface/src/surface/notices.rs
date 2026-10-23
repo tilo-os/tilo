@@ -1220,7 +1220,6 @@ mod tests {
             notice.default_action_key().as_deref(),
             Some("host:keep-identity")
         );
-        // An application's notification still opens on a click.
         let plain = Notification::new("Tea", "Ready");
         assert!(notifications.host().actions_for(&plain).is_empty());
     }
@@ -1232,7 +1231,6 @@ mod tests {
         notifications.host().invoke_action(id, "not-now");
         assert!(notifications.take_outcomes().is_empty());
         assert_eq!(notifications.counts(), (0, 1));
-        // Chosen later from the centre, it is the action itself.
         let activation = notifications.host().activate_history(id);
         assert!(matches!(activation, HistoryActivation::Invoked));
         assert!(matches!(

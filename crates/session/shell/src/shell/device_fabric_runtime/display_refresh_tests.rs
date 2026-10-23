@@ -1,5 +1,3 @@
-//! Exercise policy changes through the production pump and settings watcher.
-
 use std::sync::{Arc, Mutex, mpsc};
 
 use super::{DeviceFabricRuntime, LocalFabricCapabilities};

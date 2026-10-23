@@ -444,10 +444,6 @@ impl Desktop {
 
     /// Every path the main thread walked since
     /// [`Self::forbid_main_thread_files`], with where it was.
-    ///
-    /// # Panics
-    ///
-    /// When the audit does not answer.
     #[track_caller]
     pub fn main_thread_files(&self) -> Vec<shell::compositor::liveness::FileWalk> {
         match self.liveness(r#"{"op":"main_thread_files"}"#) {
@@ -534,7 +530,6 @@ impl Desktop {
         self.ok(&json!({"op": "pointer_move", "x": x, "y": y}));
     }
 
-    /// Type `text`.
     #[track_caller]
     pub fn type_text(&self, text: &str) {
         self.ok(&json!({"op": "type", "text": text}));
@@ -953,8 +948,23 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                     }
                 }
                 match answer {
-                    Ok(Answer::Alive { latency_ms, .. }) => {
+                    Ok(Answer::Alive {
+                        latency_ms,
+                        halfway,
+                        ..
+                    }) => {
                         watch.beats.fetch_add(1, Ordering::Relaxed);
+                        // Back within the budget, but asleep at its middle:
+                        // note where, as slow work is noted.
+                        if let Some(thread) = halfway
+                            && let Ok(mut jank) = watch.jank.lock()
+                        {
+                            jank.push(format!(
+                                "main loop took {latency_ms:.0} ms to acknowledge, idle at the \
+                                 middle of the budget in state {} waiting in {}:\n{}",
+                                thread.state, thread.wait, thread.backtrace
+                            ));
+                        }
                         let micros =
                             u64::try_from(Duration::from_secs_f64(latency_ms / 1000.0).as_micros())
                                 .unwrap_or(u64::MAX);

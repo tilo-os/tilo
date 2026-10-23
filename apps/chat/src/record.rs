@@ -63,20 +63,26 @@ pub const CHAT_CHANNEL: &str = "c_chat";
 /// The id of the room's voice channel every chat opens with, `#voice`.
 pub const VOICE_CHANNEL: &str = "c_voice";
 
-/// Bring a chat record of version `from` up to this one. Version 1 kept
-/// everyone's unsent drafts in the room, where every member edited one
-/// shared draft per channel; drafts are each writer's own now
-/// ([`crate::drafts`]), so the room's copy is dropped. Versions 1 and 2
-/// kept the messages in the record and read marks as counts; the messages
-/// are kept in parts beside it now ([`crate::parts`]) and a read mark is a
-/// position in them, so both are dropped: a record outgrown by its messages
-/// is what parts replace, and nothing carries them over. Versions 1 to 3
-/// kept workspaces of the chat's own; Chat runs in its room now, so that
-/// structure is dropped and every channel and category stays
-/// ([`drop_workspaces`]). Versions 1 to 4 kept a filed report's submission,
+/// Bring a chat record of version `from` up to this one. No step deletes
+/// anything a person wrote: what the record no longer reads stays where it
+/// is. Version 1 kept everyone's unsent drafts in the room, where every
+/// member edited one shared draft per channel; drafts are each writer's own
+/// now ([`crate::drafts`]), and the room's copy stays under `drafts`.
+/// Versions 1 and 2 kept the messages in the record and read marks as
+/// counts; new messages are kept in parts beside it now ([`crate::parts`])
+/// and a read mark is a position in them. The record's messages stay under
+/// `messages`, and the counts move to `read_counts` so `read` can hold
+/// positions ([`keep_read_counts`]). Versions 1 to 3
+/// kept workspaces of the chat's own, and each channel and category named
+/// its workspace; Chat runs in its room now and reads neither, so both stay
+/// where they are, names included, and every channel and category is the
+/// room's. Versions 1 to 4 kept a filed report's submission,
 /// a triage step's update and a moderation decision's reports and
 /// take-backs as one JSON string each; they are model values now, rewritten
-/// in place.
+/// in place. Chats made before Chat's record was a model kept each channel's
+/// and category's fields flat in its entry, and opened as version 1 with
+/// those fields unread; up to version 5 they are read into the item
+/// ([`restore_flat_items`]).
 ///
 /// # Errors
 /// When `from` is not a version this chat was, or a stored value does not
@@ -85,26 +91,16 @@ fn migrate(
     doc: &mut ui::tilo_resource::Doc,
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
-    use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
-    if !(1..=4).contains(&from) {
+    use ui::automerge::ROOT;
+    if !(1..=5).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Chat migration from {from}"
         )));
     }
     if from <= 2 {
-        for dropped in ["drafts", "messages"] {
-            if doc.get(ROOT, dropped)?.is_some() {
-                doc.delete(ROOT, dropped)?;
-            }
-        }
-        // Read marks start over as positions in the parts.
-        let read = ui::tilo_resource::Slot::Key(&ROOT, "read");
-        read.remove(doc)?;
-        read.object(doc, ui::automerge::ObjType::Map)?;
+        keep_read_counts(doc)?;
     }
-    if from <= 3 {
-        drop_workspaces(doc)?;
-    }
+    restore_flat_items(doc)?;
     for report in collection_items(doc, &ROOT, "feedback")? {
         retype_json::<Option<ui::feedback::Submission>>(doc, &report, "submission")?;
         for step in collection_items(doc, &report, "triage")? {
@@ -117,43 +113,114 @@ fn migrate(
     Ok(())
 }
 
-/// Drop the workspaces a chat of version 3 or older kept: they were the
-/// chat's own structure, not anything a person wrote. Every channel and
-/// every category stays, as the room's, without the workspace it named;
-/// nothing else is added or removed. A category that two devices' starters
-/// left without its workspace (the field whose absence made the user's chat
-/// unopenable, `categories.cat_home_text.v.workspace: required value is
-/// missing`) reads again once the field is no longer the model's.
+/// Move the read marks versions 1 and 2 kept as counts (person, then
+/// channel, to how many messages they had read) to `read_counts`, and start
+/// `read` over as positions in the parts.
 ///
 /// # Errors
 /// The document's read or write error.
-fn drop_workspaces(doc: &mut ui::tilo_resource::Doc) -> Result<(), ui::tilo_resource::ModelError> {
-    use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value, transaction::Transactable as _};
-    if doc.get(ROOT, "workspaces")?.is_some() {
-        doc.delete(ROOT, "workspaces")?;
+fn keep_read_counts(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value};
+    use ui::tilo_resource::Slot;
+    if let Some(read) = map_at(doc, &ROOT, "read")? {
+        let counts = Slot::Key(&ROOT, "read_counts").object(doc, ObjType::Map)?;
+        for person in doc.keys(&read).collect::<Vec<_>>() {
+            let Some(channels) = map_at(doc, &read, &person)? else {
+                continue;
+            };
+            let kept = Slot::Key(&counts, &person).object(doc, ObjType::Map)?;
+            for channel in doc.keys(&channels).collect::<Vec<_>>() {
+                if let Some((Value::Scalar(count), _)) = doc.get(&channels, channel.as_str())? {
+                    Slot::Key(&kept, &channel).put_scalar(doc, count.into_owned())?;
+                }
+            }
+        }
     }
-    for collection in ["channels", "categories"] {
-        let Some((Value::Object(ObjType::Map), map)) = doc.get(ROOT, collection)? else {
+    let read = Slot::Key(&ROOT, "read");
+    read.remove(doc)?;
+    read.object(doc, ObjType::Map)?;
+    Ok(())
+}
+
+/// Read the fields a chat from before its record was a model kept flat in
+/// each channel's and category's entry (`name`, `topic`, `category`,
+/// `kind`, `order` beside the item's `k` and `v`) into the item, where
+/// those chats were opened without them: a name or topic the item holds
+/// empty, a category or kind it does not hold. What the item already says
+/// stays, and the flat fields stay where they are. A collection whose every
+/// entry kept its flat `order` is listed in that order again.
+///
+/// # Errors
+/// The document's read or write error.
+fn restore_flat_items(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
+    use ui::tilo_resource::Slot;
+    let flat_str =
+        |doc: &ui::tilo_resource::Doc, entry: &ObjId, key: &str| match doc.get(entry, key) {
+            Ok(Some((Value::Scalar(scalar), _))) => match scalar.as_ref() {
+                ScalarValue::Str(text) if !text.is_empty() => Some(text.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+    for collection in ["categories", "channels"] {
+        let Some(map) = map_at(doc, &ROOT, collection)? else {
             continue;
         };
-        let entries: Vec<ui::automerge::ObjId> = doc
-            .map_range(&map, ..)
-            .filter(|entry| entry.value == ui::automerge::ValueRef::Object(ObjType::Map))
-            .map(|entry| entry.id())
-            .collect();
-        for entry in entries {
-            // Every copy of the entry's value: two devices that made the
-            // same item each made one, and the document keeps both.
-            let values: Vec<ui::automerge::ObjId> = doc
-                .get_all(&entry, "v")?
-                .into_iter()
-                .filter(|(value, _)| matches!(value, Value::Object(ObjType::Map)))
-                .map(|(_, id)| id)
-                .collect();
-            for value in values {
-                if doc.get(&value, "workspace")?.is_some() {
-                    doc.delete(&value, "workspace")?;
+        let mut ordered = Vec::new();
+        let mut every_entry_ordered = true;
+        for id in doc.keys(&map).collect::<Vec<_>>() {
+            let Some(entry) = map_at(doc, &map, &id)? else {
+                every_entry_ordered = false;
+                continue;
+            };
+            let value = match map_at(doc, &entry, "v")? {
+                Some(value) => value,
+                None if doc.get(&entry, "v")?.is_none() => {
+                    Slot::Key(&entry, "v").object(doc, ObjType::Map)?
                 }
+                None => {
+                    every_entry_ordered = false;
+                    continue;
+                }
+            };
+            for key in ["name", "topic"] {
+                if let Some(flat) = flat_str(doc, &entry, key)
+                    && ui::tilo_resource::read_key::<String>(doc, &value, key)
+                        .is_ok_and(|held| held.is_empty())
+                {
+                    flat.store(doc, Slot::Key(&value, key))?;
+                }
+            }
+            if collection == "channels" {
+                if let Some(flat) = flat_str(doc, &entry, "category")
+                    && doc.get(&value, "category")?.is_none()
+                {
+                    Some(Id::from_raw(flat)).store(doc, Slot::Key(&value, "category"))?;
+                }
+                if let Some(flat) = flat_str(doc, &entry, "kind")
+                    && doc.get(&value, "kind")?.is_none()
+                {
+                    let kind: ChannelKind = flat.parse().unwrap_or_default();
+                    kind.store(doc, Slot::Key(&value, "kind"))?;
+                }
+            }
+            match doc.get(&entry, "order")? {
+                Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
+                    ScalarValue::Int(order) => ordered.push((*order, id, entry)),
+                    ScalarValue::Uint(order) => {
+                        ordered.push((i64::try_from(*order).unwrap_or(i64::MAX), id, entry));
+                    }
+                    _ => every_entry_ordered = false,
+                },
+                _ => every_entry_ordered = false,
+            }
+        }
+        if every_entry_ordered && !ordered.is_empty() {
+            ordered.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+            let keys = ui::tilo_resource::order::sequence(None, None, ordered.len());
+            for ((_, _, entry), key) in ordered.iter().zip(keys) {
+                Slot::Key(entry, "k").put_scalar(doc, ScalarValue::Str(key.into()))?;
             }
         }
     }
@@ -178,6 +245,96 @@ pub(crate) fn upgrade_part(doc: &mut ui::tilo_resource::Doc, from: u32) -> Resul
         upgrade_message(doc, &message)?;
     }
     Ok(())
+}
+
+/// The messages a chat record of version 1 or 2, or from before its
+/// record was a model, kept in itself under `messages`, which its upgrade
+/// leaves in place: read as the record would have shown them, each under
+/// its own id, by its own author, at its own time, oldest first. Version 1
+/// and 2 kept a [`Collection`] of messages with some values as JSON text;
+/// before the model, each channel kept a list of message maps.
+pub(crate) fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message> {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value};
+    use ui::tilo_resource::read_key;
+    let Ok(Some(map)) = map_at(doc, &ROOT, "messages") else {
+        return Collection::default();
+    };
+    let mut upgraded = doc.clone();
+    if let Ok(items) = collection_items(&upgraded, &ROOT, "messages") {
+        for message in items {
+            let _ = upgrade_message(&mut upgraded, &message);
+        }
+    }
+    let mut kept: Collection<Message> = read_key(&upgraded, &ROOT, "messages").unwrap_or_default();
+    let mut listed = Vec::new();
+    for channel in doc.keys(&map).collect::<Vec<_>>() {
+        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&map, channel.as_str()) else {
+            continue;
+        };
+        for index in 0..doc.length(&list) {
+            let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index) else {
+                continue;
+            };
+            let text = |key: &str| read_key::<String>(doc, &row, key).unwrap_or_default();
+            let flag = |key: &str| read_key::<bool>(doc, &row, key).unwrap_or_default();
+            let id = text("id");
+            if id.is_empty() {
+                continue;
+            }
+            let parent = text("parent");
+            let mut reactions = ui::tilo_resource::Set::new();
+            if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&row, "reactions") {
+                for index in 0..doc.length(&list) {
+                    if let Ok(Some((Value::Object(ObjType::Map), reaction))) = doc.get(&list, index)
+                    {
+                        let emoji = read_key::<String>(doc, &reaction, "emoji").unwrap_or_default();
+                        let user = read_key::<String>(doc, &reaction, "user").unwrap_or_default();
+                        if !emoji.is_empty() && !user.is_empty() {
+                            reactions.insert(Reacted { emoji, user });
+                        }
+                    }
+                }
+            }
+            listed.push((
+                Id::from_raw(id),
+                Message {
+                    channel: Id::from_raw(channel.as_str()),
+                    author: Atom(text("author")),
+                    ts: read_key::<i64>(doc, &row, "ts").unwrap_or_default(),
+                    text: text("text"),
+                    edited: flag("edited"),
+                    parent: (!parent.is_empty()).then(|| Id::from_raw(parent)),
+                    pinned: flag("pinned"),
+                    reactions,
+                    ..Message::default()
+                },
+            ));
+        }
+    }
+    for (id, message) in listed {
+        if !kept.contains(&id) {
+            kept.push(id, message);
+        }
+    }
+    kept.sort_by(|a, b| a.ts.cmp(&b.ts));
+    kept
+}
+
+/// The names a chat from before its record was a model kept for the people
+/// in it, under `users`, by participant id: what the authors of its kept
+/// messages are called where the room no longer names them.
+pub(crate) fn kept_names(doc: &ui::tilo_resource::Doc) -> BTreeMap<String, String> {
+    use ui::automerge::{ROOT, ReadDoc as _};
+    let Ok(Some(users)) = map_at(doc, &ROOT, "users") else {
+        return BTreeMap::new();
+    };
+    doc.keys(&users)
+        .filter_map(|id| {
+            let user = map_at(doc, &users, &id).ok()??;
+            let name = ui::tilo_resource::read_key::<String>(doc, &user, "name").ok()?;
+            (!name.trim().is_empty()).then_some((id, name))
+        })
+        .collect()
 }
 
 /// [`upgrade_part`] of one message stored at `message`.
@@ -389,6 +546,9 @@ pub struct ShownPersona {
     pub service: String,
     #[model(atom)]
     pub account: String,
+    /// The room member the account is linked to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<String>,
 }
 
 impl From<tilo_actions::Appearance> for ShownAs {
@@ -399,6 +559,7 @@ impl From<tilo_actions::Appearance> for ShownAs {
             persona: appearance.persona.map(|persona| ShownPersona {
                 service: persona.service,
                 account: persona.account,
+                linked: persona.linked,
             }),
         }
     }
@@ -412,6 +573,7 @@ impl From<ShownAs> for tilo_actions::Appearance {
             persona: shown.persona.map(|persona| tilo_actions::Persona {
                 service: persona.service,
                 account: persona.account,
+                linked: persona.linked,
             }),
         }
     }
@@ -883,19 +1045,6 @@ pub fn reply_id(summons: &Id, agent: &str) -> Id {
     Id::from_raw(format!("m_reply_{:016x}", hash.finish()))
 }
 
-/// Stable hidden conversation the room's replicas share with an
-/// authenticated Agent. The id is an address only; admission still comes
-/// from the live room roster.
-#[must_use]
-pub fn agent_conversation_channel_id(agent: &str) -> Id {
-    use std::hash::Hasher as _;
-    let mut hash = fnv::FnvHasher::default();
-    hash.write(b"room");
-    hash.write(&[0]);
-    hash.write(agent.as_bytes());
-    Id::from_raw(format!("c_agent_{:016x}", hash.finish()))
-}
-
 /// A new message's fields beyond its channel, author and time.
 #[derive(Default)]
 pub(crate) struct Posting {
@@ -1014,7 +1163,7 @@ impl Chat {
     read_content = Chat::content,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 5,
+    version = 6,
     migrate = migrate,
 )]
 impl Chat {

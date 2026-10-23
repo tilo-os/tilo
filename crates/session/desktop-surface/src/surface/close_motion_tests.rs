@@ -81,7 +81,6 @@ impl Desk {
             now: ui::time::now(),
         };
         strip.handle.focus_tab(strip.windows[focus].1);
-        // The reveal glides there.
         strip.frames(40);
         strip
     }
@@ -287,9 +286,9 @@ fn closing_the_last_window_pans_only_as_far_as_the_strip_shrinks() {
         .shown_row_ref()
         .unwrap();
     assert!(
-        (last.scroll - row.pan_max_scroll_x()).abs() < 0.5,
-        "the strip rests at its new end, {} not {}",
-        row.pan_max_scroll_x(),
+        (last.scroll - row.max_scroll_x()).abs() < 0.5,
+        "the strip rests at the end of its windows, {} not {}",
+        row.max_scroll_x(),
         last.scroll
     );
     let left = last.x(strip.group(3)).unwrap();

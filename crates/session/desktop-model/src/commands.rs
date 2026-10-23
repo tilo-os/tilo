@@ -241,10 +241,6 @@ impl DesktopCommand {
 }
 
 /// The shortcut a [`DesktopCommand::SaveShortcut`] carries.
-///
-/// # Errors
-///
-/// Why the JSON is not a shortcut, or names none.
 pub fn decode_shortcut(json: &str) -> Result<tilo_automation::Shortcut, String> {
     let shortcut: tilo_automation::Shortcut =
         serde_json::from_str(json).map_err(|error| format!("not a shortcut: {error}"))?;
@@ -266,7 +262,6 @@ pub fn stamp_saver(json: &str, saver: &str) -> Result<String, String> {
     serde_json::to_string(&shortcut).map_err(|error| error.to_string())
 }
 
-/// `kind` of a desktop command receipt value.
 pub const RECEIPT_KIND: &str = "desktop.command";
 
 /// Identity of one desktop command (optimistic open, close, reorder): the
@@ -760,7 +755,6 @@ fn split_tab(
     Ok(())
 }
 
-/// Apply a shortcut command to `workspace`'s saved shortcuts.
 fn apply_shortcut_command(
     workspace: &mut Workspace,
     command: &DesktopCommand,
@@ -795,11 +789,6 @@ fn apply_shortcut_command(
 /// Canonical topology reduction. The host checks authority ([`may_command`])
 /// and supplies fresh identities and a checked record constructor before the
 /// tab enters the tree.
-///
-/// # Errors
-///
-/// Returns a description when the command no longer matches the topology, a
-/// name is invalid, or `mint`/`create` refuses.
 pub fn apply_command(
     workspace: &mut Workspace,
     command: &DesktopCommand,
@@ -901,11 +890,6 @@ pub fn apply_command(
 /// workspace, the one path every host edits strips and names through. A
 /// created strip becomes the workspace's shown strip and is returned; a
 /// removed strip that was shown hands that to the workspace's first.
-///
-/// # Errors
-///
-/// Returns a description when there is no active workspace, the command
-/// is not such an edit, or [`apply_command`] refuses it.
 pub fn apply_to_active_workspace(
     tree: &mut DesktopTree,
     command: &DesktopCommand,

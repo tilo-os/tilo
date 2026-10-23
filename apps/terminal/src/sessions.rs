@@ -427,7 +427,6 @@ impl Sessions {
             .ok_or_else(|| "the environment was not created".into())
     }
 
-    /// Rename the environment `record`.
     pub fn rename_environment(&mut self, record: &str, name: &str) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
             return Err("not an environment record".into());

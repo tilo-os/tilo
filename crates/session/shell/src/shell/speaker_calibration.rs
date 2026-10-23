@@ -75,10 +75,6 @@ pub const MICROPHONE_CONSENT_WAIT: Duration = Duration::from_secs(60);
 const MAX_REPORTED_ARRIVAL_NS: i64 = 1_000_000_000;
 
 /// The sweep every device plays and measures against.
-///
-/// # Errors
-///
-/// Only if the fixed parameters were invalid.
 pub fn sweep() -> Result<media::calibration::LogSweep, String> {
     media::calibration::LogSweep::new(SWEEP_RATE, SWEEP_START_HZ, SWEEP_END_HZ, SWEEP_SECONDS)
         .map_err(|error| error.to_string())
@@ -488,7 +484,6 @@ pub trait MeasurementSource: Send {
     fn cancel(&mut self);
 }
 
-/// Sends one fabric action to one device.
 pub type FabricSender = Box<dyn Fn(&DeviceId, PersonalFabricAction) -> Result<(), String> + Send>;
 
 struct InFlight {
@@ -783,7 +778,6 @@ pub struct MemberResult {
     /// Arrival at the listening position after the scheduled start.
     pub arrival_ns: i64,
     pub level_db: f64,
-    /// Microphones that heard this member.
     pub heard_by: usize,
     /// This member's output latency, heard by its own microphone.
     pub output_latency_ns: Option<i64>,
@@ -850,7 +844,6 @@ pub struct CalibrationMember {
     pub label: String,
 }
 
-/// One calibration of one group.
 pub struct CalibrationRun {
     group: SpeakerGroupId,
     members: Vec<CalibrationMember>,
@@ -873,10 +866,6 @@ impl CalibrationRun {
     /// Start calibrating every member of `group`, in member order, from
     /// the microphone `listening` indexes. Microphones still awaiting
     /// consent are waited for first, at most [`MICROPHONE_CONSENT_WAIT`].
-    ///
-    /// # Errors
-    ///
-    /// When `listening` names no microphone that may take part.
     pub fn start(
         group: &SpeakerGroup,
         labels: &[String],

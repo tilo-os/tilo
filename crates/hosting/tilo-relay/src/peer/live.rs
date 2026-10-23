@@ -315,10 +315,10 @@ pub(super) async fn handle_presence(
             let reads = wr.spectators.is_some_and(|spectators| spectators.public);
             let authority = wr.room_authority.clone();
             drop(wr);
-            if reads && let (Some(body), Some(authority)) = (asks, authority) {
+            if reads && let Some(body) = asks {
                 answer_content(
                     &ws,
-                    &authority,
+                    authority.as_ref(),
                     workspace_id,
                     (*session.own_device_public_key, peer.device_public_key),
                     body,
@@ -329,10 +329,10 @@ pub(super) async fn handle_presence(
         wr.fanout_presence(&peer.device_public_key, peer.role, &env, slot);
         let authority = wr.room_authority.clone();
         drop(wr);
-        if let (Some(body), Some(authority)) = (asks, authority) {
+        if let Some(body) = asks {
             answer_content(
                 &ws,
-                &authority,
+                authority.as_ref(),
                 workspace_id,
                 (*session.own_device_public_key, peer.device_public_key),
                 body,
@@ -356,21 +356,29 @@ pub(super) async fn handle_presence(
 /// Answer a member's request for content its room's records reference
 /// from what this host keeps ([`crate::rooms::RoomContent`]), to the
 /// member's device alone, off the connection's task: reading the content
-/// may touch the disk.
+/// may touch the disk. A host that governs no room here keeps none of it,
+/// and says so, so the member stops counting on it.
 fn answer_content(
     ws: &Arc<tokio::sync::Mutex<crate::workspace::WorkspaceRuntime>>,
-    authority: &crate::rooms::RoomAuthority,
+    authority: Option<&crate::rooms::RoomAuthority>,
     workspace_id: u64,
     (host, member): ([u8; 32], [u8; 32]),
     body: Vec<u8>,
 ) {
-    let Some(rooms) = authority.rooms() else {
-        return;
-    };
-    let (ws, room) = (Arc::clone(ws), authority.room().to_owned());
+    let served = authority.and_then(|authority| {
+        authority
+            .rooms()
+            .map(|rooms| (rooms, authority.room().to_owned()))
+    });
+    let ws = Arc::clone(ws);
     tokio::spawn(async move {
-        let Ok(frames) =
-            tokio::task::spawn_blocking(move || rooms.content_answer(&room, &body)).await
+        let Ok(frames) = tokio::task::spawn_blocking(move || match served {
+            Some((rooms, room)) => rooms.content_answer(&room, &body),
+            None => crate::rooms::lacks_answer(&host, &body)
+                .into_iter()
+                .collect(),
+        })
+        .await
         else {
             return;
         };

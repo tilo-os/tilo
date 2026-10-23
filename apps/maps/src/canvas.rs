@@ -1404,19 +1404,16 @@ mod tests {
             let anchor = Point::new(100.0, 200.0);
             let (r, h) = (8.0, 22.0);
             let bb = pin_path(anchor, r, h).bounding_box();
-            // The tip is the lowest point, at the anchor.
             assert!(
                 (bb.y1 - anchor.y).abs() < 0.5,
                 "pin tip on the anchor, got y1={}",
                 bb.y1
             );
-            // The head reaches up to about anchor.y - h - r.
             assert!(
                 (bb.y0 - (anchor.y - h - r)).abs() < 1.5,
                 "head top near anchor.y-h-r, got y0={}",
                 bb.y0
             );
-            // Width is about the head diameter, centred on the anchor x.
             assert!(
                 (bb.width() - 2.0 * r).abs() < 2.0,
                 "width ~ head diameter, got {}",
@@ -1453,7 +1450,6 @@ mod tests {
                 agency: "MVG".into(),
                 realtime: true,
             };
-            // Feed colour wins.
             assert_eq!(
                 leg_color(&theme, &base),
                 Color::from_rgba8(0xeb, 0x69, 0x0b, 255)

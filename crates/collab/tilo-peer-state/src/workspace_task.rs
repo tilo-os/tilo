@@ -40,9 +40,6 @@ pub struct WorkspaceTaskCommandId {
 }
 
 /// Read canonical tasks and execution controls from an admitted room document.
-///
-/// # Errors
-/// A task-control entry is malformed.
 pub fn snapshot(doc: &AutoCommit) -> Result<WorkspaceTaskSnapshot, String> {
     Ok(WorkspaceTaskSnapshot {
         tasks: tilo_desktop_model::projection::workspace_tasks_of(doc),
@@ -52,9 +49,6 @@ pub fn snapshot(doc: &AutoCommit) -> Result<WorkspaceTaskSnapshot, String> {
 }
 
 /// Read the retained result of one exact device-scoped invocation.
-///
-/// # Errors
-/// A task-control entry is malformed.
 pub fn result_of(
     doc: &AutoCommit,
     id: WorkspaceTaskCommandId,
@@ -1907,7 +1901,6 @@ mod tests {
             ScalarValue::Bytes(serde_json::to_vec(&expected[&task_id]).unwrap()),
         )
         .unwrap();
-        // Simulate a pre-sidecar document, then migrate through the production projection.
         doc.delete(ROOT, "task_presentations_v1").unwrap();
         assert_eq!(controls_of(&doc).unwrap(), expected);
         project_controls(&mut doc, &expected).unwrap();

@@ -45,7 +45,7 @@ const POSITION_TOLERANCE: f64 = 1e-4;
 const EDGE_REACH_DWELL: crate::time::Duration = super::group_row::DRAG_SPRING_LOAD;
 /// How close to the deck's top or bottom edge (or past it, over the top
 /// bar) a drag has to rest to reach the next strip.
-const EDGE_REACH_BAND_PX: f64 = super::group_row::DRAG_EDGE_BAND_PX;
+const EDGE_REACH_BAND_PX: f64 = crate::tokens::motion::EDGE_AUTOSCROLL_BAND;
 
 /// Fingers moving the deck.
 #[derive(Clone, Copy, Debug)]
@@ -57,7 +57,6 @@ struct Drag {
 /// What a released swipe did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StripDeckRelease {
-    /// The strip the deck settles on.
     pub to: usize,
     /// The strip the fingers took the deck from.
     pub from: usize,
@@ -86,7 +85,6 @@ pub struct StripDeck {
 }
 
 impl StripDeck {
-    /// A deck of `rows`, showing the strip at `shown`.
     #[must_use]
     pub fn new(rows: Vec<GroupRow>, shown: usize) -> Self {
         let shown = clamp_index(shown, rows.len());
@@ -167,7 +165,6 @@ impl StripDeck {
         self.position.snap(index as f64);
     }
 
-    /// Whether fingers are on the deck.
     pub fn dragging(&self) -> bool {
         self.drag.is_some()
     }
@@ -685,12 +682,10 @@ mod tests {
         let _settled = crate::motion::testing::settled();
         let mut deck = deck_of(3);
         let t0 = crate::time::now();
-        // A drag in the middle of the strip reaches nothing.
         if let Some(row) = deck.row_mut(0) {
             row.set_external_content_drag_hover(Some(Point::new(500.0, 400.0)));
         }
         assert!(!deck.advance_edge_reach(t0));
-        // At the bottom edge it waits, then goes to the strip below.
         if let Some(row) = deck.row_mut(0) {
             row.set_external_content_drag_hover(Some(Point::new(500.0, 798.0)));
         }
@@ -711,7 +706,6 @@ mod tests {
         // Never past the last strip.
         assert!(!deck.advance_edge_reach(t0 + EDGE_REACH_DWELL * 4));
         assert_eq!(deck.shown(), 2);
-        // Over the top bar, above the deck, reaches the strip above.
         if let Some(row) = deck.row_mut(0) {
             row.set_external_content_drag_hover(Some(Point::new(500.0, 10.0)));
         }
@@ -719,7 +713,6 @@ mod tests {
         assert!(!deck.advance_edge_reach(t1));
         assert!(deck.advance_edge_reach(t1 + EDGE_REACH_DWELL));
         assert_eq!(deck.shown(), 1);
-        // A drag that ended reaches nothing.
         if let Some(row) = deck.row_mut(0) {
             row.set_external_content_drag_hover(None);
         }
@@ -743,7 +736,6 @@ mod tests {
         // ... and, released after a pause, springs back.
         let release = deck.end_drag(t0 + ms(800), false).expect("a drag");
         assert_eq!(release, StripDeckRelease { to: 0, from: 0 });
-        // A short flick goes on to the next strip with its momentum.
         deck.jump_to(0);
         deck.begin_drag(t0);
         for i in 1..=4_u32 {
@@ -755,14 +747,12 @@ mod tests {
             deck.position.velocity(t0 + ms(33)) > 0.0,
             "the settle carries the fingers' momentum"
         );
-        // A drag past the last strip is resisted and settles on it.
         deck.jump_to(2);
         deck.begin_drag(t0);
         deck.drag_to(height, t0 + ms(16));
         assert!(deck.position.target() < 2.0 + OVERPULL_REACH_FRAC);
         let release = deck.end_drag(t0 + ms(400), false).expect("a drag");
         assert_eq!(release.to, 2);
-        // A cancelled gesture goes back where it began.
         deck.jump_to(1);
         deck.begin_drag(t0);
         deck.drag_to(height * 0.9, t0 + ms(16));
@@ -772,13 +762,10 @@ mod tests {
 
     #[test]
     fn a_swipe_settles_on_the_strip_it_carried_the_deck_to() {
-        // Under a quarter of the deck springs back.
         assert_eq!(settle_index(1, (1.1, 1.2), 3), 1);
         assert_eq!(settle_index(1, (0.9, 0.8), 3), 1);
-        // Past a quarter, or thrown there, goes on to the next strip.
         assert_eq!(settle_index(1, (1.3, 1.3), 3), 2);
         assert_eq!(settle_index(1, (0.9, 0.6), 3), 0);
-        // A hard flick is still one strip ...
         assert_eq!(settle_index(0, (0.1, 2.4), 4), 1);
         // ... and fingers that carried the deck across two go on by two.
         assert_eq!(settle_index(0, (1.6, 2.4), 4), 2);

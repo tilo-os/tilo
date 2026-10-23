@@ -80,6 +80,13 @@ const POI_MIN_ZOOM: f64 = 14.0;
 const POI_MAX: usize = 140;
 /// How many nearby POIs the Explore panel lists (the closest to the anchor).
 const NEARBY_MAX: usize = 10;
+/// The menu the map's one [`ContextMenu`] shows: the ⋯ button's utilities or
+/// the layers button's layers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapMenu {
+    More,
+    Layers,
+}
 /// A clickable hot-region recorded during draw and hit-tested on click.
 #[derive(Clone, Debug)]
 enum Hit {
@@ -98,7 +105,6 @@ enum Hit {
     /// Select a nearby POI from the Explore list: centre the map on it and open
     /// its info card, linking the list to the marker layer.
     SelectPoi(String),
-    /// Dismiss the open POI info card.
     ClosePoi,
     /// Route to the POI whose info card is open.
     PoiDirections,
@@ -303,9 +309,12 @@ pub struct MapsApp {
     /// is discarded rather than drawn over the current one.
     poi_generation: u64,
 
-    // bottom-right ⋯ overflow menu (attribution / offline maps / licenses) — a
-    // shared ContextMenu so it is themed, keyboard-navigable and a11y-correct.
+    // bottom-right ⋯ overflow menu (attribution / offline maps / licenses), or
+    // the layers button's menu of layers — a shared ContextMenu so it is
+    // themed, keyboard-navigable and a11y-correct.
     overflow: ContextMenu,
+    /// Which menu `overflow` shows now: the ⋯ utilities or the map's layers.
+    menu_for: MapMenu,
     /// Attribution/licence modal. Owns state, drawing geometry, and hit-testing.
     info_sheet: MapInfoSheet,
 
@@ -595,6 +604,7 @@ impl MapsApp {
                 m.push(MenuItem::action("Licenses", || {}));
                 m
             },
+            menu_for: MapMenu::More,
             info_sheet: MapInfoSheet::default(),
             offline_panel: OfflinePanel::new(cache_bytes),
             nav_open,
@@ -618,7 +628,29 @@ impl MapsApp {
     /// Open the overflow menu at its button; the toolkit flips it up from
     /// the bottom corner.
     fn open_overflow(&mut self) {
+        self.menu_for = MapMenu::More;
+        self.overflow.set_items(vec![
+            MenuItem::action("Attribution", || {}),
+            MenuItem::action("Offline maps", || {}),
+            MenuItem::action("Licenses", || {}),
+        ]);
         self.overflow.open_anchored(self.overflow_rect(), self.rect);
+    }
+
+    /// The map's layers, each checked while it shows, under the layers
+    /// button. Traffic is the one layer the map draws over its basemap.
+    fn open_layers(&mut self) {
+        self.menu_for = MapMenu::Layers;
+        self.overflow.set_items(vec![
+            MenuItem::action("Traffic", || {}).with_checked(self.map_controls.traffic_enabled()),
+        ]);
+        self.overflow
+            .open_anchored(self.map_controls.rect(MapControlAction::Layers), self.rect);
+    }
+
+    /// Whether the menu of `which` is open.
+    fn menu_open(&self, which: MapMenu) -> bool {
+        self.overflow.is_open() && self.menu_for == which
     }
 
     /// An offline (no-worker, no-network) app that mirrors the live first-run
@@ -717,7 +749,6 @@ impl MapsApp {
         }
     }
 
-    // --- geometry helpers --------------------------------------------------
     fn view_center(&self) -> Point {
         Point::new(
             f64::midpoint(self.rect.x0, self.rect.x1),
@@ -858,8 +889,6 @@ impl MapsApp {
         GeoBounds::new(nw, se)
     }
 
-    // --- offline regions ---------------------------------------------------
-
     /// The tile ids a saved region covers — used for delete/keep set arithmetic
     /// so removing one area doesn't drop imagery another still needs.
     fn region_tile_ids(region: &crate::model::DownloadedRegion) -> Vec<TileId> {
@@ -974,7 +1003,6 @@ impl MapsApp {
         }
     }
 
-    // --- actions -----------------------------------------------------------
     /// Submit one verb or field edit of the shared map through the
     /// framework's door. Callers show its result in this window right away;
     /// the door checks, applies, records and replicates it, and the state it
@@ -1703,8 +1731,6 @@ impl MapsApp {
         self.schedule_pois();
     }
 
-    // --- POI layer (Overpass) ----------------------------------------------
-
     /// Arm the viewport POI refetch. Debounced so a drag/zoom gesture fires one
     /// Overpass query when it settles, not per pointer event.
     fn schedule_pois(&mut self) {
@@ -2023,7 +2049,6 @@ impl MapsApp {
                                 found.truncate(POI_MAX);
                                 let n = found.len();
                                 self.pois = found;
-                                // Drop the open card if its POI is gone.
                                 if let Some(sel) = &self.selected_poi
                                     && !self.pois.iter().any(|p| &p.id == sel)
                                 {
@@ -2115,7 +2140,6 @@ impl MapsApp {
         }
     }
 
-    // --- click dispatch ----------------------------------------------------
     fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
         if self.info_sheet.modal_capture().is_some()
             || self.offline_panel.is_open()
@@ -2236,7 +2260,7 @@ impl MapsApp {
                 self.fit_current();
             }
             Hit::ToggleOverflow => {
-                if self.overflow.is_open() {
+                if self.menu_open(MapMenu::More) {
                     self.overflow.close();
                 } else {
                     self.open_overflow();
@@ -2251,8 +2275,12 @@ impl MapsApp {
             MapControlAction::ZoomIn => self.zoom_by(1.0, self.visible_map_area().center()),
             MapControlAction::ZoomOut => self.zoom_by(-1.0, self.visible_map_area().center()),
             MapControlAction::Locate => self.use_my_location(),
-            MapControlAction::ToggleTraffic => {
-                self.set_traffic(!self.map_controls.traffic_enabled());
+            MapControlAction::Layers => {
+                if self.menu_open(MapMenu::Layers) {
+                    self.overflow.close();
+                } else {
+                    self.open_layers();
+                }
             }
         }
     }
@@ -2613,7 +2641,7 @@ impl MapsApp {
         theme: &Theme,
     ) {
         let r = self.overflow_rect();
-        let open = self.overflow.is_open();
+        let open = self.menu_open(MapMenu::More);
         self.floats(r);
         self.icon_button(
             &mut PaintCtx::new(scene, t, tr, theme),
@@ -4418,7 +4446,7 @@ impl MapsApp {
                 Role::ToggleButton,
                 AccessState::new()
                     .focusable(true)
-                    .checked(self.overflow.is_open()),
+                    .checked(self.menu_open(MapMenu::More)),
             ),
         };
         Some(AccessibilityTarget {
@@ -4468,13 +4496,13 @@ impl MapsApp {
                 state: AccessState::new().focusable(true),
             },
             AccessibilityTarget {
-                rect: self.map_controls.rect(MapControlAction::ToggleTraffic),
-                label: "Traffic".to_string(),
-                target: "maps.control:traffic".to_string(),
-                role: Role::Switch,
+                rect: self.map_controls.rect(MapControlAction::Layers),
+                label: "Map layers".to_string(),
+                target: "maps.control:layers".to_string(),
+                role: Role::ToggleButton,
                 state: AccessState::new()
                     .focusable(true)
-                    .checked(self.map_controls.traffic_enabled()),
+                    .checked(self.menu_open(MapMenu::Layers)),
             },
         ];
         targets.retain(|target| target.rect.area() > 0.0);
@@ -4638,7 +4666,6 @@ impl Widget for MapsApp {
         self.drain_net();
         // Fold in a device-location fix if the portal worker has one.
         self.drain_location();
-        // Send the platform search's newest place query to the geocoder.
         self.pump_place_search();
         // Refetch viewport POIs once a pan/zoom settles.
         self.tick_poi_debounce(ui::time::now());
@@ -5162,7 +5189,7 @@ impl Widget for MapsApp {
             "maps.control:zoom-in" => Some(MapControlAction::ZoomIn),
             "maps.control:zoom-out" => Some(MapControlAction::ZoomOut),
             "maps.control:locate" => Some(MapControlAction::Locate),
-            "maps.control:traffic" => Some(MapControlAction::ToggleTraffic),
+            "maps.control:layers" => Some(MapControlAction::Layers),
             _ => None,
         };
         if let Some(control) = control {

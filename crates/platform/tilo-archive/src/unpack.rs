@@ -17,7 +17,6 @@ pub struct Extracted {
     /// Device nodes, pipes and sockets the archive holds, never created;
     /// and, where the host has no symbolic links, the archive's links.
     pub skipped: usize,
-    /// The bytes the files hold.
     pub bytes: u64,
 }
 

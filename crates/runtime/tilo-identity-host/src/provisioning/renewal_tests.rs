@@ -133,22 +133,49 @@ fn a_session_keeps_a_certificate_not_yet_due() {
 }
 
 /// A clock the renewal loop runs by in a test: it starts at `now`, moves
-/// on by what it is asked to wait, and stops after `waits` waits.
+/// on by what it is asked to wait, and stops after `waits` waits. Asked to
+/// wait for a change, it runs `change`, what changes while the loop waits,
+/// if there is one.
 struct TestClock {
     now: Cell<u64>,
-    waited: RefCell<Vec<Duration>>,
+    waited: RefCell<Vec<Option<Duration>>>,
     waits: usize,
+    changes: Cell<u64>,
+    change: RefCell<Option<Box<dyn FnOnce()>>>,
+}
+impl TestClock {
+    fn at(now: u64, waits: usize) -> Self {
+        Self {
+            now: Cell::new(now),
+            waited: RefCell::new(Vec::new()),
+            waits,
+            changes: Cell::new(0),
+            change: RefCell::new(None),
+        }
+    }
 }
 impl RenewalClock for TestClock {
     fn now_ns(&self) -> u64 {
         self.now.get()
     }
-    fn wait(&self, duration: Duration) -> bool {
-        self.now.set(
-            self.now
-                .get()
-                .saturating_add(u64::try_from(duration.as_nanos()).unwrap()),
-        );
+    fn changes(&self) -> u64 {
+        self.changes.get()
+    }
+    fn wait(&self, duration: Option<Duration>, seen: u64) -> bool {
+        assert_eq!(seen, self.changes.get(), "waits past the changes it saw");
+        match duration {
+            Some(duration) => self.now.set(
+                self.now
+                    .get()
+                    .saturating_add(u64::try_from(duration.as_nanos()).unwrap()),
+            ),
+            None => {
+                if let Some(change) = self.change.borrow_mut().take() {
+                    change();
+                    self.changes.set(self.changes.get().saturating_add(1));
+                }
+            }
+        }
         self.waited.borrow_mut().push(duration);
         self.waited.borrow().len() < self.waits
     }
@@ -163,11 +190,7 @@ fn a_running_device_renews_its_certificate_when_it_is_due_and_waits_for_the_next
     let identity =
         runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
     let start = tilo_clock::unix_now_ns();
-    let clock = TestClock {
-        now: Cell::new(start),
-        waited: RefCell::new(Vec::new()),
-        waits: 2,
-    };
+    let clock = TestClock::at(start, 2);
     let renewals = Cell::new(0);
     keep_device_certificates_renewed(&personal, &paths, &clock, || {
         renewals.set(renewals.get() + 1);
@@ -191,12 +214,12 @@ fn a_running_device_renews_its_certificate_when_it_is_due_and_waits_for_the_next
     assert_eq!(renewals.get(), 1, "renewed once, when it was due");
     assert_eq!(
         waited[0],
-        Duration::from_nanos(due.saturating_sub(start)),
+        Some(Duration::from_nanos(due.saturating_sub(start))),
         "slept until it was due"
     );
     assert_eq!(
         waited[1],
-        Duration::from_nanos(12 * HOUR),
+        Some(Duration::from_nanos(12 * HOUR)),
         "then slept until the renewed one is due"
     );
 }
@@ -208,11 +231,99 @@ fn a_device_whose_certificates_never_expire_has_nothing_to_renew() {
     let paths = IdentityPaths::under(tmp.path().join("system"));
     ensure_collaboration_identity(&personal, &paths, FILES).expect("identity");
     assert_eq!(next_device_certificate_renewal(&personal, &paths), None);
-    let clock = TestClock {
-        now: Cell::new(0),
-        waited: RefCell::new(Vec::new()),
-        waits: 1,
-    };
+    let clock = TestClock::at(0, 1);
     keep_device_certificates_renewed(&personal, &paths, &clock, || panic!("nothing is due"));
     assert!(clock.waited.borrow().is_empty());
+}
+
+/// Renew `held` for `identity` at `now`, as provisioning does, into both
+/// places the device keeps it.
+#[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+fn renew_at(
+    identity: &runtime_identity::SigningIdentity,
+    paths: &IdentityPaths,
+    held: &DeviceCert,
+    now: u64,
+) -> io::Result<()> {
+    let renewed = issue_device_certificate_at(
+        identity,
+        held.device_public_key,
+        &held.device_label,
+        DeviceClass::Throwaway,
+        now,
+    )?;
+    for path in [
+        paths.device_cert.clone(),
+        paths.device_cert_for_user(&identity.group_public_key()),
+    ] {
+        persist::write_device_cert(&path, &renewed)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+fn a_failed_renewal_is_tried_again_when_what_it_failed_on_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Thirteen hours into a day: due.
+    let (personal, paths, held) = aged_throwaway(tmp.path(), 13 * HOUR);
+    let identity =
+        runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
+    let clock = TestClock::at(tilo_clock::unix_now_ns(), 2);
+    let custody = std::rc::Rc::new(Cell::new(false));
+    let available = std::rc::Rc::clone(&custody);
+    *clock.change.borrow_mut() = Some(Box::new(move || available.set(true)));
+    let attempts = Cell::new(0);
+    keep_device_certificates_renewed(&personal, &paths, &clock, || {
+        attempts.set(attempts.get() + 1);
+        if !custody.get() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "identity custody unavailable",
+            ));
+        }
+        renew_at(&identity, &paths, &held, clock.now_ns())
+    });
+    assert_eq!(attempts.get(), 2, "tried again once custody came");
+    assert_eq!(
+        *clock.waited.borrow(),
+        [None, Some(Duration::from_nanos(12 * HOUR))],
+        "waited for the change, not a time, then for the renewed one"
+    );
+}
+
+#[test]
+#[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+fn a_failed_renewal_is_not_tried_again_while_nothing_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (personal, paths, _) = aged_throwaway(tmp.path(), 13 * HOUR);
+    // Nothing changes: the clock's wait for a change ends the loop.
+    let clock = TestClock::at(tilo_clock::unix_now_ns(), 1);
+    let attempts = Cell::new(0);
+    keep_device_certificates_renewed(&personal, &paths, &clock, || {
+        attempts.set(attempts.get() + 1);
+        Err(io::Error::other("the relay is unreachable"))
+    });
+    assert_eq!(attempts.get(), 1);
+    assert_eq!(*clock.waited.borrow(), [None], "no timed retry");
+}
+
+#[test]
+fn a_renewal_waits_for_a_change_after_the_ones_it_saw() {
+    let causes = RenewalCauses::new();
+    let seen = causes.seen();
+    assert!(
+        !causes.wait_past(seen, Some(Duration::from_millis(20))),
+        "nothing changed"
+    );
+    // A change while the renewal was being tried is not missed.
+    causes.changed();
+    assert!(causes.wait_past(seen, None));
+    let seen = causes.seen();
+    std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| causes.wait_past(seen, None));
+        causes.changed();
+        assert!(waiter.join().unwrap(), "woken by the change");
+    });
 }

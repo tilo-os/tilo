@@ -55,11 +55,6 @@ pub use uri::{ScopedUriFixture, scoped_uri_fixture};
 /// the effect.
 pub trait EffectGate: Send + 'static {
     /// Run `effect` only while the original caller is still admitted.
-    ///
-    /// # Errors
-    ///
-    /// The caller's refusal when it is no longer admitted, or `effect`'s own
-    /// error.
     fn with_effect<R>(&self, effect: impl FnOnce() -> Result<R, String>) -> Result<R, String>;
 }
 
@@ -684,7 +679,6 @@ pub struct PickedContents {
 /// paths (a browser page).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dropped {
-    /// The file, read.
     Contents(PickedContents),
     /// A file the host did not read, so the app can say why it took none
     /// of it: only its name and size were looked at.
@@ -701,7 +695,6 @@ pub enum Dropped {
 /// Why a host did not read a dropped file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotRead {
-    /// Larger than a drop hands over.
     TooLarge,
     /// One more than a drop hands over at once.
     TooMany,
@@ -1235,8 +1228,6 @@ mod tests {
         );
     }
 
-    // ---- the security rule -------------------------------------------
-
     #[test]
     fn rejects_a_uri_that_names_a_remote_host() {
         let uri = u("file://evil-host.example.com/etc/passwd");
@@ -1305,8 +1296,6 @@ mod tests {
             PortalOutcome::Opened(local_path("/home/alice/a.mkv"))
         );
     }
-
-    // ---- escaped filenames, which the nine copies disagreed about -----
 
     #[test]
     fn percent_escapes_in_filenames_are_decoded() {
@@ -1402,8 +1391,6 @@ mod tests {
             );
         }
     }
-
-    // ---- the shape every copy implemented -----------------------------
 
     #[test]
     fn empty_is_cancel() {
@@ -1549,8 +1536,6 @@ mod tests {
         ));
     }
 
-    // ---- the request builder ------------------------------------------
-
     #[test]
     fn builder_records_the_per_app_delta() {
         let r = PickRequest::open("Insert image", "Insert")
@@ -1600,10 +1585,6 @@ pub struct ScopedPickerFixture {
 /// Select a test backend for scoped chooser requests on this exact UI thread.
 /// Dispatch retains the backend even after the guard leaves scope; all real
 /// effect checks still run immediately before invoking it on the worker.
-///
-/// # Errors
-///
-/// When this UI thread already owns a picker fixture.
 #[cfg(any(test, feature = "test-support"))]
 pub fn scoped_picker_fixture(backend: ScopedPickerBackend) -> Result<ScopedPickerFixture, String> {
     SCOPED_PICKER_FIXTURE.with(|current| {

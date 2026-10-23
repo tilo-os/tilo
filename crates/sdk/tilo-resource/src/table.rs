@@ -383,8 +383,6 @@ pub(crate) fn mismatch() -> ModelError {
     ModelError::invalid("a value of another type")
 }
 
-// --- Tables of the types with their own `Model` functions ----------------
-
 /// The table of `T`, from its own [`Model`] functions.
 pub struct TableOf<T>(PhantomData<T>);
 
@@ -917,8 +915,6 @@ fn atom_collect_text(_: &ModelTable, value: &dyn Any, out: &mut Vec<String>) {
 fn atom_get_at<'a>(_: &ModelTable, value: &'a dyn Any, path: &[Segment]) -> Option<&'a dyn Any> {
     path.is_empty().then_some(value)
 }
-
-// --- Records ------------------------------------------------------------
 
 /// The functions of every record, over its [`RecordDesc`].
 pub static RECORD_OPS: ModelOps = ModelOps {
@@ -1921,8 +1917,6 @@ pub fn filled<T>(out: Option<T>) -> Result<T, ModelError> {
     }
 }
 
-// --- Edits of a value as a whole -------------------------------------------
-
 /// The value in a filled `Option` of its type.
 pub(crate) type Unstage = for<'a> fn(&'a dyn Any) -> Option<&'a dyn Any>;
 
@@ -1957,8 +1951,6 @@ pub(crate) fn edit_whole(
         other => Err(ModelError::unsupported(other)),
     }
 }
-
-// --- Option ---------------------------------------------------------------
 
 /// What `Option<T>`'s table reaches into one with.
 #[allow(
@@ -2356,8 +2348,6 @@ impl Run<'_> {
     }
 }
 
-// --- Enums of unit variants -----------------------------------------------
-
 /// A `#[derive(Model)]` enum of unit variants, each stored as its name.
 pub struct UnitDesc {
     /// The variants' stored names, in declaration order.
@@ -2526,8 +2516,6 @@ pub fn set_variant<T: 'static>(variant: Option<T>, target: &mut dyn Any) -> Resu
     *target.downcast_mut::<T>().ok_or_else(mismatch)? = variant.ok_or_else(mismatch)?;
     Ok(())
 }
-
-// --- Values stored whole as JSON text -----------------------------------------
 
 /// A type stored whole through its serde form: as one JSON string, last
 /// writer winning ([`json_model!`](crate::json_model)), or as that form's
@@ -2821,8 +2809,6 @@ pub static JSON_OPS: ModelOps = ModelOps {
     op_schemas: no_schemas,
 };
 
-// --- Vec ------------------------------------------------------------------
-
 /// A list's items, whatever their type.
 pub trait ListItems {
     fn count(&self) -> usize;
@@ -3063,8 +3049,6 @@ pub static VEC_OPS: ModelOps = ModelOps {
     op_lands: no_lands,
     op_schemas: no_schemas,
 };
-
-// --- Maps of string keys ---------------------------------------------------
 
 /// A map's entries, whatever their value type.
 pub trait MapEntries {

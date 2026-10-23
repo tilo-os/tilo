@@ -155,11 +155,6 @@ pub fn invite_id(token: &str) -> [u8; 32] {
 
 /// Mint an invite for `workspace` with no always-on hosts and no bound
 /// signing identity.
-///
-/// # Errors
-///
-/// Returns an error if `workspace` has no room identity, if `owner_addr`
-/// does not belong to `key`, or if encoding the signed token fails.
 pub fn make_invite_token(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -170,11 +165,6 @@ pub fn make_invite_token(
 }
 
 /// Mint an invite carrying optional always-on workspace hosts.
-///
-/// # Errors
-///
-/// Returns an error if `workspace` has no room identity, if `owner_addr`
-/// does not belong to `key`, or if encoding the signed token fails.
 pub fn make_invite_token_with_hosts(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -272,11 +262,6 @@ pub struct InviteRecipient<'a> {
 
 /// Mint an invite bound to one recipient person identity. The optional name is
 /// signed by the inviter and therefore safe for an offline host to project.
-///
-/// # Errors
-///
-/// Returns an error if the workspace, endpoint, device certificate, or
-/// serialized signed token is invalid.
 pub fn make_invite_token_with_recipient(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -482,7 +467,6 @@ mod tests {
 
     #[test]
     fn invitations_round_trip_their_room_hosts_and_roster() {
-        // Phase `round_trip_binds_room_key_and_dialing_address`.
         {
             let key = iroh::SecretKey::from_bytes(&[7; 32]);
             let ws = workspace(99);
@@ -494,7 +478,6 @@ mod tests {
             assert_eq!(token.owner_addr, addr);
             assert_eq!(token.owner_peer_id, key.public().to_string());
         }
-        // Phase `round_trip_carries_signed_always_on_hosts`.
         {
             let owner = iroh::SecretKey::from_bytes(&[13; 32]);
             let host = iroh::SecretKey::from_bytes(&[14; 32]);
@@ -510,7 +493,6 @@ mod tests {
             let token = validate_invite_token(&encoded).unwrap();
             assert_eq!(token.host_addrs, vec![host_addr]);
         }
-        // Phase `invitations_minted_in_the_same_second_remain_distinct_and_valid`.
         {
             let owner = iroh::SecretKey::from_bytes(&[32; 32]);
             let workspace = workspace(32);
@@ -540,7 +522,6 @@ mod tests {
             validate_invite_token(&first).expect("first remains valid");
             validate_invite_token(&second).expect("second remains valid");
         }
-        // Phase `accepting_invite_adopts_room_and_roster_identity`.
         {
             let key = iroh::SecretKey::from_bytes(&[11; 32]);
             let host = workspace(11);
@@ -574,7 +555,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn every_signed_invitation_field_is_tamper_evident() {
-        // Phase `home_host_pin_is_signed_and_tamper_evident`.
         {
             use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -625,7 +605,6 @@ mod tests {
                     .contains("signature")
             );
         }
-        // Phase `selected_role_is_signed_and_tamper_evident`.
         {
             let owner = iroh::SecretKey::from_bytes(&[31; 32]);
             let encoded = make_invite_token_with_identity_and_role(
@@ -653,7 +632,6 @@ mod tests {
                     .contains("signature")
             );
         }
-        // Phase `recipient_binding_and_name_are_signature_covered`.
         {
             let owner = iroh::SecretKey::from_bytes(&[18; 32]);
             let workspace = workspace(18);
@@ -685,7 +663,6 @@ mod tests {
             let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
             assert!(validate_invite_token(&forged).is_err());
         }
-        // Phase `an_unsigned_recipient_cannot_be_grafted_onto_a_bearer`.
         {
             let owner = iroh::SecretKey::from_bytes(&[19; 32]);
             let workspace = workspace(19);
@@ -697,7 +674,6 @@ mod tests {
             let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
             assert!(validate_invite_token(&forged).is_err());
         }
-        // Phase `tampering_any_signed_route_field_is_rejected`.
         {
             let key = iroh::SecretKey::from_bytes(&[8; 32]);
             let encoded = make_invite_token(&key, &workspace(1), &endpoint(&key, 1), 3600).unwrap();
@@ -711,7 +687,6 @@ mod tests {
                     .contains("signature")
             );
         }
-        // Phase `substituted_endpoint_is_rejected`.
         {
             let owner = iroh::SecretKey::from_bytes(&[9; 32]);
             let attacker = iroh::SecretKey::from_bytes(&[10; 32]);
@@ -727,7 +702,6 @@ mod tests {
 
     #[test]
     fn invitation_identity_is_bound_and_unsupported_invites_are_refused() {
-        // Phase `identity_certificate_binds_inviter_person_to_device_endpoint`.
         {
             use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -778,7 +752,6 @@ mod tests {
                     .any(|member| member.id == person)
             );
         }
-        // Phase `nil_room_cannot_be_invited`.
         {
             let key = iroh::SecretKey::from_bytes(&[12; 32]);
             let ws = crate::shell::state::rehomed(&workspace(4), RoomId::nil());

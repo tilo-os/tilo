@@ -193,7 +193,6 @@ impl ShellOverlayHost {
         })
     }
 
-    /// Run `f` on the maximized group, if there is one.
     #[allow(
         clippy::needless_pass_by_ref_mut,
         reason = "the group is reached through a raw row pointer; `&mut self` is what makes that access unaliased"

@@ -73,11 +73,6 @@ impl FrameHarness {
     /// Press the window's History control as the bar hands the press over:
     /// it runs on the app's History door, as the History shortcut does, and
     /// never reaches the app.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the app has no History to open, or its door
-    /// refuses the control.
     pub fn press_window_history(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let control = self
@@ -160,19 +155,58 @@ impl FrameHarness {
         }
     }
 
+    /// Where a point of the window (a capture's picture, as the person sees
+    /// it) is in the app's frame under the bar. The bar is the desktop's:
+    /// a point on it is refused, never handed to the app.
+    pub(super) fn frame_point(&self, x: f64, y: f64) -> Result<(f64, f64), String> {
+        let frame_y = self.frame_y(y);
+        if frame_y < 0.0 {
+            return Err(format!(
+                "({x}, {y}) is on the window bar, which is the desktop's: invoke the \
+                 action its slot runs instead"
+            ));
+        }
+        Ok((x, frame_y))
+    }
+
+    /// [`Self::frame_point`]'s height alone, for the end of a gesture that
+    /// may leave the frame.
+    pub(super) fn frame_y(&self, y: f64) -> f64 {
+        y - self.frame_top()
+    }
+
+    /// A rect of the app's frame where the window shows it.
+    pub(super) fn window_rect(&self, rect: Rect) -> Rect {
+        rect + vello::kurbo::Vec2::new(0.0, self.frame_top())
+    }
+
+    /// Where the app's frame starts in the window.
+    fn frame_top(&self) -> f64 {
+        if self.window_bar {
+            f64::from(bar_height_px())
+        } else {
+            0.0
+        }
+    }
+
     /// The window's title and app, as its tab shows them.
     fn window_tab(&self) -> TabDescriptor {
         let bound = self
             .root
             .as_any()
             .and_then(|root| root.downcast_ref::<crate::widget::BoundAppWidget>());
-        let mut tab = TabDescriptor::new(
-            TAB,
-            bound.map_or_else(String::new, |bound| {
-                crate::AppWidget::app_title(bound).to_owned()
-            }),
-        );
-        tab.app_kind = bound.map(crate::AppWidget::app_kind);
+        let (kind, title) = match bound {
+            Some(bound) => (
+                Some(crate::AppWidget::app_kind(bound)),
+                crate::AppWidget::app_title(bound).to_owned(),
+            ),
+            None => self
+                .window_app
+                .clone()
+                .map_or((None, String::new()), |(kind, title)| (Some(kind), title)),
+        };
+        let mut tab = TabDescriptor::new(TAB, title);
+        tab.app_kind = kind;
         tab
     }
 
@@ -199,6 +233,11 @@ impl FrameHarness {
         // A capture shows the bar at rest, as a person sees it after it
         // arrived: its slots' cross-fade has ended.
         let _settled = crate::motion::testing::settled();
+        assert!(
+            self.window_tab().app_kind.is_some(),
+            "a hosted window's bar wears its app's icon, as every desktop window's does: \
+             mount the app with FrameHarness::for_app"
+        );
         let (mut bar, mut search) = self.window_bar(width);
         let ground = bar.ground_color(&self.theme);
         scene.fill(
@@ -429,6 +468,108 @@ mod tests {
         harness.relayout();
         harness.send(&winit::event::WindowEvent::Focused(true));
         assert_eq!(harness.focused(), None, "never a button for being first");
+    }
+
+    /// A spec aims at the picture it captures: with the bar over the app, a
+    /// click on a control where the capture shows it presses that control.
+    #[test]
+    fn a_click_aimed_at_the_captured_window_lands_where_it_is_painted() {
+        let _hosted = HostedReset;
+        let root = crate::widget::Column::new()
+            .push(Box::new(crate::widget::Button::new("first", "First")))
+            .push(Box::new(crate::widget::Button::new("chosen", "Chosen")));
+        let mut harness = harness_of(Box::new(root));
+        harness.present_in_window_bar();
+        harness.relayout();
+        let first = harness
+            .targets()
+            .into_iter()
+            .find_map(|(name, rect)| (name == "first").then(|| harness.window_rect(rect)))
+            .expect("the first button is a target");
+        let bar = f64::from(bar_height_px());
+        assert!(first.y0 >= bar, "the app's frame starts under the bar");
+        let centre = first.center();
+        harness
+            .perform(&super::super::Action::ClickAt(centre.x, centre.y))
+            .unwrap();
+        assert_eq!(focused_name(&harness).as_deref(), Some("first"));
+        assert!(
+            harness
+                .perform(&super::super::Action::ClickAt(centre.x, bar / 2.0))
+                .is_err(),
+            "the bar is the desktop's"
+        );
+    }
+
+    /// An app that is only its name.
+    struct NamedApp;
+
+    impl Widget for NamedApp {
+        fn name(&self) -> &str {
+            "NamedApp"
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut taffy::TaffyTree<()>,
+            _: &crate::theme::Theme,
+            nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            use crate::widget::TaffyTreeExt as _;
+            tree.widget_leaf(taffy::Style::default(), nodes, self)
+        }
+    }
+
+    impl crate::widget::AppWidget for NamedApp {
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Files
+        }
+        fn app_title(&self) -> &str {
+            "Files"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("F")
+        }
+    }
+
+    // Every hosted bar wears its app's icon at its leading edge, whatever
+    // the location says (a cloud folder, a page, nothing).
+    #[test]
+    fn every_hosted_bar_wears_its_apps_icon() {
+        let _hosted = HostedReset;
+        let mut harness = FrameHarness::for_app(
+            crate::State::new(),
+            NamedApp,
+            (800, 600),
+            crate::theme::Theme::dark(),
+        );
+        harness.present_in_window_bar();
+        crate::window_toolbar::declare(Some(crate::window_toolbar::WindowToolbar {
+            location: Some(crate::window_toolbar::ToolbarLocation {
+                label: "Trip to Lisbon".into(),
+                ..crate::window_toolbar::ToolbarLocation::default()
+            }),
+            ..crate::window_toolbar::WindowToolbar::default()
+        }));
+        let tab = harness.window_tab();
+        assert_eq!(tab.app_kind, Some(crate::widget::AppKind::Files));
+        assert_eq!(tab.title, "Files");
+        let mut scene = Scene::new();
+        harness.paint_window_bar(&mut scene, Affine::IDENTITY, 800.0);
+        crate::window_toolbar::declare(None);
+    }
+
+    #[test]
+    #[should_panic(expected = "wears its app's icon")]
+    fn a_bar_with_no_app_to_wear_refuses_to_paint() {
+        let _hosted = HostedReset;
+        let mut harness = FrameHarness::for_root(
+            crate::State::new(),
+            crate::widget::Column::new(),
+            (800, 600),
+            crate::theme::Theme::dark(),
+        );
+        harness.present_in_window_bar();
+        harness.paint_window_bar(&mut Scene::new(), Affine::IDENTITY, 800.0);
     }
 
     /// Hosting is per thread: a test leaves it as it found it.

@@ -1,7 +1,3 @@
-//! The installer backend's checks and writes, through the shipped
-//! `tilo-staging-handoff` binary as `tilo-install`, `tilo-guided-partition`
-//! and `tilo-installer-profile-extract` run it.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

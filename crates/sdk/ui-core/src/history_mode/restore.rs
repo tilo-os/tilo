@@ -232,10 +232,6 @@ impl RestoreError {
 /// Mixed structural ancestors and retained entities keep current identities.
 /// This value grants no authority: the host must check the reviewed resource,
 /// lifetime and current permission inside its exclusive record action frame.
-///
-/// # Errors
-/// Returns a typed error for pending edits, stale heads, invalid registration,
-/// unavailable target history, unsupported content, or failed validation.
 pub fn prepare_content_restore(
     doc: &AutoCommit,
     schema: &'static HistoryRestoreSchema,

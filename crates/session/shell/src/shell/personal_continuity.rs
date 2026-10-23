@@ -42,10 +42,6 @@ const MAX_ENCODED_CHECKPOINT_BYTES: usize = 3_900_000;
 pub struct DeviceId(String);
 
 impl DeviceId {
-    /// # Errors
-    ///
-    /// Returns an error when the device identifier is empty, oversized, or
-    /// contains unsupported characters.
     pub fn new(value: impl Into<String>) -> Result<Self, ContinuityError> {
         let value = value.into();
         if !valid_identifier(&value, MAX_DEVICE_ID_BYTES) {
@@ -135,10 +131,6 @@ pub enum LaunchIntent {
 }
 
 impl LaunchIntent {
-    /// # Errors
-    ///
-    /// Returns an error when `app_id` is not a valid application launch
-    /// target.
     pub fn app(app_id: impl Into<String>) -> Result<Self, ContinuityError> {
         let intent = Self::App {
             app_id: app_id.into(),
@@ -147,10 +139,6 @@ impl LaunchIntent {
         Ok(intent)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the record identifier or supplied hashes are
-    /// invalid for a file reference.
     pub fn file_reference(
         record_id: impl Into<String>,
         content_hash: Option<[u8; 32]>,
@@ -416,10 +404,6 @@ pub struct DeviceContinuationSnapshot {
 }
 
 impl DeviceContinuationSnapshot {
-    /// # Errors
-    ///
-    /// Returns an error when the snapshot violates size, identity, or focus
-    /// invariants.
     pub fn new(
         device: DeviceId,
         counter: u64,
@@ -441,10 +425,6 @@ impl DeviceContinuationSnapshot {
         Ok(value)
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when schema, device, size, workspace, or focus
-    /// invariants are violated.
     pub fn validate(&self) -> Result<(), ContinuityError> {
         if self.schema_version != CONTINUITY_SCHEMA_VERSION {
             return Err(ContinuityError::UnsupportedSchema(self.schema_version));
@@ -505,11 +485,6 @@ impl DeviceContinuationSnapshot {
     /// in its preceding snapshot but has now closed. Callers must advance the
     /// Lamport counter past every received checkpoint before constructing
     /// `self`, so the removal causally defeats the offer it observed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `previous` belongs to another device or the
-    /// resulting snapshot violates continuity invariants.
     pub fn record_closures_from(&mut self, previous: &Self) -> Result<(), ContinuityError> {
         if previous.device != self.device {
             return Err(ContinuityError::SnapshotStampDeviceMismatch);

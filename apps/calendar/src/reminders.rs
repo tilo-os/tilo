@@ -228,7 +228,6 @@ mod tests {
             due.iter().all(|reminder| reminder.title != "Earlier"),
             "past ones never ring"
         );
-        // The standup rings each weekday of the coming week, each its own.
         let standups = due.iter().filter(|reminder| reminder.title == "Standup");
         assert_eq!(standups.clone().count(), 6);
         let tags: HashSet<_> = standups.map(|reminder| reminder.tag.clone()).collect();

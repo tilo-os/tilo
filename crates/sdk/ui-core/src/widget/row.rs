@@ -477,7 +477,6 @@ mod tests {
 
     #[test]
     fn row_gap_justify_and_alignment_place_children() {
-        // Case `default_row_gap_is_the_theme_gap_standard_and_children_pack_at_start`.
         {
             let theme = Theme::dark();
             let rects = lay_out(&mut two_texts(), 600.0);
@@ -491,7 +490,6 @@ mod tests {
             );
         }
 
-        // Case `with_gap_overrides_the_gap_between_children`.
         {
             let rects = lay_out(&mut two_texts().with_gap(4.0), 600.0);
             assert!((rects[1].x0 - rects[0].x1 - 4.0).abs() < 0.5, "{rects:?}");
@@ -499,7 +497,6 @@ mod tests {
             assert!((tight[1].x0 - tight[0].x1).abs() < 0.5, "{tight:?}");
         }
 
-        // Case `with_justify_space_between_pushes_the_last_child_to_the_far_edge`.
         {
             let rects = lay_out(
                 &mut two_texts().with_justify(taffy::JustifyContent::SpaceBetween),
@@ -518,7 +515,6 @@ mod tests {
             );
         }
 
-        // Case `with_align_items_start_keeps_a_short_child_at_the_top_of_a_tall_row`.
         {
             let tall = Box::new(
                 crate::widget::Container::new()
@@ -561,7 +557,6 @@ mod tests {
 
     #[test]
     fn damage_merge_coalesces_near_children_but_keeps_wrap_endpoints() {
-        // Case `damage_merge_keeps_progress_wrap_endpoints_separate`.
         {
             // These are the clipped old/new segments at opposite ends of a
             // 200px indeterminate progress bar. Their union would repaint the
@@ -572,7 +567,6 @@ mod tests {
             assert!(!can_merge_damage(old_segment, new_segment));
         }
 
-        // Case `damage_merge_coalesces_nearby_row_children`.
         {
             let left = vello::kurbo::Rect::new(0.0, 0.0, 40.0, 20.0);
             let right = vello::kurbo::Rect::new(44.0, 0.0, 84.0, 20.0);

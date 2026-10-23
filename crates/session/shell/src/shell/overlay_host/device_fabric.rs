@@ -117,6 +117,11 @@ pub enum DeviceFabricUiAction {
     WakeDevice {
         device: String,
     },
+    /// Move the window in front here to `target`, another of the person's
+    /// devices: it shows that window from now on.
+    ShowWindowOn {
+        target: crate::shell::personal_continuity::DeviceId,
+    },
     HandoffMedia {
         session_id: String,
         target: crate::shell::personal_continuity::DeviceId,

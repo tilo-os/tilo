@@ -64,12 +64,10 @@ pub struct InlinePart {
     pub bytes: Vec<u8>,
 }
 
-/// How a mail is set.
 #[derive(Clone, Copy, Debug)]
 pub struct Policy<'a> {
     /// The person allowed remote content for this message.
     pub remote: bool,
-    /// The reader is dark.
     pub dark: bool,
     /// The reader's ground and ink as `#rrggbb`, for a mail set dark.
     pub ground: &'a str,
@@ -350,12 +348,26 @@ fn dark_ready(html: &str) -> bool {
 /// frame at the size the view has carries the mark there, so the reader
 /// shows a body once a frame has it (`reader::html`). A pseudo-element of the root,
 /// above everything, so nothing the mail lays out moves or covers it.
+///
+/// The mail's style cannot remove it: the rules are important declarations in
+/// the document's first cascade layer, which win over every important
+/// declaration after it, layered or not, and the layer has no name for a
+/// mail's rule to join. The mark resets every property it does not set, and
+/// the root keeps nothing that would hide, move or contain it. The mail's own
+/// root element, with its attributes, is never written.
 /// `apps/browser/chromium/tests/resize_frames.py` holds Chromium to it.
-pub const END_MARK: &str = "html::after{content:\"\"!important;display:block!important;\
-position:fixed!important;right:0!important;bottom:0!important;width:2px!important;\
-height:2px!important;margin:0!important;background:rgb(1,1,1)!important;\
-mix-blend-mode:difference!important;pointer-events:none!important;\
-z-index:2147483647!important}";
+pub const END_MARK: &str = "@layer{html::after{all:initial!important;content:\"\"!important;\
+display:block!important;position:fixed!important;right:0!important;bottom:0!important;\
+width:2px!important;height:2px!important;margin:0!important;\
+background:rgb(1,1,1)!important;mix-blend-mode:difference!important;\
+pointer-events:none!important;z-index:2147483647!important}\
+html{display:block!important;visibility:visible!important;opacity:1!important;\
+transform:none!important;translate:none!important;scale:none!important;\
+rotate:none!important;perspective:none!important;filter:none!important;\
+backdrop-filter:none!important;contain:none!important;\
+container-type:normal!important;content-visibility:visible!important;\
+will-change:auto!important;clip-path:none!important;mask:none!important;\
+zoom:1!important;isolation:auto!important;mix-blend-mode:normal!important}}";
 
 /// The document's own style, before the mail's: a light sheet or the
 /// reader's dark ground, preformatted text that wraps, long words that
@@ -389,8 +401,6 @@ fn css_color(color: &str) -> &str {
         "#000000"
     }
 }
-
-// ---- elements and attributes -------------------------------------------
 
 /// Elements kept with their attributes.
 const ALLOWED: &[&str] = &[
@@ -573,8 +583,6 @@ fn kind_of(name: &str) -> Kind {
     }
 }
 
-// ---- tokens --------------------------------------------------------------
-
 /// A start or end tag as read: its lower-case name, and its attributes with
 /// lower-case names and raw values, the first of each name only.
 #[derive(Debug, Default)]
@@ -691,8 +699,6 @@ fn raw_text_end(src: &str, from: usize, name: &str) -> (usize, usize) {
     }
     (src.len(), src.len())
 }
-
-// ---- the sanitizer -------------------------------------------------------
 
 struct Sanitizer<'p> {
     policy: &'p Policy<'p>,

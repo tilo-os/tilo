@@ -466,6 +466,19 @@ fn base_document(studio: &Studio, base: &str) -> Result<ThemeDocument, Refusal> 
         .ok_or_else(|| Refusal::new(format!("no preset or theme is called {base:?}")))
 }
 
+impl Studio {
+    /// The theme a new one starting from `base` (a preset id or a theme id)
+    /// is before anything changes it: the base's roles, named as its copy.
+    ///
+    /// # Errors
+    /// Refuses a base that is no preset and no theme.
+    pub fn draft(&self, base: &str) -> Result<Theme, Refusal> {
+        let mut theme = Theme::from_document(&base_document(self, base)?);
+        theme.name = format!("{} copy", theme.name);
+        Ok(theme)
+    }
+}
+
 #[resource(kind = "themes.studio", label = "Themes")]
 impl Studio {
     /// Start a theme from a preset or from one of your themes.
@@ -479,8 +492,7 @@ impl Studio {
         if self.themes.contains(&id) || Preset::find(id.as_str()).is_some() {
             return Err(Refusal::from("a theme with that id already exists"));
         }
-        let mut theme = Theme::from_document(&base_document(self, &base)?);
-        theme.name = format!("{} copy", theme.name);
+        let theme = self.draft(&base)?;
         self.themes.push(id, theme);
         Ok(())
     }

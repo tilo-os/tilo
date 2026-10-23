@@ -29,7 +29,6 @@ use tilo_automerge::ApplyIncoming;
 mod upstream;
 use upstream::{Replica, Rng, agrees_with_upstream};
 
-/// Letters at a random place of `text`.
 fn type_at_random(doc: &mut AutoCommit, text: &ObjId, rng: &mut Rng, letters: usize) {
     let at = rng.below(doc.length(text) as u64 + 1) as usize;
     let word: String = (0..letters)

@@ -272,6 +272,7 @@ mod tab_menu_host;
 mod thing_menu;
 mod top_bar;
 mod tree_harvest;
+mod uninstall;
 mod wifi_password;
 mod window_focus;
 mod workspace_content;
@@ -549,6 +550,9 @@ pub struct ShellOverlayHost {
     /// state the rows show (a switch's ON/OFF) changing moves it, and the
     /// rows are rebuilt.
     search_chrome_revision: u64,
+    /// An index the open palette's query reaches was still being built at
+    /// the last tick: its rows are owed, and a still capture waits for them.
+    search_indexes_settling: bool,
     /// Atomic remote-directory admissions are not assumed accepted when the
     /// user presses Enter. Their tickets are polled at frame refresh without
     /// ever blocking the compositor on a broker RPC.
@@ -806,6 +810,9 @@ pub struct ShellOverlayHost {
     pairing_until_ms: u64,
     /// When the host was last asked for the devices asking.
     pairing_polled_at: Option<std::time::Instant>,
+    /// The last change of the devices another of the person's devices asked
+    /// about here, as the sheet has read them.
+    certification_seen: u64,
     /// Rooms a screenshot scene stands in as held through the web.
     site_rooms_for_shots: Option<Vec<crate::shell::network::SiteRoom>>,
     /// What each device asking calls itself, for the answer's notice.
@@ -994,6 +1001,12 @@ pub struct ShellOverlayHost {
     person_quick_composer_node: Option<NodeId>,
     /// The invite, join and pairing sheet's node while it is up.
     peer_sync_node: Option<NodeId>,
+    /// "Uninstall <name>?" while it asks ([`uninstall`]).
+    uninstall_sheet: Option<crate::shell::uninstall_sheet::Asking>,
+    /// The sheet's window node and its own, while it is laid out.
+    uninstall_nodes: Option<(NodeId, NodeId)>,
+    /// The sheet opened or closed since the tree was last built.
+    uninstall_changed: bool,
     agent_actions:
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
     /// The rooms' trackers, where the composer follows the runs it asked for.
@@ -1759,6 +1772,13 @@ mod overview_transition_tests;
 #[cfg(test)]
 #[path = "wifi_password_tests.rs"]
 mod wifi_password_tests;
+
+#[cfg(test)]
+#[path = "open_window_rows_tests.rs"]
+mod open_window_rows_tests;
+#[cfg(test)]
+#[path = "store_index_arrival_tests.rs"]
+mod store_index_arrival_tests;
 
 #[cfg(test)]
 #[allow(

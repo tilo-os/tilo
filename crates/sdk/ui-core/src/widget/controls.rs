@@ -27,7 +27,6 @@ pub type AttributedControlInvocation = (
     Option<tilo_actions::InvocationId>,
 );
 
-/// A widget that owns action-bound controls.
 pub trait ActionControls: Widget {
     /// Bind retained producers before their first callback. Private holders
     /// must override this; child traversal alone never certifies full coverage.

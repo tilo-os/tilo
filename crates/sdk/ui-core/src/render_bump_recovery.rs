@@ -106,7 +106,6 @@ mod tests {
             BumpStep::Repaint
         );
         assert_eq!(recovery.wait(), None);
-        // A second stage overflowing in the repaint gets its own repaint.
         assert_eq!(
             recovery.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
             BumpStep::Repaint

@@ -12,10 +12,6 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 /// Connect to the control socket at `path`.
-///
-/// # Errors
-/// The socket is missing, refuses the connection, or belongs to another
-/// account.
 pub fn connect(path: &Path) -> io::Result<UnixStream> {
     UnixStream::connect(path)
 }

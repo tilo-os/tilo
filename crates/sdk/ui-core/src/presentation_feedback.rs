@@ -276,7 +276,6 @@ mod tests {
 
     #[test]
     fn handoff_rows_keep_identity_and_refuse_malformed_emission() {
-        // Case `handoff_keeps_frame_and_clock_fields_with_explicit_worker_identity`.
         {
             let original =
                 serde_json::json!({"cpu_frame_id": 42, "before_receive_host_lo_s": null});
@@ -289,7 +288,6 @@ mod tests {
             }
         }
 
-        // Case `malformed_handoff_cannot_be_emitted_as_a_qualifying_row`.
         {
             for row in [
                 serde_json::Value::Null,

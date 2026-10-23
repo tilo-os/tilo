@@ -70,11 +70,9 @@ mod tests {
                 TABLE,
             )
         };
-        // Utrecht, Potsdam, Newark.
         assert_eq!(at(52.09, 5.12).as_deref(), Some("Europe/Amsterdam"));
         assert_eq!(at(52.39, 13.06).as_deref(), Some("Europe/Berlin"));
         assert_eq!(at(40.73, -74.17).as_deref(), Some("America/New_York"));
-        // Across the antimeridian, Fiji is nearer than anything west of it.
         assert_eq!(at(-17.0, -179.5).as_deref(), Some("Pacific/Fiji"));
         assert_eq!(
             nearest_zone_in(

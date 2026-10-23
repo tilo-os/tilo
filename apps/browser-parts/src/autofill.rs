@@ -237,7 +237,6 @@ pub mod tests {
     /// Profile lifecycle: opt-in, private isolation and capacity.
     #[test]
     fn address_profiles_opt_in_edit_capacity_and_private_isolation() {
-        // Phase `address_profiles_require_opt_in_and_survive_explicit_edits`.
         {
             let (_app, record) = address_book();
             let mut store = AutofillStore::open(BrowsingMode::Normal, Some(record.clone()));
@@ -262,7 +261,6 @@ pub mod tests {
             assert!(reopened.profile_for_fill("two").is_none());
         }
 
-        // Phase `private_mode_never_reads_or_changes_the_persons_profiles`.
         {
             let (_app, record) = address_book();
             let mut normal = AutofillStore::open(BrowsingMode::Normal, Some(record.clone()));
@@ -276,7 +274,6 @@ pub mod tests {
             assert_eq!(record.with(|book| book.profiles.len()), 1);
         }
 
-        // Phase `profile_capacity_still_allows_editing_and_deleting_existing_entries`.
         {
             let (_app, record) = address_book();
             let mut store = AutofillStore::open(BrowsingMode::Normal, Some(record));

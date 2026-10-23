@@ -24,6 +24,7 @@ pub mod actions;
 mod graphics;
 pub mod history;
 mod i18n;
+mod image_loads;
 mod native_editor;
 pub mod parse;
 pub mod resource;

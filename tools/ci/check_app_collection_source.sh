@@ -10,7 +10,6 @@ for commit in "$collection" "$target"; do
     exit 1
   }
 done
-# Use the publication workflow's input set, including shared UI/runtime code.
 mapfile -t inputs < <(awk '
   /^    paths:$/ { on = 1; next }
   on && /^      - / { gsub(/^      - "|"$/, ""); print ":(glob)" $0; next }

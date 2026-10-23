@@ -221,7 +221,6 @@ mod tests {
         policy.capabilities[0].expiry = Expiry::AtUnix(500);
         assert_eq!(policy.net_hosts(Some(501)), [".crates.io"]);
 
-        // A host grant for another app grants this guest nothing.
         let mut other = tilo_environment::host_grant("example.com").unwrap();
         other.subject = Subject::Principal(Principal::App("so.tilo.other".into()));
         assert!(Policy::new(vec![other]).net_hosts(Some(1)).is_empty());
@@ -236,7 +235,6 @@ mod tests {
 
     #[test]
     fn a_grant_the_runtime_would_not_bind_binds_nothing() {
-        // Written by something other than `grant-dir`, which refuses it.
         let policy = Policy::new(vec![CapOverride::grant(
             Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string())),
             Scope::FsPath("/usr".to_string()),

@@ -124,7 +124,6 @@ mod tests {
 
     #[test]
     fn history_pages_backwards_from_the_oldest_live_op_until_loaded() {
-        // Case `history_is_fetched_from_the_oldest_live_op_backwards_on_demand`.
         {
             let artifact = ArtifactId::new();
             let mut history = DocumentHistory::default();
@@ -147,7 +146,6 @@ mod tests {
             assert_eq!(before_seq(history.on_viewport(artifact, 0)), None);
         }
 
-        // Case `opening_an_old_version_keeps_paging_until_it_is_loaded`.
         {
             let artifact = ArtifactId::new();
             let mut history = DocumentHistory::default();

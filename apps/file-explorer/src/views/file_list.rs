@@ -93,6 +93,14 @@ impl FileRow for ListRow {
         self.entry.modified
     }
 
+    /// An app's kind in the Applications place.
+    fn kind(&self) -> Option<String> {
+        self.entry
+            .app
+            .as_ref()
+            .map(|app| crate::applications::kind_label(app.kind))
+    }
+
     /// The file's icon or preview with its sync emblem, then its name and,
     /// for a conflicted file, a warning.
     fn paint_name(

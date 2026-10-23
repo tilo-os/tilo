@@ -1220,7 +1220,6 @@ mod tests {
                 inputs: std::collections::BTreeMap::default(),
                 paused: false,
             },
-            // Far above the few ids other membership commands carry.
             program: "x".repeat(8 * 1024),
             device: None,
         };

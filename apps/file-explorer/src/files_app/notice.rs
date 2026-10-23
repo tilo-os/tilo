@@ -6,7 +6,9 @@
 //! news is the transient status bubble's. A notice is the shared toast card
 //! ([`ui::widget::toast::paint_transient`]) with at most one action and a
 //! close button, at the bottom of the file view; it goes away by itself,
-//! but not while the pointer rests on it.
+//! but not while the pointer rests on it. A card with an action stays for
+//! [`LIFETIME`]; one without leaves after the shared notice lifetime
+//! ([`ui::widget::toast::NOTICE_LIFETIME`]), as every such toast does.
 
 use std::path::PathBuf;
 
@@ -14,7 +16,7 @@ use ui::time::{Duration, Instant};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastCardHit, ToastKind};
 use vello::kurbo::{Point, Rect};
 
-/// How long a notice stays up once the pointer is not on it.
+/// How long a notice with an action stays up once the pointer is not on it.
 const LIFETIME: Duration = Duration::from_secs(8);
 
 /// What a notice's button does.
@@ -120,6 +122,16 @@ impl Notice {
         }
     }
 
+    /// How long the card stays up once the pointer is not on it: one that
+    /// offers nothing to do leaves as every such toast does.
+    fn lifetime(&self) -> Duration {
+        if self.action().is_some() {
+            LIFETIME
+        } else {
+            ui::widget::toast::NOTICE_LIFETIME
+        }
+    }
+
     /// Whether the card is a transfer's progress.
     pub(crate) fn shows_progress(&self) -> bool {
         self.action() == Some(&NoticeAction::CancelTransfer)
@@ -162,7 +174,7 @@ impl Notice {
             shown.action != Some(NoticeAction::CancelTransfer)
                 && self.hovered.is_none()
                 && !ui::time::wall_frozen()
-                && now.saturating_duration_since(shown.since) > LIFETIME
+                && now.saturating_duration_since(shown.since) > self.lifetime()
         });
         over && self.dismiss()
     }
@@ -172,7 +184,9 @@ impl Notice {
         if ui::time::wall_frozen() || self.hovered.is_some() || self.shows_progress() {
             return None;
         }
-        self.shown.as_ref().map(|shown| shown.since + LIFETIME)
+        self.shown
+            .as_ref()
+            .map(|shown| shown.since + self.lifetime())
     }
 
     /// Where the action button was painted (`Rect::ZERO` when it wasn't).
@@ -279,6 +293,12 @@ impl Notice {
             area,
             ToastAnchor::BottomCenter,
             &card,
+            // Under the pointer it is held: its time starts when it leaves.
+            if self.hovered.is_some() {
+                ui::time::now()
+            } else {
+                shown.since
+            },
         );
     }
 
@@ -328,7 +348,6 @@ mod tests {
         assert!(notice.is_shown());
         assert!(!notice.press(Point::new(400.0, 10.0)));
         assert_eq!(notice.release(Point::new(400.0, 10.0)), None);
-        // A press that slides off the button onto the card does nothing.
         assert!(notice.press(Point::new(220.0, 20.0)));
         assert_eq!(
             notice.release(Point::new(10.0, 10.0)),
@@ -362,7 +381,11 @@ mod tests {
         let shown_at = ui::time::now();
         assert!(!notice.expire(shown_at));
         if !ui::time::wall_frozen() {
-            assert!(notice.expire(shown_at + LIFETIME + Duration::from_millis(1)));
+            assert!(
+                notice.expire(
+                    shown_at + ui::widget::toast::NOTICE_LIFETIME + Duration::from_millis(1)
+                )
+            );
             assert!(!notice.is_shown());
         }
     }

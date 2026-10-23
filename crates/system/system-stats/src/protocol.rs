@@ -84,7 +84,6 @@ impl Grant {
         }
     }
 
-    /// The grant a device scope names, if any.
     #[must_use]
     pub fn from_device_scope(scope: &str) -> Option<Self> {
         Self::ALL
@@ -141,7 +140,6 @@ impl Grants {
         }
     }
 
-    /// These grants with `grant` added.
     #[must_use]
     pub const fn with(mut self, grant: Grant) -> Self {
         match grant {
@@ -191,10 +189,6 @@ pub fn write_handoff<W: std::io::Write + ?Sized>(
 }
 
 /// Read the handoff a launcher wrote.
-///
-/// # Errors
-/// The stream ends, the magic is wrong, or the handoff does not decode or
-/// names another version.
 pub fn read_handoff<R: std::io::Read + ?Sized>(stream: &mut R) -> std::io::Result<Handoff> {
     let mut magic = [0_u8; 4];
     stream.read_exact(&mut magic)?;
@@ -285,7 +279,6 @@ pub enum Reply {
     Storage { request: u64, storage: Box<Storage> },
 }
 
-/// The `op` of a [`Reply`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum ReplyOp {
@@ -460,7 +453,6 @@ impl MemoryStats {
         self.total.saturating_sub(self.available)
     }
 
-    /// Swap in use.
     #[must_use]
     pub const fn swap_used(&self) -> u64 {
         self.swap_total.saturating_sub(self.swap_free)
@@ -527,7 +519,6 @@ pub struct GpuStats {
     pub memory_total: Option<u64>,
 }
 
-/// One battery.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct BatteryStats {
     pub name: String,
@@ -693,7 +684,6 @@ pub struct StorageDevice {
     pub label: Option<String>,
     #[serde(default)]
     pub uuid: Option<String>,
-    /// Bytes in use on its mounted filesystem.
     #[serde(default)]
     pub fs_used: Option<u64>,
     /// Where its filesystem is mounted, when it is.
@@ -765,9 +755,6 @@ pub struct DriveHealth {
 }
 
 /// Encode one request or reply as a frame on `stream`.
-///
-/// # Errors
-/// The value does not encode, the frame is too large, or the write fails.
 pub fn write_message<W: std::io::Write + ?Sized, T: Serialize>(
     stream: &mut W,
     message: &T,
@@ -778,9 +765,6 @@ pub fn write_message<W: std::io::Write + ?Sized, T: Serialize>(
 }
 
 /// Read one request or reply; `None` when the peer closed between frames.
-///
-/// # Errors
-/// The stream fails mid-frame, or the frame does not decode.
 pub fn read_message<R: std::io::Read + ?Sized, T: serde::de::DeserializeOwned>(
     stream: &mut R,
 ) -> std::io::Result<Option<T>> {

@@ -72,9 +72,6 @@ impl PrivateFeedback {
     /// Name the window the next report is about. The desktop chooses it from
     /// where the person asked for Feedback; nothing about it is read until
     /// the person includes context in a review.
-    ///
-    /// # Errors
-    /// Refuses while the controller is busy in an effect.
     pub fn about(&self, subject: Option<Subject>) -> Result<(), Error> {
         self.services.about(subject)
     }

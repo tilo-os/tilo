@@ -100,7 +100,6 @@ mod tests {
             Some(event.what.clone()),
             "the event reads as a history entry"
         );
-        // The same status again changes nothing and records nothing.
         assert!(
             workspace
                 .set_task_status_at("task-1", target, "person-1", 43)

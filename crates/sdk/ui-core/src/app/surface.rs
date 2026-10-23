@@ -10,7 +10,6 @@ use crate::profiling::InputPhase;
 pub trait AppSurface {
     /// Physical pixels per logical pixel.
     fn scale_factor(&self) -> f64;
-    /// The surface's size in physical pixels.
     fn inner_size(&self) -> winit::dpi::PhysicalSize<u32>;
     /// Ask for another frame.
     fn request_redraw(&self);
@@ -410,14 +409,16 @@ impl App {
             } = event
         {
             let shift = app.input.modifiers.state().shift_key();
-            // Find opens the window bar's search, which acts on this app in
-            // place, ahead of any find of the app's own.
-            if c.eq_ignore_ascii_case("f")
-                && !shift
-                && !app.input.modifiers.state().alt_key()
-                && app.window_bar_takes_find()
+            // Find (and Find and Replace) opens the window bar's search,
+            // which acts on this app in place, ahead of any find of the
+            // app's own.
+            if let Some(opening) = crate::widget::window_search::search_chord(
+                &event,
+                app.input.modifiers.state(),
+                app.input.platform,
+            ) && app.window_bar_takes(opening)
             {
-                crate::window_toolbar::open_search();
+                crate::window_toolbar::open_search(opening);
                 handled = true;
             }
             match crate::platform::HostShortcut::resolve(app.input.platform, c, shift) {
@@ -1263,9 +1264,7 @@ pub struct SurfaceDamage {
     /// The last frame painted a layer over the widgets (an overlay, history
     /// chrome, a dialog, the palette) that their damage does not describe.
     top_layer_drawn: bool,
-    /// Where the last frame's tooltip painted.
     tooltip: Option<KurboRect>,
-    /// The presence the last frame's widgets painted from.
     widgets: Option<crate::presence::WidgetPresence>,
     /// Why the last frame repainted the surface whole, if it did.
     repainted: Option<&'static str>,
@@ -1560,7 +1559,6 @@ mod tests {
             ),
             vec![chip, body, lower]
         );
-        // The chip went again.
         assert_eq!(
             changed_boxes(
                 &[(a, header), (c, chip), (b, body)],
@@ -2060,9 +2058,6 @@ mod tests {
         );
     }
 
-    /// An app embedded in a host's tree is laid out where the host places
-    /// it, takes the host's pointer input in its own coordinates whatever
-    /// the host's scale, and leaves the desktop's tab chords to the host.
     #[test]
     fn an_embedded_app_takes_its_region_input_and_leaves_tab_chords_to_the_host() {
         let (app, clicks) = clicks_app();

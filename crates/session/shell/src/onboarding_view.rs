@@ -19,6 +19,8 @@
 
 mod prepared;
 mod semantic;
+mod session;
+use session::SessionPaths;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -509,6 +511,7 @@ type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
 /// make it active, with the same root to device chain minting provisions.
 fn import_identity(
     import_dir: &Path,
+    identity_paths: &tilo_user_identity::IdentityPaths,
     source: &Path,
     passphrase: &[u8],
 ) -> Result<MintedIdentity, String> {
@@ -534,17 +537,11 @@ fn import_identity(
     // complete root -> device chain as minting. The narrower
     // identity-keyed certificate helper leaves the legacy system
     // owner/certificate absent until a later login repair.
-    crate::firstboot::ensure_collaboration_identity(
-        import_dir,
-        &crate::firstboot::collaboration_identity_paths(),
-    )
-    .map_err(|error| error.to_string())?;
-    crate::device_fleet::DeviceFleetStore::at(
-        import_dir,
-        crate::firstboot::collaboration_identity_paths(),
-    )
-    .register_current_device(&profile.id)
-    .map_err(|error| error.to_string())?;
+    crate::firstboot::ensure_collaboration_identity(import_dir, identity_paths)
+        .map_err(|error| error.to_string())?;
+    crate::device_fleet::DeviceFleetStore::at(import_dir, identity_paths.clone())
+        .register_current_device(&profile.id)
+        .map_err(|error| error.to_string())?;
     Ok(MintedIdentity {
         fingerprint: profile.id,
         path: profile.record_path,
@@ -815,6 +812,7 @@ pub struct OnboardingView {
     backup_passphrase: Arc<Mutex<String>>,
     backup_confirmation: Arc<Mutex<String>>,
     identity_dir: Option<PathBuf>,
+    session: SessionPaths,
     nearby: Option<crate::onboarding_nearby::NearbyPairing>,
     nearby_status: Option<String>,
     /// Why the last pairing attempt ended without joining. The nearby
@@ -917,20 +915,44 @@ impl OnboardingView {
         context: OnboardingContext,
         recovery_only: bool,
     ) -> Self {
+        Self::new_in_session(
+            identity_dir,
+            SessionPaths::from_process(),
+            context,
+            recovery_only,
+        )
+    }
+
+    fn new_in_session(
+        identity_dir: PathBuf,
+        session: SessionPaths,
+        context: OnboardingContext,
+        recovery_only: bool,
+    ) -> Self {
         let mint_dir = identity_dir.clone();
         let import_dir = identity_dir.clone();
-        let minter: Minter = match context {
-            OnboardingContext::FullSystem => {
-                Box::new(move || crate::onboarding::mint_into(&mint_dir).map_err(|e| e.to_string()))
+        let mint_paths = session.identity_paths();
+        let import_paths = session.identity_paths();
+        let minter: Minter = Box::new(move || {
+            let paths = mint_paths
+                .as_ref()
+                .ok_or_else(session::identity_root_unavailable)?;
+            match context {
+                OnboardingContext::FullSystem => crate::onboarding::mint_into(&mint_dir, paths),
+                OnboardingContext::HostDesktop => {
+                    crate::onboarding::mint_into_for_legacy_linux_host(&mint_dir, paths)
+                }
             }
-            OnboardingContext::HostDesktop => Box::new(move || {
-                crate::onboarding::mint_into_for_legacy_linux_host(&mint_dir)
-                    .map_err(|e| e.to_string())
-            }),
-        };
+            .map_err(|e| e.to_string())
+        });
         let mut view = Self::with_all_handlers_in_context(
             minter,
-            Box::new(move |source, passphrase| import_identity(&import_dir, source, passphrase)),
+            Box::new(move |source, passphrase| {
+                let paths = import_paths
+                    .as_ref()
+                    .ok_or_else(session::identity_root_unavailable)?;
+                import_identity(&import_dir, paths, source, passphrase)
+            }),
             Box::new(move |identity, destination, passphrase| {
                 runtime_identity::export_portable_backup(identity, destination, passphrase)
                     .map(|_| ())
@@ -939,6 +961,7 @@ impl OnboardingView {
             context,
         );
         view.backup_capability = Box::new(canonical_backup_capability);
+        view.session = session;
         view.nearby_status_path = Some(identity_dir.join(".nearby-enrollment-status.json"));
         view.recovery_only = recovery_only;
         if context == OnboardingContext::FullSystem
@@ -952,7 +975,10 @@ impl OnboardingView {
         }
         view.load_prepared_setup(&identity_dir);
         if context == OnboardingContext::FullSystem {
-            view.migration = crate::onboarding_prepared::session_home()
+            view.migration = view
+                .session
+                .home
+                .clone()
                 .map(crate::onboarding_migration::Migration::open);
         }
         view.identity_dir = Some(identity_dir);
@@ -1097,6 +1123,7 @@ impl OnboardingView {
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
             identity_dir: None,
+            session: SessionPaths::default(),
             nearby: None,
             nearby_status: None,
             nearby_failure: None,
@@ -1769,17 +1796,16 @@ impl OnboardingView {
     }
 
     fn start_nearby_pairing(&mut self) {
-        if let (Some(identity_dir), Some(status_path)) =
-            (&self.identity_dir, &self.nearby_status_path)
-        {
-            let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
-            let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
-                .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
+        if let (Some(identity_dir), Some(status_path), Some(system)) = (
+            &self.identity_dir,
+            &self.nearby_status_path,
+            &self.session.identity,
+        ) {
             match crate::onboarding_nearby::NearbyPairing::start(
-                &identity_root,
+                &system.root,
                 identity_dir,
                 status_path,
-                &label,
+                &self.session.device_label,
             ) {
                 Ok(pairing) => {
                     self.nearby = Some(pairing);
@@ -4500,6 +4526,15 @@ impl Widget for OnboardingView {
         self.settle_journal();
         self.settle_identity_work();
 
+        // The chooser lists and checks on a worker; what it answered shows
+        // now, and a confirmed choice is taken below.
+        if self
+            .picker
+            .as_mut()
+            .is_some_and(|(_, picker)| picker.poll_lookups())
+        {
+            self.invalidation.both();
+        }
         let picker_outcome = self
             .picker
             .as_mut()
@@ -4551,18 +4586,18 @@ impl Widget for OnboardingView {
             && self.flow.screen() == Screen::Restore
             && self.picker.is_none()
         {
-            let (initial, roots) = onboarding_picker_scope();
+            let (initial, roots) = self.session.picker_scope();
             self.picker = Some((
                 PickerPurpose::ImportIdentity,
-                FilePicker::new(t("onboarding-picker-import-title"), initial, roots).with_filters(
-                    vec![
+                FilePicker::new(t("onboarding-picker-import-title"), initial, roots)
+                    .with_waker(Some(crate::shell::search::invocation_wake::waker()))
+                    .with_filters(vec![
                         ui::widget::file_picker::FileFilter::new(
                             t("onboarding-picker-import-filter"),
                             &["tilo-identity", "tilo-identity-backup", "json"],
                         ),
                         ui::widget::file_picker::FileFilter::all(),
-                    ],
-                ),
+                    ]),
             ));
             self.invalidation.focus();
         }
@@ -4653,10 +4688,11 @@ impl Widget for OnboardingView {
                 _ => Some(t("onboarding-passphrase-unavailable")),
             };
             if self.backup_error.is_none() {
-                let (initial, roots) = onboarding_picker_scope();
+                let (initial, roots) = self.session.picker_scope();
                 self.picker = Some((
                     PickerPurpose::BackupIdentity,
                     FilePicker::new(t("onboarding-picker-backup-title"), initial, roots)
+                        .with_waker(Some(crate::shell::search::invocation_wake::waker()))
                         .with_mode(FilePickerMode::Save)
                         .with_filters(vec![ui::widget::file_picker::FileFilter::new(
                             t("onboarding-picker-backup-filter"),
@@ -5210,54 +5246,6 @@ fn view_order(screen: Screen, tour: Option<TourPage>) -> u8 {
     }
 }
 
-/// OOBE is trusted compositor chrome, so its chooser follows the user rather
-/// than an application's capability scope. Keep roots narrow: the home tree
-/// plus conventional removable-media mount roots, never the whole filesystem.
-fn onboarding_picker_scope() -> (PathBuf, Vec<PathBuf>) {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute() && path.is_dir());
-    let mut roots = Vec::new();
-    if let Some(home) = home.as_ref() {
-        roots.push(home.clone());
-    }
-    let user = std::env::var_os("USER").filter(|value| !value.is_empty());
-    let mut media_roots = Vec::new();
-    if let Some(user) = user {
-        for base in [PathBuf::from("/run/media"), PathBuf::from("/media")] {
-            let candidate = base.join(&user);
-            if candidate.is_dir() {
-                media_roots.push(candidate);
-            }
-        }
-    }
-    if media_roots.is_empty() && PathBuf::from("/media").is_dir() {
-        media_roots.push(PathBuf::from("/media"));
-    }
-    let mounted = media_roots
-        .iter()
-        .find(|root| directory_has_subdirectory(root))
-        .cloned();
-    roots.extend(media_roots);
-    let initial = mounted
-        .or_else(|| home.clone())
-        .unwrap_or_else(std::env::temp_dir);
-    if roots.is_empty() {
-        roots.push(initial.clone());
-    }
-    (initial, roots)
-}
-
-fn directory_has_subdirectory(path: &std::path::Path) -> bool {
-    std::fs::read_dir(path).is_ok_and(|entries| {
-        entries.filter_map(Result::ok).any(|entry| {
-            entry
-                .file_type()
-                .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
-        })
-    })
-}
-
 fn onboarding_picker_rect(viewport: Rect) -> Rect {
     let width = (viewport.width() * 0.78)
         .clamp(420.0, 900.0)
@@ -5401,6 +5389,7 @@ mod tests {
         ));
         let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
         view.identity_dir = Some(directory.clone());
+        view.session.home = Some(home.path().into());
         view.load_prepared_setup(&directory);
         assert!(!view.prepared_pending);
         assert_eq!(
@@ -5433,6 +5422,7 @@ mod tests {
         );
         let mut other_view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
         other_view.identity_dir = Some(other_identity.clone());
+        other_view.session.home = Some(home.path().into());
         other_view.load_prepared_setup(&other_identity);
         assert!(other_view.prepared_pending);
         assert!(other_view.verified_browser_projection().is_none());
@@ -5467,6 +5457,7 @@ mod tests {
         assert!(crate::onboarding_prepared::session_pending(&directory));
         let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
         view.identity_dir = Some(directory.clone());
+        view.session.home = Some(home.path().into());
         view.load_prepared_setup(&directory);
         assert!(!view.prepared_pending);
         assert!(view.browser.is_some());
@@ -5519,6 +5510,7 @@ mod tests {
         let before = std::fs::read(directory.join("primary.json")).unwrap();
         let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
         view.identity_dir = Some(directory.clone());
+        view.session.home = Some(home.path().into());
         view.load_prepared_setup(&directory);
         assert!(!view.prepared_pending);
         assert!(
@@ -5639,7 +5631,7 @@ mod tests {
             &identity,
             "Source owner",
             [20, 30, 40],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         runtime_identity::set_active_identity(&identity, "primary").unwrap();
@@ -6492,7 +6484,12 @@ mod tests {
             press(&view, &mut document, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &document);
             view.picker.as_mut().expect("save picker").1.click_open();
-            view.sync(&document, &automerge::ROOT);
+            // The picker checks where it saves on its worker; the frame
+            // takes its answer and hands the export to its own worker.
+            tilo_test_env::wait_until("the save picker to answer", || {
+                view.sync(&document, &automerge::ROOT);
+                view.picker.is_none()
+            });
             assert!(!view.identity_idle(), "the export is running");
             for _ in 0..3 {
                 view.sync(&document, &automerge::ROOT);
@@ -6636,7 +6633,7 @@ mod tests {
 
             store_progress(directory.path(), PersistedStage::IdentityReady)
                 .expect("backup journal");
-            let mut backup = OnboardingView::new(directory.path().to_path_buf());
+            let mut backup = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(backup.flow().screen(), Screen::Done);
             assert!(!backup.identity_ready_page);
             let mut blocked_finish = AutoCommit::new();
@@ -6646,13 +6643,13 @@ mod tests {
 
             store_progress(directory.path(), PersistedStage::IdentityReadyBackedUp)
                 .expect("verified-backup journal");
-            let backed_up = OnboardingView::new(directory.path().to_path_buf());
+            let backed_up = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert!(!backed_up.identity_ready_page);
             assert!(backed_up.backup_was_verified);
 
             store_progress(directory.path(), PersistedStage::ReadyToEnter).expect("ready journal");
 
-            let mut done = OnboardingView::new(directory.path().to_path_buf());
+            let mut done = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(done.flow().screen(), Screen::Done);
             assert!(done.flow().is_done());
             assert_eq!(
@@ -6676,32 +6673,35 @@ mod tests {
                 Some(PersistedStage::TourNavigate)
             );
 
-            let mut navigate_restart = OnboardingView::new(directory.path().to_path_buf());
+            let mut navigate_restart =
+                OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(navigate_restart.tour_page, Some(TourPage::Navigate));
             press(&navigate_restart, &mut document, KEY_TOUR_NEXT);
             sync_journaled(&mut navigate_restart, &document);
             assert_eq!(navigate_restart.tour_page, Some(TourPage::Organise));
 
-            let mut organise_restart = OnboardingView::new(directory.path().to_path_buf());
+            let mut organise_restart =
+                OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(organise_restart.tour_page, Some(TourPage::Organise));
             press(&organise_restart, &mut document, KEY_TOUR_NEXT);
             sync_journaled(&mut organise_restart, &document);
             assert_eq!(organise_restart.tour_page, Some(TourPage::Collaborate));
 
-            let mut collaborate_restart = OnboardingView::new(directory.path().to_path_buf());
+            let mut collaborate_restart =
+                OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(collaborate_restart.tour_page, Some(TourPage::Collaborate));
             press(&collaborate_restart, &mut document, KEY_TOUR_NEXT);
             sync_journaled(&mut collaborate_restart, &document);
             assert_eq!(collaborate_restart.tour_page, Some(TourPage::Start));
 
-            let mut start_restart = OnboardingView::new(directory.path().to_path_buf());
+            let mut start_restart = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(start_restart.tour_page, Some(TourPage::Start));
             press(&start_restart, &mut document, KEY_FINISH);
             sync_journaled(&mut start_restart, &document);
             assert!(start_restart.finished());
             assert!(!has_pending_progress(directory.path()));
 
-            let established = OnboardingView::new(directory.path().to_path_buf());
+            let established = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(
                 established.flow().screen(),
                 Screen::Intro,
@@ -6720,7 +6720,7 @@ mod tests {
             assert!(has_pending_progress(directory.path()));
             assert!(load_progress(directory.path()).is_err());
             write_fixture_identity(directory.path());
-            let resumed = OnboardingView::new(directory.path().to_path_buf());
+            let resumed = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(resumed.flow().screen(), Screen::Done);
             assert!(resumed.progress_error.is_some());
 
@@ -7104,7 +7104,7 @@ mod tests {
                 let directory = TempDir::new().expect("progress directory");
                 write_fixture_identity(directory.path());
                 store_progress(directory.path(), stage).expect("tour progress");
-                let mut view = OnboardingView::new(directory.path().to_path_buf());
+                let mut view = OnboardingView::isolated(directory.path().to_path_buf(), false);
                 let mut document = AutoCommit::new();
 
                 assert_eq!(view.tour_page, Some(page));
@@ -7170,7 +7170,7 @@ mod tests {
             write_fixture_identity(directory.path());
             store_progress(directory.path(), PersistedStage::TourOrganise)
                 .expect("organise journal");
-            let mut view = OnboardingView::new(directory.path().to_path_buf());
+            let mut view = OnboardingView::isolated(directory.path().to_path_buf(), false);
 
             assert_eq!(view.tour_page, Some(TourPage::Organise));
             assert!(
@@ -7462,7 +7462,7 @@ mod tests {
         // Phase `recovery_mode_starts_on_restore_and_never_offers_creation`.
         {
             let identity = tempfile::tempdir().expect("identity directory");
-            let mut recovery = OnboardingView::new_for_recovery(identity.path().to_path_buf());
+            let mut recovery = OnboardingView::isolated(identity.path().to_path_buf(), true);
             assert!(recovery.recovery_only);
             assert_eq!(recovery.flow.screen(), Screen::Existing);
             let mut document = AutoCommit::new();
@@ -7770,7 +7770,8 @@ mod tests {
             return;
         }
         let directory = runtime_identity::identity_dir_from_env().unwrap();
-        let minted = crate::onboarding::mint_into(&directory).unwrap();
+        let paths = crate::firstboot::collaboration_identity_paths();
+        let minted = crate::onboarding::mint_into(&directory, &paths).unwrap();
         let original = std::fs::read(&minted.path).unwrap();
         let view = real_backup_view(&directory);
         assert!(
@@ -7791,8 +7792,7 @@ mod tests {
             .unwrap()
             .try_into()
             .unwrap();
-        let certificate =
-            crate::firstboot::collaboration_identity_paths().device_cert_for_user(&person);
+        let certificate = paths.device_cert_for_user(&person);
         let held = certificate.with_extension("continuation-held");
         std::fs::rename(&certificate, &held).unwrap();
         assert!(
@@ -8247,6 +8247,11 @@ mod tests {
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &doc);
             view.picker.as_mut().expect("save picker").1.click_open();
+            // The picker checks where it saves on its worker first.
+            tilo_test_env::wait_until("the save picker to answer", || {
+                view.sync(&doc, &automerge::ROOT);
+                view.picker.is_none()
+            });
             sync_journaled(&mut view, &doc);
             assert_eq!(exports.load(Ordering::SeqCst), 1);
             assert!(view.backup_saved.is_some());

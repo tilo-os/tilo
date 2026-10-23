@@ -744,7 +744,6 @@ mod tests {
         );
         assert!(gaps.last().unwrap() < &REPEAT_FIRST);
         assert!(gaps.iter().all(|gap| *gap >= REPEAT_FASTEST));
-        // Releasing stops the repeat.
         assert!(
             mapper
                 .feed(ForwardedGamepadEvent::Hat { x: 0, y: 0 }, now)

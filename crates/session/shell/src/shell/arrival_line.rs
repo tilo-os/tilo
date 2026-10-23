@@ -39,7 +39,6 @@ const BELOW_BAR: f64 = ui::tokens::Spacing::BASE.s2 as f64;
 /// Someone here now, as the line shows them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Present {
-    /// Their name.
     pub name: String,
     /// Their stable id: what their face's colour is derived from when the
     /// roster gives none.
@@ -60,7 +59,6 @@ struct Shown {
     intro: Option<String>,
 }
 
-/// The arrival line.
 #[derive(Default)]
 pub struct ArrivalLine {
     appearing: ui::motion::Appearing,

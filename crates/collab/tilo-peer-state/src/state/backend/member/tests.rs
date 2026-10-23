@@ -507,7 +507,6 @@ fn a_read_deny_below_the_room_refuses_only_what_it_names() {
             TreePath::room(&room_id).app("finance"),
             Answer::Deny,
         ),
-        // A more specific Allow reopens one record of the hidden app.
         read_grant(
             "finance-summary",
             collab_types::document_node(&room_id, "finance", "summary"),
@@ -634,7 +633,6 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
                 "{app}/{record}"
             );
         }
-        // Nothing is withheld that the read decision allows.
         for (channel, withheld) in &readers.withheld {
             assert!(*channel == payroll || *channel == q3 || withheld.is_empty());
         }

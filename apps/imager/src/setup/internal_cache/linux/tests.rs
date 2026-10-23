@@ -1,6 +1,5 @@
 use super::*;
 
-/// Raw ancestry and effective ACL mask parsing.
 #[test]
 fn linux_ancestry_and_acl_mask_rules_are_lossless_and_strict() {
     // Phase `raw_ancestry_is_bounded_lossless_and_refuses_normalization`.

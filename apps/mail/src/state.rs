@@ -128,7 +128,6 @@ pub enum ReaderChoice {
     OpenLink(String),
     /// Put the link's address on the clipboard.
     CopyLink(String),
-    /// Copy what is selected in the HTML body.
     Copy,
     /// Select the whole HTML body.
     SelectAll,
@@ -168,7 +167,6 @@ pub enum Intent {
     /// Open a link of a message in the Browser: a web or mail address the
     /// person followed.
     OpenLink(String),
-    /// Open the reader's menu on a message at a point.
     ReaderMenu(MessageId, Point, Vec<ReaderChoice>),
     /// Ask the app-owned modal layer to confirm an all-Trash bulk purge. The
     /// selection remains local; no purge action is authored until confirmed.
@@ -181,7 +179,6 @@ pub enum Intent {
 pub enum Command {
     /// Browse explicit shared address-book recipient and sender choices.
     ContactRecipients,
-    /// Show `folder` of account `index`.
     OpenFolder(usize, Folder),
     /// Show every account's inbox in one list.
     OpenAllInboxes,
@@ -548,8 +545,6 @@ impl MailState {
             .item(&ui::tilo_resource::Id::from_raw(id.to_string()))
     }
 
-    // ---- intents ----
-
     pub fn push_intent(&mut self, i: Intent) {
         self.intents.push(i);
         self.dirty = true;
@@ -567,8 +562,6 @@ impl MailState {
     pub fn take_commands(&mut self) -> Vec<Command> {
         std::mem::take(&mut self.commands)
     }
-
-    // ---- derived views ----
 
     pub fn current_threads(&self) -> Vec<Thread> {
         self.mailbox.threads_in(self.folder)
@@ -1171,7 +1164,6 @@ mod tests {
 
     #[test]
     fn reader_selection_is_read_neutral_and_reply_all_is_distinct() {
-        // Phase `initial_reader_selection_is_read_state_neutral`.
         {
             let st = state();
             let selected = st
@@ -1185,7 +1177,6 @@ mod tests {
             );
         }
 
-        // Phase `arrow_browsing_previews_an_unread_message_without_a_read_action`.
         {
             let mut st = state();
             let rows = st.list_rows();
@@ -1208,7 +1199,6 @@ mod tests {
             assert_eq!(doc.get_heads(), heads_before);
         }
 
-        // Phase `reply_all_action_raises_distinct_reply_all_intent`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1329,7 +1319,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn bulk_actions_are_bounded_canonical_and_never_partial() {
-        // Phase `bulk_archive_is_one_bounded_canonical_move_action_and_keeps_selection_local`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1373,7 +1362,6 @@ mod tests {
             );
         }
 
-        // Phase `bulk_marking_read_retains_the_local_selection_for_follow_up_triage`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1397,7 +1385,6 @@ mod tests {
             assert_eq!(st.selected_bulk_ids(), ids);
         }
 
-        // Phase `bulk_move_to_trash_never_purges_trash_rows_from_a_mixed_virtual_view`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1441,7 +1428,6 @@ mod tests {
             );
         }
 
-        // Phase `bulk_purge_refuses_mixed_or_stale_rows_without_a_partial_mutation`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();

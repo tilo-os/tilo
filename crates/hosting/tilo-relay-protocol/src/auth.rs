@@ -71,7 +71,6 @@ const TILO_AUTH_CLIENT_TAG: &[u8] = b"tilo-relay-auth-v2/client\0";
 pub struct Hello {
     /// The client's [`PEER_PROTOCOL_VERSION`]. First, and never moved.
     pub protocol: u32,
-    /// Client's device cert.
     pub cert: DeviceCert,
     /// Fresh 32-byte challenge nonce the client wants the server to
     /// sign.
@@ -159,10 +158,6 @@ pub fn decode_handshake<T: serde::de::DeserializeOwned>(
 
 /// What a server answers a hello at another version with: its own
 /// version, alone, before it closes.
-///
-/// # Errors
-///
-/// Returns the encoding error.
 pub fn version_answer() -> Result<Vec<u8>, postcard::Error> {
     postcard::to_allocvec(&PEER_PROTOCOL_VERSION)
 }
@@ -842,7 +837,6 @@ mod tests {
             [5; 32],
         )
         .unwrap();
-        // The client sees a valid ack for its own nonce.
         verify_hello_ack(&ack, &alice, &revocations, 1000, &[3; 32]).unwrap();
         assert_eq!(ack.server_nonce, [5; 32]);
         let peer = pending
@@ -972,7 +966,6 @@ mod tests {
             .unwrap()
             .0
         };
-        // Another device's key, a different nonce, and a tampered signature.
         for ack2 in [
             build_hello_ack2(&collaborator.sk, &[5; 32]),
             build_hello_ack2(&laptop.sk, &[6; 32]),
@@ -1013,7 +1006,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(peer.device_public_key, laptop.cert.device_public_key);
-        // The same validity and trust checks as the handshake apply.
         assert!(matches!(
             authenticate_endpoint_bound(
                 &collaborator.cert,
@@ -1145,7 +1137,6 @@ mod tests {
             AuthError::PolicyReject
         ));
 
-        // A tampered challenge signature.
         let client_nonce = [4u8; 32];
         let mut ack = build_hello_ack(relay.cert.clone(), &relay.sk, [0u8; 32], &client_nonce);
         ack.sig_over_client_nonce[0] ^= 0x01;
@@ -1154,7 +1145,6 @@ mod tests {
             AuthError::BadChallengeSig
         ));
 
-        // A signature replayed under a different client nonce.
         let ack = build_hello_ack(relay.cert.clone(), &relay.sk, [0u8; 32], &[9u8; 32]);
         assert!(matches!(
             verify_hello_ack(&ack, &alice.public_key, &revs, 1000, &[8u8; 32]).unwrap_err(),

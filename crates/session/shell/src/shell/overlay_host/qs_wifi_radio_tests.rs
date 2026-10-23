@@ -110,7 +110,6 @@ impl Panel {
         let action = {
             let mut state = self.chrome.borrow_mut();
             let qs = &mut state.quick_settings;
-            // Lay the page out where nothing is.
             let _ = self
                 .host
                 .qs_root

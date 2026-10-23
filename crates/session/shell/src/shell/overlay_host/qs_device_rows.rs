@@ -21,7 +21,6 @@ impl ShellOverlayHost {
             .unwrap_or(Rect::ZERO)
     }
 
-    /// A device row's control button.
     pub(super) fn qs_device_control_rect(row: Rect) -> Rect {
         crate::shell::quick_settings::hosted::control_rect(row)
     }

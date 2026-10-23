@@ -62,13 +62,11 @@ pub enum View {
     /// Discover: updates, featured, recently updated, categories.
     #[default]
     Home,
-    /// Every app in one category.
     Category(String),
     /// The installed apps a newer version is offered for.
     Updates,
     /// The apps on this device.
     Installed,
-    /// The bots.
     Bots,
     /// The apps of one configured Flatpak repository, by its resource id.
     Repository(String),
@@ -88,7 +86,6 @@ impl View {
         }
     }
 
-    /// The view `show-view` names, if any.
     #[must_use]
     pub fn named(name: &str) -> Option<Self> {
         Some(match name.trim().to_ascii_lowercase().as_str() {
@@ -306,7 +303,6 @@ fn validate_remote_name(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The id an app's row is published under.
 fn app_row_id(app_id: &str) -> String {
     format!("app:{app_id}")
 }
@@ -364,7 +360,10 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
         .chain(item.pin_action())
         .chain(item.remove_action());
     for action in actions {
-        let spec = StoreEffect::package(action, item).bound();
+        let Some(effect) = StoreEffect::package(action, item) else {
+            continue;
+        };
+        let spec = effect.bound();
         let spec = if action == ActionKind::AddBot {
             // A bot is added by the workspace it runs in: the workspace's
             // Add a bot is the door, which the Store's button prepares.
@@ -1312,7 +1311,6 @@ impl StoreApp {
         ids.iter().filter_map(|id| self.item(id)).collect()
     }
 
-    /// Every category with apps in it.
     fn categories(&self) -> Vec<String> {
         crate::catalogue::Home::compute(&self.items, &self.blocks)
             .categories
@@ -2263,13 +2261,11 @@ impl StoreApp {
             StoreEffect::InstallRuntime { .. }
             | StoreEffect::OpenApp { .. }
             | StoreEffect::Update { .. }
-            | StoreEffect::Remove { .. }
             | StoreEffect::Pin { .. }
             | StoreEffect::Unpin { .. }
             | StoreEffect::FlatpakInstall { .. }
             | StoreEffect::FlatpakUpdate { .. }
             | StoreEffect::FlatpakOpen { .. }
-            | StoreEffect::FlatpakRemove { .. }
             | StoreEffect::FlatpakSetup { .. }
             | StoreEffect::AddBot { .. } => {}
         }
@@ -2288,11 +2284,8 @@ impl StoreApp {
             .chain(&self.remote_results)
             .find(|item| item.id == app)
             .ok_or_else(|| "app is no longer present in the catalog".to_string())?;
-        // A blocked app is opened, installed or updated from nowhere; it can
-        // still be removed.
-        if self.blocks.is_blocked(app)
-            && !matches!(action, ActionKind::Remove | ActionKind::FlatpakRemove)
-        {
+        // A blocked app is opened, installed or updated from nowhere.
+        if self.blocks.is_blocked(app) {
             return Err(ui::i18n!("store-blocked-refused"));
         }
         if action.requires_flatpak_host() && !self.flatpak_available {
@@ -2734,7 +2727,6 @@ impl StoreApp {
                     StoreEffect::FLATPAK_INSTALL,
                     StoreEffect::FLATPAK_UPDATE,
                     StoreEffect::FLATPAK_OPEN,
-                    StoreEffect::FLATPAK_REMOVE,
                     StoreEffect::FLATPAK_SETUP,
                     StoreEffect::ENABLE_REMOTE,
                     StoreEffect::DISABLE_REMOTE,
@@ -3128,7 +3120,7 @@ mod tests {
         item.id = "so.tilo.runtime.chromium".into();
         item.versions[0].root_hash_hex = Some("11".repeat(32));
         item.versions[0].runtime = Some("tilo-runtime/2026.10.4-chromium".into());
-        let action = StoreEffect::package(ActionKind::RuntimeInstall, &item);
+        let action = StoreEffect::package(ActionKind::RuntimeInstall, &item).unwrap();
         let mut app = StoreApp::new();
         app.set_items(vec![item.clone()]);
         assert_eq!(
@@ -3733,7 +3725,6 @@ mod tests {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
             store.worker = None;
-            // This controlled source fixture replaces the initial missing-service snapshot.
             store.set_operation_error(None);
             store.set_items(crate::fixture::fixture_catalog());
             store.set_flatpak_available(true);
@@ -4918,7 +4909,6 @@ mod tests {
     /// search ranks on this device; the categories are the catalogue's.
     #[test]
     fn catalogue_views_and_search_rank_visible_items() {
-        // Case `discover_features_tilo_apps_not_yet_on_this_device`.
         {
             let app = seeded_app();
             let names: Vec<&str> = app
@@ -4933,7 +4923,6 @@ mod tests {
             );
         }
 
-        // Case `on_this_device_shows_only_installed_apps`.
         {
             let mut app = seeded_app();
             app.show_view(View::Installed);
@@ -4945,7 +4934,6 @@ mod tests {
             assert_eq!(names, vec!["Terminal"]);
         }
 
-        // Case `a_category_lists_its_apps`.
         {
             let mut app = seeded_app();
             app.admit(StoreEffect::SetCategory {
@@ -4960,7 +4948,6 @@ mod tests {
             assert_eq!(names, vec!["Chess"]);
         }
 
-        // Case `search_narrows_and_ranks_by_score`.
         {
             let mut app = seeded_app();
             // "Term" only matches Terminal — Notes contains "te" but not
@@ -4988,7 +4975,6 @@ mod tests {
             );
         }
 
-        // Case `categories_are_the_catalogues`.
         {
             let app = seeded_app();
             let cats = app.categories();
@@ -5005,7 +4991,6 @@ mod tests {
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn resource_snapshots_are_bounded_and_resolve_canonically() {
-        // Case `worker_snapshot_does_not_reindex_on_the_ui_thread`.
         {
             let directory = crate::search::StoreDirectory::default();
             let mut app = StoreApp::new().with_directory(directory.clone());
@@ -5044,7 +5029,6 @@ mod tests {
             assert!(row.actions.iter().any(|action| action.id == "show-details"));
         }
 
-        // Case `published_rows_are_bounded_and_omitted_apps_resolve_by_id`.
         {
             let mut app = StoreApp::new();
             let mut items = Vec::new();
@@ -5104,7 +5088,6 @@ mod tests {
             );
         }
 
-        // Case `remotes_and_moderation_rows_resolve_by_id`.
         {
             let mut app = seeded_app();
             app.set_remotes(vec![crate::flathub_client::Remote {
@@ -5127,7 +5110,6 @@ mod tests {
             );
         }
 
-        // Case `app_rows_include_bounded_catalogue_context_for_nonvisual_clients`.
         {
             let app = seeded_app();
             let item = app.items.iter().find(|item| item.id == "id.notes").unwrap();
@@ -5148,7 +5130,6 @@ mod tests {
     /// Remote configuration rejects hostile input and unsubmitted drafts stay on their device.
     #[test]
     fn remote_configuration_is_validated_and_drafts_stay_local() {
-        // Case `remote_configuration_rejects_hostile_sizes_and_control_characters`.
         {
             assert!(validate_remote_name("flathub").is_ok());
             assert!(validate_remote_name(&"r".repeat(MAX_REMOTE_NAME_CHARS + 1)).is_err());
@@ -5163,7 +5144,6 @@ mod tests {
             );
         }
 
-        // Case `unsubmitted_remote_draft_stays_on_its_device`.
         {
             let mut app = seeded_app();
             let doc = AutoCommit::new();
@@ -5186,7 +5166,6 @@ mod tests {
             &[("en-US", include_str!("../locales/en-US.ftl"))],
         )
         .unwrap();
-        // Case `device_copy_distinguishes_tilo_on_demand_from_flatpak_installation`.
         {
             let tilo = item(
                 "Notes",
@@ -5212,7 +5191,6 @@ mod tests {
             assert_eq!(flatpak.action_kind(true).label(), "Install");
         }
 
-        // Case `the_title_says_where_the_person_is`.
         {
             let mut app = seeded_app();
             assert_eq!(app.page_title(), "Discover");
@@ -5229,7 +5207,6 @@ mod tests {
     /// Availability groups, narrow cards, medium summaries and the narrow discover section.
     #[test]
     fn catalogue_grids_keep_cards_apart_at_narrow_and_medium_widths() {
-        // Case `narrow_cards_do_not_cover_each_others_actions`.
         {
             fn check(widget: &dyn Widget) {
                 if widget.name() == "Card" {
@@ -5258,7 +5235,6 @@ mod tests {
             check(list.root_widget());
         }
 
-        // Case `catalogue_never_titles_the_window`.
         {
             let app = seeded_app();
             let tree = app.compose(&Theme::dark());
@@ -5269,7 +5245,6 @@ mod tests {
             );
         }
 
-        // Case `first_empty_busy_catalogue_is_real_chrome_not_a_flat_fill`.
         {
             let mut app = StoreApp::new();
             app.set_worker_busy(true);
@@ -5277,7 +5252,6 @@ mod tests {
             assert_eq!(accessible_name_count(tree.as_ref(), "Loading apps"), 1);
         }
 
-        // Case `full_narrow_discover_keeps_its_shelves_apart`.
         {
             let mut app = seeded_app();
             app.set_items(crate::fixture::fixture_catalog());
@@ -5467,7 +5441,6 @@ mod tests {
     /// Card pointer and primary activation invoke the Store's effects.
     #[test]
     fn cards_and_detail_controls_keep_typed_local_bindings() {
-        // Case `card_pointer_details_and_primary_activation_keep_typed_bindings`.
         {
             for width in [480.0, 1200.0] {
                 let app = seeded_app();
@@ -5525,7 +5498,9 @@ mod tests {
                     } else {
                         assert_eq!(
                             invoked.unwrap().address.action,
-                            crate::resource::StoreEffect::package(action, item).id()
+                            crate::resource::StoreEffect::package(action, item)
+                                .expect("a primary action is the Store's")
+                                .id()
                         );
                     }
                 }
@@ -5536,7 +5511,6 @@ mod tests {
     /// Stacked geometry, contained actions, the three-column measure and the large-text layout.
     #[test]
     fn catalogue_measures_stay_finite_contained_and_stacked_under_large_text() {
-        // Case `full_catalogue_geometry_stays_finite_at_every_width_and_text_scale`.
         {
             for (width, scale) in [(480.0, 1.0), (1_280.0, 2.0)] {
                 let mut app = seeded_app();
@@ -5547,7 +5521,6 @@ mod tests {
             }
         }
 
-        // Case `catalogue_cards_contain_actions_and_align_long_descriptions`.
         {
             fn check(widget: &dyn Widget, found: &mut usize) {
                 if widget.name() == "CardGrid" {
@@ -5599,7 +5572,6 @@ mod tests {
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn status_and_accessibility_surfaces_are_named_bounded_live_regions() {
-        // Case `operation_notice_uses_shared_live_banner_semantics`.
         {
             fn banner(widget: &dyn Widget) -> Option<AccessNode> {
                 if let Some(node) = widget.accessibility()
@@ -5654,7 +5626,6 @@ mod tests {
             assert_eq!(invoked.address.action, StoreEffect::Refresh.id());
         }
 
-        // Case `root_accessibility_is_a_named_window_not_an_empty_generic`.
         {
             let mut app = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
@@ -5664,7 +5635,6 @@ mod tests {
             assert!(node.bounds.is_some());
         }
 
-        // Case `publisher_identity_reads_as_a_short_fingerprint_with_the_full_key_kept`.
         {
             let mut signed = item(
                 "Signed",
@@ -5682,7 +5652,6 @@ mod tests {
             );
         }
 
-        // Case `visible_operation_status_is_printable_and_bounded`.
         {
             assert_eq!(visible_operation_status("\n\t"), UNKNOWN_OPERATION_STATUS);
             assert_eq!(
@@ -5698,7 +5667,6 @@ mod tests {
             assert!(visible.ends_with('…'));
         }
 
-        // Case `resource_detail_excerpt_is_printable_and_byte_bounded`.
         {
             assert_eq!(resource_detail_excerpt(" one\n\ttwo  "), "one two");
             let detail = resource_detail_excerpt(&format!("{}\nignored", "界".repeat(200)));
@@ -5707,7 +5675,6 @@ mod tests {
             assert!(!detail.contains('\n'));
         }
 
-        // Case `operation_status_is_exposed_as_a_polite_live_region`.
         {
             let mut app = seeded_app();
             app.set_status_line("Installing Notes…");
@@ -5739,7 +5706,6 @@ mod tests {
     /// operations are worker jobs; a card's operation holds it until done.
     #[test]
     fn refresh_and_package_operations_are_worker_jobs() {
-        // Case `update_priority_follows_the_current_catalogue_snapshot`.
         {
             let mut app = seeded_app();
             let mut files = item(
@@ -5784,7 +5750,6 @@ mod tests {
             );
         }
 
-        // Case `refresh_is_a_worker_job`.
         {
             let mut app = seeded_app();
             let job = admitted_job(&mut app, StoreEffect::Refresh);
@@ -5792,7 +5757,6 @@ mod tests {
             assert_eq!(job.finish, Finish::Status);
         }
 
-        // Case `app_operation_locks_the_target_card_until_it_finishes`.
         {
             let mut app = seeded_app();
             let open = StoreEffect::OpenApp {
@@ -5881,7 +5845,6 @@ mod tests {
     /// and an unknown filter is refused.
     #[test]
     fn browse_effects_filter_this_window_only() {
-        // Case `live_constructor_starts_empty`.
         {
             // The live app must show a real (empty) catalog until the
             // refresh worker streams one — never a fabricated one.
@@ -5891,7 +5854,6 @@ mod tests {
             assert!(app.query().is_empty());
         }
 
-        // Case `search_effect_filters_the_catalogue_and_reaches_the_worker`.
         {
             let mut app = seeded_app();
             let doc = AutoCommit::new();
@@ -5906,7 +5868,6 @@ mod tests {
             assert_eq!(names, vec!["Terminal"]);
         }
 
-        // Case `one_window_cannot_navigate_another_with_document_filters`.
         {
             let mut first = seeded_app();
             let mut second = seeded_app();
@@ -5920,7 +5881,6 @@ mod tests {
             assert_eq!(doc.get_heads(), heads, "browsing writes nothing");
         }
 
-        // Case `agent_browse_effects_match_the_local_controls`.
         {
             let mut app = seeded_app();
             app.scroll_offset.set((0.0, 240.0));
@@ -5969,7 +5929,6 @@ mod tests {
             );
         }
 
-        // Case `details_and_remotes_are_routes_of_this_window`.
         {
             let mut app = seeded_app();
             app.admit(StoreEffect::ShowDetails {
@@ -5993,23 +5952,20 @@ mod tests {
         }
     }
 
-    /// Stale or host-less Flatpak operations are unavailable and refused.
     #[test]
     fn flatpak_and_stale_operations_are_refused_without_escalation() {
-        // Case `stale_operation_cannot_escalate_to_an_unoffered_mutation`.
         {
             let mut app = seeded_app();
             assert!(
-                app.admit(StoreEffect::Remove {
+                app.admit(StoreEffect::Update {
                     app: "id.notes".into()
                 })
                 .is_err(),
-                "an uninstalled app offers Open, not an arbitrary stale Remove"
+                "an uninstalled app offers Open, not an arbitrary stale Update"
             );
             assert!(app.active_operation.is_none());
         }
 
-        // Case `flatpak_operations_are_unavailable_without_a_flatpak_host`.
         {
             let mut app = seeded_app();
             app.items
@@ -6027,58 +5983,74 @@ mod tests {
                 .live_row("app:id.chess")
                 .expect("an app row resolves")
                 .into_resource();
-            for id in ["flatpak-setup", "flatpak-remove"] {
-                let action = chess.actions.iter().find(|action| action.id == id).unwrap();
-                assert!(matches!(
-                    action.contract.availability,
-                    ui::tilo_actions::Availability::Unavailable { ref code, .. }
-                        if code == "flatpak_host_unavailable"
-                ));
-            }
+            let setup = chess
+                .actions
+                .iter()
+                .find(|action| action.id == "flatpak-setup")
+                .unwrap();
+            assert!(matches!(
+                setup.contract.availability,
+                ui::tilo_actions::Availability::Unavailable { ref code, .. }
+                    if code == "flatpak_host_unavailable"
+            ));
             assert!(
                 app.effect_statuses()
                     .iter()
                     .any(|status| *status
                         == EffectStatus::unavailable(
-                            StoreEffect::FLATPAK_REMOVE,
+                            StoreEffect::FLATPAK_UPDATE,
                             "flatpak_host_unavailable",
                             "Flatpak is not installed on this host; install it before using Flatpak catalog actions",
                         ))
             );
             assert!(
-                app.admit(StoreEffect::FlatpakRemove {
+                app.admit(StoreEffect::FlatpakUpdate {
                     app: "id.chess".into()
                 })
                 .is_err(),
                 "a direct invocation cannot bypass the unavailable operation"
             );
         }
+    }
 
-        // Case `flatpak_remove_asks_first_at_its_exact_address`.
-        {
-            let mut app = seeded_app();
-            app.items
-                .iter_mut()
-                .find(|item| item.id == "id.chess")
-                .unwrap()
-                .installed = InstalledState::Installed {
-                version: "1".into(),
-                available: "1".into(),
-                pinned: false,
-                user_managed: true,
-            };
-            let chess = app.live_row("app:id.chess").unwrap().into_resource();
-            let remove = chess
-                .actions
-                .iter()
-                .find(|action| action.id == "flatpak-remove")
-                .expect("Flatpak remove is offered at its concrete address");
-            assert_eq!(
-                remove.contract.confirmation,
-                ui::tilo_actions::ConfirmationPolicy::Confirm
+    #[test]
+    fn uninstalling_is_the_systems_one_action_not_a_store_effect() {
+        let mut app = seeded_app();
+        for item in &mut app.items {
+            if item.id == "id.chess" || item.id == "id.notes" {
+                item.installed = InstalledState::Installed {
+                    version: "1".into(),
+                    available: "1".into(),
+                    pinned: false,
+                    user_managed: true,
+                };
+            }
+        }
+        for (row, remove) in [
+            ("app:id.chess", ActionKind::FlatpakRemove),
+            ("app:id.notes", ActionKind::Remove),
+        ] {
+            let resource = app.live_row(row).unwrap().into_resource();
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .all(|action| action.id != "remove" && action.id != "flatpak-remove")
             );
-            let item = app.items.iter().find(|item| item.id == "id.chess").unwrap();
-            assert!(bindings::package(item, ActionKind::FlatpakRemove).is_some());
+            let item = app
+                .items
+                .iter()
+                .find(|item| row.ends_with(&item.id))
+                .unwrap();
+            assert_eq!(item.remove_action(), Some(remove));
+            assert!(StoreEffect::package(remove, item).is_none());
+            let binding = bindings::package(item, remove).unwrap();
+            let uninstall = bindings::uninstall(item);
+            assert_eq!(binding.address(), uninstall.address());
+            assert_eq!(
+                binding.invoke(()).unwrap().arguments,
+                uninstall.invoke(()).unwrap().arguments
+            );
         }
     }
 
@@ -6090,7 +6062,6 @@ mod tests {
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn moderation_effects_are_bounded_and_target_checked() {
-        // Case `a_draft_is_submitted_with_its_note_to_its_registry`.
         {
             let mut app = seeded_app();
             app.directory
@@ -6151,7 +6122,6 @@ mod tests {
             );
         }
 
-        // Case `a_case_is_refreshed_and_appealed_at_its_registry`.
         {
             let mut app = seeded_app();
             app.directory
@@ -6198,7 +6168,6 @@ mod tests {
             assert!(!offered.contains(&"submit-report"));
         }
 
-        // Case `only_a_well_formed_case_about_the_reported_app_is_recorded`.
         {
             let record = case_record("id.notes", "id.notes", "case-authoritative", "Open").unwrap();
             assert_eq!(
@@ -6213,7 +6182,6 @@ mod tests {
             assert!(case_record("id.notes", "id.other", "case-authoritative", "Open").is_err());
         }
 
-        // Case `registry_work_is_bounded`.
         {
             let mut app = seeded_app();
             app.pending_jobs = MAX_PENDING_EXTERNAL_OPERATIONS;

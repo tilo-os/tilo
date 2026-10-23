@@ -106,14 +106,12 @@ impl DesktopHandle {
     }
 }
 
-/// The hints over the strip.
 #[derive(Default)]
 pub(crate) struct ArrivalHints {
     rect: Rect,
     hints: Vec<Hint>,
     /// Where hints may stand: the strip below the windows' bars.
     area: Rect,
-    /// The pointer, as last moved.
     pointer: Option<Point>,
     /// What the last draw showed, by tab.
     drawn: Cell<Option<Vec<TabId>>>,

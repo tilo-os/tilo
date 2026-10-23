@@ -893,6 +893,35 @@ fn a_group_is_checked_once_at_its_end() {
     assert_eq!((state.left, state.right), (2, 2));
 }
 
+/// A control whose gesture is sometimes several actions is bound to a
+/// group; when it is one, it records that action alone, so an edit in it
+/// continues the undo step of the edit before as the edit itself would.
+#[test]
+fn a_group_of_one_is_that_action() {
+    let mut pair = Replica::<Pair>::new();
+    let paths = Pair::paths();
+    let alone = pair
+        .apply(Pair::MOVE_LEFT.with(0))
+        .expect("a verb")
+        .action
+        .clone();
+    let grouped = pair
+        .apply(Invoke::group([Pair::MOVE_LEFT.with(0)]))
+        .expect("a group of one verb")
+        .action
+        .clone();
+    assert_eq!(grouped.type_id, alone.type_id);
+    let pair_of = pair
+        .apply(Invoke::group([
+            paths.left.set(0).into(),
+            paths.right.set(0).into(),
+        ]))
+        .expect("a group of two")
+        .action
+        .clone();
+    assert_ne!(pair_of.type_id, alone.type_id, "two actions stay a group");
+}
+
 #[test]
 fn a_place_offers_a_verb_with_nothing_bound() {
     let place = Derived::<Board>::new("Board").with(Board::RETITLE.unbound());

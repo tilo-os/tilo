@@ -154,10 +154,6 @@ pub(crate) const HYDRATION_WAIT: Duration = Duration::from_secs(10 * 60);
 /// downloads off its request path, so no FUSE worker waits meanwhile; the
 /// repeat is the same idempotent request, and it commits once the bytes are
 /// local. After `wait` the last `EINPROGRESS` is the answer.
-///
-/// # Errors
-///
-/// The final error `write` returned.
 pub(crate) fn write_until_hydrated(
     wait: Duration,
     write: impl FnMut() -> std::io::Result<()>,

@@ -207,7 +207,6 @@ impl Widget for StepIndicator {
                 );
             }
 
-            // Step number, centred in the circle.
             let num = format!("{}", i.saturating_add(1));
             let num_color = if done_or_active {
                 Color::WHITE

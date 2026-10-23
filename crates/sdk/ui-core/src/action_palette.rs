@@ -85,6 +85,55 @@ pub fn placement(window: Rect) -> (Point, f64) {
     (Point::new(x0, y0), width)
 }
 
+/// The window a palette was asked for from, when a host lays several app
+/// tiles out in one tree (the desktop's strip of windows): the innermost
+/// tile under `pressed_at` when a press asked (a control that needs
+/// confirmation, clicked in a window that does not hold the keyboard), else
+/// the tile around the `focused` node. `None` when there is no tile there:
+/// the window is the whole surface. `tile_rect` is a node's rect when it is
+/// a tile ([`tile_rect`]).
+pub(crate) fn invoking_window(
+    taffy: &TaffyTree<()>,
+    root: Option<NodeId>,
+    pressed_at: Option<Point>,
+    focused: Option<NodeId>,
+    tile_rect: impl Fn(NodeId) -> Option<Rect>,
+) -> Option<Rect> {
+    let under_press = pressed_at.and_then(|at| {
+        let mut found = None;
+        let mut pending = vec![root?];
+        while let Some(node) = pending.pop() {
+            if let Some(rect) = tile_rect(node) {
+                if !rect.contains(at) {
+                    continue;
+                }
+                found = Some(rect);
+            }
+            if let Ok(children) = taffy.children(node) {
+                pending.extend(children);
+            }
+        }
+        found
+    });
+    under_press.or_else(|| {
+        let mut node = focused?;
+        loop {
+            if let Some(rect) = tile_rect(node) {
+                return Some(rect);
+            }
+            node = taffy.parent(node)?;
+        }
+    })
+}
+
+/// `widget`'s rect when it is an app's tile, a window of its own.
+pub(crate) fn tile_rect(widget: &dyn Widget) -> Option<Rect> {
+    widget
+        .as_any()
+        .is_some_and(|any| any.is::<crate::widget::TileHost>())
+        .then(|| widget.get_rect())
+}
+
 const FIELD_SIZE: crate::widget::ControlSize = crate::widget::ControlSize::Large;
 const GAP: f64 = 10.0;
 /// One row of facet chips, a small control's height.
@@ -2685,7 +2734,15 @@ impl ActionPalette {
         }
         // Escape: cancel the argument step, or close the palette.
         if matches!(&key.logical_key, Key::Named(NamedKey::Escape)) {
-            if self.arg.is_some() || self.confirm.is_some() {
+            // A question a window's control asked is answered "no", as by
+            // Cancel: the person never searched, so no search is left open.
+            let asked_by_a_control = self
+                .confirm
+                .as_ref()
+                .is_some_and(|state| state.pending.ordinary.is_some());
+            if asked_by_a_control {
+                self.close();
+            } else if self.arg.is_some() || self.confirm.is_some() {
                 self.exit_argument_mode();
             } else {
                 self.close();
@@ -3450,7 +3507,6 @@ mod tests {
     fn palette_search_is_budgeted_grouped_and_reaches_exact_matches() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `large_lazy_provider_is_budgeted_but_cannot_supply_its_own_authority`.
         {
             let materialized = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let mut palette =
@@ -3645,7 +3701,6 @@ mod tests {
             );
         }
 
-        // Case `ambient_task_context_reaches_palette_actions_without_overwriting_resource`.
         {
             let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
@@ -3787,7 +3842,6 @@ mod tests {
             );
             assert!(p.is_open(), "still open while collecting the argument");
 
-            // Type the argument into the field and confirm.
             p.field.set_query("Sprocket");
             let mut doc = automerge::AutoCommit::new();
             let root = ROOT;
@@ -3823,7 +3877,6 @@ mod tests {
     fn removed_or_disabled_actions_are_refused_at_activation_and_dispatch() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `removed_canonical_action_is_refused_at_activation`.
         {
             let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
@@ -3847,7 +3900,6 @@ mod tests {
             );
         }
 
-        // Case `disabled_canonical_action_is_refused_at_activation`.
         {
             let mut disabled = thing_resource();
             disabled.actions[0].contract.availability = tilo_actions::Availability::Unavailable {
@@ -3870,7 +3922,6 @@ mod tests {
             assert!(!p.is_empty());
         }
 
-        // Case `removed_action_is_refused_again_at_dispatch_boundary`.
         {
             let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
@@ -3893,7 +3944,6 @@ mod tests {
     fn consequential_actions_confirm_by_exact_value() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `consequential_action_waits_for_exact_confirmation`.
         {
             let resource = Resource::new("test.thing:1", "test.thing", "Thing").with_action(
                 ActionSpec::immediate(

@@ -39,7 +39,6 @@ fn remote_notes_caret_names_the_same_block_on_both_peers_across_inserted_blocks(
     .unwrap();
 
     with_surface::<NotesShell, NotesApp, _>(&mut b, |notes| {
-        // B read the same stable ids from the shared notebook ...
         let editor_b = notes.main_panel_mut().editor_mut();
         let ids_b: Vec<_> = editor_b
             .blocks()

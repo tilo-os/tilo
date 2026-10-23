@@ -1,13 +1,33 @@
 //! What a local subscriber of a channel is sent besides live traffic.
-use super::{BrokerChannels, ChannelSubscribers, ContextEnvelope, CrdtRoute, OpEnvelope, OpKind};
+use super::{
+    BrokerChannels, ChannelSubscribers, ContextEnvelope, CrdtRoute, OpAdmission, OpEnvelope, OpKind,
+};
 use std::sync::Mutex;
 use tokio::sync::mpsc;
+
+/// This broker's verdict for `envelope` on `route`'s channel as it fans out
+/// live: a sealed op is sealed because the channel requires it, and
+/// cleartext is admitted exactly while the channel's gates admit it. The
+/// app applies the verdict and keeps no policy of its own.
+pub(super) fn live_admission(
+    channels: &BrokerChannels,
+    route: &CrdtRoute,
+    envelope: &collab_types::SignedOp,
+) -> OpAdmission {
+    let channel =
+        collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
+    channels
+        .document_admission(channel, envelope.encryption.as_ref())
+        .into()
+}
 
 /// Replay to a new op subscriber of `channel_id` the ops this broker
 /// admitted for its record before. The room delivers a record's history
 /// once, when this device connects; an app that opens the record later
 /// would otherwise build on changes it never received. Its CRDT drops what
-/// it already holds.
+/// it already holds. Every op in the log passed the channel's gate when it
+/// arrived, so cleartext there stays admitted after the channel later
+/// starts requiring encryption: the history is the channel's own.
 pub(super) fn admitted_ops(
     channels: &Mutex<BrokerChannels>,
     channel_id: &str,
@@ -28,12 +48,31 @@ pub(super) fn admitted_ops(
                 op_bytes,
                 from_user_id: hex::encode(op.author.as_bytes()),
                 kind: OpKind::Signed,
+                admission: if op.encryption.is_some() {
+                    OpAdmission::EncryptionRequired
+                } else {
+                    OpAdmission::CleartextAdmitted
+                },
             });
         }
     }
 }
 
 impl super::CapnpBrokerState {
+    /// The verdict a document event fans out with, before the subscribers
+    /// are locked; `None` when the gates are unavailable.
+    pub(super) fn admission_of(
+        &self,
+        event: &super::CollabEvent,
+        route: &CrdtRoute,
+    ) -> Option<OpAdmission> {
+        let super::CollabEvent::Document { envelope, .. } = event else {
+            return Some(OpAdmission::Unstated);
+        };
+        let broker_channels = self.broker_channels.lock().ok()?;
+        Some(live_admission(&broker_channels, route, envelope))
+    }
+
     /// The records local app windows hold, by the window instance the
     /// shell launched each for: what each window shows, known as soon as its
     /// app opens a record, before anyone points in it.
@@ -115,8 +154,6 @@ mod tests {
         state.ensure_channel(&note.channel_key());
         state.ensure_channel(&other.channel_key());
         state.window_instances.lock().unwrap().insert(2, 77);
-        // The app's second window, opened in its process on a connection
-        // of its own.
         let second = CrdtRoute::record("so.tilo.notes", "room-1", "note-2");
         state.ensure_channel(&second.channel_key());
         state.window_instances.lock().unwrap().insert(4, 78);
@@ -169,6 +206,45 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "another record's subscriber gets none of it"
+        );
+    }
+
+    #[test]
+    fn cleartext_admitted_before_the_channel_required_encryption_stays_admitted() {
+        let route = CrdtRoute::record("so.tilo.chat", "room-1", "");
+        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let op = SignedOp::new_unsigned(
+            DocumentMutation::Incremental(b"general".to_vec())
+                .encode()
+                .unwrap(),
+            artifact,
+            Ed25519PublicKey::from_bytes([5; 32]),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::OpKind::Change,
+            std::time::SystemTime::now(),
+            1,
+        );
+        let channels = Mutex::new(BrokerChannels::default());
+        let admission = || live_admission(&channels.lock().unwrap(), &route, &op);
+        assert_eq!(admission(), OpAdmission::CleartextAdmitted);
+        channels
+            .lock()
+            .unwrap()
+            .state_for(artifact)
+            .record_validated_op(op.clone());
+        channels.lock().unwrap().register_channel_gate(
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id),
+            channel_crypto::ChannelGate {
+                encryption_required: true,
+                head_epoch: None,
+            },
+        );
+        assert_eq!(admission(), OpAdmission::EncryptionRequired);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        admitted_ops(&channels, &route.channel_key(), &tx);
+        assert_eq!(
+            rx.try_recv().unwrap().admission,
+            OpAdmission::CleartextAdmitted
         );
     }
 }

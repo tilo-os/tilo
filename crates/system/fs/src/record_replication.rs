@@ -237,11 +237,6 @@ impl RecordEnvelopeV1 {
     ///
     /// This performs cryptographic and structural validation only. Call
     /// [`RecordReplica::merge`] to apply the live identity and grant checks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed/trailing wire bytes, unsupported schema,
-    /// inconsistent embedded scope or actor, or an invalid signature.
     pub fn decode_and_verify(bytes: &[u8]) -> Result<Self, RecordReplicationError> {
         let envelope: Self = collab_types::canonical::from_canonical_bytes(bytes)?;
         envelope.verify()?;
@@ -274,11 +269,6 @@ impl RecordEnvelopeV1 {
     }
 
     /// Verify schema, record/actor binding, and the device signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for unsupported schema, invalid sequence, inconsistent
-    /// embedded scope or actor, invalid payload, or invalid signature.
     pub fn verify(&self) -> Result<(), RecordReplicationError> {
         self.validate()?;
         verify_event(&self.signing_view(), &self.signature, &self.actor.device)?;
@@ -340,7 +330,6 @@ pub struct RecordSnapshot {
     pub metadata: Option<FileMetadataV1>,
     /// Deterministically selected, signed current content tuple.
     pub content_revision: Option<ContentRevisionV1>,
-    /// Immutable versions accepted for this record.
     pub versions: Vec<FileVersionV1>,
     /// First-class open and resolved conflicts accepted for this record.
     pub conflicts: Vec<FileConflictV1>,
@@ -475,11 +464,6 @@ impl RecordReplica {
     /// Authenticate, authorize, replay-check, and merge an operation.
     ///
     /// State is not mutated until every security check succeeds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when authentication, certification, authorization,
-    /// record binding, replay defense, or immutable-version validation fails.
     pub fn merge<A: RecordAuthorizer + ?Sized>(
         &mut self,
         envelope: &RecordEnvelopeV1,
@@ -778,11 +762,6 @@ impl RecordReplica {
     }
 
     /// Return this record's state only after a live read decision.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the requesting actor is not currently certified
-    /// or lacks read access to this record.
     pub fn snapshot<A: RecordAuthorizer + ?Sized>(
         &self,
         requester: &FileActor,
@@ -848,7 +827,6 @@ pub enum RecordReplicationError {
     /// The human-to-device identity binding is absent or revoked.
     #[error("actor device is not currently certified for the person")]
     UncertifiedActor,
-    /// The caller lacks the record-scoped read grant.
     #[error("record read denied")]
     ReadDenied,
     /// The author lacks the record-scoped write grant.
@@ -1263,9 +1241,7 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn signed_transactions_revisions_and_conflicts_replicate_exactly() {
-        // Phase `transactions_revisions_and_conflicts_replicate_exactly`.
         {
-            // Phase `transaction_prepare_is_invisible_and_commit_requires_prepare`.
             {
                 let (key, actor, record, auth) = fixture();
                 let signed = transaction(&key, actor, record, FileRecordId::new());
@@ -1307,7 +1283,6 @@ mod tests {
                 replica.merge(&commit, &auth).unwrap();
                 assert_eq!(replica.transaction_state(id), Some((&signed, true)));
             }
-            // Phase `signed_content_revision_requires_and_exactly_matches_immutable_version`.
             {
                 let (key, actor, record, auth) = fixture();
                 let version = FileVersionV1 {
@@ -1379,7 +1354,6 @@ mod tests {
                     Some(revision)
                 );
             }
-            // Phase `conflict_lifecycle_is_signed_record_local_and_convergent`.
             {
                 let (key, actor, record, auth) = fixture();
                 let first = FileVersionV1 {
@@ -1446,7 +1420,6 @@ mod tests {
                 assert_eq!(snapshot.conflicts[0].resolution, Some(resolution));
             }
         }
-        // Phase `concurrent_resolution_proposals_converge_independent_of_arrival_order`.
         {
             let (first_key, first_actor, record, mut auth) = fixture();
             let (second_key, second_device) = generate_keypair();
@@ -1641,7 +1614,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn envelope_signatures_bind_payload_record_actor_and_certified_device() {
-        // Phase `canonical_signed_bytes_are_deterministic_and_domain_separated`.
         {
             let (key, actor, record, _) = fixture();
             let first = envelope(&key, actor, record, 1);
@@ -1667,7 +1639,6 @@ mod tests {
                     .any(|window| window == RECORD_OPERATION_SIGNATURE_DOMAIN.as_bytes())
             );
         }
-        // Phase `tampering_with_signed_payload_is_rejected_without_mutation`.
         {
             let (key, actor, record, auth) = fixture();
             let mut op = envelope(&key, actor, record, 1);
@@ -1683,7 +1654,6 @@ mod tests {
             assert!(replica.metadata.is_none());
             assert!(replica.highest_sequence.is_empty());
         }
-        // Phase `actor_device_must_be_certified_even_with_a_valid_signature`.
         {
             let (key, actor, record, mut auth) = fixture();
             auth.certified.clear();
@@ -1694,7 +1664,6 @@ mod tests {
                 Err(RecordReplicationError::UncertifiedActor)
             ));
         }
-        // Phase `signing_with_wrong_device_key_does_not_certify_the_claimed_device`.
         {
             let (_, actor, record, auth) = fixture();
             let (wrong_key, _wrong_public) = generate_keypair();
@@ -1705,7 +1674,6 @@ mod tests {
                 Err(RecordReplicationError::Signature(VerifyError::BadSignature))
             ));
         }
-        // Phase `payload_record_and_actor_are_bound_to_envelope`.
         {
             let (key, actor, record, _auth) = fixture();
             let other_record = FileRecordId::new();
@@ -1722,7 +1690,6 @@ mod tests {
                 Err(RecordReplicationError::PayloadRecordMismatch)
             ));
         }
-        // Phase `legacy_envelopes_accept_legacy_operations_but_not_conflicts`.
         {
             let (key, actor, record, _) = fixture();
             let mut legacy = envelope(&key, actor, record, 1);
@@ -1745,7 +1712,6 @@ mod tests {
                 Err(RecordReplicationError::OperationRequiresV2)
             ));
         }
-        // Phase `version_three_binding_signatures_remain_valid_but_transactions_require_four`.
         {
             let (key, actor, record, _) = fixture();
             let parent = FileRecordId::new();
@@ -1791,7 +1757,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn replication_is_record_local_role_checked_and_replay_safe() {
-        // Phase `signed_binding_is_record_local_and_converges_by_observation_stamp`.
         {
             let (key, actor, record, auth) = fixture();
             let parent = FileRecordId::new();
@@ -1844,7 +1809,6 @@ mod tests {
                 Err(RecordReplicationError::PayloadRecordMismatch)
             ));
         }
-        // Phase `wrong_record_is_rejected_and_cannot_disclose_siblings`.
         {
             let (key, actor, record, mut auth) = fixture();
             let sibling = FileRecordId::new();
@@ -1862,7 +1826,6 @@ mod tests {
                 Err(RecordReplicationError::ReadDenied)
             ));
         }
-        // Phase `read_only_actor_cannot_merge`.
         {
             let (key, actor, record, mut auth) = fixture();
             auth.writers.clear();
@@ -1874,7 +1837,6 @@ mod tests {
             ));
             assert!(replica.metadata.is_none());
         }
-        // Phase `replay_and_stale_sequences_are_rejected`.
         {
             let (key, actor, record, auth) = fixture();
             let first = envelope(&key, actor, record, 1);
@@ -1887,7 +1849,6 @@ mod tests {
                 Err(RecordReplicationError::Replay { sequence: 1 })
             ));
         }
-        // Phase `append_version_checks_embedded_actor_and_is_record_local`.
         {
             let (key, actor, record, auth) = fixture();
             let version = FileVersionV1 {

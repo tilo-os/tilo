@@ -294,7 +294,6 @@ pub fn draft(doc: &AutoCommit, key: &str) -> Option<ObjId> {
     }
 }
 
-/// The draft for `key` as written.
 #[must_use]
 pub fn draft_blocks(doc: &AutoCommit, key: &str) -> Vec<ui::widget::BlockContent> {
     draft(doc, key)

@@ -42,7 +42,6 @@ pub enum SearchRow {
 }
 
 impl SearchRow {
-    /// A message row.
     pub fn message(sender: impl Into<String>, subject: impl Into<String>) -> Self {
         Self::Message {
             sender: sender.into(),
@@ -53,7 +52,6 @@ impl SearchRow {
         }
     }
 
-    /// A media row.
     pub fn media(title: impl Into<String>) -> Self {
         Self::Media {
             thumbnail: None,

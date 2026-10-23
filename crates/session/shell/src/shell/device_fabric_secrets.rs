@@ -62,11 +62,6 @@ pub enum WifiSecretError {
 }
 
 /// Seal one passphrase independently to every currently certified device.
-///
-/// # Errors
-///
-/// Returns an error for invalid metadata, recipients, an empty/oversized
-/// passphrase, encryption failure, or an aggregate exceeding the fabric cap.
 pub fn seal_wifi_credential(
     ssid: &str,
     security: os_actions::WifiSecurity,
@@ -126,11 +121,6 @@ pub fn seal_wifi_credential(
 }
 
 /// Open this device's envelope without exposing any other recipient's copy.
-///
-/// # Errors
-///
-/// Returns an error when the envelope is malformed, does not target this
-/// device, fails authentication, or does not contain a valid passphrase.
 pub fn open_wifi_credential(
     credential: &WifiCredential,
     recipient_key: &SigningKey,
@@ -171,10 +161,6 @@ pub fn open_wifi_credential(
 }
 
 /// Certified recipients currently represented by an opaque bundle.
-///
-/// # Errors
-///
-/// Returns an error when the bundle is malformed or violates its bounds.
 pub fn wifi_envelope_recipients(
     credential: &WifiCredential,
 ) -> Result<BTreeSet<DeviceId>, WifiSecretError> {
@@ -311,7 +297,6 @@ mod tests {
                 wifi_envelope_recipients(&credential).unwrap(),
                 BTreeSet::from([author])
             );
-            // The bundle nonce is authenticated too.
             let mut moved = credential.clone();
             moved.nonce[0] ^= 1;
             assert_eq!(

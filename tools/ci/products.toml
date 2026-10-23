@@ -16,9 +16,13 @@ dev_signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:1256501473
 [[product]]
 family = "services"
 name = "room-service"
-about = "The room service: tested before it is published, deployed by digest from stable's receipt."
+about = """
+The room service: tested before it is published, deployed by digest from stable's receipt.
+Development tags are published only when dispatched (`t dispatch publish-room-service --ref
+main`): what runs is stable's."""
 repository = "registry.tilo.so/tilo/room-service"
 dev = ["dev-{commit}"]
+dispatch = true
 release = ["sha-{commit}"]
 
 [product.context]
@@ -54,9 +58,11 @@ about = """
 The web entry: the Tilo app on the web, tested before it is published, deployed by digest from
 stable's receipt. A release carries the version of the image production serves, so tabs open on
 it survive the deploy: carry-web-entry derives that image from the build and tests it, and it is
-what stable signs and publishes. Main's development tags are the build as it is."""
+what stable signs and publishes. Development tags, published only when dispatched (`t dispatch
+publish-web-entry --ref main`), are the build as it is."""
 repository = "registry.tilo.so/tilo/web-entry"
 dev = ["dev-{commit}"]
+dispatch = true
 release = ["sha-{commit}"]
 
 [product.context]
@@ -98,10 +104,14 @@ family = "services"
 name = "registry-server"
 about = """
 The app registry server (crates/packaging/registry-server): x86_64 only, like the cluster it
-runs in. Rust compiles inside the Containerfile; the image is tested before main publishes it
-and the GitOps repository pins the receipt's digest."""
+runs in. Rust compiles inside the Containerfile; the image is tested before it is published, and
+the GitOps repository pins the receipt's digest. Stable publishes it signed with the release key
+as `sha-<commit>`; a dispatch on main (`t dispatch publish-registry-server --ref main`) publishes
+the unsigned development tag `dev-<commit>`."""
 repository = "registry.tilo.so/tilo/tilo-registry-server"
-dev = ["sha-{commit}"]
+dev = ["dev-{commit}"]
+dispatch = true
+release = ["sha-{commit}"]
 publish = { requirement = { cores = 1, memory = "1GiB" } }
 
 [product.build]
@@ -122,12 +132,14 @@ name = "release-rehearsal"
 about = """
 The release rehearsal (tools/ci/publish/rehearsal): a one-file image that runs the whole chain
 as a release does, so the chain is proven on t without publishing anything anyone deploys.
-Main publishes `dev-<commit>` when its inputs change. A tag `v0-rehearsal-<n>` (or `t dispatch
+`t dispatch publish-release-rehearsal --ref main` publishes `dev-<commit>`; main doesn't on its
+own, since nothing deploys it. A tag `v0-rehearsal-<n>` (or `t dispatch
 publish-release-rehearsal --ref stable`) runs it as a release: it is signed with the release key in
 KMS (identity token, AWS role), published as `sha-<commit>` with the signature and a receipt, and
 the reference's `release-rehearsal` pointer is set. No other check runs on such a tag."""
 repository = "registry.tilo.so/tilo/release-rehearsal"
 dev = ["dev-{commit}"]
+dispatch = true
 release = ["sha-{commit}"]
 release_on = ["dispatch", "tag:v0-rehearsal-*"]
 
@@ -183,12 +195,14 @@ name = "release-tools"
 about = """
 The release tools image (os/Containerfile.release-tools): the compiler-free environment the
 release jobs run in, built and tested natively per architecture and published from main as
-one index. Its consumers pin the index by digest; jobs pull it before they can log in, so it
-must be anonymously pullable."""
+one index when someone asks (`t dispatch publish-release-tools --ref main`). Its consumers pin
+the index by digest by hand, so a push to main has nothing to publish it for; jobs pull it
+before they can log in, so it must be anonymously pullable."""
 repository = "registry.tilo.so/tilo/tilo-release-tools"
 arches = ["x86_64", "aarch64"]
 index = true
 dev = ["sha-{commit}"]
+dispatch = true
 anonymous = true
 
 [product.build]
@@ -405,7 +419,7 @@ tlog = true
 [product.build]
 run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot {out}"
 needs = ["rpm-snapshot"]
-inputs = ["os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-secrets/**", "crates/platform/tilo-sort/**", "crates/runtime/egress/**", "crates/browser/browser-continuity/**", "crates/browser/browser-continuity-core/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/sdk/font-catalog/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/content-types/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/system-stats/**", "crates/system/block-devices/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "crates/system/documents/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/derive-rpm-package-set.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "vendor/wgpu/**", "vendor/wgpu-hal/**", "crates/platform/tilo-mime/**", "crates/platform/tilo-render-protocol/**", "crates/system/content-device/**", "vendor/pulldown-cmark/**", "vendor/regex-syntax/**", "vendor/vello_encoding/**"]
+inputs = ["os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-governor/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-secrets/**", "crates/platform/tilo-sort/**", "crates/runtime/egress/**", "crates/browser/browser-continuity/**", "crates/browser/browser-continuity-core/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/sdk/font-catalog/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/content-types/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/system-stats/**", "crates/system/block-devices/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "crates/system/documents/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/derive-rpm-package-set.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "vendor/wgpu/**", "vendor/wgpu-hal/**", "crates/platform/tilo-mime/**", "crates/platform/tilo-render-protocol/**", "crates/system/content-device/**", "vendor/pulldown-cmark/**", "vendor/regex-syntax/**", "vendor/vello_encoding/**"]
 cost = "heavy"
 requirement = { cores = 16, memory = "24GiB" }
 
@@ -797,10 +811,10 @@ family = "development-signing"
 about = """
 The development signing tools proven natively on both architectures (os/tests/
 development_signing_native.sh): a fixture image with private keys and a local registry,
-whose tests nest Podman, so it runs as root in a micro-VM step. It runs on main whenever
-what it reads changes (the signing tools, their tests, tilo-crypto and what it depends on);
-T_INPUT_PROOF=prediction|retention|prediction-retention selects one proof once it can also
-be dispatched."""
+whose tests nest Podman, so it runs as root in a micro-VM step. It builds and boots fixture
+images on both architectures, so it runs on release candidates and when dispatched, not on
+every push to main. `t dispatch development-signing-x86_64 --input
+proof=prediction|retention|prediction-retention` runs one proof."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 
 [[matrix.check]]
@@ -811,6 +825,8 @@ cargo_packages = ["tilo-crypto"]
 outputs = ["/target/development-signing/{arch}/**"]
 requires = ["arch={arch}"]
 cost = "heavy"
+on = ["stable", "dispatch"]
+default = false
 
 [[matrix.check]]
 name = "development-signing-{arch}"
@@ -821,6 +837,9 @@ requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 requirement = { cores = 4, memory = "16GiB" }
 timeout_secs = 2700
+on = ["stable", "dispatch"]
+default = false
+dispatch_inputs = { proof = "full" }
 
 [[matrix]]
 family = "env-tools"
@@ -1117,14 +1136,16 @@ default = false
 [[matrix.check]]
 name = "nightly-os-image-{arch}"
 comment = """
-The image os-image-{arch} built, checked as a device gets it, every night main's image inputs
-changed (tools/ci/publish/os-image-smoke.sh): inside the image, every ELF resolves its libraries,
-every script its interpreter and every package its dependencies, the enabled units exist and
-verify, every GStreamer plugin loads and Miracast's software encoders work, and the programs
-the desktop runs start (tools/ci/image_smoke.py); then the image is installed onto a disk as a
-release validation installs one and booted under KVM until the greeter accepts input, with no
-unit failed on the way. It installs from the RPM set of the same run when no snapshot of it is
-published, so a package-set change is checked on main before it reaches stable."""
+The image os-image-{arch} built, checked as a device gets it, on every release candidate and
+when dispatched (tools/ci/publish/os-image-smoke.sh): inside the image, every ELF resolves its
+libraries, every script its interpreter and every package its dependencies, the enabled units
+exist and verify, every GStreamer plugin loads and Miracast's software encoders work, and the
+programs the desktop runs start (tools/ci/image_smoke.py); then the image is installed onto a
+disk as a release validation installs one and booted under KVM until the greeter accepts input,
+with no unit failed on the way. It installs from the RPM set of the same run when no snapshot
+of it is published, so a package-set change is checked before stable ships it (`t dispatch
+nightly-os-image-x86_64 --ref main` checks it on main sooner). It builds the whole OS image, so
+pushes to main don't run it."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-image-smoke.sh {arch} /target/os/{arch}/image /target/publish/os-smoke/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-image-smoke.sh", "tools/ci/image_smoke.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh"]
@@ -1136,7 +1157,7 @@ isolation = "vm"
 cost = "heavy"
 requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 5400
-on = ["schedule:30 1 * * *"]
+on = ["stable", "dispatch"]
 default = false
 
 [[matrix]]
@@ -1144,8 +1165,9 @@ family = "os"
 about = """
 Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
-since bootc takes a device tree only from one. Every night, and when dispatched (`t dispatch
-publish-os-board-lenovo-83ed --ref main`), main's head is built and pushed as
+since bootc takes a device tree only from one. When dispatched (`t dispatch
+publish-os-board-lenovo-83ed --ref main`; it builds the whole aarch64 OS image, so main
+doesn't run it on its own), main's head is built and pushed as
 registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
 sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 follow on their own (DEVELOPMENT.md, "Board dev images on real hardware")."""
@@ -1176,7 +1198,7 @@ needs = ["os-board-{board}"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["schedule:30 1 * * *", "dispatch"]
+on = ["dispatch"]
 
 [[matrix]]
 family = "extension-manifests"

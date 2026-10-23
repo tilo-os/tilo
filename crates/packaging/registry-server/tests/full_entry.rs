@@ -184,7 +184,6 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
             prereleases: MAX_ENTRY_VERSIONS,
         };
 
-        // The entry fills up to its limit.
         registry_client::publish(&client, &publisher, full, None, None, &keep_all).unwrap();
         promote(&data_dir, &publisher_hex, &channel_key);
         let entry = client.entry(PACKAGE_ID).unwrap().unwrap();

@@ -79,7 +79,6 @@ impl Reads {
         let current = !self.closed() && rows.values().any(|gate| {
             matches!(gate, Gate::Required(candidate, _) if std::ptr::eq(candidate.as_ref(), ready))
         });
-        // Serialize a positive publication with close's gate withdrawal.
         ready.swap(current, Ordering::AcqRel) != current
     }
     /// How many readiness changes happened so far; pass it to
@@ -777,7 +776,6 @@ mod tests {
             &ByteBudget::new(),
             async |request| {
                 assert!(matches!(request, Request::Cancel { capture: 1, .. }));
-                // A loaded broker answers in hundreds of milliseconds.
                 tokio::time::sleep(Duration::from_millis(900)).await;
                 Ok(Reply::Cancelled)
             },

@@ -34,9 +34,7 @@ use tilo_control::{TEST_CONTROL_ENV, admin_socket_path, default_socket_path};
 /// what that socket is and how to get one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SocketKind {
-    /// Named by `--socket` or `$TILO_TEST_CONTROL`.
     Named,
-    /// The device admin's control socket.
     Admin,
     /// The default development test-control socket.
     TestControl,
@@ -1770,7 +1768,6 @@ mod tests {
         };
         assert_eq!(invoked_provider, "app-actions");
         assert_eq!(invoked_id, id);
-        // A raw id, as `--json` gives it, passes through unchanged.
         let raw = parse(&["actions", "invoke", "app-actions", id]).unwrap();
         assert!(matches!(raw.command, Command::ActionsInvoke { id: raw_id, .. } if raw_id == id));
     }
@@ -2037,7 +2034,6 @@ mod tests {
                 &["click-at", "100.5", "200"],
                 Command::ClickAt { x: 100.5, y: 200.0 },
             ),
-            // Drag takes four floats with optional steps.
             (&["drag", "0", "0", "100", "100"], drag(None)),
             (&["drag", "0", "0", "100", "100", "16"], drag(Some(16))),
             (
@@ -2055,7 +2051,6 @@ mod tests {
                 },
             ),
             (&["modifiers", "ctrl,shift"], modifiers(true, true)),
-            // The empty string clears every modifier.
             (&["modifiers", ""], modifiers(false, false)),
             (
                 &["snapshot", "/tmp/x.png"],
@@ -2101,11 +2096,9 @@ mod tests {
             assert_eq!(parse(args).unwrap().command, want, "case {args:?}");
         }
 
-        // The socket flag overrides the default.
         let inv = parse(&["--socket", "/custom/path", "list-targets"]).unwrap();
         assert_eq!(inv.socket, Some(PathBuf::from("/custom/path")));
 
-        // The modifier-flag parser itself.
         for (flags, want) in [
             ("", (false, false, false, false)),
             ("ctrl,shift,alt,logo", (true, true, true, true)),
@@ -2359,7 +2352,6 @@ mod tests {
             Command::ActionsInvoke { wait_ms: None, .. }
         ));
         assert_eq!(wire(&admitted).get("wait_ms"), None);
-        // Sent to a device it answers once the device has it.
         assert!(matches!(
             invoke(&["--device", "aa"]).unwrap(),
             Command::ActionsInvoke { wait_ms: None, .. }
@@ -2540,7 +2532,6 @@ mod tests {
         assert_eq!(v["x"], 1.5);
         assert_eq!(v["y"], 2.5);
 
-        // Drag includes steps when set and omits them when unset.
         let drag = |steps| Command::Drag {
             x1: 0.0,
             y1: 0.0,
@@ -2585,7 +2576,6 @@ mod tests {
             serde_json::json!({ "op": "windows" })
         );
 
-        // Action invocations preserve structured arguments.
         let value = wire(&Command::ActionsInvoke {
             provider: "app-actions".into(),
             id: "7-resource-action".into(),
@@ -2598,7 +2588,6 @@ mod tests {
         assert_eq!(value["args"]["resource"], "notes.note:42");
         assert_eq!(value["args"]["at"], "2026-09-01T12:00:00Z");
 
-        // Status and cancel preserve the broker id.
         for (command, operation) in [
             (
                 Command::ActionsStatus {
@@ -2617,7 +2606,6 @@ mod tests {
             assert_eq!(value["invocation_id"], 91, "case {operation}");
         }
 
-        // Raw passes through verbatim, and invalid raw JSON is a usage error.
         let json = command_to_wire(&Command::Raw {
             json: r#"{"op":"list_targets","extra":1}"#.to_string(),
         })

@@ -71,8 +71,6 @@ fn calendar_invitation_acceptance_is_structural_and_honours_overrides() {
     }
 }
 
-// --- the mailbox on its own ------------------------------------------------
-
 fn apply(mail: &mut Replica<Mail>, invoke: Invoke<Mail>) -> Result<(), String> {
     mail.apply(invoke)
         .map(drop)
@@ -252,7 +250,6 @@ fn flags_and_purges_converge_without_resurrection() {
     }
 }
 
-/// The draft, labels and local folders round-trip and stay bounded.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -622,7 +619,6 @@ fn batch_verbs_fail_closed_and_converge() {
     }
 }
 
-/// The draft body is rich text, started by a verb and edited at its path.
 #[test]
 fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
     use tilo_document::action::RegionKind;
@@ -711,8 +707,6 @@ fn the_draft_body_is_rich_text_started_and_edited_at_its_path() {
         "discard clears the body"
     );
 }
-
-// --- the mailbox as the window publishes it --------------------------------
 
 /// The sample mailbox window as the framework hosts it.
 fn sample_window() -> TestApp<MailShell> {

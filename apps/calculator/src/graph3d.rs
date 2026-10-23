@@ -77,7 +77,6 @@ struct SurfaceCell {
 struct SurfaceKey {
     /// `(expr, visible)` for every surface, in order.
     surfaces: Vec<(String, bool)>,
-    deg: bool,
     yaw: u64,
     pitch: u64,
     zoom: u64,
@@ -135,7 +134,6 @@ impl SurfaceKey {
                 .iter()
                 .map(|f| (f.expr.clone(), f.visible))
                 .collect(),
-            deg: model.deg,
             yaw: bits(model.view3d.yaw),
             pitch: bits(model.view3d.pitch),
             zoom: bits(model.view3d.zoom),
@@ -291,10 +289,11 @@ impl Graph3dScreen {
         }
         let rebuilds = self.surface_cache.rebuilds.wrapping_add(1);
 
-        let resample =
-            self.surface_cache.key.as_ref().is_none_or(|previous| {
-                previous.surfaces != key.surfaces || previous.deg != key.deg
-            });
+        let resample = self
+            .surface_cache
+            .key
+            .as_ref()
+            .is_none_or(|previous| previous.surfaces != key.surfaces);
         let sample_rebuilds = self.surface_cache.sample_rebuilds + u32::from(resample);
         let (sampled, mut zmin, mut zmax) = if resample {
             Self::sample_surfaces(model)
@@ -344,7 +343,7 @@ impl Graph3dScreen {
             if !f.visible || f.expr.trim().is_empty() {
                 continue;
             }
-            let Ok(comp) = engine::compile(&f.expr, model.deg, true) else {
+            let Ok(comp) = engine::compile(&f.expr, engine::PLOT_IN_DEGREES, true) else {
                 continue;
             };
             let mut zs = vec![[0.0f64; N + 1]; N + 1];
@@ -493,7 +492,6 @@ impl Graph3dScreen {
     }
 }
 
-/// Stroke `path` in `color` at `width`.
 fn stroke_path(scene: &mut Scene, t: Affine, width: f64, color: Color, path: &BezPath) {
     scene.stroke(&Stroke::new(width), t, color, None, path);
 }
@@ -618,9 +616,27 @@ mod tests {
         model.surfaces.first_mut().unwrap().expr = "x*y".into();
         screen.ensure_surfaces(&model);
         assert_eq!(screen.surface_cache.sample_rebuilds, 2);
+        // The angle unit is for calculations; a plot's axes stay numbers.
         model.deg = true;
         screen.ensure_surfaces(&model);
-        assert_eq!(screen.surface_cache.sample_rebuilds, 3);
+        assert_eq!(screen.surface_cache.sample_rebuilds, 2);
+    }
+
+    /// With Degrees chosen, a surface still reads x and y as plain numbers:
+    /// `sin(x)` waves through its full range over the plotted domain
+    /// instead of lying flat near zero.
+    #[test]
+    fn surfaces_plot_in_radians_whatever_the_angle_unit() {
+        let mut model = CalcModel::seeded();
+        for surface in &mut model.surfaces {
+            surface.visible = false;
+        }
+        let first = model.surfaces.first_mut().unwrap();
+        first.expr = "sin(x)".into();
+        first.visible = true;
+        model.deg = true;
+        let (_, zmin, zmax) = Graph3dScreen::sample_surfaces(&model);
+        assert!(zmin < -0.9 && zmax > 0.9, "sin(x) spans {zmin}..{zmax}");
     }
 
     /// The sampled-surface cache: the first draw samples every visible surface
@@ -636,7 +652,6 @@ mod tests {
             s.ensure_surfaces(&m);
             assert_eq!(s.surface_cache.rebuilds, 1);
             assert!(!s.surface_cache.cells.is_empty(), "expected sampled grids");
-            // Cells from more than one series prove multiple surfaces are drawn.
             let distinct: std::collections::BTreeSet<usize> =
                 s.surface_cache.cells.iter().map(|c| c.series).collect();
             assert!(

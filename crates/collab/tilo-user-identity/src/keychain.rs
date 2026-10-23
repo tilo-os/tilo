@@ -201,7 +201,6 @@ mod tests {
             file_key.as_bytes()
         );
 
-        // A copy restored from a backup that matches is tidied away.
         let restored = file_layout(&paths);
         crate::persist::write_device_key(&restored.device_privkey, &file_key).unwrap();
         assert_eq!(

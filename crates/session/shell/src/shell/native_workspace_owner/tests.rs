@@ -1,4 +1,3 @@
-//! These tests use actual signed membership and native document admission.
 use super::*;
 use crate::shell::{persist, state::WorkspaceTree};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};

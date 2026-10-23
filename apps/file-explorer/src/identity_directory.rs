@@ -124,10 +124,6 @@ impl TrustedHumanDirectory {
     }
 
     /// Convert and validate a legacy human-only projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid keys, labels, bounds, or duplicate humans.
     pub fn from_projection(projection: TrustedIdentityProjectionV1) -> Result<Self, String> {
         projection
             .validate()
@@ -164,10 +160,6 @@ impl TrustedHumanDirectory {
     }
 
     /// Convert and validate a governed human/device projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the governed projection fails validation.
     pub fn from_projection_v2(projection: TrustedIdentityProjectionV2) -> Result<Self, String> {
         Self::from_projection_v2_at(projection, try_unix_now_ns().unwrap_or(u64::MAX))
     }

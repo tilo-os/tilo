@@ -599,8 +599,6 @@ impl AudioOutputServices for AudioOutputService {
 
 #[cfg(test)]
 mod tests {
-    //! Production service/lifecycle/PCM tests with synthetic callers and device streams.
-    //! Launcher custody is tested separately on the broker's actual RPC path.
     use super::super::collab_broker_capnp::LocalSessionAuthority;
     use super::*;
     use media::pw_stream::DeviceTiming;

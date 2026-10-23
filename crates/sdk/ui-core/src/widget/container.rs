@@ -726,7 +726,6 @@ mod tests {
             let readable = f64::from(theme.tokens.metrics.readable_width);
             assert!((inner.width() - readable).abs() < 0.5, "{inner:?}");
         }
-        // Narrower than the measure, it shrinks with its parent.
         let (narrow, _) = lay_out(
             Container::new()
                 .with_no_padding()

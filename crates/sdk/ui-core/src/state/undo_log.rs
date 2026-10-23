@@ -108,7 +108,6 @@ impl Default for UndoLog {
     }
 }
 
-/// The key a change is remembered under.
 fn step_key(version: &Version) -> ChangeHash {
     version.hash
 }
@@ -445,7 +444,6 @@ impl UndoLog {
         self.next_undo_step(doc, author, None).is_some()
     }
 
-    /// Whether `author` has anything to redo.
     pub fn can_redo_as(&self, doc: &AutoCommit, author: Option<&UserId>) -> bool {
         self.next_redo_undo(doc, author, None).is_some()
     }

@@ -3,7 +3,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Media a realtime session uses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(

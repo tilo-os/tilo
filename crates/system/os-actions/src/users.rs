@@ -79,11 +79,6 @@ fn block<T>(f: impl std::future::Future<Output = Result<T, String>>) -> Result<T
 }
 
 /// Create a local login account through `AccountsService`.
-///
-/// # Errors
-///
-/// Returns an error message if `username` or `full_name` fails validation, the system bus is
-/// unreachable, or `AccountsService` refuses the request (e.g. the polkit challenge fails).
 pub fn create_user(username: &str, full_name: &str, role: AccountRole) -> Result<(), String> {
     let username = validate_username(username)?.to_string();
     let full_name = validate_real_name(full_name)?.to_string();
@@ -171,22 +166,12 @@ pub fn set_role(username: &str, role: AccountRole) -> Result<(), String> {
 }
 
 /// Enable or disable passwordless automatic login for `username`.
-///
-/// # Errors
-///
-/// Returns an error message if `username` fails validation or `AccountsService` refuses the
-/// request.
 pub fn set_automatic_login(username: &str, enabled: bool) -> Result<(), String> {
     validate_username(username)?;
     block(call_user(username, "SetAutomaticLogin", &enabled))
 }
 
 /// Read whether `username` is set up for automatic login.
-///
-/// # Errors
-///
-/// Returns an error message if `username` fails validation, the system bus is unreachable, or
-/// `AccountsService` refuses the request.
 pub fn automatic_login(username: &str) -> Result<bool, String> {
     validate_username(username)?;
     block(async move {
@@ -217,13 +202,62 @@ pub fn set_password(username: &str, password: &mut [u8]) -> Result<(), String> {
     block(call_user(username, "SetPassword", &(hash.as_str(), "")))
 }
 
+/// The group whose members administer this device: `AccountsService` makes
+/// an administrator by adding the account to it, and polkit's rules (Tilo's
+/// and Flatpak's own) grant privileged changes to it.
+const ADMINISTRATORS: &std::ffi::CStr = c"wheel";
+
+/// Whether this process's user administers the device. Reads the group
+/// database, which may be a file or a network service: never on a UI
+/// thread.
+#[must_use]
+pub fn administers_this_device() -> bool {
+    administrators_gid().is_some_and(in_group)
+}
+
+fn administrators_gid() -> Option<libc::gid_t> {
+    let mut buffer = vec![0_u8; 16 * 1024];
+    // SAFETY: an all-zero `group` is a valid out-parameter for getgrnam_r.
+    let mut group: libc::group = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::group = std::ptr::null_mut();
+    // SAFETY: every pointer is valid for the call and `buffer.len()` is its
+    // length; getgrnam_r writes only into `group`, `buffer` and `found`.
+    let status = unsafe {
+        libc::getgrnam_r(
+            ADMINISTRATORS.as_ptr(),
+            &raw mut group,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &raw mut found,
+        )
+    };
+    (status == 0 && !found.is_null()).then_some(group.gr_gid)
+}
+
+fn in_group(gid: libc::gid_t) -> bool {
+    rustix::process::getegid().as_raw() == gid
+        || rustix::process::getgroups()
+            .is_ok_and(|groups| groups.iter().any(|group| group.as_raw() == gid))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn an_administrator_is_a_member_of_wheel() {
+        let groups = std::process::Command::new("id")
+            .arg("-nG")
+            .output()
+            .expect("id runs");
+        let in_wheel = String::from_utf8_lossy(&groups.stdout)
+            .split_whitespace()
+            .any(|group| group == "wheel");
+        assert_eq!(administers_this_device(), in_wheel);
+    }
+
+    #[test]
     fn account_input_is_validated_and_scrubbed_before_the_privilege_boundary() {
-        // Phase `validates_account_names_before_privilege_boundary`.
         {
             assert!(validate_username("ada").is_ok());
             assert!(validate_username("ada_2").is_ok());
@@ -232,7 +266,6 @@ mod tests {
             assert!(validate_real_name("Ada Lovelace").is_ok());
             assert!(validate_real_name("Ada\nroot").is_err());
         }
-        // Phase `password_validation_always_scrubs_the_caller_buffer`.
         {
             let mut short = b"bad".to_vec();
             assert!(set_password("ada", &mut short).is_err());

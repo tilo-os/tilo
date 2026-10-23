@@ -624,8 +624,6 @@ mod tests {
     use vello::Scene;
     use vello::kurbo::Affine;
 
-    /// Every commit row has the same height, grown with the text scale, and
-    /// the list reports a row for every visible commit.
     #[test]
     fn commit_rows_are_one_height_and_follow_the_text_scale() {
         let theme = Theme::dark();

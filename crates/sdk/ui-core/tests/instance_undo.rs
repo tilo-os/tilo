@@ -1,4 +1,3 @@
-//! Record history attribution uses the same explicit component fixture as dispatch.
 use crate::support::application::{ProbeHost, author, existing, instantiate_probe};
 use automerge::ReadDoc;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};

@@ -18,7 +18,6 @@ fn sample() -> AutoCommit {
     AutoCommit::load(&replica.save()).unwrap()
 }
 
-/// The record `doc` holds.
 fn record(doc: &AutoCommit) -> Rc<Workspace> {
     Rc::new(Workspace::read(doc).unwrap())
 }
@@ -145,7 +144,6 @@ fn request_builder_resolves_environment_and_loads_saved_requests() {
     assert_eq!(a.active_tab, RequestTab::Params);
 }
 
-/// Replaying a history entry opens it in the builder without sending it.
 #[test]
 fn replaying_history_fills_the_builder_without_sending() {
     let (mut a, mut doc) = demo();
@@ -378,7 +376,6 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
     assert_eq!(a.collections[ci].requests[ri].name, "List users");
 }
 
-/// Saving names the request, files it in a collection and selects it.
 #[test]
 fn saving_a_request_files_it_and_selects_it() {
     let (mut a, mut doc) = demo();
@@ -610,7 +607,6 @@ fn resource_provider_sends_for_real_and_resolves_exact_records() {
     resource_provider_resolves_a_late_record_without_scanning_the_workspace();
 }
 
-/// Open `request` in the builder of `app`, as a new request.
 fn open(app: &mut TestApp<ApiTesterShell>, request: &Request) {
     app.invoke(Workspace::NEW_REQUEST.with(())).unwrap();
     let edits = Workspace::paths().request.path().edits(
@@ -810,7 +806,6 @@ fn the_new_environment_sheet_is_as_tall_as_its_one_field() {
     );
 }
 
-/// On a wide screen a parameter's value stays beside its key.
 #[test]
 fn a_wide_window_keeps_each_value_beside_its_key() {
     let mut app = TestApp::<ApiTesterShell>::capture_at(None, (2560, 1440)).unwrap();
@@ -857,6 +852,60 @@ fn send_without_a_url_asks_for_one() {
     assert!(app.state().history.is_empty());
 }
 
+/// A guest's Save opens the save form at once: the button reaches nothing
+/// outside, and saving into a collection is an edit, decided as one.
+#[test]
+fn a_guests_save_opens_the_form_unasked() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    open(&mut app, &Request::new("Kept"));
+    app.set_role(ui::permissions::Role::Editor);
+    app.harness().click_named("api.save-request").unwrap();
+    app.settle();
+    assert!(
+        app.asking().is_none(),
+        "Save asks nothing: {:?}",
+        app.harness().asking_why()
+    );
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert_eq!(
+            surface.form.as_ref().map(|form| form.mode),
+            Some(FormMode::SaveRequest),
+            "the save form opened"
+        );
+    })
+    .unwrap();
+}
+
+/// Escape answers the window's ask "no", as Cancel does: the ask closes,
+/// nothing is sent, and no empty search is left open in its place.
+#[test]
+fn escape_closes_a_guests_ask_without_leaving_a_search() {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("No address");
+    request.url = "  ".into();
+    open(&mut app, &request);
+    app.set_role(ui::permissions::Role::Editor);
+    app.harness().click_named("api.send").unwrap();
+    app.settle();
+    assert!(app.asking().is_some(), "the guest is asked");
+    app.harness().key("Escape");
+    app.settle();
+    assert!(app.asking().is_none(), "Escape closed the ask");
+    let fields: Vec<_> = app
+        .harness()
+        .controls()
+        .into_iter()
+        .filter(|control| control.role == ui::accesskit::Role::TextInput)
+        .filter_map(|control| control.name)
+        .collect();
+    assert!(
+        !fields.iter().any(|name| name == "Search"),
+        "no palette search is left open: {fields:?}"
+    );
+    app.with_surface::<ApiTesterApp, _>(|surface| assert!(surface.error.is_none(), "not sent"))
+        .unwrap();
+}
+
 /// A guest (an Editor) pressing Send reaches a server outside the room, so
 /// the room's grants ask first: the guest is asked in the window, told they
 /// decide, and nothing is sent until they confirm. The click is never
@@ -895,7 +944,6 @@ fn a_guests_send_is_asked_in_the_window_saying_who_decides() {
     .unwrap();
 }
 
-/// A failed request shows the failure once, in the response pane.
 #[test]
 
 fn a_failed_request_is_shown_in_the_response_pane() {

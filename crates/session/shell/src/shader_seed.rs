@@ -29,9 +29,6 @@ fn session_dir() -> PathBuf {
 /// Restore a validated persisted seed before any GPU or application threads
 /// start. Re-exec preserves the PID and registered launch ancestry while setting
 /// the native driver's environment without mutating a threaded process.
-///
-/// # Errors
-/// Returns an error for damaged seeds, unavailable storage or failed re-exec.
 pub fn prepare_session() -> io::Result<()> {
     use std::os::unix::process::CommandExt as _;
     if std::env::var_os(PREPARED).is_some()

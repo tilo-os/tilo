@@ -31,9 +31,6 @@ pub struct ConsumerEndpoint {
 impl ConsumerEndpoint {
     /// Validate the descriptor before acknowledging its fixed transport role.
     /// The caller must independently authenticate the endpoint's actual peer.
-    /// # Errors
-    /// Returns an error for a missing descriptor, wrong role, non-Unix-stream
-    /// endpoint, transport or acknowledgement failure, or an unsupported host.
     pub fn receive(channel: &File, role: EndpointRole) -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         {

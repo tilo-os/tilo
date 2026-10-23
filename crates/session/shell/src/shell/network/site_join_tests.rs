@@ -760,7 +760,6 @@ fn two_computers_in_a_sites_workspace_see_each_others_pointer() {
     for (net, tree) in [(&ada, &ada_tree), (&ben, &ben_tree)] {
         net.join_site(&site.entry).unwrap();
         held(net, tree, room);
-        // In the Lounge, as a person who arrived there is.
         let mut tree = tree.write();
         let lounge = tree
             .desktop

@@ -40,7 +40,6 @@ impl App {
         Ok(())
     }
 
-    /// The Edit resource, when `address` names it.
     pub(super) fn edit_resource_for(
         &mut self,
         address: &tilo_actions::ActionAddress,

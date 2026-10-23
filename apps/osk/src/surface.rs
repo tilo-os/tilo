@@ -44,8 +44,6 @@ pub(crate) const SCENARIOS: &[&str] = &[
 /// The on-screen keyboard over its preferences.
 pub struct OskSurface {
     keyboard: OskWidget,
-    /// The person's keyboard preferences, and the revision of them the
-    /// keyboard was last presented.
     preferences: Option<(Setting<OskPreferences>, Option<OskPreferences>)>,
     /// What the keyboard learned from this person, and the revision of it
     /// the keyboard was last presented.
@@ -69,7 +67,6 @@ impl OskSurface {
         Self::with_keyboard(OskWidget::new())
     }
 
-    /// The surface over `keyboard`.
     pub fn with_keyboard(keyboard: OskWidget) -> Self {
         Self {
             keyboard: keyboard.with_surface_height(),

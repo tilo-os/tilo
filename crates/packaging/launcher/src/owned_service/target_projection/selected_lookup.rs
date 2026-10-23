@@ -586,7 +586,6 @@ mod tests {
             receive_status(&mut io, &[7; 32], &[8; 32], &[9; 32], &[10; 32]).unwrap(),
             libc::ENOENT as u32
         );
-        // Honest operation failure leaves exact channel usable for next request.
         assert_eq!(
             receive_status(&mut io, &[7; 32], &[8; 32], &[9; 32], &[10; 32]).unwrap(),
             libc::ENOENT as u32

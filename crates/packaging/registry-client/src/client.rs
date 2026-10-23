@@ -23,10 +23,6 @@ pub struct RegistryClient {
 impl RegistryClient {
     /// The registry at `base`, else the one in [`REGISTRY_ENV`], else
     /// [`DEFAULT_REGISTRY`].
-    ///
-    /// # Errors
-    ///
-    /// When the URL is not HTTPS or loopback HTTP.
     pub fn resolve(base: Option<&str>) -> Result<Self> {
         let from_env = std::env::var(REGISTRY_ENV).ok();
         Self::new(
@@ -35,11 +31,6 @@ impl RegistryClient {
         )
     }
 
-    /// The registry at `base`.
-    ///
-    /// # Errors
-    ///
-    /// When the URL is not HTTPS or loopback HTTP.
     pub fn new(base: &str) -> Result<Self> {
         Self::validate_url(base)?;
         let http = tilo_net::http::blocking_client()
@@ -141,19 +132,11 @@ impl RegistryClient {
 
     /// Upload a package `key` signed, for review. Answers the URL the
     /// package will be published at.
-    ///
-    /// # Errors
-    ///
-    /// When the registry refuses the upload.
     pub fn upload(&self, key: &SigningKey, tapp_bytes: &[u8]) -> Result<String> {
         self.put_upload(key, tapp_bytes, "tapp")
     }
 
     /// Upload a bot program for review. Answers the URL it will be served at.
-    ///
-    /// # Errors
-    ///
-    /// When the registry refuses the upload, such as for a non-canonical program.
     pub fn upload_program(&self, key: &SigningKey, program: &[u8]) -> Result<String> {
         self.put_upload(key, program, "program")
     }
@@ -187,10 +170,6 @@ impl RegistryClient {
     }
 
     /// Ask the registry to add, update or delete `entry`.
-    ///
-    /// # Errors
-    ///
-    /// When the registry refuses the request.
     pub fn submit(
         &self,
         action: EntryAction,

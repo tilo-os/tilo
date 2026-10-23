@@ -496,12 +496,10 @@ mod tests {
             assert_eq!(NotificationBackend::urgency(&values), expected);
         }
         assert_eq!(NotificationBackend::urgency(&HashMap::new()), 1);
-        // Phase `markup_is_reduced_to_safe_text`.
         assert_eq!(
             markup_to_plain_text("Hello <b>world</b> &amp; <a href='x'>friends</a>"),
             "Hello world & friends"
         );
-        // Phase `reverse_map_is_bounded_and_cleans_up`.
         {
             let handle = NotificationPortalHandle::default();
             for index in 0..=MAX_ACTIVE_PORTAL_NOTIFICATIONS {

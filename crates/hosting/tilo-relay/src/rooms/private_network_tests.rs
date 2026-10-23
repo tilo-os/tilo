@@ -1,4 +1,3 @@
-//! Exercise the private governor door over QUIC with real device identities.
 use super::*;
 use std::collections::HashMap;
 use tilo_peer_state::join;

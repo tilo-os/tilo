@@ -200,8 +200,6 @@ impl crate::resources::PublishesResources for SemanticCountingPublisher {
 
 impl crate::widget::controls::ActionControls for SemanticCountingPublisher {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        // Count full semantic construction, independently of inventory's
-        // default accessibility-derived metadata implementation.
         self.button.control_action_bindings()
     }
 }
@@ -366,8 +364,6 @@ impl crate::resources::PublishesResources for InventoryOnlyPublisher {
 
 impl crate::widget::controls::ActionControls for InventoryOnlyPublisher {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        // Count full semantic construction, independently of inventory's
-        // default accessibility-derived metadata implementation.
         self.button.control_action_bindings()
     }
     fn refresh_control_action_availability(
@@ -421,8 +417,6 @@ impl crate::resources::PublishesResources for FastInventoryPublisher {
 
 impl crate::widget::controls::ActionControls for FastInventoryPublisher {
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        // Count full semantic construction, independently of inventory's
-        // default accessibility-derived metadata implementation.
         self.counts[1].set(self.counts[1].get() + 1);
         self.button.control_action_bindings()
     }

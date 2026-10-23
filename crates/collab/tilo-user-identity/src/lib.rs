@@ -302,7 +302,6 @@ mod tests {
             assert_eq!(user.created_at_ns, 1_720_000_000_000_000_000);
             assert_eq!(user.public_key.len(), 32);
 
-            // Bytes round-trip through canonical postcard encoding.
             let bytes = canonical::canonical_bytes(&user).unwrap();
             let back: UserIdentity = canonical::from_canonical_bytes(&bytes).unwrap();
             assert_eq!(user, back);

@@ -150,7 +150,6 @@ async fn whoever_watches_a_rooms_calls_is_told_each_join_and_leave_unasked() {
     relay.shutdown().await;
 }
 
-/// Whether the participant of `user` on `channel` in `list` shows `showing`.
 fn shows(list: &[CallSummary], channel: &str, user: [u8; 32], showing: Showing) -> bool {
     list.iter()
         .filter(|call| call.channel_id == channel && call.state.active)

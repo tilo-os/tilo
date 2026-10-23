@@ -59,6 +59,17 @@ impl Downlink {
 /// oldest instead of queueing behind it.
 const MAX_GROUPS_IN_FLIGHT: usize = 8;
 
+/// How a session's copy of a track reads the source.
+#[derive(Clone, Copy)]
+pub(crate) enum Start {
+    /// What the subscription asks for, as the source keeps it.
+    Requested,
+    /// As the relay reads its egress for a subscriber
+    /// ([`crate::live::egress_subscription`]): from the live edge, with the
+    /// relay's reorder budget.
+    Egress,
+}
+
 /// A session-owned copy of `source`. Drop it to cut the session off.
 pub(crate) struct Mirror {
     origin: moq_net::origin::Producer,
@@ -68,16 +79,18 @@ pub(crate) struct Mirror {
 
 impl Mirror {
     /// Mirror every broadcast `source` announces, with the given cache bound
-    /// and retention for the session's copy. With a `downlink`, datagrams of
-    /// the voice track are re-bundled for that downlink's measured loss.
+    /// and retention for the session's copy, each track from `start`. With a
+    /// `downlink`, datagrams of the voice track are re-bundled for that
+    /// downlink's measured loss.
     pub(crate) fn start(
         source: moq_net::origin::Consumer,
         bytes: u64,
         retain: Duration,
+        start: Start,
         downlink: Option<Arc<Downlink>>,
     ) -> Self {
         let (origin, task) = OriginTask::produce(origin_config(bytes, retain));
-        let watch = Task::spawn(watch(source, origin.clone(), downlink));
+        let watch = Task::spawn(watch(source, origin.clone(), start, downlink));
         Self {
             origin,
             _watch: watch,
@@ -94,6 +107,7 @@ impl Mirror {
 async fn watch(
     source: moq_net::origin::Consumer,
     target: moq_net::origin::Producer,
+    start: Start,
     downlink: Option<Arc<Downlink>>,
 ) {
     let mut announced = source.announced();
@@ -107,6 +121,7 @@ async fn watch(
                     source.clone(),
                     target.clone(),
                     path,
+                    start,
                     downlink.clone(),
                 ))
             });
@@ -122,6 +137,7 @@ async fn broadcast(
     source: moq_net::origin::Consumer,
     target: moq_net::origin::Producer,
     path: String,
+    start: Start,
     downlink: Option<Arc<Downlink>>,
 ) {
     let Ok(input) = source.routed_broadcast(path.as_str()).await else {
@@ -144,7 +160,7 @@ async fn broadcast(
                 let voice = downlink
                     .clone()
                     .filter(|_| request.name() == crate::relay::VOICE_TRACK);
-                tracks.push(Task::spawn(track(input.clone(), request, voice)));
+                tracks.push(Task::spawn(track(input.clone(), request, start, voice)));
             }
             _ = input.closed() => break,
         }
@@ -156,11 +172,18 @@ async fn broadcast(
 async fn track(
     input: moq_net::broadcast::Consumer,
     request: moq_net::track::Request,
+    start: Start,
     downlink: Option<Arc<Downlink>>,
 ) {
     let subscription = request.subscription().unwrap_or_default();
     let attempt = match input.track(request.name()) {
-        Ok(track) => track.subscribe(subscription).await,
+        Ok(track) => {
+            let subscription = match start {
+                Start::Requested => subscription,
+                Start::Egress => crate::live::egress_subscription(&track, subscription),
+            };
+            track.subscribe(subscription).await
+        }
         Err(error) => Err(error),
     };
     let mut reader = match attempt {

@@ -485,14 +485,12 @@ mod tests {
     fn contains(widget: &dyn Widget, id: &str) -> bool {
         ui::widget::find_test_id(widget, id).is_some()
     }
-    /// Download records, open and reveal.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn download_records_outlive_origin_and_offer_host_actions_when_complete() {
-        // Phase `download_records_offer_cancel_then_open_and_stay_bounded`.
         {
             let capture = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
@@ -563,7 +561,6 @@ mod tests {
             assert_eq!(capabilities.downloads.borrow().records.len(), 100);
         }
 
-        // Phase `open_and_reveal_go_to_the_host_for_an_existing_download`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("download.txt");
@@ -589,7 +586,6 @@ mod tests {
             assert_eq!(recorder.launch_requests().len(), 2);
         }
 
-        // Phase `only_completed_downloads_offer_explicit_open_and_reveal`.
         {
             let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
             let mut capabilities = Capabilities::default();
@@ -618,14 +614,12 @@ mod tests {
         }
     }
 
-    /// Progress aggregation, sparse updates and runtime disconnect.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn download_progress_aggregates_and_runtime_disconnect_fails_truthfully() {
-        // Phase `aggregate_progress_handles_large_valid_native_byte_counts`.
         {
             let mut capabilities = Capabilities::default();
             for id in 1..=4 {
@@ -647,7 +641,6 @@ mod tests {
             );
         }
 
-        // Phase `sparse_terminal_updates_preserve_retry_metadata_and_aggregate_status`.
         {
             let capture = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
@@ -702,7 +695,6 @@ mod tests {
             );
         }
 
-        // Phase `runtime_disconnect_fails_in_progress_records_and_exit_waits_for_detached_owner`.
         {
             let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
             let mut capabilities = Capabilities::default();

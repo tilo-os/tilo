@@ -1560,7 +1560,6 @@ impl<T: Model> Model for Option<T> {
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
     const NULLABLE: bool = true;
-    // Run by one set of functions for every option, over `T`'s table.
     const TABLE: &'static crate::table::ModelTable = &crate::table::OptionOf::<T>::TABLE;
     leaf_paths!();
     crate::__table_functions!();
@@ -1709,7 +1708,6 @@ impl<T: Model> Model for Vec<T> {
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
-    // Run by one set of functions for every list, over `T`'s table.
     const TABLE: &'static crate::table::ModelTable = &crate::table::VecOf::<T>::TABLE;
     leaf_paths!();
     crate::__table_functions!();
@@ -1783,7 +1781,6 @@ impl<T: Model> Model for BTreeMap<String, T> {
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
-    // Run by one set of functions for every map, over `T`'s table.
     const TABLE: &'static crate::table::ModelTable = &crate::table::MapOf::<T>::TABLE;
     leaf_paths!();
     crate::__table_functions!();

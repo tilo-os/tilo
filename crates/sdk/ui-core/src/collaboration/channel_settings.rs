@@ -564,7 +564,6 @@ mod tests {
             channel.load()["app_personal"]["so.tilo.monitor"]["confirm_kill"],
             false
         );
-        // The answer to the write is the view that follows.
         let after = object(json!({
             "app_personal": {"so.tilo.monitor": {"confirm_kill": false}},
             "locale": {"region": "AT"}

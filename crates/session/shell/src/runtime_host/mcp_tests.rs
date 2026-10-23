@@ -655,14 +655,12 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         let id=reply["result"]["structuredContent"]["invocation_id"].as_str().unwrap().to_owned();
         let invocation:tilo_actions::InvocationId=serde_json::from_value(reply["result"]["structuredContent"]["update"]["invocation"].clone()).unwrap();
         assert_eq!(invocation.0.to_string(),id,"the update speaks in the caller's invocation id");
-        // The job is the MCP client's agent's, acting for the person.
         let tilo_actions::remote::CallerPrincipal::Agent(agent) = server.execution_caller().principal().clone() else {
             panic!("the MCP client is an agent");
         };
         assert_eq!(server.execution_caller().acting_for_person(), Some(actor_name.as_str()));
         let job=fixture.broker.statuses(&format!("agent:{agent}")).into_iter().map(|(job,_)|job).max().expect("the broker job behind it");
         let output=tilo_actions::ActionOutput {value:Some(json!({"content":"sha256:123","width":200})),resources:vec!["content:sha256:123".into()]};
-        // Scoped applications answer with the exact stable UUID they received.
         let (first_job,first_invocation)=fixture.take_invocation_identity().expect("first actual delivery");
         let (delivered_job,delivered_invocation)=fixture.take_invocation_identity().expect("second actual delivery");
         assert_ne!(first_job,delivered_job);

@@ -227,7 +227,6 @@ impl Writer {
     }
 }
 
-/// The low six bits of `n`.
 fn low_bits(n: impl Into<u128>) -> u8 {
     u8::try_from(n.into() & 0x3f).unwrap_or_default()
 }

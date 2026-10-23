@@ -23,10 +23,6 @@ pub struct Budget {
 impl Budget {
     /// Reads `[budget]` from a `tilo-app.toml` source. Unknown keys are refused
     /// so a misspelt ceiling does not silently stop applying.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed TOML, an unknown key or an unreadable size.
     pub fn from_manifest(source: &str) -> Result<Self> {
         let table: toml::Table = source.parse().context("parsing tilo-app.toml")?;
         let Some(budget) = table.get("budget") else {
@@ -57,10 +53,6 @@ impl Budget {
 
 /// Parses `"900 KiB"`, `"1.5 MB"` or `"4096"`. `KB`/`MB` are powers of ten
 /// and `KiB`/`MiB` powers of two, as everywhere else.
-///
-/// # Errors
-///
-/// Returns an error for a missing number or an unknown unit.
 pub fn parse_size(text: &str) -> Result<u64> {
     let text = text.trim();
     let split = text
@@ -161,7 +153,6 @@ pub fn elf_sections(bytes: &[u8]) -> Option<Sections> {
     Some(sections)
 }
 
-/// One file in the package payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayloadFile {
     pub path: PathBuf,

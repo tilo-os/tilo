@@ -2253,7 +2253,6 @@ mod tests {
         let (state, room) = broker(&workspace);
         state.launchable.persist_at(&path);
         state.launchable.retain(&surface(7, &room));
-        // Dropping the session finishes its last save.
         drop(state);
 
         let (restarted, _) = broker(&workspace);

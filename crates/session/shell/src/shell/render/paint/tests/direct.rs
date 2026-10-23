@@ -8,7 +8,6 @@ use super::*;
 fn bridge_paint_fills_sized_buffers_and_xrgb_output_matches_swizzled_paint() {
     // Phase `bridge_paint_sizes_and_fills_its_buffer`.
     {
-        // Phase `bridge_paint_returns_non_empty_buffer_for_non_empty_scene`.
         {
             let mut bridge = required_bridge(64, 64);
             // Fill with cyan so the buffer is definitely not the (dark) base color.
@@ -26,7 +25,6 @@ fn bridge_paint_fills_sized_buffers_and_xrgb_output_matches_swizzled_paint() {
             assert_eq!(bridge.last_phase_timing(), None, "profiling defaults off");
         }
 
-        // Phase `bridge_resize_changes_buffer_size`.
         {
             let mut bridge = required_bridge(1600, 900);
             let bytes = bridge.paint(&Scene::new()).expect("paint at initial size");
@@ -39,7 +37,6 @@ fn bridge_paint_fills_sized_buffers_and_xrgb_output_matches_swizzled_paint() {
             assert_eq!(bytes.len(), 1280 * 720 * 4);
         }
 
-        // Phase `bridge_paint_uses_base_color_for_empty_scene`.
         {
             let mut bridge = required_bridge(32, 32);
             // Pick a distinctive base color so the empty background is distinguishable from any other clear.
@@ -58,7 +55,6 @@ fn bridge_paint_fills_sized_buffers_and_xrgb_output_matches_swizzled_paint() {
             }
         }
 
-        // Phase `bridge_handles_non_aligned_width_via_padding`.
         {
             // Width=33 → tight stride=132, padded to 256 — verifies the row-pitch stripping in `paint`.
             let mut bridge = required_bridge(33, 16);
@@ -128,7 +124,6 @@ fn bridge_paint_fills_sized_buffers_and_xrgb_output_matches_swizzled_paint() {
             }
         }
 
-        // Phase `diagnostic_zero_pitch_records_readback_but_no_output_bytes`.
         {
             let mut bridge = required_bridge(8, 4);
             bridge.set_phase_timing_enabled(true);
@@ -142,7 +137,6 @@ fn bridge_paint_fills_sized_buffers_and_xrgb_output_matches_swizzled_paint() {
             assert_eq!(timing.cpu_output_bytes, 0, "no destination was writable");
         }
 
-        // Phase `diagnostic_xrgb_counts_written_bytes_without_changing_pixels`.
         {
             let mut bridge = required_bridge(8, 4);
             bridge.set_phase_timing_enabled(true);
@@ -161,7 +155,6 @@ fn bridge_paint_fills_sized_buffers_and_xrgb_output_matches_swizzled_paint() {
             }
         }
 
-        // Phase `zero_destination_pitch_unmaps_before_the_next_frame`.
         {
             let mut bridge = required_bridge(8, 4);
             let scene = rect_scene(8, 4, Color::from_rgb8(0x12, 0x34, 0x56));
@@ -178,7 +171,6 @@ fn bridge_paint_fills_sized_buffers_and_xrgb_output_matches_swizzled_paint() {
             }
         }
 
-        // Phase `overflow_recovery_retries_before_xrgb_output`.
         {
             let (width, height) = (384, 256);
             let mut xrgb_bridge = required_bridge(width, height);

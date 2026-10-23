@@ -435,9 +435,6 @@ pub(crate) fn declarations() -> Vec<ActionDecl<RichText>> {
 // ---------------------------------------------------------------------------
 
 /// The body of the rich text under `root` as Markdown with block ids.
-///
-/// # Errors
-/// Returns why `root` holds no rich text.
 pub fn read_markdown_under(doc: &AutoCommit, root: &ObjId) -> Result<String, String> {
     let c = tilo_doc::model::open(doc, root).map_err(|error| error.to_string())?;
     let blocks = tilo_doc::model::materialize_region(doc, &c, Region::Body);
@@ -447,9 +444,6 @@ pub fn read_markdown_under(doc: &AutoCommit, root: &ObjId) -> Result<String, Str
 
 /// What a read of the rich text under `root` answers: its Markdown with ids,
 /// or, naming `block`, that block's line.
-///
-/// # Errors
-/// Returns why `root` holds no rich text, or `block` no block.
 pub fn read_under(
     doc: &AutoCommit,
     root: &ObjId,
@@ -475,9 +469,6 @@ pub fn read_under(
 
 /// The blocks of the rich text under `root` whose text holds `text`, as
 /// `{block, text}` with each block's id as the read shows it.
-///
-/// # Errors
-/// Returns why `root` holds no rich text.
 pub fn find_under(
     doc: &AutoCommit,
     root: &ObjId,

@@ -205,6 +205,15 @@ impl<P: DoorParticipant> BotDoor<P> {
         }
     }
 
+    /// Forget the steps this door took. For a run whose changes the room
+    /// refused part of: run again, it finds the steps whose changes stand
+    /// in the records' history and takes the others anew, reading the room
+    /// as it now is, instead of answering every step from what it did the
+    /// first time.
+    pub fn forget_steps(&self) {
+        self.ledger.lock_recover().clear();
+    }
+
     /// The cause every change of the next run records.
     pub fn set_cause(&self, cause: Option<Cause>) {
         *self.cause.lock_recover() = cause;

@@ -472,13 +472,11 @@ mod tests {
     use super::*;
     #[test]
     fn value_range_includes_reversed_intervals_unless_explicit() {
-        // Case `reversed_intervals_are_included`.
         {
             let domain = RangeChart::new(vec![RangeBar::new("a", "A", 8.0, 2.0)]).domain();
             assert!(domain.0 < 2.0 && domain.1 > 8.0);
         }
 
-        // Case `explicit_range_wins`.
         {
             let chart = RangeChart::new(Vec::new()).with_style(RangeStyle {
                 range: Some((10.0, 20.0)),

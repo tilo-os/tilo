@@ -13,7 +13,6 @@ use crate::icons;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-/// One of the window's controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowControl {
     History,
@@ -82,7 +81,6 @@ impl WindowControls {
             .map_or(row.x1, |x0| x0 - LEAD_GAP)
     }
 
-    /// Every offered control with its rect.
     pub fn iter(&self) -> impl Iterator<Item = (WindowControl, Rect)> {
         [
             (WindowControl::History, self.history),
@@ -93,13 +91,11 @@ impl WindowControls {
         .filter(|(_, r)| r.area() > 0.0)
     }
 
-    /// The control under `p`.
     #[must_use]
     pub fn hit(&self, p: Point) -> Option<WindowControl> {
         self.iter().find(|(_, r)| r.contains(p)).map(|(c, _)| c)
     }
 
-    /// Move every control by `shift`.
     pub fn offset(&mut self, shift: vello::kurbo::Vec2) {
         for r in [&mut self.history, &mut self.maximize, &mut self.close] {
             if r.area() > 0.0 {
@@ -146,7 +142,6 @@ impl WindowControls {
 pub struct ButtonFace {
     pub hovered: bool,
     pub pressed: bool,
-    /// A toggle that is on.
     pub on: bool,
     /// It can act now.
     pub enabled: bool,

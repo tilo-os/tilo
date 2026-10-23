@@ -53,10 +53,6 @@ pub(crate) fn mysql_opts(profile: &crate::model::ConnectionProfile) -> OptsBuild
 impl MySqlEngine {
     /// Open a real connection. A refused socket or a failed auth surfaces as
     /// the driver's own error string — never a fabricated success.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if the TCP connection is refused or
-    /// authentication fails.
     pub fn connect(profile: &crate::model::ConnectionProfile) -> Result<Self, String> {
         let opts: Opts = mysql_opts(profile).into();
         let conn = Conn::new(opts.clone()).map_err(|e| e.to_string())?;
@@ -73,11 +69,6 @@ impl MySqlEngine {
     /// Introspect the connection's current database into the shared
     /// [`DatabaseSchema`] shape. `MySQL`'s schema namespace is the database, so
     /// this yields a single [`SchemaInfo`] named after it.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if any of the underlying
-    /// `information_schema` queries (listing tables, or a table's columns,
-    /// foreign keys or indexes) fail.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         let db: Option<String> = self
             .conn
@@ -460,7 +451,6 @@ mod tests {
                 ),
                 Cell::Text("42".into())
             );
-            // NULL and already-typed binary-protocol values pass straight through.
             assert_eq!(
                 cell_from_value(Value::NULL, Some(ColumnType::MYSQL_TYPE_LONG)),
                 Cell::Null

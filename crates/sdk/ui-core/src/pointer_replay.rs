@@ -183,7 +183,6 @@ impl<T> Default for HeldPress<T> {
 }
 
 impl<T: Copy + PartialEq> HeldPress<T> {
-    /// A press landed on `at`.
     pub(crate) fn press(&mut self, at: PressAt<'_, T>) {
         record_press(at.key, at.rect);
         self.held = Some(at.target);

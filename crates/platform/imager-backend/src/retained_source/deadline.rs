@@ -83,10 +83,6 @@ impl Drop for ProofFence<'_> {
 }
 /// Execute one proof exchange under an absolute deadline. IO progress and
 /// handshake timeout resets cannot renew it; every failed exchange is shut down.
-/// # Errors
-/// Returns the exchange error, `Interrupted` on cancellation, or `TimedOut` on
-/// deadline expiry. Transport observation and watcher creation or join failures
-/// also return errors, including unsupported-host errors.
 pub fn with_proof_deadline_at<T>(
     stream: &ControlStream,
     cancel: &AtomicBool,

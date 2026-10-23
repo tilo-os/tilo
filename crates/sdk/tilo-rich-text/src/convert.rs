@@ -530,7 +530,6 @@ mod tests {
             BlockKind::Callout(CalloutKind::Warning),
             "a quote with an alert is that callout"
         );
-        // A callout made a plain quote again drops its alert.
         let plain = KindSpec::of(&content_of(&cases[2]));
         assert!(plain.same_style(&cases[3]));
         assert_eq!(plain.attr_changes(&cases[3]), [(CALLOUT, None)]);

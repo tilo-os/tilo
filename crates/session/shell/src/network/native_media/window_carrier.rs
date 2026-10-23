@@ -27,11 +27,6 @@ pub(crate) struct WindowCarrier {
 
 impl WindowCarrier {
     /// Join `room`'s window carrier and keep it on the current runtime.
-    ///
-    /// # Errors
-    /// The device is no member of a room that shares its layout, the room's
-    /// relay session is not connected, or the governor did not grant it in
-    /// time.
     pub(crate) async fn open(
         commands: mpsc::Sender<NetCmd>,
         owner: NativeWorkspaceOwner,

@@ -499,7 +499,6 @@ mod tests {
                 }
                 assert_eq!(w.pending(), 50);
 
-                // Nothing drained yet.
                 assert!(w.poll().is_empty());
 
                 // A "worker thread" posts a result; the UI drains it non-blockingly.

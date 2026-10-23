@@ -156,7 +156,6 @@ impl EngineRequest {
         })
     }
 
-    /// `POST` the form `fields` to `url`.
     fn post(url: &str, fields: &[(&'static str, &str)]) -> Option<Self> {
         Some(Self {
             url: Url::parse(url).ok()?,
@@ -166,7 +165,6 @@ impl EngineRequest {
     }
 }
 
-/// One result as an engine ranked it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineResult {
     pub url: String,
@@ -207,7 +205,6 @@ fn blocked_reason(engine: Engine, doc: &Document, body: &str) -> Option<String> 
         return Some(format!("{engine} asked for a CAPTCHA"));
     }
     let markers: &[(&str, &str)] = match engine {
-        // Read by its own parser, which knows its challenges.
         Engine::Google => &[],
         Engine::Bing => &[
             ("id=\"b_captcha", "Bing asked for a CAPTCHA"),

@@ -67,7 +67,6 @@ fn partitions(layout: Layout) -> Vec<Part> {
     }
 }
 
-/// The `sfdisk` script for a layout.
 pub fn sfdisk_script(layout: Layout) -> String {
     let mut script = String::from("label: gpt\n");
     for (index, (name, start, size, kind, _)) in partitions(layout).iter().enumerate() {
@@ -100,10 +99,6 @@ fn preserved_names(layout: Layout) -> &'static [&'static str] {
 /// Build the alongside target as a sparse raw image at `raw`, returning the
 /// extents to verify after the install. The caller creates a qcow2 child with
 /// this immutable raw image as its backing file.
-///
-/// # Errors
-///
-/// A tool failure or an I/O error, as text.
 pub fn build(
     layout: Layout,
     raw: &Path,
@@ -157,10 +152,6 @@ pub fn build(
 
 /// Re-hash every preserved extent of the installed raw image. Returns the
 /// names of the extents that changed.
-///
-/// # Errors
-///
-/// An I/O error reading the image.
 pub fn changed(raw: &Path, preserved: &[Preserved]) -> std::io::Result<Vec<String>> {
     let mut changed = Vec::new();
     for extent in preserved {
@@ -173,10 +164,6 @@ pub fn changed(raw: &Path, preserved: &[Preserved]) -> std::io::Result<Vec<Strin
 
 /// Re-hash only the preserved extents through the installed qcow2 chain.
 /// Reading those ranges avoids converting the entire target back to raw.
-///
-/// # Errors
-///
-/// A tool failure, truncated extraction, or an I/O error.
 pub fn changed_cow(
     qcow2: &Path,
     scratch: &Path,
@@ -281,7 +268,6 @@ mod tests {
     impl Tools for Recorder {
         fn run(&mut self, program: &str, args: &[&str], _: Option<&str>) -> Result<(), String> {
             self.0.push(format!("{program} {}", args.join(" ")));
-            // Stand in for mkfs by writing a recognisable signature.
             if program.starts_with("mkfs")
                 && let Some(path) = args.last()
             {
@@ -325,7 +311,6 @@ mod tests {
         assert!(tools.0.iter().any(|call| call.starts_with("sfdisk ")));
         assert!(changed(&raw, &preserved).unwrap().is_empty());
 
-        // An install that wrote into the sentinel filesystem is refused.
         let mut file = std::fs::OpenOptions::new().write(true).open(&raw).unwrap();
         file.seek(SeekFrom::Start(513 * MIB + 4096)).unwrap();
         file.write_all(b"overwritten").unwrap();

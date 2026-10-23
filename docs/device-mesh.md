@@ -33,6 +33,12 @@ device. From then on every device of theirs finds and trusts the others:
   certificate, the enrolment list and a later hello of the revoked device.
 - Another person's device is never admitted this way; it joins through an
   invitation to a workspace.
+- Any of the person's devices can pair a new one. A device that holds none of
+  the identity's key (or one FROST share of it) asks the devices that hold it
+  to certify the device it found; each asks the person, showing the device's
+  code, and the signatures of the key's threshold of devices make the
+  certificate (`tilo_identity_host::certification_ceremony`). A revoked device
+  is refused by every key holder.
 - On the local network the devices find each other's addresses with sealed
   probes only the person's devices can read (`crates/collab/tilo-lan-discovery`).
   A device that asks for an older one also introduces itself to it, so a device
@@ -372,6 +378,19 @@ authorization.
   measures every member with one microphone on any device and produces a
   before/after proposal; trims change only when it is applied, and one
   revert restores the previous ones.
+- **Show this window on another device** brings the window in front here to
+  the front of another online device of the person. The workspace is theirs
+  on both, so nothing is copied: the target selects the same tab by its id
+  and opens its own instance of the app, as it does for every tab of the
+  person's workspaces. It is part of app continuations.
+- **The lock follows the person.** Each device's presence carries whether it
+  is locked, when the person last locked or unlocked it themselves and when
+  they last used it (`shell::owner_session`). Locking a device locks the
+  person's other devices they have not used since; unlocking one unlocks,
+  on the same network, those that locked only because it did and were in use
+  then. A device does not lock for idleness while the person uses another of
+  their devices on its network. The idle timer's own lock neither spreads nor
+  is undone from elsewhere.
 - **Universal clipboard** is a content-addressed, de-duplicated 50-item
   history. Entries are explicitly classified as shareable and capped at
   256 KiB. Primary selection, secret fields, and Tilo's secret MIME type never
@@ -478,7 +497,9 @@ authorization.
   or Media is turned off. A member without an estimate is shown syncing, and
   after a bounded wait fails with a reason, instead of playing silence.
 
-The Devices surface exposes these capabilities individually. Disabling a
+The Devices surface exposes these capabilities individually. All of them, the
+continuity switch and automatic display input are on until the person turns
+them off: they act only between the person's own certified devices. Disabling a
 capability tears down its active leases; disabling continuity tears down all of
 them. Device identities and transport routes stay compositor-owned rather than
 being disclosed to applications.

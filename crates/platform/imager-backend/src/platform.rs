@@ -93,8 +93,6 @@ pub trait Platform {
         Ok(None)
     }
     /// Resize only the retained, reattested eligible Btrfs filesystem.
-    /// # Errors
-    /// Returns an error if the filesystem is unsupported, its identity changed or resize fails.
     fn resize_linux_btrfs_filesystem(
         &mut self,
         _partition_guid: &str,
@@ -103,30 +101,20 @@ pub trait Platform {
         Err("Linux Btrfs filesystem resize is unavailable".into())
     }
     /// Resize GPT and its kernel partition view, with exact readback.
-    /// # Errors
-    /// Returns an error if the geometry is invalid, identity changed or resize readback fails.
     fn resize_linux_btrfs_partition(&mut self, _partition_guid: &str, _bytes: u64) -> IoResult<()> {
         Err("Linux Btrfs partition resize is unavailable".into())
     }
     /// Shrink the system volume to exactly `to_bytes` (Windows only).
-    /// # Errors
-    /// Returns an error if the shrink is unsupported, unsafe or fails.
     fn shrink_system_volume(&mut self, partition_guid: &str, to_bytes: u64) -> IoResult<()>;
     /// Grow the system volume back to exactly `to_bytes` (Windows only).
-    /// # Errors
-    /// Returns an error if the growth is unsupported or fails.
     fn grow_system_volume(&mut self, partition_guid: &str, to_bytes: u64) -> IoResult<()>;
     /// Create one partition; returns its GUID as read back.
-    /// # Errors
-    /// Returns an error if the geometry is invalid or partition creation fails.
     fn create_partition(&mut self, disk: &Disk, spec: &NewPartition) -> IoResult<String>;
     /// # Errors
     /// Returns an error if the partition is in use, missing or cannot be deleted.
     fn delete_partition(&mut self, disk: &Disk, partition_guid: &str) -> IoResult<()>;
     /// Write `data` at `offset` bytes from the start of the partition.
     /// `offset` and `data.len()` are multiples of `disk.sector_bytes`.
-    /// # Errors
-    /// Returns an error if the partition identity, alignment or write fails.
     fn write_partition(
         &mut self,
         disk: &Disk,
@@ -134,8 +122,6 @@ pub trait Platform {
         offset: u64,
         data: &[u8],
     ) -> IoResult<()>;
-    /// # Errors
-    /// Returns an error if the partition identity, alignment or read fails.
     fn read_partition(
         &self,
         disk: &Disk,
@@ -159,10 +145,6 @@ pub trait Platform {
     /// Returns an error if the variable cannot be read or decoded.
     fn get_efi_var(&self, name: &str) -> IoResult<Option<Vec<u8>>>;
     /// Create or replace a non-volatile, boot + runtime EFI global variable.
-    /// # Errors
-    /// Returns an error if the name is invalid or the firmware write fails.
     fn set_efi_var(&mut self, name: &str, data: &[u8]) -> IoResult<()>;
-    /// # Errors
-    /// Returns an error if the name is invalid or the firmware deletion fails.
     fn delete_efi_var(&mut self, name: &str) -> IoResult<()>;
 }

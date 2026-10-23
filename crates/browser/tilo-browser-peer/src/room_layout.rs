@@ -31,6 +31,14 @@ impl RoomLayouts {
         }
         room_layout(doc)
     }
+
+    /// The members `room`'s document lists, by person id, once it lists
+    /// any ([`tilo_desktop_model::projection::room_members`]).
+    pub(crate) fn members(&self, room: &str) -> Option<std::collections::BTreeSet<String>> {
+        self.docs
+            .get(room)
+            .and_then(tilo_desktop_model::projection::room_members)
+    }
 }
 
 #[cfg(test)]

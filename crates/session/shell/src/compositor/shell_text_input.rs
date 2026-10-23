@@ -93,11 +93,6 @@ pub struct ShellTextInput {
 
 impl ShellTextInput {
     /// Connect the stand-in client to the compositor's own display.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the socket pair, the client insertion or
-    /// the Wayland connection fails.
     pub fn connect(state: &mut State) -> Result<Self, String> {
         let (link, conn) = LoopbackClient::connect(state, ClientState::new_arc())?;
         let queue = conn.new_event_queue::<ClientSide>();

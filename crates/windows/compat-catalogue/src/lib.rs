@@ -160,7 +160,6 @@ impl Default for RunnerSettings {
 pub struct Runtime {
     /// Stable local ID, not a filesystem path.
     pub id: String,
-    /// Exact layer used by the runtime.
     pub layer: Layer,
 }
 
@@ -208,7 +207,6 @@ pub struct ApplicationQuery {
 }
 
 impl ApplicationQuery {
-    /// Build a query from an executable path.
     pub fn executable(path: impl Into<String>) -> Self {
         Self {
             executable: Some(path.into()),
@@ -434,11 +432,6 @@ pub struct Catalogue {
 impl Catalogue {
     /// Validate all data before it can influence launching. Unknown schema,
     /// duplicate IDs, malformed keys and malformed recipes fail closed.
-    ///
-    /// # Errors
-    ///
-    /// Returns a specific [`CatalogueError`] for any unsupported or malformed
-    /// catalogue field.
     pub fn validate(&self) -> Result<(), CatalogueError> {
         if self.schema_version != CATALOGUE_SCHEMA_VERSION {
             return Err(CatalogueError::UnsupportedSchema(self.schema_version));
@@ -481,11 +474,6 @@ impl Catalogue {
 
     /// Resolve Wine/Proton routes. VM records are ignored unless the caller
     /// explicitly opts into VM fallback using [`Resolver::resolve`].
-    ///
-    /// # Errors
-    ///
-    /// Returns a validation error if any catalogue entry is unsupported or
-    /// malformed.
     pub fn resolver(&self) -> Result<Resolver<'_>, CatalogueError> {
         self.validate()?;
         Ok(Resolver { catalogue: self })
@@ -1562,7 +1550,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn catalogue_matches_rank_identity_digest_and_provenance_deterministically() {
-        // Phase `normalizes_case_paths_and_whitespace`.
         {
             let key = MatchKey {
                 executable: Some(String::from("  Program\\APP.EXE  ")),
@@ -1570,7 +1557,6 @@ mod tests {
             };
             assert!(key.matches(&ApplicationQuery::executable("/tmp/program/app.exe")));
         }
-        // Phase `exact_identity_beats_executable_and_ties_are_deterministic`.
         {
             let executable = wine_record(
                 "z-executable",
@@ -1600,7 +1586,6 @@ mod tests {
             assert_eq!(plan.record_id.as_deref(), Some("a-exact"));
             assert_eq!(plan.match_kind, MatchKind::AppId);
         }
-        // Phase `executable_digest_is_strongest_match`.
         {
             let mut digest_record = wine_record(
                 "digest",
@@ -1636,7 +1621,6 @@ mod tests {
             assert_eq!(plan.record_id.as_deref(), Some("digest"));
             assert_eq!(plan.match_kind, MatchKind::ExecutableDigest);
         }
-        // Phase `signed_and_provenance_metadata_break_same_match_ties`.
         {
             let mut unsigned = wine_record(
                 "unsigned",
@@ -1671,7 +1655,6 @@ mod tests {
 
     #[test]
     fn runner_selection_defaults_to_wine_and_never_implies_proton_or_vm() {
-        // Phase `unknown_application_defaults_to_wine`.
         {
             let catalogue = catalogue(Vec::new());
             let resolver = catalogue.resolver().expect("valid catalogue");
@@ -1683,7 +1666,6 @@ mod tests {
             assert_eq!(plan.match_kind, MatchKind::DefaultWine);
             assert_eq!(plan.runner.family, "wine");
         }
-        // Phase `proton_requires_recipe_and_umu_runner`.
         {
             let mut record = wine_record(
                 "game",
@@ -1706,7 +1688,6 @@ mod tests {
                 })
             );
         }
-        // Phase `vm_is_never_implicit`.
         {
             let mut vm = wine_record(
                 "legacy",
@@ -1736,7 +1717,6 @@ mod tests {
                 WINDOWS_VM_RUNTIME_ID
             );
         }
-        // Phase `malformed_catalogue_fails_closed`.
         {
             let duplicate = wine_record(
                 "same",
@@ -1767,7 +1747,6 @@ mod tests {
 
     #[test]
     fn umu_csv_imports_proton_records_with_primary_store_ids() {
-        // Phase `parses_umu_csv_and_builds_proton_records`.
         {
             let csv = "TITLE,STORE,CODENAME,UMU_ID,EXTRA\n\"A, Great Game\",steam,GreatGame,123,ignored\n";
             let rows = parse_umu_csv(csv).expect("valid UMU CSV");
@@ -1812,14 +1791,12 @@ mod tests {
                 MatchKind::GameId
             );
         }
-        // Phase `rejects_malformed_umu_csv`.
         {
             assert!(parse_umu_csv("TITLE,STORE\nGame,steam\n").is_err());
             assert!(
                 parse_umu_csv("TITLE,STORE,CODENAME,UMU_ID\n\"unterminated,steam,x,1\n").is_err()
             );
         }
-        // Phase `store_and_codename_are_primary_for_egs_and_gog_rows`.
         {
             let csv = "TITLE,STORE,CODENAME,UMU_ID\nCatnip,EGS,Catnip,397540\nGOG title,GOG,123456,765432\n";
             let rows = parse_umu_csv(csv).expect("valid store catalogue");
@@ -1865,7 +1842,6 @@ mod tests {
 
     #[test]
     fn bottles_metadata_imports_only_safe_bounded_fields() {
-        // Phase `imports_safe_bottles_metadata_and_ignores_steps_paths_and_urls`.
         {
             let recipe = r"
     Name: Evernote
@@ -1904,12 +1880,10 @@ mod tests {
             );
             assert_eq!(records[0].recipe.settings.components.len(), 2);
         }
-        // Phase `rejects_bottles_path_as_an_executable`.
         {
             let recipe = "Name: Bad\nExecutable: /home/user/evil.exe\n";
             assert!(parse_bottles_recipe(recipe).is_err());
         }
-        // Phase `rejects_duplicate_bottles_metadata_and_bounds_csv_rows`.
         {
             let duplicate = "Name: App\nGrade: Gold\nGrade: Platinum\nExecutable: app.exe\n";
             assert!(parse_bottles_recipe(duplicate).is_err());
@@ -1919,7 +1893,6 @@ mod tests {
             }
             assert!(parse_umu_csv(&csv).is_err());
         }
-        // Phase `community_bottles_metadata_cannot_select_proton_or_vm`.
         {
             let recipe = "Name: App\nExecutable: app.exe\n";
             let profile = profile();

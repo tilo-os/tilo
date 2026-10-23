@@ -44,7 +44,6 @@ enum ExitState {
     Ready,
 }
 
-/// The root of a Browser window.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "layout invalidation, address focus, close admission and native fullscreen observations are independent flags; exit admission already uses ExitState"
@@ -996,7 +995,6 @@ mod tests {
     /// A window is one page: other pages are desktop tabs.
     #[test]
     fn other_pages_are_desktop_tabs_never_tabs_of_this_window() {
-        // Phase `the_window_has_no_tab_strip`.
         {
             let (mut window, _engine) = window();
             let rects = layout_rects(&mut window);
@@ -1012,7 +1010,6 @@ mod tests {
             assert_ne!(accessibility.role, ui::a11y::Role::TabBar);
         }
 
-        // Phase `a_link_opened_in_a_new_tab_asks_the_desktop_for_a_tab_beside`.
         {
             let _ = ui::shell_tabs::take_requests();
             let (mut window, engine) = window();
@@ -1041,7 +1038,6 @@ mod tests {
             );
         }
 
-        // Phase `a_page_that_closes_itself_closes_its_desktop_tab`.
         {
             let _ = ui::shell_tabs::take_requests();
             let (mut window, engine) = window();
@@ -1053,7 +1049,6 @@ mod tests {
             );
         }
 
-        // Phase `the_desktop_tab_chords_never_reach_the_page`.
         {
             use winit::keyboard::ModifiersState;
             let (mut window, engine) = window();
@@ -1083,7 +1078,6 @@ mod tests {
     /// Content full screen hint lifetime and exit routes.
     #[test]
     fn content_fullscreen_owner_hint_and_exit_follow_the_root_window() {
-        // Phase `content_fullscreen_hides_the_chrome_and_shows_the_hint`.
         {
             let (mut window, engine) = window();
             engine.emit(WebViewEvent::FullscreenChanged(true));
@@ -1114,7 +1108,6 @@ mod tests {
             assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
         }
 
-        // Phase `ordinary_os_fullscreen_keeps_browser_chrome_and_has_no_hint`.
         {
             let (mut window, _engine) = window();
             window.on_fullscreen_changed(true);
@@ -1124,7 +1117,6 @@ mod tests {
             assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
         }
 
-        // Phase `input_is_held_until_the_immersive_tree_is_rebuilt`.
         {
             let (mut window, engine) = window();
             window.on_fullscreen_changed(true);
@@ -1140,7 +1132,6 @@ mod tests {
             ));
         }
 
-        // Phase `fullscreen_hint_lifetime_is_exactly_three_seconds`.
         {
             let entered = ui::time::now();
             let deadline = entered + FULLSCREEN_HINT_DURATION;
@@ -1215,7 +1206,6 @@ mod tests {
                 error: String::new(),
             };
 
-        // Phase `fullscreen_download_close_exposes_both_exit_choices`.
         {
             let (mut window, engine) = window();
             let mut doc = AutoCommit::new();
@@ -1246,7 +1236,6 @@ mod tests {
             assert_eq!(engine.sent(&WebViewCommand::CancelAllDownloads), 0);
         }
 
-        // Phase `cancelling_waits_for_the_native_owner_before_quitting`.
         {
             let (mut window, engine) = window();
             let mut doc = AutoCommit::new();
@@ -1296,7 +1285,6 @@ mod tests {
             );
         }
 
-        // Phase `a_window_without_downloads_closes_at_once`.
         {
             let (mut window, _engine) = window();
             assert_eq!(
@@ -1420,9 +1408,7 @@ mod tests {
     /// How a person reaches the address field before typing.
     #[derive(Clone, Copy, Debug)]
     enum Reach {
-        /// A new window starts in the field.
         Launch,
-        /// A click into the field.
         Click,
         /// Ctrl+L.
         Shortcut,

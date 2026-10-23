@@ -71,9 +71,6 @@ pub const MODES: [&str; 4] = [
 
 /// Run one installed producer mode. Returns stdout on success, or the closed
 /// diagnostic for stderr; the caller maps these to exit status 0 and 1.
-///
-/// # Errors
-/// Returns the diagnostic line for unknown arguments and failed checks.
 pub fn run(mode: &str, args: impl IntoIterator<Item = OsString>) -> Result<Vec<u8>, String> {
     let args = args.into_iter().collect::<Vec<_>>();
     let check = match args.as_slice() {

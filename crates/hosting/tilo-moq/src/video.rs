@@ -51,7 +51,6 @@ pub const MAX_SIDE: u16 = 4096;
 /// What a picture shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Source {
-    /// The participant's camera.
     Camera,
     /// A screen or window the participant shares.
     Screen,
@@ -238,7 +237,6 @@ pub enum Track {
 }
 
 impl Track {
-    /// The track's name.
     #[must_use]
     pub fn name(self) -> String {
         match self {
@@ -255,7 +253,6 @@ impl Track {
             .or_else(|| parse_window_track(name).map(Self::Window))
     }
 
-    /// The layer every picture of the track is in.
     #[must_use]
     pub const fn layer(self) -> Layer {
         match self {
@@ -298,11 +295,6 @@ fn byte(bytes: &[u8], at: usize) -> Result<u8, InvalidVideoObject> {
 
 impl VideoObject {
     /// Encode this object in the tilo-video/1 wire layout.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidVideoObject`] for an empty or oversized payload or a
-    /// picture size of zero or past [`MAX_SIDE`].
     pub fn encode(&self) -> Result<Vec<u8>, InvalidVideoObject> {
         if self.payload.is_empty()
             || self.payload.len() > MAX_OBJECT_BYTES.saturating_sub(HEADER_BYTES)
@@ -333,10 +325,6 @@ impl VideoObject {
     }
 
     /// Decode one complete, valid tilo-video/1 object.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidVideoObject`] when [`validate`] rejects `bytes`.
     pub fn decode(bytes: &[u8]) -> Result<Self, InvalidVideoObject> {
         let header = validate(bytes)?;
         Ok(Self {
@@ -367,12 +355,6 @@ pub struct Header {
 }
 
 /// Check one object's header and length.
-///
-/// # Errors
-///
-/// Returns [`InvalidVideoObject`] for another version, flags or reserved
-/// bytes set, an unknown codec or layer, a picture size of zero or past
-/// [`MAX_SIDE`], or a length that does not match the payload.
 pub fn validate(bytes: &[u8]) -> Result<Header, InvalidVideoObject> {
     if bytes.len() <= HEADER_BYTES || bytes.len() > MAX_OBJECT_BYTES {
         return Err(InvalidVideoObject);

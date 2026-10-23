@@ -1,9 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
-//! Every resource that declares a view publishes `share-link`, which asks
-//! the room's host for a fresh locator and renders the link grammar under
-//! the web entry the host announced.
-
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::{

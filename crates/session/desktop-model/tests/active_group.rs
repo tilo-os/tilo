@@ -125,7 +125,6 @@ fn active_group_follows_closing_groups_and_resolves_neighbours() {
         tree.set_active_group(strip_id, b);
         let resolved = tree.resolve_active_group(strip_id, |id| id == a || id == c);
         assert_eq!(resolved, Some(b));
-        // Map is unchanged.
         assert_eq!(tree.active_group_for(strip_id), Some(b));
     }
     // Phase `resolve_active_group_walks_left_then_right`.

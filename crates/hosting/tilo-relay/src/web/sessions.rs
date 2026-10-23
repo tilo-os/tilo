@@ -299,7 +299,6 @@ impl Sessions {
         })
     }
 
-    /// The open session for `token`.
     pub(crate) fn get(&self, token: &[u8; 32]) -> Result<Arc<Session>, SessionError> {
         lock(&self.live)
             .get(token)

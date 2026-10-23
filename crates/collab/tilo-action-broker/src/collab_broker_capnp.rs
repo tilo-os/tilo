@@ -117,9 +117,9 @@ use collab_types::{
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle, collab_service,
-    context_stream, invocation_stream, presence_event, presence_handle, presence_payload,
-    presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
+    OpAdmission, OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle,
+    collab_service, context_stream, invocation_stream, presence_event, presence_handle,
+    presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, KindSet, RoomPolicy, Subject, TreePath, roles,
@@ -1474,6 +1474,7 @@ struct OpEnvelope {
     op_bytes: Vec<u8>,
     from_user_id: String,
     kind: OpKind,
+    admission: OpAdmission,
 }
 
 /// Envelope pushed onto a [`PresenceStreamServer`]'s queue. Carries
@@ -7700,6 +7701,9 @@ impl CapnpBrokerState {
         if route.cluster_id.is_empty() {
             return;
         }
+        let Some(admission) = self.admission_of(event, route) else {
+            return;
+        };
         let Ok(mut all_channels) = self.channels.lock() else {
             return;
         };
@@ -7712,7 +7716,15 @@ impl CapnpBrokerState {
                 envelope,
                 from_user_id,
                 ..
-            } => Self::fanout_signed_incremental(channels, except, envelope, from_user_id),
+            } => {
+                Self::fanout_signed_incremental(
+                    channels,
+                    except,
+                    envelope,
+                    from_user_id,
+                    admission,
+                );
+            }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 Self::fanout_cursor_moved(channels, except, user_id, *x, *y);
             }
@@ -7775,6 +7787,7 @@ impl CapnpBrokerState {
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
+            | CollabEvent::RecordContentState { .. }
             | CollabEvent::RemoteAction { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
@@ -7792,6 +7805,7 @@ impl CapnpBrokerState {
         except: u64,
         envelope: &SignedOp,
         from_user_id: &str,
+        admission: OpAdmission,
     ) {
         let op_bytes = match postcard::to_stdvec(envelope) {
             Ok(v) => v,
@@ -7804,6 +7818,7 @@ impl CapnpBrokerState {
             op_bytes,
             from_user_id: from_user_id.to_owned(),
             kind: OpKind::Signed,
+            admission,
         };
         for subs in channels {
             subs.op.retain(|s| {
@@ -9283,11 +9298,11 @@ impl CapnpChannelHandle {
     }
 }
 
-/// Content arriving for one channel's record, pulled one piece of content
-/// per `read`.
+/// News of content for one channel's record, pulled one per `read`:
+/// content that arrived, or where a want of it has got to.
 struct BlobStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<crate::record_content::ContentArrival>>>,
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<crate::record_content::ContentNews>>>,
 }
 
 impl blob_stream::Server for BlobStreamServer {
@@ -9310,6 +9325,12 @@ impl blob_stream::Server for BlobStreamServer {
             let mut reply = results.get();
             reply.set_hash(&arrival.hash);
             reply.set_bytes(&arrival.bytes);
+            reply.set_state(match arrival.state {
+                tilo_content::ContentState::Resolved => runtime_collab::BlobState::Arrived,
+                tilo_content::ContentState::Pending => runtime_collab::BlobState::Fetching,
+                tilo_content::ContentState::Waiting => runtime_collab::BlobState::Waiting,
+                tilo_content::ContentState::Unavailable => runtime_collab::BlobState::Unavailable,
+            });
             Ok(())
         })
     }
@@ -13201,6 +13222,7 @@ impl stream::Server for OpStreamServer {
             r.set_op(&env.op_bytes);
             r.set_from_user_id(&env.from_user_id);
             r.set_kind(env.kind);
+            r.set_admission(env.admission);
             Ok(())
         })
     }

@@ -83,21 +83,12 @@ pub struct DynamicSection {
 /// names that run past their table): the caller then knows nothing about the
 /// object, which is different from knowing it needs nothing. A statically
 /// linked object has no dynamic section and returns an empty one.
-///
-/// # Errors
-///
-/// Returns the I/O error of opening or reading the file. A file shorter than
-/// its headers claim is `Ok(None)`, not an error.
 pub fn read_dynamic_section(path: &Path) -> std::io::Result<Option<DynamicSection>> {
     read_dynamic_section_of(&File::open(path)?)
 }
 
 /// [`read_dynamic_section`] of a file already open: the object read is the
 /// one this descriptor holds, whatever its path names by then.
-///
-/// # Errors
-///
-/// Returns the I/O error of reading the file.
 pub fn read_dynamic_section_of(file: &File) -> std::io::Result<Option<DynamicSection>> {
     match parse_dynamic(file) {
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
@@ -116,11 +107,6 @@ struct ProgramHeaders {
 
 /// Read an ELF interpreter without executing the object. Absence is distinct
 /// from a malformed/unsupported ELF, which is an error.
-///
-/// # Errors
-///
-/// Returns I/O errors for inaccessible or truncated objects, and rejects
-/// unsupported ELF headers or an invalid interpreter string.
 pub fn read_interpreter(path: &Path) -> std::io::Result<Option<String>> {
     let file = File::open(path)?;
     let malformed = || std::io::Error::other("invalid ELF interpreter");
@@ -407,7 +393,6 @@ pub struct MissingLibrary {
 pub struct LoaderView {
     /// The launcher's own binds as `(sandbox path, host path)`.
     mounts: Vec<(PathBuf, PathBuf)>,
-    /// `LD_LIBRARY_PATH`, as sandbox paths.
     library_path: Vec<PathBuf>,
     cache: LdCache,
     /// The loader's built-in directories, as sandbox paths.
@@ -467,10 +452,6 @@ impl LoaderView {
     /// Check that every `DT_NEEDED` library of `entry` (a sandbox path), and
     /// of each library it finds shipped in the app payload or the runtime
     /// bundle, resolves where the sandboxed loader looks.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first library that resolves nowhere.
     pub fn check(&self, entry: &Path) -> Result<(), MissingLibrary> {
         let mut queue = VecDeque::from([entry.to_path_buf()]);
         let mut seen: HashSet<PathBuf> = HashSet::from([entry.to_path_buf()]);

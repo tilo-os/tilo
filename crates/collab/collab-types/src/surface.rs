@@ -333,7 +333,6 @@ writes = ["record", "comments.*"]
         assert!(forged.surface(&record, None, Some(&hash)).is_none());
     }
 
-    /// Every app's committed surface parses as a receiver reads it.
     #[test]
     fn every_committed_surface_parses() {
         let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");

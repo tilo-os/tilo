@@ -283,7 +283,6 @@ pub struct CatalogueProvider {
     pub browsable: bool,
 }
 
-/// One page of catalogue rows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CataloguePage {
     /// Opaque revision the page, its cursor and its targets belong to.

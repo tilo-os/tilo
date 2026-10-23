@@ -67,7 +67,6 @@ fn assert_unlocked(read: &str) {
     );
 }
 
-/// Where the seat's pointer is.
 #[track_caller]
 pub fn pointer_location(pointer: &PointerHandle<State>) -> Point<f64, Logical> {
     assert_unlocked("the pointer's location");
@@ -81,7 +80,6 @@ pub fn pointer_is_grabbed(pointer: &PointerHandle<State>) -> bool {
     pointer.is_grabbed()
 }
 
-/// The surface that has the seat's keyboard focus.
 #[track_caller]
 pub fn keyboard_focus(
     keyboard: &KeyboardHandle<State>,

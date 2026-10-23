@@ -290,7 +290,6 @@ mod tests {
 
     #[test]
     fn seat_detection_reads_the_environment_through_the_probe() {
-        // Phase `detect_with_normalises_empty_variables_to_absent`.
         {
             // A shell that exports XDG_SESSION_ID= (empty) is telling us the
             // same thing as not exporting it. Treating `Some("")` as "we have
@@ -308,7 +307,6 @@ mod tests {
             assert_eq!(e.seat, None);
             assert_eq!(e.vtnr.as_deref(), Some("2"));
         }
-        // Phase `detect_with_reads_the_socket_and_seat_dir_through_the_probe`.
         {
             let e = SeatEnvironment::detect_with(|_| None, |p| p == SEATD_SOCKET);
             assert!(e.seatd_socket, "the seatd socket probe must be consulted");
@@ -333,7 +331,6 @@ mod tests {
 
     #[test]
     fn seat_diagnosis_classifies_each_missing_precondition() {
-        // Phase `no_session_id_is_the_no_login_session_case`.
         {
             // The reported failure: XDG_SESSION_ID empty, no seatd socket.
             let e = SeatEnvironment {
@@ -343,7 +340,6 @@ mod tests {
             };
             assert_eq!(classify(ENOSYS, &e), SeatFailureKind::NoLoginSession);
         }
-        // Phase `no_session_id_wins_even_when_a_compositor_is_running`.
         {
             // Running Tilo from a terminal emulator inside GNOME *and* outside
             // a logind session (a container, say). "You are not in a session"
@@ -356,7 +352,6 @@ mod tests {
             };
             assert_eq!(classify(ENOSYS, &e), SeatFailureKind::NoLoginSession);
         }
-        // Phase `session_without_a_seat_is_its_own_diagnosis`.
         {
             // `loginctl` shows this session's seat as `-` — a manager session.
             let e = SeatEnvironment {
@@ -382,7 +377,6 @@ mod tests {
                 "seat name {name:?} must not read as a real seat"
             );
         }
-        // Phase `seat_owned_but_a_wayland_compositor_is_running_is_seat_already_held`.
         {
             let e = SeatEnvironment {
                 session_id: Some("3".into()),
@@ -394,7 +388,6 @@ mod tests {
             };
             assert_eq!(classify(ENOSYS, &e), SeatFailureKind::SeatAlreadyHeld);
         }
-        // Phase `an_x_display_counts_as_a_running_display_server_too`.
         {
             let e = SeatEnvironment {
                 session_id: Some("3".into()),
@@ -405,7 +398,6 @@ mod tests {
             };
             assert_eq!(classify(ENOSYS, &e), SeatFailureKind::SeatAlreadyHeld);
         }
-        // Phase `seat_owned_and_free_but_no_backend_running_is_no_seat_backend`.
         {
             // A seat name in the environment with neither logind managing
             // seats nor seatd listening: nothing can open it.
@@ -419,7 +411,6 @@ mod tests {
             };
             assert_eq!(classify(ENOSYS, &e), SeatFailureKind::NoSeatBackend);
         }
-        // Phase `seatd_socket_alone_is_enough_of_a_backend`.
         {
             let e = SeatEnvironment {
                 session_id: Some("3".into()),
@@ -430,7 +421,6 @@ mod tests {
             };
             assert_eq!(classify(ENOSYS, &e), SeatFailureKind::Unclassified);
         }
-        // Phase `everything_present_and_free_falls_through_to_unclassified`.
         {
             // A permissions failure (EACCES on the seat) looks like this: the
             // environment is correct, so the raw error is the only evidence.
@@ -451,7 +441,6 @@ mod tests {
 
     #[test]
     fn seat_diagnosis_messages_name_the_environment_and_remedy() {
-        // Phase `the_message_names_the_observed_environment_and_the_vt_remedy`.
         {
             let e = SeatEnvironment {
                 session_id: None,
@@ -489,7 +478,6 @@ mod tests {
                 "the raw libseat error must survive: {msg}"
             );
         }
-        // Phase `the_seat_held_message_tells_you_to_stop_the_other_compositor`.
         {
             let e = SeatEnvironment {
                 session_id: Some("3".into()),
@@ -504,7 +492,6 @@ mod tests {
             assert!(msg.contains("XDG_SEAT=seat0"), "{msg}");
             assert!(msg.contains("WAYLAND_DISPLAY=wayland-1"), "{msg}");
         }
-        // Phase `the_no_backend_message_names_seatd`.
         {
             let e = SeatEnvironment {
                 session_id: Some("3".into()),

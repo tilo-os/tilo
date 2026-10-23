@@ -1,4 +1,3 @@
-//! Exercise the live policy check with a real admitted task command path.
 use super::NativeTaskActionRequirement;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
@@ -553,7 +552,6 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
             "{asks}"
         );
 
-        // The person's Deny for the agent still refuses.
         peer.governance_mut()
             .put_governed_grants(
                 &[agent_answers::grant(
@@ -573,7 +571,6 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
         let denied = requirement.check(&peer, room, "scribe", now).unwrap_err();
         assert!(denied.contains("not allowed"), "{denied}");
 
-        // On its own, outside any task, the agent keeps its preset's limits.
         let policy =
             tilo_desktop_model::projection::room_policy_of(peer.admitted_room().unwrap(), room);
         let own = tilo_action_policy::Authority::person(policy.party_of(Subject::agent("scribe")))

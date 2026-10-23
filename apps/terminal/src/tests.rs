@@ -235,7 +235,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             terminal_end.set_read_timeout(bound).unwrap();
             let supervisor = std::thread::spawn(move || {
                 let mut reader = std::io::BufReader::new(&supervisor_end);
-                // The persistent-control handshake precedes every open.
                 let mut hello = String::new();
                 reader.read_line(&mut hello).unwrap();
                 assert!(hello.contains("\"op\":\"hello\""), "{hello}");
@@ -293,7 +292,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             std::os::unix::net::UnixStream::pair().expect("socket pair");
         let supervisor = std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(&supervisor_end);
-            // The persistent-control handshake precedes every open.
             let mut hello = String::new();
             reader.read_line(&mut hello).unwrap();
             assert!(hello.contains("\"op\":\"hello\""), "{hello}");
@@ -785,7 +783,6 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
     {
         let (mut widget, _rx) = build_test_widget();
 
-        // Fresh lines start empty.
         widget.feed(b"");
         assert_eq!(widget.grid_row(0).len(), 0, "blank lines are seeded empty");
 
@@ -883,7 +880,6 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
     }
 }
 
-/// Disconnected accessibility state and drawing from theme tokens at every text scale.
 #[test]
 fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
     // Case `exited_pty_publishes_a_persistent_disconnected_accessibility_state`.
@@ -969,8 +965,6 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
     }
 }
 
-/// The session banner stands above the grid and the grid starts under it, at
-/// every text scale.
 #[test]
 fn ended_session_banner_reserves_its_own_band_above_the_grid() {
     use ui::widget::Widget;
@@ -1573,7 +1567,6 @@ fn person_paste_is_immediate_while_published_paste_asks_for_confirmation() {
             true,
             true,
         );
-        // Case `shift_insert_pastes_without_confirmation`.
         send_key(
             terminal,
             &mut doc,
@@ -2499,7 +2492,6 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
 // Paste — bracketed and plain, straight to the PTY.
 // ---------------------------------------------------------------
 
-/// Plain and bracketed paste bytes.
 #[test]
 fn paste_writes_to_pty_with_newline_and_bracketing_rules() {
     // Case `plain_paste_writes_to_pty_with_cr_newlines`.
@@ -2514,7 +2506,6 @@ fn paste_writes_to_pty_with_newline_and_bracketing_rules() {
     // Case `bracketed_paste_wraps_when_app_enabled_it`.
     {
         let (mut w, write_rx) = build_test_widget();
-        // App turns on bracketed paste via a real DEC private set sequence.
         w.feed(b"\x1b[?2004h");
         assert!(w.modes().bracketed_paste);
         w.paste("data");
@@ -2530,7 +2521,6 @@ fn paste_writes_to_pty_with_newline_and_bracketing_rules() {
 // Alternate screen + DEC private modes.
 // ---------------------------------------------------------------
 
-/// Alternate screen, DEC private modes and focus reporting.
 #[test]
 fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
     // Case `alt_screen_switches_buffers_and_restores_main`.
@@ -2540,13 +2530,11 @@ fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
         let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        // Write to the main screen.
         w.feed(b"MAIN CONTENT\r\n");
         w.sync(&doc, &automerge::ROOT);
         assert!(!w.is_alt_screen());
         assert!(w.grid_row(0).starts_with("MAIN CONTENT"));
 
-        // Enter the alternate screen and do a full-screen redraw.
         w.feed(b"\x1b[?1049h\x1b[2J\x1b[H");
         w.feed(b"\x1b[3;5HTUI REDRAW");
         w.sync(&doc, &automerge::ROOT);
@@ -2697,8 +2685,6 @@ fn mouse_tracking_padding_and_grid_hit_testing() {
             "grid right inset by padding + scrollbar gutter: {gr:?}"
         );
         assert!(gr.y1 < 640.0, "grid bottom inset by body padding: {gr:?}");
-        // The top+bottom padding genuinely reduces the usable rows vs. a
-        // full-rect fit.
         let (cols, rows) = w.grid_size();
         assert!(cols > 0 && rows > 0, "reflow produced a usable grid");
         assert!(
@@ -2751,7 +2737,6 @@ fn mouse_tracking_padding_and_grid_hit_testing() {
     }
 }
 
-/// IME commits and the accessibility/semantic transcript surface.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -2940,7 +2925,6 @@ fn ime_and_accessibility_expose_terminal_semantics() {
     }
 }
 
-/// Terminal resource identity, CRDT convergence between peers, and presence.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -3078,7 +3062,6 @@ fn terminal_resource_identity_convergence_and_presence() {
         let (mut w, _) = build_test_widget();
         w.force_grid(vec!["abcdefgh".to_string()]);
 
-        // With a selection, the payload is a Selection over linear indices.
         w.force_selection(Some(Selection {
             anchor: GridPos { row: 0, col: 2 },
             cursor: GridPos { row: 0, col: 5 },
@@ -3093,7 +3076,6 @@ fn terminal_resource_identity_convergence_and_presence() {
             other => panic!("expected Selection payload, got {other:?}"),
         }
 
-        // Without a selection, the payload is a Caret at the cursor.
         w.force_selection(None);
         let (_key, payload) =
             ui::presence::capability::presence_payload(&w).expect("payload with cursor");
@@ -3233,7 +3215,6 @@ fn underline_ends_where_programs_end_it() {
 // SGR — 256-color, truecolor, and the four style bits.
 // ---------------------------------------------------------------
 
-/// SGR colours/styles and kitty images parse into cells and placements.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -3248,7 +3229,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        // Semicolon truecolor foreground.
         w.feed(b"\x1b[H\x1b[38;2;10;20;30mA");
         w.sync(&doc, &automerge::ROOT);
         assert_eq!(
@@ -3275,7 +3255,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
             "38:5 colon-form indexed fg"
         );
 
-        // Truecolor background.
         w.feed(b"\x1b[H\x1b[48;2;5;6;7mD");
         w.sync(&doc, &automerge::ROOT);
         assert_eq!(
@@ -3293,7 +3272,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        // Bold + italic + underline + reverse all at once.
         w.feed(b"\x1b[H\x1b[1;3;4;7mW");
         w.sync(&doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
@@ -3302,7 +3280,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
             "combined SGR style bits: {a:?}"
         );
 
-        // A reset clears everything back to the default attribute.
         w.feed(b"\x1b[H\x1b[0mN");
         w.sync(&doc, &automerge::ROOT);
         let b = w.cell_attr(0, 0);
@@ -3320,7 +3297,6 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
-        // Faint + crossed-out together.
         w.feed(b"\x1b[H\x1b[2;9mX");
         w.sync(&doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
@@ -3853,7 +3829,6 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
 
     // Case `triple_click_selects_line`.
     {
-        // A triple-click selects the whole grid line.
         let (mut w, _) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
@@ -4054,7 +4029,6 @@ fn osc_sequences_update_title_and_hyperlinks() {
         // clickable).
         let (mut w, _) = build_test_widget();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        // Home, open link, print "link", close link.
         w.feed(b"\x1b[H\x1b]8;;https://example.test/docs\x1b\\link\x1b]8;;\x1b\\");
 
         assert_eq!(w.grid_row(0).trim_end(), "link", "the link text is printed");
@@ -4259,7 +4233,6 @@ fn status_and_mode_reports_reply_or_stay_silent() {
     }
 }
 
-/// Query replies through the real PTY pump, and fish starting cleanly.
 #[test]
 #[cfg(unix)]
 fn real_pty_query_replies_and_fish_startup() {
@@ -4407,7 +4380,6 @@ fn login_shell_resolution_and_default_spawn() {
             "/usr/bin/zsh",
             "with $SHELL unset the passwd login shell is used, not a hardcoded /bin/sh"
         );
-        // An empty $SHELL is treated as unset and also falls through to passwd.
         assert_eq!(
             crate::inner::resolve_login_shell_with(
                 Some(String::new()),
@@ -4463,7 +4435,6 @@ fn locate_fish() -> Option<std::path::PathBuf> {
 // Confinement / capability detection (issue: ush errors off Tilo).
 // ---------------------------------------------------------------
 
-/// Confinement routing and the hosted-terminal ush requirement.
 #[test]
 fn confinement_routes_are_mandatory_for_hosted_terminals() {
     // Case `confine_route_service_is_mandatory_for_every_target`.
@@ -4722,7 +4693,6 @@ fn cell_fills_snap_to_device_pixels_and_adjacent_cells_tile() {
 
     for scale in [1.0, 1.25, 1.5, 2.0] {
         let transform = Affine::scale(scale);
-        // Fractional advances and an offset, as in a real grid.
         let (char_w, x0) = (8.43, 12.0);
         for cell in 0..40 {
             let left = x0 + f64::from(cell) * char_w;

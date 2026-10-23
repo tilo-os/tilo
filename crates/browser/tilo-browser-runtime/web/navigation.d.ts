@@ -3,21 +3,9 @@
  * All identities are opaque strings, including u64 IDs.
  */
 export interface DesktopRoute { workspace: string; strip: string; group: string; tab: string }
-export type WorkspaceActivityView = 'catch-up' | 'explore' | 'replay' | 'tasks';
-export type WorkspaceTaskStatus = 'queued' | 'in_progress' | 'waiting' | 'done' | 'cancelled';
-export interface WorkspaceTask {
-  id: string;
-  title: string;
-  status: WorkspaceTaskStatus;
-  statusLabel: string;
-  routeLabel: string;
-  createdBy: string;
-  assignedAgent: string | null;
-  resource: string | null;
-  updatedAt: number;
-}
+export type WorkspaceActivityView = 'catch-up' | 'explore' | 'replay';
 /** `inSurface`: the runtime draws this view over the desktop itself (the shared history pane), so the page shows none of its own. */
-export type WorkspaceActivityState = {workspace: string; view: WorkspaceActivityView; playing: boolean; coverage: 'complete' | 'partial'; tasks: WorkspaceTask[]; inSurface: boolean} | null;
+export type WorkspaceActivityState = {workspace: string; view: WorkspaceActivityView; playing: boolean; coverage: 'complete' | 'partial'; inSurface: boolean} | null;
 /** Last authoritative close in this generation; reset to null when a pane opens.
  * Only dismissed permits returning focus to an external opener. */
 export type WorkspaceActivityCloseReason = 'dismissed' | 'workspace-changed' | 'resource-opened';
@@ -37,7 +25,7 @@ export interface DesktopNavigationSnapshot {
   capabilities: {
     select: boolean; width: boolean; maximize: boolean; strips: boolean; commands: boolean;
     globalSearch: boolean; workspaceSelect: boolean; workspaceHistory: boolean; workspaceReplay: boolean;
-    workspaceTasks: boolean; close: boolean; closeInactive: boolean; launch: boolean; pan: boolean;
+    close: boolean; closeInactive: boolean; launch: boolean; pan: boolean;
     scroll: boolean; history: boolean;
     /** The surface takes sideways wheel input itself; leave it the wheel rather than turn it into `pan`. */
     swipe: boolean;

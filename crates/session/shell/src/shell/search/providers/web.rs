@@ -94,7 +94,6 @@ pub struct Service {
     pub home: &'static str,
     /// The search URL, `{query}` standing for the percent-encoded query.
     pub search: &'static str,
-    /// The app that serves it, if one does.
     pub app: Option<ServingApp>,
 }
 
@@ -222,7 +221,6 @@ impl Service {
 /// What a query asks of the service table.
 #[derive(Debug, PartialEq, Eq)]
 enum Named {
-    /// The service by its name or a keyword, or the start of its name.
     Service(&'static Service),
     /// The service's name or a keyword, then what to search it for.
     Search(&'static Service, String),
@@ -324,7 +322,6 @@ impl WebProvider {
             .unwrap_or_else(|| ResourceKind::Custom(t("search-kind-websites")))
     }
 
-    /// "Search the web for `query`".
     fn web_search_row(&self, query: &str) -> SearchResult {
         let typed = query.to_owned();
         row(

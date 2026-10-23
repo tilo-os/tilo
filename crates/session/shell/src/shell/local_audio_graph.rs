@@ -137,11 +137,6 @@ impl LocalAudioGraph {
     }
 
     /// Queue `edit` once the node it names is in the graph as last read.
-    ///
-    /// # Errors
-    ///
-    /// Returns the pane's message when the node is gone or too many edits
-    /// are already waiting.
     pub(crate) fn submit(&self, edit: LocalAudioEdit) -> Result<(), String> {
         let mut state = self.shared.lock();
         let graph = state.graph.as_ref();

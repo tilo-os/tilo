@@ -66,10 +66,6 @@ pub trait RecentsStore {
     fn load(&self) -> Recents;
 
     /// Replace what is stored.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description of why the recents could not be kept.
     fn save(&self, recents: &Recents) -> Result<(), String>;
 }
 
@@ -409,8 +405,6 @@ impl EmojiPicker {
             .then_some(rect)
     }
 
-    // --- content ---------------------------------------------------------
-
     fn rebuild(&mut self) {
         let catalogue = self.catalogue;
         self.items.clear();
@@ -537,8 +531,6 @@ impl EmojiPicker {
             self.commit(text);
         }
     }
-
-    // --- geometry --------------------------------------------------------
 
     fn layout(&mut self) {
         // A new grid must never complete a press on the old geometry/content.
@@ -873,8 +865,6 @@ impl EmojiPicker {
             .map(|(i, _)| i)
     }
 
-    // --- input -----------------------------------------------------------
-
     /// Route an event while the picker is open. It owns the keyboard and the
     /// pointer: whatever it does not act on reaches nothing behind it.
     pub fn handle_event(
@@ -1122,8 +1112,6 @@ impl EmojiPicker {
         }
     }
 
-    // --- words -----------------------------------------------------------
-
     /// The localised name of `text`, with its tone when it carries one.
     pub fn spoken_name(&self, text: &str) -> String {
         let Some(found) = self.catalogue.lookup(text) else {
@@ -1154,8 +1142,6 @@ impl EmojiPicker {
             Vec::new()
         }
     }
-
-    // --- accessibility ---------------------------------------------------
 
     /// The picker as assistive technology sees it: a modal dialog with the
     /// search field focused, the group tabs, the grid (the highlighted emoji
@@ -1384,8 +1370,6 @@ impl EmojiPicker {
             Rect::new(hint_x, hint_y, rect.x1, hint_y + footer.hint_height),
         );
     }
-
-    // --- paint -----------------------------------------------------------
 
     /// Paint over `viewport`. Geometry follows the theme's spacing and
     /// metrics, re-laid out when either (or the viewport) changed.
@@ -1827,7 +1811,6 @@ mod tests {
             Some(cell),
             Instant::now(),
         );
-        // Search correction through the production keyboard editing path.
         press(
             &mut picker,
             &Key::Character("a".into()),
@@ -2324,7 +2307,6 @@ mod tests {
 
     #[test]
     fn the_dialog_announces_the_highlight() {
-        // German names and searches in German.
         let mut picker = EmojiPicker::new();
         picker.open(VIEWPORT, "de-DE");
         typed(&mut picker, "daumen");

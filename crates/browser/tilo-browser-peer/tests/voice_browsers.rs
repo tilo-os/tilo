@@ -1,5 +1,3 @@
-//! Two isolated Chromium profiles exchange real microphone Opus through
-//! a governed relay call, including mute, reconnect, leave and revocation.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

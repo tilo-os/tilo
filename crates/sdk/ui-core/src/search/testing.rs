@@ -81,11 +81,6 @@ impl ExactSizeIterator for Corpus {}
 /// returns the provider. The provider and the hit are handed back so the
 /// caller can check app-specific behaviour, such as resolving the hit's
 /// action address to a resource.
-///
-/// # Panics
-///
-/// When the last record is not found, when anything else matches, or when
-/// the search inspects more candidates than an index lookup needs.
 pub fn assert_late_hit_reachable<P, F>(rows_fn: F, n: usize) -> (P, SearchResult)
 where
     P: SearchProvider,
@@ -205,7 +200,6 @@ mod tests {
                 .unwrap_or_default()
         }
 
-        // A provider that matches ordinary rows fails.
         let needle = format!(" {LATE_HIT_NEEDLE}");
         let message = panic_message(|| {
             assert_late_hit_reachable(|corpus| catalogue(corpus, &needle), 20);
@@ -215,7 +209,6 @@ mod tests {
             "case matches ordinary rows: {message}"
         );
 
-        // A provider that scans the corpus fails.
         let message = panic_message(|| {
             assert_late_hit_reachable(|corpus| Scanning(catalogue(corpus, "")), 100);
         });

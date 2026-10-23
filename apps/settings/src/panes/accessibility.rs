@@ -757,7 +757,6 @@ mod tests {
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
         let access = AccessibilitySettings::paths();
-        // The rows' own states, which a field shown as text shares.
         let zoom = pane.access.shown(&access.magnifier_zoom, |zoom| {
             magnifier::zoom_label(*zoom).to_owned()
         });

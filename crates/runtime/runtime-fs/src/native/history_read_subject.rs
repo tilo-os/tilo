@@ -122,8 +122,6 @@ impl NativeHistoryReadSubject {
     }
     /// Match the actual named entry to the held original readable inode. This
     /// prevents a stale history subject from following a substituted file.
-    /// # Errors
-    /// Refuses substitution/deletion, stale scope and kernel metadata errors.
     pub fn check(&self) -> Result<(), FsError> {
         let table = self.session.call()?;
         self.scope_locked(&table)?;

@@ -7,9 +7,8 @@
 //! `desktop_navigation.rs`) onto `tilo-desktop-model`.
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{
-    DesktopTree, GroupId, StripId, TabId, WindowGroup, Workspace, WorkspaceId, WorkspaceTaskStatus,
+    DesktopTree, GroupId, StripId, TabId, WindowGroup, Workspace, WorkspaceId,
 };
-use tilo_sort::CompactSort as _;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -65,20 +64,16 @@ pub enum ActivityView {
     CatchUp,
     Explore,
     Replay,
-    Tasks,
 }
 
 impl ActivityView {
     /// Why a surface with `capabilities` cannot present `self`, if it
-    /// cannot. Tasks is carried by the desktop model; the other views read
-    /// retained record and desktop history, which only a host that installed
-    /// a history source holds.
+    /// cannot. The views read retained record and desktop history, which
+    /// only a host that installed a history source holds.
     pub fn unavailable(self, capabilities: &Capabilities) -> Option<&'static str> {
         match self {
-            Self::Tasks if capabilities.workspace_tasks => None,
             Self::CatchUp | Self::Explore if capabilities.workspace_history => None,
             Self::Replay if capabilities.workspace_replay => None,
-            Self::Tasks => Some("Tasks are unavailable on this desktop"),
             Self::CatchUp => {
                 Some("Catch up needs retained record history, which this desktop does not carry")
             }
@@ -271,7 +266,6 @@ pub enum Admitted {
     NotificationCenter(bool),
 }
 
-/// The scroll region key of `route`'s primary region `key`.
 pub fn scroll_region(route: RouteIds, key: &str) -> String {
     format!(
         "{}/{}/{}/{}/{key}",
@@ -306,7 +300,6 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     workspace_select: true,
     workspace_history: false,
     workspace_replay: false,
-    workspace_tasks: true,
     close: true,
     close_inactive: false,
     launch: true,
@@ -624,7 +617,6 @@ pub struct Capabilities {
     pub workspace_select: bool,
     pub workspace_history: bool,
     pub workspace_replay: bool,
-    pub workspace_tasks: bool,
     pub close: bool,
     pub close_inactive: bool,
     pub launch: bool,
@@ -710,23 +702,8 @@ pub struct PaneState {
 pub struct NotificationsState {
     /// Banners on screen.
     pub active: usize,
-    /// Notifications retained in the centre.
     pub retained: usize,
     pub center_open: bool,
-}
-
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskEntry {
-    pub id: String,
-    pub title: String,
-    pub status: WorkspaceTaskStatus,
-    pub status_label: String,
-    pub route_label: String,
-    pub created_by: String,
-    pub assigned_agent: Option<String>,
-    pub resource: Option<String>,
-    pub updated_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -735,7 +712,6 @@ pub struct ActivityState {
     pub view: ActivityView,
     pub playing: bool,
     pub coverage: &'static str,
-    pub tasks: Vec<TaskEntry>,
     /// The surface draws this view itself (the shared history pane), so a
     /// host presents no view of its own for it.
     #[serde(rename = "inSurface")]
@@ -743,36 +719,10 @@ pub struct ActivityState {
 }
 
 fn activity_state(
-    tree: &DesktopTree,
     workspace: WorkspaceId,
     view: ActivityView,
     pane: Option<PaneState>,
 ) -> ActivityState {
-    let mut tasks: Vec<TaskEntry> = tree
-        .workspaces
-        .iter()
-        .find(|w| w.id == workspace)
-        .map(|w| w.tasks.as_slice())
-        .unwrap_or_default()
-        .iter()
-        .map(|task| TaskEntry {
-            id: task.id.clone(),
-            title: task.title.clone(),
-            status: task.status,
-            status_label: task.status.label().into(),
-            route_label: task.route.label().into(),
-            created_by: task.created_by.clone(),
-            assigned_agent: task.assigned_agent.clone(),
-            resource: task.resource.as_ref().map(|r| r.label.clone()),
-            updated_at: task.updated_at,
-        })
-        .collect();
-    tasks.compact_sort_by_key(|task| {
-        (
-            task.status.is_finished(),
-            std::cmp::Reverse(task.updated_at),
-        )
-    });
     ActivityState {
         workspace: workspace.0.to_string(),
         view,
@@ -782,7 +732,6 @@ fn activity_state(
         } else {
             "complete"
         },
-        tasks,
         in_surface: pane.is_some(),
     }
 }
@@ -843,7 +792,6 @@ pub struct Snapshot {
     pub notifications: Option<NotificationsState>,
 }
 
-/// Project `tree` into the navigation snapshot for `generation`.
 pub fn snapshot(tree: &DesktopTree, generation: &str, applications: Vec<Application>) -> Snapshot {
     snapshot_with(tree, generation, applications, &Presentation::default())
 }
@@ -893,7 +841,7 @@ pub fn snapshot_with(
     let workspace_activity = presentation
         .activity
         .filter(|(workspace, _)| *workspace == tree.active)
-        .map(|(workspace, view)| activity_state(tree, workspace, view, presentation.pane));
+        .map(|(workspace, view)| activity_state(workspace, view, presentation.pane));
     Snapshot {
         version: 1,
         generation: generation.to_owned(),
@@ -1162,20 +1110,9 @@ mod tests {
     }
 
     #[test]
-    fn only_the_tasks_view_is_admitted_and_only_on_the_active_workspace() {
+    fn activity_views_need_history_and_the_active_workspace() {
         let mut tree = tree();
         let w = u64::MAX.to_string();
-        assert_eq!(
-            admitted(
-                &tree,
-                serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":w,"view":"tasks"})
-            ),
-            Ok(Admitted::Activity(
-                WorkspaceId(u64::MAX),
-                ActivityView::Tasks,
-                None
-            ))
-        );
         for view in ["catch-up", "explore", "replay"] {
             let reason = admitted(
                 &tree,
@@ -1189,12 +1126,17 @@ mod tests {
         }
         tree.workspaces
             .push(Workspace::new(WorkspaceId(2), "Other"));
+        let capabilities = Presentation {
+            retained_history: true,
+            ..Presentation::default()
+        }
+        .capabilities();
+        let command: Command = serde_json::from_value(
+            serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":"2","view":"explore"}),
+        )
+        .unwrap();
         assert_eq!(
-            admitted(
-                &tree,
-                serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":"2","view":"tasks"})
-            )
-            .unwrap_err(),
+            admit_with(&command, "g", &tree, &capabilities).unwrap_err(),
             "Workspace is no longer active"
         );
         assert_eq!(
@@ -1206,7 +1148,6 @@ mod tests {
         );
         let caps =
             serde_json::to_value(snapshot(&tree, "g", vec![])).unwrap()["capabilities"].clone();
-        assert_eq!(caps["workspaceTasks"], true);
         assert_eq!(caps["swipe"], true);
         assert_eq!(caps["workspaceHistory"], false);
         assert_eq!(caps["workspaceReplay"], false);
@@ -1234,7 +1175,6 @@ mod tests {
             ("catch-up", ActivityView::CatchUp),
             ("explore", ActivityView::Explore),
             ("replay", ActivityView::Replay),
-            ("tasks", ActivityView::Tasks),
         ] {
             let command: Command = serde_json::from_value(
                 serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":w,"view":wire}),
@@ -1300,7 +1240,7 @@ mod tests {
                 can_back: true,
                 can_forward: false,
             }),
-            activity: Some((WorkspaceId(2), ActivityView::Tasks)),
+            activity: Some((WorkspaceId(2), ActivityView::Explore)),
             ..Presentation::default()
         };
         let json = serde_json::to_value(snapshot_with(&tree, "g", vec![], &presentation)).unwrap();

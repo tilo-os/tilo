@@ -1,5 +1,3 @@
-//! The shortcut help button and panel.
-
 #[allow(
     clippy::wildcard_imports,
     reason = "private implementation module shares its enclosing host types"

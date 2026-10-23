@@ -2437,7 +2437,6 @@ mod tests {
             app.harness()
                 .click_named("input.source.add_picker")
                 .unwrap();
-            // The list opens on the next frame, as it does for a person.
             app.settle();
             app.harness().render_png(&out.join("open.png"));
             app.harness().type_text("zzzz");
@@ -2598,7 +2597,6 @@ mod tests {
         reason = "off, pass-through and clamped slider values are exact sentinels, not computed"
     )]
     fn input_pane_lays_out_and_shows_imported_repeat_settings() {
-        // Case `builds_layout`.
         {
             let mut pane = pane_with(&InputPrefs::default(), catalog());
             let theme = Theme::dark();
@@ -2607,7 +2605,6 @@ mod tests {
             let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
         }
 
-        // Case `imported_repeat_settings_are_shown_as_the_live_rate_or_disabled`.
         {
             let disabled = pane_with(
                 &InputPrefs {

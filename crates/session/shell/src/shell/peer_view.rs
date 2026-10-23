@@ -385,7 +385,6 @@ impl PeerView {
         self.decoder.set_display_size(display_size);
     }
 
-    /// The codec the view is decoding.
     pub fn codec(&self) -> media::StreamCodec {
         self.decoder.codec()
     }
@@ -947,8 +946,6 @@ mod tests {
     /// is out. A rejected unit stays [`PushOutcome::DecodeFailed`], and one
     /// whose picture never comes stays [`PushOutcome::Pending`].
     fn push_settled(view: &mut PeerView, unit: &[u8], latency_ns: Option<u64>) -> PushOutcome {
-        // Every unit these tests push is a keyframe, which decodes at any
-        // sequence number.
         let outcome = view.push_encoded_with_latency(0, unit, latency_ns);
         if outcome != PushOutcome::Pending {
             return outcome;
@@ -1325,7 +1322,6 @@ mod tests {
         );
         assert_eq!(view.next_wake_deadline(), None);
 
-        // Without a wake, a picture still decoding is polled for.
         view.set_picture_wake(None);
         view.mark_drawn();
         push_until_pending(&mut view, &nalus, None);

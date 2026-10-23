@@ -103,6 +103,38 @@ class SelectTests(unittest.TestCase):
         self.assertEqual(pre_push.opt_in_line([]), "")
 
 
+def result(check: str, outcome: str, excerpt: str = "", **extra) -> dict:
+    failures = [{"test": None, "excerpt": excerpt}] if excerpt else []
+    return {"type": "result", "check": check, "outcome": outcome, "failures": failures, **extra}
+
+
+class UnpassedTests(unittest.TestCase):
+    def test_a_check_that_could_not_run_is_named_as_t_s_failure_with_its_reason(self):
+        events = [{"type": "planned", "run": "r1", "checks": ["changes", "clippy/shell"]},
+                  result("changes", "pass"),
+                  result("clippy/shell", "error", "the machine running it ran out of disk space\nmore"),
+                  {"type": "done", "exit_code": 2, "run": "r1"}]
+        self.assertEqual(pre_push.unpassed(events, ["changes", "clippy/shell"]), [
+            "clippy/shell: could not run, a failure of t's infrastructure, not of the change: "
+            "the machine running it ran out of disk space"])
+
+    def test_every_outcome_but_pass_is_named(self):
+        events = [result("a", "fail", "boom", blame={"kind": "inherited"}), result("b", "fail", "bang"),
+                  result("c", "cancelled"), result("d", "skipped"), result("e", "later"),
+                  {"type": "error", "message": "503 from the server", "hint": "t status"}]
+        self.assertEqual(pre_push.unpassed(events, ["a", "b", "c", "d", "e", "f"]), [
+            "t failed, not a check: 503 from the server (t status)",
+            "a: fails (main fails it too): boom",
+            "b: fails: bang",
+            "c: cancelled before it finished",
+            "d: not run, since a check it is gated on failed",
+            "e: later, which this hook can't tell apart from a failure",
+            "f: no result; the run ended before t reported one, a failure of t, not of the change"])
+
+    def test_a_run_that_passed_names_nothing(self):
+        self.assertEqual(pre_push.unpassed([result("a", "pass")], ["a"]), [])
+
+
 FAKE_T = r'''#!/usr/bin/env python3
 import json, os, sys
 args = sys.argv[1:]
@@ -120,7 +152,10 @@ elif command == "scope":
 elif command == "suggest":
     print(json.dumps({"checks": [{"check": "test-x86_64/shell", "reason": "opt-in; your change touches it"}]}))
 elif command == "test":
-    print(json.dumps({"type": "done", "run": "r1"}))
+    sys.stdout.write(os.environ.get("FAKE_RUN") or json.dumps({"type": "done", "run": "r1"}) + "\n")
+    sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
+elif command == "show":
+    print("(the run, as t shows it)")
 '''
 
 
@@ -204,6 +239,29 @@ class HookTests(unittest.TestCase):
         pushed = self.git("push", "origin", "main", env=self.env, check=False)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)
         self.assertEqual(self.gate_runs(), 2)
+
+    def test_a_refusal_names_each_check_that_could_not_run_and_why(self):
+        run = [{"type": "planned", "run": "r9", "checks": ["fmt-changed", "changes", "clippy/notes", "policy/formats"]},
+               result("fmt-changed", "pass"), result("changes", "pass"), result("policy/formats", "pass"),
+               result("clippy/notes", "error", "the machine running it ran out of disk space"),
+               {"type": "done", "exit_code": 2, "run": "r9"}]
+        env = {**self.env, "FAKE_EXIT": "2", "FAKE_RUN": "".join(json.dumps(event) + "\n" for event in run)}
+        pushed = self.git("push", "origin", "main", env=env, check=False)
+        self.assertNotEqual(pushed.returncode, 0)
+        self.assertIn("a failure of t, not of the change", pushed.stderr)
+        self.assertIn("    clippy/notes: could not run, a failure of t's infrastructure, not of the change: "
+                      "the machine running it ran out of disk space", pushed.stderr)
+        self.assertNotIn("no-verify", pushed.stderr)
+
+    def test_a_refusal_for_a_failure_names_the_check(self):
+        run = [{"type": "planned", "run": "r9", "checks": ["fmt-changed", "changes", "clippy/notes", "policy/formats"]},
+               result("fmt-changed", "pass"), result("changes", "fail", "a commit message says nothing"),
+               result("policy/formats", "pass"), result("clippy/notes", "pass"),
+               {"type": "done", "exit_code": 1, "run": "r9"}]
+        env = {**self.env, "FAKE_EXIT": "1", "FAKE_RUN": "".join(json.dumps(event) + "\n" for event in run)}
+        pushed = self.git("push", "origin", "main", env=env, check=False)
+        self.assertNotEqual(pushed.returncode, 0)
+        self.assertIn("    changes: fails: a commit message says nothing", pushed.stderr)
 
     def test_a_push_to_another_branch_runs_nothing(self):
         self.git("push", "-q", "origin", "HEAD:topic", env=self.env)

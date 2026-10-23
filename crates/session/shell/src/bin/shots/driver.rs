@@ -30,8 +30,12 @@ use ui::Widget;
 use taffy::prelude::NodeId;
 
 mod desktop_control;
+mod downloaded_scene;
 mod invite_scenes;
+mod scene_catalogue;
 mod search_seed;
+mod two_groups_scene;
+mod uninstall_scenes;
 mod window_menu_scene;
 
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
@@ -781,41 +785,6 @@ fn shots_clock() -> tilo_desktop::chrome::ClockSnapshot {
         clock: "09:41".into(),
         weekday: "Tue".into(),
         date: "14 November".into(),
-    }
-}
-
-// Real room-owned task state qualifies catch-up review, only in shots fixtures.
-fn seed_catch_up_tasks(tree: &mut WorkspaceTree, local: &str) {
-    let workspace = tree.desktop.active;
-    for (title, status) in [
-        (
-            "Finish release notes",
-            shell::shell::state::WorkspaceTaskStatus::Done,
-        ),
-        (
-            "Check yesterday's goals",
-            shell::shell::state::WorkspaceTaskStatus::InProgress,
-        ),
-        (
-            "Review the draft result",
-            shell::shell::state::WorkspaceTaskStatus::Waiting,
-        ),
-    ] {
-        let task = tree.create_workspace_task(
-            workspace,
-            title.to_string(),
-            local.to_string(),
-            None,
-            shell::shell::state::WorkspaceTaskRoute::Manual,
-            None,
-        );
-        assert!(
-            task.is_some(),
-            "shots fixture must create real workspace work"
-        );
-        if let Some(task) = task {
-            assert!(tree.set_workspace_task_status(workspace, &task, status, local));
-        }
     }
 }
 
@@ -1990,21 +1959,15 @@ impl ShellDriver {
             "palette_sum" => self.scene_palette_query("2+2"),
             "palette_move" => self.scene_palette_query("move"),
             "palette_files" => self.scene_palette_query("files"),
-            "palette_finder" => {
-                self.scene_seeded_query("finder");
-            }
-            "palette_spotify" => {
-                self.scene_seeded_query("spotify");
-            }
-            "palette_youtube_cats" => {
-                self.scene_seeded_query("youtube cats");
-            }
-            "palette_github" => {
-                self.scene_seeded_query("github");
-            }
-            "palette_workbook" => {
-                self.scene_seeded_query("workbook");
-            }
+            "palette_finder" => self.scene_seeded_query("finder"),
+            "palette_spotify" => self.scene_seeded_query("spotify"),
+            "palette_youtube_cats" => self.scene_seeded_query("youtube cats"),
+            "palette_github" => self.scene_seeded_query("github"),
+            "palette_workbook" => self.scene_seeded_query("workbook"),
+            "palette_open_app" => self.scene_palette_open_app(),
+            "palette_downloaded" => self.scene_downloaded_query("aseprite"),
+            "palette_downloaded_missing" => self.scene_downloaded_query("ardour"),
+            "launcher_downloaded" => self.scene_downloaded_launcher(),
             "quick-settings" => self.scene_quick_settings(),
             "qs-edit" => self.scene_qs_edit(false),
             "qs-edit-drag" => self.scene_qs_edit(true),
@@ -2059,6 +2022,12 @@ impl ShellDriver {
             ),
             "launchpad-notes-card" => self.scene_launchpad_notes_card(),
             "peer-sync" => self.scene_peer_sync(),
+            name @ ("app-uninstall-flatpak"
+            | "app-uninstall-tilo"
+            | "app-uninstall-downloaded"
+            | "app-uninstall-system"
+            | "app-uninstall-system-tilo"
+            | "app-uninstall-device-flatpak") => self.scene_app_uninstall(name),
             "invite-empty" => self.scene_invite_empty(),
             "invite-typing" => self.scene_invite_typing(),
             "invite-error" => self.scene_invite_error(),
@@ -2200,6 +2169,7 @@ impl ShellDriver {
             code: "482 917".into(),
             requested_at_ms: tilo_clock::unix_now_ms(),
             country: Some("NL".into()),
+            via: None,
         };
         self.with_chrome(|st| {
             st.push_device_asking(&asking);
@@ -3271,7 +3241,6 @@ impl ShellDriver {
                 .host_mut()
                 .room_activity_mut()
                 .prepare_away_recap_for_shots(&mut *tree);
-            seed_catch_up_tasks(&mut tree, &local);
             drop(tree);
             drop(state);
         }
@@ -3707,71 +3676,6 @@ impl ShellDriver {
         Ok(())
     }
 
-    /// Two half-width windows, focus on the right-hand one — nothing about
-    /// the layout alone says which takes the next keystroke.
-    fn scene_two_groups_focus(&mut self) {
-        use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-        let half = WindowWidth::Fraction(500);
-        let mut placed = None;
-        self.with_chrome(|st| {
-            let mut tree = st.tree_mut();
-            let mut sibling = None;
-            let mut strip_id = None;
-            if let Some(strip) = tree
-                .desktop
-                .active_workspace_mut()
-                .and_then(|ws| ws.strips.first_mut())
-            {
-                for g in &mut strip.window_groups {
-                    g.width = half;
-                }
-                let gid = 9101u64;
-                let tid = 9111u64;
-                strip.window_groups.push(WindowGroup {
-                    id: gid,
-                    tabs: vec![Tab {
-                        id: tid,
-                        title: "Settings".to_string(),
-                        tile: TileContent::Stub {
-                            kind: shell::shell::state::AppKind::Settings,
-                            label: "Settings".to_string(),
-                        },
-                    }],
-                    active_tab: tid,
-                    width: half,
-                    maximized: false,
-                    focus_history: Vec::new(),
-                });
-                strip_id = Some(strip.id);
-                sibling = Some(gid);
-            }
-            // Focus the newly-added right-hand window, so the
-            // scene shows the signal moving off the default.
-            if let (Some(sid), Some(gid)) = (strip_id, sibling) {
-                tree.desktop.set_active_group(sid, gid);
-                placed = Some(sid);
-            }
-            drop(tree);
-            st.bump();
-        });
-        // Widths only reach the widget tree at construction, which
-        // ran before this; halve the live groups too or the scene
-        // renders one full-width window with its sibling off-edge.
-        if let Some(sid) = placed
-            && let Some(row) = self.host_mut().group_row_mut_for_tests(sid)
-        {
-            for g in &mut row.groups {
-                g.set_width(half);
-            }
-        }
-        // The pushed group latches its 420 ms arrival fade off the
-        // wall clock the moment it's spliced in; paint once so it
-        // becomes a widget, then wait the curve out before the
-        // caller's `paint_settled` captures the resting state.
-        let _ = self.paint_settled();
-        std::thread::sleep(std::time::Duration::from_millis(600));
-    }
-
     /// Three strips in the active workspace, focus on the middle one — the
     /// only scene exercising the strip ribbon.
     fn scene_multi_strip(&mut self) {
@@ -3815,110 +3719,6 @@ impl ShellDriver {
             st.bump();
         });
     }
-
-    /// Catalogue of scene names supported by `scene_setup`. Used by the
-    /// legacy `--scenes` flag for default expansion + validation.
-    pub const ALL_SCENES: &'static [&'static str] = &[
-        "desktop",
-        "room-member-window",
-        "offline",
-        "multi-group",
-        "multi-strip",
-        "maximized",
-        "two-groups-focus",
-        "overview",
-        "overview-shared",
-        "palette",
-        "palette_typed",
-        "palette_in_app_query",
-        "palette_app_query",
-        "palette_records",
-        "palette_no_results",
-        "palette_rechner",
-        "palette_sum",
-        "palette_move",
-        "palette_files",
-        "palette_finder",
-        "palette_spotify",
-        "palette_youtube_cats",
-        "palette_github",
-        "palette_workbook",
-        "quick-settings",
-        "qs-edit",
-        "qs-edit-drag",
-        "qs-hardware-wired",
-        "qs-compact",
-        "qs-scrolled",
-        "qs-wifi",
-        "qs-wifi-two-displays",
-        "qs-wifi-off",
-        "qs-wifi-hardware-switch",
-        "qs-wifi-turning-on",
-        "qs-wifi-scanning",
-        "qs-wifi-password",
-        "qs-wifi-password-rejected",
-        "qs-wifi-long-labels",
-        "qs-bt",
-        "qs-bt-long-labels",
-        "qs-vpn-long-labels",
-        "qs-battery",
-        "qs-power-mode",
-        "qs-sound",
-        "qs-devices",
-        "qs-clipboard",
-        "qs-clipboard-paste",
-        "power-menu",
-        "power-menu-keyboard",
-        "ws-settings-general",
-        "ws-settings-members",
-        "ws-settings-permissions",
-        "ws-settings-apps",
-        "ws-settings-agents",
-        "ws-settings-agent-access",
-        "ws-settings-agent-access-keyboard",
-        "collaborators",
-        "launchpad",
-        "saved-window-missing-app",
-        "saved-window-reopen",
-        "launchpad-notes-card",
-        "peer-sync",
-        "invite-empty",
-        "invite-typing",
-        "invite-error",
-        "invite-pending",
-        "join-empty",
-        "overview-lounge",
-        "join-field",
-        "pairing-sheet",
-        "device-asking",
-        "lounge-open",
-        "projection",
-        "window-switcher",
-        "emoji-picker",
-        "display-confirm",
-        "portal-permission",
-        "desktop-control-ask",
-        "desktop-control-chip",
-        "desktop-control-menu",
-        "workspace-menu",
-        "window-menu",
-        "profile-card",
-        "dictation-consent",
-        "dictation-listening",
-        "dictation-finishing",
-        "dictation-model-required",
-        "agent-composer",
-        "agent-composer-typed",
-        "agent-composer-answer",
-        "agent-composer-working",
-        "notifications",
-        "notifications-one",
-        "notifications-dnd",
-        "notifications-graphics",
-        "room-activity",
-        "room-activity-all",
-        "room-activity-named",
-    ];
 
     /// Resolve a "named" UI target (button, pill, tab) to its on-screen
     /// rect in viewport-local coordinates. `None` means `Rect::ZERO` —

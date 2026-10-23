@@ -46,9 +46,7 @@ pub(crate) enum SiteJoin {
     /// The host admitted this device; its workspace says Joining… until the
     /// enrollment is installed.
     Enrolling {
-        /// Its room.
         room: RoomId,
-        /// The room's workspace, made for the join.
         local: WorkspaceId,
         /// The enrollment, which [`ShellNetwork::poll_enrollment`] installs.
         enrollment: u64,
@@ -307,10 +305,6 @@ impl ShellNetwork {
     /// it runs, as for every window someone else opened) rather than adding
     /// another, so a community with fifty people in it has one Chat, not
     /// fifty.
-    ///
-    /// # Errors
-    ///
-    /// When the workspace is gone or the app did not open.
     pub(crate) fn open_arrival(&self, arrival: &Arrival) -> Result<(), String> {
         let Some(app) = arrival.app.as_deref() else {
             return Ok(());
@@ -440,11 +434,6 @@ impl ShellNetwork {
     /// this device's replica of the room go together, and a site's is
     /// remembered as left, so it is never joined again unasked; its door
     /// joins it again when the person asks.
-    ///
-    /// # Errors
-    ///
-    /// When `room` is not held through the web, it is the last workspace,
-    /// or what was left is not kept.
     pub(crate) fn leave_site(&self, room: RoomId) -> Result<(), String> {
         if self.hosted_sites.hosted(room).is_none() {
             return Err("that workspace is not held through the web".into());
@@ -476,10 +465,6 @@ impl ShellNetwork {
 
     /// Leave the workspace of `site`, held or not: it is not joined again
     /// unasked.
-    ///
-    /// # Errors
-    ///
-    /// When what was left is not kept.
     #[cfg(test)]
     pub(crate) fn leave_community(&self, site: &url::Url) -> Result<(), String> {
         match self.hosted_sites.room_of_site(site) {

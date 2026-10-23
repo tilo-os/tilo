@@ -581,7 +581,6 @@ impl Custodian {
         }
     }
 
-    /// Use `auth` for `iCloud` Drive.
     #[must_use]
     pub fn with_icloud(mut self, auth: Arc<dyn ICloudAuth>) -> Self {
         self.icloud = auth;

@@ -422,7 +422,6 @@ mod tests {
         assert!(matches!(out.last(), Some(WindowEvent::CursorLeft { .. })));
         assert!(!pointer.is_emulated(4));
 
-        // A shell gesture taking over releases the held pointer.
         let template = touch(6, TouchPhase::Started, 10.0, 10.0);
         pointer.events(&template, || TouchRoute::Drag);
         let withdrawn = pointer.cancel(&template);

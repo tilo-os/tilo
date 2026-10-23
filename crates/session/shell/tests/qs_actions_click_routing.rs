@@ -301,10 +301,6 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
-    // Phase `keyboard_actions_and_reverse_tab_route_through_the_host`.
-    // Enter, Space and reverse-Tab all use the same root actions exposed to
-    // pointer users. This guards the route through `ShellOverlayHost`, where
-    // overlay ordering and modifier state have historically swallowed keys.
     {
         // Sliders, live controls and both radio detail targets, Devices,
         // Clipboard, power profile and Edit precede Settings.
@@ -729,7 +725,6 @@ fn only_the_invite_button_opens_the_signed_composer() {
         host.force_ws_settings_settled();
 
         let btn = host.ws_settings_invite_rect_for_tests();
-        // Well left of the button, still inside the modal body.
         let p = Point::new(btn.x0 - 160.0, btn.center().y);
         click(&mut host, &taffy, host_node, p);
 

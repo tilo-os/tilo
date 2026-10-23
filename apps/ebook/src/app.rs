@@ -56,7 +56,7 @@ use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::metrics::Metrics;
 use ui::widget::modal_dialog;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, Transient};
 use ui::widget::{
     Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead, ColorSwatchFace, Continuable,
     ControlSize, DropZoneFace, EditOutcome, EditableLabel, EmptyState, EmptyStateContent,
@@ -77,9 +77,7 @@ use crate::model::{
     AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
     ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
 };
-use crate::paginate::{
-    ChapterLayout, ChapterLayoutRequest, LayoutKey, LayoutKind, font_choice, layout_chapter,
-};
+use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice};
 use crate::paint;
 use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
@@ -137,55 +135,6 @@ struct ImportMailbox {
 struct ImportWorker {
     mailbox: Arc<(Mutex<ImportMailbox>, Condvar)>,
     results: mpsc::Receiver<ImportResult>,
-}
-
-/// A completed immutable search projection. The worker owns all O(n) index
-/// construction; the UI thread only installs this already-complete value.
-struct SearchBuild {
-    fingerprint: u64,
-    generation: u64,
-    provider: crate::search_provider::BookSearch,
-}
-
-struct SearchWorker {
-    results: mpsc::Receiver<SearchBuild>,
-}
-
-impl SearchWorker {
-    /// `prior` is the published provider; its chapter-prose index is reused
-    /// when the book set has not changed.
-    fn spawn(
-        prior: crate::search_provider::BookSearch,
-        books: Arc<Vec<Arc<Book>>>,
-        annotations: Arc<Vec<Annotation>>,
-        registry: Arc<Vec<crate::model::LibraryEntry>>,
-        fingerprint: u64,
-        generation: u64,
-    ) -> Result<Self, String> {
-        let (send, results) = mpsc::sync_channel(1);
-        ui::rt::spawn_thread("ebook-search-builder", move || {
-            let provider = crate::search_provider::BookSearch::new_shared_after(
-                &prior,
-                books,
-                annotations,
-                registry,
-                generation,
-            );
-            // The receiver is intentionally allowed to disappear during
-            // shutdown; publication has no side effect outside the app.
-            let _ = send.send(SearchBuild {
-                fingerprint,
-                generation,
-                provider,
-            });
-        })
-        .map_err(|error| error.to_string())?;
-        Ok(Self { results })
-    }
-
-    fn try_recv(&self) -> Option<SearchBuild> {
-        self.results.try_recv().ok()
-    }
 }
 
 impl ImportWorker {
@@ -305,6 +254,9 @@ struct LoadingImport {
     path: PathBuf,
     kind: ImportKind,
     expected_book_id: Option<String>,
+    /// The "Opening …" card: it goes after a notice's lifetime, though
+    /// the import may run on.
+    card: Transient<()>,
 }
 
 /// A materialised workspace copy awaiting the UI/document-owner commit. The
@@ -679,6 +631,8 @@ enum Action {
     /// progress are kept, keyed by content id, so re-adding the file restores them.
     RemoveFromLibrary(String),
     ToggleWatchFolder(PathBuf),
+    /// Keep a copy of the book catalogues on this device, or stop.
+    ToggleKeepCatalogues,
 
     // --- settings screen: navigation -------------------------------------
     OpenSettings,
@@ -829,7 +783,7 @@ impl BooksApp {
             self.book_idx = index;
             self.chapter = chapter;
             self.page = 0;
-            self.layout = None;
+            self.retire_layout();
         }
         self.view = View::Reader;
         self.composing = None;
@@ -904,7 +858,7 @@ pub struct BooksApp {
     import_loading: Option<LoadingImport>,
     pending_share: Option<PendingShare>,
     /// Empty-state message when opening a book failed.
-    load_error: Option<String>,
+    load_error: Transient<String>,
 
     // --- taffy / paint geometry -------------------------------------------
     rect: Rect,
@@ -1126,6 +1080,12 @@ pub struct BooksApp {
     local_library: LocalLibrary,
     /// The person's own reader key bindings.
     reader_keys: crate::reader_keys::ReaderKeys,
+    /// Whether this device keeps a copy of the book catalogues.
+    catalogue_setting: Option<ui::framework::Setting<crate::catalogue::CatalogueCopies>>,
+    /// The device's copy of Project Gutenberg's catalogue, in a live window.
+    catalogue: Option<std::sync::Arc<crate::catalogue::DeviceCatalogue>>,
+    /// What the copy was last told: kept or released.
+    catalogue_kept: Option<bool>,
     /// The command currently awaiting a one-key local binding in Settings.
     shortcut_capture: Option<ReaderShortcut>,
     /// A short, local capture error announced through the row's accessible
@@ -1146,7 +1106,9 @@ pub struct BooksApp {
     shelf_annos: HashMap<String, usize>,
     /// Last-opened timestamp per book (for the "recently opened" shelf sort).
     shelf_opened: HashMap<String, u64>,
-    last_persisted: Option<(usize, usize, u16)>,
+    /// The chapter, block and page last recorded: a scroll records its
+    /// place as it reaches another block or page, not every frame it moves.
+    last_persisted: Option<(usize, usize, usize)>,
     /// The open book's stored position is still to be taken up: set when a
     /// book opens, cleared once the reader shows it there.
     adopt_position: bool,
@@ -1164,6 +1126,9 @@ pub struct BooksApp {
 
     // --- layout cache ------------------------------------------------------
     layout: Option<ChapterLayout>,
+    layouts: chapter_layouts::ChapterLayouts,
+    /// Whether the layout last drawn holds the whole chapter.
+    flow_complete: bool,
     /// Decoded cover artwork lifted into GPU-ready image handles, keyed by
     /// book id and built lazily on first shelf draw.
     cover_cache: HashMap<String, PenikoImage>,
@@ -1267,7 +1232,7 @@ impl BooksApp {
             import_generation: 0,
             import_loading: None,
             pending_share: None,
-            load_error: None,
+            load_error: Transient::new(),
             rect: Rect::ZERO,
             dirty: true,
             view: View::Library,
@@ -1361,6 +1326,9 @@ impl BooksApp {
             watched_sources: HashMap::new(),
             local_library: LocalLibrary::default(),
             reader_keys: crate::reader_keys::ReaderKeys::default(),
+            catalogue_setting: None,
+            catalogue: None,
+            catalogue_kept: None,
             shortcut_capture: None,
             shortcut_capture_error: None,
             shelf_controls: ShelfControls::default(),
@@ -1384,6 +1352,8 @@ impl BooksApp {
             shelf_focus_visible: false,
             file_open: ui::widget::FileOpenSurface::default(),
             layout: None,
+            layouts: chapter_layouts::ChapterLayouts::default(),
+            flow_complete: false,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
             dispatch,
@@ -1545,14 +1515,12 @@ impl BooksApp {
         let record = Rc::clone(&self.record);
         if record.settings != self.settings {
             self.settings = record.settings.clone();
-            self.layout = None; // typography changed → relayout
         }
         let new_fonts: Vec<FontEntry> = record.fonts.values().cloned().collect();
         let new_default = record.default_font.0.clone();
         if new_fonts != self.fonts || new_default != self.default_font_id {
             self.fonts = new_fonts;
             self.default_font_id = new_default;
-            self.layout = None; // a font attribute (family/size) may have changed
         }
         self.schemes = record.schemes.values().cloned().collect();
         self.library_prefs = record.prefs;
@@ -1618,20 +1586,24 @@ impl BooksApp {
             return None;
         }
         let block = self.reading_block();
-        let fraction = self.current_progress_fraction();
-        let key = (self.chapter, block, (fraction * 10_000.0).round() as u16);
+        let key = (self.chapter, block, self.page);
         if self.last_persisted == Some(key) {
             return None;
         }
+        let fraction = self.current_progress_fraction();
         let id = self.library.get(self.book_idx)?.id.clone();
         self.last_persisted = Some(key);
-        Some(Ebook::RECORD_PROGRESS.with(books::RecordProgress {
+        let progress = Ebook::RECORD_PROGRESS.with(books::RecordProgress {
             book: id,
             chapter: self.chapter,
             block,
             fraction,
             opened: false,
-        }))
+        });
+        // A participant the room does not let change the library (a guest
+        // who may only view) reads on without their place being sent: the
+        // room would refuse it on every page turn.
+        self.dispatch.may_invoke(&progress).then_some(progress)
     }
 
     /// The first block on the page the reader is at: what the reading
@@ -1724,28 +1696,9 @@ impl BooksApp {
         self.composing = None;
         self.note_composer.close();
         self.comment_overlay.close();
-        self.layout = None;
+        self.retire_layout();
         self.toc_scroll_to_active = true;
         self.reading_progress = fraction;
-    }
-
-    fn resolve_pending_seek_fraction(
-        &mut self,
-        layout: &ChapterLayout,
-        mode: ReadMode,
-        geom: &ReaderPageGeometry,
-    ) {
-        let Some(within) = self.pending_seek_fraction.take() else {
-            return;
-        };
-        if mode.is_continuous() {
-            self.scroll_y = (f64::from(layout.total_height) - f64::from(geom.content_h)).max(0.0)
-                * f64::from(within);
-        } else {
-            let count = layout.page_count().max(1);
-            let page = ((within * count as f32).floor() as usize).min(count - 1);
-            self.page = page - page % mode.page_stride();
-        }
     }
 
     fn progress_fraction_at(&self, point: Point) -> f32 {
@@ -1771,28 +1724,6 @@ impl BooksApp {
             }
             .clamp(0.0, 1.0)
         })
-    }
-
-    /// Move the continuous-scroll offset by `delta` px, rolling into the
-    /// neighbouring chapter when the scroll runs off either end.
-    fn scroll_continuous(&mut self, delta: f64) {
-        let (total_h, view_h) = self.flow_extent;
-        let max_scroll = (total_h - view_h).max(0.0);
-        let target = self.scroll_y + delta;
-        if target < -0.5 && self.chapter > 0 {
-            self.chapter -= 1;
-            self.selected_block = None;
-            self.pending_scroll_end = true;
-            self.scroll_y = 0.0;
-            self.layout = None;
-        } else if target > max_scroll + 0.5 && self.chapter + 1 < self.num_chapters() {
-            self.chapter += 1;
-            self.selected_block = None;
-            self.scroll_y = 0.0;
-            self.layout = None;
-        } else {
-            self.scroll_y = target.clamp(0.0, max_scroll);
-        }
     }
 
     // --- Library loading + the host file picker -----------------------------
@@ -1912,7 +1843,7 @@ impl BooksApp {
         self.composing = None;
         self.note_composer.close();
         self.comment_overlay.close();
-        self.layout = None;
+        self.retire_layout();
         self.last_persisted = None;
         self.adopt_position = true;
         self.toc_scroll_to_active = true;
@@ -1982,8 +1913,9 @@ impl BooksApp {
             path,
             kind,
             expected_book_id,
+            card: Transient::showing(()),
         });
-        self.load_error = None;
+        self.load_error.dismiss();
         self.dirty = true;
         Ok(())
     }
@@ -1995,7 +1927,7 @@ impl BooksApp {
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("epub"));
         if !epub {
-            self.load_error = Some(format!(
+            self.load_error.show(format!(
                 "Couldn't open {}: only EPUB books can be added",
                 path.file_name().map_or_else(
                     || path.display().to_string(),
@@ -2009,7 +1941,7 @@ impl BooksApp {
 
     fn settle_import_failure(&mut self, message: String, code: &str) {
         self.import_loading = None;
-        self.load_error = Some(message.clone());
+        self.load_error.show(message.clone());
         if let Some(invocation) = self.resource_invocation.take() {
             self.completed_resource_invocation = Some(tilo_actions::InvocationUpdate::Failed {
                 invocation,
@@ -2062,12 +1994,12 @@ impl BooksApp {
                 cx.submit(crate::resource::shelve(&placed.entry));
                 self.pending_open_book = Some(placed.entry.id);
                 self.shelve(placed.book, placed.path);
-                self.load_error = None;
+                self.load_error.dismiss();
                 Ok(ui::framework::Effected::done())
             }
             Err(error) => {
                 let message = format!("Couldn’t open {name}: {error}");
-                self.load_error = Some(message.clone());
+                self.load_error.show(message.clone());
                 Err(message)
             }
         }
@@ -2160,7 +2092,7 @@ impl BooksApp {
                         Arc::make_mut(&mut self.library).push(Arc::new(book));
                         self.library.len() - 1
                     };
-                    self.load_error = None;
+                    self.load_error.dismiss();
                     if completed.kind == ImportKind::Open {
                         self.open_book_at(doc, index);
                     }
@@ -2184,14 +2116,19 @@ impl BooksApp {
                         .file_name()
                         .and_then(|name| name.to_str())
                         .unwrap_or("book");
-                    self.load_error = Some(format!("Couldn’t open {name}: {error}"));
+                    self.load_error
+                        .show(format!("Couldn’t open {name}: {error}"));
                     if let Some(invocation) = self.resource_invocation.take() {
                         self.completed_resource_invocation =
                             Some(tilo_actions::InvocationUpdate::Failed {
                                 invocation,
                                 error: tilo_actions::ActionFailure {
                                     code: "ebook.open_failed".into(),
-                                    message: self.load_error.clone().unwrap_or_default(),
+                                    message: self
+                                        .load_error
+                                        .as_deref()
+                                        .unwrap_or_default()
+                                        .to_owned(),
                                     details: None,
                                     retryable: false,
                                 },
@@ -2236,6 +2173,7 @@ impl BooksApp {
             path: path.to_path_buf(),
             kind,
             expected_book_id: None,
+            card: Transient::showing(()),
         });
         Ok((entered, release))
     }
@@ -2312,7 +2250,9 @@ impl BooksApp {
             Action::ToggleNotes => self.on_toggle_notes(),
             Action::ToggleTypePopover => self.reading_settings.toggle(),
             Action::DismissOverlay => self.on_dismiss_overlay(),
-            Action::DismissLoadError => self.load_error = None,
+            Action::DismissLoadError => {
+                self.load_error.dismiss();
+            }
             Action::Swallow => {}
             Action::ToggleBookmark => self.toggle_bookmark(doc),
             Action::FontInc => self.bump_setting(doc, |s| {
@@ -2359,6 +2299,7 @@ impl BooksApp {
             Action::ShareToWorkspace(id) => self.on_share_to_workspace(&id, doc),
             Action::RemoveFromLibrary(id) => self.on_remove_from_library(&id, doc),
             Action::ToggleWatchFolder(folder) => self.on_toggle_watch_folder(&folder, doc),
+            Action::ToggleKeepCatalogues => self.on_toggle_keep_catalogues(),
 
             // --- settings screen: navigation -----------------------------
             Action::OpenSettings => self.on_open_settings(),
@@ -2437,11 +2378,11 @@ impl BooksApp {
         let pc = self.cur_page_count.max(1);
         if self.page + stride < pc {
             self.page += stride;
-        } else if self.chapter + 1 < self.num_chapters() {
+        } else if self.flow_complete && self.chapter + 1 < self.num_chapters() {
+            self.retire_layout();
             self.chapter += 1;
             self.page = 0;
             self.selected_block = None;
-            self.layout = None;
         }
         if (self.chapter, self.page) != before {
             // The new page eases in from the right — a forward turn.
@@ -2466,7 +2407,7 @@ impl BooksApp {
             self.chapter -= 1;
             self.selected_block = None;
             self.pending_last_page = true;
-            self.layout = None;
+            self.retire_layout();
         }
         if (self.chapter, self.page) != before {
             // The new page eases in from the left — a backward turn.
@@ -2486,8 +2427,6 @@ impl BooksApp {
                 self.scroll_y = f64::from(l.pages.get(self.page).copied().unwrap_or(0.0));
             }
             self.bump_setting(doc, |s| s.mode = mode);
-            // Two-up halves the column width → relayout on the next draw.
-            self.layout = None;
         }
     }
 
@@ -2506,7 +2445,7 @@ impl BooksApp {
         self.composing = None;
         self.note_composer.close();
         self.comment_overlay.close();
-        self.layout = None;
+        self.retire_layout();
         self.toc_scroll_to_active = true;
     }
 
@@ -2596,7 +2535,7 @@ impl BooksApp {
             self.pending_jump_block = Some(a.block);
             self.clear_selection();
             self.comment_overlay.close();
-            self.layout = None;
+            self.retire_layout();
             self.notes_scroll_to_annotation = Some(id);
         }
     }
@@ -2743,26 +2682,26 @@ impl BooksApp {
                 .remember_book(&pending.book_id, &pending.path);
             self.library_paths.insert(pending.book_id, pending.path);
             self.local_library.save();
-            self.load_error = None;
+            self.load_error.dismiss();
         } else {
-            self.load_error = Some("The shared copy no longer matches this book.".into());
+            self.load_error
+                .show("The shared copy no longer matches this book.".into());
         }
         if let Some(invocation) = self.resource_invocation.take() {
-            self.completed_resource_invocation = Some(if self.load_error.is_none() {
-                tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                }
-            } else {
-                tilo_actions::InvocationUpdate::Failed {
+            self.completed_resource_invocation = Some(match self.load_error.as_deref() {
+                Some(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
                     error: tilo_actions::ActionFailure {
                         code: "ebook.share_failed".into(),
-                        message: self.load_error.clone().unwrap_or_default(),
+                        message: message.to_owned(),
                         details: None,
                         retryable: true,
                     },
-                }
+                },
+                None => tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
             });
         }
         self.dirty = true;
@@ -2770,7 +2709,7 @@ impl BooksApp {
 
     fn on_share_to_workspace(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         if let Err(error) = self.begin_share_book(id) {
-            self.load_error = Some(error);
+            self.load_error.show(error);
             return;
         }
         self.commit_pending_share(doc);
@@ -2802,7 +2741,7 @@ impl BooksApp {
         if self.library.is_empty() {
             self.view = View::Library;
         }
-        self.layout = None;
+        self.retire_layout();
     }
 
     fn on_toggle_watch_folder(&mut self, folder: &std::path::Path, doc: &AutoCommit) {
@@ -2905,7 +2844,6 @@ impl BooksApp {
         }
         if self.settings.scheme_id == id {
             self.settings.scheme_id.clear();
-            self.layout = None;
         }
     }
 
@@ -2986,7 +2924,6 @@ impl BooksApp {
         );
         if self.settings.font_id == id {
             self.settings.font_id.clear();
-            self.layout = None;
         }
         if self.default_font_id == id {
             self.default_font_id.clear();
@@ -3270,7 +3207,6 @@ impl BooksApp {
             self.edit(doc, edit);
         }
         self.settings = s;
-        self.layout = None;
     }
 
     /// Change the scheme `before` to `after`, field by field.
@@ -3597,7 +3533,7 @@ impl BooksApp {
         if self.library.is_empty() {
             self.view = View::Library;
         }
-        self.layout = None;
+        self.retire_layout();
     }
 
     /// Read what the host gives the reader: whether the window is live, the
@@ -3607,8 +3543,12 @@ impl BooksApp {
         self.live = cx.mode().is_live();
         self.content = cx.content();
         self.sample = cx.fixture::<crate::scenarios::SampleShelf>();
+        self.catalogue_setting = Some(cx.settings());
         if self.live {
-            self.query = query_view::BookQuery::live(cx.waker());
+            let catalogue = crate::catalogue::DeviceCatalogue::on_this_device();
+            self.query = query_view::BookQuery::live(cx.waker(), std::sync::Arc::clone(&catalogue));
+            self.catalogue = Some(catalogue);
+            self.follow_catalogue_setting();
             self.local_library = LocalLibrary::load(cx.storage().settings());
             self.reader_keys = crate::reader_keys::ReaderKeys::following(cx.settings());
             self.watched_folders
@@ -4149,6 +4089,7 @@ impl BooksApp {
             Action::ToggleWatchFolder(path) => {
                 format!("library.watch:{}", ui::a11y::hash_key(path))
             }
+            Action::ToggleKeepCatalogues => "library.keep-catalogues".into(),
             Action::OpenSettings => "settings.open".into(),
             Action::CloseSettings => "settings.close".into(),
             Action::SetSettingsTab(tab) => format!("settings.tab:{tab:?}"),
@@ -4252,6 +4193,7 @@ impl BooksApp {
             Action::OpenViaPortal => "Open book".into(),
             Action::DismissLoadError => "Dismiss".into(),
             Action::ToggleWatchFolder(path) => format!("Watch {}", path.display()),
+            Action::ToggleKeepCatalogues => crate::catalogue::KEEP_CATALOGUES.into(),
             Action::OpenSettings => "Book settings".into(),
             Action::SetSettingsTab(SettingsTab::Fonts) => "Fonts".into(),
             Action::SetSettingsTab(SettingsTab::Colours) => "Colour themes".into(),
@@ -4416,6 +4358,7 @@ impl BooksApp {
                 Role::Checkbox,
                 base.checked(self.watched_folders.contains(path)),
             ),
+            Action::ToggleKeepCatalogues => (Role::Switch, base.checked(self.keeps_catalogues())),
             _ => (Role::Button, base),
         }
     }
@@ -4495,26 +4438,49 @@ impl BooksApp {
             .reduce(|bounds, run| bounds.union(run))
     }
 
+    /// Take the import's card down once it has been up for a notice's
+    /// lifetime, so the window repaints without it.
+    fn expire_load_toast(&mut self) {
+        let opening = self
+            .import_loading
+            .as_mut()
+            .is_some_and(|loading| loading.card.expire());
+        if self.load_error.expire() || opening {
+            self.dirty = true;
+        }
+    }
+
+    /// When the import's card leaves, for the app's wake deadline.
+    fn load_toast_deadline(&self) -> Option<ui::time::Instant> {
+        self.import_loading
+            .as_ref()
+            .and_then(|loading| loading.card.deadline())
+            .into_iter()
+            .chain(self.load_error.deadline())
+            .min()
+    }
+
     /// An import in flight or the last import's failure, as a transient
-    /// card at the bottom of the window. The failure stays until it is
-    /// dismissed.
+    /// card at the bottom of the window, for a notice's lifetime or until
+    /// it is dismissed.
     fn draw_load_toast(&mut self, ctx: &mut PaintCtx<'_>) {
         let opening;
-        let (title, body, kind) = if let Some(loading) = &self.import_loading {
+        let (title, body, kind, since) = if let Some(loading) = &self.import_loading {
             let name = loading
                 .path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("book");
             opening = format!("Opening {name}");
-            (opening.as_str(), "", ToastKind::Info)
+            (opening.as_str(), "", ToastKind::Info, loading.card.since())
         } else if let Some(error) = self.load_error.as_deref() {
             // "Couldn't open x.epub: the reason" reads as a title and a body.
-            match error.split_once(": ") {
-                Some((title, body)) => (title, body, ToastKind::Error),
-                None => (error, "", ToastKind::Error),
-            }
+            let (title, body) = error.split_once(": ").unwrap_or((error, ""));
+            (title, body, ToastKind::Error, self.load_error.since())
         } else {
+            return;
+        };
+        let Some(since) = since else {
             return;
         };
         let closable = self.import_loading.is_none();
@@ -4527,6 +4493,7 @@ impl BooksApp {
             self.toast_area,
             ToastAnchor::BottomCenter,
             &card,
+            since,
         );
         if closable && hit.close_rect.width() > 0.0 {
             self.push_hit(hit.card_rect, Action::Swallow);
@@ -4615,7 +4582,7 @@ impl Continuable for BooksApp {
         // The accepted passage is explicit presentation. Ordinary sync must
         // not replace it with the record's older saved reading progress.
         self.adopt_position = false;
-        self.layout = None;
+        self.retire_layout();
         self.dirty = true;
         true
     }
@@ -4640,7 +4607,11 @@ impl Widget for BooksApp {
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
         self.drain_opens();
+        self.expire_load_toast();
         self.poll_query();
+        if self.absorb_layout_chunks() {
+            self.dirty = true;
+        }
         self.close_orphaned_editors();
         self.note_composer.sync(doc, path);
         self.comment_overlay.sync(doc, path);
@@ -4788,7 +4759,7 @@ impl Widget for BooksApp {
         // The empty shelf says what failed in its own empty state. Every
         // other view needs an honest loading/result surface: parsing happens
         // off-thread, so the previous book stays interactive.
-        if self.view != View::Library || !self.library.is_empty() {
+        if self.view != View::Library || !self.library.is_empty() || !self.elsewhere.is_empty() {
             self.draw_load_toast(&mut ctx);
         }
         // The open list of a dropdown lies over everything.
@@ -4943,6 +4914,21 @@ impl Widget for BooksApp {
                     .with_state(state)
                     .with_bounds(hit.rect)
                     .with_action_target(target);
+                // A book's tile carries where its text stands while it is
+                // neither here nor on its way.
+                let status = match &hit.action {
+                    Action::OpenBook(index) => self
+                        .shelf_book(*index)
+                        .and_then(|book| self.shelf_status(&book.id)),
+                    _ => None,
+                };
+                if let Some((label, detail)) = status {
+                    let node = node.with_value(label);
+                    return Some(match detail {
+                        Some(detail) => node.with_description(detail),
+                        None => node,
+                    });
+                }
                 Some(if matches!(hit.action, Action::SeekProgress) {
                     node.with_value(format!(
                         "{}%",
@@ -5036,7 +5022,7 @@ impl Widget for BooksApp {
             }
         }
         children.extend(controls);
-        if let Some(error) = self.load_error.as_ref().filter(|error| !error.is_empty()) {
+        if let Some(error) = self.load_error.get().filter(|error| !error.is_empty()) {
             children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(error.clone())
@@ -5305,11 +5291,17 @@ impl Widget for BooksApp {
     /// A book being imported shows once it parses. A screenshot imports
     /// nothing, so a loading state it stages is the still it shows.
     fn has_pending_visual_work(&self) -> bool {
-        (self.live && self.import_loading.is_some()) || self.query_busy()
+        (self.live && self.import_loading.is_some())
+            || self.query_busy()
+            || (self.view == View::Reader && self.layout_pending())
     }
 
     fn needs_redraw(&self) -> bool {
         self.dirty || self.flaps_animating()
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.load_toast_deadline()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -5524,7 +5516,7 @@ impl BooksApp {
         // book opened here from the shelf must not then take up its stored
         // position over the place asked for.
         self.adopt_position = false;
-        self.layout = None;
+        self.retire_layout();
         self.dirty = true;
         Ok(())
     }
@@ -6945,6 +6937,7 @@ impl BooksApp {
                         self.shared_in_workspace(&book.id)
                     },
                     arriving: self.arriving(&book.id),
+                    status: self.shelf_status(&book.id),
                     progress: self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0),
                     notes: match notes {
                         0 => None,
@@ -7060,7 +7053,7 @@ impl BooksApp {
             icon: Some(Icon::FileText),
             message: Some(message),
             action_label: Some("Open a book"),
-            error: self.load_error.is_some(),
+            error: self.load_error.is_shown(),
             ..EmptyStateContent::new("Your library is empty")
         };
         if let Some(action) = self
@@ -7192,8 +7185,25 @@ impl BooksApp {
 
         // ---- (re)compute the chapter layout -----------------------------
         let (base_family, font_mult, font_sig, base_mono) = self.body_font();
-        let layout =
-            self.resolve_chapter_layout(ctx.text, &lib, &geom, font_sig, &base_family, font_mult);
+        let layout = match lib.get(self.book_idx) {
+            Some(book) => self.resolve_chapter_layout(
+                ctx.text,
+                &chapter_layouts::LayoutInputs {
+                    book,
+                    geom: &geom,
+                    font_sig,
+                    base_family: &base_family,
+                    font_mult,
+                },
+            ),
+            None => ChapterLayout {
+                blocks: Vec::new(),
+                total_height: 0.0,
+                pages: vec![0.0],
+                key: LayoutKey::new(0, 0.0, 0.0, &self.settings, font_sig, 1.0),
+                complete: true,
+            },
+        };
         self.resolve_pending_seek_fraction(&layout, mode, &geom);
         self.cur_page_count = layout.page_count();
         self.resolve_reader_page_index(&layout, mode, &geom);
@@ -7228,11 +7238,18 @@ impl BooksApp {
             comment_group: self.comment_overlay.group(),
         };
         let (sel_anchor, comment_box) = self.draw_reader_columns(ctx, &frame, &panes, &geom, mode);
+        let line_pitch = f64::from(
+            self.settings.body_size_with(font_mult)
+                * 1.25
+                * self.settings.line_spacing
+                * ctx.text.text_scale(),
+        );
+        Self::draw_unset_text(ctx, &layout, &panes, &geom, (&palette, line_pitch));
         self.comment_overlay.set_anchor(comment_box);
         self.resolve_pending_sel_edge();
 
         // restore the layout cache (key drives reuse next frame)
-        self.layout = Some(layout);
+        self.layout = (layout.complete || !layout.blocks.is_empty()).then_some(layout);
         // restore the annotation cache before chrome reads it (the top bar's
         // bookmark state + the notes drawer both consult `self.annotations`)
         self.annotations = annos;
@@ -7275,59 +7292,6 @@ impl BooksApp {
             Some(Action::NextPage)
         } else {
             None
-        }
-    }
-
-    /// Resolve the current page/scroll index against the fresh layout:
-    /// honour a pending "jump to last page"/"jump to block" request, clamp
-    /// to the page count, align a spread to an even left page, and
-    /// (continuous mode) clamp the scroll offset and derive `self.page`
-    /// from it.
-    fn resolve_reader_page_index(
-        &mut self,
-        layout: &ChapterLayout,
-        mode: ReadMode,
-        geom: &ReaderPageGeometry,
-    ) {
-        if self.pending_last_page {
-            self.page = layout.page_count().saturating_sub(1);
-            self.pending_last_page = false;
-        }
-        if let Some(jb) = self.pending_jump_block.take() {
-            self.page = page_for_block(layout, jb);
-            if mode.is_continuous() {
-                self.scroll_y = layout
-                    .blocks
-                    .iter()
-                    .find(|b| b.index == jb)
-                    .map_or(0.0, |b| f64::from(b.top));
-            }
-        }
-        self.page = self.page.min(layout.page_count().saturating_sub(1));
-        // Spreads align to an even left page so a spread is always (2k, 2k+1).
-        if mode == ReadMode::TwoUp {
-            self.page -= self.page % 2;
-        }
-
-        // Record the flow extent so a continuous scroll (which runs before the
-        // next layout) can clamp itself, and resolve a pending end-scroll after
-        // a backward chapter roll. Keep `page` synced to the scroll so progress
-        // and the page locator stay meaningful.
-        self.flow_extent = (f64::from(layout.total_height), f64::from(geom.content_h));
-        if mode.is_continuous() {
-            let max_scroll = (f64::from(layout.total_height) - f64::from(geom.content_h)).max(0.0);
-            if self.pending_scroll_end {
-                self.scroll_y = max_scroll;
-                self.pending_scroll_end = false;
-            }
-            self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
-            self.page = layout
-                .pages
-                .iter()
-                .rposition(|&py| f64::from(py) <= self.scroll_y + 0.5)
-                .unwrap_or(0);
-        } else {
-            self.pending_scroll_end = false;
         }
     }
 
@@ -7601,65 +7565,6 @@ impl BooksApp {
             rule_y,
             slider_band,
         }
-    }
-
-    /// (Re)compute the chapter layout if the cache key changed, or fall back
-    /// to an empty layout when the book/chapter isn't available. Takes
-    /// ownership of the previous cached layout via `self.layout.take()`.
-    fn resolve_chapter_layout(
-        &mut self,
-        tr: &mut TextRenderer,
-        lib: &[Arc<Book>],
-        geom: &ReaderPageGeometry,
-        font_sig: u64,
-        base_family: &FontChoice,
-        font_mult: f32,
-    ) -> ChapterLayout {
-        let key = LayoutKey::new(
-            self.chapter,
-            geom.content_w,
-            geom.content_h,
-            &self.settings,
-            font_sig,
-            tr.text_scale(),
-        );
-        let previous = self.layout.as_ref().map(|l| l.key);
-        if previous != Some(key)
-            && let Some(book) = lib.get(self.book_idx)
-            && let Some(ch) = book.chapters.get(self.chapter)
-        {
-            // The same chapter laid out again (a resize, a new text size or
-            // font): keep the paragraph the reader was at on screen, rather
-            // than a page number that now holds other text.
-            if previous.is_some_and(|old| old.chapter == self.chapter)
-                && self.pending_jump_block.is_none()
-                && self.pending_seek_fraction.is_none()
-                && !self.pending_last_page
-                && !self.settings.mode.is_continuous()
-            {
-                self.pending_jump_block = Some(self.page_top_block);
-            }
-            self.layout = Some(layout_chapter(
-                tr,
-                &ChapterLayoutRequest {
-                    blocks: &ch.blocks,
-                    content_width: geom.content_w,
-                    content_height: geom.content_h,
-                    settings: &self.settings,
-                    chapter: self.chapter,
-                    language: &book.language,
-                    base_family,
-                    font_multiplier: font_mult,
-                    font_signature: font_sig,
-                },
-            ));
-        }
-        self.layout.take().unwrap_or_else(|| ChapterLayout {
-            blocks: Vec::new(),
-            total_height: 0.0,
-            pages: vec![0.0],
-            key,
-        })
     }
 
     /// Lay out the visible pane(s) for the current mode: one scrolling pane
@@ -8444,6 +8349,8 @@ impl BooksApp {
                 swatches: &swatches,
                 show_note: true,
                 show_delete: del_group.is_some(),
+                show_select_all: false,
+                shortcuts: false,
             },
             ui::HudPlacement::new(anchor_pt, bounds),
             self.cursor,
@@ -8465,6 +8372,7 @@ impl BooksApp {
                     Some(g) => Action::DeleteHighlight(g),
                     None => Action::Swallow,
                 },
+                ui::HudAction::SelectAll => Action::Swallow,
             };
             self.push_hit(rect, mapped);
         }
@@ -9536,10 +9444,12 @@ impl BooksApp {
         folders.sort();
         folders.dedup();
 
-        if folders.is_empty() {
-            return self.draw_library_settings_empty(ctx, col, y);
-        }
-        self.draw_watched_folder_rows(ctx, col, y, &folders)
+        let y = if folders.is_empty() {
+            self.draw_library_settings_empty(ctx, col, y)
+        } else {
+            self.draw_watched_folder_rows(ctx, col, y, &folders)
+        };
+        self.draw_catalogue_settings(ctx, col, y)
     }
 
     /// No folder to offer yet: say how one appears, and offer the way in.
@@ -10401,8 +10311,12 @@ fn draw_progress_label(ctx: &mut PaintCtx<'_>, rect: Rect, fraction: f32, color:
 
 mod book_card;
 use book_card::ShelfCard;
+mod catalogue_settings;
+mod chapter_layouts;
 mod query_view;
+mod search_worker;
 mod stage;
+use search_worker::SearchWorker;
 
 pub(crate) use query_view::PASSAGE;
 pub(crate) use query_view::kinds as query_kinds;
@@ -10418,3 +10332,7 @@ mod query_view_tests;
 #[cfg(test)]
 #[path = "app/shelf_tests.rs"]
 mod shelf_tests;
+
+#[cfg(test)]
+#[path = "app/scroll_tests.rs"]
+mod scroll_tests;

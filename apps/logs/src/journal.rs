@@ -462,11 +462,6 @@ pub fn load_live(limit: usize) -> Result<Vec<LogEntry>, JournalLoadError> {
 /// The caller must obtain `path` from the host Save portal. It never follows
 /// an app-owned default location, and returns only concise errors: exporting
 /// logs is sensitive and should stay fully scoped to that portal choice.
-///
-/// # Errors
-///
-/// Returns an error for a non-absolute target or JSON/IO failure while writing
-/// the selected entries.
 pub fn export_json_lines(entries: &[&LogEntry], path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("export path must be absolute".into());
@@ -670,13 +665,11 @@ mod tests {
         assert!(e.iter().any(|x| x.priority == Priority::Crit));
         let boots: std::collections::HashSet<_> = e.iter().map(|x| x.boot_id.clone()).collect();
         assert_eq!(boots.len(), 2, "should span exactly two boots");
-        // Sorted ascending by time.
         assert!(e.windows(2).all(|w| w[0].realtime_us <= w[1].realtime_us));
     }
 
     #[test]
     fn parse_json_stream_reads_journalctl_shape_byte_messages_and_skips_malformed() {
-        // Reads the journalctl JSON shape.
         let line = r#"{"__REALTIME_TIMESTAMP":"1609459200000000","_SYSTEMD_UNIT":"x.service","PRIORITY":"3","MESSAGE":"boom","_PID":"42","_HOSTNAME":"h","_BOOT_ID":"b","_TRANSPORT":"stdout","CUSTOM":"keep"}"#;
         let parsed = parse_json_stream(line);
         assert_eq!(parsed.len(), 1);
@@ -692,7 +685,6 @@ mod tests {
         let parsed = parse_json_stream(line);
         assert_eq!(parsed[0].message, "hi");
 
-        // Malformed lines are skipped.
         let stream = "not json\n{\"MESSAGE\":\"ok\",\"__REALTIME_TIMESTAMP\":\"5\"}\n";
         let parsed = parse_json_stream(stream);
         assert_eq!(parsed.len(), 1);
@@ -709,7 +701,6 @@ mod tests {
             "export path must be absolute"
         );
 
-        // Export writes JSON lines to the selected target, replacing it.
         let path = std::env::temp_dir().join(format!(
             "tilo-logs-export-{}-{}.jsonl",
             std::process::id(),

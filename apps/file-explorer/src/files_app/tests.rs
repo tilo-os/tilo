@@ -81,6 +81,7 @@ mod open_with_tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         }
@@ -1357,6 +1358,7 @@ mod command_path_tests {
             availability: None,
             share: None,
             history: None,
+            app: None,
             rich_metadata: None,
             observed: None,
         }
@@ -3301,7 +3303,10 @@ mod command_path_tests {
         std::fs::create_dir(&work).unwrap();
 
         let (mut w, _cfg) = hermetic();
-        w.templates_dir = Some(d.path().to_path_buf());
+        w.templates = crate::templates::Catalog::new(
+            Some(d.path().to_path_buf()),
+            ui::WakeHandle::detached(),
+        );
         w.navigate(work.clone());
         w.apply_command(FileCommand::NewFromTemplate(tmpl));
         assert!(
@@ -7668,4 +7673,143 @@ fn a_listing_read_that_finds_nothing_asks_for_no_sync() {
         "a new file asks for the sync that shows it"
     );
     assert!(files.entries.iter().any(|entry| entry.name == "b.txt"));
+}
+
+/// Run `test` on a thread that is a frame loop's, where a window reads its
+/// folders on a worker, since that thread never waits on the disk.
+fn on_a_frame_loop(test: impl FnOnce() + Send) {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
+                test();
+            })
+            .join()
+            .unwrap();
+    });
+}
+
+/// A hosted window showing `home`, as the compositor mounts one.
+fn hosted_window(home: &Path) -> FileExplorerWidget {
+    FileExplorerWidget::with_startup_inputs_and_services(
+        StartupInputs {
+            initial_dir: home.to_path_buf(),
+            workspace_roots: Vec::new(),
+            record_roots: Vec::new(),
+            remote_accounts: Vec::new(),
+            trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
+        },
+        HostedFileServices {
+            thumbnails: None,
+            document_opener: DocumentOpenRoute::Unavailable,
+            open_with: None,
+            local_clipboard: false,
+        },
+    )
+}
+
+/// Apply the worker's read once it is done.
+fn settle_folder_read(files: &mut FileExplorerWidget) {
+    tilo_test_env::wait_until("the folder read to finish", || files.take_folder_read());
+}
+
+#[test]
+fn on_a_frame_loop_a_folder_shows_the_loading_state_until_its_worker_has_read_it() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("a.txt"), b"a").unwrap();
+    on_a_frame_loop(|| {
+        // Building the window lists nothing on this thread: a listing here
+        // would panic.
+        let mut files = hosted_window(home.path());
+        settle_folder_read(&mut files);
+        files.navigate(folder.clone());
+        assert!(files.is_loading(), "the folder is being read");
+        assert!(
+            files.entries().is_empty(),
+            "no rows of the folder left behind"
+        );
+        assert_eq!(files.current_path(), folder);
+        assert_eq!(files.current_place(), None, "not known to be a folder yet");
+        settle_folder_read(&mut files);
+        assert!(!files.is_loading());
+        assert_eq!(
+            files
+                .entries()
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a.txt"]
+        );
+        assert!(files.current_place().is_some(), "a folder read is a place");
+    });
+}
+
+#[test]
+fn on_a_frame_loop_a_read_replaced_by_a_newer_navigation_is_never_shown() {
+    let home = tempfile::tempdir().unwrap();
+    let first = home.path().join("first");
+    let second = home.path().join("second");
+    std::fs::create_dir(&first).unwrap();
+    std::fs::create_dir(&second).unwrap();
+    std::fs::write(first.join("old.txt"), b"").unwrap();
+    std::fs::write(second.join("new.txt"), b"").unwrap();
+    on_a_frame_loop(|| {
+        let mut files = hosted_window(home.path());
+        settle_folder_read(&mut files);
+        files.navigate(first.clone());
+        files.navigate(second.clone());
+        settle_folder_read(&mut files);
+        assert_eq!(files.current_path(), second);
+        assert_eq!(
+            files
+                .entries()
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
+            ["new.txt"]
+        );
+        assert!(
+            !files.folder_reads.is_pending(),
+            "the first read is dropped"
+        );
+    });
+}
+
+#[test]
+fn on_a_frame_loop_the_shown_folder_keeps_its_rows_while_it_is_read_again() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("a.txt"), b"").unwrap();
+    on_a_frame_loop(|| {
+        let mut files = hosted_window(home.path());
+        settle_folder_read(&mut files);
+        let shown = files.entries().len();
+        std::fs::write(home.path().join("b.txt"), b"").unwrap();
+        files.refresh();
+        assert!(!files.is_loading(), "a refresh does not blank the folder");
+        assert_eq!(files.entries().len(), shown, "its rows stay until replaced");
+        settle_folder_read(&mut files);
+        assert_eq!(files.entries().len(), shown + 1);
+    });
+}
+
+#[test]
+fn on_a_frame_loop_reveal_in_folder_selects_the_item_once_its_folder_is_read() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    for name in ["a.txt", "b.txt"] {
+        std::fs::write(folder.join(name), b"").unwrap();
+    }
+    on_a_frame_loop(|| {
+        let mut files = hosted_window(home.path());
+        settle_folder_read(&mut files);
+        assert!(files.apply_reveal_in_folder(&folder.join("b.txt")));
+        settle_folder_read(&mut files);
+        let selected = files
+            .selected_index()
+            .map(|i| files.displayed_entries()[i].name.clone());
+        assert_eq!(selected.as_deref(), Some("b.txt"));
+    });
 }

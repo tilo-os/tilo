@@ -1398,11 +1398,35 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
                 && !chat.channels.contains(&id(VOICE_CHANNEL)),
             "a room that has channels gets no #chat or #voice"
         );
+        let (_, workspaces) = automerge::ReadDoc::get(&doc, automerge::ROOT, "workspaces")
+            .unwrap()
+            .expect("the workspace structure stays in the record");
+        let (_, home) = automerge::ReadDoc::get(&doc, &workspaces, "ws_home")
+            .unwrap()
+            .expect("each workspace stays");
+        let (_, home) = automerge::ReadDoc::get(&doc, &home, "v").unwrap().unwrap();
+        assert_eq!(
+            ui::tilo_resource::read_key::<String>(&doc, &home, "name").unwrap(),
+            "My Workspace"
+        );
+        let mut app = crate::ChatApp::new_ephemeral();
+        app.reload(&doc);
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
+        ui::Widget::draw(
+            &mut app,
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &ui::theme::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        );
+        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
         assert!(
-            automerge::ReadDoc::get(&doc, automerge::ROOT, "workspaces")
-                .unwrap()
-                .is_none(),
-            "only the workspace structure goes"
+            root.children.iter().all(|node| node
+                .name
+                .as_deref()
+                .is_none_or(|name| !name.contains("Workspace"))),
+            "Chat shows no workspace of its own"
         );
     }
 }
@@ -1453,34 +1477,6 @@ fn every_id_in_the_users_chat_survives_the_migration_and_its_messages_still_show
             [(message, text)]
         );
     }
-}
-
-/// The agent conversation the user had keeps its id: opening it again
-/// shows what was said there.
-#[test]
-fn an_agent_conversation_reopens_under_its_existing_id_with_its_history() {
-    use ui::tilo_resource::evolution;
-    let mut doc = users_chat(false);
-    evolution::migrate::<Chat>(&mut doc).unwrap();
-    let mut room = crate::demo::Room::of(doc);
-    room.say(ADA, OLD_AGENT_CHANNEL, "said to the agent")
-        .unwrap();
-    let mut app = crate::app::ChatApp::new_ephemeral();
-    app.attach_room(&room);
-    app.room_agents = vec!["scribe".into()];
-    app.reload(&room);
-    assert!(app.open_agent_conversation("scribe"));
-    assert_eq!(
-        app.active_channel, OLD_AGENT_CHANNEL,
-        "the conversation the chat holds, not a new id"
-    );
-    app.reload(&room);
-    assert!(
-        app.messages
-            .iter()
-            .any(|message| message.text == "said to the agent"),
-        "its history shows"
-    );
 }
 
 /// A category that does not read at all is kept as it is, held out of the

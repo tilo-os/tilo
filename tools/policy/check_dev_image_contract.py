@@ -114,8 +114,6 @@ def production_containerfiles(repo: Path) -> list[Path]:
     return sorted(recipes + ([compile_script] if compile_script.is_file() else []))
 
 
-# ---- 1. the dev image is never the production image ---------------------------
-
 def check_dev_containerfile(repo: Path) -> list[Finding]:
     path = repo / DEV_CONTAINERFILE
     shown = DEV_CONTAINERFILE
@@ -285,8 +283,6 @@ def check_production_policy(repo: Path) -> list[Finding]:
                                     + admitted))
     return findings
 
-
-# ---- 2. production images carry nothing dev-only ------------------------------
 
 def dev_only_needles(repo: Path) -> list[tuple[re.Pattern[str], str]]:
     installer = load("install_components_for_dev_contract", repo / "os/scripts/install-components.py")

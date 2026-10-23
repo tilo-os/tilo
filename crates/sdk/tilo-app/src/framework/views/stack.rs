@@ -69,7 +69,6 @@ impl<V: Clone + PartialEq> ViewStack<V> {
         !self.forward.is_empty()
     }
 
-    /// The view Back returns to.
     #[must_use]
     pub fn previous(&self) -> Option<&V> {
         self.back.last().map(|entry| &entry.view)

@@ -169,7 +169,6 @@ fn regular(face: &FontRef<'_>) -> Location {
     face.axes().location([WEIGHT])
 }
 
-/// Whether `face` has the table `tag`.
 fn has_table(face: &FontRef<'_>, tag: Tag) -> bool {
     face.table_data(tag).is_some()
 }
@@ -201,7 +200,6 @@ fn font_units(value: f32) -> u16 {
     value.round().clamp(0.0, f32::from(u16::MAX)) as u16
 }
 
-/// A glyph placed on a line.
 #[derive(Clone, Debug)]
 pub(crate) struct PlacedGlyph {
     /// Index into [`TextSetter`]'s fonts.
@@ -214,7 +212,6 @@ pub(crate) struct PlacedGlyph {
     pub y: f32,
 }
 
-/// A shaped line of text.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ShapedLine {
     pub glyphs: Vec<PlacedGlyph>,
@@ -246,7 +243,6 @@ pub(crate) struct EmbeddedFont {
 }
 
 impl TextSetter {
-    /// The resource name content uses for font `index`.
     pub fn resource_name(index: usize) -> String {
         format!("TF{index}")
     }
@@ -714,7 +710,6 @@ mod tests {
             let segments = font_segments(faces, "e\u{301}x");
             assert_eq!(segments.len(), 1, "{segments:?}");
         }
-        // Phase `breaks_at_spaces_and_between_ideographs`.
         {
             assert_eq!(break_opportunities("ab cd  ef"), vec!["ab ", "cd  ", "ef"]);
             assert_eq!(break_opportunities("你好a"), vec!["你", "好", "a"]);

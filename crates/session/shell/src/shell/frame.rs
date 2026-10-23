@@ -4985,7 +4985,7 @@ impl FrameBuilder {
     }
 
     #[cfg(test)]
-    fn enable_test_onboarding(&mut self, view: crate::onboarding_view::OnboardingView) {
+    pub(crate) fn enable_test_onboarding(&mut self, view: crate::onboarding_view::OnboardingView) {
         self.host.enable_test_onboarding(view);
         self.rebuild_layout_tree();
     }

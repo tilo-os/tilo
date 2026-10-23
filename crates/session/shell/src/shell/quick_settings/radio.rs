@@ -11,8 +11,6 @@ use os_actions::{RadioChange, RadioState, RadioWork};
 use crate::shell::chrome_state::Chrome;
 use crate::shell::i18n::t;
 
-/// What the worker came back with: the radios read after the change (when
-/// the dispatcher reads them), or its refusal.
 type RadioResult = Result<Option<RadioState>, String>;
 
 struct Completion {
@@ -101,7 +99,6 @@ impl RadioTicket {
 /// Why Wi-Fi is not in the state the person asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WifiProblem {
-    /// A physical switch holds the radio off.
     HardwareSwitch,
     /// Asked to turn on, the radio stayed off.
     StayedOff,

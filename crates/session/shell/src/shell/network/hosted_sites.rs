@@ -40,7 +40,6 @@ fn hosted_rooms_path(state_dir: &Path) -> PathBuf {
 /// A room this computer reaches over its host's HTTPS routes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct HostedRoom {
-    /// The host's origin.
     pub origin: String,
     /// The site whose home workspace the room is, when it was joined as one.
     pub site: Option<String>,
@@ -76,7 +75,6 @@ pub enum JoinProgress {
 /// A site's workspace this session is joining or failed to join.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SiteJoinState {
-    /// Its room.
     pub room: RoomId,
     /// The site it is the workspace of, as its listing names it.
     pub site: Option<String>,
@@ -90,7 +88,6 @@ pub struct SiteJoinState {
 /// in the app its site names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Arrival {
-    /// Its room.
     pub room: RoomId,
     /// The app it opens in, once.
     pub app: Option<String>,
@@ -291,7 +288,6 @@ pub(crate) struct HostHttp {
 }
 
 impl HostHttp {
-    /// The host at `origin`.
     pub(crate) fn new(origin: &str) -> Result<Arc<Self>, String> {
         let origin = web_origin(origin).map_err(|error| error.to_string())?;
         Ok(Arc::new(Self {
@@ -359,9 +355,7 @@ pub(crate) enum SiteError {
 pub(crate) struct SiteWorkspace {
     /// The site's entry: where its links point.
     pub entry: url::Url,
-    /// The workspace's name.
     pub name: String,
-    /// The HTTPS origin of its host.
     pub origin: String,
     /// The host's admission door, when it admits people without an
     /// invitation.
@@ -382,7 +376,6 @@ struct EntryJson {
 /// What a site's `entry.json` says: its home workspace and its directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SiteEntry {
-    /// The home workspace, when the site names one.
     pub home: Option<SiteWorkspace>,
     /// The directory of public workspaces, when the site names one.
     pub directory: Option<url::Url>,
@@ -472,7 +465,6 @@ pub(crate) async fn read_site(entry: &url::Url) -> Result<SiteEntry, SiteError> 
     Ok(SiteEntry { home, directory })
 }
 
-/// The home workspace `home` of the site at `entry`.
 fn home_workspace(
     entry: &url::Url,
     home: &HomeJson,

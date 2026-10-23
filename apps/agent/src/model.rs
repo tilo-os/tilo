@@ -245,11 +245,6 @@ impl Chooser {
     /// in one model turn; the read-only discovery tools reach what the
     /// summary leaves out. The model can finish only by submitting `plan`
     /// with native JSON argument values, naming only ids it was shown.
-    ///
-    /// # Errors
-    ///
-    /// Returns the deterministic fallback route when model discovery is
-    /// disabled, unavailable, invalid, exhausted, or misses its deadline.
     pub fn choose_actions(
         &self,
         rest: &str,
@@ -278,9 +273,6 @@ impl Chooser {
     }
 
     /// Observe presentation without granting deltas authority to act.
-    ///
-    /// # Errors
-    /// Returns the fallback route when model access or validated planning fails.
     pub fn choose_actions_observed(
         &self,
         rest: &str,
@@ -638,7 +630,6 @@ pub struct FirstTurn {
 }
 
 impl FirstTurn {
-    /// The whole turn as one text.
     pub fn text(&self) -> String {
         format!("{}{}", self.operations, self.task)
     }
@@ -1396,10 +1387,6 @@ impl LegacyConversation {
     }
 
     /// The assistant turn and its tool calls, in call order.
-    ///
-    /// # Errors
-    ///
-    /// When the body is unreadable, a refusal, or carries no tool call.
     pub fn calls(&self, body: &str) -> Result<(Value, Vec<ToolCall>), String> {
         let (assistant, calls) = match self.dialect {
             Dialect::Anthropic => anthropic_calls(body)?,
@@ -1894,7 +1881,6 @@ mod tests {
         assert_eq!(messages[4]["tool_call_id"], "call_2");
         assert_eq!(messages[4]["content"], "listed");
 
-        // The plan call is the final answer.
         let plan_turn = serde_json::json!({
             "choices": [{"message": {"tool_calls": [
                 {"id": "call_3", "type": "function", "function": {"name": tools::PLAN, "arguments": "{\"steps\":[],\"why\":\"x\",\"then\":null}"}}
@@ -2226,7 +2212,6 @@ mod tests {
         for (body, same) in openai.iter().zip(&anthropic) {
             assert!(!body.to_string().contains("cache_control"), "{body}");
             assert!(body["messages"][1]["content"].is_string(), "{body}");
-            // The same words, joined.
             assert_eq!(first_user_turn(body), first_user_turn(same));
             assert!(first_user_turn(body).starts_with(operations));
         }
@@ -2386,11 +2371,6 @@ mod tests {
 /// Decode only the launcher's explicit nonsecret profile/model/protocol tuple,
 /// and whether the model sees pictures. Endpoint, bearer credentials and
 /// vault references never enter this contract.
-///
-/// # Errors
-///
-/// Returns a description of the first violation when `value` is not exactly
-/// that tuple or names an unknown protocol or model.
 pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, String> {
     let object = value
         .as_object()
@@ -2945,7 +2925,6 @@ pub mod plan_stream {
         fn whole_arguments_yield_every_followed_field_once_done() {
             let seen = scan(&[ARGS]);
             assert_eq!(finals(&seen), expected());
-            // The values agree with a real JSON parser.
             let parsed: serde_json::Value = serde_json::from_str(ARGS).unwrap();
             assert_eq!(parsed["reply"], expected()[0].1);
             assert_eq!(parsed["steps"][0]["arguments"]["text"], expected()[2].1);

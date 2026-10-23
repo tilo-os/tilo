@@ -111,7 +111,6 @@ mod tests {
 
     #[test]
     fn broadcast_reaches_every_other_subscriber_but_not_the_sender() {
-        // Phase `broadcast_delivers_to_all_other_subscribers`.
         {
             let a = make_sub(1);
             let b = make_sub(2);
@@ -137,7 +136,6 @@ mod tests {
             );
             assert_eq!(c.lock().unwrap().recv, vec![(PeerOrigin::hub(1), msg)]);
         }
-        // Phase `broadcast_does_not_echo_to_sender`.
         {
             let a = make_sub(10);
             let b = make_sub(20);

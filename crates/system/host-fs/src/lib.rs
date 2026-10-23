@@ -42,10 +42,6 @@ pub fn mode(metadata: &Metadata) -> Option<u32> {
 }
 
 /// Apply Unix permission bits to `path`. A no-op on platforms without them.
-///
-/// # Errors
-///
-/// Returns the permission change's error.
 #[inline]
 pub fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     #[cfg(unix)]
@@ -107,9 +103,6 @@ pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
 
 /// Create a symlink containing `target` beneath an already-open directory.
 /// The target is data, including absolute paths; it is never opened.
-///
-/// # Errors
-/// Refuses a non-leaf name, NUL bytes, unsupported hosts, or host I/O errors.
 pub fn symlink_at(
     target: &Path,
     directory: &std::fs::File,

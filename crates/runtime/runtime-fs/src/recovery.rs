@@ -233,9 +233,6 @@ impl NativeReplacementPin {
     }
     /// Accept canonical ownership only from the enrolled daemon's signed
     /// commit for this same actual pin and durably retained preparation.
-    /// # Errors
-    /// Refuses stale capture/grant, different operation, invalid signer or
-    /// ambiguous journal publication. Captured inode custody is not byte history.
     pub fn commit_with_history(
         &self,
         current: &FsSession,
@@ -855,8 +852,6 @@ impl OperationOwner {
         }
         Ok(())
     }
-    /// # Errors
-    /// Returns `NotFound` for IDs outside this explicitly scoped owner.
     pub fn report(&self, id: &OperationId) -> Result<OperationReport, FsError> {
         let store = lock(&self.state)?;
         let r = store.receipts.get(&id.0).ok_or(FsError::NotFound)?;
@@ -1068,8 +1063,6 @@ impl OperationOwner {
         }
     }
     /// Explicit host acknowledgment never mutates user bytes or rewrites history.
-    /// # Errors
-    /// Returns `Busy` for active jobs or any unresolved known/unknown recovery.
     pub fn acknowledge_report(&self, id: &OperationId) -> Result<(), FsError> {
         self.update(id, "ReportAcknowledged", |r| {
             if r.state == OperationState::Running

@@ -1002,7 +1002,7 @@ fn every_scenario_stages_the_sample_shelf_through_the_librarys_edits() {
         let shelf = app.state().entries.len();
         if scenario == Some("onboarding") {
             assert_eq!(shelf, 0, "the first start is an empty shelf");
-        } else if scenario == Some("fresh-device") {
+        } else if scenario.is_some_and(|scenario| scenario.starts_with("fresh-device")) {
             assert_eq!(shelf, 8, "a library synced from other devices");
         } else if scenario == Some("search-elsewhere") {
             assert_eq!(shelf, 4, "the sample shelf and a book elsewhere");
@@ -1140,5 +1140,32 @@ fn a_page_turn_while_the_library_is_held_copies_one_chunk_of_progress() {
     assert!(
         kept >= 500 - 64,
         "{kept} of 500 books' progress still shared"
+    );
+}
+
+/// Whether this device keeps the book catalogues is a setting of the
+/// device's that search, the palette and agents reach as the section's field
+/// edit, and the reader's toggle reads.
+#[test]
+fn keeping_book_catalogues_is_a_device_setting_search_reaches() {
+    use crate::catalogue::CatalogueCopies;
+    let mut app = ui::framework::testing::TestApp::<EbookShell>::new().unwrap();
+    assert!(
+        app.settings::<CatalogueCopies>().get().keep_catalogues,
+        "kept on a computer unless the person turns it off"
+    );
+    app.call_on(
+        "settings:settings.books-catalogues",
+        "field-edit",
+        serde_json::json!({
+            "edit": { "path": [{ "field": "keep_catalogues" }], "op": "set", "value": false }
+        }),
+    )
+    .unwrap();
+    assert!(!app.settings::<CatalogueCopies>().get().keep_catalogues);
+    assert_eq!(
+        <CatalogueCopies as ui::storage::SettingsSchema>::SCOPE,
+        ui::storage::Scope::DeviceLocal,
+        "it never leaves this device"
     );
 }

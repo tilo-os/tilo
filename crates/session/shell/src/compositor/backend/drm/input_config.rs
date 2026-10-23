@@ -144,7 +144,6 @@ pub const REPEAT_DELAY_MIN_MS: u32 = 200;
     reason = "persisted input toggles: each is an independent, named setting mirroring the Settings pane, not a state machine"
 )]
 pub struct InputSettings {
-    /// Content-follows-finger scrolling for touchpads.
     pub touchpad_natural_scroll: bool,
     /// Content-follows-finger scrolling for mice and trackballs.
     pub mouse_natural_scroll: bool,

@@ -73,7 +73,6 @@ pub struct LaunchRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShareBinding {
     pub drive_name: String,
-    /// Portal document this staging mount represents.
     pub portal_document_id: String,
     /// Broker-owned bind mount below the lease root. `read_only` is enforced
     /// on this mount; it is not merely a hint to `FreeRDP`.
@@ -768,7 +767,6 @@ mod tests {
 
     #[test]
     fn appliance_launches_require_an_available_guest_and_published_unchanged_apps() {
-        // Phase `unavailable_guest_bridge_fails_closed`.
         {
             let directory = TempDir::new().unwrap();
             let appliance = fixture(
@@ -784,7 +782,6 @@ mod tests {
                 Err(LaunchError::Agent(AgentError::Unavailable))
             ));
         }
-        // Phase `unpublished_application_cannot_be_launched`.
         {
             let directory = TempDir::new().unwrap();
             let appliance = fixture(
@@ -802,7 +799,6 @@ mod tests {
                 Err(LaunchError::ApplicationNotPublished(_))
             ));
         }
-        // Phase `changed_publication_alias_fails_and_revokes_lease`.
         {
             let directory = TempDir::new().unwrap();
             let appliance = fixture(
@@ -826,7 +822,6 @@ mod tests {
 
     #[test]
     fn brokers_cannot_widen_portal_documents_handles_or_clipboard() {
-        // Phase `broker_cannot_upgrade_a_read_only_portal_document_to_a_writable_drive`.
         {
             let directory = TempDir::new().unwrap();
             let appliance = fixture(
@@ -859,7 +854,6 @@ mod tests {
                 Err(LaunchError::BrokerEscalated("files"))
             ));
         }
-        // Phase `duplicate_portal_handles_are_rejected_before_any_guest_connection`.
         {
             let directory = TempDir::new().unwrap();
             let appliance = fixture(
@@ -886,7 +880,6 @@ mod tests {
                 Err(LaunchError::InvalidRequest("portal document id"))
             ));
         }
-        // Phase `a_broker_cannot_enable_ungranted_clipboard`.
         {
             let directory = TempDir::new().unwrap();
             let appliance = fixture(
@@ -917,7 +910,6 @@ mod tests {
 
     #[test]
     fn the_passive_catalogue_cache_is_authenticated_and_never_wakes_the_guest() {
-        // Phase `authenticated_catalogue_is_cached_for_passive_manager_enumeration`.
         {
             let directory = TempDir::new().unwrap();
             let appliance = fixture(
@@ -935,7 +927,6 @@ mod tests {
             assert_eq!(cached, fresh);
             assert_eq!(appliance.state.load().unwrap().catalog_generation, 2);
         }
-        // Phase `passive_catalogue_cache_never_contacts_an_unavailable_guest`.
         {
             let directory = TempDir::new().unwrap();
             let appliance = fixture(

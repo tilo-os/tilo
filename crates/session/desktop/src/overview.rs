@@ -488,7 +488,6 @@ pub enum PressSource {
     Touch(u64),
 }
 
-/// How a press on the overview ended.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PressEnd {
     /// Released where it began: a click or a tap on `tab`'s preview, or on

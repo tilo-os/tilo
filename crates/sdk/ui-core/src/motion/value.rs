@@ -173,7 +173,6 @@ impl<T: Animatable> MotionValue<T> {
         self.target
     }
 
-    /// The value at `now`.
     #[track_caller]
     pub fn get(&self, now: Instant) -> T {
         T::from_channels(self.channels_at(now).0)

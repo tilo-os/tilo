@@ -388,14 +388,12 @@ mod tests {
             assert!(decoded.settings[0].alternatives.is_empty());
             assert!(decoded.wifi.is_empty());
         }
-        // Phase `future_schema_fails_closed`.
         {
             assert!(matches!(
                 RoamingProvenance::from_slice(br#"{"schema_version":99}"#),
                 Err(ProvenanceError::UnsupportedSchema(99))
             ));
         }
-        // Phase `round_trip_is_deterministic_bounded_and_secret_free`.
         {
             let dir = crate::test_dir();
             let path = dir.path().join(FILE_NAME);
@@ -424,7 +422,6 @@ mod tests {
             assert_eq!(loaded.settings[0].alternatives[0].device_id, "a");
             assert_eq!(loaded, projection);
         }
-        // Phase `unknown_setting_cannot_enter_projection`.
         {
             let mut projection = RoamingProvenance {
                 settings: vec![SettingResolution {

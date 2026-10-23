@@ -55,7 +55,6 @@ pub(crate) const COMPUTE_KIND: &str = "workspace.compute";
 /// Choosing the device a compute job runs on.
 pub(crate) const PLACE_JOB: &str = "compute.place";
 
-/// The id of workspace `workspace_id`'s compute resource.
 pub(crate) fn compute_resource(workspace_id: u64) -> String {
     format!("{COMPUTE_KIND}:{workspace_id}")
 }

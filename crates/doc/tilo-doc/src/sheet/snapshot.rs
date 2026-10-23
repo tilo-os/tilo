@@ -101,7 +101,6 @@ pub struct WorkbookSnapshot {
 }
 
 impl WorkbookSnapshot {
-    /// The sheet with the given id, if present.
     pub fn sheet(&self, id: &str) -> Option<&SheetView> {
         self.sheets.iter().find(|s| s.id == id)
     }

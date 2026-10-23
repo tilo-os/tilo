@@ -829,7 +829,6 @@ mod tests {
 
     #[test]
     fn offline_panel_owns_zoom_depth_selection_and_hit_testing() {
-        // Phase `zoom_depth_is_owned_and_clamped_by_panel`.
         {
             let mut panel = OfflinePanel::new(0);
             panel.adjust_zoom(100);
@@ -838,7 +837,6 @@ mod tests {
             assert_eq!(panel.zoom_extra, 0);
         }
 
-        // Phase `reopening_drops_stale_search_selection`.
         {
             let mut panel = OfflinePanel::new(0);
             let hit = RegionHit {
@@ -857,7 +855,6 @@ mod tests {
             assert!(panel.pick.is_none());
         }
 
-        // Phase `topmost_panel_target_wins_hit_testing`.
         {
             let mut panel = OfflinePanel::new(0);
             let rect = Rect::new(0.0, 0.0, 50.0, 50.0);

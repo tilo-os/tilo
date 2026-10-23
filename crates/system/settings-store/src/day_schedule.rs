@@ -13,7 +13,6 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
-/// The section holding the schedule.
 pub const SECTION: &str = "appearance";
 /// `"sun"` or `"custom"`.
 pub const SCHEDULE_KEY: &str = "schedule";

@@ -74,8 +74,6 @@ pub(crate) fn listed_containers(engine: &Engine) -> Vec<&Container> {
     list
 }
 
-// ---- sidebar ---------------------------------------------------------------
-
 fn place_id(place: Place) -> &'static str {
     place.as_str()
 }
@@ -151,8 +149,6 @@ pub(crate) fn sidebar(
     )
 }
 
-// ---- header actions ------------------------------------------------------
-
 pub(crate) fn search_button() -> Element {
     Box::new(ui::search::search_button(
         ui::search::SearchRequest::this_app(),
@@ -174,8 +170,6 @@ pub(crate) fn primary(
             .on_view(intents.sender(intent)),
     )
 }
-
-// ---- status ----------------------------------------------------------------
 
 /// How a container's state reads: running is good news, a dead container
 /// needs attention, a paused or restarting one is in between.
@@ -228,8 +222,6 @@ fn verb(action: Action) -> &'static str {
         Action::Remove => "remove",
     }
 }
-
-// ---- containers ------------------------------------------------------------
 
 /// A row's status dot for a container state.
 fn with_status(row: ListRow, status: ContainerStatus) -> ListRow {
@@ -864,8 +856,6 @@ fn shell(model: &DetailModel<'_>, intents: &Intents) -> Element {
     )
 }
 
-// ---- images ----------------------------------------------------------------
-
 fn used_by(n: u32) -> String {
     match n {
         0 => "Not used by any container".into(),
@@ -948,8 +938,6 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
     page(Some(summary), rows)
 }
 
-// ---- volumes ---------------------------------------------------------------
-
 pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
     if engine.volumes.is_empty() {
         if !engine.live && !controls {
@@ -987,8 +975,6 @@ pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -
     page(Some(summary), rows)
 }
 
-// ---- distrobox -------------------------------------------------------------
-
 pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
     if engine.distroboxes.is_empty() {
         if !engine.live && !controls {
@@ -1025,8 +1011,6 @@ pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents)
     page(None, rows)
 }
 
-// ---- pull progress ---------------------------------------------------------
-
 /// The body of the pull sheet: the state of the pull and its latest output.
 pub(crate) fn pull_body(pull: &crate::app::PullProgress) -> Column {
     let state: Element = match &pull.failed {
@@ -1056,8 +1040,6 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress) -> Column {
         .push(state)
         .push(output(pull.lines.iter().skip(skip).map(String::as_str)))
 }
-
-// ---- the window ------------------------------------------------------------
 
 /// What the window shows, published by the app whenever the engine or the
 /// view changes. Each part of the window rebuilds only when the slice of

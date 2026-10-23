@@ -73,11 +73,6 @@ impl ActionHost {
     /// Unlike [`dispatch`](Self::dispatch), this does not swallow errors. It
     /// only records an undo boundary and last-dispatched payload after the
     /// action applies.
-    ///
-    /// # Errors
-    ///
-    /// Returns an encoding, document, or application refusal error without
-    /// recording an undo boundary or last-dispatched payload.
     pub fn try_dispatch<A>(
         &mut self,
         doc: &mut AutoCommit,
@@ -278,7 +273,6 @@ mod tests {
 
     #[test]
     fn dispatch_applies_actions_as_one_undo_boundary_with_the_clicking_actor() {
-        // Case `dispatch_applies_the_action_to_the_doc`.
         {
             let mut doc = AutoCommit::new();
             let mut host = ActionHost::new();
@@ -296,7 +290,6 @@ mod tests {
             );
         }
 
-        // Case `direct_actions_keep_the_clicking_documents_actor`.
         {
             let actor = automerge::ActorId::from(vec![7, 8, 9, 10]);
             let mut doc = AutoCommit::new().with_actor(actor.clone());
@@ -317,7 +310,6 @@ mod tests {
             );
         }
 
-        // Case `brackets_one_undo_boundary_across_several_actions`.
         {
             let mut doc = AutoCommit::new();
             // A pre-existing app write; the bracket must start *after* it.
@@ -356,7 +348,6 @@ mod tests {
             );
         }
 
-        // Case `last_dispatched_records_the_encoded_action`.
         {
             let mut doc = AutoCommit::new();
             let mut host = ActionHost::new();
@@ -372,7 +363,6 @@ mod tests {
             assert_eq!(enc, &EncodedAction::encode(PUT_TYPE, &action).unwrap());
         }
 
-        // Case `try_dispatch_refusal_leaves_no_undo_boundary_or_last_payload`.
         {
             let mut doc = AutoCommit::new();
             let mut host = ActionHost::new();
@@ -388,7 +378,6 @@ mod tests {
 
     #[test]
     fn dispatch_context_and_optimism_keep_the_action_host_contract() {
-        // Case `contextual_dispatch_embeds_activity_in_the_change`.
         {
             let mut doc = AutoCommit::new();
             let mut host = ActionHost::new();
@@ -418,7 +407,6 @@ mod tests {
             );
         }
 
-        // Case `ambient_task_context_enriches_explicit_action_context`.
         {
             let mut doc = AutoCommit::new();
             let mut host = ActionHost::new();

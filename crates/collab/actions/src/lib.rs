@@ -213,7 +213,7 @@ pub use resource::{
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, NESTED_RESOURCE_FACET, PROMPTED_PARAM, Resource,
     ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
-    ResourceViewRangeSpec, ResourceViewSpec, flatten, sole_text_argument,
+    ResourceViewRangeSpec, ResourceViewSpec, RunBy, flatten, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
@@ -539,10 +539,8 @@ mod tests {
         };
         let encoded = EncodedAction::encode(COUNTER_TYPE, &action).unwrap();
 
-        // A plays locally, producing an envelope to replicate.
         let env = apply_local(&mut a, &action, encoded).unwrap();
 
-        // B replays the envelope from the same base state.
         replay(&mut b, &env, &registry()).unwrap();
 
         // Identical *history*, not just identical materialized values.

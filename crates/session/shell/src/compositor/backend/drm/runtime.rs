@@ -748,7 +748,6 @@ pub struct LiveEntry {
     pub hdr_driver_ready: bool,
     /// HDR as the user configured it: SDR white in cd/m² when on.
     pub hdr_setting: Option<f32>,
-    /// The HDR request last sent to the scanout owner.
     pub hdr_requested: Option<HdrRequest>,
     /// The software dimming last sent to the scanout owner: the share of
     /// linear light the output lets through, `1.0` when undimmed (as a new
@@ -1303,7 +1302,6 @@ impl DrmDispatchState {
             entry.set_color_profile(profile);
         }
         scanouts.sort_by_key(|e| e.id.0);
-        // Start the pointer in the middle of the logical desktop.
         let placements = self.placements();
         let (lw, lh) = hotplug::combined_extent(
             &placements
@@ -4448,7 +4446,6 @@ mod color_calibration_tests {
         std::fs::write(&path, panel.lut16_profile()).unwrap();
         let (transform, _) = color_calibration(path.to_str().unwrap())
             .expect("a readable profile yields the qcms transform and its LUT");
-        // The readback's transform is the one the profile defines.
         let colours = [[12_u8, 200, 90, 255], [255, 255, 255, 255], [0, 0, 0, 255]];
         let mut readback = colours.concat();
         let mut reference = colours.concat();

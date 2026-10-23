@@ -75,7 +75,6 @@ pub struct Session {
     /// Saved connection profiles shown in the sidebar: the workspace's
     /// `root["connections"]` as last presented.
     pub connections: Vec<ConnectionProfile>,
-    /// Index into `connections` of the active connection.
     pub active: usize,
     /// Whether a live engine is currently open on the worker for the active
     /// connection (reflected by the sidebar status dot).
@@ -93,9 +92,7 @@ pub struct Session {
     pub tab: MainTab,
     /// Status banner.
     pub status: RunStatus,
-    /// Pagination offset for the Data tab.
     pub data_offset: usize,
-    /// Page size for the Data tab.
     pub data_page_size: usize,
     /// Bumped whenever a fresh query / data result lands, so the grids rebind.
     pub query_gen: usize,
@@ -189,8 +186,6 @@ impl Session {
 
         s
     }
-
-    // ---- worker plumbing -------------------------------------------------
 
     /// Fold every reply the worker has ready into the session, without
     /// blocking. Call once per frame.
@@ -373,8 +368,6 @@ impl Session {
         }
     }
 
-    // ---- connection management ------------------------------------------
-
     /// Remember a connection's password for this session only (never persisted
     /// and never written to the shared document).
     pub fn remember_password(&mut self, id: Uuid, password: String) {
@@ -385,7 +378,6 @@ impl Session {
         }
     }
 
-    /// Whether the session holds a password for connection `id`.
     pub fn knows_password(&self, id: Uuid) -> bool {
         self.passwords.contains_key(&id)
     }
@@ -420,7 +412,6 @@ impl Session {
             self.set_schema(DatabaseSchema::default());
             return;
         };
-        // Clear the previous connection's view state up front.
         self.connected = false;
         self.active_query = None;
         self.cancelled_query = None;
@@ -495,8 +486,6 @@ impl Session {
         self.block_until_idle();
         id
     }
-
-    // ---- introspection accessors ----------------------------------------
 
     /// The active connection profile, or `None` when there are no saved
     /// connections yet (a fresh live session).
@@ -725,7 +714,6 @@ mod tests {
             let b = ConnectionProfile::new("B", Engine::MySql);
             s.set_connections(vec![a.clone(), b.clone()]);
             s.active = 1; // B is active
-            // A reorder that keeps both keeps B active by id.
             s.set_connections(vec![b.clone(), a.clone()]);
             assert_eq!(s.active_connection().unwrap().id, b.id);
             // Removing the active one resets to the first + clears view state.

@@ -97,6 +97,14 @@ fn detail(core: &Core, requests: &Requests) -> Element {
     let Some(item) = core.selected_item() else {
         // The list offers the next step; the wide pane beside it says what
         // the vault keeps instead of standing blank.
+        if core.opening {
+            return Box::new(
+                EmptyState::new("Opening your vault")
+                    .with_id("passwords.content.empty")
+                    .with_icon(Icon::Shield)
+                    .busy(),
+            );
+        }
         if core.items.is_empty() {
             return Box::new(
                 EmptyState::new("Nothing saved yet")

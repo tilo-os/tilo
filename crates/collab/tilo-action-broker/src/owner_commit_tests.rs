@@ -927,7 +927,6 @@ mod owner_commit_tests {
             })
             .await;
     }
-    /// Exercises the public portable constructor, real SDK FD, checked Writer and sole actual owner.
     #[tokio::test(flavor = "current_thread")]
     async fn portable_constructor_checked_writer_commits_through_actual_owner_and_retires_authority()
      {
@@ -1061,7 +1060,6 @@ mod owner_commit_tests {
             )
             .is_err()
         );
-        // A private worker descriptor also refuses a different record on the same app/room.
         let wrong = broker.connect_local_worker(route.clone(), &cert).unwrap();
         assert!(
             CollaborationManager::for_route_fd_with_identity(
@@ -1262,7 +1260,6 @@ mod owner_commit_tests {
             "terminal must follow actual owner commitment"
         );
         assert_ne!(initial, saved);
-        // Loss of the current owner authority withdraws admission and disclosure.
         *committed.lock().unwrap() = None;
         assert!(broker.connect_local_worker(route, &cert).is_err());
         assert!(

@@ -757,7 +757,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn native_journal_budgets_refuse_before_exceeding_limits() {
-        // Phase `repeated_directory_receipts_stop_before_exceeding_total_append_budget`.
         {
             let (_temp, plan, destination, path) = fixture();
             let mut journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
@@ -779,7 +778,6 @@ mod tests {
             assert!(destination.is_dir());
         }
 
-        // Phase `repeated_outcomes_reserve_whole_group_before_append`.
         {
             let (_temp, plan, destination, path) = fixture();
             let mut journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
@@ -792,7 +790,6 @@ mod tests {
             assert!(destination.is_dir());
         }
 
-        // Phase `total_replay_budget_refuses_repeated_directory_and_outcome_history_before_repair`.
         {
             use super::super::migration_journal_log::write_record;
             for directory in [true, false] {
@@ -845,7 +842,6 @@ mod tests {
             }
         }
 
-        // Phase `total_append_byte_budget_preserves_existing_outcome`.
         {
             let (_temp, plan, destination, path) = fixture();
             let mut journal = NativeJournal::open(&plan, &path, &RUNNING, || Ok(())).unwrap();
@@ -868,7 +864,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn native_journal_cancellation_and_relocation_preserve_history() {
-        // Phase `cancelled_replay_preserves_torn_history_without_source_validation`.
         {
             let (_temp, plan, destination, path) = fixture();
             std::fs::OpenOptions::new()
@@ -890,7 +885,6 @@ mod tests {
             assert!(destination.is_dir());
         }
 
-        // Phase `cancelled_receipt_append_preserves_history_and_output`.
         {
             let (_temp, plan, destination, path) = fixture();
             let cancel = AtomicBool::new(false);
@@ -907,7 +901,6 @@ mod tests {
             assert!(destination.is_dir());
         }
 
-        // Phase `relocated_journal_during_source_validation_is_not_repaired`.
         {
             for replace in [false, true] {
                 let (_temp, plan, _destination, path) = fixture();

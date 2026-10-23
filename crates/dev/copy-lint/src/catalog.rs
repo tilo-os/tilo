@@ -48,7 +48,6 @@ pub fn messages(source: &str) -> BTreeMap<String, String> {
     messages
 }
 
-/// The `$variables` a pattern interpolates.
 fn variables(pattern: &str) -> BTreeSet<String> {
     pattern
         .split('$')
@@ -193,10 +192,6 @@ impl UsedKeys {
 
     /// Panic unless every catalogue defines every key the code asks for: a
     /// missing one renders as the raw key, or as English in a translation.
-    ///
-    /// # Panics
-    ///
-    /// When the scan found too few keys or a catalogue lacks one.
     pub fn check_defined(&self, catalogs: &[(&str, &str)]) {
         assert!(
             self.found.len() >= self.min_keys,

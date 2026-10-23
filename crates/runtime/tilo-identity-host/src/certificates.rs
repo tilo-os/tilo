@@ -20,10 +20,6 @@ pub fn authorize(room: &str, cert: &DeviceCert) -> Result<(), String> {
 }
 
 /// [`authorize`], and the device is enrolled in the identity's fleet.
-///
-/// # Errors
-///
-/// Returns any [`authorize`] error, or a message for an unenrolled device.
 pub fn authorize_join(room: &str, cert: &DeviceCert) -> Result<(), String> {
     let (profile, fleet) = selected_fleet(room)?;
     check_identity_and_revocation(&profile, &fleet, cert)?;
@@ -234,7 +230,6 @@ mod tests {
         settle(&path);
         assert_eq!(fixture.authorize_join_twice(), 1, "the fleet is cached");
 
-        // Another process rewrites the file in place with the revocation.
         std::fs::write(&path, &revoked).expect("external revocation");
         assert_eq!(
             authorize_join(ROOM, &fixture.cert),

@@ -368,10 +368,6 @@ struct Counts {
 /// `resources`. Only the record's shape is checked here (every count backed
 /// by bytes, every enumeration known, every id registered); whether it is
 /// safe to draw is [`crate::validate::validate`]'s question.
-///
-/// # Errors
-///
-/// When the bytes are not an encoding or name an unregistered resource.
 pub fn decode(bytes: &[u8], resources: &dyn Resources) -> Result<Encoding, WireError> {
     let mut r = Reader::new(bytes);
     let mut header = [0_usize; 11];

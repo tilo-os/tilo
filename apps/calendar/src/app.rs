@@ -13,7 +13,8 @@
 //!   the selected item's block list, run the editor's sync.
 //! - `build_layout` — register the editor node, return a full-bleed root.
 //! - `apply_layout` — compute region rects, place the editor.
-//! - `draw` — paint sidebar + toolbar + the active view + detail panel,
+//! - `draw` — paint the active view + detail panel (the sidebar is the
+//!   shell's, [`shell`]),
 //!   rebuilding the click hit-map.
 //! - `handle_event` — route clicks against the hit-map, keyboard
 //!   shortcuts, and forward to the editor when notes are active.
@@ -50,6 +51,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::modal_dialog::ModalLayout;
+use ui::widget::toast::Transient;
 use ui::widget::{DatePicker, Popover, TextInput};
 
 use tilo_rich_text::{RichTextField, RichTextSurface};
@@ -62,7 +64,6 @@ use crate::event_popovers::{EventPopovers, PopoverEdit, PopoverKind as FormPopov
 use crate::ics;
 use crate::input_context::InputContext;
 use crate::model::{Calendar, Event, Id, ListSel, Palette, Priority, Task, View};
-use crate::sidebar::{Mode as SidebarMode, Sidebar};
 use crate::tasks::{TasksAction, TasksSource, TasksView};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
@@ -75,7 +76,8 @@ mod contact_attendees;
 mod editor;
 mod month_view;
 mod repeat_scope;
-mod sidebar_view;
+mod shell;
+pub(crate) use shell::sidebar;
 mod status;
 
 use editor::{Choices, FormRects};
@@ -102,14 +104,6 @@ const MAX_ALL_DAY_ROWS: usize = 3;
 /// The hour a working day starts at: the week and day views open on it.
 const WORKING_DAY_START: u8 = 7;
 
-/// Navigation intent of the sidebar's month navigator. The app applies it to
-/// the anchor shared by every calendar view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MiniMonthOutcome {
-    SelectDate(NaiveDate),
-    ShiftMonth(i32),
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Sel {
     Event(Id),
@@ -128,15 +122,12 @@ enum Action {
     OpenEvent(Id),
     ToggleTask(Id),
     List(ListSel),
-    /// Put the sidebar's task list away, back to the month navigator.
+    /// Put the sidebar's task list away.
     CloseList,
     CloseDetail,
     Export,
     Import,
     NewEvent,
-    /// Navigation intent interpreted by the mini-month component. The app
-    /// applies it to the anchor shared by every calendar view.
-    MiniMonth(MiniMonthOutcome),
     ToggleSelectedTask,
     OpenTaskPopover(TaskPopover),
     DismissTaskPopover,
@@ -148,11 +139,6 @@ enum Action {
     NewTask,
     /// Focus the Tasks screen entry.
     FocusTaskEntry,
-    /// Show or hide the sidebar: the docked column when the window is wide,
-    /// the floating drawer when it is narrow.
-    ToggleSidebar,
-    /// Dismiss the drawer by pressing the scrim behind it.
-    DismissSidebar,
     /// Set whether a synced remote calendar's events are shown. This carries
     /// the resulting absolute value, never a replay-unsafe toggle.
     SetCalendarVisible {
@@ -242,8 +228,8 @@ pub struct CalendarApp {
     /// `None` shows every visible collection; a stable local/remote calendar
     /// id is set only by the collection resource's canonical `open` action.
     calendar_filter: Option<String>,
-    /// The task list the sidebar shows in place of the month navigator,
-    /// when one is chosen.
+    /// The task list the sidebar shows under the places, when one is
+    /// chosen.
     list_sel: Option<ListSel>,
     selection: Option<Sel>,
     detail_open: bool,
@@ -301,8 +287,13 @@ pub struct CalendarApp {
     /// Opens the platform search scoped to contacts when the Guests field
     /// asks to invite one.
     search_opener: ui::search::SearchOpener,
-    /// The month navigator at the bottom of the sidebar.
-    mini_month: DatePicker,
+    /// The sidebar's places, as the shell's list shows them.
+    places: ui::widget::NavFeed,
+    /// The month navigator at the sidebar's foot.
+    month: ui::widget::DateFeed,
+    /// The shell's sidebar and its slots in the window's bar; `None` while
+    /// the calendar stands alone (a test's bare surface).
+    bar: Option<ui::widget::WindowBarLink>,
     /// Shots-only: spawn a fresh event on the first sync so the offscreen
     /// renderer can capture the New-Event form. No effect on live runtime.
     staged_new_event: bool,
@@ -331,15 +322,12 @@ pub struct CalendarApp {
     contacts_requested: std::rc::Rc<std::cell::Cell<bool>>,
 
     // --- responsive state ------------------------------------------------
-    /// Responsive drawer state, geometry and chrome interaction.
-    sidebar: Sidebar,
     /// The theme of the last layout pass, so the renderer-less layout reads
     /// the same tokens and text roles the painters do.
     layout_theme: Theme,
     // --- layout caches (filled by `relayout`) ----------------------------
     rect: Rect,
-    /// The region right of a docked sidebar (or the whole window under a
-    /// drawer) holding the header and the calendar view.
+    /// The shell's content column, holding the calendar view.
     content_rect: Rect,
     /// The editor sheet's card while it is open.
     detail_rect: Rect,
@@ -357,7 +345,9 @@ pub struct CalendarApp {
 
     hits: Vec<(Rect, Action)>,
     last_mouse: Point,
-    status: Option<String>,
+    /// The result of the last sync, import or edit, shown as a toast for a
+    /// notice's lifetime.
+    status: Transient<String>,
     /// The status toast's close button as last painted.
     status_close: Rect,
     /// A just-created blank event is a provisional draft until the user edits
@@ -504,16 +494,14 @@ impl CalendarApp {
                 .with_items(repeat_scope::choices())
                 .with_label(repeat_scope::label()),
             pending_repeat: None,
-            mini_month: DatePicker::new(today)
-                .with_today(today)
-                .navigator()
-                .with_accessible_name("Month"),
+            places: ui::widget::NavFeed::new(),
+            month: ui::widget::DateFeed::new(),
+            bar: None,
             search_opener: ui::search::SearchOpener::new(),
             staged_new_event: false,
             staged_popover: None,
             shots_pending_calendar_menu: false,
             shots_detail_scroll_to_end: false,
-            sidebar: Sidebar::new(),
             layout_theme: Theme::dark(),
             sample_accounts: false,
             person_accounts: None,
@@ -531,7 +519,7 @@ impl CalendarApp {
             built_notes_w: -1.0,
             hits: Vec::new(),
             last_mouse: Point::ZERO,
-            status: None,
+            status: Transient::new(),
             status_close: Rect::ZERO,
             fresh_draft: None,
             dirty: true,
@@ -670,8 +658,8 @@ impl CalendarApp {
             "sync_syncing" | "sync_offline" | "sync_conflict" | "sync_error" => {
                 self.shots_set_sync_state(name.strip_prefix("sync_").unwrap_or(name));
             }
-            "collapsed_sidebar" => self.sidebar.set_collapsed(true),
-            "narrow_drawer" => self.sidebar.set_open(true),
+            "collapsed_sidebar" => self.stage_sidebar(false),
+            "narrow_drawer" => self.stage_sidebar(true),
             _ => {}
         }
         self.dirty = true;
@@ -693,7 +681,7 @@ impl CalendarApp {
     /// Deterministic transport-state presentation for visual regression shots.
     pub fn shots_set_sync_state(&mut self, state: &str) {
         self.syncing = state == "syncing";
-        self.status = Some(match state {
+        self.status.show(match state {
             "syncing" => "Syncing calendars…".into(),
             "offline" => "Offline. Changes sync when you reconnect.".into(),
             "conflict" => {
@@ -748,7 +736,8 @@ impl CalendarApp {
         // No account configured: answer instantly rather than spinning up a
         // worker that would only return Offline.
         if self.accounts.is_empty() {
-            self.status = Some("No calendar accounts yet. Add one in Settings.".into());
+            self.status
+                .show("No calendar accounts yet. Add one in Settings.".into());
             self.dirty = true;
             return;
         }
@@ -760,7 +749,7 @@ impl CalendarApp {
         let runtime = match ui::rt::try_app() {
             Ok(runtime) => runtime,
             Err(error) => {
-                self.status = Some(format!("Sync unavailable: {error}"));
+                self.status.show(format!("Sync unavailable: {error}"));
                 self.dirty = true;
                 return;
             }
@@ -868,7 +857,7 @@ impl CalendarApp {
         }));
         self.sync_rx = Some(rx);
         self.syncing = true;
-        self.status = Some("Syncing…".into());
+        self.status.show("Syncing…".into());
         self.dirty = true;
     }
 
@@ -900,7 +889,7 @@ impl CalendarApp {
                 // Worker panicked or dropped the sender without a reply.
                 self.sync_rx = None;
                 self.syncing = false;
-                self.status = Some("Sync failed".into());
+                self.status.show("Sync failed".into());
                 if let Some(reply) = self.sync_reply.take() {
                     reply.finish(Err(
                         "calendar synchronization stopped without a result".into()
@@ -1084,7 +1073,7 @@ impl CalendarApp {
             );
         }
         self.model.events.settle();
-        self.status = Some(match outcome {
+        self.status.show(match outcome {
             SyncOutcome::Synced { calendars, .. } => {
                 format!(
                     "Synced {calendars} calendars. {added} new, {updated} updated, {removed} removed."
@@ -1267,7 +1256,8 @@ impl CalendarApp {
             .split_once('@')
             .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.'));
         if !valid {
-            self.status = Some("Enter a complete email address, such as name@example.com".into());
+            self.status
+                .show("Enter a complete email address, such as name@example.com".into());
             return;
         }
         if self
@@ -1275,7 +1265,7 @@ impl CalendarApp {
             .event(event_id)
             .is_some_and(|event| event.attendees.iter().any(|item| item.email == email))
         {
-            self.status = Some(format!("{email} is already invited"));
+            self.status.show(format!("{email} is already invited"));
             return;
         }
         self.submit(
@@ -1286,7 +1276,7 @@ impl CalendarApp {
             self.model = read;
         }
         self.invite_input.set_text("");
-        self.status = Some(format!(
+        self.status.show(format!(
             "Added {email}. Prepare the invitation in Mail to send it."
         ));
         self.dirty = true;
@@ -1461,14 +1451,12 @@ impl CalendarApp {
         }
     }
 
-    /// Open the editor sheet for the current selection. An open sidebar
-    /// drawer is dismissed so it isn't left under the sheet.
+    /// Open the editor sheet for the current selection. A sidebar floating
+    /// as a drawer goes away so it isn't left over the sheet.
     fn open_detail(&mut self) {
         self.detail_open = true;
         self.detail_scroll_y = 0.0;
-        if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
-            self.sidebar.set_open(false);
-        }
+        self.put_drawer_away();
         self.dirty = true;
     }
 
@@ -1672,7 +1660,7 @@ impl CalendarApp {
             return false;
         }
         self.delete_event(id, doc);
-        self.status = Some("Discarded empty draft".into());
+        self.status.show("Discarded empty draft".into());
         true
     }
 
@@ -1746,7 +1734,8 @@ impl CalendarApp {
             doc,
             Calendar::RESCHEDULE.with((crate::model::key(id), after.start, bridge_end)),
         ) {
-            self.status = Some(format!("Couldn’t move the event: {error}"));
+            self.status
+                .show(format!("Couldn’t move the event: {error}"));
             return;
         }
         let fields = Calendar::paths().events.item(&crate::model::key(id));
@@ -1860,12 +1849,10 @@ impl CalendarApp {
 
     // --- week/day timeline + agenda: scroll & drag input -----------------
 
-    /// Whether the calendar content (as opposed to a modal editor or an open
-    /// overlay sidebar) currently owns pointer input.
+    /// Whether the calendar content (as opposed to a modal editor)
+    /// currently owns pointer input.
     fn calendar_content_interactive(&self) -> bool {
-        self.content_rect.area() > 0.0
-            && !(self.detail_open && self.detail_rect.area() > 0.0)
-            && !(matches!(self.sidebar.mode(), SidebarMode::Overlay) && self.sidebar.is_open())
+        self.content_rect.area() > 0.0 && !(self.detail_open && self.detail_rect.area() > 0.0)
     }
 
     /// Route input to the Agenda scroller or the self-contained week/day
@@ -2039,7 +2026,7 @@ impl CalendarApp {
                 task: crate::actions::TaskData::from_task(&task),
             }),
         ) {
-            self.status = Some(error.to_string());
+            self.status.show(error.to_string());
             return;
         }
         self.say_when_kept(crate::resource::t_args(
@@ -2058,7 +2045,7 @@ impl CalendarApp {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.say_when_kept(text);
         } else {
-            self.status = Some(text.into());
+            self.status.show(text.into());
         }
     }
 
@@ -2072,7 +2059,7 @@ impl CalendarApp {
         let said = dispatcher.said();
         if let Some(text) = said.with(Clone::clone) {
             said.set(None);
-            self.status = Some(text);
+            self.status.show(text);
             self.dirty = true;
         }
         let refused = dispatcher.refused();
@@ -2080,7 +2067,7 @@ impl CalendarApp {
             return;
         };
         refused.set(None);
-        self.status = Some(crate::resource::t_args(
+        self.status.show(crate::resource::t_args(
             "calendar-change-refused",
             &[("reason", ui::i18n::ArgValue::from(refusal.reason))],
         ));
@@ -2313,14 +2300,15 @@ impl CalendarApp {
             .find(|account| account.id == id)
             .map(|account| account.collapsed)
         else {
-            self.status = Some("That calendar account is no longer configured".into());
+            self.status
+                .show("That calendar account is no longer configured".into());
             return;
         };
         let result = self.change_display(|display| {
             display.collapsed.insert(id.to_owned(), !collapsed);
         });
         if let Err(error) = result {
-            self.status = Some(error);
+            self.status.show(error);
         }
     }
 
@@ -2589,7 +2577,7 @@ impl CalendarApp {
     fn ics_export(&mut self) -> Result<(String, String), String> {
         self.dirty = true;
         if self.model.events.is_empty() && self.model.tasks.is_empty() {
-            self.status = Some("Nothing to export yet".into());
+            self.status.show("Nothing to export yet".into());
             return Err("There are no events or tasks to export".into());
         }
         Ok((
@@ -2608,7 +2596,7 @@ impl CalendarApp {
             ui::portal::PickRequest::save("Export calendar", "Export", &name).filter(ics_filter());
         Ok(
             cx.save_file(request, ics.into_bytes(), |app: &mut Self, saved, _| {
-                app.status = Some(if saved {
+                app.status.show(if saved {
                     format!(
                         "Exported {} events · {} tasks",
                         app.model.events.len(),
@@ -2639,7 +2627,8 @@ impl CalendarApp {
             let import = crate::resource::import(&payload)
                 .ok_or_else(|| format!("{} holds no events or tasks", file.name))?;
             cx.submit(import);
-            app.status = Some(format!("Imported calendar items from {}", file.name));
+            app.status
+                .show(format!("Imported calendar items from {}", file.name));
             app.dirty = true;
             Ok(ui::framework::Effected::done())
         })
@@ -2678,15 +2667,13 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Recompute every layout rect from the allocated window size. Called from
-    /// `apply_layout`: the sidebar (docked column or drawer, from the shared
-    /// [`ui::widget::SidebarDrawer`]), the header and the active view below
-    /// it, and the editor sheet over the window.
+    /// Recompute every layout rect from the allocated size (the shell's
+    /// content column). Called from `apply_layout`: the active view, and the
+    /// editor sheet over it.
     fn relayout(&mut self) {
         let r = self.rect;
         let theme = self.layout_theme.clone();
-        let content_x0 = self.sidebar.layout(r, &theme);
-        self.content_rect = Rect::new(content_x0, r.y0, r.x1, r.y1);
+        self.content_rect = r;
 
         // Point the active view's scroll container at the fresh geometry so a
         // resize reflows the scroll extents (and re-clamps the offset) every
@@ -2844,13 +2831,9 @@ impl CalendarApp {
     fn apply_action(&mut self, action: Action, doc: &mut ui::widget::Edits<'_>) {
         match action {
             Action::View(v) => {
+                // The chosen view shows at once, with no drawer over it.
                 self.view = v;
-                // On narrow layouts the switcher lives in the overlay flap;
-                // picking a view there returns to the calendar screen and
-                // dismisses the flap so the chosen view is visible at once.
-                if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
-                    self.sidebar.set_open(false);
-                }
+                self.put_drawer_away();
             }
             Action::Today => self.anchor = self.today,
             Action::Prev => self.step_period(-1),
@@ -2865,9 +2848,8 @@ impl CalendarApp {
             Action::NewTask | Action::FocusTaskEntry => self.start_new_task(),
             Action::ToggleTask(id) => self.toggle_task(id, doc),
             Action::List(s) => {
-                // The list's tasks show in the sidebar, under the lists, so
-                // the drawer stays open; choosing the shown list again puts
-                // it away.
+                // The list's tasks show in the sidebar, under the places;
+                // choosing the shown list again puts it away.
                 self.list_sel = (self.list_sel != Some(s)).then_some(s);
             }
             Action::CloseList => self.list_sel = None,
@@ -2877,13 +2859,12 @@ impl CalendarApp {
                 self.selection = None;
                 self.blur_editor();
             }
-            Action::ToggleSidebar => self.sidebar.toggle_open(),
-            Action::DismissSidebar => self.sidebar.set_open(false),
             Action::SetCalendarVisible { id, visible } => {
-                self.status = Some(match self.set_calendar_visibility(&id, visible) {
+                let status = match self.set_calendar_visibility(&id, visible) {
                     Ok(()) => Self::visibility_status(visible).into(),
                     Err(error) => error,
-                });
+                };
+                self.status.show(status);
             }
             Action::ToggleAccountCollapsed(id) => {
                 self.toggle_account_collapsed(&id);
@@ -2891,12 +2872,6 @@ impl CalendarApp {
             Action::Sync => self.start_sync(doc),
             Action::Export => self.invoke_effect(&crate::resource::CalendarEffect::ExportIcs),
             Action::Import => self.invoke_effect(&crate::resource::CalendarEffect::ImportIcs),
-            Action::MiniMonth(outcome) => match outcome {
-                MiniMonthOutcome::SelectDate(date) => self.anchor = date,
-                MiniMonthOutcome::ShiftMonth(months) => {
-                    self.anchor = date::add_months(self.anchor, months);
-                }
-            },
             Action::NewEvent => self.new_event(doc),
             Action::ToggleSelectedTask => {
                 if let Some(Sel::Task(id)) = self.selection {
@@ -2927,10 +2902,12 @@ impl CalendarApp {
             Action::DiscardDraft(id) => {
                 self.fresh_draft = None;
                 self.delete_event(id, doc);
-                self.status = None;
+                self.status.dismiss();
             }
             Action::DeleteTask(id) => self.delete_task(id, doc),
-            Action::DismissStatus => self.status = None,
+            Action::DismissStatus => {
+                self.status.dismiss();
+            }
             Action::Noop => {}
         }
         // Discrete actions are worth an immediate save; if the action didn't
@@ -2994,24 +2971,6 @@ impl CalendarApp {
                 AccessState::new()
                     .focusable(true)
                     .focused(self.tasks.entry_focused()),
-            ),
-            Action::ToggleSidebar => (
-                "calendar.sidebar".into(),
-                if self.sidebar.visible() {
-                    "Hide sidebar".into()
-                } else {
-                    "Show sidebar".into()
-                },
-                Role::ToggleButton,
-                AccessState::new()
-                    .focusable(true)
-                    .checked(self.sidebar.visible()),
-            ),
-            Action::DismissSidebar => (
-                "calendar.sidebar.dismiss".into(),
-                "Hide sidebar".into(),
-                Role::Button,
-                AccessState::new().focusable(true),
             ),
             Action::List(selection) => {
                 let (target, label) = match selection {
@@ -3116,24 +3075,6 @@ impl CalendarApp {
             Action::PickDate(day) | Action::OpenDay(day) => (
                 format!("calendar.date:{day}:open"),
                 format!("Open {}", date::fmt_day_long(*day)),
-                Role::Button,
-                AccessState::new().focusable(true),
-            ),
-            Action::MiniMonth(MiniMonthOutcome::SelectDate(day)) => (
-                format!("calendar.mini-date:{day}"),
-                format!("Select {}", date::fmt_day_long(*day)),
-                Role::Button,
-                AccessState::new()
-                    .focusable(true)
-                    .selected(self.anchor == *day),
-            ),
-            Action::MiniMonth(MiniMonthOutcome::ShiftMonth(months)) => (
-                format!("calendar.mini-month:{months}"),
-                if *months < 0 {
-                    "Previous month".into()
-                } else {
-                    "Next month".into()
-                },
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -3675,12 +3616,6 @@ impl CalendarApp {
             self.dirty = true;
             return true;
         }
-        if matches!(self.sidebar.mode(), SidebarMode::Overlay) && self.sidebar.is_open() {
-            self.sidebar.set_open(false);
-            *handled = true;
-            self.dirty = true;
-            return true;
-        }
         if self.detail_open {
             self.discard_pristine_draft(state);
             self.detail_open = false;
@@ -3938,6 +3873,7 @@ impl Widget for CalendarApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
+        self.status.expire();
         self.adopt_person_accounts();
         if !self.seeded {
             // Whatever the document holds is now authoritative for the UI.
@@ -3987,10 +3923,12 @@ impl Widget for CalendarApp {
             self.choices.calendar.dropdown.open_menu();
         }
         self.notes_editor.sync(state, path);
+        self.show_shell();
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
         self.apply_window_toolbar(edits);
+        self.take_shell_events(edits);
         if std::mem::take(&mut self.sync_requested) {
             self.start_sync(edits);
             if !self.syncing
@@ -4006,7 +3944,7 @@ impl Widget for CalendarApp {
         // toast an interactive creation shows.
         if std::mem::take(&mut self.staged_new_event) {
             self.new_event(edits);
-            self.status = None;
+            self.status.dismiss();
         }
         self.poll_sync(edits);
         self.commit_choices(edits, path);
@@ -4162,8 +4100,6 @@ impl Widget for CalendarApp {
             }
         }
 
-        // The sidebar last, so a drawer and its scrim float over the view.
-        hits.extend(self.draw_sidebar(&mut PaintCtx::new(scene, t, text_renderer, theme)));
         self.hits = hits;
     }
 
@@ -4366,7 +4302,7 @@ impl Widget for CalendarApp {
                     .with_live(ui::a11y::Politeness::Polite),
             );
         }
-        if let Some(status) = &self.status {
+        if let Some(status) = self.status.get() {
             root.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(status.clone())
@@ -4453,6 +4389,7 @@ impl Widget for CalendarApp {
         if self.pinned_now.is_some() {
             return None;
         }
+        let status = self.status.deadline();
         let now = self.now();
         let now_line = matches!(self.view, View::Week | View::Day)
             && self.timeline_days().contains(&self.today);
@@ -4461,7 +4398,11 @@ impl Widget for CalendarApp {
         } else {
             3600 - u64::from(now.minute()) * 60 - u64::from(now.second())
         };
-        ui::time::now().checked_add(std::time::Duration::from_secs(seconds.max(1)))
+        let minute = ui::time::now().checked_add(std::time::Duration::from_secs(seconds.max(1)));
+        match (status, minute) {
+            (Some(status), Some(minute)) => Some(status.min(minute)),
+            (status, minute) => status.or(minute),
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -4514,7 +4455,7 @@ impl CalendarApp {
         ui::window_toolbar::declare(Some(crate::window_bar::window_toolbar(
             self.view,
             self.anchor,
-            self.sidebar.visible(),
+            self.sidebar_open(),
         )));
     }
 
@@ -4524,11 +4465,16 @@ impl CalendarApp {
     fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
         use crate::window_bar::BarAction;
         for event in ui::window_toolbar::take_events() {
+            // The sidebar's toggle is the shell's.
+            if self.bar.as_ref().is_some_and(|bar| bar.event(&event)) {
+                self.dirty = true;
+                continue;
+            }
             let Some(action) = crate::window_bar::bar_action(&event) else {
                 continue;
             };
             let action = match action {
-                BarAction::ToggleSidebar => Action::ToggleSidebar,
+                BarAction::ToggleSidebar => continue,
                 BarAction::Previous => Action::Prev,
                 BarAction::Next => Action::Next,
                 BarAction::Today => Action::Today,
@@ -4655,7 +4601,7 @@ impl CalendarApp {
                 self.detail_open = false;
                 self.selection = None;
                 self.blur_editor();
-                self.status = Some(if calendar.visible {
+                self.status.show(if calendar.visible {
                     format!("Showing {}", calendar.label)
                 } else {
                     format!(
@@ -4747,7 +4693,6 @@ impl CalendarApp {
             self.anchor = today;
         }
         self.today = today;
-        self.mini_month.set_today(today);
         self.task_due_picker.set_today(today);
         self.dirty = true;
     }
@@ -4759,7 +4704,7 @@ impl CalendarApp {
         self.selection = None;
         self.detail_open = false;
         self.blur_editor();
-        self.status = Some("Showing all calendars".into());
+        self.status.show("Showing all calendars".into());
         self.dirty = true;
     }
 
@@ -4815,9 +4760,7 @@ impl CalendarApp {
                 self.detail_open = false;
                 self.selection = None;
                 self.blur_editor();
-                if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
-                    self.sidebar.set_open(false);
-                }
+                self.put_drawer_away();
                 self.dirty = true;
                 Ok(Effected::done())
             }
@@ -4857,7 +4800,7 @@ impl CalendarApp {
             }
             CalendarEffect::SetVisibility { id, visible } => {
                 self.set_calendar_visibility(&id, visible)?;
-                self.status = Some(Self::visibility_status(visible).into());
+                self.status.show(Self::visibility_status(visible).into());
                 self.dirty = true;
                 Ok(Effected::done())
             }
@@ -4931,7 +4874,8 @@ impl CalendarApp {
             event.timezone
         );
         let calendar_ics = crate::ics::invitation_request(event);
-        self.status = Some("Invitation prepared for Mail — review it there before sending".into());
+        self.status
+            .show("Invitation prepared for Mail — review it there before sending".into());
         self.dirty = true;
         Ok(serde_json::json!({
             "delivery": "not_sent",

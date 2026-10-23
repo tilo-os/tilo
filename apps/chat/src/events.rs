@@ -30,7 +30,6 @@ use attachment_import::{
 use embedded_input::drive_retained_control;
 pub(crate) use embedded_input::drive_text_input;
 
-/// The record's id for `id`.
 fn item(id: &str) -> ui::tilo_resource::Id {
     ui::tilo_resource::Id::from_raw(id)
 }
@@ -319,7 +318,6 @@ impl ChatApp {
             self.call_hovered = hovered;
             *handled = true;
         }
-        // Track an in-progress channel-row swipe.
         if let Some(sw) = &mut self.swipe {
             sw.current = self.last_mouse;
             *handled = true;
@@ -823,30 +821,12 @@ impl ChatApp {
                     self.person_error = Some(error);
                 }
             }
-            Hit::Agent(agent) => {
-                self.open_agent_conversation(&agent);
-            }
             Hit::AgentWindow => {
                 if self.conversation_surface {
                     self.conversation_return_requested = true;
                 } else {
                     self.float_agent_conversation();
                 }
-            }
-            Hit::AgentIntent(intent) => self.set_direct_agent_intent(intent),
-            Hit::AgentTask(frontier) => {
-                self.select_agent_task(&frontier);
-            }
-            Hit::AgentTaskMore => {
-                if let Some(agent) = self.direct_agent.clone() {
-                    self.agent_tasks.next_page(&agent);
-                }
-            }
-            Hit::AgentStart => {
-                self.start_agent_task();
-            }
-            Hit::AgentStop => {
-                self.stop_agent_task();
             }
             Hit::VoiceChannel(id) => self.join_voice(&id, doc),
             Hit::CategoryToggle(id) => self.toggle_category(&id),
@@ -1269,8 +1249,6 @@ impl ChatApp {
         }
     }
 
-    // --- voice / call wiring ---------------------------------------------
-
     /// Pointer and accessibility call controls use the same local service as
     /// exported Effect resources. They never mutate durable voice membership.
     fn join_voice(&mut self, channel: &str, _doc: &mut ui::widget::Edits<'_>) {
@@ -1294,8 +1272,6 @@ impl ChatApp {
             self.media_error = Some(error);
         }
     }
-
-    // --- structure CRUD ---------------------------------------------------
 
     pub(crate) fn apply_menu_action(
         &mut self,
@@ -1732,10 +1708,6 @@ impl ChatApp {
             self.send_person_focused();
             return;
         }
-        if self.direct_agent.is_some() {
-            self.send_agent_focused(doc);
-            return;
-        }
         // Posting is a write into the workspace: gated by the OS permission
         // context (a View-only / ungranted peer can read but not send).
         if !self.can_participate() {
@@ -1815,70 +1787,6 @@ impl ChatApp {
             self.composer_main
                 .insert_text(&mut ui::widget::Edits::lend(&mut own), &text);
         }
-    }
-
-    pub(crate) fn send_agent_focused(&mut self, doc: &ui::widget::Edits<'_>) -> bool {
-        let Some(agent) = self.direct_agent.clone() else {
-            return false;
-        };
-        if !self.direct_agent_intent_allowed(self.direct_agent_intent()) {
-            return false;
-        }
-        let text = self.composer_main.private_plain().unwrap_or_default();
-        if text.trim().is_empty() {
-            return false;
-        }
-        let Some(route) = self.agent_draft_route() else {
-            return false;
-        };
-        let Some(revision) = self
-            .composer_main
-            .private_revision_for(crate::app::ROOM_SCOPE, &route)
-        else {
-            return false;
-        };
-        let accepted = match self.direct_agent_intent() {
-            crate::agent_tasks::AgentComposerIntent::Steer => {
-                self.agent_tasks.direct(&agent, text, revision)
-            }
-            crate::agent_tasks::AgentComposerIntent::Queue => {
-                self.agent_tasks.queue(&agent, text, revision)
-            }
-        };
-        if accepted {
-            self.jump_to_latest();
-        }
-        self.reload(doc);
-        accepted
-    }
-
-    pub(crate) fn select_agent_task(
-        &mut self,
-        frontier: &crate::agent_tasks::AgentTaskFrontier,
-    ) -> bool {
-        let Some(agent) = self.direct_agent.clone() else {
-            return false;
-        };
-        let selected = self.agent_tasks.select(&agent, frontier);
-        if selected {
-            self.set_direct_agent_intent(crate::agent_tasks::AgentComposerIntent::Steer);
-            self.sync_agent_route();
-        }
-        selected
-    }
-
-    pub(crate) fn start_agent_task(&mut self) -> bool {
-        let Some(agent) = self.direct_agent.clone() else {
-            return false;
-        };
-        self.agent_tasks.start(&agent)
-    }
-
-    pub(crate) fn stop_agent_task(&mut self) -> bool {
-        let Some(agent) = self.direct_agent.clone() else {
-            return false;
-        };
-        self.agent_tasks.stop(&agent)
     }
 
     /// Return to the newest message. This is intentionally local state: it

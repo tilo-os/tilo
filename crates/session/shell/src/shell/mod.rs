@@ -12,6 +12,7 @@ pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
 pub mod app_close;
+pub mod app_list;
 pub mod app_notice_card;
 pub mod app_tabs;
 pub(crate) mod app_versions;
@@ -51,6 +52,7 @@ pub(crate) mod desktop_commands;
 #[cfg(target_os = "linux")]
 pub(crate) mod desktop_continuation;
 pub mod desktop_control;
+pub(crate) mod device_certification;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
@@ -70,6 +72,7 @@ pub mod display_identify;
 pub(crate) mod display_persistence;
 pub mod doc_open;
 pub mod document_import;
+pub mod downloaded_apps;
 #[cfg(target_os = "linux")]
 pub mod drives;
 pub mod durable_writer;
@@ -130,6 +133,7 @@ pub mod osd;
 pub mod output_scene;
 pub mod overlay_host;
 pub mod overview;
+pub mod owner_session;
 pub mod pad_map;
 pub mod peer_actions;
 pub mod peer_presence;
@@ -191,7 +195,6 @@ pub mod system_sounds;
 pub(crate) mod system_update;
 pub mod tab_binding;
 pub mod tab_documents;
-pub(crate) mod task_review;
 pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;
@@ -199,6 +202,7 @@ pub mod test_support;
 pub mod tool_intents;
 pub mod topbar_chrome;
 pub mod trusted_ui;
+pub mod uninstall_sheet;
 pub mod uri_open;
 pub mod window_actions;
 pub mod window_appearance;
@@ -1021,6 +1025,9 @@ pub fn mount_in_process(
             let collaboration = apps.borrow().collaboration(&component, &room);
             TileResolution::App(component, collaboration)
         }
+        // The loop never waits on the disk for an app's record: the store's
+        // thread opens it, and its wake has the tab resolved again.
+        Err(error) if error.is_opening() => TileResolution::Opening,
         Err(error) => TileResolution::Failed(error),
     })
 }

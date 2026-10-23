@@ -104,7 +104,6 @@ mod tests {
         assert_eq!(part_index(&part(41)), Some(41));
         assert_eq!(part_index(&chain()), None);
         assert_eq!(part_index(&RecordId::room_default().part(3)), None);
-        // The host reads the same chain and number from the wire id.
         assert_eq!(
             neighbour_wire::record_sync(first.as_str()),
             neighbour_wire::RecordSync::Part {

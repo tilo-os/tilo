@@ -50,10 +50,6 @@ pub struct SubjectModel {
 }
 
 impl SubjectModel {
-    /// Load an ONNX model of `family` from its bytes.
-    ///
-    /// # Errors
-    /// Returns why the bytes are not a model of one input and output.
     pub fn load(bytes: Vec<u8>, family: Family) -> Result<Self, Error> {
         let model = Model::load(bytes).map_err(|error| Error::Load(error.to_string()))?;
         if model.input_ids().is_empty() || model.output_ids().is_empty() {

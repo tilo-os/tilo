@@ -57,13 +57,9 @@ impl NamespaceWitness {
     pub fn init_pidfd(&self) -> io::Result<OwnedFd> {
         self.init.try_clone()
     }
-    /// # Errors
-    /// Returns descriptor exhaustion.
     pub fn pid_namespace(&self) -> io::Result<File> {
         self.pid_namespace.try_clone()
     }
-    /// # Errors
-    /// Returns descriptor exhaustion.
     pub fn mount_namespace(&self) -> io::Result<File> {
         self.mount_namespace.try_clone()
     }
@@ -229,8 +225,6 @@ impl NamespaceWitness {
     }
     /// Kill only the exact held namespace init and wait for kernel exit.
     /// A timeout leaves this witness intact and cannot release a source lease.
-    /// # Errors
-    /// Returns an actual signal/poll error or an incomplete-stop timeout.
     pub fn cancel_and_wait(&self, budget: Duration) -> io::Result<()> {
         if self.observed_stopped()? {
             return Ok(());
@@ -265,8 +259,6 @@ impl NamespaceWitness {
     }
     /// Observe exact task exit, even after admission or session revocation.
     /// This does not establish a successful application exit.
-    /// # Errors
-    /// Returns a kernel poll failure rather than assuming the task stopped.
     pub fn observed_stopped(&self) -> io::Result<bool> {
         let mut fd = libc::pollfd {
             fd: self.init.as_raw_fd(),

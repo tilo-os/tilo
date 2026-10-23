@@ -66,10 +66,15 @@ ARTICLE = f'''<!doctype html><title>The long read</title>
 <input id="kept" value="typed by the person">'''.encode()
 
 
+LATER = b'''<!doctype html><title>Later</title>
+<button onclick="setTimeout(() => location.href = '/next', 1000)">Go later</button>'''
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
+            else LATER if path == '/later' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -205,7 +210,7 @@ class PageActions(unittest.TestCase):
         self.ok('fill', element=search, text='tea')
         pressed = self.ok('press', element=search, key='Enter', ctrl=False, shift=False, alt=False, meta=False)
         # The reply waits for the navigation Enter started, so it names the new page.
-        self.assertEqual((pressed['navigated'], pressed['loading']), (True, False), pressed)
+        self.assertEqual((pressed['navigation'], pressed['navigated'], pressed['loading']), ('started', True, False), pressed)
         self.assertTrue(any(e['event'] == 'loaded' and '/done' in e['url'] for e in self.h.seen))
         query = parse_qs(urlparse(pressed['url']).query)
         self.assertEqual((query['email'], query['q']), (['ada@example.test'], ['tea']))
@@ -214,13 +219,30 @@ class PageActions(unittest.TestCase):
 
     def test_clicking_a_link_reports_the_navigation_it_started(self):
         self.h.navigate(self.url + '/form')
-        link = self.ref(self.outline(), 'link "Next page"')
+        read = self.ok('outline')
+        self.assertEqual((read['navigation'], read['navigated']), ('none', False), read)
+        link = self.ref(read['outline'], 'link "Next page"')
         clicked = self.ok('click', element=link)
-        self.assertEqual((clicked['navigated'], clicked['loading']), (True, False), clicked)
+        self.assertEqual((clicked['navigation'], clicked['navigated'], clicked['loading']), ('started', True, False), clicked)
         self.assertTrue(clicked['url'].endswith('/next'), clicked)
         self.assertIn('text "/next"', self.outline())
         idle = self.ok('press', key='Tab', ctrl=False, shift=False, alt=False, meta=False)
-        self.assertFalse(idle['navigated'], idle)
+        self.assertEqual((idle['navigation'], idle['navigated']), ('possible', False), idle)
+
+    def test_a_navigation_the_page_starts_later_is_its_own_event(self):
+        self.h.navigate(self.url + '/later')
+        button = self.ref(self.outline(), 'button "Go later"')
+        clicked = self.ok('click', element=button)
+        # The page navigates a second after it handled the click: the reply
+        # cannot know that yet, and says so.
+        self.assertEqual((clicked['navigation'], clicked['navigated']), ('possible', False), clicked)
+        self.assertTrue(clicked['url'].endswith('/later'), clicked)
+        self.h.until(lambda e: e['event'] == 'loaded' and e['url'].endswith('/next'))
+        entries = self.ok('network', since=0)['data']['entries']
+        later = [entry for entry in entries if entry.get('navigation') and entry['url'].endswith('/next')]
+        self.assertEqual(len(later), 1, entries)
+        # Chromium attributes it to the click's user activation.
+        self.assertTrue(later[0]['user_gesture'], later)
 
 
     def test_changes_report_only_what_appeared_after_the_page_settles(self):

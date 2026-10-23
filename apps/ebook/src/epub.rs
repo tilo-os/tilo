@@ -397,7 +397,6 @@ mod tests {
             assert_eq!(book.title, "The Lantern-Keeper's Almanac");
             assert_eq!(book.author, "Wren Halloway");
             assert_eq!(book.chapters.len(), 4);
-            // TOC supplied real chapter titles.
             assert!(book.chapters[0].title.contains("Tide-House"));
             // First chapter has a heading + several paragraphs + a blockquote.
             assert!(

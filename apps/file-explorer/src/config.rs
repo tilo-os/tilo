@@ -42,7 +42,6 @@ mod tests {
             assert!((zoom_scale(0) - 1.0).abs() < 1e-9);
             assert!(zoom_scale(1) > zoom_scale(0));
             assert!(zoom_scale(-1) < zoom_scale(0));
-            // Clamped at the extremes.
             assert_eq!(zoom_scale(999), zoom_scale(ZOOM_MAX));
             assert_eq!(zoom_scale(-999), zoom_scale(ZOOM_MIN));
         }

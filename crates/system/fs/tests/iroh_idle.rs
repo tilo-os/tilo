@@ -351,7 +351,6 @@ mod netns {
             message.extend_from_slice(&[family, 128, 0, 0]);
             message.extend_from_slice(&1_u32.to_ne_bytes());
             for kind in [2_u16, 1] {
-                // IFA_LOCAL, then IFA_ADDRESS
                 message.extend_from_slice(&20_u16.to_ne_bytes());
                 message.extend_from_slice(&kind.to_ne_bytes());
                 message.extend_from_slice(&address);
@@ -410,7 +409,6 @@ mod netns {
         set_up(ALIAS, true);
         noticed("an address added", || has(IpAddr::V4(ALIAS_ADDR)));
 
-        // Taking a labelled address down removes it.
         set_up(ALIAS, false);
         noticed("the address removed", || !has(IpAddr::V4(ALIAS_ADDR)));
 

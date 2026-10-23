@@ -188,8 +188,6 @@ impl HexModel {
         }
     }
 
-    // --- edits and the resource's bytes ---------------------------------
-
     /// The edits made since the last call, in order.
     pub fn take_edits(&mut self) -> Vec<BufferEdit> {
         std::mem::take(&mut self.edits)
@@ -275,8 +273,6 @@ impl HexModel {
         self.top_row = self.top_row.min(self.row_count().saturating_sub(1));
     }
 
-    // --- read accessors -------------------------------------------------
-
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -359,8 +355,6 @@ impl HexModel {
         }
     }
 
-    // --- view configuration --------------------------------------------
-
     pub fn set_bytes_per_row(&mut self, n: usize) {
         self.bytes_per_row = n.max(1);
     }
@@ -389,8 +383,6 @@ impl HexModel {
         }
     }
 
-    // --- mode toggles ---------------------------------------------------
-
     pub fn toggle_column(&mut self) {
         self.column = self.column.toggle();
         self.pending_nibble = None;
@@ -412,8 +404,6 @@ impl HexModel {
     pub fn toggle_endian(&mut self) {
         self.endian = self.endian.toggle();
     }
-
-    // --- cursor movement ------------------------------------------------
 
     /// Move the cursor to an absolute offset, clamped to the buffer.
     /// `extend` keeps/creates the selection anchor; otherwise the
@@ -505,8 +495,6 @@ impl HexModel {
             self.cursor % self.bytes_per_row,
         )
     }
-
-    // --- editing --------------------------------------------------------
 
     /// Set the byte at `offset` to `value`, recording it as dirty.
     /// No-op (returns false) if `offset` is out of bounds.
@@ -756,7 +744,6 @@ mod tests {
 
     #[test]
     fn cursor_movement_clamps_and_selection_is_inclusive() {
-        // Cursor moves clamp to bounds.
         let mut m = model();
         m.move_left(false);
         assert_eq!(m.cursor(), 0);
@@ -765,7 +752,6 @@ mod tests {
         m.move_right(false);
         assert_eq!(m.cursor(), 63);
 
-        // Vertical movement uses the row width.
         let mut m = model();
         m.set_bytes_per_row(16);
         m.move_down(false);
@@ -773,14 +759,12 @@ mod tests {
         m.move_up(false);
         assert_eq!(m.cursor(), 0);
 
-        // Selection is inclusive and normalised.
         let mut m = model();
         m.move_to(10, false);
         m.move_to(5, true);
         assert_eq!(m.selection(), Some((5, 10)));
         assert_eq!(m.selection_len(), 6);
 
-        // Select-all spans the buffer.
         let mut m = model();
         m.select_all();
         assert_eq!(m.selection(), Some((0, 63)));
@@ -789,7 +773,6 @@ mod tests {
 
     #[test]
     fn byte_edits_overwrite_insert_delete_and_track_dirty_and_history() {
-        // Overwriting with two hex nibbles sets the byte and advances.
         let mut m = HexModel::new(vec![0x00, 0x00]);
         // Type "ff" over the first byte.
         assert!(m.input_hex_digit(0xF));
@@ -799,7 +782,6 @@ mod tests {
         assert_eq!(m.cursor(), 1); // advanced after completing the byte
         assert!(m.is_dirty(0));
 
-        // Every change is recorded as the edit that makes it.
         let mut edited = HexModel::new(vec![0x10, 0x20]);
         assert!(edited.set_byte(1, 0xAB));
         assert!(
@@ -821,7 +803,6 @@ mod tests {
         );
         assert!(edited.take_edits().is_empty());
 
-        // Insert-mode hex grows the buffer.
         let mut m = HexModel::new(vec![0xAA]);
         m.toggle_mode(); // -> Insert
         m.move_to(0, false);
@@ -829,14 +810,12 @@ mod tests {
         m.input_hex_digit(0x2);
         assert_eq!(m.bytes(), &[0x12, 0xAA]);
 
-        // ASCII input overwrites.
         let mut m = HexModel::new(vec![0x00, 0x00]);
         m.set_column(Column::Ascii);
         assert!(m.input_ascii_char('A'));
         assert_eq!(m.bytes()[0], b'A');
         assert_eq!(m.cursor(), 1);
 
-        // Deleting a selection removes the range.
         let mut m = model();
         m.move_to(2, false);
         m.move_to(5, true);
@@ -845,7 +824,6 @@ mod tests {
         // The byte originally at offset 6 is now at offset 2.
         assert_eq!(m.bytes()[2], 6);
 
-        // Insert shifts dirty markers.
         let mut m = HexModel::new(vec![0x10, 0x20, 0x30]);
         m.set_byte(2, 0x31); // dirty at 2
         assert!(m.is_dirty(2));
@@ -866,14 +844,12 @@ mod tests {
         assert_eq!(m.cursor(), 3);
         m.show_bytes(&saved, &saved);
         assert_eq!(m.dirty_count(), 0);
-        // A shorter buffer clamps the cursor and marks the changed span.
         m.show_bytes(&[0x10, 0x40], &saved);
         assert_eq!(m.cursor(), 1);
         assert_eq!(m.dirty_count(), 0, "a pure removal changes no byte left");
         m.show_bytes(&[0x10, 0x99, 0x40], &saved);
         assert!(m.is_dirty(1));
         assert!(!m.is_dirty(2));
-        // A load starts clean.
         m.load(vec![1, 2, 3]);
         assert_eq!(m.dirty_count(), 0);
         assert_eq!(m.cursor(), 0);

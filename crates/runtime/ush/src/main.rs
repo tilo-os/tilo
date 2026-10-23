@@ -912,7 +912,6 @@ explain when the host does not offer them.\n";
             }
             assert!(management_help("app", &argv(&["u", "browser"])).is_none());
 
-            // Confirmation names the state that will change.
             assert_eq!(
                 confirmation_prompt(&Request::AllUpdates),
                 "Update installed apps and every available system provider?"

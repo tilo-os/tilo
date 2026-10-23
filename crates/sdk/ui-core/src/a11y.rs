@@ -45,6 +45,10 @@ pub enum Role {
     TreeItem,
     Menu,
     MenuItem,
+    /// The options a [`Role::ComboBox`] offers while it is open.
+    ListBox,
+    /// One option of a [`Role::ListBox`]; use [`AccessState::selected`].
+    ListBoxOption,
 
     Button,
     /// Persistent pressed/unpressed state (use [`AccessState::checked`]).
@@ -399,6 +403,7 @@ impl AccessNode {
                     | Role::SpinButton
                     | Role::TextInput
                     | Role::MultilineTextInput
+                    | Role::ListBoxOption
             )
         }
 
@@ -588,6 +593,42 @@ impl From<Rect> for AccessBounds {
     }
 }
 
+/// Where a synthetic node (one of `owner`'s accessibility children, at
+/// `path` below its node) is drawn: its own bounds, else the rect the owner
+/// reports for it. A node with neither has no geometry of its own.
+pub(crate) fn synthetic_bounds(
+    access: &AccessNode,
+    owner: &dyn crate::widget::Widget,
+    path: &[usize],
+) -> Option<AccessBounds> {
+    access.bounds.or_else(|| {
+        owner
+            .synthetic_accessibility_rect(path)
+            .filter(|rect| rect.width() > 0.0 || rect.height() > 0.0)
+            .map(Into::into)
+    })
+}
+
+/// `owner`'s accessibility node with every synthetic descendant's
+/// geometry filled in by [`synthetic_bounds`], as the native accessibility
+/// tree reads it: a node exported without bounds would otherwise be placed
+/// over its owner's whole rect, and a pointer sent to its centre would miss.
+pub(crate) fn with_synthetic_bounds(
+    mut access: AccessNode,
+    owner: &dyn crate::widget::Widget,
+) -> AccessNode {
+    fn fill(node: &mut AccessNode, owner: &dyn crate::widget::Widget, path: &mut Vec<usize>) {
+        for (index, child) in node.children.iter_mut().enumerate() {
+            path.push(index);
+            child.bounds = synthetic_bounds(child, owner, path);
+            fill(child, owner, path);
+            path.pop();
+        }
+    }
+    fill(&mut access, owner, &mut Vec::new());
+    access
+}
+
 /// Editable-text selection in the widget's native UTF-8 document space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct AccessibleTextSelection {
@@ -658,7 +699,6 @@ mod tests {
         );
         assert_eq!(AccessState::new().expanded(false).expanded, Some(false));
 
-        // Settings default to all off and round-trip through JSON.
         let s = A11ySettings::default();
         assert!(!s.high_contrast);
         assert!(!s.reduce_motion);
@@ -706,7 +746,6 @@ mod tests {
         let row = AccessNode::new(Role::TreeItem).with_level(3);
         assert_eq!(row.level, Some(3));
 
-        // Optional helpers.
         let named = AccessNode::new(Role::StaticText).with_optional_name(Some("Hi".into()));
         assert_eq!(named.name.as_deref(), Some("Hi"));
         let anon = AccessNode::new(Role::Image).with_optional_name(None);
@@ -714,7 +753,6 @@ mod tests {
         let masked = AccessNode::new(Role::TextInput).with_optional_value(None);
         assert_eq!(masked.value, None);
 
-        // The heading role carries its level.
         let h2 = Role::Heading { level: 2 };
         assert_eq!(h2, Role::Heading { level: 2 });
         assert_ne!(h2, Role::Heading { level: 3 });

@@ -66,7 +66,6 @@ pub const SHORTCUTS_APP_ID: &str = "so.tilo.shortcuts";
 /// Resource kind of one saved shortcut; its id is
 /// `shortcuts.shortcut:<shortcut id>` (see [`shortcut_resource_id`]).
 pub const SHORTCUT_RESOURCE_KIND: &str = "shortcuts.shortcut";
-/// Action on a shortcut resource that runs it.
 pub const SHORTCUT_RUN_ACTION: &str = "run";
 
 /// Application that publishes the model-backed transform actions an
@@ -74,7 +73,6 @@ pub const SHORTCUT_RUN_ACTION: &str = "run";
 pub const AGENT_APP_ID: &str = "so.tilo.agent";
 /// Resource kind carrying the transform actions.
 pub const AGENT_TRANSFORM_KIND: &str = "agent.transform";
-/// The one resource the agent publishes its transforms on.
 pub const AGENT_TRANSFORM_RESOURCE: &str = "agent.transform:default";
 /// Condense the input into a short text.
 pub const AGENT_SUMMARISE_ACTION: &str = "summarise";

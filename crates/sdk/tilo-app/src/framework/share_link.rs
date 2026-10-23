@@ -70,7 +70,6 @@ impl Default for ShareLinks {
     }
 }
 
-/// Whether `type_id` is one of the link operations.
 pub(crate) fn handles(type_id: &str) -> bool {
     type_id == SHARE_TYPE || type_id == SHARE_INVITE_TYPE
 }

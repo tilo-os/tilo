@@ -247,7 +247,6 @@ fn two_invocations() -> (tempfile::TempDir, PathBuf, InvocationKey, InvocationKe
 #[test]
 fn append_journal_ignores_only_a_torn_final_entry() {
     let torn: [fn(&mut Vec<u8>); 3] = [
-        // The crash cut the final entry short.
         |bytes| {
             let keep = bytes.len() - 40;
             bytes.truncate(keep);
@@ -298,7 +297,6 @@ fn append_journal_corruption_before_the_final_entry_stays_fatal() {
             let second = bytes.iter().position(|byte| *byte == b'\n').unwrap() + 1;
             bytes.drain(second + 10..second + 20);
         },
-        // A middle entry's blocks read as zeros.
         |bytes| {
             let second = bytes.iter().position(|byte| *byte == b'\n').unwrap() + 1;
             bytes[second + 5..second + 15].fill(0);

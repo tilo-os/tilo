@@ -1496,7 +1496,6 @@ mod tests {
             }
         ));
 
-        // A different local slot for the same room preserves durable consent.
         let moved_id = WorkspaceId(32);
         shared.write().desktop.workspaces[0].id = moved_id;
         let moved = PortalCaller::new(moved_id, "private-app");
@@ -1565,7 +1564,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn grant_store_resolves_capabilities_scopes_and_callers() {
-        // Phase `capability_kind_matches_filesystem_modes`.
         {
             let read = Capability::Filesystem {
                 path: "/tmp".into(),
@@ -1583,7 +1581,6 @@ mod tests {
             assert!(!CapabilityKind::FilesystemReadWrite.matches(&read));
             assert!(CapabilityKind::FilesystemReadWrite.matches(&rw));
         }
-        // Phase `grant_store_returns_strongest_scope`.
         {
             let mut ws = empty_ws(11);
             for scope in [GRANT_ONCE, GRANT_ALWAYS, GRANT_SESSION] {
@@ -1596,7 +1593,6 @@ mod tests {
                 Some(GRANT_ALWAYS)
             );
         }
-        // Phase `filesystem_path_granted_covers_exact_and_ancestor_paths`.
         {
             let mut ws = empty_ws(21);
             ws.grant_app(
@@ -1609,7 +1605,6 @@ mod tests {
             );
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
             let caller = PortalCaller::new(ws_id, "Editor");
-            // Exact match and any descendant are covered.
             assert!(store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj")));
             assert!(
                 store
@@ -1626,14 +1621,12 @@ mod tests {
                     .filesystem_path_granted(&other, std::path::Path::new("/home/u/proj/main.ts"))
             );
         }
-        // Phase `grant_store_returns_none_for_missing_app`.
         {
             let ws = empty_ws(12);
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
             let caller = PortalCaller::new(ws_id, "no.such.app");
             assert!(store.lookup(&caller, CapabilityKind::Camera).is_none());
         }
-        // Phase `grant_store_insert_appends_into_workspace`.
         {
             let ws = empty_ws(13);
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
@@ -1694,7 +1687,6 @@ mod tests {
                  (audit C-3: shared WorkspaceTreeHandle ties subsystems together)",
             );
         }
-        // Phase `caller_map_round_trips`.
         {
             let m = CallerMap::new();
             let caller = PortalCaller::new(WorkspaceId(7), "app.x");
@@ -1706,7 +1698,6 @@ mod tests {
 
     #[test]
     fn prompt_queue_resolves_buffers_and_cancels_exactly_one_request() {
-        // Phase `prompt_queue_auto_allow_resolves_immediately`.
         {
             let q = PromptQueueHandle::new(PromptResolver::AutoAllow);
             let caller = PortalCaller::new(WorkspaceId(1), "app");
@@ -1717,7 +1708,6 @@ mod tests {
             // Nothing should have been buffered.
             assert_eq!(q.queued_len(), 0);
         }
-        // Phase `prompt_queue_channel_buffers_for_drain`.
         {
             let q = PromptQueueHandle::new(PromptResolver::Channel);
             let caller = PortalCaller::new(WorkspaceId(2), "app");
@@ -1728,7 +1718,6 @@ mod tests {
             assert_eq!(drained[0].caller, caller);
             assert_eq!(q.queued_len(), 0);
         }
-        // Phase `cancelling_one_request_prompt_never_removes_another`.
         {
             let q = PromptQueueHandle::new(PromptResolver::Channel);
             let caller = PortalCaller::new(WorkspaceId(3), "app");
@@ -1760,7 +1749,6 @@ mod tests {
                 "dropped UI sheet cancels only its own request"
             );
         }
-        // Phase `cancellation_before_enqueue_closes_the_request_enqueue_race`.
         {
             let q = PromptQueueHandle::new(PromptResolver::Channel);
             assert!(q.cancel_request("/request/racing"));
@@ -1783,7 +1771,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn flow_resolve_persists_only_session_and_always_outcomes() {
-        // Phase `flow_resolve_fast_path_always_grant_skips_prompt`.
         {
             // Channel mode would buffer any enqueued request, so an empty queue at the end proves the fast path bypassed it.
             let mut ws = empty_ws(21);
@@ -1811,7 +1798,6 @@ mod tests {
             assert_eq!(outcome, PromptOutcome::AllowAlways);
             assert_eq!(queue.queued_len(), 0, "fast path must skip enqueue");
         }
-        // Phase `flow_resolve_session_outcome_persists_grant`.
         {
             let ws = empty_ws(22);
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
@@ -1847,7 +1833,6 @@ mod tests {
                 "a local privacy choice must never enter replicated workspace state"
             );
         }
-        // Phase `always_portal_consent_is_private_and_survives_restart`.
         {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("consents.json");
@@ -1876,7 +1861,6 @@ mod tests {
                     .is_none()
             );
         }
-        // Phase `flow_resolve_once_outcome_does_not_persist`.
         {
             let ws = empty_ws(23);
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
@@ -1899,7 +1883,6 @@ mod tests {
                 "Once outcomes must not persist"
             );
         }
-        // Phase `flow_resolve_deny_outcome_is_propagated`.
         {
             let ws = empty_ws(24);
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);

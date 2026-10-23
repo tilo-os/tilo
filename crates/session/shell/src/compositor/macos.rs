@@ -27,8 +27,6 @@ pub struct Session {
 }
 
 /// Prepare the shell; invalid stored state is never replaced by a new tree.
-/// # Errors
-/// Returns invalid directory, session lock, state, record-store or construction errors.
 pub fn prepare(options: &Options) -> Result<Session, Error> {
     std::fs::create_dir_all(&options.state_dir)?;
     let state_dir = options.state_dir.canonicalize()?;

@@ -363,14 +363,12 @@ pub struct Inbound {
     pub app_id: String,
     /// The pointer, then the caret or selection, as local presence.
     pub updates: Vec<PeerPresence>,
-    /// The name the sender asks to be drawn with.
     pub label: Option<String>,
     /// The colour the sender asks to be drawn in: the presence hue nearest
     /// its participant colour.
     pub colour: Option<ui::tokens::PresenceHue>,
     /// What the sender is saying beside its pointer, `None` for nothing.
     pub chat: Option<CursorChat>,
-    /// The sender's latest reaction.
     pub reaction: Option<LiveReaction>,
     /// The sender's latest wave.
     pub wave: Option<LiveWave>,

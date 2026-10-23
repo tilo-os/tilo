@@ -79,11 +79,6 @@ pub enum ListingError {
 
 impl Listing {
     /// The listing with its description trimmed, when it may be published.
-    ///
-    /// # Errors
-    ///
-    /// The description is too long or not text, or the role is one only an
-    /// owner hands out.
     pub fn checked(self) -> Result<Self, ListingError> {
         let description = self.description.trim().to_owned();
         if description.chars().count() > MAX_DESCRIPTION_CHARS
@@ -117,7 +112,6 @@ pub struct Face {
 pub struct DirectoryEntry {
     /// The room's UUID.
     pub room: String,
-    /// Its name.
     pub name: String,
     /// What it is.
     #[serde(default)]
@@ -126,7 +120,6 @@ pub struct DirectoryEntry {
     pub default_role: RoomRole,
     /// Its door, relative to the directory's address (or absolute).
     pub door: String,
-    /// Some of the people in it now.
     #[serde(default)]
     pub here: Vec<Face>,
     /// How many people are in it now, `here` included.
@@ -205,7 +198,6 @@ impl DoorReport {
 /// How lively a public workspace is, as its listing says in a word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
-    /// People are in it now.
     HereNow(u32),
     /// Someone changed something today (the last 24 hours).
     ActiveToday,

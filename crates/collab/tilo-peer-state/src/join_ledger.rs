@@ -570,11 +570,6 @@ impl JoinLedger {
     /// Record a challenge for `request` from the device at
     /// `remote_endpoint`, unwritten. The same request asked again while its
     /// challenge is open answers that challenge.
-    ///
-    /// # Errors
-    ///
-    /// The certificate is not the authenticated endpoint's, the invitation
-    /// is not redeemable by it, or too many challenges are open.
     pub fn challenge(
         &mut self,
         room: &Governed<'_>,
@@ -823,11 +818,6 @@ impl JoinLedger {
     /// Record a membership challenge for `request` from the device at
     /// `remote_endpoint`, unwritten. The same request asked again while its
     /// challenge is open answers that challenge.
-    ///
-    /// # Errors
-    ///
-    /// The request is not the endpoint's or this workspace's, the device is
-    /// not a member, or too many challenges are open.
     pub fn membership_challenge(
         &mut self,
         room: &Governed<'_>,
@@ -934,11 +924,6 @@ impl JoinLedger {
 
     /// The room's current bootstrap for a member that proved its membership
     /// against a challenge this room issued.
-    ///
-    /// # Errors
-    ///
-    /// The challenge was not issued here, the proof is not the endpoint's or
-    /// does not verify, or the device is no longer a member.
     pub fn membership_complete(
         &self,
         room: &Governed<'_>,

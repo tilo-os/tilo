@@ -49,18 +49,12 @@ pub struct DictationMicrophone(super::audio_capture::AudioCapture);
 
 impl DictationMicrophone {
     /// Request 16 kHz mono S16LE from the current `PipeWire` microphone.
-    ///
-    /// # Errors
-    /// Fails on denied/unavailable source access or failed process startup.
     pub fn start() -> Result<Self, String> {
         super::audio_capture::AudioCapture::start_dictation_microphone().map(Self)
     }
 
     /// Drain complete samples. Queue overflow is a fatal discontinuity, never
     /// a silent gap from which a recognizer could manufacture missing words.
-    ///
-    /// # Errors
-    /// Fails when the microphone process exits or any audio chunk was lost.
     pub fn drain(&mut self) -> Result<Vec<u8>, String> {
         self.0.drain(true)
     }
@@ -182,10 +176,6 @@ impl State {
     /// lend the compositor an in-process input method using the existing private
     /// credential. An existing OSK or composing IME retains ownership.
     /// Pump `advance_dictation_preparation` until ready before recording.
-    ///
-    /// # Errors
-    /// Fails on absent focus or an unavailable trusted connection. Starting
-    /// while another request is preparing or recording returns `Busy`.
     pub fn prepare_dictation(&mut self, now: Instant) -> Result<SessionId, DictationError> {
         if self.text_commit.dictation.session.is_some()
             || self.text_commit.dictation.preparation.is_some()
@@ -239,10 +229,6 @@ impl State {
 
     /// Pump activation without blocking; `true` means recording may begin.
     /// A late tick cannot prepare a successor or redirect a canceled request.
-    ///
-    /// # Errors
-    /// Fails on cancellation, focus loss, timeout, sensitive fields or a failed
-    /// input-method connection. Matching failed requests release their lease.
     pub fn advance_dictation_preparation(
         &mut self,
         id: SessionId,
@@ -423,10 +409,6 @@ impl State {
     /// Commit the latest corrected hypothesis once, using native UTF-8 text.
     /// Empty recognition ends the session without sending a protocol edit.
     /// Dictated text never enters the emoji picker's recents.
-    ///
-    /// # Errors
-    /// Returns a failure if the request expired or its original edit target
-    /// changed. Failure cancels the current session and inserts nothing.
     pub fn finish_dictation(&mut self, id: SessionId, now: Instant) -> Result<(), DictationError> {
         self.validate_dictation(id, now)?;
         let session = self
@@ -815,8 +797,6 @@ impl State {
     /// Begin local recognition only after the trusted desktop has obtained
     /// explicit microphone consent and prepared this original edit target.
     /// Neither model readiness nor an untrusted action request is consent.
-    /// # Errors
-    /// Fails closed on a changed field, another actor or unavailable worker.
     pub fn start_authorized_dictation(
         &mut self,
         id: SessionId,

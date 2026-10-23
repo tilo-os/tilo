@@ -632,7 +632,6 @@ async fn act(mut collaborator: Collaborator, start: Instant, end: Instant) -> an
     Ok(())
 }
 
-/// `base + gap * n`.
 fn later(base: Instant, gap: Duration, n: u32) -> anyhow::Result<Instant> {
     base.checked_add(gap.checked_mul(n).context("duration")?)
         .context("clock")

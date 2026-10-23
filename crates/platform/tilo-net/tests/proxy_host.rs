@@ -1,4 +1,3 @@
-//! The fetch proxy a workspace host serves, against loopback targets.
 #![cfg(not(target_family = "wasm"))]
 #![allow(
     clippy::unwrap_used,
@@ -158,7 +157,6 @@ async fn the_host_network_is_refused_by_address_and_by_what_a_name_resolves_to()
         counted.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             Ok(match name.as_str() {
-                // A public address beside a private one is still refused.
                 "rebind.test" => vec![
                     "93.184.216.34".parse::<IpAddr>().unwrap(),
                     "127.0.0.1".parse().unwrap(),

@@ -1129,7 +1129,6 @@ async fn revoked_or_foreign_peers_are_denied_and_owned_devices_bootstrap() {
                 "authorized record blob must transfer through the real guard"
             );
         }
-        // A chunk is authorised through a manifest named in the same request.
         let connection = client_ep
             .connect(server_ep.addr(), iroh_blobs::ALPN)
             .await
@@ -1439,7 +1438,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
             ws_a.sync.broadcast_delta(delta);
         }
 
-        // B sees the entry via gossip...
         assert!(
             wait_until(|| ns_b.lock().unwrap().entry_at("doc.txt").is_some()).await,
             "doc entry must sync to B"
@@ -1631,7 +1629,6 @@ async fn structure_content_and_transactions_propagate_between_peers() {
         let registry = Arc::new(Mutex::new(
             crate::availability::AvailabilityRegistry::open(&path).unwrap(),
         ));
-        // As a session's receipt collection records it.
         record_replica_observation(
             &mut registry.lock().unwrap(),
             revision,
@@ -3771,7 +3768,6 @@ fn namespace_with_history(changes: u64) -> Namespace {
             let content = Hash::new(change.to_le_bytes());
             assert!(namespace.set_content(file, Some(&content), change, change));
         }
-        // Reading the heads commits the edit as one change.
         namespace.heads();
     }
     namespace
@@ -4328,7 +4324,6 @@ impl ConflictWatchFixture {
         }
     }
 
-    /// A record with one version, `base`.
     fn seed(&self) -> (FileRecordId, FileVersionV1) {
         let record_id = FileRecordId::new();
         let base = self.version(record_id, 1, &[]);

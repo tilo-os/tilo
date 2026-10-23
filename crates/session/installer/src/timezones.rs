@@ -146,7 +146,6 @@ mod tests {
 
     #[test]
     fn timezone_catalog_lists_only_real_zones_sorted_with_utc() {
-        // Phase `finalize_sorts_dedups_and_includes_utc`.
         {
             let out = finalize(vec![
                 "Europe/Berlin".into(),
@@ -163,14 +162,12 @@ mod tests {
                 ]
             );
         }
-        // Phase `is_zone_path_accepts_real_zones`.
         {
             assert!(is_zone_path("UTC"));
             assert!(is_zone_path("Europe/Amsterdam"));
             assert!(is_zone_path("America/Argentina/Buenos_Aires"));
             assert!(is_zone_path("Etc/GMT"));
         }
-        // Phase `is_zone_path_rejects_helpers`.
         {
             assert!(!is_zone_path("posix/UTC"));
             assert!(!is_zone_path("right/UTC"));
@@ -179,7 +176,6 @@ mod tests {
             assert!(!is_zone_path("tzdata.zi"));
             assert!(!is_zone_path("leapseconds")); // lowercase first component
         }
-        // Phase `list_timezones_is_never_empty_and_has_utc`.
         {
             let tz = list_timezones();
             assert!(!tz.is_empty());

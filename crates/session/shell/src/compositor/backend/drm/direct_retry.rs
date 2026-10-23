@@ -36,7 +36,6 @@ impl DirectDegradation {
         self.reason.is_some() && self.retry_at.is_some_and(|retry_at| now < retry_at)
     }
 
-    /// The current degradation, if any.
     pub fn reason(&self) -> Option<&str> {
         self.reason.as_deref()
     }
@@ -97,7 +96,6 @@ mod tests {
 
     #[test]
     fn direct_scanout_failures_back_off_and_are_retried() {
-        // Phase `one_slow_frame_demotes_direct_scanout_only_until_the_retry`.
         {
             let start = Instant::now();
             let mut degradation = DirectDegradation::default();
@@ -131,7 +129,6 @@ mod tests {
             assert_eq!(degradation.reason(), None);
             assert!(!degradation.blocked(retried));
         }
-        // Phase `repeated_failures_back_off_exponentially_up_to_the_ceiling`.
         {
             let now = Instant::now();
             let mut degradation = DirectDegradation::default();
@@ -150,7 +147,6 @@ mod tests {
             assert_eq!(degradation.failures(), 10);
             assert_eq!(retry_delay(u32::MAX), MAX_RETRY);
         }
-        // Phase `a_stable_direct_run_forgets_earlier_failures`.
         {
             let start = Instant::now();
             let mut degradation = DirectDegradation::default();

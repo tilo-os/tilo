@@ -415,7 +415,6 @@ mod tests {
 
     #[test]
     fn guest_network_leases_parse_strictly_and_hide_their_tokens() {
-        // Phase `rejects_empty_or_unsafe_canonical_nethosts`.
         {
             assert!(matches!(
                 GuestNetworkProxy::start_at("127.0.0.1:0".parse().unwrap(), &[], false),
@@ -430,7 +429,6 @@ mod tests {
                 Err(GuestNetworkError::InvalidHost(_))
             ));
         }
-        // Phase `reads_hosts_through_the_one_nethost_grammar`.
         {
             // An address is not a host, for the guest as for apps and
             // environments.
@@ -447,13 +445,11 @@ mod tests {
                     "{address} must not be leased"
                 );
             }
-            // The domain spelling apps and environments accept is accepted.
             assert_eq!(
                 lease_policy(&["*.example.test".into()]).unwrap(),
                 EgressPolicy::from_grants([".example.test"])
             );
         }
-        // Phase `binding_never_exposes_its_bearer_token_through_debug`.
         {
             let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),
@@ -467,7 +463,6 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::LOCALHOST)
             );
         }
-        // Phase `parser_requires_connect_and_a_full_lease_token`.
         {
             assert!(
                 parse_connect(
@@ -495,7 +490,6 @@ mod tests {
 
     #[test]
     fn tunnels_register_carry_bytes_and_close_on_revocation() {
-        // Phase `active_tunnel_registration_is_removed_when_the_copy_finishes`.
         {
             let tunnels = ActiveTunnels::default();
             let (client, server) = connected_pair();
@@ -505,7 +499,6 @@ mod tests {
             drop(registration);
             assert_eq!(tunnels.len(), 0, "completed tunnels retain no descriptors");
         }
-        // Phase `revoked_lease_rejects_late_tunnel_registration`.
         {
             let tunnels = ActiveTunnels::default();
             let shutdown = AtomicBool::new(true);
@@ -513,7 +506,6 @@ mod tests {
             assert!(tunnels.register(client, server, &shutdown).is_err());
             assert_eq!(tunnels.len(), 0);
         }
-        // Phase `a_tunnel_carries_bytes_both_ways_and_revocation_closes_it`.
         {
             let service = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = service.local_addr().unwrap().port();
@@ -554,7 +546,6 @@ mod tests {
                 result => panic!("active tunnel survived revoke: {result:?}"),
             }
         }
-        // Phase `revocation_interrupts_an_active_tunnel_immediately`.
         {
             let proxy = GuestNetworkProxy::start_at(
                 "127.0.0.1:0".parse().unwrap(),

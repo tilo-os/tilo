@@ -260,7 +260,6 @@ fn the_minimum_window_width_is_the_compact_layouts() {
                 shell.minimum_width() <= 360.0 * f64::from(theme.text_growth()),
                 "phone width"
             );
-            // At that width the compact layout shows something whole.
             let width = shell.minimum_width().ceil();
             #[allow(
                 clippy::cast_possible_truncation,
@@ -537,7 +536,6 @@ fn the_shell_follows_the_window_and_the_text_scale() {
                     g.stack
                 );
             }
-            // Every shown body sits under the one header row.
             for id in ["sidebar", "overview", "content"] {
                 if let Some(rect) = child_rect(&h, id) {
                     assert!(
@@ -2203,5 +2201,280 @@ fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() 
         h.root::<NavShell>().front_pane(),
         front,
         "the bar's Back pops the pane in front"
+    );
+}
+
+/// An app that declares no slots of its own gets them from its shell: while the
+/// desktop's bar hosts the window, the column in front names the window's
+/// location, the headers' buttons are the bar's actions and run from it, and
+/// the shell draws no header row.
+#[test]
+fn a_hosted_shell_hands_its_header_to_the_window_bar() {
+    use crate::window_toolbar::{ToolbarEvent, declared, deliver};
+    let pressed = SharedRc::new(Cell::new(0));
+    let count = SharedRc::clone(&pressed);
+    let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
+        .on_click(move || count.set(count.get() + 1));
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .overview(Probe::boxed("overview").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Mailboxes", vec![Box::new(add)])
+        .overview_header("Inbox", Vec::new())
+        .content_header(
+            "Design review",
+            vec![Box::new(crate::widget::Row::new().push(Box::new(
+                Button::icon_only("mail.reply", Icon::Reply, "Reply"),
+            )))],
+        );
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).header_height > 0.0,
+        "with no desktop bar, the header row stands"
+    );
+    assert_eq!(declared(), None, "and the shell declares nothing");
+
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    assert_eq!(
+        geometry(&h).header_height,
+        0.0,
+        "no header row under the bar"
+    );
+    let toolbar = declared().expect("the shell declares the window's slots");
+    assert_eq!(
+        toolbar
+            .location
+            .as_ref()
+            .map(|location| location.label.as_str()),
+        Some("Design review"),
+        "the content in front names the window"
+    );
+    assert_eq!(
+        toolbar.sidebar,
+        Some(true),
+        "the sidebar's toggle is a slot"
+    );
+    let action = toolbar
+        .actions
+        .iter()
+        .find(|action| action.name == "New mailbox")
+        .expect("the header's button is the bar's action");
+    assert_eq!(action.icon, "plus");
+    assert!(!action.menu, "a button with an icon stands in the row");
+    assert!(
+        toolbar
+            .actions
+            .iter()
+            .any(|action| action.id == "mail.reply"),
+        "a row of buttons gives its buttons"
+    );
+    deliver(ToolbarEvent::Action {
+        id: action.id.clone(),
+    });
+    settle(&mut h, 1280, 800);
+    assert_eq!(pressed.get(), 1, "the bar's press runs the button");
+}
+
+/// A header the bar cannot show (a fill of the app's own beside the title)
+/// keeps its row under the bar, and the shell declares nothing; a window
+/// where another part declares the slots keeps its row too.
+#[test]
+fn a_header_the_bar_cannot_show_keeps_its_row() {
+    use crate::window_toolbar::{WindowToolbar, declare, declared};
+    let shell = mail_shell().content_header_leading(Box::new(Text::new("Path")));
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    assert!(geometry(&h).header_height > 0.0);
+    assert_eq!(declared(), None);
+    drop(h);
+
+    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    assert_eq!(geometry(&h).header_height, 0.0);
+    let app = WindowToolbar {
+        sidebar: Some(false),
+        ..WindowToolbar::default()
+    };
+    declare(Some(app.clone()));
+    settle(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).header_height > 0.0,
+        "the shell steps aside for the app's own slots"
+    );
+    assert_eq!(
+        declared(),
+        Some(app.bounded()),
+        "and leaves them as declared"
+    );
+}
+
+/// A header button bound to an action, as framework apps build theirs, runs
+/// when pressed in the window's bar, though the shell lays no header row out
+/// under it. A column the shell does not have offers none of its buttons, as
+/// its header row would show none.
+#[test]
+fn a_header_action_runs_from_the_window_bar() {
+    use crate::window_toolbar::{ToolbarEvent, declared};
+    let pressed = SharedRc::new(Cell::new(0));
+    let count = SharedRc::clone(&pressed);
+    let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
+        .on_own_device_effect(move || count.set(count.get() + 1));
+    let compose = Button::icon_only("mail.compose", Icon::Plus, "Compose");
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Mailboxes", vec![Box::new(add)])
+        .overview_header("Inbox", vec![Box::new(compose)])
+        .content_header("Design review", Vec::new());
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    h.set_permission_ctx(crate::permissions::PermissionContext::member(
+        "ada",
+        crate::permissions::Role::Editor,
+    ));
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    let toolbar = declared().expect("the shell declares the window's slots");
+    let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
+    assert!(ids.contains(&"mail.new-mailbox"), "{ids:?}");
+    assert!(
+        !ids.contains(&"mail.compose"),
+        "a column the shell does not have offers no buttons: {ids:?}"
+    );
+
+    h.press_window_slot(ToolbarEvent::Action {
+        id: "mail.new-mailbox".into(),
+    });
+    h.idle();
+    assert!(
+        h.control_failures().is_empty(),
+        "{:?}",
+        h.control_failures()
+    );
+    assert_eq!(h.refusal_shown(), None);
+    assert_eq!(pressed.get(), 1, "the bar's press runs the button's action");
+}
+
+/// A host that runs several apps on one thread (the browser desktop) shows
+/// each in a window of its own: every window's shell declares that window's
+/// slots, and one declaring never makes another step aside, keep a header
+/// row under its bar and leave its old slots there.
+#[test]
+fn each_window_on_one_thread_keeps_its_own_shells_slots() {
+    use crate::hosted_window::HostedWindow;
+    use crate::window_toolbar::enter;
+    let windows = [HostedWindow::new(), HostedWindow::new()];
+    let mut harnesses: Vec<FrameHarness> = windows
+        .iter()
+        .map(|window| {
+            let _scope = enter(Some(window));
+            let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+            h.present_in_window_bar();
+            settle(&mut h, 1280, 800);
+            h
+        })
+        .collect();
+    for _ in 0..2 {
+        for (window, h) in windows.iter().zip(&mut harnesses) {
+            let _scope = enter(Some(window));
+            settle(h, 1280, 800);
+        }
+    }
+    for (i, (window, h)) in windows.iter().zip(&harnesses).enumerate() {
+        assert!(
+            window.declared().is_some(),
+            "window {i}'s shell declares its slots"
+        );
+        assert_eq!(
+            geometry(h).header_height,
+            0.0,
+            "window {i} draws no header row under its bar"
+        );
+    }
+}
+
+/// A content that continues on another device and answers a diagnostic
+/// input with its own state.
+struct ResumableContent(crate::widget::Spacer);
+
+impl crate::widget::Decorator for ResumableContent {
+    type Inner = crate::widget::Spacer;
+
+    fn inner(&self) -> &crate::widget::Spacer {
+        &self.0
+    }
+
+    fn inner_mut(&mut self) -> &mut crate::widget::Spacer {
+        &mut self.0
+    }
+
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn crate::widget::Continuable>() {
+            request.provide::<dyn crate::widget::Continuable>(self);
+        }
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn crate::widget::Continuable>() {
+            request.provide::<dyn crate::widget::Continuable>(self);
+        }
+    }
+
+    fn native_input_snapshot(
+        &self,
+        _state: &AppModel,
+        _path: &ModelPath,
+    ) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "caret_line": 3 }))
+    }
+}
+
+impl crate::widget::Continuable for ResumableContent {
+    fn continuation_metadata(
+        &self,
+        _state: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata> {
+        Some(crate::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes: b"line 3".to_vec(),
+        })
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        _metadata: &crate::collaboration::ContinuationMetadata,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> bool {
+        true
+    }
+}
+
+#[test]
+fn the_shell_continues_and_reports_input_as_its_content() {
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Box::new(ResumableContent(crate::widget::Spacer::new())));
+    let mut h = harness(shell, 900, 600, Theme::dark());
+    settle(&mut h, 900, 600);
+    let document = automerge::AutoCommit::new();
+    let metadata =
+        crate::widget::capability::capability::<dyn crate::widget::Continuable>(h.root_widget())
+            .and_then(|continuable| continuable.continuation_metadata(&document, &automerge::ROOT))
+            .expect("the content's continuation");
+    assert_eq!(metadata.bytes, b"line 3");
+    assert!(
+        crate::widget::capability::capability_mut::<dyn crate::widget::Continuable>(
+            h.root_mut::<NavShell>()
+        )
+        .is_some()
+    );
+    assert_eq!(
+        h.native_input_snapshot(),
+        Some(serde_json::json!({ "caret_line": 3 }))
     );
 }

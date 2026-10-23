@@ -1373,7 +1373,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn capture_runtime_gates_chunks_on_consent_approval_and_bounded_profiles() {
-        // Phase `exact_route_consent_and_local_app_approval_gate_chunks`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1461,7 +1460,6 @@ mod tests {
             );
         }
 
-        // Phase `unanswered_requests_expire_without_leaving_authority`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1478,7 +1476,6 @@ mod tests {
             assert!(runtime.target_sessions.is_empty());
         }
 
-        // Phase `standard_profiles_fit_the_bounded_transport_and_views_hide_backend_ids`.
         {
             for kind in [
                 RemoteCaptureKind::Camera,
@@ -1518,7 +1515,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn capture_runtime_teardown_revokes_exactly_the_affected_authority() {
-        // Phase `peer_and_policy_teardown_remove_pending_and_live_authority`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1537,7 +1533,6 @@ mod tests {
             assert_eq!(RemoteCaptureKind::Camera, profile().kind());
         }
 
-        // Phase `focus_teardown_revokes_only_the_previous_target_app`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1611,7 +1606,6 @@ mod tests {
             ));
         }
 
-        // Phase `source_backend_failure_returns_a_denial_without_authority`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();
@@ -1659,7 +1653,6 @@ mod tests {
             );
         }
 
-        // Phase `target_adapter_failure_revokes_grant_and_stops_exact_source`.
         {
             let phone = DeviceId::new("phone").unwrap();
             let laptop = DeviceId::new("laptop").unwrap();

@@ -124,7 +124,6 @@ mod tests {
 
         published.follow(Some("room-a".into()));
         published.follow(Some("room-b".into()));
-        // The newest room wins.
         eventually(&path, Some("room-b"));
         let mode = std::fs::metadata(&path)
             .expect("metadata")

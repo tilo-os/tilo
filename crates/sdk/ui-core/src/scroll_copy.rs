@@ -245,7 +245,6 @@ pub(crate) fn placed(root: &dyn Widget) -> Vec<Placed> {
     out
 }
 
-/// Whether `new` is `old` moved by `delta`.
 #[cfg(feature = "native")]
 fn moved_by(old: Rect, new: Rect, delta: Vec2) -> bool {
     (new.x0 - old.x0 - delta.x).abs() <= SAME_PLACE

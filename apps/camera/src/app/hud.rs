@@ -11,7 +11,7 @@ use ui::TextRole;
 use ui::chrome::panel_ground;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
 use ui::widget::tooltip::draw_hover_tooltip;
 use ui::widget::{
     BadgeFace, Button, ButtonFace, ButtonRole, ChipStyle, ControlSize, EmptyState,
@@ -37,7 +37,6 @@ pub(super) struct HudMetrics {
     pub pad: f64,
     /// Height of one control.
     pub control: f64,
-    /// Between two clusters.
     pub gap: f64,
     /// Between two controls of one cluster.
     pub item_gap: f64,
@@ -829,7 +828,7 @@ impl CameraApp {
         } else {
             ToastKind::Success
         };
-        paint_transient(
+        self.toast.paint(
             scene,
             t,
             tr,

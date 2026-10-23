@@ -47,7 +47,6 @@ pub struct StripFrame {
     pub rail: StripRail,
     /// The active workspace's strips, in ribbon order.
     pub strips: Vec<StripId>,
-    /// The shown strip.
     pub strip: Option<StripId>,
     /// The shown strip's windows, in rail order.
     pub windows: Vec<GroupId>,
@@ -269,7 +268,6 @@ impl StripNavigator {
         self.switcher.pointer_moved(p, now, zone) || changed
     }
 
-    /// The pointer left the display.
     pub fn pointer_left(&mut self, now: Instant) -> bool {
         let hovered = self.ribbon_hover.take().is_some() | self.rail_hover.take().is_some();
         if hovered {
@@ -363,7 +361,6 @@ impl StripNavigator {
         Some(command.map(StripNavigation::Strip))
     }
 
-    /// Whether the labels are open.
     pub fn is_open(&self) -> bool {
         self.switcher.is_open()
     }

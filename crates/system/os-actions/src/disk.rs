@@ -38,9 +38,6 @@ impl DiskCapacity {
 }
 
 /// The capacity of the filesystem holding `path`.
-///
-/// # Errors
-/// Why the kernel could not say (the path is gone, or not readable).
 pub fn disk_capacity(path: &Path) -> Result<DiskCapacity, String> {
     let stat = rustix::fs::statvfs(path).map_err(|error| error.to_string())?;
     let block = stat.f_frsize.max(1);

@@ -549,6 +549,7 @@ impl stream::Server for OpStream {
             out.set_op(&value.bytes);
             out.set_from_user_id(&value.author);
             out.set_kind(runtime_collab::raw::OpKind::Signed);
+            out.set_admission(runtime_collab::raw::OpAdmission::CleartextAdmitted);
             Ok(())
         })
     }

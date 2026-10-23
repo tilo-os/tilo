@@ -1,0 +1,20 @@
+[package]
+name = "tilo-page-raster"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Document pages rasterised on demand: the render queue, bitmap cache and tiles every page viewer draws from"
+
+[dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-rt.workspace = true
+vello.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

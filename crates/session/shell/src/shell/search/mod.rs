@@ -648,10 +648,17 @@ pub trait SearchProvider {
     }
 
     /// Whether `result` opens the app whose windows announce `app_id` (a
-    /// package id, a Wayland app id). Search shows one row per open app: the
-    /// app's row takes over its latest window's row and switches to it.
+    /// package id, a Wayland app id). Search ranks an app's row beside the
+    /// rows of its open windows; each stays its own row.
     fn opens_app(&self, _result: &SearchResult, _app_id: &str) -> bool {
         false
+    }
+
+    /// This provider's row that starts the app whose windows announce
+    /// `app_id`, whatever was typed: what a new window of an open window's
+    /// app runs. `None` when the app is not this provider's.
+    fn app_row(&self, _app_id: &str) -> Option<SearchResult> {
+        None
     }
 
     /// Whether a person typing `needle` should not be offered `result`: a
@@ -1561,7 +1568,7 @@ impl SearchRegistry {
         }
         if interactive && !needle.trim().is_empty() {
             loose_matches_give_way(&mut merged, &loose);
-            self.one_row_per_open_app(&mut merged, chrome);
+            self.apps_beside_their_windows(&mut merged, chrome);
             files_follow_what_was_named(&mut merged, needle);
         }
         let providers: HashMap<&str, &dyn SearchProvider> = self
@@ -1588,13 +1595,13 @@ impl SearchRegistry {
         (merged.into_iter().map(|(r, _)| r).collect(), completion)
     }
 
-    /// One row per open app: an app's row takes over the row of its most
-    /// recently used window in this workspace, and Enter switches to that
-    /// window instead of starting another copy. Its other windows stay, each
-    /// titled by what it shows. Two rows that do the same thing ("Files" and
-    /// a "Files" window) cost a row of the palette and a guess.
-    fn one_row_per_open_app(&self, merged: &mut Vec<(SearchResult, f32)>, chrome: &ChromeState) {
-        let windows: Vec<(usize, String, usize)> = {
+    /// An open app is two kinds of row: the app, which starts it (for most
+    /// apps a new window), and each of its windows, which switches to that
+    /// window. They rank together: an app and the windows it opened take
+    /// the strongest of their strengths, so the app sits right beside its
+    /// windows instead of somewhere below them.
+    fn apps_beside_their_windows(&self, merged: &mut [(SearchResult, f32)], chrome: &ChromeState) {
+        let windows: Vec<(usize, String)> = {
             let tree = chrome.tree();
             merged
                 .iter()
@@ -1607,15 +1614,7 @@ impl SearchRegistry {
                         return None;
                     }
                     let app = tilo_desktop::search::window_row_app_id(&tree.desktop, &row.id)?;
-                    let tab: crate::shell::state::TabId =
-                        row.id.rsplit(':').next()?.parse().ok()?;
-                    let recency = chrome
-                        .search_context
-                        .recent_windows
-                        .iter()
-                        .position(|recent| *recent == tab)
-                        .unwrap_or(usize::MAX);
-                    Some((at, app, recency))
+                    Some((at, app))
                 })
                 .collect()
         };
@@ -1626,9 +1625,8 @@ impl SearchRegistry {
             .enabled_providers()
             .map(|provider| (provider.id(), provider.as_ref()))
             .collect();
-        let mut absorbed: Vec<usize> = Vec::new();
         for app_at in 0..merged.len() {
-            let Some((app_row, _)) = merged.get(app_at) else {
+            let Some((app_row, app_strength)) = merged.get(app_at) else {
                 continue;
             };
             if !matches!(
@@ -1640,37 +1638,32 @@ impl SearchRegistry {
             let Some(provider) = providers.get(app_row.provider_id.as_str()) else {
                 continue;
             };
-            let latest = windows
+            let together: Vec<usize> = windows
                 .iter()
-                .filter(|(at, app, _)| !absorbed.contains(at) && provider.opens_app(app_row, app))
-                .min_by_key(|(_, _, recency)| *recency)
-                .map(|(at, ..)| *at);
-            let Some(window_at) = latest else {
+                .filter(|(_, app)| provider.opens_app(app_row, app))
+                .map(|(at, _)| *at)
+                .chain(std::iter::once(app_at))
+                .collect();
+            if together.len() < 2 {
                 continue;
-            };
-            let Some((window, window_strength)) = merged.get(window_at).cloned() else {
-                continue;
-            };
-            if let Some((app_row, strength)) = merged.get_mut(app_at) {
-                app_row.subtitle = if window.title.eq_ignore_ascii_case(&app_row.title) {
-                    window.subtitle
-                } else {
-                    Some(window.title)
-                };
-                app_row.operation_kind = window.operation_kind;
-                app_row.contract = window.contract;
-                app_row.params = window.params;
-                app_row.on_open = window.on_open;
-                app_row.on_invoke = window.on_invoke;
-                app_row.on_begin_invoke = window.on_begin_invoke;
-                *strength = strength.max(window_strength);
             }
-            absorbed.push(window_at);
+            let strongest = together
+                .iter()
+                .filter_map(|at| merged.get(*at).map(|(_, strength)| *strength))
+                .fold(*app_strength, f32::max);
+            for at in together {
+                if let Some((_, strength)) = merged.get_mut(at) {
+                    *strength = strongest;
+                }
+            }
         }
-        absorbed.sort_unstable();
-        for at in absorbed.into_iter().rev() {
-            merged.remove(at);
-        }
+    }
+
+    /// The row that starts the app whose windows announce `app_id`, from
+    /// the first provider that has it ([`SearchProvider::app_row`]).
+    pub fn app_row(&self, app_id: &str) -> Option<SearchResult> {
+        self.enabled_providers()
+            .find_map(|provider| provider.app_row(app_id))
     }
 
     /// Whether activating `result` flips a switch in place; see
@@ -1741,8 +1734,38 @@ impl SearchRegistry {
         {
             return jump_back_in(self, args);
         }
-        system::group(self.query(args), row_budget)
+        let store = in_the_store();
+        let ranked: Vec<(ResourceKind, SearchResult)> = self
+            .query(args)
+            .into_iter()
+            .map(|row| {
+                // A third-party app's Store page is not something the person
+                // has: its own heading, after their content (the merge puts
+                // every one of them last), never a second "Applications".
+                let heading = if self.availability(&row) == Availability::ThirdPartyCatalogue {
+                    store.clone()
+                } else {
+                    row.kind.clone()
+                };
+                (heading, row)
+            })
+            .collect();
+        system::group_by_kind(ranked, |(heading, _)| heading, row_budget)
+            .into_iter()
+            .map(|group| KindGroup {
+                kind: group.kind,
+                total: group.total,
+                results: group.results.into_iter().map(|(_, row)| row).collect(),
+            })
+            .collect()
     }
+}
+
+/// The heading third-party apps' Store pages are listed under, apart from
+/// the apps the person has and the Tilo apps that open at once.
+#[must_use]
+pub fn in_the_store() -> ResourceKind {
+    ResourceKind::Custom(t("search-group-in-the-store"))
 }
 
 /// How much nearer the person a row is in Workspace scope: from the focused
@@ -1970,18 +1993,9 @@ fn jump_back_in(registry: &SearchRegistry, args: &QueryArgs<'_>) -> Vec<KindGrou
         }
     }
     if !recent.is_empty() {
-        // A recent app that has a window here switches to it, and that
-        // window is not listed twice.
-        let recent_count = recent.len();
-        let mut merged: Vec<(SearchResult, f32)> = recent
-            .into_iter()
-            .chain(windows)
-            .map(|row| (row, 0.0))
-            .collect();
-        registry.one_row_per_open_app(&mut merged, args.chrome);
-        let mut rows = merged.into_iter().map(|(row, _)| row);
-        let recent: Vec<SearchResult> = rows.by_ref().take(recent_count).collect();
-        let windows: Vec<SearchResult> = rows.take(JUMP_BACK_IN_GROUP_ROWS).collect();
+        // A recent app starts it again; its windows are listed apart.
+        let windows: Vec<SearchResult> =
+            windows.into_iter().take(JUMP_BACK_IN_GROUP_ROWS).collect();
         return [
             (ResourceKind::Custom(t("search-group-recent")), recent),
             (ResourceKind::Tab, windows),
@@ -3721,32 +3735,8 @@ mod tests {
         assert_eq!(rows.first().map(|row| row.id.as_str()), Some("tube"));
     }
 
-    #[test]
-    fn an_open_app_is_one_row_that_switches_to_its_latest_window() {
-        struct Apps;
-        impl SearchProvider for Apps {
-            fn id(&self) -> &'static str {
-                "open-app-apps"
-            }
-            fn name(&self) -> &'static str {
-                "apps"
-            }
-            fn resource_kinds(&self) -> &[ResourceKind] {
-                &[ResourceKind::Application]
-            }
-            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
-                vec![mk_result(
-                    ResourceKind::Application,
-                    "open-app-apps",
-                    "so.tilo.files",
-                    "Files",
-                    100,
-                )]
-            }
-            fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
-                result.id == app_id
-            }
-        }
+    /// A desktop showing two Alacritty windows, one titled after the app.
+    fn two_alacritty_windows() -> Rc<RefCell<ChromeState>> {
         use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
         let mut tree = WorkspaceTree::bootstrap_default();
         let window = |id: u64, title: &str| WindowGroup {
@@ -3755,7 +3745,7 @@ mod tests {
                 id,
                 title: title.into(),
                 tile: TileContent::Foreign {
-                    app_id: "so.tilo.files".into(),
+                    app_id: "Alacritty".into(),
                     surface_id: id,
                 },
             }],
@@ -3765,26 +3755,102 @@ mod tests {
             focus_history: Vec::new(),
         };
         tree.desktop.workspaces[0].strips[0].window_groups =
-            vec![window(1, "Downloads"), window(2, "Documents")];
+            vec![window(1, "~/src"), window(2, "Alacritty")];
         tree.seed_doc_from_cache();
-        let chrome = ChromeState::new(tree);
-        chrome.borrow_mut().search_context.recent_windows = vec![2, 1];
+        ChromeState::new(tree)
+    }
+
+    #[test]
+    fn an_open_app_is_its_own_row_beside_its_windows_and_still_starts_the_app() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static STARTED: AtomicBool = AtomicBool::new(false);
+        struct Apps;
+        impl SearchProvider for Apps {
+            fn id(&self) -> &'static str {
+                "open-app-apps"
+            }
+            fn name(&self) -> &'static str {
+                "apps"
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::HostApplication]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                vec![SearchResult::nullary(
+                    ResourceKind::HostApplication,
+                    "open-app-apps",
+                    "Alacritty",
+                    "Alacritty",
+                    None,
+                    40,
+                    |_, _, _| STARTED.store(true, Ordering::SeqCst),
+                )]
+            }
+            fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
+                result.id == app_id
+            }
+        }
+        struct Actions;
+        impl SearchProvider for Actions {
+            fn id(&self) -> &'static str {
+                "open-app-actions"
+            }
+            fn name(&self) -> &'static str {
+                "actions"
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::Action]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                vec![mk_result(
+                    ResourceKind::Action,
+                    "open-app-actions",
+                    "alacritty.settings",
+                    "Alacritty settings",
+                    70,
+                )]
+            }
+        }
+        let chrome = two_alacritty_windows();
         let mut reg = SearchRegistry::new();
         reg.register(Rc::new(Apps));
+        reg.register(Rc::new(Actions));
         reg.register(Rc::new(providers::DesktopWindowsProvider::new()));
-        let rows = ask(&reg, &chrome, "files");
-        let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            ["Files", "Downloads"],
-            "one row for the app, which took the latest window; the other window stays"
+        let rows = ask(&reg, &chrome, "alacritty");
+        let at = |pick: &dyn Fn(&SearchResult) -> bool| {
+            rows.iter()
+                .position(pick)
+                .unwrap_or_else(|| panic!("{:?}", rows.iter().map(|r| &r.id).collect::<Vec<_>>()))
+        };
+        let app = at(&|row| row.provider_id == "open-app-apps");
+        let windows: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.provider_id == tilo_desktop::search::WINDOWS_PROVIDER_ID)
+            .filter(|(_, row)| row.kind == ResourceKind::Tab)
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(windows.len(), 2, "both windows are rows of their own");
+        let mut together = windows;
+        together.push(app);
+        together.sort_unstable();
+        assert!(
+            together.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "the app and its windows sit together: {:?}",
+            rows.iter().map(|row| &row.title).collect::<Vec<_>>()
         );
-        assert_eq!(
-            rows[0].subtitle.as_deref(),
-            Some("Documents"),
-            "the app's row says which window it goes to"
-        );
-        assert_eq!(rows[0].operation_kind, tilo_actions::OperationKind::View);
+        assert_eq!(rows[app].title, "Alacritty");
+        assert_eq!(rows[app].subtitle, None);
+
+        let mut doc = AutoCommit::new();
+        (rows[app].on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &action_api::ActionArgs::none(),
+        )
+        .expect("starting the app takes no arguments");
+        assert!(STARTED.load(Ordering::SeqCst), "choosing the app starts it");
     }
 
     /// Write the on-disk shape `launcher::gui_apps` reads.

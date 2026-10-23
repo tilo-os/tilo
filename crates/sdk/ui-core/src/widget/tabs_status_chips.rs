@@ -39,7 +39,6 @@ impl TabBar {
         }
     }
 
-    /// Whether `id`'s app may control the desktop.
     pub fn controls_desktop(&self, id: u64) -> bool {
         self.desktop_control.ids.contains(&id)
     }

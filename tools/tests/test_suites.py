@@ -368,15 +368,14 @@ class CargoReaderTests(unittest.TestCase):
             with self.subTest(fixture=fixture):
                 self.assertEqual(
                     suites.select_packages(manifest, [prefix + fixture]),
-                    ["settings", "settings-core", "settings-rare", "tilo-app-cli", "tilo-fs"],
+                    ["settings", "settings-core", "settings-rare", "tilo-fs"],
                 )
         self.assertEqual(
-            suites.select_packages(manifest, [prefix + "empty.svg"]),
-            ["tilo-app-cli", "tilo-fs"])
-        # The CLI's existing package audit selects the provider directory;
-        # import consumers should select only the fixtures they actually read.
+            suites.select_packages(manifest, [prefix + "empty.svg"]), ["tilo-fs"])
+        # Import consumers select only the fixtures they read. (The CLI reads the provider's
+        # sources as a dependency of the apps, which tools/ci/t_toml.py derives.)
         self.assertEqual(
-            suites.select_packages(manifest, [prefix + "unrelated.rs"]), ["tilo-app-cli"])
+            suites.select_packages(manifest, [prefix + "unrelated.rs"]), [])
 
     def test_cross_package_readers_must_be_declared_exactly(self):
         with self.subTest(phase='a declared reader passes'):
@@ -426,6 +425,70 @@ class CargoReaderTests(unittest.TestCase):
             text = 'let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/x.py");\n'
             manifest = READER_MANIFEST + '[[cargo-exempt]]\nfile = "apps/calc/src/lib.rs"\nreason = "ignored test"\n'
             self.assertEqual(self.audit({"apps/calc/src/lib.rs": text}, manifest), [])
+
+    APPS = {
+        "apps/calc/tilo-app.toml": "",
+        "apps/notes/Cargo.toml": '[package]\nname = "notes"\n',
+        "apps/notes/src/main.rs": "fn main() {}\n",
+        "apps/notes/tilo-app.toml": "",
+    }
+
+    def test_inputs_cover_what_paths_built_from_the_manifest_dir_read(self):
+        lists_apps = (
+            'fn every_app() {\n'
+            '    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();\n'
+            '    for app in std::fs::read_dir(root.join("apps")).unwrap() {\n'
+            '        let manifest = app.unwrap().path().join("tilo-app.toml");\n'
+            '        let _ = std::fs::read_to_string(manifest);\n'
+            '    }\n'
+            '}\n')
+        enumerated = READER_MANIFEST.replace('"apps/*/src/main.rs"', '"apps/calc/tilo-app.toml"')
+        with self.subTest(phase='an input for some entries of a listed directory is not enough'):
+            problems = self.audit({**self.APPS, "crates/ui/tests/audit.rs": lists_apps}, enumerated)
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("crates/ui/tests/audit.rs:3: lists apps and reads apps/notes/tilo-app.toml", problems[0])
+        with self.subTest(phase='a glob over the entries covers every one, and those to come'):
+            manifest = READER_MANIFEST.replace('"apps/*/src/main.rs"', '"apps/*/tilo-app.toml"')
+            self.assertEqual(self.audit({**self.APPS, "crates/ui/tests/audit.rs": lists_apps}, manifest), [])
+        with self.subTest(phase='an entry without the name read is not required'):
+            self.assertEqual(self.audit({"apps/calc/tilo-app.toml": "", "crates/ui/tests/audit.rs": lists_apps},
+                                        enumerated), [])
+        with self.subTest(phase='bindings, aliases and root functions are followed'):
+            for text in (
+                'fn root() -> PathBuf {\n    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")\n}\n'
+                'fn every_app() {\n    let apps = root().join("apps");\n'
+                '    for app in std::fs::read_dir(&apps).unwrap() {\n'
+                '        read(app.unwrap().path().join("tilo-app.toml"));\n    }\n}\n',
+                'fn every_app() {\n    let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps");\n'
+                '    for app in std::fs::read_dir(&apps).unwrap() {\n'
+                '        read(app.unwrap().path().join("tilo-app.toml"));\n    }\n}\n',
+            ):
+                with self.subTest(text=text):
+                    problems = self.audit({**self.APPS, "crates/ui/tests/audit.rs": text}, enumerated)
+                    self.assertEqual(len(problems), 1, problems)
+                    self.assertIn("lists apps and reads apps/notes/tilo-app.toml", problems[0])
+        with self.subTest(phase='a joined path must match an input'):
+            text = ('fn notes() {\n    let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap();\n'
+                    '    read(root.join("apps/notes"));\n    read(root.join("os/share/data.json"));\n}\n')
+            problems = self.audit({**self.APPS, "crates/ui/tests/audit.rs": text}, enumerated)
+            self.assertEqual(problems, ["crates/ui/tests/audit.rs:3: reads apps/notes, "
+                                        "which no input of cargo ui matches"])
+            self.assertEqual(self.audit({**self.APPS, "crates/ui/tests/audit.rs": text},
+                                        READER_MANIFEST.replace('"apps/*/src/main.rs"', '"apps/"')), [])
+        with self.subTest(phase='paths the tree does not hold and the package itself are not required'):
+            text = ('fn scratch() {\n    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");\n'
+                    '    write(root.join("apps/new/tilo-app.toml"));\n    read(root.join("crates/ui/src"));\n}\n')
+            self.assertEqual(self.audit({**self.APPS, "crates/ui/tests/audit.rs": text}, enumerated), [])
+
+    def test_dependencies_of_names_directories_holding_packages(self):
+        manifest = READER_MANIFEST + 'dependencies_of = ["apps/"]\n'
+        self.assertEqual(suites.parse(manifest).cargo[0].dependencies_of, ("apps/",))
+        self.assertEqual(self.audit({}, manifest), [])
+        problems = self.audit({}, manifest.replace('["apps/"]', '["tools/"]'))
+        self.assertEqual(problems, ["cargo ui: dependencies_of tools/ holds no tracked package"])
+        for value in ('["apps"]', '[]', '"apps/"', '["../apps/"]'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                suites.parse(manifest.replace('["apps/"]', value))
 
     def test_a_file_the_checked_change_deletes_is_not_tracked(self):
         # t checks a commit its server has not seen as uncommitted changes on

@@ -38,8 +38,10 @@ fn not_a_content_size(c: &Captures<'_>) -> bool {
 }
 
 /// `TextRenderer::measure` has three arguments. Widget layout measurement
-/// accepts four (width, height, theme, renderer) and carries no pixel text size.
-/// Incomplete/multiline calls stay counted unless the four arguments are visible.
+/// accepts four (width, height, theme, renderer) and a manual layout's child
+/// measurement two (child, constraints); neither carries a pixel text size.
+/// A call closed on its line is the text API only with three arguments; an
+/// incomplete/multiline call stays counted unless four arguments are visible.
 fn is_pixel_text_call(line: &str, c: &Captures<'_>) -> bool {
     if &c[1] != "measure" {
         return true;
@@ -49,6 +51,7 @@ fn is_pixel_text_call(line: &str, c: &Captures<'_>) -> bool {
     let mut escaped = false;
     let mut commas = 0_u32;
     let mut last = None;
+    let mut closed = false;
     let end = c.get(0).expect("matched call").end();
     for ch in line[end..].chars() {
         if quoted {
@@ -62,6 +65,7 @@ fn is_pixel_text_call(line: &str, c: &Captures<'_>) -> bool {
             continue;
         }
         if ch == ')' && depth == 0 {
+            closed = true;
             break;
         }
         if !ch.is_whitespace() {
@@ -75,7 +79,12 @@ fn is_pixel_text_call(line: &str, c: &Captures<'_>) -> bool {
             _ => {}
         }
     }
-    commas.saturating_sub(u32::from(last == Some(','))) < 3
+    let separators = commas.saturating_sub(u32::from(last == Some(',')));
+    if closed && last.is_some() {
+        separators == 2
+    } else {
+        separators < 3
+    }
 }
 
 pub fn typography_ratchet() -> Ratchet {
@@ -265,6 +274,7 @@ fn layout_measurement_does_not_hide_pixel_text_calls() {
     for line in [
         "composer.measure(width, max_height, theme, text)",
         "host.measure(width, f32::INFINITY, theme, tr);",
+        "let measured = ctx.measure(1, constraint)?;",
     ] {
         assert_eq!(legacy.hits(line), 0);
     }

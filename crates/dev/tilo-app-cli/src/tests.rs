@@ -5186,7 +5186,6 @@ fn every_template_scaffolds_a_portable_app() {
         assert!(report.passed(), "{}: {}", template.name(), report.render());
         assert!(report.files > 0);
         assert!(report.render().starts_with("portability: ok"));
-        // The manifest declares every capability the generated code uses.
         let manifest = tilo_app_package::Manifest::from_toml_str(
             &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
         )

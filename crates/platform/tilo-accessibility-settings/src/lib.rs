@@ -57,10 +57,8 @@ macro_rules! accessibility_settings {
             pub large_cursor: bool,
             /// Pointer size in logical pixels (the compositor's cursor theme size).
             pub cursor_size: u32,
-            /// Run the screen reader.
             $(#[$readonly])*
             pub screen_reader: bool,
-            /// When the on-screen keyboard runs.
             pub on_screen_keyboard: OnScreenKeyboard,
             /// Latch modifier keys so chords can be typed one key at a time.
             pub sticky_keys: bool,

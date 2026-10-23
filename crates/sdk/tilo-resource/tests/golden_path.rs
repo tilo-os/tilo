@@ -163,7 +163,6 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         assert!(clear.destructive);
         assert_eq!(clear.field, Some("cards"));
 
-        // The published tree is what the palette, agents and scripts see.
         let published = tilo_resource::publish::<Board>("board", "Board", &Board::default());
         let published_ids: Vec<_> = published
             .actions
@@ -194,7 +193,6 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         board.apply(Board::ADVANCE.with(first.clone())).unwrap();
         assert_eq!(board.state().unwrap().cards[&first].stage, Stage::Doing);
 
-        // A refusal is the app answering, and changes nothing.
         let heads = board.heads();
         let refused = board.apply(Board::ADVANCE.with(Id::from_raw("missing")));
         assert!(
@@ -224,7 +222,6 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         assert_eq!(first.heads(), second.heads());
         assert_eq!(second.state().unwrap(), state);
 
-        // A member that refuses refuses the whole group.
         let missing = Id::from_raw("missing");
         assert!(
             first
@@ -338,7 +335,6 @@ fn documents_replay_converge_version_index_and_migrate() {
         assert_eq!(a, bob.state().unwrap());
         assert_eq!(a.title, "Alice's board");
         assert_eq!(a.cards.len(), 2);
-        // Alice's field edit and Bob's move of the same card both survive.
         assert_eq!(a.cards[&shared].stage, Stage::Doing);
         assert_eq!(a.cards.position(&shared), Some(1));
     }

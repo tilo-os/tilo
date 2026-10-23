@@ -94,7 +94,6 @@ pub struct PrivateConversation {
     pub peer: String,
     /// Bounded private message page.
     pub messages: Vec<PrivateMessage>,
-    /// Cursor for the next page.
     pub next_sequence: u64,
     /// Whether another page is available.
     pub has_more: bool,
@@ -135,7 +134,6 @@ pub struct PrivateRequest {
     pub device_cert: DeviceCert,
     /// Exact workspace identifier.
     pub room: String,
-    /// Requested private operation.
     pub operation: PrivateOperation,
 }
 impl std::fmt::Debug for PrivateRequest {
@@ -160,8 +158,6 @@ impl PrivateClient {
         }
     }
     /// One exchange. Watches remain pending until a real pair or authority change.
-    /// # Errors
-    /// Returns a redacted transport or codec failure.
     pub async fn send(
         &self,
         relay: iroh::EndpointAddr,

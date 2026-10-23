@@ -24,7 +24,6 @@ fn tree(at: &Path) -> PathBuf {
     top
 }
 
-/// `top` as a plain tar.
 fn tar_bytes(top: &Path) -> Vec<u8> {
     let mut builder = tar::Builder::new(Vec::new());
     builder.append_dir_all("top", top).unwrap();
@@ -124,8 +123,6 @@ const FORMATS: [Format; 7] = [
     Format::Tar(Compression::Bzip2),
 ];
 
-/// Every format lists its entries and extracts the same tree, byte for
-/// byte, and a member reads back on its own.
 #[test]
 fn every_format_lists_extracts_and_reads_a_member() {
     for format in FORMATS {

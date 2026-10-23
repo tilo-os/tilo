@@ -133,7 +133,6 @@ impl PermissionScope {
         }
     }
 
-    /// An action of `kind` anywhere in the app `app_id`.
     pub fn app(app_id: impl Into<String>, kind: ActionKind) -> Self {
         Self::Action {
             node: TreePath::root().app(app_id),
@@ -404,7 +403,6 @@ impl PermissionContext {
         Self::member(LOCAL_USER, Role::Owner).acting_as(subject, grants)
     }
 
-    /// The same context with one more grant in the room's policy.
     #[must_use]
     pub fn with_grant(mut self, grant: policy::Grant) -> Self {
         Arc::make_mut(&mut self.standing).policy.grants.push(grant);

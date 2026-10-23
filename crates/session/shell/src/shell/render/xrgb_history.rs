@@ -411,7 +411,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn xrgb_history_reuses_a_delta_only_for_the_proven_target() {
-        // Phase `transaction_binds_the_exact_prepared_delta_without_rejecting_a_gap`.
         {
             let mut history = XrgbTargetHistory::new(1);
             let regions = [rect(2, 3)];
@@ -434,7 +433,6 @@ mod tests {
             transaction.abort();
         }
 
-        // Phase `accepted_delta_is_partial_only_for_a_proven_target_and_identity`.
         {
             let mut history = XrgbTargetHistory::new(1);
             let regions = [rect(2, 3)];
@@ -457,7 +455,6 @@ mod tests {
             transaction.abort();
         }
 
-        // Phase `two_targets_accumulate_intervening_delta_before_partial_reuse`.
         {
             let mut history = XrgbTargetHistory::new(2);
             let first = [rect(2, 3)];
@@ -485,7 +482,6 @@ mod tests {
             transaction.abort();
         }
 
-        // Phase `uncommitted_transaction_invalidates_instead_of_replaying`.
         {
             let mut history = XrgbTargetHistory::new(1);
             let regions = [rect(2, 3)];
@@ -506,7 +502,6 @@ mod tests {
             transaction.abort();
         }
 
-        // Phase `accumulated_other_target_rectangles_cap_and_invalidate_that_target`.
         {
             let mut history = XrgbTargetHistory::new(2);
             let initial = [rect(2, 3)];
@@ -565,7 +560,6 @@ mod tests {
 
     #[test]
     fn xrgb_history_turns_oversized_invalid_and_epoch_changes_into_full_boundaries() {
-        // Phase `oversized_regions_match_then_choose_a_full_boundary`.
         {
             let mut history = XrgbTargetHistory::new(1);
             let regions = vec![rect(2, 3); MAX_RECTS + 1];
@@ -575,7 +569,6 @@ mod tests {
             transaction.abort();
         }
 
-        // Phase `oversized_destination_only_rects_are_rejected_without_scanning`.
         {
             let mut history = XrgbTargetHistory::new(1);
             let seed = [rect(2, 3)];
@@ -589,7 +582,6 @@ mod tests {
             transaction.abort();
         }
 
-        // Phase `layout_scanout_epoch_and_invalid_target_are_full_boundaries`.
         {
             let mut history = XrgbTargetHistory::new(2);
             let regions = [rect(2, 3)];
@@ -624,7 +616,6 @@ mod tests {
             transaction.abort();
         }
 
-        // Phase `empty_large_and_invalid_delta_inputs_are_full_boundaries`.
         {
             let cases = [
                 None,

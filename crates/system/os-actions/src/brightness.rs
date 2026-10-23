@@ -38,7 +38,6 @@ pub enum BrightnessTarget {
     Software,
 }
 
-/// One monitor whose brightness can be set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MonitorBrightness {
     /// Raw DRM connector label, e.g. `DP-2`.
@@ -210,10 +209,6 @@ impl BrightnessTarget {
     }
 
     /// Current brightness as a `0.0..=1.0` fraction.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the monitor could not be read.
     pub fn get(&self) -> Result<f32, String> {
         self.read().map(|reading| reading.level)
     }
@@ -222,10 +217,6 @@ impl BrightnessTarget {
     /// monitor whose `maximum` is known is written without reading it
     /// first. Software dimming is the compositor's to apply, so it is a
     /// no-op here.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the monitor could not be written.
     pub fn set_with_maximum(&self, pct: f32, maximum: Option<u16>) -> Result<(), String> {
         let pct = pct.clamp(0.0, 100.0);
         match self {
@@ -242,10 +233,6 @@ impl BrightnessTarget {
     }
 
     /// Set brightness to `pct` percent, clamped to `[0, 100]`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the monitor could not be written.
     pub fn set(&self, pct: f32) -> Result<(), String> {
         self.set_with_maximum(pct, None)
     }
@@ -1179,7 +1166,6 @@ mod tests {
         fs::create_dir_all(dp.join("i2c-9")).unwrap();
         fs::create_dir_all(dp.join("power")).unwrap();
         tree.connector("card0-DP-3", "disconnected");
-        // A connected port without any I²C adapter is dimmed in software.
         tree.connector("card0-Virtual-1", "connected");
         fs::create_dir_all(tree.path("drm/card0")).unwrap();
         tree.faux_card("card1", &["Virtual-1"]);
@@ -1515,7 +1501,6 @@ mod tests {
                 level: Some(0.3),
             })
         );
-        // The software-dimmed monitor comes back on another port at its level.
         broken.connector = "DP-3".into();
         let fake = fake_service_at(vec![broken], Some(path));
         fake.service.rescan_blocking();

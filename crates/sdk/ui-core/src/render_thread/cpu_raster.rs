@@ -9,7 +9,6 @@ pub(super) struct CpuCanvas {
     pixels: Vec<u8>,
     size: (u32, u32),
     valid: bool,
-    /// What the last frame rasterized.
     regions: Vec<Region>,
     /// What the last frame changed and [`Self::upload`] sends: what it
     /// rasterized, and where its scroll copies landed.

@@ -629,6 +629,12 @@ impl ShellOverlayHost {
             (PeerSyncRequest::DevicesAsking, Ok(PeerSyncResponse::DevicesAsking(asking))) => {
                 if let Some(chrome) = self.chrome.as_ref() {
                     let mut state = chrome.borrow_mut();
+                    state.retire_device_asking(
+                        &asking
+                            .iter()
+                            .map(|device| device.digest)
+                            .collect::<Vec<_>>(),
+                    );
                     for device in &asking {
                         self.device_labels
                             .insert(device.digest, device.label.clone());
@@ -674,6 +680,15 @@ impl ShellOverlayHost {
             .map_or_else(Vec::new, |chrome| chrome.borrow_mut().take_device_answers());
         for (digest, approve) in answers {
             self.dispatch_pairing(PeerSyncRequest::AnswerDevice { digest, approve });
+        }
+        // Another device of the person found one and asks here.
+        let certification = crate::shell::device_certification::generation();
+        if certification != self.certification_seen
+            && !self.peer_sync.in_flight(&PeerSyncRequest::DevicesAsking)
+        {
+            self.certification_seen = certification;
+            self.dispatch_pairing(PeerSyncRequest::DevicesAsking);
+            return;
         }
         if self.pairing_until_ms <= tilo_clock::unix_now_ms()
             || self.peer_sync.in_flight(&PeerSyncRequest::DevicesAsking)

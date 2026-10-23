@@ -175,10 +175,6 @@ pub fn manifest_sha256() -> String {
 
 /// Check that `root` holds the catalog this build was made against: its
 /// `manifest.toml` must be byte-identical to [`MANIFEST`].
-///
-/// # Errors
-///
-/// When the manifest is missing, unreadable or different.
 pub fn check_manifest(root: &Path) -> Result<(), Error> {
     let path = root.join("manifest.toml");
     let shipped = std::fs::read(&path).map_err(|e| Error::at(&path, e))?;
@@ -313,10 +309,6 @@ mod immutable {
 impl Asset {
     /// The file's path under `root`, refusing a manifest entry that would
     /// leave the catalog directory.
-    ///
-    /// # Errors
-    ///
-    /// When the entry is absolute or climbs out of `root`.
     pub fn path_in(&self, root: &Path) -> Result<PathBuf, Error> {
         let relative = Path::new(&self.file);
         if !relative
@@ -333,10 +325,6 @@ impl Asset {
 
     /// Check the file under `root` against its pinned size and SHA-256 and
     /// return its path.
-    ///
-    /// # Errors
-    ///
-    /// When the file is missing, not a regular file, or differs.
     pub fn verify(&self, root: &Path) -> Result<PathBuf, Error> {
         self.verify_with(root, Trust::Verify)
     }
@@ -345,10 +333,6 @@ impl Asset {
     /// allows and return its path. Under [`Trust::Immutable`] a file that is
     /// itself [immutable](file_is_immutable) is checked by type and size and
     /// not read; any other file is hashed as under [`Trust::Verify`].
-    ///
-    /// # Errors
-    ///
-    /// When the file is missing, not a regular file, or differs.
     pub fn verify_with(&self, root: &Path, trust: Trust) -> Result<PathBuf, Error> {
         self.verify_probed(root, trust, file_is_immutable)
     }
@@ -379,36 +363,17 @@ impl Asset {
 
     /// Check bytes already read from this asset's file (at `path`, for the
     /// error) against its pinned size and SHA-256.
-    ///
-    /// # Errors
-    ///
-    /// When the bytes differ.
     pub fn verify_bytes(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        self.check_len(path, bytes.len())?;
+        if bytes.len() as u64 != self.bytes {
+            return Err(Error::at(
+                path,
+                format!("expected {} bytes, found {}", self.bytes, bytes.len()),
+            ));
+        }
         self.check_digest(path, &hex::encode(Sha256::digest(bytes)))
     }
 
-    /// Compare a length in bytes with the pinned one.
-    ///
-    /// # Errors
-    ///
-    /// When they differ.
-    pub fn check_len(&self, path: &Path, len: usize) -> Result<(), Error> {
-        if len as u64 == self.bytes {
-            Ok(())
-        } else {
-            Err(Error::at(
-                path,
-                format!("expected {} bytes, found {len}", self.bytes),
-            ))
-        }
-    }
-
     /// Compare a lowercase hex SHA-256 with the pinned one.
-    ///
-    /// # Errors
-    ///
-    /// When they differ.
     pub fn check_digest(&self, path: &Path, actual: &str) -> Result<(), Error> {
         if actual == self.sha256 {
             Ok(())

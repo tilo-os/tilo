@@ -226,7 +226,6 @@ pub enum AccessTarget {
     /// Open (or close) one app's answers.
     Expand(AnswerScope),
     Answer(AnswerScope, ActionKind, Answer),
-    /// Return every answer of the scope to the admission's.
     Reset(AnswerScope),
     /// Stop always allowing an action.
     RemoveException(AnswerScope, ActionKind),
@@ -1191,7 +1190,6 @@ mod tests {
         assert_eq!(edit.granted.len(), 1);
         let outside = answer_at(&ws, AGENT, &mail, ActionKind::Outside);
         assert_eq!((outside.answer, outside.explicit), (Answer::Deny, true));
-        // Another app is untouched.
         let notes = answer_at(
             &ws,
             AGENT,
@@ -1255,7 +1253,6 @@ mod tests {
         assert_eq!(exceptions[0].scope, send);
         assert_eq!(exceptions[0].kind, ActionKind::Outside);
         assert_eq!(exceptions[0].label, format!("{MAIL} · Send message"));
-        // Taking it back.
         let edit = set_agent_answers(
             &mut ws,
             &OWNER.to_string(),

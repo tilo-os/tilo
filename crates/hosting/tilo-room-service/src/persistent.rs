@@ -411,6 +411,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
             .arg("--country-proxies")
             .arg(proxies);
     }
+    // The room's records answer its pages through the host: a visitor
+    // links their account on the room's Discord from their profile card.
+    command.arg("--room-records");
     command
         .arg("--persistent")
         .arg(&persistent.name)
@@ -1625,6 +1628,10 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
+        assert!(
+            args.iter().any(|arg| arg == "--room-records"),
+            "the room's records answer its pages: {args:?}"
+        );
         let at = args.iter().position(|arg| arg == "--state").unwrap();
         let relay_state = PathBuf::from(&args[at + 1]);
         let root = room_relay_root(&relay_state);

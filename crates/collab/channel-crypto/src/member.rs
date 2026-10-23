@@ -184,11 +184,6 @@ impl ChannelMember {
     /// An in-memory member restored from [`Self::export_sealed`]: its MLS
     /// state and journal mirror as they were, so it neither asks again nor
     /// loses the keys it held.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `bytes` do not open under `vault`, name another
-    /// channel, or hold a journal that does not verify.
     pub fn restore_in_memory(
         channel: ChannelId,
         device: Ed25519PublicKey,
@@ -219,7 +214,6 @@ impl ChannelMember {
         })
     }
 
-    /// The channel.
     pub fn channel_id(&self) -> ChannelId {
         self.channel
     }
@@ -261,11 +255,6 @@ impl ChannelMember {
     /// A signed access request carrying a fresh key package, or `None` when
     /// the device is already admitted. A removed device starts waiting again
     /// with a new member key: whether it is admitted is the steward's call.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when minting the key package, persisting it, or
-    /// signing fails.
     pub fn access_request(
         &mut self,
         device_key: &SigningKey,
@@ -298,10 +287,6 @@ impl ChannelMember {
 
     /// The cumulative acknowledgement for everything applied so far, or
     /// `None` before the first frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when signing fails.
     pub fn acknowledgement(&self, device_key: &SigningKey) -> Result<Option<MlsGovernanceAckV1>> {
         if self.journal.frames().is_empty() {
             return Ok(None);
@@ -543,10 +528,6 @@ impl ChannelMember {
     /// unsigned (see [`MlsAccessRequestV1::unsigned`]), or `None` when the
     /// device is already admitted. For a device key held outside this
     /// process; [`Self::access_request`] otherwise.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when minting or persisting the key package fails.
     pub fn unsigned_access_request(
         &mut self,
         issued_at: u64,

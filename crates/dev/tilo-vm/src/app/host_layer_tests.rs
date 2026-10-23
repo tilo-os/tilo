@@ -1,4 +1,3 @@
-//! Drive the host import path over the production stdio Remote transport.
 use super::*;
 
 const PEER: &str = r#"

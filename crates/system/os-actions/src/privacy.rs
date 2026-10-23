@@ -102,11 +102,6 @@ fn get_privacy_status_from(rfkill: &Path, dev: &Path) -> PrivacyStatus {
 /// is the reference client shipped with `PipeWire` and keeps compatibility
 /// across native, Flatpak and portal clients. Attribution is independently
 /// re-derived from `/proc`; client-authored labels are intentionally ignored.
-///
-/// # Errors
-///
-/// Returns an error message if `pw-dump` is not installed, the command fails, or its output is
-/// not valid `PipeWire` graph JSON.
 pub fn active_media_uses() -> Result<Vec<ActiveMediaUse>, String> {
     let json = crate::process::run_capture("pw-dump", &[])?;
     parse_pipewire_media(&json, Path::new("/proc"), effective_uid())
@@ -192,11 +187,6 @@ impl DeviceGraphWatch {
 /// not from a second `pw-dump`: that second process is a stream, and
 /// treating it as a graph change kept `--monitor` running for the whole
 /// idle window.
-///
-/// # Errors
-///
-/// Returns an error message if `pw-dump` is not installed, the monitor
-/// process fails to start, or it exits before any device graph arrives.
 pub fn monitor_media_usage(mut on_change: impl FnMut(Vec<ActiveMediaUse>)) -> Result<(), String> {
     if !crate::process::which("pw-dump") {
         return Err("pw-dump not installed".into());
@@ -426,10 +416,6 @@ impl MonitorJson {
 /// Immediately disconnect an offending `PipeWire` client. This is deliberately
 /// an ephemeral stop, not a pretend persistent permission: portal-managed
 /// grants remain owned by the portal permission store.
-///
-/// # Errors
-///
-/// Returns an error message if `pw-cli` is not installed or the command fails.
 pub fn revoke_media_client(client_id: u32) -> Result<(), String> {
     crate::process::run("pw-cli", &["destroy", &client_id.to_string()])
 }
@@ -661,7 +647,6 @@ mod tests {
 
     #[test]
     fn device_use_is_attributed_only_from_server_side_security_evidence() {
-        // Phase `hardware_camera_shutter_wins_over_software_state`.
         {
             let root = tempfile::tempdir().unwrap();
             let dev = tempfile::tempdir().unwrap();
@@ -674,7 +659,6 @@ mod tests {
             let status = get_privacy_status_from(root.path(), dev.path());
             assert_eq!(status.camera_kill, KillState::HardwareBlocked);
         }
-        // Phase `pipewire_attribution_uses_security_pid_and_kernel_executable`.
         {
             use std::os::unix::fs::symlink;
             let proc = tempfile::tempdir().unwrap();
@@ -698,7 +682,6 @@ mod tests {
             assert_eq!(uses[0].kind, MediaKind::Microphone);
             assert!(!uses[0].label.contains("Settings"));
         }
-        // Phase `client_claim_without_server_security_pid_is_not_attributed`.
         {
             let json = r#"[
               {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
@@ -712,7 +695,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `portal_identity_requires_server_flatpak_security_marker`.
         {
             use std::os::unix::fs::symlink;
             let proc = tempfile::tempdir().unwrap();

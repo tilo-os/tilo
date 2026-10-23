@@ -177,7 +177,6 @@ impl Run {
             .open(arguments))
     }
 
-    /// The same run, for the participant `me`.
     pub(crate) fn for_participant(mut self, me: Option<&str>) -> Self {
         self.people = super::People::new(me);
         self
@@ -261,9 +260,6 @@ impl<R: Resource> Fixture<R> {
 
     /// A private scratch directory for files the scene shows (a folder to
     /// browse, a repository to diff), removed after the capture.
-    ///
-    /// # Errors
-    /// Returns why the directory could not be created.
     pub fn directory(&mut self) -> std::io::Result<&std::path::Path> {
         if self.directory.is_none() {
             self.directory = Some(

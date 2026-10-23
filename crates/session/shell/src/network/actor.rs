@@ -71,6 +71,13 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(15);
 /// hold with no application message sent while idle; before the transport
 /// carried liveness, both were 15 to 16 s after the last 5 s heartbeat.
 const DEPARTURE_GRACE: Duration = Duration::from_secs(5);
+/// A neighbour's identity hello is answered with this device's own unless
+/// it announced itself on the topic this recently. A neighbour announces
+/// itself on a link it sees as new, such as after it restarted, which this
+/// side may not have seen as new and so not answered: without its answer
+/// the neighbour never learns who this device is. The bound keeps two
+/// devices from answering each other's answers.
+const IDENTITY_ANSWER_INTERVAL: Duration = Duration::from_secs(10);
 /// How often each workspace host session is asked for a fresh checkpoint
 /// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
 /// host session to ask.
@@ -236,6 +243,12 @@ pub enum PersonalFabricPayload {
         stamp: crate::shell::device_fabric::FabricStamp,
         outputs: Vec<crate::shell::device_fabric::DisplayOutputObservation>,
     },
+    /// Word to the device that asked ([`Self::RecordContentWant`]) that this
+    /// one keeps none of that content.
+    RecordContentLacks {
+        app_id: String,
+        hash: String,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -300,6 +313,12 @@ pub enum NetCmd {
     /// for a first subscription: a local app joined a record whose earlier
     /// traffic this device dropped because nothing held it then.
     Replay {
+        ws: WorkspaceId,
+    },
+    /// A neighbour on `ws` sent something this device cannot place without
+    /// the neighbour's identity: announce this device's own, which the
+    /// neighbour answers with its ([`IDENTITY_ANSWER_INTERVAL`]).
+    AnnounceIdentity {
         ws: WorkspaceId,
     },
     /// Ask the host of the joined room on `ws` to replay what it retains:
@@ -505,6 +524,14 @@ pub enum NetEvent {
     /// door, where it has one.
     NotAdmitted {
         ws: WorkspaceId,
+    },
+    /// A member of `ws` this device reaches through the workspace host
+    /// `host` joined (`active`) or left the host's live plane.
+    HostMember {
+        ws: WorkspaceId,
+        host: PeerId,
+        device: PeerId,
+        active: bool,
     },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
@@ -714,6 +741,11 @@ enum HostEvent {
         from: [u8; 32],
         frame: Vec<u8>,
     },
+    /// A member joined or left the host's live plane.
+    Member {
+        device: [u8; 32],
+        active: bool,
+    },
     Message {
         author: EndpointId,
         fingerprint: [u8; 32],
@@ -731,6 +763,9 @@ struct TopicRuntime {
     /// a renewed certificate or a new revocation goes out the tick it lands
     /// and an unchanged one never does.
     identity_sent: Option<[u8; 32]>,
+    /// When this device last announced its identity to the topic's
+    /// neighbours ([`IDENTITY_ANSWER_INTERVAL`]).
+    identity_announced: Option<Instant>,
     /// Whether gossip has had a neighbour on the topic: a `NeighborUp`, or a
     /// lag that may have hidden one. Until then nothing is handed to gossip
     /// (see [`Self::broadcast`]).
@@ -738,11 +773,19 @@ struct TopicRuntime {
 }
 
 impl TopicRuntime {
+    /// Whether this device announced its identity here within
+    /// [`IDENTITY_ANSWER_INTERVAL`].
+    fn announced_identity_lately(&self) -> bool {
+        self.identity_announced
+            .is_some_and(|announced| announced.elapsed() < IDENTITY_ANSWER_INTERVAL)
+    }
+
     fn new(sender: GossipSender, pump: tokio::task::JoinHandle<()>) -> Self {
         Self {
             sender,
             pump,
             identity_sent: None,
+            identity_announced: None,
             linked: false,
         }
     }
@@ -842,6 +885,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                         | NeighbourMsg::SurfaceViewRequest { .. }
                         | NeighbourMsg::RemoteAction { .. }
                         | NeighbourMsg::RecordContentPiece { .. }
+                        | NeighbourMsg::RecordContentLacks { .. }
                 ) {
                     tracing::warn!(peer = %peer, "invalid message on direct surface/control ALPN");
                     continue;
@@ -889,6 +933,7 @@ async fn enqueue_surface_event(
                 | NeighbourMsg::SurfaceViewRequest { .. }
                 | NeighbourMsg::RemoteAction { .. }
                 | NeighbourMsg::RecordContentPiece { .. }
+                | NeighbourMsg::RecordContentLacks { .. }
                 | NeighbourMsg::SurfaceStreamStart { .. }
                 | NeighbourMsg::SurfaceStreamEnd { .. }
                 | NeighbourMsg::PermissionGrant { .. },
@@ -1279,10 +1324,9 @@ struct PeerMembership {
     /// liveness check (see [`DEPARTURE_GRACE`]).
     expires: Option<Instant>,
     epoch: MembershipEpoch,
-    /// Fingerprints of the last identity and codec adverts taken from the
-    /// peer during this membership: a repeated advert changes nothing, but
-    /// one repeated after the peer was evicted and came back is new again.
-    identity_advert: Option<[u8; 32]>,
+    /// Fingerprint of the last codec advert taken from the peer during this
+    /// membership: a repeated advert changes nothing, but one repeated after
+    /// the peer was evicted and came back is new again.
     caps_advert: Option<[u8; 32]>,
 }
 
@@ -1291,7 +1335,6 @@ impl PeerMembership {
         Self {
             expires: Some(later(now, PEER_TIMEOUT)),
             epoch,
-            identity_advert: None,
             caps_advert: None,
         }
     }
@@ -1304,15 +1347,10 @@ impl PeerMembership {
         }
     }
 
-    /// Take advert `fingerprint` (identity when `identity`, codecs
-    /// otherwise), answering whether it is news from this peer.
-    fn take_advert(&mut self, identity: bool, fingerprint: [u8; 32]) -> bool {
-        let last = if identity {
-            &mut self.identity_advert
-        } else {
-            &mut self.caps_advert
-        };
-        last.replace(fingerprint) != Some(fingerprint)
+    /// Take codec advert `fingerprint`, answering whether it is news from
+    /// this peer.
+    fn take_caps_advert(&mut self, fingerprint: [u8; 32]) -> bool {
+        self.caps_advert.replace(fingerprint) != Some(fingerprint)
     }
 }
 
@@ -1605,6 +1643,15 @@ impl ActorState {
                     if let Some(task) = self.content_discovery_tasks.remove(&key) {
                         task.abort();
                     }
+                }
+            }
+            Some(NetCmd::AnnounceIdentity { ws }) => {
+                if self
+                    .topics
+                    .get(&ws)
+                    .is_some_and(|topic| !topic.announced_identity_lately())
+                {
+                    self.announce_identity(ws).await;
                 }
             }
             Some(NetCmd::Replay { ws }) => {
@@ -2438,7 +2485,10 @@ impl ActorState {
 
     async fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
         let RecordContentDelivery { ws, target, msg } = delivery;
-        if !matches!(msg, NeighbourMsg::RecordContentPiece { .. }) {
+        if !matches!(
+            msg,
+            NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
+        ) {
             tracing::warn!(
                 ws,
                 "refused a non-content message on the record-content route"
@@ -2497,7 +2547,9 @@ impl ActorState {
         // an action frame (up to a catalogue page) is worth waiting for.
         let budget = if matches!(
             msg,
-            NeighbourMsg::RemoteAction { .. } | NeighbourMsg::RecordContentPiece { .. }
+            NeighbourMsg::RemoteAction { .. }
+                | NeighbourMsg::RecordContentPiece { .. }
+                | NeighbourMsg::RecordContentLacks { .. }
         ) {
             Duration::from_secs(2)
         } else {
@@ -3018,10 +3070,13 @@ impl ActorState {
 
     /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
-    /// Whether a message `peer` sent on `ws` is news. An advert describes
-    /// its sender rather than reporting an event: it is news when it differs
-    /// from the last one this membership took, so a peer evicted and back is
-    /// heard again though it says the same thing.
+    /// Whether a message `peer` sent on `ws` is news. A codec advert
+    /// describes its sender rather than reporting an event: it is news when
+    /// it differs from the last one this membership took, so a peer evicted
+    /// and back is heard again though it says the same thing. An identity
+    /// hello is always news: it comes once per link or as an answer
+    /// ([`IDENTITY_ANSWER_INTERVAL`]), and the session binds the peer's
+    /// current membership to the identity each time.
     fn is_news(
         &mut self,
         ws: WorkspaceId,
@@ -3029,17 +3084,13 @@ impl ActorState {
         decoded: Option<&NeighbourMsg>,
         fingerprint: [u8; 32],
     ) -> bool {
-        let advert = match decoded {
-            Some(NeighbourMsg::IdentityHello { .. }) => Some(true),
-            Some(NeighbourMsg::MediaCapabilities { .. }) => Some(false),
-            _ => None,
-        };
-        match advert {
-            Some(identity) => self
+        match decoded {
+            Some(NeighbourMsg::IdentityHello { .. }) => true,
+            Some(NeighbourMsg::MediaCapabilities { .. }) => self
                 .peers_seen
                 .get_mut(&(ws, peer))
-                .is_some_and(|membership| membership.take_advert(identity, fingerprint)),
-            None => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
+                .is_some_and(|membership| membership.take_caps_advert(fingerprint)),
+            _ => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
         }
     }
 
@@ -3094,6 +3145,14 @@ impl ActorState {
                     );
                 }
                 let fingerprint = message_fingerprint(&message.content);
+                if matches!(decoded, Ok(NeighbourMsg::IdentityHello { .. }))
+                    && self
+                        .topics
+                        .get(&ws)
+                        .is_some_and(|topic| !topic.announced_identity_lately())
+                {
+                    self.announce_identity(ws).await;
+                }
                 if !self.is_news(ws, peer, decoded.as_ref().ok(), fingerprint) {
                     // A restarted device repeats a message already seen, such
                     // as its identity hello. The payload is old but the
@@ -3256,6 +3315,26 @@ impl ActorState {
         }
     }
 
+    /// The host `host` of `ws` reports another member device joined
+    /// (`active`) or left its live plane; `None` for this device itself.
+    fn host_member(
+        &self,
+        ws: WorkspaceId,
+        host: EndpointId,
+        device: [u8; 32],
+        active: bool,
+    ) -> Option<NetEvent> {
+        EndpointId::from_bytes(&device)
+            .ok()
+            .filter(|device| !self.is_own_device(device))
+            .map(|device| NetEvent::HostMember {
+                ws,
+                host,
+                device,
+                active,
+            })
+    }
+
     /// [`InternalEvent::Host`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
@@ -3264,6 +3343,7 @@ impl ActorState {
             HostEvent::NativeInput(_) => "HostNativeInput",
             HostEvent::Ready => "HostReady",
             HostEvent::Live { .. } => "HostLive",
+            HostEvent::Member { .. } => "HostMember",
             HostEvent::Voice(_) => "HostVoice",
             HostEvent::Closed => "HostClosed",
         });
@@ -3272,6 +3352,7 @@ impl ActorState {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
+            HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
             HostEvent::Voice(event) => {
                 let session = self
                     .host_sessions
@@ -3616,6 +3697,7 @@ impl ActorState {
             return;
         };
         topic.identity_sent = Some(message_fingerprint(&bytes));
+        topic.identity_announced = Some(Instant::now());
         if let Err(error) = topic.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
@@ -3644,6 +3726,7 @@ impl ActorState {
             return;
         }
         tracing::info!(ws, "device identity material changed; announcing it again");
+        topic.identity_announced = Some(Instant::now());
         if let Err(error) = topic.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
@@ -4207,6 +4290,9 @@ fn report_addrs(
             out.clear();
             out.push(current);
         }
+        // A new address or home relay: the network came back or moved, and
+        // a certificate renewal that failed meanwhile tries again.
+        tilo_identity_host::provisioning::RENEWAL_CAUSES.changed();
     };
     report(current);
     tokio::spawn(async move {
@@ -4854,6 +4940,7 @@ fn spawn_host_pump(
                     HostEvent::Ready
                 }
                 HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
+                HostInbound::Member { device, active } => HostEvent::Member { device, active },
                 HostInbound::Voice(event) => HostEvent::Voice(event),
                 // The shell opens no on-demand record yet.
                 HostInbound::RecordOpened { .. } => continue,
@@ -4932,12 +5019,16 @@ fn spawn_host_pump(
     })
 }
 
-/// A piece of a record's content a workspace host handed this device from
-/// `from`; `None` for anything else.
+/// A piece of a record's content, or word that a device keeps none, a
+/// workspace host handed this device from `from`; `None` for anything else.
 fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
     let author = EndpointId::from_bytes(from).ok()?;
     let msg = postcard::from_bytes(frame).ok()?;
-    matches!(msg, NeighbourMsg::RecordContentPiece { .. }).then(|| HostEvent::Message {
+    matches!(
+        msg,
+        NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. }
+    )
+    .then(|| HostEvent::Message {
         author,
         fingerprint: message_fingerprint(frame),
         replayed: false,

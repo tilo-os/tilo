@@ -270,10 +270,6 @@ fn display_time(time: x509_cert::time::Time) -> String {
 }
 
 /// Parse PEM or DER certificate bytes without invoking a general-purpose CLI.
-///
-/// # Errors
-///
-/// Returns an error for malformed, trailing, non-certificate, or expired data.
 pub fn inspect_certificate(bytes: &[u8]) -> Result<CertificateInfo, String> {
     let (der, certificate) = decode_single_certificate(bytes)?;
     let validity = &certificate.tbs_certificate.validity;
@@ -298,20 +294,12 @@ pub fn inspect_certificate(bytes: &[u8]) -> Result<CertificateInfo, String> {
 }
 
 /// Return the lowercase SHA-256 digest of a certificate's canonical DER.
-///
-/// # Errors
-///
-/// Returns an error for malformed, trailing, or non-certificate input.
 pub fn certificate_sha256(bytes: &[u8]) -> Result<String, String> {
     let (der, _) = decode_single_certificate(bytes)?;
     Ok(hex::encode(Sha256::digest(&der)))
 }
 
 /// Decode one PEM or DER X.509 certificate to its canonical DER form.
-///
-/// # Errors
-///
-/// Returns an error for malformed input, the wrong PEM label, or trailing data.
 pub fn certificate_der(bytes: &[u8]) -> Result<Vec<u8>, String> {
     use x509_cert::der::{Decode, DecodePem, Encode};
 
@@ -331,11 +319,6 @@ pub fn certificate_der(bytes: &[u8]) -> Result<Vec<u8>, String> {
 ///
 /// Signature owners and list ordering are deliberately ignored; firmware may
 /// rewrite either while the certificate DER remains the trust identity.
-///
-/// # Errors
-///
-/// Returns an error for malformed/truncated ESL data or when the certificate
-/// is absent.
 pub fn verify_efi_signature_list_contains_certificate(
     certificate_bytes: &[u8],
     signature_list: &[u8],
@@ -353,11 +336,6 @@ pub fn verify_efi_signature_list_contains_certificate(
 /// This is used before sealing an online signing key to PCR 7. Merely finding
 /// the owner certificate is insufficient: any additional certificate or image
 /// hash could boot another OS under the same PCR 7 value and expose that key.
-///
-/// # Errors
-///
-/// Returns an error for malformed/truncated ESL data, a missing certificate,
-/// or any additional trusted entry.
 pub fn verify_efi_signature_list_exclusively_contains_certificate(
     certificate_bytes: &[u8],
     signature_list: &[u8],
@@ -374,10 +352,6 @@ pub fn verify_efi_signature_list_exclusively_contains_certificate(
 
 /// Validate the framing and dimensions of every list and entry in an EFI
 /// Signature List blob.
-///
-/// # Errors
-///
-/// Returns an error for empty, malformed, truncated, or partially framed data.
 pub fn validate_efi_signature_list(signature_list: &[u8]) -> Result<usize, String> {
     let (_, entries) = inspect_efi_signature_list(None, signature_list)?;
     if entries == 0 {
@@ -505,10 +479,6 @@ pub fn certificate_efi_signature_list(certificate: &[u8]) -> Result<Vec<u8>, Str
 }
 
 /// Generate a 4096-bit RSA/SHA-256 self-signed certificate valid for 20 years.
-///
-/// # Errors
-///
-/// Returns an error if the OS random source or certificate encoder fails.
 pub fn generate_secure_boot_certificate(common_name: &str) -> Result<RsaCertificate, String> {
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_RSA_SHA256};
@@ -576,19 +546,11 @@ pub fn generate_tpm_authority_key() -> Result<TpmAuthorityKey, String> {
 }
 
 /// Create an RSA PKCS#1 v1.5 SHA-256 signature from a PEM private key.
-///
-/// # Errors
-///
-/// Returns an error if the key is malformed or signing fails.
 pub fn sign_rsa_sha256(private_key_pem: &str, message: &[u8]) -> Result<Vec<u8>, String> {
     sign_rsa_pkcs1_ring(private_key_pem, message, &ring::signature::RSA_PKCS1_SHA256)
 }
 
 /// Derive a PKCS#8 PEM public key from a PKCS#1 or PKCS#8 RSA private key.
-///
-/// # Errors
-///
-/// Returns an error if the private key is malformed or encoding fails.
 pub fn rsa_public_key_pem(private_key_pem: &str) -> Result<String, String> {
     use rsa::{
         RsaPrivateKey, RsaPublicKey, pkcs1::DecodeRsaPrivateKey, pkcs8::DecodePrivateKey,
@@ -604,10 +566,6 @@ pub fn rsa_public_key_pem(private_key_pem: &str) -> Result<String, String> {
 }
 
 /// Verify that an RSA private key is the private half of an X.509 certificate.
-///
-/// # Errors
-///
-/// Returns an error for malformed inputs, a non-RSA certificate, or a mismatch.
 pub fn rsa_private_key_matches_certificate(
     private_key_pem: &str,
     certificate_bytes: &[u8],
@@ -637,10 +595,6 @@ pub fn rsa_private_key_matches_certificate(
 }
 
 /// Verify an RSA PKCS#1 v1.5 SHA-256 signature using a PEM public key.
-///
-/// # Errors
-///
-/// Returns an error if the key/signature is malformed or verification fails.
 pub fn verify_rsa_sha256(
     public_key_pem: &str,
     message: &[u8],
@@ -751,11 +705,6 @@ pub fn verify_p256_sha256(
 /// attributes, matching `scripts/sign-file` with `CMS_NOCERTS`,
 /// `CMS_DETACHED`, and `CMS_NOATTR`.  The kernel resolves the signer from its
 /// built-in trusted keyring using the certificate issuer and serial number.
-///
-/// # Errors
-///
-/// Returns an error for malformed key/certificate material or DER encoding
-/// failure, and refuses input that is already module-signed.
 pub fn sign_kernel_module(
     private_key_pem: &str,
     certificate_bytes: &[u8],
@@ -921,11 +870,6 @@ pub fn sign_efi_variable_payload(
 
 /// Verify the exact Linux module-signature envelope emitted by
 /// [`sign_kernel_module`] against the supplied X.509 certificate.
-///
-/// # Errors
-///
-/// Returns an error for malformed trailers/CMS, unexpected algorithms or
-/// attributes, a mismatched signer identity, or an invalid signature.
 pub fn verify_kernel_module(certificate_bytes: &[u8], signed_module: &[u8]) -> Result<(), String> {
     use cms::{
         content_info::ContentInfo,
@@ -1483,11 +1427,6 @@ fn verify_authenticode_entry(
 ///
 /// Existing signatures are retained. The certificate table must be at the end
 /// of the image, as required for an unambiguous Authenticode digest.
-///
-/// # Errors
-///
-/// Returns an error for malformed keys, certificates, PE images, certificate
-/// tables, or signing/encoding failures.
 pub fn sign_efi_image(
     private_key_pem: &str,
     certificate_pem: &str,
@@ -1590,11 +1529,6 @@ fn embed_efi_signature(
 ///
 /// The supplied certificate is the trust anchor: certificates embedded beside
 /// it only matter for the code-signing purpose check, not as a chain.
-///
-/// # Errors
-///
-/// Returns an error for malformed input, when the image digest or signature is
-/// invalid, or when no signature is bound to the supplied certificate.
 pub fn verify_efi_image(certificate_pem: &str, image: &[u8]) -> Result<(), String> {
     use authenticode::{AttributeCertificateIterator, authenticode_digest};
     use authenticode_sha2::Digest as _;
@@ -1623,10 +1557,6 @@ pub fn verify_efi_image(certificate_pem: &str, image: &[u8]) -> Result<(), Strin
 ///
 /// This proves only that signature envelopes exist. Call [`verify_efi_image`]
 /// when a particular signing identity must be authenticated.
-///
-/// # Errors
-///
-/// Returns an error for malformed PE images or certificate tables.
 pub fn efi_signature_count(image: &[u8]) -> Result<usize, String> {
     use authenticode::{AttributeCertificateIterator, AuthenticodeSignature};
 
@@ -1914,7 +1844,6 @@ mod tests {
             .expect("public PEM");
         assert!(verify_p256_sha256(&other, message, encoded.as_bytes()).is_err());
 
-        // The same signature with s replaced by n - s still proves the signer.
         let (r, s) = (signature.r(), signature.s());
         let high = Signature::from_scalars(r, -*s).expect("high-s signature");
         let high = STANDARD.encode(high.to_der().as_bytes());

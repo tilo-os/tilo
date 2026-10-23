@@ -569,7 +569,6 @@ mod tests {
         assert!(app.undo(), "naming a drive is an undo step");
         assert!(app.state().names.is_empty());
 
-        // An agent names a drive in one call.
         app.call(
             "name-drive",
             serde_json::json!({ "serial": "S6Z1NJ0T934217X", "name": "Fast" }),

@@ -1,4 +1,3 @@
-//! Real firstboot seed authority + original-user adoption, in a private mount namespace.
 use super::*;
 #[path = "native_test_artifact.rs"]
 mod native_test_artifact;

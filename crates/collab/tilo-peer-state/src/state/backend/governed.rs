@@ -233,6 +233,11 @@ fn apply(
             Some(known) if crate::state::certificate_renewal::renews(cert, known.as_ref()) => {
                 cert_work.certificate(cert, Some(now_ns(now)))?
             }
+            // An older state of the room, from before the renewal it holds:
+            // the renewal stays.
+            Some(known) if crate::state::certificate_renewal::renews(known.as_ref(), cert) => {
+                known.clone()
+            }
             Some(_) => return Err(ImportError::CertificateConflict),
             None => cert_work.certificate(cert, Some(now_ns(now)))?,
         };
@@ -256,7 +261,8 @@ fn apply(
                 .insert(entry.clone())
                 .map_err(ImportError::Revocation)?;
         }
-        changed |= certificates.get(&cert.device_public_key).map(AsRef::as_ref) != Some(cert);
+        changed |=
+            certificates.get(&cert.device_public_key).map(AsRef::as_ref) != Some(verified.as_ref());
         cert_work.tree::<[u8; 32], VerifiedCertificate>()?;
         certificates.insert(cert.device_public_key, verified);
     }

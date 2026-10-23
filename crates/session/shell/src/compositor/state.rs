@@ -2890,14 +2890,24 @@ impl State {
     /// Send one message of `surface`'s stream on its room's topic: to its
     /// viewers alone when they are all the person's own devices.
     fn publish_legacy(&self, surface: SurfaceId, message: crate::network::NeighbourMsg) -> bool {
-        let Some(publish) = self.legacy_stream_publisher.as_ref() else {
-            return false;
-        };
         let viewers = self
             .active_sessions
             .get(&surface)
             .map(|session| session.viewer_ids())
             .unwrap_or_default();
+        self.publish_legacy_to(surface, message, viewers)
+    }
+
+    /// [`Self::publish_legacy`] to `viewers` of the window alone.
+    fn publish_legacy_to(
+        &self,
+        surface: SurfaceId,
+        message: crate::network::NeighbourMsg,
+        viewers: Vec<MsgPeerId>,
+    ) -> bool {
+        let Some(publish) = self.legacy_stream_publisher.as_ref() else {
+            return false;
+        };
         // Every viewer is one of the person's own devices or a member of the
         // room viewing it: each gets the stream over the direct route, to it
         // alone, end-to-end encrypted to that device.
@@ -3378,9 +3388,8 @@ impl State {
         for peer in removed {
             self.release_remote_focus_for_surface(peer, surface);
         }
-        // A new viewer starts at the keyframe `sync_viewers` asked for.
         if !added.is_empty() {
-            self.seed_share_frame(session, surface);
+            self.start_share_readers(session, surface, added);
         }
     }
 
@@ -3616,9 +3625,6 @@ impl State {
         }
     }
 
-    /// Encode and publish `surface`'s already captured frame, so a viewer
-    /// can start decoding without the window having to damage itself (a
-    /// static window may never do so).
     /// Viewer `peer` of `surface` could not use unit `seq` and asks for a
     /// keyframe. Only a device the share streams to may ask; the session
     /// rate-limits what it forces, and the frame goes out at once so a
@@ -3637,8 +3643,7 @@ impl State {
     }
 
     /// A member started reading `surface`'s stream through `peer`, a room's
-    /// window carrier: the share encodes a keyframe of the window's last
-    /// committed buffer at once, changed or not.
+    /// window carrier.
     pub fn start_share_reader(&self, peer: MsgPeerId, surface: SurfaceId) {
         let Some(session) = self.active_sessions.get(&surface) else {
             return;
@@ -3646,10 +3651,31 @@ impl State {
         if session.viewer_share(peer).is_none() {
             return;
         }
-        session.start_reader();
-        self.seed_share_frame(session, surface);
+        let _ = session.start_reader();
+        self.start_share_readers(session, surface, vec![peer]);
     }
 
+    /// `readers` start at the window's standing keyframe, sent to them alone;
+    /// once the window has changed since, at a keyframe encoded from its last
+    /// committed buffer.
+    fn start_share_readers(
+        &self,
+        session: &SharedFlatpakSession,
+        surface: SurfaceId,
+        readers: Vec<MsgPeerId>,
+    ) {
+        match session.standing_keyframe() {
+            Some(keyframe) if self.legacy_stream_publisher.is_some() => {
+                let _ = self.publish_legacy_to(surface, keyframe.into_neighbour_msg(), readers);
+            }
+            Some(_) => {}
+            None => self.seed_share_frame(session, surface),
+        }
+    }
+
+    /// Encode and publish `surface`'s already captured frame, so a viewer
+    /// can start decoding without the window having to damage itself (a
+    /// static window may never do so).
     fn seed_share_frame(&self, session: &SharedFlatpakSession, surface: SurfaceId) {
         if let Some(rgba) = self.share_frame(session, surface, || {
             crate::compositor::foreign::store()
@@ -7159,6 +7185,7 @@ impl XdgShellHandler for State {
         self.release_sheets_of_destroyed(surface_id);
         self.system_modals.retain(|id| *id != surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
+        crate::shell::downloaded_apps::forget_window(surface_id);
         crate::compositor::window_handles::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
@@ -7318,6 +7345,11 @@ impl XdgShellHandler for State {
                 )
             };
             crate::shell::launcher::record_host_window_open(surface_id, &app_id);
+            crate::compositor::downloaded_programs::observe(
+                surface.wl_surface(),
+                surface_id,
+                &app_id,
+            );
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }

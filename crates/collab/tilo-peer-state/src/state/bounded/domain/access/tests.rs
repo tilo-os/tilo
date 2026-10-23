@@ -84,7 +84,6 @@ fn native_current_access_matches_actual_legacy_room_and_record_decisions() {
                 old_document(&peer, device, app, record, now).is_ok()
             );
         }
-        // Removing the member closes both paths.
         let person = hex::encode(peer.core.certificates.get(&device).unwrap().user_public_key);
         let room = peer.core.room_doc.as_mut().unwrap();
         let members = room.get(ROOT, "members").unwrap().unwrap().1;

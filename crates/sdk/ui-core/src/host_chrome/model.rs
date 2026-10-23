@@ -28,7 +28,6 @@ pub(crate) enum CommandGroup {
     Search,
     /// The app's own document and effect actions.
     AppActions,
-    /// The app's own view actions.
     AppViews,
     /// Show or hide History, and compare selected changes.
     History,

@@ -5,10 +5,14 @@
 //! window's local, device-only view of the profile's extensions. Interface
 //! closures queue [`Command`]s, `sync` runs them and starts the slow parts
 //! (download, verify, unpack) on worker threads whose results come back
-//! through [`Outcome`]s, so nothing here blocks a frame.
+//! through [`Outcome`]s, so nothing here blocks a frame. The profile itself
+//! (which extensions are installed, approved and pinned, their manifests and
+//! icons) is read and written on one worker of its own, in order, since the
+//! window may be drawn on the compositor's frame loop.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
 use ui::icons::Icon;
@@ -75,6 +79,80 @@ fn badges_shown(installed: &[Installed], hosted: bool) -> Vec<String> {
 enum Outcome {
     Staged(Result<StagedPackage, String>),
     Installed(Result<ExtensionInfo, String>),
+    /// A profile job ran: the change it made refused, if it did, and the
+    /// profile as it then was.
+    Profile {
+        refused: Option<String>,
+        profile: Profile,
+    },
+}
+
+/// A change to the profile, made on the profile's worker.
+type ProfileChange = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+/// One job for the profile's worker: a change to make, if any, then a read
+/// of the profile, reading the icons of extensions not in `known`.
+struct ProfileJob {
+    change: Option<ProfileChange>,
+    known: HashSet<String>,
+}
+
+/// The profile's extensions as one read found them.
+struct Profile {
+    infos: Vec<ExtensionInfo>,
+    installed: Vec<Installed>,
+    wanted: Vec<Wanted>,
+    unwanted: Vec<String>,
+    /// Icons of extensions the read was told it did not know yet.
+    icons: Vec<(String, Option<vello::peniko::ImageData>)>,
+}
+
+/// Read the profile, with the icons of the extensions not in `known`.
+fn read_profile(known: &HashSet<String>) -> Profile {
+    let infos = extensions::list_installed();
+    let installed: Vec<Installed> = infos
+        .iter()
+        .filter_map(|info| {
+            Installed::read(
+                info,
+                extensions::is_approved(info),
+                extensions::is_pinned(&extensions::chrome_id(info)?),
+            )
+        })
+        .collect();
+    let wanted = installed
+        .iter()
+        .filter(|extension| extension.enabled)
+        .filter_map(|extension| {
+            Some(Wanted {
+                id: extension.id.clone(),
+                path: extension.root.canonicalize().ok()?,
+                name: extension.name.clone(),
+            })
+        })
+        .collect();
+    let unwanted = installed
+        .iter()
+        .filter(|extension| !extension.enabled)
+        .map(|extension| extension.id.clone())
+        .collect();
+    let icons = installed
+        .iter()
+        .filter(|extension| !known.contains(&extension.id))
+        .map(|extension| {
+            let icon = extension
+                .icon_path()
+                .and_then(|path| toolbar::read_icon(&path));
+            (extension.id.clone(), icon)
+        })
+        .collect();
+    Profile {
+        infos,
+        installed,
+        wanted,
+        unwanted,
+        icons,
+    }
 }
 
 /// What the anchored panel shows.
@@ -94,6 +172,8 @@ pub struct ExtensionController {
     active: bool,
     commands: Arc<Mutex<Vec<Command>>>,
     outcomes: Arc<Mutex<Vec<Outcome>>>,
+    /// The profile's worker, once started.
+    profile_jobs: Option<Sender<ProfileJob>>,
     host: ExtensionHost,
     installed: Vec<Installed>,
     infos: Vec<ExtensionInfo>,
@@ -112,6 +192,7 @@ impl ExtensionController {
             active,
             commands: Arc::default(),
             outcomes: Arc::default(),
+            profile_jobs: None,
             host: ExtensionHost::new(),
             installed: Vec::new(),
             infos: Vec::new(),
@@ -177,29 +258,37 @@ impl ExtensionController {
             .map(|mut queue| std::mem::take(&mut *queue))
             .unwrap_or_default();
         for outcome in outcomes {
-            self.busy = false;
-            self.refresh = true;
             changed = true;
             match outcome {
-                Outcome::Staged(Ok(package)) => self.panel = Some(Panel::Offer(Box::new(package))),
-                Outcome::Installed(Ok(info)) => {
-                    if let Err(error) = extensions::set_approved(&info, true) {
-                        self.panel = Some(Panel::Message(error.to_string()));
-                    } else {
-                        self.panel = Some(Panel::Message(format!("{} was added", info.name)));
+                Outcome::Profile { refused, profile } => {
+                    if let Some(error) = refused {
+                        self.panel = Some(Panel::Message(error));
                     }
+                    self.apply_profile(profile);
+                    continue;
+                }
+                Outcome::Staged(Ok(package)) => {
+                    self.panel = Some(Panel::Offer(Box::new(package)));
+                    self.refresh = true;
+                }
+                Outcome::Installed(Ok(info)) => {
+                    self.panel = Some(Panel::Message(format!("{} was added", info.name)));
+                    self.change_profile(move || {
+                        extensions::set_approved(&info, true).map_err(|error| error.to_string())
+                    });
                 }
                 Outcome::Staged(Err(error)) | Outcome::Installed(Err(error)) => {
                     self.panel = Some(Panel::Message(format!(
                         "Could not add the extension: {error}"
                     )));
+                    self.refresh = true;
                 }
             }
+            self.busy = false;
         }
         if self.refresh {
             self.refresh = false;
-            self.reload();
-            changed = true;
+            self.read_profile();
         }
         let now = ui::time::now();
         let shown = badges_shown(&self.installed, ui::window_toolbar::is_hosted());
@@ -247,47 +336,60 @@ impl ExtensionController {
         changed
     }
 
-    /// Re-read the profile and bring the engine in line with it.
-    fn reload(&mut self) {
-        let infos = extensions::list_installed();
-        let installed: Vec<Installed> = infos
-            .iter()
-            .filter_map(|info| {
-                Installed::read(
-                    info,
-                    extensions::is_approved(info),
-                    extensions::is_pinned(&extensions::chrome_id(info)?),
-                )
-            })
-            .collect();
-        let wanted: Vec<Wanted> = installed
-            .iter()
-            .filter(|extension| extension.enabled)
-            .filter_map(|extension| {
-                Some(Wanted {
-                    id: extension.id.clone(),
-                    path: extension.root.canonicalize().ok()?,
-                    name: extension.name.clone(),
-                })
-            })
-            .collect();
-        let unwanted: Vec<String> = installed
-            .iter()
-            .filter(|extension| !extension.enabled)
-            .map(|extension| extension.id.clone())
-            .collect();
-        self.host.reconcile(&wanted, &unwanted, ui::time::now());
-        self.icons
-            .retain(|id, _| installed.iter().any(|e| &e.id == id));
-        for extension in &installed {
-            self.icons.entry(extension.id.clone()).or_insert_with(|| {
-                extension
-                    .icon_path()
-                    .and_then(|path| toolbar::read_icon(&path))
+    /// Have the profile's worker read the profile.
+    fn read_profile(&mut self) {
+        self.profile_job(None);
+    }
+
+    /// Have the profile's worker make `change`, then read the profile.
+    fn change_profile(&mut self, change: impl FnOnce() -> Result<(), String> + Send + 'static) {
+        self.profile_job(Some(Box::new(change)));
+    }
+
+    fn profile_job(&mut self, change: Option<ProfileChange>) {
+        let job = ProfileJob {
+            change,
+            known: self.icons.keys().cloned().collect(),
+        };
+        let job = match &self.profile_jobs {
+            Some(jobs) => match jobs.send(job) {
+                Ok(()) => return,
+                Err(mpsc::SendError(job)) => job,
+            },
+            None => job,
+        };
+        let (jobs, queue) = mpsc::channel::<ProfileJob>();
+        let outcomes = self.outcomes.clone();
+        let spawned = std::thread::Builder::new()
+            .name("browser-extensions".into())
+            .spawn(move || {
+                for job in std::iter::once(job).chain(queue) {
+                    let refused = job.change.and_then(|change| change().err());
+                    let profile = read_profile(&job.known);
+                    if let Ok(mut queue) = outcomes.lock() {
+                        queue.push(Outcome::Profile { refused, profile });
+                    }
+                }
             });
+        match spawned {
+            Ok(_) => self.profile_jobs = Some(jobs),
+            Err(error) => {
+                self.panel = Some(Panel::Message(format!(
+                    "Extensions could not be read: {error}"
+                )));
+            }
         }
-        self.installed = installed;
-        self.infos = infos;
+    }
+
+    /// Bring the engine and the window in line with a read of the profile.
+    fn apply_profile(&mut self, profile: Profile) {
+        self.host
+            .reconcile(&profile.wanted, &profile.unwanted, ui::time::now());
+        self.icons
+            .retain(|id, _| profile.installed.iter().any(|e| &e.id == id));
+        self.icons.extend(profile.icons);
+        self.installed = profile.installed;
+        self.infos = profile.infos;
     }
 
     fn info_of(&self, id: &str) -> Option<&ExtensionInfo> {
@@ -345,21 +447,19 @@ impl ExtensionController {
             Command::Disable(id) => self.set_enabled(&id, false),
             Command::Remove(id) => {
                 if let Some(info) = self.info_of(&id).cloned() {
-                    let result = extensions::uninstall(&info, &extensions::extensions_dir());
                     self.host
                         .reconcile(&[], std::slice::from_ref(&id), ui::time::now());
                     self.host.forget(&id);
-                    if let Err(error) = result {
-                        self.panel = Some(Panel::Message(error.to_string()));
-                    }
-                    self.refresh = true;
+                    self.change_profile(move || {
+                        extensions::uninstall(&info, &extensions::extensions_dir())
+                            .map_err(|error| error.to_string())
+                    });
                 }
             }
             Command::Pin(id, pinned) => {
-                if let Err(error) = extensions::set_pinned(&id, pinned) {
-                    self.panel = Some(Panel::Message(error.to_string()));
-                }
-                self.refresh = true;
+                self.change_profile(move || {
+                    extensions::set_pinned(&id, pinned).map_err(|error| error.to_string())
+                });
             }
             Command::OpenAction(id) => self.open_action(&id, engine),
             // Busy: ignore a second fetch until the first settles.
@@ -369,10 +469,9 @@ impl ExtensionController {
 
     fn set_enabled(&mut self, id: &str, enabled: bool) {
         if let Some(info) = self.info_of(id).cloned() {
-            if let Err(error) = extensions::set_approved(&info, enabled) {
-                self.panel = Some(Panel::Message(error.to_string()));
-            }
-            self.refresh = true;
+            self.change_profile(move || {
+                extensions::set_approved(&info, enabled).map_err(|error| error.to_string())
+            });
         }
     }
 
@@ -405,8 +504,6 @@ impl ExtensionController {
             Err(error) => self.panel = Some(Panel::Message(error)),
         }
     }
-
-    // ---- Interface ------------------------------------------------------
 
     fn model(&self) -> toolbar::Model {
         toolbar::model(&self.installed, |id| self.host.action_state(id))
@@ -816,7 +913,6 @@ mod tests {
             Some(Panel::Popup { size, .. }) => *size,
             _ => None,
         };
-        // A popup wider than a panel, as tall as its list.
         page.push_event(ui::webview::WebViewEvent::DocumentSize {
             width: 380.0,
             height: 430.0,

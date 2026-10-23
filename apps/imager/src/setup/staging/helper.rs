@@ -244,7 +244,6 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
 
 pub use imager_backend::firmware::read_firmware;
 
-/// A fresh basis from the platform.
 pub fn read_basis(platform: &dyn Platform) -> super::platform::IoResult<Basis> {
     Ok(Basis {
         disk: platform.system_disk()?,
@@ -521,8 +520,6 @@ impl Engine<'_> {
     fn disk(&self) -> Result<Disk, Refusal> {
         self.platform.system_disk().map_err(io_refusal)
     }
-
-    // ----- authority -------------------------------------------------------
 
     fn resolve_release(&mut self, authority: &dyn ReleaseAuthority) -> Result<(), Refusal> {
         let release = &self.request.release;
@@ -802,8 +799,6 @@ impl Engine<'_> {
         Ok(())
     }
 
-    // ----- component files ---------------------------------------------------
-
     fn open_components(&mut self) -> Result<(), Refusal> {
         let paths = &self.request.component_paths;
         let open = |p: &str| open_input(p).map_err(|m| Refusal::new(codes::DIGEST_MISMATCH, m));
@@ -907,8 +902,6 @@ impl Engine<'_> {
         .expect("component opened")
     }
 
-    // ----- identities --------------------------------------------------------
-
     fn staged(&self, which: Which) -> &super::plan::StagedPartition {
         match which {
             Which::Esp => &self.plan().staging_esp,
@@ -990,8 +983,6 @@ impl Engine<'_> {
         })?;
         Ok((disk, p))
     }
-
-    // ----- aligned partition I/O ---------------------------------------------
 
     fn read_at(&self, disk: &Disk, guid: &str, offset: u64, buf: &mut [u8]) -> Result<(), Refusal> {
         let s = disk.sector_bytes;
@@ -1089,8 +1080,6 @@ impl Engine<'_> {
         };
         Ok(self.readback_digest(&disk, &p.guid, size, &mask, step)? == sha)
     }
-
-    // ----- step dispatch -----------------------------------------------------
 
     /// Run one step: re-verify a done step, adopt an effect that already
     /// holds, otherwise record intent, apply, re-read and record done.
@@ -1256,8 +1245,6 @@ impl Engine<'_> {
             }
         }
     }
-
-    // ----- shrink ------------------------------------------------------------
 
     fn check_shrink(&mut self) -> Result<Actual, Refusal> {
         let Some(shrink) = self.plan().shrink.clone() else {
@@ -1565,8 +1552,6 @@ impl Engine<'_> {
         .map_err(io_refusal)
     }
 
-    // ----- create --------------------------------------------------------------
-
     fn check_create(&mut self, which: Which) -> Result<Actual, Refusal> {
         let disk = self.disk()?;
         match self.find_staged(&disk, which) {
@@ -1613,8 +1598,6 @@ impl Engine<'_> {
         let disk = self.disk()?;
         self.platform.sync_disk(&disk).map_err(io_refusal)
     }
-
-    // ----- write ---------------------------------------------------------------
 
     fn check_write(&mut self, which: Which) -> Result<Actual, Refusal> {
         let step = match which {
@@ -1724,8 +1707,6 @@ impl Engine<'_> {
         let at = (BTRFS_SUPERBLOCK_OFFSET - start) as usize;
         Ok(btrfs_fsid(&buf[at..]).is_some_and(|fsid| super::same_guid(&fsid, &expected)))
     }
-
-    // ----- handoff -------------------------------------------------------------
 
     fn allocate_boot_number(&mut self) -> Result<u16, Refusal> {
         let order = efi::parse_u16_list(
@@ -2036,8 +2017,6 @@ impl Engine<'_> {
         self.platform.sync_disk(&disk).map_err(io_refusal)
     }
 
-    // ----- firmware ------------------------------------------------------------
-
     fn load_option(&self) -> Result<Vec<u8>, Refusal> {
         let disk = self.disk()?;
         let esp = self
@@ -2093,8 +2072,6 @@ impl Engine<'_> {
             )),
         })
     }
-
-    // ----- remove --------------------------------------------------------------
 
     fn check_remove_boot_next(&mut self) -> Result<Actual, Refusal> {
         let Some(number) = self.owned_number() else {
@@ -2214,8 +2191,6 @@ impl Engine<'_> {
         }
         Ok(Actual::Absent)
     }
-
-    // ----- actions ---------------------------------------------------------------
 
     fn stage(&mut self, authority: &dyn ReleaseAuthority) -> Result<(), Refusal> {
         self.resolve_release(authority)?;
@@ -2420,8 +2395,6 @@ fn find_placeholders(
     })
 }
 
-// ----- process boundary ------------------------------------------------------
-
 pub use imager_backend::staging::process::{Poll, Running, helper_executable};
 
 /// Validate the reviewed request before launching the native helper transport.
@@ -2571,10 +2544,8 @@ mod tests {
 
     use super::*;
 
-    /// Helper elevation, mode entry and progress polling.
     #[test]
     fn staging_helper_mode_is_exact_and_polls_partial_writes() {
-        // Phase `poll_reads_progress_then_outcome_across_partial_writes`.
         {
             use std::io::Write;
             let dir = tempfile::tempdir().unwrap();
@@ -2599,7 +2570,6 @@ mod tests {
             assert_eq!(poll.outcome.unwrap().code.as_deref(), Some("plan-stale"));
         }
 
-        // Phase `helper_mode_is_only_entered_by_its_exact_argument`.
         {
             assert_eq!(maybe_run_staging_helper(&["imager".into()]).unwrap(), None);
             assert_eq!(

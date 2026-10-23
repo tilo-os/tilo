@@ -69,9 +69,6 @@ class InterfaceError(Exception):
     """A schema could not be read from the code."""
 
 
-# ---------------------------------------------------------------------------
-# Rust tokens
-
 
 @dataclass(frozen=True)
 class Token:
@@ -207,9 +204,6 @@ def split_top(tokens: list[Token], sep: str = ",") -> list[list[Token]]:
     return [part for part in parts if part]
 
 
-# ---------------------------------------------------------------------------
-# Attributes
-
 
 @dataclass
 class Serde:
@@ -259,9 +253,6 @@ def read_attrs(tokens: list[Token], i: int) -> tuple[Attrs, int]:
         i = close + 1
     return attrs, i
 
-
-# ---------------------------------------------------------------------------
-# Rust items
 
 
 @dataclass
@@ -440,9 +431,6 @@ def read_variants(tokens: list[Token]) -> list[Variant]:
     return variants
 
 
-# ---------------------------------------------------------------------------
-# Wire names
-
 
 def renamed(name: str, rule: str | None, variant: bool = False) -> str:
     """`name` under serde's `rename_all` `rule`, exactly as serde_derive
@@ -483,9 +471,6 @@ def renamed(name: str, rule: str | None, variant: bool = False) -> str:
             return name.upper().replace("_", "-")
     raise InterfaceError(f"unknown rename_all rule {rule!r}")
 
-
-# ---------------------------------------------------------------------------
-# Schema
 
 
 def type_text(tokens: list[Token]) -> str:
@@ -714,9 +699,6 @@ def rust_schema(spec: Spec, root: Path = ROOT) -> dict[str, str]:
     return schema
 
 
-# ---------------------------------------------------------------------------
-# Cap'n Proto
-
 
 _CAPNP_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|@0x[0-9a-fA-F]+|@[0-9]+|0x[0-9a-fA-F]+|[A-Za-z_][A-Za-z0-9_.]*|->|\S')
 
@@ -803,9 +785,6 @@ def schema_of(spec: Spec, root: Path = ROOT) -> dict[str, str]:
     return dict(sorted(schema.items()))
 
 
-# ---------------------------------------------------------------------------
-# Compatibility
-
 
 def owner_of(key: str) -> str:
     """The type a schema line belongs to."""
@@ -856,9 +835,6 @@ def incompatible(before: dict[str, str], now: dict[str, str], encoding: str) -> 
         reasons.append(f"`{key}` is new ({value})")
     return reasons
 
-
-# ---------------------------------------------------------------------------
-# Files
 
 
 def interface_files(root: Path = ROOT) -> list[Path]:

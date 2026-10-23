@@ -478,7 +478,6 @@ mod wayland {
                 serial: 0,
                 unavailable: false,
             };
-            // Flush the get_input_method request.
             queue.roundtrip(&mut state).ok()?;
             if state.unavailable {
                 input_method.destroy();
@@ -501,9 +500,6 @@ mod wayland {
         }
 
         /// Invoke only one opaque slot from the current trusted service context.
-        ///
-        /// # Errors
-        /// Refuses when the private extension is absent or its connection fails.
         pub(crate) fn invoke_context(&self, generation: u32, slot: u32) -> Result<(), String> {
             let context = self
                 .context
@@ -725,8 +721,6 @@ mod tests {
 
         eprintln!("phase full_focus_cycle_number_field");
         {
-            // The exact sequence a compositor sends when focusing a number field,
-            // then blurring it.
             let mut s = ImState::new();
 
             let t = s.reduce(ImEvent::Activate);
@@ -780,7 +774,6 @@ mod tests {
             s.reduce(ImEvent::Done);
             assert_eq!(s.purpose(), InputPurpose::Email);
 
-            // New field gains focus.
             let t = s.reduce(ImEvent::Activate);
             assert_eq!(s.purpose(), InputPurpose::Text);
             assert_eq!(t.purpose_changed, Some(InputPurpose::Text));
@@ -793,7 +786,6 @@ mod tests {
             s.reduce(purpose_only(content_purpose::NUMBER));
             s.reduce(ImEvent::Done);
 
-            // Field re-reports a different purpose without a re-activate.
             s.reduce(purpose_only(content_purpose::EMAIL));
             let t = s.reduce(ImEvent::Done);
             assert_eq!(t.visibility_changed, None);

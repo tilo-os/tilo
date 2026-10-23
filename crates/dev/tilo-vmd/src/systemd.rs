@@ -1989,7 +1989,6 @@ mod tests {
     fn the_device_session_is_the_board_layers_session() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let read = |path: &str| fs::read_to_string(repo.join(path)).unwrap();
-        // Phase `the_names_match_the_board_layer`.
         {
             let layer = read("os/dev/install-board-layer.sh");
             assert!(
@@ -2013,7 +2012,6 @@ mod tests {
                 Path::new("/run/user/1000/tilo-session/test-control.sock")
             );
         }
-        // Phase `the_active_instance_is_the_session`.
         {
             let listing = "tilo-board-headless-session@old.service loaded inactive dead Tilo board session for old\n\
                            tilo-board-headless-session@quickuser.service loaded active running Tilo board session for quickuser\n";
@@ -2038,7 +2036,6 @@ mod tests {
     /// greetd's worker leads on seat0, never the greeter's or a slot's.
     #[test]
     fn the_device_session_of_a_laptop_is_the_owners_greetd_login() {
-        // Phase `a_login_is_found_by_its_greetd_worker`.
         {
             let shown = |id: &str, text: &str| parse_logind_session(id, text);
             let greeter = shown(
@@ -2072,7 +2069,6 @@ mod tests {
             assert_eq!(greetd_login(&sessions[..3], 500, parent), None);
             assert_eq!(greetd_login(&sessions, 0, parent), None);
         }
-        // Phase `the_names_match_tilo_session`.
         {
             let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
             let wrapper = repo.join("os/usr/libexec").join(LOGIN_WRAPPER);
@@ -2101,14 +2097,12 @@ mod tests {
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
         png.extend_from_slice(b"\0\0\0\x0dIHDR-and-pixels");
         png.extend_from_slice(b"\0\0\0\0IEND\xae\x42\x60\x82");
-        // Phase `only_a_whole_png_counts`.
         {
             assert!(png_complete(&png));
             assert!(!png_complete(&png[..png.len() - 1]));
             assert!(!png_complete(&png[..20]));
             assert!(!png_complete(b""));
         }
-        // Phase `the_read_waits_for_the_frame_that_writes_the_file`.
         {
             let writer = {
                 let (path, png) = (path.clone(), png.clone());
@@ -2123,7 +2117,6 @@ mod tests {
             writer.join().unwrap();
             assert_eq!(read, png);
         }
-        // Phase `a_snapshot_that_never_lands_is_an_error_not_a_hang`.
         {
             fs::write(&path, &png[..20]).unwrap();
             let error = await_png(&path, std::time::Duration::from_millis(200)).unwrap_err();

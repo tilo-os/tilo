@@ -461,7 +461,6 @@ fn holder_refusal(holders: &HashMap<TabId, ui::widget::TabHolder>, tab: TabId) -
     )
 }
 
-/// Where `tab` is in `tree`.
 fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
     tree.workspaces.iter().find_map(|workspace| {
         workspace.strips.iter().find_map(|strip| {

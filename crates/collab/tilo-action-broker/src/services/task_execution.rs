@@ -70,10 +70,6 @@ impl NativeTaskActionRequirement {
     /// Where any of them asks first, the run pauses for its person: unless
     /// the invocation is [`Self::confirmed`], the answer is an error starting
     /// with [`tilo_actions::draft::AWAITING_CONFIRMATION`].
-    ///
-    /// # Errors
-    /// The room is unavailable, the current agent is not allowed this
-    /// action, or it waits for its person's confirmation.
     pub fn check(
         &self,
         peer: &tilo_peer_state::StatePeer,
@@ -163,10 +159,6 @@ impl NativeTaskActionRequirement {
     /// on the starter's live grants, held to the issue's own grant set.
     /// The tracker freezes no scope: the starter's live grants and the
     /// agent's bound it.
-    ///
-    /// # Errors
-    /// The room is unavailable, the run ended or was replaced, the agent is
-    /// not allowed this action, or it waits for its person's confirmation.
     pub fn check_tracker(
         &self,
         peer: &tilo_peer_state::StatePeer,
@@ -302,14 +294,8 @@ fn not_allowed(kind: tilo_action_policy::ActionKind, whose: &str) -> String {
 pub trait WorkspaceTaskExecution: Send + Sync {
     fn requires_room(&self, room: &str) -> bool;
     /// Read the canonical task controls in this native workspace.
-    ///
-    /// # Errors
-    /// The owner is unavailable or this service does not govern the room.
     fn snapshot(&self, room: &str) -> Result<WorkspaceTaskSnapshot, String>;
     /// Read instructions only while the assigned agent remains a current member.
-    ///
-    /// # Errors
-    /// The owner is unavailable or current agent admission ended.
     fn agent_snapshot(&self, room: &str, agent: &str) -> Result<WorkspaceTaskSnapshot, String>;
     /// The broker supplies a binding derived from its authenticated channel.
     /// Authority uses the host's existing enrolled attestation, never a wire grant.
@@ -320,9 +306,6 @@ pub trait WorkspaceTaskExecution: Send + Sync {
         command: WorkspaceTaskCommand,
     ) -> tilo_owner_commit::CommitFuture;
     /// Check the current owner capability policy before observing retained action output.
-    ///
-    /// # Errors
-    /// The room or actor is unavailable, or its action capability was revoked.
     fn authorize_action(
         &self,
         room: &str,
@@ -343,9 +326,6 @@ pub trait WorkspaceTaskExecution: Send + Sync {
     ) -> Result<(), String>;
 
     /// Runs ordinary action admission inside the existing serialized task turn.
-    ///
-    /// # Errors
-    /// Current membership, approval or instruction frontier changed, or admission fails.
     fn admit(
         &self,
         room: &str,
@@ -365,7 +345,6 @@ pub const TRACKER_APP: &str = "so.tilo.tasks";
 /// they act on.
 pub const TRACKER_RESOURCE: &str = "tasks.tracker";
 
-/// Whether `task_id` names an issue of the tracker.
 #[must_use]
 pub fn is_tracker_issue(task_id: &str) -> bool {
     task_id.starts_with(TRACKER_ISSUE_PREFIX)
@@ -466,9 +445,6 @@ pub trait TrackerRuns: Send + Sync {
     /// starter, to `requirement`, as [`NativeTaskActionRequirement::check`]
     /// does for a room task. Where any of them asks first, the error starts
     /// with [`tilo_actions::draft::AWAITING_CONFIRMATION`].
-    ///
-    /// # Errors
-    /// The action is not allowed, or waits for the starter's confirmation.
     fn authorize_action(
         &self,
         room: &str,

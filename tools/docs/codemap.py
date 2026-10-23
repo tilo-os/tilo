@@ -67,7 +67,6 @@ def doc_paragraphs(crate: Path) -> list[str]:
         attribute_depth = 0
         for line in path.read_text(errors="replace").splitlines()[:120]:
             stripped = line.strip()
-            # Skip inner attributes, including ones split over several lines.
             if attribute_depth or stripped.startswith("#!["):
                 attribute_depth += stripped.count("[") - stripped.count("]")
                 continue

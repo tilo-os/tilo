@@ -145,13 +145,11 @@ mod tests {
 
     #[test]
     fn store_volumes_decode_mountinfo_and_exclude_tmp() {
-        // Phase `mountinfo_escapes_are_decoded`.
         {
             assert_eq!(unescape_mountinfo("/a\\040b"), "/a b");
             assert_eq!(unescape_mountinfo("/plain"), "/plain");
             assert_eq!(unescape_mountinfo("/x\\"), "/x\\");
         }
-        // Phase `tmp_is_not_a_store_volume`.
         {
             assert!(check_dedicated(Path::new("/proc")).is_err());
         }

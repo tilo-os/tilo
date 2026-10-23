@@ -292,7 +292,6 @@ mod tests {
             gate.decide(&tree(&["a"], 0), None, t0),
             SemanticsDecision::Deliver { forced: true }
         );
-        // Inside the window a moved frame waits, with the deadline set.
         assert!(gate.defer_unbuilt(None, t0 + Duration::from_millis(10)));
         assert_eq!(gate.due(), Some(t0 + Duration::from_millis(100)));
         // An IME line that moved needs the tree at once.
@@ -310,7 +309,6 @@ mod tests {
         assert_eq!(gate.due(), Some(t0 + Duration::from_millis(300)));
         assert!(gate.defer_unbuilt(None, t0 + Duration::from_millis(250)));
         assert_eq!(gate.due(), Some(t0 + Duration::from_millis(300)));
-        // Once it has come, the frame's tree is built.
         assert!(!gate.would_defer_unbuilt(t0 + Duration::from_millis(300)));
         assert!(!gate.defer_unbuilt(None, t0 + Duration::from_millis(300)));
     }
@@ -328,7 +326,6 @@ mod tests {
         assert_eq!(gate.due(), None);
         // An IME line that moved needs the tree.
         assert!(!gate.unchanged_unbuilt(Some(&ime(0, 40)), ms(510)));
-        // A held change waits for its deadline, and is built then.
         assert!(gate.defer_unbuilt(None, ms(520)));
         assert!(gate.unchanged_unbuilt(None, ms(600)));
         assert!(!gate.unchanged_unbuilt(None, ms(620)));
@@ -493,7 +490,6 @@ mod tests {
             gate.decide(&tree(&["a", ""], 0), None, ms(30)),
             SemanticsDecision::Unchanged
         );
-        // A request during a deferred change delivers the current tree now.
         assert_eq!(
             gate.decide(&tree(&["ab", ""], 0), None, ms(40)),
             SemanticsDecision::Deferred(ms(120))

@@ -272,7 +272,6 @@ fn draw_member_row(ctx: &mut PaintCtx<'_>, row: &MemberRow, view: &MemberRowView
     }
 }
 
-/// `slot` narrowed to `height`, centred on it.
 fn centred(slot: Rect, height: f64) -> Rect {
     Rect::new(
         slot.x0,
@@ -317,7 +316,6 @@ mod tests {
         .ok();
         assert_eq!(label(&ws, &owner).as_deref(), Some("Cancel transfer"));
         assert_eq!(label(&ws, &recipient).as_deref(), Some("Accept ownership"));
-        // Each leads to the ownership action it names.
         let actions: Vec<String> = super::super::ownership_transfer_resource(&ws, &owner)
             .actions
             .iter()
@@ -342,7 +340,6 @@ mod tests {
             member_row_controls(owner, "owner"),
             (Rect::ZERO, Rect::ZERO)
         );
-        // Ada's row offers both to the owner.
         let (role, remove) = member_row_controls(ada, "owner");
         assert!(role.area() > 0.0 && remove.area() > 0.0);
         // Ada, looking at her own row, cannot remove herself here.

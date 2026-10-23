@@ -9,6 +9,8 @@ pub mod action_groups;
 pub mod actors;
 #[path = "attached_view.rs"]
 pub mod attached_view;
+#[path = "child_records.rs"]
+pub mod child_records;
 #[path = "child_resources.rs"]
 pub mod child_resources;
 #[path = "confirmation.rs"]

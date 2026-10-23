@@ -97,9 +97,6 @@ pub struct Stub {
 
 impl Stub {
     /// Serve `udp` and `tcp` (already bound inside the namespace).
-    ///
-    /// # Errors
-    /// Returns the error configuring the sockets or starting a thread.
     pub fn start(udp: UdpSocket, tcp: TcpListener, shared: &Arc<Shared>) -> std::io::Result<Self> {
         // The UDP socket stays blocking: its clones send the replies, and a
         // non-blocking send could drop one when the buffer is full.
@@ -610,7 +607,6 @@ mod tests {
         assert_eq!(Some(reply), answer(&shared, &allowed, Transport::Udp));
         assert_eq!(asked.load(Ordering::SeqCst), 2);
 
-        // Over TCP, two queries on one connection.
         let mut client = TcpStream::connect(running.tcp).unwrap();
         client
             .set_read_timeout(Some(tilo_test_env::hang_bound()))

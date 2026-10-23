@@ -534,7 +534,6 @@ mod tests {
 
     #[test]
     fn extension_archives_install_list_and_reject_invalid_packages() {
-        // Phase `installs_xpi_and_reads_manifest`.
         {
             let root = tempfile::tempdir().unwrap();
             let info = install_from_bytes(&fixture_zip(), root.path()).unwrap();
@@ -588,7 +587,6 @@ mod tests {
             assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 0);
         }
 
-        // Phase `lists_installed_extensions`.
         {
             let root = tempfile::tempdir().unwrap();
             install_from_bytes(&fixture_zip(), root.path()).unwrap();
@@ -597,7 +595,6 @@ mod tests {
             assert_eq!(listed[0].name, "Dark Reader");
         }
 
-        // Phase `rejects_zip_without_manifest`.
         {
             let mut buf = Cursor::new(Vec::new());
             {
@@ -614,7 +611,6 @@ mod tests {
             ));
         }
 
-        // Phase `oversized_archive_is_rejected_before_parsing`.
         {
             let bytes = vec![0; MAX_ARCHIVE_BYTES + 1];
             assert!(matches!(
@@ -624,10 +620,8 @@ mod tests {
         }
     }
 
-    /// Identifier fallbacks, path containment and manifest bounds.
     #[test]
     fn extension_identifiers_and_manifests_are_safe_and_bounded() {
-        // Phase `slug_fallback_for_manifests_without_gecko_id`.
         {
             let manifest = r#"{"manifest_version": 3, "name": "My Cool Tool!", "version": "1.0"}"#;
             let info = parse_manifest(manifest).unwrap();
@@ -635,7 +629,6 @@ mod tests {
             assert_eq!(info.manifest_version, 3);
         }
 
-        // Phase `manifest_identifier_cannot_escape_extension_root`.
         {
             let manifest = r#"{
                 "manifest_version": 3,
@@ -648,7 +641,6 @@ mod tests {
             assert!(!info.id.contains('/'));
         }
 
-        // Phase `non_ascii_name_gets_a_nonempty_safe_fallback_identifier`.
         {
             let manifest = r#"{"manifest_version": 3, "name": "🌙", "version": "1.0"}"#;
             let info = parse_manifest(manifest).unwrap();
@@ -660,7 +652,6 @@ mod tests {
             );
         }
 
-        // Phase `inventory_skips_manifests_larger_than_the_install_limit`.
         {
             let root = tempfile::tempdir().unwrap();
             let extension = root.path().join("oversized");
@@ -674,7 +665,6 @@ mod tests {
             assert!(list_in(root.path()).is_empty());
         }
 
-        // Phase `manifest_fields_and_permission_lists_are_bounded`.
         {
             let oversized_name = "a".repeat(MAX_EXTENSION_NAME_BYTES + 1);
             let manifest = format!(
@@ -744,9 +734,6 @@ pub fn is_approved(extension: &ExtensionInfo) -> bool {
             .is_some_and(|(approved, current)| approved == current)
 }
 /// Update startup approval for this installed extension.
-///
-/// # Errors
-/// Returns an error for an invalid extension path, unsupported manifest version or filesystem failure.
 pub fn set_approved(extension: &ExtensionInfo, approved: bool) -> Result<(), ExtensionError> {
     let path = approval_path(extension)
         .ok_or_else(|| ExtensionError::Manifest("Extension path is invalid".into()))?;

@@ -201,11 +201,6 @@ impl PairingReplySender {
 
     /// Answer once.  Returns the unsent reply if `BlueZ` already cancelled the request or the
     /// agent stopped listening.
-    ///
-    /// # Errors
-    ///
-    /// Returns the original reply if this prompt was already answered, cancelled, or its receiver
-    /// was dropped.
     pub fn send(&self, reply: PairingReply) -> Result<(), PairingReply> {
         let Ok(mut sender) = self.inner.lock() else {
             return Err(reply);
@@ -619,21 +614,11 @@ impl AgentRegistration {
     /// Serve `agent` at [`AGENT_PATH`] on `connection`, register it with `BlueZ`, and ask to
     /// become the default agent — which routes prompts for pairings the user starts from
     /// anywhere (including `bluetoothctl` or the remote device) to this desktop.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if serving the object or `RegisterAgent` fails (for
-    /// example, another agent is already registered at this path).
     pub async fn register(connection: &Connection, agent: PairingAgent) -> zbus::Result<Self> {
         Self::register_at(connection, agent, AGENT_PATH, AGENT_CAPABILITY).await
     }
 
     /// Register at an explicit path and capability. Tests use this to run several agents on one bus.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `path` is not a valid object path, or if serving
-    /// the object or the `RegisterAgent` D-Bus call fails.
     pub async fn register_at(
         connection: &Connection,
         agent: PairingAgent,
@@ -668,11 +653,6 @@ impl AgentRegistration {
     }
 
     /// Unregister from `BlueZ` and drop the object.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `UnregisterAgent` D-Bus call fails or removing
-    /// the served object fails.
     pub async fn unregister(self) -> zbus::Result<()> {
         let object_path = ObjectPath::try_from(self.path.clone())?;
         let manager = zbus::Proxy::new(
@@ -777,7 +757,6 @@ mod tests {
             });
             assert_eq!(a.request_passkey(dev()).await.unwrap(), 4321);
         }
-        // Phase `typed_pin_is_returned_verbatim`.
         {
             let (a, mut rx) = agent();
             tokio::spawn(async move {
@@ -805,7 +784,6 @@ mod tests {
             );
             assert_eq!(request.prompt.passkey_text().as_deref(), Some("000042"));
         }
-        // Phase `cancel_and_release_reach_the_ui`.
         {
             let (a, mut rx) = agent();
             a.cancel();
@@ -866,7 +844,6 @@ mod tests {
             ]
         );
 
-        // The display methods return at once, carrying the code to show.
         a.display_passkey(dev(), 42, 2);
         a.display_pin_code(dev(), "1234".into());
         for expected in [
@@ -933,7 +910,6 @@ mod tests {
             let err = a.request_passkey(dev()).await.unwrap_err();
             assert!(matches!(err, AgentError::Canceled(_)), "{err:?}");
         }
-        // Phase `dropping_the_agent_rejects_retained_pairing_replies`.
         {
             let (a, _rx) =
                 PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
@@ -950,7 +926,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn the_bounded_event_queue_rejects_overflow_and_drains_on_shutdown() {
-        // Phase `a_full_event_queue_rejects_authorization_instead_of_accumulating_work`.
         {
             let (a, _rx) =
                 PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
@@ -963,7 +938,6 @@ mod tests {
                 matches!(err, AgentError::Rejected(message) if message == "pairing UI is busy")
             );
         }
-        // Phase `request_id_exhaustion_never_wraps_or_replaces_an_active_reply`.
         {
             let (a, mut rx) =
                 PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 2);
@@ -1003,7 +977,6 @@ mod tests {
                 Err(AgentError::Rejected(_))
             ));
         }
-        // Phase `draining_a_bounded_queue_admits_the_next_pairing_request`.
         {
             let (a, mut rx) =
                 PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
@@ -1021,7 +994,6 @@ mod tests {
             reply.send(PairingReply::Accept).unwrap();
             assert!(asking.await.unwrap().is_ok());
         }
-        // Phase `cancel_is_delivered_and_rejects_an_ask_even_when_the_queue_is_full`.
         {
             let (a, mut rx) =
                 PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
@@ -1045,7 +1017,6 @@ mod tests {
                 Err(AgentError::Rejected(_))
             ));
         }
-        // Phase `release_rejects_pending_work_and_prevents_new_requests`.
         {
             let (a, mut rx) =
                 PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
@@ -1067,7 +1038,6 @@ mod tests {
                 matches!(err, AgentError::Rejected(message) if message == "pairing agent released")
             );
         }
-        // Phase `receiver_shutdown_drains_admitted_events_then_closes`.
         {
             let (a, mut rx) =
                 PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
@@ -1079,7 +1049,6 @@ mod tests {
             drop(a);
             assert!(rx.recv().await.is_none());
         }
-        // Phase `oversized_daemon_strings_do_not_enter_the_event_queue`.
         {
             let (a, mut rx) =
                 PairingAgent::with_event_capacity(DeviceNames::new(), Duration::from_secs(1), 1);
@@ -1096,14 +1065,12 @@ mod tests {
 
     #[test]
     fn the_name_cache_is_bounded_and_falls_back_to_addresses() {
-        // Phase `oversized_names_are_not_retained_in_the_cache`.
         {
             let names = DeviceNames::new();
             let path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
             names.set(path, &"x".repeat(MAX_DEVICE_NAME_BYTES + 1));
             assert_eq!(names.get(path), "AA:BB:CC:DD:EE:FF");
         }
-        // Phase `a_full_name_cache_uses_the_address_for_new_devices`.
         {
             let names = DeviceNames::with_capacity(1);
             names.set("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", "first");

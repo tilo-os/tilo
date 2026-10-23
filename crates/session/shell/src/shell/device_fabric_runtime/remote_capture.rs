@@ -124,7 +124,6 @@ impl CaptureConsentSheets {
     }
 }
 
-/// The consent sheet's handle for a capture request.
 fn consent_handle(request: [u8; 16]) -> String {
     format!("remote-capture/{}", hex::encode(request))
 }

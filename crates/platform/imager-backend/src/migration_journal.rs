@@ -1235,9 +1235,6 @@ pub fn copy_reviewed(
 /// Reopen a private journal and revalidate native roots, source facts and output
 /// bytes. Changed or unrecorded output is retained as a conflict requiring review.
 /// Linux without a persistent filesystem UUID is restricted to the same boot.
-///
-/// # Errors
-/// Returns an error for corrupt receipts, changed roots, or unavailable durable storage.
 pub fn resume_folder(
     journal_path: &Path,
     cancelled: &AtomicBool,
@@ -1262,7 +1259,6 @@ mod tests {
         serde_json::from_value(serde_json::to_value(document).unwrap()).unwrap()
     }
 
-    /// Torn tails, recovery failure, legacy upgrades and malformed journals.
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1418,8 +1414,6 @@ mod tests {
             assert!(resume_folder(&journal, &cancel, |_| {}).unwrap().complete());
         });
 
-        // Phase `restarts_after_one_durable_file_and_preserves_originals`.
-        // Removing durable receipts or skipping output revalidation breaks restart.
         isolated(
             "restarts_after_one_durable_file_and_preserves_originals",
             || {
@@ -1823,7 +1817,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn resume_revalidates_journal_identity_and_source_content() {
-        // Phase `private_journal_permissions_and_nofollow_are_enforced`.
         #[cfg(unix)]
         isolated(
             "private_journal_permissions_and_nofollow_are_enforced",

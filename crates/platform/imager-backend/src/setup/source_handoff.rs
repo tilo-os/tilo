@@ -22,11 +22,6 @@ impl Handoff {
     /// identity is public; the generated package password never leaves this
     /// value until the destination proves its identity and a person approves
     /// the exact request.
-    ///
-    /// # Errors
-    ///
-    /// The host has no identity custody or peer endpoint, or the operation id
-    /// is invalid.
     pub fn bind(
         identity: &crate::setup::prepared_identity::PreparedIdentity,
         operation_id: String,
@@ -49,9 +44,6 @@ impl Handoff {
         self.inner.cancel();
     }
 
-    /// # Errors
-    ///
-    /// The approval token is malformed or the endpoint stopped.
     pub fn approve(&self, approval: &str) -> io::Result<()> {
         self.inner.approve(approval)
     }
@@ -62,11 +54,6 @@ impl Handoff {
     }
 
     /// Make the exact ciphertext available to the approved destination.
-    ///
-    /// # Errors
-    ///
-    /// The package is empty or oversized, the digest differs from the bytes, or
-    /// the endpoint stopped.
     pub fn serve(&self, ciphertext: Vec<u8>, digest: [u8; 32]) -> io::Result<()> {
         self.inner.serve(ciphertext, digest)
     }

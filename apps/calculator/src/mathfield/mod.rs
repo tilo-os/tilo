@@ -365,8 +365,6 @@ impl MathField {
         s
     }
 
-    // -- input ---------------------------------------------------------------
-
     /// Handle a key press. Returns `true` if it changed the content (so the
     /// caller can persist + re-plot). Caret-only moves return `false`.
     pub fn handle_key(&mut self, key: &WKey, modifiers: &Modifiers) -> bool {

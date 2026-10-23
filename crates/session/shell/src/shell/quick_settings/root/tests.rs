@@ -919,10 +919,8 @@ fn the_sliders_sit_on_the_panel_not_in_a_card_of_their_own() {
         let first = root.slider_face_rect(sliders, 0);
         let second = root.slider_face_rect(sliders, 1);
         for probe in [
-            // The block's leading edge, beside each band's glyph.
             Point::new(sliders.x0 + 3.0, first.center().y),
             Point::new(sliders.x0 + 3.0, second.center().y),
-            // Between the two bands.
             Point::new(
                 first.x0 + 4.0,
                 f64::midpoint(first.y1, second.y0).min(second.y0 - 1.0),

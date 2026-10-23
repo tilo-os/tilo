@@ -389,7 +389,6 @@ mod tests {
             identify_process(tree.path(), 1, 1000).unwrap().as_str(),
             "flatpak:org.example.Chat"
         );
-        // An app that writes another name into its own info file.
         let forged = "[Application]\nname=org.example.Bank\n";
         fake_process(
             tree.path(),
@@ -476,7 +475,6 @@ mod tests {
             identify_proven_process(tree.path(), 8, 1000, Some(Path::new("/usr/bin/true"))),
             Err(UnknownCaller::OtherUser)
         );
-        // A readable link names the caller, whatever it proved.
         assert_eq!(
             identify_proven_process(tree.path(), 7, 1000, Some(&home))
                 .unwrap()

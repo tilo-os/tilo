@@ -85,10 +85,20 @@ fn pane(slot: Slot, below_divider: bool) -> Column {
 }
 
 /// Preserve the shared divider across request-view replacements, with an
-/// explicit local reset requested by the published header control.
+/// explicit local reset requested by the published header control. It
+/// reports whether the divider moved, so the reset is offered only then.
 struct RequestSplit {
     split: ResizableSplit<Column, Column>,
     reset: LocalState<bool>,
+    resized: LocalState<bool>,
+}
+impl RequestSplit {
+    fn report(&self) {
+        let resized = !self.split.is_at_content_size();
+        if self.resized.get() != resized {
+            self.resized.set(resized);
+        }
+    }
 }
 impl ui::widget::Decorator for RequestSplit {
     type Inner = ResizableSplit<Column, Column>;
@@ -104,6 +114,23 @@ impl ui::widget::Decorator for RequestSplit {
             self.split.reset_to_content_size();
         }
         self.split.sync(state, path);
+        self.report();
+    }
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        ui::widget::Widget::handle_event(&mut self.split, event, ctx);
+        self.report();
+    }
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        let handled =
+            ui::widget::Widget::perform_action(&mut self.split, action, key_path, state, path);
+        self.report();
+        handled
     }
 }
 
@@ -344,15 +371,18 @@ impl ApiTesterApp {
     }
 
     /// The header control that gives the request and the response their
-    /// first sizes again.
+    /// first sizes again, offered only while the person moved the divider.
+    /// Its glyph is the request standing on the divider, not a rotating
+    /// arrow, which reads as reloading the request.
     fn reset_area(sink: &Sink) -> ui::widget::Button {
         let reset = sink.reset_area.clone();
         ui::widget::Button::icon_only(
             "api.reset-request-area",
-            ui::icons::Icon::RotateCcw,
+            ui::icons::Icon::AlignEndHorizontal,
             "Reset request area",
         )
         .on_view(move || reset.set(true))
+        .enabled_from(&sink.area_resized)
     }
 
     /// The content column: the URL bar over the request and the response,
@@ -394,6 +424,7 @@ impl ApiTesterApp {
                                 .push(Box::new(RequestSplit {
                                     split,
                                     reset: sink.reset_area.clone(),
+                                    resized: sink.area_resized.clone(),
                                 })),
                         )),
                 ))

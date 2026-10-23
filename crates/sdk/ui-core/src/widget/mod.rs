@@ -1600,6 +1600,13 @@ pub trait Widget {
         None
     }
 
+    /// This control as an action of the window's bar, sent back as `id`
+    /// ([`crate::window_toolbar::ToolbarAction`]): a button's icon and name.
+    /// `None` for anything that is not a button.
+    fn window_slot(&self, _id: String) -> Option<crate::window_toolbar::ToolbarAction> {
+        None
+    }
+
     /// Downcast to the concrete widget, for hosts and tests that reach a
     /// known widget through `dyn Widget`. Default `None` (a widget may borrow
     /// and so not be `'static`); a widget opts in with `Some(self)`, and a
@@ -1907,6 +1914,15 @@ pub trait Widget {
     /// for that child; assistive technology then sees one copy, not two.
     fn accessibility_represents_child(&self, _child_index: usize) -> bool {
         false
+    }
+
+    /// What describes one retained [`children`](Widget::children) entry to
+    /// assistive technology, when this widget holds the words for it: a
+    /// row's secondary line is its trailing switch's description. The
+    /// bridge sets it as that child's node's description unless the child
+    /// describes itself.
+    fn accessibility_child_description(&self, _child_index: usize) -> Option<String> {
+        None
     }
 
     /// Perform an accessibility [`Action`](crate::a11y::Action) on this
@@ -3261,8 +3277,8 @@ pub mod empty_state;
 pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout};
 pub mod find_bar;
 pub use find_bar::{
-    FindBar, FindMatch, FindMode, FindOptions, FindScope, FindSession, Findable, paint_find_match,
-    with_findable,
+    FindAbilities, FindBar, FindMatch, FindMode, FindOptions, FindScope, FindSession, Findable,
+    paint_find_match, with_findable,
 };
 pub mod search_field;
 pub use search_field::{
@@ -3299,7 +3315,7 @@ pub mod selection_handles;
 pub use screenshot_markup::{
     MarkupExport, MarkupStroke, MarkupTool, ScreenshotMarkup, ScreenshotMarkupCommand,
 };
-pub use selection_handles::{Handle as SelectionHandle, SelectionHandles};
+pub use selection_handles::{Handle as SelectionHandle, SelectionHandles, TextGrip, TextGrips};
 
 pub mod activity_timeline;
 pub mod history;

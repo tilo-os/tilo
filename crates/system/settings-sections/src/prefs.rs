@@ -568,8 +568,29 @@ impl ui::storage::SettingsSchema for PowerPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("power");
 }
 
-#[ui::tilo_resource::resource(kind = "settings.power", label = "Power")]
+#[ui::tilo_resource::resource(
+    kind = "settings.power",
+    label = "Power",
+    version = 2,
+    migrate = PowerPrefs::upgrade
+)]
 impl PowerPrefs {
+    /// Version 1 stored every profile's suspend timer; version 2 stores one
+    /// only where it was set. A timer version 1 stored reads as set, with the
+    /// minutes it had, so nothing needs rewriting.
+    fn upgrade(
+        _doc: &mut ui::tilo_resource::Doc,
+        from: u32,
+    ) -> Result<(), ui::tilo_resource::ModelError> {
+        if from == 1 {
+            Ok(())
+        } else {
+            Err(ui::tilo_resource::ModelError::invalid(format!(
+                "no migration from {from}"
+            )))
+        }
+    }
+
     /// Suspend after this many idle minutes while plugged in; 0 never.
     #[action(id = "set-suspend-plugged-in")]
     pub fn suspend_plugged_in(
@@ -1375,7 +1396,6 @@ mod paste_shortcut_tests {
             .unwrap();
         assert!(input.paste_shortcuts.is_empty());
 
-        // What the shell reads back from the stored section.
         input
             .set_paste_shortcut("org.example.MyTerm", "ctrl_shift_v")
             .unwrap();
@@ -1388,5 +1408,54 @@ mod paste_shortcut_tests {
         );
         let back: InputPrefs = serde_json::from_value(stored).unwrap();
         assert_eq!(back.paste_shortcuts, input.paste_shortcuts);
+    }
+}
+
+#[cfg(test)]
+mod power_storage_tests {
+    #![allow(clippy::unwrap_used, reason = "test assertions")]
+
+    use super::PowerPrefs;
+    use ui::tilo_resource::{Replica, Slot, evolution};
+
+    /// Version 1 stored every profile's suspend timer as a number. Those
+    /// timers read as set, with the minutes they had.
+    #[test]
+    fn power_settings_of_version_one_keep_every_timer() {
+        let root = ui::tilo_resource::__private::ROOT;
+        let mut replica = Replica::<PowerPrefs>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(
+            doc,
+            &root,
+            &serde_json::json!({
+                "auto_suspend": true,
+                "suspend_minutes": 15,
+                "saver_suspend_minutes": 5,
+                "balanced_suspend_minutes": 15,
+                "performance_suspend_minutes": 30,
+                "blank_minutes": 10,
+                "lock_minutes": 5,
+            }),
+        )
+        .unwrap();
+        Slot::Key(&root, evolution::VERSION_KEY)
+            .put_scalar(doc, ui::tilo_resource::__private::ScalarValue::Uint(1))
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(evolution::migrate::<PowerPrefs>(&mut old).unwrap());
+        let power = evolution::read_checked::<PowerPrefs>(&old).unwrap();
+        assert_eq!(power.suspend_minutes, 15);
+        assert_eq!(
+            [
+                power.saver_suspend_minutes,
+                power.balanced_suspend_minutes,
+                power.performance_suspend_minutes,
+            ],
+            [Some(5), Some(15), Some(30)]
+        );
+        assert_eq!(power.battery_suspend_minutes, None);
+        assert_eq!((power.blank_minutes, power.lock_minutes), (10, 5));
     }
 }

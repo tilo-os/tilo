@@ -188,7 +188,6 @@ fn opaque_rect_stack_in_rect_scene(rect: vello::FineDamageRect) -> Scene {
     scene
 }
 
-/// A frame that renders in full.
 fn full_frame(revision: u64) -> SceneDamage<'static> {
     SceneDamage {
         revision,

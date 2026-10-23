@@ -136,7 +136,6 @@ impl KindDecl {
         self
     }
 
-    /// The field `key`.
     #[must_use]
     pub fn field_of(&self, key: &str) -> Option<&FieldDecl> {
         self.fields.iter().find(|field| field.key == key)

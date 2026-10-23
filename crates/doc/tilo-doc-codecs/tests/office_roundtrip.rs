@@ -464,7 +464,6 @@ fn large_document_parse_and_serialize_does_constant_order_work() {
                 N,
                 "{name}: block count preserved through a large round-trip"
             );
-            // Spot-check fidelity at the ends and a bold run survived.
             assert!(
                 snap.blocks[0].text.starts_with("Section 0:"),
                 "{name}: first block text preserved"

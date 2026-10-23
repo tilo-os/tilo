@@ -53,11 +53,17 @@ pub(crate) struct DirectoryWatch {
 
 impl DirectoryWatch {
     pub(crate) fn new(wake: ui::WakeHandle) -> Self {
+        Self::with_waker(Waker::from(Arc::new(UiWake(wake))))
+    }
+
+    /// A watch that wakes `waker` instead of a window, for a worker thread
+    /// that keeps something current off the window's thread.
+    pub(crate) fn with_waker(waker: Waker) -> Self {
         Self {
             target: None,
             watch: None,
             coverage: Coverage::None,
-            waker: Waker::from(Arc::new(UiWake(wake))),
+            waker,
         }
     }
 
@@ -69,26 +75,36 @@ impl DirectoryWatch {
         if self.target.as_deref() == dir {
             return false;
         }
-        self.target = dir.map(Path::to_path_buf);
+        if let Some(dir) = dir {
+            return self.adopt(dir, StartedWatch::start(dir));
+        }
+        self.target = None;
         self.watch = None;
         self.coverage = Coverage::None;
-        let Some(dir) = dir else {
+        false
+    }
+
+    /// Watch `dir` with `started`, the watch started for it (perhaps on
+    /// another thread), or with nothing where it could not be watched.
+    /// Returns `true` when a watch started, as [`Self::point_at`] does.
+    pub(crate) fn adopt(&mut self, dir: &Path, started: Option<StartedWatch>) -> bool {
+        self.target = Some(dir.to_path_buf());
+        self.watch = None;
+        self.coverage = Coverage::None;
+        let Some(started) = started else {
             return false;
         };
-        match tilo_files::native::watch_entries(dir) {
-            Ok(watch) => {
-                self.coverage = coverage_of(dir);
-                self.watch = Some(watch);
-                // Arm the wake: the watch wakes the window only once a
-                // drain has found its queue empty.
-                let _ = self.take_changes();
-                true
-            }
-            Err(error) => {
-                tracing::debug!(dir = %dir.display(), %error, "directory watch unavailable; polling");
-                false
-            }
-        }
+        self.coverage = started.coverage;
+        self.watch = Some(started.watch);
+        // Arm the wake: the watch wakes the window only once a drain has
+        // found its queue empty.
+        let _ = self.take_changes();
+        true
+    }
+
+    /// The directory the watch was last pointed at.
+    pub(crate) fn target(&self) -> Option<&Path> {
+        self.target.as_deref()
     }
 
     pub(crate) fn coverage(&self) -> Coverage {
@@ -122,6 +138,29 @@ impl DirectoryWatch {
     }
 }
 
+/// A watch on a directory's entries, started where waiting on the disk is
+/// allowed, for a [`DirectoryWatch`] to adopt.
+pub(crate) struct StartedWatch {
+    watch: tilo_files::Watch,
+    coverage: Coverage,
+}
+
+impl StartedWatch {
+    /// Watch `dir`'s entries, or `None` where it cannot be watched.
+    pub(crate) fn start(dir: &Path) -> Option<Self> {
+        match tilo_files::native::watch_entries(dir) {
+            Ok(watch) => Some(Self {
+                watch,
+                coverage: coverage_of(dir),
+            }),
+            Err(error) => {
+                tracing::debug!(dir = %dir.display(), %error, "directory watch unavailable; polling");
+                None
+            }
+        }
+    }
+}
+
 /// A watch on a directory that may not exist yet, such as the trusted-identity
 /// projection's, which the launcher binds into Files' sandbox only when there
 /// is a projection to show.
@@ -138,9 +177,14 @@ pub(crate) struct AwaitedDirectoryWatch {
 
 impl AwaitedDirectoryWatch {
     pub(crate) fn new(wake: ui::WakeHandle) -> Self {
+        Self::with_waker(Waker::from(Arc::new(UiWake(wake))))
+    }
+
+    /// An awaited watch that wakes `waker` instead of a window.
+    pub(crate) fn with_waker(waker: Waker) -> Self {
         Self {
             target: None,
-            nearest: DirectoryWatch::new(wake),
+            nearest: DirectoryWatch::with_waker(waker),
         }
     }
 

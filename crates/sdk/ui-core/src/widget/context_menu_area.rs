@@ -90,7 +90,6 @@ impl MenuEntry {
 /// coordinates (`None` when the keyboard opened it).
 pub type MenuEntries = Box<dyn Fn(Option<Point>) -> Vec<MenuEntry>>;
 
-/// An element with a context menu.
 pub struct ContextMenuArea {
     content: Element,
     entries: MenuEntries,
@@ -124,7 +123,6 @@ impl ContextMenuArea {
         }
     }
 
-    /// Whether the menu is showing.
     pub fn is_open(&self) -> bool {
         self.menu.is_open()
     }

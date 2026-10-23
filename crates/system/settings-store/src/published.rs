@@ -33,7 +33,6 @@ impl<T> Published<T> {
         }
     }
 
-    /// Record `value` as published to `path`.
     pub fn set(&self, path: &Path, value: T) {
         *self.slot.write_recover() = Some((path.to_path_buf(), Arc::new(value)));
         self.generation.fetch_add(1, Ordering::Release);

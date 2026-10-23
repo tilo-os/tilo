@@ -23,7 +23,6 @@ pub struct SearchData {
     pub applications: Vec<AppEntry>,
     pub windows: Vec<WindowEntry>,
     pub commands: Vec<CommandSpec>,
-    /// The resources open applications publish.
     pub resources: Vec<Resource>,
     /// The search providers open applications publish.
     pub providers: Vec<Box<dyn ui::search::SearchProvider>>,

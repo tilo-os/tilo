@@ -226,7 +226,7 @@ fn save_to_a_destination_without_a_path_hands_the_host_the_pdf() {
     settle_until(&mut app, &mut st, |app| {
         app.portal_save_rx.is_none() && app.pending_save.is_none() && app.save_write_rx.is_none()
     });
-    let note = app.status_note.clone().unwrap_or_default();
+    let note = app.status_note.as_deref().unwrap_or_default().to_owned();
     let bytes = written
         .lock()
         .unwrap()

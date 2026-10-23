@@ -95,7 +95,7 @@ glyph-join 1 apps/video-player/src/app.rs
 glyph-join 1 apps/weather/src/main.rs
 glyph-join 1 apps/word-processor/src/widget.rs
 glyph-join 3 crates/session/desktop-model/src/task.rs
-glyph-join 10 crates/session/desktop-surface/src/activity/pane.rs
+glyph-join 7 crates/session/desktop-surface/src/activity/pane.rs
 glyph-join 1 crates/session/desktop-surface/src/activity/replay.rs
 glyph-join 2 crates/session/desktop-surface/src/person_cursor.rs
 glyph-join 1 crates/session/desktop/src/here.rs
@@ -115,7 +115,6 @@ glyph-join 1 crates/session/shell/src/compositor/native.rs
 glyph-join 1 crates/session/shell/src/notifications.rs
 glyph-join 1 crates/session/shell/src/portal/camera.rs
 glyph-join 1 crates/session/shell/src/portal/print.rs
-glyph-join 1 crates/session/shell/src/shell/agent_quick_composer.rs
 glyph-join 2 crates/session/shell/src/shell/automation_host.rs
 glyph-join 1 crates/session/shell/src/shell/broker_services.rs
 glyph-join 1 crates/session/shell/src/shell/broker_services/airdrop_transfer.rs
@@ -132,7 +131,6 @@ glyph-join 1 crates/session/shell/src/shell/render/strip_layers.rs
 glyph-join 4 crates/session/shell/src/shell/room_activity.rs
 glyph-join 2 crates/session/shell/src/shell/search/providers/actions.rs
 glyph-join 3 crates/session/shell/src/shell/search/providers/live_app_actions.rs
-glyph-join 1 crates/session/shell/src/shell/search/providers/task_review.rs
 glyph-join 1 crates/session/shell/src/shell/speaker_settings.rs
 glyph-join 3 crates/session/shell/src/shell/test_control.rs
 glyph-join 1 crates/session/shell/src/shell/workspace_drop.rs
@@ -142,7 +140,7 @@ hand-rolled 1 apps/pdf-viewer/src/render.rs
 hand-rolled 1 apps/themes/src/draw.rs
 hand-rolled 2 apps/word-processor/src/widget/paint.rs
 hand-rolled 2 apps/word-processor/src/widget/panels.rs
-hand-rolled 11 crates/session/desktop-surface/src/activity/pane.rs
+hand-rolled 7 crates/session/desktop-surface/src/activity/pane.rs
 hand-rolled 1 crates/session/desktop-surface/src/notifications/center.rs
 hand-rolled 1 crates/session/desktop/src/overview_panel.rs
 hand-rolled 1 crates/session/desktop/src/topbar.rs

@@ -251,10 +251,11 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
     let catalog = FontCatalog::product("", "en-US");
     let root = fixture().root().to_path_buf();
     let mut requested = Vec::new();
+    let mut read = super::test_font_files(&root);
     let fonts = catalog
         .load_browser_startup_bytes(|name| {
             requested.push(name.to_owned());
-            std::fs::read(root.join(name)).ok()
+            read(name)
         })
         .unwrap();
     assert_eq!(
@@ -272,11 +273,37 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
 }
 
 #[test]
+fn a_startup_font_whose_page_digest_or_size_differs_from_the_build_is_refused() {
+    let catalog = FontCatalog::product("", "en-US");
+    let root = fixture().root().to_path_buf();
+    let mut read = super::test_font_files(&root);
+    let Err(error) = catalog.load_browser_startup_bytes(|name| {
+        let (bytes, mut digest) = read(name)?;
+        digest.replace_range(..1, if digest.starts_with('0') { "1" } else { "0" });
+        Some((bytes, digest))
+    }) else {
+        panic!("a wrong digest is refused");
+    };
+    let error = error.to_string();
+    assert!(error.contains("SHA-256 mismatch"), "{error}");
+    let Err(error) = catalog.load_browser_startup_bytes(|name| {
+        let mut bytes = std::fs::read(root.join(name)).ok()?;
+        bytes.pop();
+        let digest = super::test_sha256(&bytes);
+        Some((bytes, digest))
+    }) else {
+        panic!("a wrong size is refused");
+    };
+    let error = error.to_string();
+    assert!(error.contains("SHA-256 mismatch"), "{error}");
+}
+
+#[test]
 fn incremental_browser_asset_install_is_idempotent_and_integrity_checked() {
     let catalog = FontCatalog::product("", "en-US");
     let root = fixture().root().to_path_buf();
     let mut fonts = catalog
-        .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+        .load_browser_startup_bytes(super::test_font_files(&root))
         .unwrap();
     let name = "NotoSansArabic[wght].ttf";
     let bytes = std::fs::read(root.join(name)).unwrap();
@@ -527,7 +554,7 @@ fn a_browser_fetches_the_cuts_a_reading_style_can_take() {
     let catalog = FontCatalog::product("", "en-US");
     let root = fixture().root().to_path_buf();
     let fonts = catalog
-        .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+        .load_browser_startup_bytes(super::test_font_files(&root))
         .unwrap();
     let mut renderer = crate::TextRenderer::with_browser_font_system(fonts);
     let reading = crate::tokens::Typography::default().style(crate::tokens::TextRole::Reading);
@@ -554,7 +581,7 @@ fn a_browser_fetches_the_monospace_a_rich_layout_asks_for() {
     let catalog = FontCatalog::product("", "en-US");
     let root = fixture().root().to_path_buf();
     let fonts = catalog
-        .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+        .load_browser_startup_bytes(super::test_font_files(&root))
         .unwrap();
     let mut renderer = crate::TextRenderer::with_browser_font_system(fonts);
     let code = crate::tokens::Typography::default().style(crate::tokens::TextRole::Code);

@@ -777,7 +777,7 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
     clippy::significant_drop_tightening,
     reason = "the relay and its room stay live for the whole test"
 )]
-async fn a_refused_change_is_a_dead_letter_and_later_runs_still_land() {
+async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_land() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
@@ -809,12 +809,21 @@ async fn a_refused_change_is_a_dead_letter_and_later_runs_still_land() {
     ada_says(&rooms, &room, &cert, &general, "first").await;
     let reports = runner.step().await.unwrap();
     assert!(reports.is_empty(), "{reports:?}");
+    assert_eq!(runner.dead_letters().count(), 0, "a refused run goes again");
+    // Each run again meets the same refusal, until its attempts are spent.
+    for _ in 0..40 {
+        if runner.dead_letters().count() > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        runner.step().await.unwrap();
+    }
     let dead: Vec<_> = runner.dead_letters().collect();
-    assert_eq!(dead.len(), 1, "the refusal is kept, not retried");
+    assert_eq!(dead.len(), 1, "the refusal is kept once its runs are spent");
     assert!(
         dead[0]
             .reason
-            .starts_with("the room refused the bot's change"),
+            .starts_with("the room refused the bot's change to so.tilo.chat/"),
         "{}",
         dead[0].reason
     );
@@ -1086,12 +1095,11 @@ fn opened(rooms: &Rooms, room: &str, device: [u8; 32], bytes: &[u8]) -> Option<V
     .unwrap();
     let mut whole = Vec::new();
     for frame in rooms.content_answer(room, &want) {
-        let neighbour_wire::NeighbourMsg::RecordContentPiece { bytes, .. } =
-            postcard::from_bytes(&frame).unwrap()
-        else {
-            panic!("a piece of content")
-        };
-        whole.extend(bytes);
+        match postcard::from_bytes(&frame).unwrap() {
+            neighbour_wire::NeighbourMsg::RecordContentPiece { bytes, .. } => whole.extend(bytes),
+            neighbour_wire::NeighbourMsg::RecordContentLacks { .. } => return None,
+            _ => panic!("a piece of content, or word that the host keeps none"),
+        }
     }
     (!whole.is_empty()).then_some(whole)
 }
@@ -1225,4 +1233,185 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
         Some(ada.as_str())
     );
     assert_eq!(again.kept_for(&blake3::hash(&notes).to_hex()), None);
+}
+
+/// The Discord bridge as the host installs it, its program as shipped.
+fn discord_bridge() -> installed::InstalledBot {
+    installed::InstalledBot {
+        installation: "5b8d2278-de54-4bf8-a0b8-8ae4f0587eed".into(),
+        entry: "discord-bridge".into(),
+        name: "Discord Bridge".into(),
+        program: include_str!("../../../../../apps/discord/bridge/program.json").to_owned(),
+        inputs: serde_json::Map::new(),
+        installed_at_ms: 1,
+    }
+}
+
+/// The room's Chat categories by name, each with its channels' names.
+async fn chat_layout(rooms: &Rooms, room: &str) -> Vec<(String, Vec<String>)> {
+    let record = room_record(&AppCatalogue::native(), CHAT);
+    let saved = rooms
+        .record_document(room, CHAT, &record)
+        .await
+        .unwrap()
+        .unwrap();
+    let chat = chat_of(&saved);
+    let named = |category: Option<&tilo_resource::Id>| {
+        chat.channels
+            .values()
+            .filter(|channel| channel.conversation_with.is_none())
+            .filter(|channel| channel.category.as_ref() == category)
+            .map(|channel| channel.name.clone())
+            .collect::<Vec<_>>()
+    };
+    std::iter::once((String::new(), named(None)))
+        .chain(
+            chat.categories
+                .iter()
+                .map(|(id, category)| (category.name.clone(), named(Some(id)))),
+        )
+        .collect()
+}
+
+/// Connect `room` to the Discord server the bridge last saw as `goal`, and
+/// `chat` holding `general` and `voice`.
+async fn bridged_lounge(rooms: &Rooms, room: &str, cert: &DeviceCert) {
+    use tilo_resource::Fields as _;
+    let link = discord::DiscordLink {
+        guild_id: "1000".into(),
+        only_channel: None,
+        name: "Fake".into(),
+        mirror_channels: false,
+        map_roles: false,
+    };
+    discord::connect(rooms, room, cert, &link).await.unwrap();
+    let catalogue = AppCatalogue::native();
+    // The server as the bridge last saw it: `goal`, and `chat` holding
+    // `general` and `voice`.
+    rooms
+        .author_application(
+            room,
+            cert,
+            &catalogue,
+            discord::APP,
+            &room_record(&catalogue, discord::APP),
+            |doc| {
+                let current = ::discord::Guild::read_fields(doc, &automerge::ROOT)
+                    .map_err(|error| error.to_string())?;
+                let mut seen = current.clone();
+                let channel = |id: &str, kind: &str, name: &str, parent: Option<&str>, at: i64| {
+                    serde_json::json!({"id": id, "kind": kind, "name": name, "parent": parent, "position": at})
+                };
+                seen.observe(
+                    "2000".into(),
+                    serde_json::from_value(serde_json::json!([
+                        channel("1103", "text", "goal", None, 0),
+                        channel("1100", "category", "chat", None, 1),
+                        channel("1101", "text", "general", Some("1100"), 2),
+                        channel("1102", "voice", "voice", Some("1100"), 3),
+                    ]))
+                    .map_err(|error| error.to_string())?,
+                    Vec::new(),
+                );
+                seen.write_changed_fields(
+                    &current,
+                    doc,
+                    &automerge::ROOT,
+                    &tilo_resource::Delta::default(),
+                )
+                .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// A bridge run the room refuses part of leaves the import half done: the
+/// category it made stands, the moves after it were dropped. The run goes
+/// again from the room's records and finishes the layout, the channels
+/// under the server's category as in Discord.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its room stay live for the whole test"
+)]
+async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_again() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    bridged_lounge(&rooms, &room, &cert).await;
+    let catalogue = AppCatalogue::native();
+    let mut runner = member_runner(
+        &rooms,
+        &room,
+        &cert,
+        discord_bridge(),
+        scratch.path().join("bridge.json"),
+    )
+    .await;
+    assert!(runner.step().await.unwrap().is_empty());
+
+    // A change to the room's Chat has the bridge reconcile; the room
+    // refuses the run's second change, mapping the category it just made.
+    let owner = hex::encode(cert.user_public_key);
+    rooms
+        .author_application(
+            &room,
+            &cert,
+            &catalogue,
+            CHAT,
+            &room_record(&catalogue, CHAT),
+            |doc| {
+                chat::demo::apply_as(
+                    doc,
+                    &owner,
+                    chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                        name: "welcome".into(),
+                        category: None,
+                        kind: None,
+                        topic: None,
+                    }),
+                )
+                .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
+    runner.refuse_change_after(1);
+    runner.step().await.unwrap();
+    let half = chat_layout(&rooms, &room).await;
+    assert!(
+        half.iter()
+            .any(|(name, channels)| name == "chat" && channels.is_empty()),
+        "the category stands, empty: {half:?}"
+    );
+
+    // It goes again, from the room's records, and finishes.
+    let done = |layout: &[(String, Vec<String>)]| {
+        layout.iter().any(|(name, channels)| {
+            name == "chat"
+                && channels.contains(&"general".to_owned())
+                && channels.contains(&"voice".to_owned())
+        })
+    };
+    for _ in 0..40 {
+        if done(&chat_layout(&rooms, &room).await) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        runner.step().await.unwrap();
+    }
+    let layout = chat_layout(&rooms, &room).await;
+    assert!(done(&layout), "general and voice under chat: {layout:?}");
+    assert_eq!(
+        layout.iter().filter(|(name, _)| name == "chat").count(),
+        1,
+        "one chat category, the one the refused run made: {layout:?}"
+    );
+    assert!(
+        layout[0].1.contains(&"goal".to_owned()),
+        "goal stands apart, as in Discord: {layout:?}"
+    );
 }

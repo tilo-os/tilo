@@ -232,7 +232,6 @@ const AAC: &[EncoderSpec] = &[
 ];
 const AAC_BASELINE: EncoderSpec = bits("voaacenc", EncoderKind::Software);
 
-/// Opus.
 const OPUS: &[EncoderSpec] = &[OPUS_BASELINE];
 const OPUS_BASELINE: EncoderSpec = bits("opusenc", EncoderKind::Software);
 

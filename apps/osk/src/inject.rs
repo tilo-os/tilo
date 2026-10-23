@@ -349,7 +349,6 @@ mod wayland {
             let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
 
             let mut state = State;
-            // Flush the creation requests.
             queue.roundtrip(&mut state).ok()?;
 
             Some(Self {
@@ -374,7 +373,6 @@ mod wayland {
                 self.upload_keymap(&keymap_str)?;
                 self.current_keymap = assigned;
             }
-            // Map each requested symbol to its keycode in the active keymap.
             needed
                 .iter()
                 .map(|s| {
@@ -519,7 +517,6 @@ mod tests {
             assert_eq!(Symbol::Unicode('a').keysym_name(), "U0061");
             // Euro sign U+20AC — five hex digits round to the natural width.
             assert_eq!(Symbol::Unicode('€').keysym_name(), "U20AC");
-            // An emoji above the BMP keeps full width.
             assert_eq!(Symbol::Unicode('😀').keysym_name(), "U1F600");
             assert_eq!(Symbol::BackSpace.keysym_name(), "BackSpace");
             assert_eq!(Symbol::Return.keysym_name(), "Return");
@@ -541,7 +538,6 @@ mod tests {
             ];
             let (keymap, assigned) = build_keymap(&symbols);
 
-            // Well-formed wrapper.
             assert!(keymap.starts_with("xkb_keymap {"));
             assert!(keymap.trim_end().ends_with("};"));
             assert!(keymap.contains("xkb_keycodes"));

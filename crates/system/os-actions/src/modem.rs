@@ -16,11 +16,6 @@ pub struct SimInfo {
 }
 
 /// List every SIM known to `ModemManager`, across every present modem.
-///
-/// # Errors
-///
-/// Returns an error message if `mmcli` is not installed or a required `mmcli` invocation
-/// fails.
 pub fn list_mobile_sims() -> Result<Vec<SimInfo>, String> {
     let list = crate::process::run_capture("mmcli", &["--list-modems"])?;
     let mut out = Vec::new();
@@ -97,11 +92,6 @@ pub fn unlock_mobile_sim_on(sim: &str, pin: &str) -> Result<(), String> {
 }
 
 /// Unlock the sole present SIM with `pin`.
-///
-/// # Errors
-///
-/// Returns an error message if `pin` fails `validate_pin`, [`list_mobile_sims`] fails, no SIM
-/// or more than one SIM is present, or [`unlock_mobile_sim_on`] fails.
 pub fn unlock_mobile_sim(pin: &str) -> Result<(), String> {
     validate_pin(pin)?;
     let sims = list_mobile_sims()?;

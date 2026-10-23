@@ -263,7 +263,6 @@ fn contents(file: &mut File) -> Vec<u8> {
     file.read_to_end(&mut b).unwrap();
     b
 }
-/// Full component fetch and prefix resume.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -2320,7 +2319,6 @@ impl Read for ResponseReader<'_> {
         Ok(n)
     }
 }
-/// Returned request boundaries.
 #[test]
 #[cfg(unix)]
 #[allow(

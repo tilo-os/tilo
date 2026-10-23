@@ -1456,7 +1456,6 @@ mod tests {
     /// Only real roots are reported and only authority-approved files are reclaimed.
     #[test]
     fn storage_pane_reports_real_roots_and_reclaims_only_approved_files() {
-        // Case `pane_reports_only_real_roots`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let cache = tmp.path().join("cache");
@@ -1489,7 +1488,6 @@ mod tests {
             assert_eq!(scan.cleanup.as_ref().unwrap().total_bytes, 24);
         }
 
-        // Case `settings_submits_only_authority_approved_reclaimable_files`.
         {
             let file = |identity: &str, reclaimable_bytes| runtime_fs::storage::SyncedFileState {
                 workspace: "work".into(),

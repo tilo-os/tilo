@@ -18,7 +18,6 @@
 //! live inside their own `app.slice`: never a system service, never the
 //! session that draws their screen.
 
-/// The app a cgroup path belongs to, when it is an app's.
 #[must_use]
 pub fn app_of_cgroup(path: &str) -> Option<String> {
     let mut components = path.split('/').filter(|part| !part.is_empty()).peekable();
@@ -239,7 +238,6 @@ mod tests {
             "/system.slice/sshd.service",
             "/user.slice/user-1000.slice/session-3.scope",
             "/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service",
-            // A sibling slice whose name merely starts the same.
             "/user.slice/user-1000.slice/user@1000.service/app.slice2/x.scope",
         ] {
             assert_eq!(

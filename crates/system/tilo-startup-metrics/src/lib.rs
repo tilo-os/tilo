@@ -929,7 +929,6 @@ mod tests {
         assert_eq!(current["events"], first["events"]);
         assert_eq!(current["native_admission"], serde_json::json!(admission));
         assert_eq!(current["native_admission"].as_object().unwrap().len(), 12);
-        // A later ordinary startup checkpoint retains the observation.
         metrics.write_snapshot();
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         std::fs::remove_dir_all(directory).unwrap();
@@ -937,16 +936,13 @@ mod tests {
 
     #[test]
     fn startup_metrics_are_opt_in_transparent_and_bind_launches_once() {
-        // Phase `disabled_by_default`.
         {
             // Without TILO_STARTUP_METRICS_PATH, mark is a no-op — nothing to assert beyond "no panic".
             mark("nothing");
         }
-        // Phase `span_passes_through_return_value`.
         {
             assert_eq!(span("computation", || 40 + 2), 42);
         }
-        // Phase `summary_names_the_slow_phases`.
         {
             let events = [
                 ("app-launch-start".to_owned(), 3_000),
@@ -961,7 +957,6 @@ mod tests {
                  phases=app-construct:7,app-construct-end:8692,first-frame-presented:141"
             );
         }
-        // Phase `same_app_launches_bind_fifo_and_present_once`.
         {
             launch_table().clear();
             let first = launch_requested("dev.tilo.test");
@@ -982,7 +977,6 @@ mod tests {
             launch_failed(second);
         }
         lifecycle_events_correlate_same_app_attempts_and_retire_once();
-        // Phase `dispatch_phases_belong_to_the_unspawned_launch`.
         {
             launch_table().clear();
             let id = launch_requested("dev.tilo.phases");

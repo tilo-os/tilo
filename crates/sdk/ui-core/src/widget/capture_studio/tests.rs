@@ -107,7 +107,6 @@ fn several_selections_are_shift_on_the_selection_tool_not_a_mode() {
     );
     assert_eq!(s.regions(), &[Rect::new(600.0, 500.0, 900.0, 700.0)]);
     assert!(s.remove_rects().is_empty(), "one selection needs no remove");
-    // Shift and a new drag adds one.
     drag(
         &mut s,
         Point::new(100.0, 100.0),

@@ -1,4 +1,3 @@
-//! Real mounted owners through the host's retained exact-owner service route.
 use super::*;
 use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
 use crate::application_test_support::{self as probe, ProbeHost};

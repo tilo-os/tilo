@@ -32,7 +32,6 @@ impl Chip {
         }
     }
 
-    /// The toggle chip `key`, on.
     #[must_use]
     pub fn toggle(key: impl Into<String>) -> Self {
         Self {
@@ -96,7 +95,6 @@ pub struct QuerySpec {
 }
 
 impl QuerySpec {
-    /// A query for `text` alone.
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
         Self {

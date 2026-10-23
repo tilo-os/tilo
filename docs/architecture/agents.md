@@ -77,9 +77,9 @@ Ask first pauses the agent's task run instead of refusing. The broker renders
 the invocation as a draft (`tilo_actions::draft`: one field per parameter,
 resource references and attachments by label, secrets withheld, a message
 previewed as a message) and records it in the task's control sidecar, so the
-pause outlives restarts. The person sees it in Task Center and in a
-notification, and confirms (optionally editing the draft's fields), declines
-with a reason, or always allows it; the published `answer-confirmation` task
+pause outlives restarts. The person sees it on the task's issue in the Tasks
+app ([tasks.md](tasks.md)), and confirms (optionally editing the draft's
+fields), declines with a reason, or always allows it; the published `answer-confirmation` task
 action does the same without the card. The agent's step waits and asks again
 with the same arguments; the broker runs exactly those arguments with the
 person's edits, carried to dispatch by a one-use token bound to them. Other
@@ -92,7 +92,7 @@ Tilo owns identity, credentials, grants, confirmation, audit and runtime
 lifecycle. Provider translation is delegated to mature components:
 
 ```text
-Agent profile / Task Center
+Agent profile / Tasks
            |
            v
 Tilo model gateway (native launcher or light authenticated HTTP host)
@@ -282,8 +282,9 @@ browser.
 2. **Provider-neutral model protocol** — preserve the implemented Rig adapters,
    OpenAI-compatible tool calls, provider profiles, streaming and broker-backed
    credentials as new providers and hosts are added.
-3. **Task Center** — manual typed tasks first, then optional model-backed
-   planning; cancellation/retry only where the action contract permits it.
+3. **Tasks** — issues in the Tasks app, agent runs as tracker actions
+   ([tasks.md](tasks.md)); cancellation/retry only where the action contract
+   permits it.
 4. **Local runtime** — explicit HF snapshot lifecycle, hardware fit checks and
    supervised vLLM status.
 5. **Resource/MCP projection** — publish permission-filtered resources beside

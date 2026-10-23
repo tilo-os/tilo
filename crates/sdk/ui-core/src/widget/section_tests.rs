@@ -221,6 +221,49 @@ fn consecutive_badged_rows_share_one_badge_column() {
     assert_eq!(shared, [Some(width), Some(width), None]);
 }
 
+/// A disclosure only shows what the page already holds, so the native app
+/// contract finds its header bound as a view-local control, addressed by
+/// its title or by the id a page gives it.
+#[test]
+fn a_disclosure_header_is_a_bound_view_local_control() {
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(
+            crate::widget::Column::new()
+                .with_no_padding()
+                .push(Box::new(
+                    Section::new(vec![Box::new(ListRow::new("a", "Ada"))])
+                        .with_header(SectionHeader::group("Details"))
+                        .collapsed(),
+                ))
+                .push(Box::new(
+                    Section::new(vec![Box::new(ListRow::new("b", "Grace"))])
+                        .with_header(SectionHeader::group("Details"))
+                        .collapsed()
+                        .disclosure_id("wired-details"),
+                )),
+        ),
+        (400, 300),
+        crate::theme::Theme::light(),
+    );
+    let audit = harness.native_app_audit();
+    assert!(audit.issues.is_empty(), "{audit:?}");
+    fn targets(node: &InspectionNode, out: &mut Vec<String>) {
+        out.extend(
+            node.semantics
+                .as_ref()
+                .and_then(|s| s.action_target.clone()),
+        );
+        for child in &node.children {
+            targets(child, out);
+        }
+    }
+    let mut ids = Vec::new();
+    targets(&harness.inspection().root, &mut ids);
+    assert!(ids.iter().any(|id| id == "disclosure:Details"), "{ids:?}");
+    assert!(ids.iter().any(|id| id == "wired-details"), "{ids:?}");
+}
+
 #[test]
 fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
     let opened = std::rc::Rc::new(std::cell::Cell::new(None));

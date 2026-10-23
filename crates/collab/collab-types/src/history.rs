@@ -99,7 +99,6 @@ impl HistoryPager {
         self.oldest_loaded = Some(self.oldest_loaded.map_or(seq, |oldest| oldest.min(seq)));
     }
 
-    /// Oldest loaded `seq`, if any history is loaded.
     pub fn oldest_loaded(&self) -> Option<u64> {
         self.oldest_loaded
     }
@@ -295,7 +294,6 @@ mod tests {
             let mut pager = HistoryPager::new(artifact, 10, 0);
             pager.anchor(50);
             let first = pager.ensure_loaded_back_to(10).unwrap();
-            // The host had nothing locally and asked its peers.
             assert_eq!(pager.on_page(None, false), None);
             assert!(!pager.is_exhausted());
             let again = pager.ensure_loaded_back_to(10).unwrap();

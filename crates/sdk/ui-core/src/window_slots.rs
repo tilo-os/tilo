@@ -59,6 +59,11 @@ pub struct HostedSync {
     pub closing: Vec<TabId>,
     /// An app asked for its window's search and its group opened it.
     pub searched: bool,
+    /// Tabs whose app the person just pressed one of its own slots for
+    /// ([`crate::window_toolbar::hands_keyboard_to_app`]). A press on a slot
+    /// is a press on the app: the host gives the app back the keyboard the
+    /// bar took, so Escape and what is typed next reach it.
+    pub keyboard: Vec<TabId>,
 }
 
 impl WindowSlots {
@@ -140,6 +145,8 @@ impl WindowSlots {
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
+            | ToolbarEvent::SearchOptions { .. }
+            | ToolbarEvent::SearchReplace { .. }
             | ToolbarEvent::History => self.offers.get(&tab).map(|(connection, _)| *connection),
             ToolbarEvent::ToggleSidebar
             | ToolbarEvent::Back
@@ -250,7 +257,7 @@ impl WindowSlots {
         for (tab, window) in windows {
             let edit = window.take_edit_request();
             let search = window.take_search_request();
-            if !edit && !search {
+            if !edit && search.is_none() {
                 continue;
             }
             // Only the tab its window shows edits or searches.
@@ -259,7 +266,9 @@ impl WindowSlots {
                 .find(|group| group.active_tab_id() == *tab)
             {
                 sync.changed |= edit && group.edit_location();
-                if search && group.open_search_for_app(*tab) {
+                if let Some(opening) = search
+                    && group.open_search_for_app(*tab, opening)
+                {
                     sync.searched = true;
                     sync.changed = true;
                 }
@@ -267,6 +276,11 @@ impl WindowSlots {
         }
         for (tab, event) in std::mem::take(&mut self.hosted_outbox) {
             if let Some((_, window)) = windows.iter().find(|(shown, _)| *shown == tab) {
+                if crate::window_toolbar::hands_keyboard_to_app(&event)
+                    && !sync.keyboard.contains(&tab)
+                {
+                    sync.keyboard.push(tab);
+                }
                 window.deliver(event);
                 // The app hears it on its next frame.
                 sync.changed = true;

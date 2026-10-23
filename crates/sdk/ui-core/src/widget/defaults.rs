@@ -179,7 +179,6 @@ pub(super) fn ime_requires_deferred_ack(caret: Option<Rect>, each: EachChild<'_>
     required
 }
 
-/// The child that types at `caret`, the widget's own caret.
 fn typing_child<'a>(children: ChildrenMut<'a>, caret: Rect) -> Option<&'a mut (dyn Widget + 'a)> {
     children
         .into_iter()

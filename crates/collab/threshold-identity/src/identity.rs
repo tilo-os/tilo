@@ -191,11 +191,6 @@ impl ThresholdIdentity {
     /// [`Self::export_device_secret`]. All public facts are derived from and
     /// cross-checked between the FROST packages; editable metadata is never
     /// trusted. At-rest authenticity is supplied by the host secret provider.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the envelope is malformed, oversized, internally
-    /// inconsistent, or does not describe a valid threshold participant.
     pub fn from_device_secret(blob: &[u8], total_shares: u16) -> Result<Self, ThresholdError> {
         if blob.len() < 16 || blob.get(..8) != Some(b"TLOFRS2\0") {
             return Err(ThresholdError::FrostInternal(
@@ -269,7 +264,6 @@ impl ThresholdIdentity {
             },
         })
     }
-    /// Borrow the group public key.
     pub fn group_public_key(&self) -> &Ed25519PublicKey {
         &self.group_public_key
     }
@@ -417,11 +411,6 @@ impl ThresholdIdentity {
 
     /// Commit a completed DKG run into this identity. Replaces
     /// the previous key material.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `session` has not reached a completed
-    /// state (`session.into_inner_complete()` fails).
     pub fn adopt_dkg_outcome(&mut self, session: DkgSession) -> Result<(), ThresholdError> {
         let (kp, pkp, threshold, total, share_index, group_pk) = session.into_inner_complete()?;
         self.inner = InnerKey::Threshold {
@@ -549,12 +538,6 @@ impl ThresholdIdentity {
 
     /// Decode a `RecoveryShare` (mnemonic + public metadata)
     /// back into a `SecretShare`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `rs`'s mnemonic or metadata do not decode
-    /// into a valid `KeyPackage` (bad checksum, malformed words, or
-    /// inconsistent group/threshold metadata).
     pub fn import_recovery_share_full(rs: RecoveryShare) -> Result<SecretShare, ThresholdError> {
         rs.into_secret_share()
     }

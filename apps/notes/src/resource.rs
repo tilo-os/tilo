@@ -159,6 +159,7 @@ impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Notebook>) {
+        self.wake_asset_reads_through(cx.waker());
         self.attach_framework(cx.dispatcher(), cx.actions(), cx.live());
     }
 

@@ -310,20 +310,12 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(), Error> {
 /// Recognise an in-memory image with Tesseract's TSV output. `language` is
 /// restricted to data identifiers, preventing it from becoming an argv option
 /// or filesystem path.
-///
-/// # Errors
-/// Returns a typed validation, image, I/O, availability, timeout, or bounded
-/// engine-output error. No partial OCR document is returned on failure.
 pub fn recognize(image: &DynamicImage, language: &str) -> Result<Document, Error> {
     recognize_detailed(image, language).map(|result| result.document)
 }
 
 /// Recognise an image and report any automatic page straightening applied
 /// before the engine saw it.
-///
-/// # Errors
-/// Returns the same typed validation, image, I/O, availability, timeout, or
-/// bounded engine-output errors as [`recognize`].
 pub fn recognize_detailed(image: &DynamicImage, language: &str) -> Result<Recognition, Error> {
     validate_language(language)?;
     let (prepared, deskew_degrees) = prepare(image)?;
@@ -341,10 +333,6 @@ pub fn recognize_detailed(image: &DynamicImage, language: &str) -> Result<Recogn
 }
 
 /// Recognise an image path through the bounded OCR process boundary.
-///
-/// # Errors
-/// Returns the same typed validation, process, timeout, and output errors as
-/// [`recognize`].
 pub fn recognize_path(path: &Path, language: &str) -> Result<Document, Error> {
     recognize_path_with_program(path, language, Path::new("tesseract"))
 }
@@ -432,10 +420,6 @@ fn validate_language(language: &str) -> Result<(), Error> {
 }
 
 /// Parse bounded Tesseract TSV into structured words.
-///
-/// # Errors
-/// Returns an error for invalid language identifiers or output exceeding the
-/// global byte/word limits.
 pub fn parse_tsv(tsv: &str, language: &str) -> Result<Document, Error> {
     parse_tsv_bounded(tsv, language, MAX_TSV_BYTES, MAX_WORDS, MAX_WORD_BYTES)
 }
@@ -564,7 +548,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn engine_output_parses_into_bounded_ordered_words() {
-        // Phase `parses_geometry_confidence_and_lines`.
         {
             let input = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t10\t20\t30\t12\t96.5\tHello\n5\t1\t1\t1\t2\t1\t10\t40\t40\t12\t80\tworld";
             let document = parse_tsv(input, "eng").unwrap();
@@ -572,7 +555,6 @@ mod tests {
             assert_eq!(document.words[0].bounds.x, 10);
             assert!((document.words[0].confidence - 0.965).abs() < 0.001);
         }
-        // Phase `unicode_words_and_page_block_line_boundaries_are_preserved`.
         {
             let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
             let rows = "5\t1\t1\t1\t1\t1\t0\t0\t20\t10\t99\tGrüße\n5\t1\t2\t1\t1\t1\t0\t20\t20\t10\t91\t世界\n5\t2\t1\t1\t1\t1\t0\t0\t20\t10\t87\tمرحبا";
@@ -580,7 +562,6 @@ mod tests {
             assert_eq!(document.plain_text(), "Grüße\n世界\nمرحبا");
             assert_eq!(document.words.len(), 3);
         }
-        // Phase `engine_rows_are_ordered_and_paragraphs_never_merge`.
         {
             let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
             let rows = "5\t1\t1\t2\t1\t2\t40\t40\t10\t10\t90\tparagraph\n\
@@ -592,14 +573,12 @@ mod tests {
             assert_eq!(document.words[2].paragraph, 2);
             assert_eq!(document.words[3].position, 2);
         }
-        // Phase `malformed_non_word_and_negative_confidence_rows_are_ignored`.
         {
             let input = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n1\t1\t0\t0\t0\t0\t0\t0\t100\t100\t-1\tpage\n5\tbogus\t1\t1\t1\t1\t0\t0\t10\t10\t99\tbad-number\n5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t-1\trejected\n5\t1\t1\t1\t1\t2\t2\t3\t10\t11\t0\taccepted";
             let document = parse_tsv(input, "eng").unwrap();
             assert_eq!(document.plain_text(), "accepted");
             assert!(document.words[0].confidence.abs() < f32::EPSILON);
         }
-        // Phase `zero_sized_and_overflowing_geometry_is_rejected`.
         {
             let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
             let rows = "5\t1\t1\t1\t1\t1\t0\t0\t0\t10\t99\tzero-width\n\
@@ -619,7 +598,6 @@ mod tests {
                 }
             );
         }
-        // Phase `large_deterministic_malformed_corpus_never_panics_or_leaks_invalid_words`.
         {
             let mut input = String::from(
                 "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n",
@@ -655,13 +633,11 @@ mod tests {
                     && (0.0..=1.0).contains(&word.confidence)
             }));
         }
-        // Phase `confidence_from_an_untrusted_engine_is_bounded`.
         {
             let input = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t140\toverconfident";
             let document = parse_tsv(input, "eng").unwrap();
             assert!((document.words[0].confidence - 1.0).abs() < f32::EPSILON);
         }
-        // Phase `adversarial_output_word_and_text_limits_fail_closed`.
         {
             let header = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n";
             let row = "5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t99\tok\n";
@@ -687,7 +663,6 @@ mod tests {
             let missing = recognize_path(Path::new("/definitely/not/an/image.png"), "eng");
             assert!(matches!(missing, Err(Error::Unavailable)));
         }
-        // Phase `language_cannot_inject_options_or_paths`.
         {
             assert!(matches!(
                 parse_tsv("", "../eng"),
@@ -700,12 +675,10 @@ mod tests {
             assert!(matches!(parse_tsv("", "-eng"), Err(Error::InvalidLanguage)));
             assert!(matches!(parse_tsv("", "eng-"), Err(Error::InvalidLanguage)));
         }
-        // Phase `oversized_images_are_rejected_before_engine_work`.
         {
             let image = DynamicImage::new_luma8(MAX_EDGE + 1, 1);
             assert!(matches!(preprocess(&image), Err(Error::TooLarge)));
         }
-        // Phase `exact_pixel_limit_is_accepted_but_one_pixel_over_is_rejected`.
         {
             assert!(validate_dimensions(10_000, 6_000).is_ok());
             assert!(matches!(
@@ -715,7 +688,6 @@ mod tests {
         }
         // Phase `absent_engine_is_a_typed_error_when_not_installed` (defined above).
         absent_engine_is_a_typed_error_when_not_installed();
-        // Phase `people_facing_errors_are_actionable_and_never_expose_engine_diagnostics`.
         {
             let cases = [
                 (Error::TooLarge, "smaller scan"),
@@ -744,7 +716,6 @@ mod tests {
 
     #[test]
     fn preprocessing_and_deskew_are_deterministic_and_conservative() {
-        // Phase `preprocessing_is_deterministic_grayscale_and_contrast_enhancing`.
         {
             let mut source = image::GrayImage::new(3, 1);
             source.put_pixel(0, 0, image::Luma([64]));
@@ -757,7 +728,6 @@ mod tests {
             assert!(first.get_pixel(0, 0)[0] < 64);
             assert!(first.get_pixel(2, 0)[0] > 192);
         }
-        // Phase `deskew_recovers_small_camera_rotation_without_changing_canvas`.
         {
             let clean = ruled_document();
             for skew in [-4.5, -2.0, 1.5, 3.0, 4.5] {
@@ -778,7 +748,6 @@ mod tests {
                 assert!(projection_score(&corrected, threshold, 0.0) > before_score);
             }
         }
-        // Phase `deskew_declines_blank_tiny_and_photo_like_inputs`.
         {
             assert!(estimate_skew_degrees(&GrayImage::from_pixel(400, 300, Luma([255]))).is_none());
             assert!(estimate_skew_degrees(&GrayImage::from_pixel(16, 16, Luma([0]))).is_none());
@@ -791,7 +760,6 @@ mod tests {
             });
             assert!(estimate_skew_degrees(&checker).is_none());
         }
-        // Phase `deskew_rotation_preserves_antialiased_glyph_edges`.
         {
             let source = GrayImage::from_fn(96, 96, |x, y| {
                 if (24..72).contains(&x) && (42..48).contains(&y) {
@@ -825,7 +793,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_engine_process_boundary_is_bounded_and_fails_closed() {
-        // Phase `engine_process_boundary_parses_successful_tsv`.
         {
             let result = fake_engine(
                 "printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t7\\t8\\t20\\t9\\t94\\tReceipt\\n'",
@@ -842,7 +809,6 @@ mod tests {
                 }
             );
         }
-        // Phase `engine_failure_is_bounded_and_typed`.
         {
             let error = fake_engine("printf '%0600d' 0 >&2; exit 7").unwrap_err();
             match error {
@@ -850,7 +816,6 @@ mod tests {
                 other => panic!("expected engine error, got {other:?}"),
             }
         }
-        // Phase `noisy_successful_engine_fails_closed_without_deadlocking`.
         {
             let error = fake_engine(
                 "(yes diagnostic | head -c 100000 >&2) || :; printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t12\\t8\\t99\\tDone\\n'",
@@ -858,12 +823,10 @@ mod tests {
             .unwrap_err();
             assert!(matches!(error, Error::Engine(message) if message.contains("diagnostics")));
         }
-        // Phase `runaway_engine_is_killed_at_the_output_limit`.
         {
             let error = fake_engine("yes x").unwrap_err();
             assert!(matches!(error, Error::Engine(message) if message.contains("safety limit")));
         }
-        // Phase `wedged_engine_is_killed_at_the_deadline`.
         {
             let error = fake_engine_with_deadline("while :; do :; done", Duration::from_millis(50))
                 .unwrap_err();

@@ -18,7 +18,6 @@ use crate::widget::marks::{MarkSpan, add_mark_to_range};
 
 /// What a paste brings in.
 enum Pasted {
-    /// Words, each line a block.
     Words(String),
     /// Formatted blocks.
     Blocks(Vec<BlockContent>),

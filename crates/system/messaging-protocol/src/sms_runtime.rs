@@ -63,10 +63,6 @@ impl SmsRuntime {
     /// Freeze and durably reserve one exact SMS before its first mutating RPC.
     /// A successful Send method only means Submitted, never recipient delivery.
     /// Call on the broker worker while holding the host's modem/SIM grant lease.
-    ///
-    /// # Errors
-    /// Refuses stale account/SIM/daemon bindings before Create. Any failure or
-    /// timeout after reservation is uncertain and prohibits automatic retry.
     pub async fn send(
         &mut self,
         accounts: &accounts::AccountStore,

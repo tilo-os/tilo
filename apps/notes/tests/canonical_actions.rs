@@ -135,7 +135,6 @@ fn assert_remapped_blocks(
             };
         }
         expected.id.clone_from(&new.id);
-        // A copied fence is a fence of its own.
         assert_eq!(new.code_group.is_some(), expected.code_group.is_some());
         if new.code_group.is_some() {
             assert_ne!(new.code_group, expected.code_group);
@@ -192,7 +191,6 @@ fn bound_edits_are_one_owned_history_entry_each() {
                 );
             })
             .unwrap();
-        // Typing a word is one history entry, recorded once the word ends.
         assert_eq!(revision(&f, &checkout), before);
         driver.key("Enter");
         assert_eq!(

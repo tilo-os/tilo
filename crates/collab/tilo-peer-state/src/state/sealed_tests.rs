@@ -1,4 +1,3 @@
-//! A replica without the channel key keeps sealed writes as their record.
 use super::*;
 use crate::admission_tests::seeded;
 use crate::{InputDisposition, TransportOrigin, peer_handle};

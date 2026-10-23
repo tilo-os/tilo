@@ -70,7 +70,6 @@ pub struct LiveMember {
     pub wave: Option<Wave>,
 }
 
-/// One person's line from the host.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct HostLine {
     pub device: String,
@@ -848,7 +847,6 @@ mod tests {
             Some(("Ada".to_owned(), ui::presence::user_color("ada-root"))),
             "alone here, a person wears their own identity's colour"
         );
-        // Without presence, the host's label and their person's colour.
         assert_eq!(
             here.person("ben-root"),
             Some(("Ben".to_owned(), ui::presence::user_color("ben-root")))
@@ -929,7 +927,6 @@ mod tests {
             here.set_members(Some(me.clone()), Some(vec![me.clone(), ben.clone()]));
             assert!(here.take_arrivals(at + 300).is_empty(), "Ben never left");
         }
-        // Ben's second tab is Ben, already here.
         let line = |device: &str| HostLine {
             device: device.into(),
             user: "ben-root".into(),
@@ -964,7 +961,6 @@ mod tests {
         let mut here = HereState::default();
         here.set_members(Some(me.clone()), Some(vec![me.clone()]));
         assert!(here.take_arrivals(1).is_empty());
-        // Their presence comes without a label, their line with the name.
         here.set_members(
             Some(me.clone()),
             Some(vec![me.clone(), member("dolphin", "person", "")]),
@@ -1101,7 +1097,6 @@ mod tests {
     /// included.
     #[test]
     fn visitors_here_together_wear_distinct_colours_on_every_page() {
-        // Both identities land on the same ring entry on their own.
         assert_eq!(
             ui::presence::user_color("visitor-0"),
             ui::presence::user_color("visitor-13")
@@ -1472,7 +1467,6 @@ mod tests {
         assert_eq!(ids, ["ben-tab", "bot"]);
         assert_eq!(ada.strip_places(), [tilo_desktop_model::StripId(12)]);
 
-        // Without the live layer the host's lines merge the same way.
         let mut host_only = HereState::default();
         host_only.set_members(
             Some(LiveMember {

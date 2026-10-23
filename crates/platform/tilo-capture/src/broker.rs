@@ -176,7 +176,6 @@ fn invalid(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
 }
 
-/// Send `bytes` with `fd` attached.
 fn send_with_fd(socket: &UnixDatagram, bytes: &[u8], fd: &OwnedFd) -> io::Result<()> {
     let fds = [fd.as_fd()];
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];

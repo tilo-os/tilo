@@ -102,7 +102,6 @@ struct Participation {
 struct State {
     participations: HashMap<[u8; 32], Participation>,
     tokens: HashMap<[u8; 32], [u8; 32]>,
-    /// The devices told each room's call list, by room.
     watchers: HashMap<String, Vec<Watcher>>,
     /// Rooms whose call list changed since their watchers were last told.
     changed: std::collections::BTreeSet<String>,

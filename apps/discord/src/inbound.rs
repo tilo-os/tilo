@@ -33,6 +33,9 @@ pub struct Appearance {
 pub struct Persona {
     pub service: String,
     pub account: String,
+    /// The Tilo person the account is linked to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<String>,
 }
 
 /// Copy an avatar, then `remember-avatar(hash, result.blob)`, then plan again.
@@ -152,6 +155,7 @@ fn persona(user: &str) -> Persona {
     Persona {
         service: "discord".into(),
         account: user.into(),
+        linked: None,
     }
 }
 
@@ -163,8 +167,31 @@ pub fn ignored(guild: &Guild, user: &str, webhook: Option<&str>) -> bool {
         || guild.blocked_personas.contains(&user.to_owned())
 }
 
-/// The appearance of `author`, or the avatar to fetch first.
-fn appearance(guild: &Guild, author: &Author) -> Result<Appearance, Box<AvatarFetch>> {
+/// The appearance of `author`, or the avatar to fetch first. A linked
+/// account speaks as its Tilo person: their name and picture as `chat`
+/// knows them, so their Discord messages read as theirs in Chat. The
+/// persona stays the Discord account, which says where it was written.
+fn appearance(
+    guild: &Guild,
+    chat: &serde_json::Value,
+    author: &Author,
+) -> Result<Appearance, Box<AvatarFetch>> {
+    if let Some((link, person)) = guild
+        .links
+        .iter()
+        .find(|link| link.discord_user == author.id)
+        .and_then(|link| Some((link, tilo::person(chat, &link.person)?)))
+        .filter(|(_, person)| !person.name.trim().is_empty())
+    {
+        return Ok(Appearance {
+            name: person.name,
+            avatar: person.avatar,
+            persona: Persona {
+                linked: Some(link.person.clone()),
+                ..persona(&author.id)
+            },
+        });
+    }
     let avatar = match (&author.avatar, &author.avatar_url) {
         (Some(hash), Some(url)) => match guild.avatars.get(hash) {
             Some(blob) => Some(blob.clone()),
@@ -233,9 +260,13 @@ fn place(
     }
 }
 
-/// `message-created`.
+/// `message-created`, in the room whose Chat record reads as `chat`.
 #[must_use]
-pub fn plan_created(guild: &Guild, event: &MessageCreated) -> InboundPlan {
+pub fn plan_created(
+    guild: &Guild,
+    chat: &serde_json::Value,
+    event: &MessageCreated,
+) -> InboundPlan {
     let mut plan = InboundPlan::default();
     if ignored(guild, &event.author.id, event.author.webhook_id.as_deref())
         || guild
@@ -247,7 +278,7 @@ pub fn plan_created(guild: &Guild, event: &MessageCreated) -> InboundPlan {
     let Some((channel, parent, quote)) = place(guild, event) else {
         return plan;
     };
-    let appearance = match appearance(guild, &event.author) {
+    let appearance = match appearance(guild, chat, &event.author) {
         Ok(appearance) => appearance,
         Err(fetch) => {
             plan.avatars.push(*fetch);

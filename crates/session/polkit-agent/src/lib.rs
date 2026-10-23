@@ -91,9 +91,6 @@ pub struct HelperIo {
 
 /// Starts a helper conversation authenticating `user` for `cookie`.
 pub trait HelperSpawner: Send + Sync {
-    /// # Errors
-    ///
-    /// When no helper can be started.
     fn spawn(
         &self,
         user: &str,
@@ -177,7 +174,6 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// A request as polkit made it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthRequest {
     pub action_id: String,

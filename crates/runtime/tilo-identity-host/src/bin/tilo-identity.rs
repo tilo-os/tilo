@@ -6,8 +6,10 @@
 //! through [`provisioning::ensure_collaboration_identity`] and writes the
 //! backup onboarding writes; `pair` runs `tilo-enroll pair-device` as
 //! first-use onboarding does; `approve` discovers and admits a device with
-//! the programs and arguments of [`device_admin`]; `devices` and `revoke` are
-//! the shell's identity steps.
+//! the programs and arguments of [`device_admin`]; `asking`, `approve` and
+//! `decline` answer a device another of the person's devices found through
+//! the session's `identity.device.pair.asking` and `.answer` actions, as its
+//! notification does; `devices` and `revoke` are the shell's identity steps.
 //!
 //! Every command takes `--json` and then prints one JSON object on stdout,
 //! errors included (`{"error": ..., "next": ...}`).
@@ -40,6 +42,7 @@ mod unix {
             New device, no identity anywhere yet:   tilo-identity create ...\n\
             New device, identity on another device: tilo-identity pair     (here)\n\
             \x20                                       tilo-identity approve  (there)\n\
+            Another of your devices asks you:       tilo-identity asking\n\
             Check:                                  tilo-identity status\n\n\
             Run it as the account that owns the identity, not with sudo; a step that\n\
             needs an administrator asks for one itself."
@@ -99,7 +102,9 @@ mod unix {
             #[arg(long, default_value_t = PAIRING_WINDOW_SECS)]
             timeout: u64,
         },
-        /// Approve the device waiting in `tilo-identity pair` on this network.
+        /// Approve the device waiting in `tilo-identity pair`: one another of
+        /// your devices found and asks you about (see `asking`), or else one
+        /// on this network.
         Approve {
             /// Approve only if the waiting device shows this code.
             #[arg(long, value_name = "CODE")]
@@ -114,6 +119,18 @@ mod unix {
             #[arg(long, value_enum, default_value_t = Elevate::Auto)]
             elevate: Elevate,
         },
+        /// Decline a device another of your devices found and asks you about.
+        Decline {
+            /// Decline the device that shows this code.
+            #[arg(long, value_name = "CODE")]
+            code: Option<String>,
+            /// Decline this device: its key, or the start of it.
+            #[arg(long, value_name = "KEY")]
+            device: Option<String>,
+        },
+        /// The new devices your other devices found, asking you here to let
+        /// them be you.
+        Asking,
         /// The devices this identity trusts.
         Devices,
         /// Revoke a device: it can no longer act as this identity.
@@ -294,13 +311,31 @@ mod unix {
                 device,
                 timeout,
                 elevate,
-            } => approve(
-                context,
-                code.as_deref(),
-                device.as_deref(),
-                timeout,
-                elevate,
-            ),
+            } => {
+                if answer_asking(context, code.as_deref(), device.as_deref())? {
+                    return Ok(());
+                }
+                approve(
+                    context,
+                    code.as_deref(),
+                    device.as_deref(),
+                    timeout,
+                    elevate,
+                )
+            }
+            Cmd::Decline { code, device } => {
+                let mut session = Session::connect()?;
+                let ask = pick(session.asking()?, code.as_deref(), device.as_deref())?.ok_or_else(
+                    || {
+                        guided(
+                            "no device asks you here",
+                            "see who asks with `tilo-identity asking`",
+                        )
+                    },
+                )?;
+                session.answer(context, &ask, false)
+            }
+            Cmd::Asking => asking(context),
             Cmd::Devices => {
                 let identity = context.require_identity()?;
                 let devices = context.devices(&identity)?;
@@ -648,6 +683,11 @@ mod unix {
         elevate: Elevate,
     ) -> anyhow::Result<()> {
         let identity = context.require_identity()?;
+        let holding = device_admin::key_holding(&context.person)
+            .map_err(|error| guided(error, "check this account with `tilo-identity status`"))?;
+        if holding != device_admin::KeyHolding::Whole {
+            return approve_through_session(context, code, device);
+        }
         if !context
             .device_cert(&identity)
             .is_some_and(|cert| cert.capabilities.can_admit_devices)
@@ -676,32 +716,7 @@ mod unix {
                      run this while it waits",
                     )
                 })?;
-        if let Some(wanted) = device
-            && !candidate
-                .device_node_id
-                .starts_with(&wanted.trim().to_ascii_lowercase())
-        {
-            return Err(guided(
-                format!(
-                    "'{}' ({}) is waiting, not the device you named",
-                    candidate.label, candidate.device_node_id
-                ),
-                "nothing was approved; run this again once the device you meant is waiting",
-            ));
-        }
-        if let Some(code) = code
-            && digits(code) != digits(&candidate.verification_code)
-        {
-            return Err(guided(
-                format!(
-                    "'{}' shows the code {}, not {}",
-                    candidate.label,
-                    candidate.verification_code,
-                    code.trim()
-                ),
-                "nothing was approved; make sure you approve the device you meant to",
-            ));
-        }
+        refuse_another(&candidate, code, device)?;
         if !context.json {
             eprintln!(
                 "Approving '{}' ({}), code {}",
@@ -745,6 +760,326 @@ mod unix {
                 candidate.label, candidate.device_node_id
             ),
         );
+        Ok(())
+    }
+
+    /// This account's Tilo session, reached through its control socket.
+    struct Session(tilo_control::client::Desktop);
+
+    /// A device another of the person's devices found, asking here.
+    struct Ask {
+        id: String,
+        device: String,
+        label: String,
+        code: String,
+        via: String,
+    }
+
+    impl Session {
+        fn connect() -> anyhow::Result<Self> {
+            use tilo_control::client::{Desktop, doors_from_env};
+            Desktop::connect(&doors_from_env()).map(Self).map_err(|_| {
+                guided(
+                    "the Tilo session is not running here",
+                    "start the Tilo session here (`tilo-board-headless-session@$USER` on a \
+                     board), then run this again",
+                )
+            })
+        }
+
+        /// Run the session's action `id` with `args`; its output.
+        fn run(&mut self, id: &str, args: &Value) -> Result<Value, String> {
+            use tilo_control::client::{Unreachable, invoke_wire};
+            let answer = self
+                .0
+                .request(&invoke_wire("actions", id, args, None, None))
+                .map_err(|error| match error {
+                    Unreachable::NoDesktop => "the session is not running".to_string(),
+                    Unreachable::Refused { message, .. } => message,
+                    Unreachable::Io { error, .. } => format!("the session broke off: {error}"),
+                })?;
+            if let Some(message) = answer.pointer("/err/message").and_then(Value::as_str) {
+                return Err(message.to_string());
+            }
+            let update = answer
+                .pointer("/answer/receipt/update")
+                .cloned()
+                .unwrap_or_default();
+            match update.get("state").and_then(Value::as_str) {
+                Some("failed" | "cancelled") => Err(update
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the session did not say why")
+                    .to_string()),
+                _ => Ok(update.pointer("/output/value").cloned().unwrap_or_default()),
+            }
+        }
+
+        /// The devices asking here, oldest first.
+        fn asking(&mut self) -> anyhow::Result<Vec<Ask>> {
+            let listed = self
+                .run("identity.device.pair.asking", &json!({}))
+                .map_err(anyhow::Error::msg)
+                .context("ask the session who asks")?;
+            Ok(listed
+                .get("asking")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|asking| {
+                    let text = |key: &str| {
+                        asking
+                            .get(key)
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned()
+                    };
+                    Ask {
+                        id: text("ask"),
+                        device: text("device"),
+                        label: text("label"),
+                        code: text("code"),
+                        via: text("via"),
+                    }
+                })
+                .collect())
+        }
+
+        /// Approve or decline `ask`, as its notification's buttons do.
+        fn answer(&mut self, context: &Context, ask: &Ask, approve: bool) -> anyhow::Result<()> {
+            if approve && !context.json {
+                eprintln!(
+                    "Approving '{}', found by '{}', code {}",
+                    ask.label, ask.via, ask.code
+                );
+            }
+            self.run(
+                "identity.device.pair.answer",
+                &json!({"ask": ask.id, "approve": approve, "confirm": approve}),
+            )
+            .map_err(|detail| {
+                guided(
+                    format!("'{}' was not answered: {detail}", ask.label),
+                    "see who still asks with `tilo-identity asking`",
+                )
+            })?;
+            let (verb, next) = if approve {
+                (
+                    "Approved",
+                    format!(
+                        "'{}' joins once '{}' finishes pairing it",
+                        ask.label, ask.via
+                    ),
+                )
+            } else {
+                ("Declined", format!("'{}' does not join", ask.label))
+            };
+            context.emit(
+                &json!({
+                    "label": ask.label,
+                    "code": ask.code,
+                    "via": ask.via,
+                    "approved": approve,
+                    "next": next,
+                }),
+                &format!("{verb} '{}'.\nnext: {next}", ask.label),
+            );
+            Ok(())
+        }
+    }
+
+    /// The one of `asking` that shows `code`, or whose key starts with
+    /// `device`; without either, the only one. `None` when none does.
+    fn pick(
+        asking: Vec<Ask>,
+        code: Option<&str>,
+        device: Option<&str>,
+    ) -> anyhow::Result<Option<Ask>> {
+        let wanted = device.map(|device| device.trim().to_ascii_lowercase());
+        let mut matching: Vec<Ask> = asking
+            .into_iter()
+            .filter(|ask| code.is_none_or(|code| digits(code) == digits(&ask.code)))
+            .filter(|ask| {
+                wanted
+                    .as_deref()
+                    .is_none_or(|wanted| ask.device.starts_with(wanted))
+            })
+            .collect();
+        if matching.len() > 1 {
+            return Err(guided(
+                "more than one device asks you",
+                "see them with `tilo-identity asking`, then pass --code CODE",
+            ));
+        }
+        Ok(matching.pop())
+    }
+
+    /// Approve the device asking here that `code` or `device` names, if
+    /// one does; whether one did. Without a session nobody can ask here,
+    /// and a device nearby still can be approved.
+    fn answer_asking(
+        context: &Context,
+        code: Option<&str>,
+        device: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        if let Ok(mut session) = Session::connect()
+            && let Ok(asking) = session.asking()
+            && let Some(ask) = pick(asking, code, device)?
+        {
+            session.answer(context, &ask, true)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn asking(context: &Context) -> anyhow::Result<()> {
+        let asking = Session::connect()?.asking()?;
+        let listed: Vec<Value> = asking
+            .iter()
+            .map(|ask| {
+                json!({"device": ask.device, "label": ask.label, "code": ask.code, "via": ask.via})
+            })
+            .collect();
+        let text = if asking.is_empty() {
+            "No device asks you here.".to_owned()
+        } else {
+            asking
+                .iter()
+                .map(|ask| {
+                    format!(
+                        "  {:<24} {}  code {}  found by '{}'",
+                        ask.label, ask.device, ask.code, ask.via
+                    )
+                })
+                .chain(std::iter::once(
+                    "next: when the new device shows the same code, `tilo-identity approve \
+                     --code CODE`; else `tilo-identity decline --code CODE`"
+                        .to_owned(),
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        context.emit(&json!({ "asking": listed }), &text);
+        Ok(())
+    }
+
+    /// `approve` on a device that holds none of the identity's key, or a
+    /// share of it: the session finds the device and has the devices that
+    /// hold the key certify it, each asking the person
+    /// (`identity.device.pair.*`, as Settings pairs).
+    fn approve_through_session(
+        context: &Context,
+        code: Option<&str>,
+        device: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let mut session = Session::connect().map_err(|_| {
+            guided(
+                "this device adds devices through its Tilo session, which asks your other \
+                 devices to approve them, and the session is not running",
+                "start the Tilo session here (`tilo-board-headless-session@$USER` on a board), \
+                 then run this again",
+            )
+        })?;
+        let mut run = |id: &str, args: Value| session.run(id, &args);
+        if !context.json {
+            eprintln!("Looking for a device waiting in `tilo-identity pair`...");
+        }
+        let found = run(
+            "identity.device.pair.discover",
+            json!({"role": PairRole::PersonalDevice.as_str()}),
+        )
+        .map_err(|error| {
+            guided(
+                error,
+                "start `tilo-identity pair` on the new device first, on this network, and run \
+                 this while it waits",
+            )
+        })?;
+        let text = |key: &str| found.get(key).and_then(Value::as_str).unwrap_or_default();
+        let (key, label, shown) = (text("device"), text("label"), text("verification_code"));
+        let mismatch =
+            if device.is_some_and(|wanted| !key.starts_with(&wanted.trim().to_ascii_lowercase())) {
+                Some(format!(
+                    "'{label}' ({key}) is waiting, not the device you named"
+                ))
+            } else if code.is_some_and(|code| digits(code) != digits(shown)) {
+                Some(format!(
+                    "'{label}' shows the code {shown}, not {}",
+                    code.unwrap_or_default().trim()
+                ))
+            } else {
+                None
+            };
+        if let Some(mismatch) = mismatch {
+            let _ = run("identity.device.pair.reject", json!({"device": key}));
+            return Err(guided(
+                mismatch,
+                "nothing was approved; make sure you approve the device you meant to",
+            ));
+        }
+        if !context.json {
+            eprintln!(
+                "'{label}' shows {shown}. Your other devices ask you to approve it: approve \
+                 it there when it shows the same code."
+            );
+        }
+        run(
+            "identity.device.pair.approve",
+            json!({
+                "role": PairRole::PersonalDevice.as_str(),
+                "device": key,
+                "service": text("service"),
+                "confirm": true,
+            }),
+        )
+        .map_err(|detail| {
+            guided(
+                format!("'{label}' was not approved: {detail}"),
+                "check both devices with `tilo-identity status`, then try again; trying again \
+                 is safe",
+            )
+        })?;
+        let next = format!("on '{label}', log in again so its session runs as the identity");
+        context.emit(
+            &json!({"device": key, "label": label, "code": shown, "next": next}),
+            &format!("Approved '{label}' ({key}).\nnext: {next}"),
+        );
+        Ok(())
+    }
+
+    /// Refuse `candidate` unless it is the device `device` names and shows
+    /// `code`.
+    fn refuse_another(
+        candidate: &device_admin::Candidate,
+        code: Option<&str>,
+        device: Option<&str>,
+    ) -> anyhow::Result<()> {
+        if let Some(wanted) = device
+            && !candidate
+                .device_node_id
+                .starts_with(&wanted.trim().to_ascii_lowercase())
+        {
+            return Err(guided(
+                format!(
+                    "'{}' ({}) is waiting, not the device you named",
+                    candidate.label, candidate.device_node_id
+                ),
+                "nothing was approved; run this again once the device you meant is waiting",
+            ));
+        }
+        if let Some(code) = code
+            && digits(code) != digits(&candidate.verification_code)
+        {
+            return Err(guided(
+                format!(
+                    "'{}' shows the code {}, not {}",
+                    candidate.label,
+                    candidate.verification_code,
+                    code.trim()
+                ),
+                "nothing was approved; make sure you approve the device you meant to",
+            ));
+        }
         Ok(())
     }
 

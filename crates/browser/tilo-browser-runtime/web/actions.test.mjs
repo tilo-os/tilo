@@ -183,6 +183,28 @@ test('an invocation keeps its id: a retry observes the original and runs once', 
   } finally { stop(); }
 });
 
+test('an empty resource names a record\'s own, and only on a record', async () => {
+  const peer = fakeHost();
+  const {actions, stop} = actionsWith(peer);
+  try {
+    await actions.loaded;
+    // The profile card asks the room's Discord record for the person's
+    // link without holding the connector's code: the host resolves it.
+    const own = {provider: 'record:so.tilo.discord:', address: {resource: '', action: 'my-link'}};
+    const ticket = actions.invoke(own, null);
+    await ticket.done.catch(() => {});
+    const sent = peer.sent.find(message => message.Invoke)?.Invoke;
+    assert.deepEqual(sent?.target, own, 'sent to the host as asked');
+    for (const target of [
+      {provider: 'workspace:room', address: {resource: '', action: 'invite'}},
+      {provider: 'record:so.tilo.discord:', address: {action: 'my-link'}},
+      {provider: 'record:so.tilo.discord:', address: {resource: 'guild', action: ''}},
+    ]) {
+      assert.throws(() => actions.invoke(target, null), TypeError, JSON.stringify(target));
+    }
+  } finally { stop(); }
+});
+
 test('a lost receipt leaves the outcome unknown until status observes the original', async () => {
   const peer = fakeHost();
   let dropped = false;

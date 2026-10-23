@@ -455,7 +455,6 @@ mod tests {
         assert!(!authority.ops_valid(&hex::encode([1; 32]), &sealed(LiveKind::Ops, 2)));
         assert!(!authority.ops_valid(&track, &sealed(LiveKind::Presence, 2)));
 
-        // The same frames in the clear are refused.
         let presence = LiveFrame::Presence(PresenceFrame {
             place: None,
             chat: None,

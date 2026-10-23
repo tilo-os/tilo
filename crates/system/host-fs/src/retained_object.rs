@@ -49,9 +49,6 @@ impl RetainedObject {
     /// Retain precisely the object whose metadata the view already observed.
     /// No-follow `O_PATH` (on macOS, an event-only no-follow open that refuses
     /// device nodes) avoids payload reads, hydration and special-file I/O.
-    ///
-    /// # Errors
-    /// Refuses a replaced/changed observation, unsupported hosts and I/O errors.
     pub fn retain_shown(path: &Path, expected: ObservedObject) -> io::Result<Self> {
         let file = open_object(path)?;
         let observed = ObservedObject::from_metadata(&file.metadata()?)
@@ -83,9 +80,6 @@ impl RetainedObject {
         self.observed.device == observation.device && self.observed.inode == observation.inode
     }
     /// Metadata of the actual retained object, independent of its current name.
-    ///
-    /// # Errors
-    /// Returns the descriptor's metadata error.
     pub fn metadata(&self) -> io::Result<Metadata> {
         self.file.metadata()
     }

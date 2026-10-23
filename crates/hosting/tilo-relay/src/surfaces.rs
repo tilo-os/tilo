@@ -82,6 +82,8 @@ pub fn decide_receipt_from_registry(registry: &str) {
             match result.ok().and_then(|mut all| all.pop()) {
                 Some(bytes) => {
                     known.insert(hash, Some(bytes.to_vec()));
+                    drop(known);
+                    arrived();
                 }
                 // Asked again by the next op that names it.
                 None => {
@@ -97,6 +99,25 @@ pub fn decide_receipt_from_registry(registry: &str) {
         ))),
         signed_surface,
     );
+}
+
+/// How many app surfaces arrived here since the process started.
+fn arrival_count() -> &'static tokio::sync::watch::Sender<u64> {
+    static ARRIVALS: std::sync::OnceLock<tokio::sync::watch::Sender<u64>> =
+        std::sync::OnceLock::new();
+    ARRIVALS.get_or_init(|| tokio::sync::watch::channel(0).0)
+}
+
+/// Changes each time an app surface arrives here: a change held for it can
+/// be decided now. A room's governor replays what its relay retains then
+/// ([`crate::rooms::Rooms`]), so a held change is never let go for good.
+pub(crate) fn arrivals() -> tokio::sync::watch::Receiver<u64> {
+    arrival_count().subscribe()
+}
+
+/// Tell whoever follows [`arrivals`] that an app surface arrived.
+pub(crate) fn arrived() {
+    arrival_count().send_modify(|count| *count = count.wrapping_add(1));
 }
 
 fn tilo_app_registry_blobs(registry: &str) -> app_registry::http_blobs::HttpBlobs {

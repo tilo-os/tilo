@@ -113,7 +113,6 @@ impl ReaderPalette {
         }
     }
 
-    /// Whether the page is dark.
     pub fn is_dark(&self) -> bool {
         is_dark(self.ground)
     }
@@ -139,7 +138,6 @@ mod tests {
             assert_eq!(pal.ground, theme.tokens.colors.surfaces.content);
         }
 
-        // A fixed paper of the other polarity paints its page.
         let light_on_dark = ReaderPalette::resolve(ReadTheme::Light, &Theme::dark());
         assert_eq!(
             light_on_dark.page,
@@ -148,14 +146,12 @@ mod tests {
         assert!(!light_on_dark.is_dark());
         let dark_on_light = ReaderPalette::resolve(ReadTheme::Dark, &Theme::light());
         assert!(dark_on_light.is_dark());
-        // The same polarity keeps the system's own ground.
         assert!(
             ReaderPalette::resolve(ReadTheme::Dark, &Theme::dark())
                 .page
                 .is_none()
         );
 
-        // Every paper's ink clears AA on its page.
         for mode in ReadTheme::ALL {
             for theme in [Theme::dark(), Theme::light()] {
                 let pal = ReaderPalette::resolve(mode, &theme);
@@ -172,7 +168,6 @@ mod tests {
             }
         }
 
-        // High contrast reaches the page.
         let hc = Theme::dark().with_high_contrast();
         let sepia = ReaderPalette::resolve(ReadTheme::Sepia, &hc);
         assert!(sepia.page.is_none());

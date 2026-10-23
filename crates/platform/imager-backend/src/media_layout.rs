@@ -40,8 +40,6 @@ pub fn prepare(
         capacity_for_free_bytes,
     })
 }
-/// # Errors
-/// Rejects changed geometry or custody, a mismatched canonical binding, insufficient reservation capacity, or GPT read errors.
 pub fn prepare_expected(
     image: &File,
     target: &File,
@@ -77,14 +75,10 @@ pub fn prepare_expected(
     Ok(prepared)
 }
 impl PreparedLayout {
-    /// # Errors
-    /// Returns an error if the planned GPT lacks a unique migration partition or a valid profile gap.
     pub fn planned_binding(&self) -> io::Result<MediaPartitionBinding> {
         self.layout
             .planned_binding(self.target_bytes, &self.stable_id)
     }
-    /// # Errors
-    /// Returns an error for invalid binding geometry, overflowing capacity, or filesystem/package framing failures.
     pub fn payload_capacity(&self) -> io::Result<u64> {
         let binding = self.planned_binding()?;
         let available = binding

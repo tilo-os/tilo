@@ -20,8 +20,10 @@
 use crate::widget::InPlace;
 use crate::widget::SearchDriver;
 #[cfg(feature = "native")]
-use crate::window_toolbar::ToolbarEvent;
+use crate::widget::{FindAbilities, FindOptions};
 use crate::window_toolbar::{SearchOffer, WindowOffer};
+#[cfg(feature = "native")]
+use crate::window_toolbar::{SearchOpening, ToolbarEvent};
 
 use super::App;
 
@@ -37,12 +39,16 @@ use super::App;
 pub(crate) struct WindowBarRuntime {
     /// The window's bar presents search and History for this app.
     presents: bool,
-    /// What the app's widgets offer the window's search; `None` until it is
-    /// looked at again after the widget tree changed.
-    offer: Option<SearchOffer>,
+    /// What the app's widgets offer the window's search, and what their
+    /// document's find offers beyond matching; `None` until it is looked at
+    /// again after the widget tree changed.
+    offer: Option<(SearchOffer, crate::widget::FindAbilities)>,
     /// The search the bar opened on this app in its own process.
     driver: SearchDriver,
     query: String,
+    /// The find options the bar's search runs under (its options' Match
+    /// case, Whole word, mode); the defaults on each opening.
+    options: crate::widget::FindOptions,
     /// What the shell was last told on this connection.
     sent: Option<WindowOffer>,
     /// The app declared window-bar slots when last looked at: its History
@@ -107,31 +113,52 @@ impl App {
     /// widget tree.
     #[cfg(feature = "native")]
     pub(crate) fn window_search_offer(&mut self) -> SearchOffer {
+        self.window_search_offer_and_abilities().0
+    }
+
+    /// What the app's widgets offer the window's search and what their
+    /// document's find offers beyond matching, looked at once per widget
+    /// tree.
+    #[cfg(feature = "native")]
+    fn window_search_offer_and_abilities(&mut self) -> (SearchOffer, FindAbilities) {
         if let Some(offer) = self.floating.window_bar.offer {
             return offer;
         }
-        let offer = SearchOffer::of(self.root_widget.as_mut());
-        self.floating.window_bar.offer = Some(offer);
-        offer
+        let root = self.root_widget.as_mut();
+        let search = SearchOffer::of(root);
+        let abilities = if search == SearchOffer::Document {
+            FindAbilities::of_root(root)
+        } else {
+            FindAbilities::default()
+        };
+        self.floating.window_bar.offer = Some((search, abilities));
+        (search, abilities)
     }
 
-    /// Whether the app's Find (Ctrl+F) opens the window bar's search instead
-    /// of a find of the app's own: the bar shows this window from another
-    /// process and the app has something to search in place.
+    /// Whether the app's Find (Ctrl+F), or its Find and Replace (Ctrl+H),
+    /// opens the window bar's search instead of a find of the app's own: the
+    /// bar shows this window from another process and the app has something
+    /// to search in place (for replacing, a document).
     #[cfg(feature = "native")]
-    pub(crate) fn window_bar_takes_find(&mut self) -> bool {
-        crate::window_toolbar::is_hosted()
-            && self.floating.window_bar.presents
-            && self.window_search_offer() != SearchOffer::Nothing
+    pub(crate) fn window_bar_takes(&mut self, opening: SearchOpening) -> bool {
+        if !crate::window_toolbar::is_hosted() || !self.floating.window_bar.presents {
+            return false;
+        }
+        match opening {
+            SearchOpening::Find => self.window_search_offer() != SearchOffer::Nothing,
+            SearchOpening::Replace => self.window_search_offer() == SearchOffer::Document,
+        }
     }
 
     /// What the window offers the bar now.
     #[cfg(feature = "native")]
     pub(crate) fn window_offer(&mut self) -> WindowOffer {
+        let (search, find) = self.window_search_offer_and_abilities();
         WindowOffer {
-            search: self.window_search_offer(),
+            search,
             count: self.floating.window_bar.driver.count().map(Into::into),
             history: self.window_history_control().map(Into::into),
+            find,
         }
     }
 
@@ -204,17 +231,32 @@ impl App {
     pub(crate) fn apply_window_bar_event(&mut self, event: &ToolbarEvent) -> Option<bool> {
         Some(match event {
             ToolbarEvent::Search { query } => {
-                if self.floating.window_bar.driver.in_place() == InPlace::Nothing {
-                    let offer = self.window_search_offer();
-                    self.floating.window_bar.driver.open(offer.into());
-                }
+                self.open_window_search_driver();
                 query.clone_into(&mut self.floating.window_bar.query);
                 self.drive_window_search(None, false)
+            }
+            ToolbarEvent::SearchOptions { options } => {
+                self.open_window_search_driver();
+                self.floating.window_bar.options = *options;
+                self.drive_window_search(None, false)
+            }
+            ToolbarEvent::SearchReplace { with, all } => {
+                let bar = &mut self.floating.window_bar;
+                let touched = bar.driver.replace(
+                    self.root_widget.as_mut(),
+                    &bar.query,
+                    bar.options,
+                    with,
+                    *all,
+                );
+                self.window_search_touched(touched);
+                touched
             }
             ToolbarEvent::SearchStep { forward } => self.drive_window_search(Some(*forward), false),
             ToolbarEvent::SearchClose => {
                 let touched = self.drive_window_search(None, true);
                 self.floating.window_bar.query.clear();
+                self.floating.window_bar.options = FindOptions::default();
                 touched
             }
             ToolbarEvent::History => match self.window_history_control() {
@@ -241,16 +283,36 @@ impl App {
     #[cfg(feature = "native")]
     fn drive_window_search(&mut self, step: Option<bool>, finishing: bool) -> bool {
         let bar = &mut self.floating.window_bar;
-        let touched = bar
-            .driver
-            .drive(self.root_widget.as_mut(), &bar.query, step, finishing);
+        let touched = bar.driver.drive(
+            self.root_widget.as_mut(),
+            &bar.query,
+            bar.options,
+            step,
+            finishing,
+        );
+        self.window_search_touched(touched);
+        touched
+    }
+
+    /// The bar's search opened on this app: what it acts on is what the
+    /// app's widgets offer now.
+    #[cfg(feature = "native")]
+    fn open_window_search_driver(&mut self) {
+        if self.floating.window_bar.driver.in_place() == InPlace::Nothing {
+            let offer = self.window_search_offer();
+            self.floating.window_bar.driver.open(offer.into());
+        }
+    }
+
+    /// What the search found shows on the app's next frame: matches
+    /// painted, a match scrolled into view, a list narrowed, a match
+    /// replaced.
+    #[cfg(feature = "native")]
+    fn window_search_touched(&mut self, touched: bool) {
         if touched {
-            // What the search found shows on the app's next frame: matches
-            // painted, a match scrolled into view, a list narrowed.
             self.mark_semantic_tree_stale();
             self.layout.layout_dirty = true;
         }
-        touched
     }
 }
 

@@ -303,7 +303,6 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             collect(&snapshot.root, "FormSection", &mut sections);
             let theme = Theme::dark();
             assert!(forms[0].rect[2] <= f64::from(theme.tokens.metrics.readable_width));
-            // On the page's leading edge, one gutter in, whatever the width.
             let gutter = f64::from(theme.tokens.spacing.rhythm.group);
             assert!(
                 (forms[0].rect[0] - gutter).abs() < 0.5,

@@ -1,5 +1,5 @@
 //! Workspace history over the strip: the shared Activity pane (Catch up,
-//! Explore, Replay and Tasks) reading a host's retained history, drawn
+//! Explore and Replay) reading a host's retained history, drawn
 //! modally over the shown strip as the native desktop draws it.
 //!
 //! The pane only reads: it works on an [`ActivitySnapshot`] the host built
@@ -152,7 +152,6 @@ pub(super) fn pane_view(view: ActivityView) -> PaneView {
         ActivityView::CatchUp => PaneView::CatchUp,
         ActivityView::Explore => PaneView::Explore,
         ActivityView::Replay => PaneView::Replay,
-        ActivityView::Tasks => PaneView::Tasks,
     }
 }
 
@@ -161,7 +160,6 @@ pub(super) fn navigation_view(view: PaneView) -> ActivityView {
         PaneView::CatchUp => ActivityView::CatchUp,
         PaneView::Explore => ActivityView::Explore,
         PaneView::Replay => ActivityView::Replay,
-        PaneView::Tasks => ActivityView::Tasks,
     }
 }
 

@@ -122,7 +122,6 @@ pub(super) enum LinkStep {
     Up,
     /// The link did not come up. The output is being switched off.
     Failed,
-    /// The output is off.
     Off,
 }
 
@@ -598,11 +597,9 @@ mod tests {
         );
         assert!(!link.presentable());
 
-        // The probe lands on the next vblank.
         assert_eq!(link.complete(101, &crtc), Completion::Link(LinkStep::Up));
         assert!(link.presentable());
         assert!(!link.busy());
-        // Later events are the presenter's flips.
         assert_eq!(link.complete(102, &crtc), Completion::Flip);
     }
 

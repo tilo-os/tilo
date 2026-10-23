@@ -41,6 +41,7 @@ fn protected_preflight(approve: bool) {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("wa-apps"),
+        Some(rig.root.path().join("wa-apps").join("person")),
         &rig.owner.principal,
         socket,
     )

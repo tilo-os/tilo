@@ -106,7 +106,6 @@ mod real {
             "keyframe seek to {MID_GOP_MS}ms landed at {keyframe_pts}ms ({keyframe_err}ms off)"
         );
 
-        // The accurate path on the same request.
         let mut exact = engine();
         let f = decode_frame_at(&mut exact, MID_GOP_MS, "accurate comparison");
         let exact_err = Drift::between(f.pts_ms, expected).ms;
@@ -174,7 +173,6 @@ mod real {
              frame would differ in none. The decoder is not seeking."
         );
 
-        // Two seconds moves the deterministic pattern much farther.
         let far = decode_frame_at(&mut e, MID_GOP_MS + 2_000, "frame C");
         let pc = far.to_rgba().expect("paintable");
         let far_diff = pa.iter().zip(pc.iter()).filter(|(x, y)| x != y).count();

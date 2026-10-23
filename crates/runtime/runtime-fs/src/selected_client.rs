@@ -85,8 +85,6 @@ fn join_worker(thread: JoinHandle<io::Result<()>>) -> io::Result<()> {
 impl SelectedFileConnection {
     /// Close the queue and observe the exact RPC worker and transport outcome.
     /// Requires sole custody after all FUSE callbacks and handles have retired.
-    /// # Errors
-    /// Fails if owners remain, the worker lock is poisoned, or worker retirement fails.
     pub fn retire(self) -> io::Result<()> {
         let mut inner = Arc::try_unwrap(self.0)
             .map_err(|_| io::Error::other("retained source still has active owners"))?;
@@ -106,8 +104,6 @@ impl SelectedFileConnection {
         self.0.live.store(false, Ordering::Release);
         let _ = self.0.transport.shutdown(std::net::Shutdown::Both);
     }
-    /// # Errors
-    /// Fails on socket or worker startup errors, invalid source capability, or startup timeout.
     pub fn connected(stream: UnixStream) -> io::Result<Self> {
         let transport = stream.try_clone()?;
         let (calls, receive) = tokio::sync::mpsc::channel::<Call>(LIMIT);
@@ -167,32 +163,24 @@ impl SelectedFileConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn metadata(&self) -> io::Result<Metadata> {
         match self.call(Request::Stat)? {
             Response::Metadata(value) => Ok(value),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn metadata_handle(&self, id: u64) -> io::Result<Metadata> {
         match self.call(Request::HandleStat(id))? {
             Response::Metadata(value) => Ok(value),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn open(&self, mode: OpenMode) -> io::Result<u64> {
         match self.call(Request::Open(mode))? {
             Response::Handle(value) => Ok(value),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn read(&self, id: u64, offset: u64, len: u32) -> io::Result<Vec<u8>> {
         if len > crate::MAX_READ_CHUNK {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -202,8 +190,6 @@ impl SelectedFileConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn write(&self, id: u64, offset: u64, bytes: &[u8]) -> io::Result<u32> {
         if bytes.len() > crate::MAX_WRITE_CHUNK as usize {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -214,8 +200,6 @@ impl SelectedFileConnection {
         }
     }
     /// One non-idempotent append; a failed transport may have an unknown effect.
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn append(&self, id: u64, bytes: &[u8]) -> io::Result<u32> {
         if bytes.len() > crate::MAX_WRITE_CHUNK as usize {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -225,16 +209,12 @@ impl SelectedFileConnection {
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn flush(&self, id: u64) -> io::Result<()> {
         match self.call(Request::Flush(id))? {
             Response::Empty => Ok(()),
             _ => Err(refused()),
         }
     }
-    /// # Errors
-    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn release(&self, id: u64) -> io::Result<()> {
         match self.call(Request::Release(id))? {
             Response::Empty => Ok(()),

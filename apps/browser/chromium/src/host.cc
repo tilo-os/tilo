@@ -393,7 +393,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(frame->IsMain() && user_gesture && !redirect) OpenTab(request->GetURL(),false);
       return true;
     }
-    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
+    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
     if(sealed_documents && !user_gesture) return true;
@@ -432,6 +432,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(loading) { navigation_busy_=true; main_navigation_finished_=false; failed_main_navigation_.reset(); return; }
     // OnLoadEnd excludes same-document history; overall loading settles it.
     CompleteMainNavigation(browser->GetMainFrame()->GetURL().ToString(),0);
+    // Not at OnLoadEnd: the browser still counts as loading there, and an
+    // action's reply waiting on the load would say it is still loading.
+    if(page_automation_)page_automation_->NavigationFinished();
     if(!navigation_dispatched_ || navigation_started_ || navigation_aborting_) {
       const auto uri=browser->GetMainFrame()->GetURL().ToString();
       if(navigation_owner_) NavigationOutcome(*navigation_owner_,uri,navigation_error_);
@@ -452,14 +455,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     OfferCredentialContext(frame);pending_main_media_token_.reset();PublishZoom();
     CompleteMainNavigation(frame->GetURL().ToString(),status);SendScripts();
     if(service_session_import_)service_session_import_->Loaded(frame,status);
-    if(page_automation_)page_automation_->NavigationFinished();
   }
   void OnLoadError(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,ErrorCode code,const CefString& text,const CefString& url) override {
     if(frame->IsMain()) { failed_main_navigation_=url.ToString(); InvalidateCredentials(); }
     if(!frame->IsMain()) return;
     if(navigation_owner_ && navigation_started_ && navigation_urls_.count(url.ToString())) navigation_error_=text.ToString();
     if(code!=ERR_ABORTED) {auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetString("message",text);Event("error",d);}
-    if(page_automation_)page_automation_->NavigationFinished();
   }
   void OnPopupShow(CefRefPtr<CefBrowser>,bool show) override { popup_visible_=show;if(!show) { popup_.clear(); EmitFrame(); } }
   void OnPopupSize(CefRefPtr<CefBrowser>,const CefRect& rect) override { popup_rect_=rect; }
@@ -1196,6 +1197,8 @@ void CreateTab(int id) {
   if(closing || id<=0 || clients.count(id) || VisibleOwners()>=32 || clients.size()>=64) {auto d=CefDictionaryValue::Create();d->SetInt("tab",id);Event("closed",d);return;}
   auto client=CefRefPtr<Client>(new Client(id));clients.emplace(id,client);
   CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=kOffscreenFrameRate;settings.background_color=CefColorSetARGB(255,255,255,255);
+  // A sealed document runs no script, whatever the document says.
+  if(sealed_documents) settings.javascript=STATE_DISABLED;
   TraceGeometry("create-begin",id);
   if(!CefBrowserHost::CreateBrowserSync(window,client,"about:blank",settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
   TraceGeometry("create-return",id);
@@ -1295,7 +1298,7 @@ class App final : public CefApp,public CefBrowserProcessHandler {
 #endif
   }
   void OnContextInitialized() override {
-    request_filter=new tilo::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); });
+    request_filter=new tilo::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); },sealed_documents);
     if(private_mode) {
       CefRequestContextSettings settings;
       // Empty cache_path is CEF's incognito request context. The separate

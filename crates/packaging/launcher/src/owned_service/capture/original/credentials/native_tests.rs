@@ -1,5 +1,3 @@
-//! Opt-in actual reduced-capability credential restoration, in owned namespaces.
-//! This exercises the production sealed bootstrap, projection and enter path.
 use super::*;
 use crate::owned_service::capture::original::{self, Bootstrap, OriginalMountedInput};
 use std::ffi::CString;

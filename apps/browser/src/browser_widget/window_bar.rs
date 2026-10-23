@@ -384,6 +384,8 @@ impl BrowserWidget {
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
+            | ToolbarEvent::SearchOptions { .. }
+            | ToolbarEvent::SearchReplace { .. }
             | ToolbarEvent::History => return,
         }
         self.structure_dirty = true;

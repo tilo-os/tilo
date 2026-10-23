@@ -130,10 +130,6 @@ pub fn collect(
 }
 
 /// The runtime versions `rows` run on or may mount.
-///
-/// # Errors
-///
-/// Returns the error reading or parsing a row's manifest.
 pub fn referenced_runtimes<'a>(
     rows: impl IntoIterator<Item = &'a InstalledPackage>,
 ) -> io::Result<BTreeSet<String>> {
@@ -160,10 +156,6 @@ pub fn referenced_runtimes<'a>(
 /// The runtime versions the package records still under `packages`
 /// (`<store>/pkgs`) name, rows or not. Run after the orphan collection, the
 /// records without a row are the trees a launch or a running app holds.
-///
-/// # Errors
-///
-/// Returns the error listing `packages` or reading or parsing a manifest.
 pub fn retained_runtimes(packages: &Path) -> io::Result<BTreeSet<String>> {
     let mut versions = BTreeSet::new();
     let entries = match std::fs::read_dir(packages) {

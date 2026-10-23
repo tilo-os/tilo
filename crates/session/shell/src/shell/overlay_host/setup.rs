@@ -117,16 +117,6 @@ impl ShellOverlayHost {
         self.tracker = tracker;
     }
 
-    pub(crate) fn attach_task_review(
-        &mut self,
-        review: crate::shell::task_review::NativeTaskReview,
-    ) {
-        self.room_activity.attach_task_review(review.clone());
-        self.search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::task_review::TaskReviewProvider::new(review),
-        ));
-    }
-
     /// Registers every built-in search provider and hands back the shared
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
@@ -418,6 +408,7 @@ impl ShellOverlayHost {
             more_rows: Vec::new(),
             present_kinds: Vec::new(),
             search_chrome_revision: 0,
+            search_indexes_settling: false,
             pending_action_admissions: Vec::new(),
             pending_launchpad_app: None,
             pending_launchpad_actions: Vec::new(),
@@ -497,6 +488,7 @@ impl ShellOverlayHost {
             peer_sync: peer_sync_dispatch::PeerSyncDispatch::default(),
             pairing_until_ms: 0,
             pairing_polled_at: None,
+            certification_seen: 0,
             site_rooms_for_shots: None,
             device_labels: std::collections::HashMap::new(),
             clipboard_manager_bridge: None,
@@ -598,6 +590,9 @@ impl ShellOverlayHost {
             public_for_shots: false,
             person_quick_composer_node: None,
             peer_sync_node: None,
+            uninstall_sheet: None,
+            uninstall_nodes: None,
+            uninstall_changed: false,
             agent_actions: HashMap::new(),
             tracker: None,
             task_imports: task_import::TaskImports::default(),

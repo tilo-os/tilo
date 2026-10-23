@@ -427,7 +427,6 @@ pub struct MainPanel {
     /// whether the editor's current state still matches the loaded
     /// document — if so we skip the `to_markdown` serialisation.
     body: String,
-    /// Panel rect, populated by `apply_layout`.
     rect: Rect,
     /// Cached taffy node id for the editor child, used by
     /// `apply_layout` + `handle_event`.

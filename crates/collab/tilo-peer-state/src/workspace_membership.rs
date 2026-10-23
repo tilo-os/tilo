@@ -194,7 +194,6 @@ pub enum WorkspaceMembershipCommand {
     },
 }
 
-/// The id of the grant task `task`'s grant set holds for `node`.
 #[must_use]
 pub fn task_grant_id(task: &str, node: &TreePath) -> GrantId {
     GrantId::new(format!("task-grant:{task}:{node}"))
@@ -405,7 +404,6 @@ mod tests {
             "no control characters"
         );
         assert!(with_inputs(&[("server", &"x".repeat(257))]).is_err());
-        // An old request, without inputs, still reads.
         let old: BotRequest =
             serde_json::from_str(r#"{"entry":"so.tilo.bots.standup","version":"1.0.0"}"#).unwrap();
         assert!(old.inputs.is_empty());

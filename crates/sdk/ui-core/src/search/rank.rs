@@ -78,7 +78,6 @@ mod tests {
         // Too short to be a remembered fragment: only word starts count.
         assert_eq!(match_tier("dun", "redundant"), None);
         assert_eq!(match_tier("", "anything"), None);
-        // A later word-start occurrence wins over an earlier infix one.
         assert_eq!(
             match_tier("dun", "redundant dune"),
             Some(MatchTier::WordPrefix)

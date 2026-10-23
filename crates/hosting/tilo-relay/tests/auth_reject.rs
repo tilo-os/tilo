@@ -36,7 +36,6 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         let alice_ws_member = alice.enrol("laptop", DeviceCapabilities::primary());
         let bob_intruder = bob.enrol("stranger-laptop", DeviceCapabilities::primary());
 
-        // Alice's relay, membership Alice's laptop.
         let relay = Box::pin(spawn_relay(
             &alice,
             alice_relay_dev,
@@ -68,8 +67,6 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         let good_dev = user.enrol("laptop", DeviceCapabilities::primary());
         let bad_dev = user.enrol("stolen-phone", DeviceCapabilities::primary());
 
-        // Build a relay identity with the stolen-phone device already
-        // in the revocation list.
         let mut revs = RevocationList::new();
         let mut entry = RevocationEntry {
             user_public_key: user.user_pk,
@@ -81,7 +78,6 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
         revs.insert(entry).unwrap();
 
-        // Custom spawn to inject the revocation list into the relay.
         let tmp = tempfile::tempdir().unwrap();
         let state_root = tmp.path().to_path_buf();
         let cfg = tilo_relay::RelayConfig {
@@ -116,7 +112,6 @@ async fn foreign_and_revoked_devices_are_rejected_and_disconnected() {
         .await;
         assert!(rejected.is_err(), "revoked device must be rejected");
 
-        // A non-revoked device from the same user still connects fine.
         let ep2 = client_endpoint().await;
         let res_ok = RelayClient::connect(
             ep2,

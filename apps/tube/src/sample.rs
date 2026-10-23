@@ -570,6 +570,7 @@ pub fn model() -> TubeModel {
         search_type_filter: crate::model::SearchTypeFilter::default(),
         playhead: 0.0,
         playing: false,
+        unplayable: None,
         liked: Vec::new(),
         comment_likes: std::collections::BTreeSet::new(),
         // No pre-seeded notices: the toast stack fills from real activity

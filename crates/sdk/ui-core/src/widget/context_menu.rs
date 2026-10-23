@@ -409,7 +409,6 @@ impl ContextMenu {
         }
     }
 
-    /// A menu of `items`, closed.
     pub fn with_items(items: Vec<MenuItem>) -> Self {
         let mut menu = Self::new();
         menu.items = items;
@@ -998,7 +997,6 @@ impl ContextMenu {
         self.submenu_focused = false;
     }
 
-    /// Whether a nested menu is open.
     pub fn is_submenu_open(&self) -> bool {
         self.submenu.is_some()
     }
@@ -2348,7 +2346,6 @@ mod tests {
             let _ = paint(&mut menu, &mut text);
             assert!(!menu.needs_animation_frame(), "it rests");
             assert!(menu.drawn.is_rest());
-            // A nested menu is there at once.
             menu.open_submenu(1, false);
             let _ = paint(&mut menu, &mut text);
             assert!(
@@ -2676,7 +2673,6 @@ mod tests {
             // Down again → must skip the separator (idx 1) and land on idx 2.
             dispatch(&mut m, &named_key(NamedKey::ArrowDown));
             assert_eq!(m.hovered(), Some(2), "ArrowDown skips the separator");
-            // Enter selects the hovered row.
             dispatch(&mut m, &named_key(NamedKey::Enter));
             assert_eq!(
                 fired.load(Ordering::SeqCst),
@@ -3120,7 +3116,6 @@ mod nested_and_anchored_tests {
         let mut m = file_menu(&fired);
         m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
         paint(&mut m);
-        // Hovering the row opens it beside the row, level with it.
         let row = m.item_rect(1).expect("the submenu row is shown");
         dispatch(&mut m, &cursor_at(row.center()));
         assert!(m.is_submenu_open(), "hover opens the nested menu");
@@ -3130,7 +3125,6 @@ mod nested_and_anchored_tests {
             nested.x0 >= m.get_rect().x1 - 0.5,
             "beside the menu: {nested:?}"
         );
-        // A pick in it runs the action, reports the nested pick and closes all.
         let nested_row = m
             .submenu
             .as_ref()
@@ -3190,7 +3184,6 @@ mod nested_and_anchored_tests {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let fired = Arc::new(AtomicU32::new(0));
-        // Labels long enough that the menu is past its minimum width.
         let label = "Open the most recent document";
         let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
         let mut shortcut = ContextMenu::with_items(vec![
@@ -3234,7 +3227,6 @@ mod nested_and_anchored_tests {
             "{:?}",
             m.get_rect()
         );
-        // Near the window's edge the menu keeps the panel margin.
         let mut edge = ContextMenu::with_items(vec![MenuItem::action("Rename", || {})]);
         edge.open_anchored(Rect::new(790.0, 10.0, 800.0, 42.0), WINDOW);
         paint(&mut edge);

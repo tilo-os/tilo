@@ -44,12 +44,10 @@ fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
             Regex::new(r"Color::rgb\s*\(\s*\d").unwrap(),
             "hard-coded Color::rgb glyph colour — read it from the Theme",
         ),
-        // Hard-coded radius literals on rounded rects
         (
             Regex::new(r"\.to_rounded_rect\(\s*\d+(\.\d+)?\s*\)").unwrap(),
             "hard-coded rounded-rect radius — use theme.radius_standard",
         ),
-        // Hard-coded shadow blur literals
         (
             Regex::new(r"blur\s*:\s*\d").unwrap(),
             "hard-coded shadow blur — use theme.elevation.*",

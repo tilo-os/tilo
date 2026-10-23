@@ -317,9 +317,7 @@ enum ChangeCallback {
 pub struct ToggleGroup {
     id: Option<String>,
     segments: Vec<Segment>,
-    /// The chosen segment, or [`NONE_CHOSEN`].
     selected: usize,
-    /// The chosen segments of a multi-select strip.
     chosen: Option<Vec<bool>>,
     /// The segment the keyboard is on in a multi-select strip.
     cursor: usize,
@@ -1312,7 +1310,6 @@ pub struct SegmentedFace<'a> {
 struct StackedMetrics {
     /// Above the icon and below the label.
     pad_y: f64,
-    /// Between the icon and its label.
     gap: f64,
     icon: f64,
     label: TextStyle,
@@ -1374,7 +1371,6 @@ impl<'a> SegmentedFace<'a> {
         self
     }
 
-    /// The height of a stacked strip of `size` in `theme`.
     pub fn stacked_height(size: ControlSize, theme: &Theme) -> f64 {
         StackedMetrics::of(size, theme).height()
     }
@@ -1468,7 +1464,6 @@ impl<'a> SegmentedFace<'a> {
         self.control_size = size;
         self
     }
-    /// The height of a strip of `size` in `theme`.
     pub fn height(size: ControlSize, theme: &Theme) -> f64 {
         StripMetrics::of(size, theme).height
     }
@@ -2888,7 +2883,6 @@ mod tests {
             "the gaps share the rest"
         );
 
-        // A press chooses the segment and stores its value.
         dispatch(&mut rail, &cursor_moved(20.0, rects[2].center().y));
         dispatch(&mut rail, &mouse_press());
         assert_eq!(state.with(|value| *value), 'c');
@@ -2899,7 +2893,6 @@ mod tests {
         Widget::sync(&mut rail, &doc, &automerge::ROOT);
         assert_eq!(rail.selected(), 0);
 
-        // An icon segment's label and shortcut are its tooltip.
         let (_, tip) = rail
             .tooltip_target_at(rects[0].center())
             .expect("an icon segment has a tooltip");
@@ -2930,7 +2923,6 @@ mod tests {
     fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `retained_labels_apply_resolved_text_scale_exactly_once`.
         {
             for scale in [1.0, 2.0] {
                 let theme = Theme::dark().with_text_scale(scale);
@@ -2963,7 +2955,6 @@ mod tests {
             }
         }
 
-        // Case `retained_group_fits_its_labels_at_its_control_height`.
         {
             let harness = crate::headless::FrameHarness::new(
                 crate::State::new(),
@@ -3014,7 +3005,6 @@ mod tests {
             assert_eq!(harness.inspection().root.children[0].rect[2], 600.0);
         }
 
-        // Case `toggle_group_paints_separator_lines_between_segments`.
         {
             let mut g = ToggleGroup::new(
                 vec![Segment::new("a"), Segment::new("b"), Segment::new("c")],
@@ -3057,7 +3047,6 @@ mod tests {
             );
         }
 
-        // Case `segmented_paint_emits_fills_over_caller_rects`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -3090,7 +3079,6 @@ mod tests {
             }
         }
 
-        // Case `a_label_that_does_not_fit_falls_back_to_its_short_form`.
         {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
@@ -3191,13 +3179,11 @@ mod tests {
     fn toggle_group_selection_follows_pointer_touch_and_keyboard() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `toggle_group_initial_selection_zero`.
         {
             let g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
             assert_eq!(g.selected(), 0);
         }
 
-        // Case `toggle_group_click_segment_two_selects_index_two`.
         {
             let captured: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
             let captured_clone = captured.clone();
@@ -3221,7 +3207,6 @@ mod tests {
             );
         }
 
-        // Case `focused_toggle_group_supports_keyboard_navigation_and_activation`.
         {
             let changes = Rc::new(RefCell::new(Vec::new()));
             let captured = Rc::clone(&changes);
@@ -3254,7 +3239,6 @@ mod tests {
             );
         }
 
-        // Case `touch_commits_on_release_and_keyboard_arrows_wrap`.
         {
             let mut group = group_at(
                 vec![
@@ -3283,7 +3267,6 @@ mod tests {
             assert_eq!(group.selected(), 2);
         }
 
-        // Case `unavailable_toggle_group_rejects_pointer_touch_and_keyboard_input`.
         {
             let mut group = group_at(
                 vec![Segment::new("Light"), Segment::new("Dark")],
@@ -3646,7 +3629,6 @@ mod tests {
     fn accessibility_and_actions_expose_and_drive_the_selected_segment() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `accessibility_reports_group_role_and_selected_segment_label`.
         {
             use crate::a11y::Role;
             let g = ToggleGroup::new(
@@ -3669,7 +3651,6 @@ mod tests {
             assert!(!node.state.disabled);
         }
 
-        // Case `accessibility_value_tracks_selection_changes`.
         {
             // Nothing reads `captured` back in this test (only the accessibility
             // value is asserted), so the closure can just own it — no need for
@@ -3703,7 +3684,6 @@ mod tests {
             );
         }
 
-        // Case `synthetic_segment_activation_selects_and_fires_on_change`.
         {
             let changed = Rc::new(RefCell::new(Vec::new()));
             let captured = Rc::clone(&changed);
@@ -3721,7 +3701,6 @@ mod tests {
             assert_eq!(&*changed.borrow(), &[1]);
         }
 
-        // Case `on_view_publishes_and_executes_one_typed_resource_action`.
         {
             let changed = Rc::new(RefCell::new(Vec::new()));
             let captured = Rc::clone(&changed);

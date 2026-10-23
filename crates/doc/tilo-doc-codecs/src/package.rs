@@ -17,10 +17,6 @@ pub struct ZipPackage {
 
 impl ZipPackage {
     /// Read an untrusted package under the default [`ZipLimits`].
-    ///
-    /// # Errors
-    /// Returns [`CodecError`] if `bytes` are not a readable zip archive, if the
-    /// archive exceeds [`ZipLimits`], or if an XML part declares a DTD.
     pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
         Ok(Self {
             parts: read_zip_parts(bytes, &ZipLimits::default())?,
@@ -49,20 +45,12 @@ impl ZipPackage {
     }
 
     /// Serialise an OOXML package: every part deflated, in order.
-    ///
-    /// # Errors
-    /// Returns [`CodecError`] if the zip writer rejects a part name or fails to
-    /// write its bytes.
     pub fn write_opc(&self) -> Result<Vec<u8>, CodecError> {
         self.write(None)
     }
 
     /// Serialise an ODF package: ODF requires `mimetype` to be the first entry
     /// and stored uncompressed; the rest are deflated, in order.
-    ///
-    /// # Errors
-    /// Returns [`CodecError`] if the zip writer rejects a part name or fails to
-    /// write its bytes.
     pub fn write_odf(&self) -> Result<Vec<u8>, CodecError> {
         self.write(Some("mimetype"))
     }

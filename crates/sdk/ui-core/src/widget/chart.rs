@@ -231,7 +231,6 @@ pub struct TrendStyle {
     /// How far the area fill reaches below the plot's baseline, so a curve
     /// with dots on its lowest sample still sits on a filled ground.
     pub baseline_overhang: f64,
-    /// A dot of this radius at every sample.
     pub markers: Option<f64>,
     /// A dot of this radius at the newest (rightmost) sample — the live edge
     /// of a streaming series.

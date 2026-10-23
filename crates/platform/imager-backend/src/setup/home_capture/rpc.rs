@@ -1410,7 +1410,6 @@ mod media_purpose_tests {
             io::ErrorKind::Interrupted
         );
         assert!(cancelled && cancel.load(Ordering::Acquire));
-        // A second poll retains cancellation without needing another byte.
         assert_eq!(
             poll_original_cancel(&mut root, &mut cancelled, &cancel)
                 .unwrap_err()

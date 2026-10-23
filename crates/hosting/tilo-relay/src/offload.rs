@@ -80,7 +80,6 @@ pub type LocalTransform = dyn Fn(&[Vec<u8>]) -> Result<Vec<Vec<u8>>, String> + S
 
 /// One invocation of an offloadable action.
 pub struct OffloadJob<'a> {
-    /// The workspace it was invoked in.
     pub workspace_id: u64,
     /// The invoked action; its contract declares the offload.
     pub action: &'a ActionDescriptor,
@@ -143,12 +142,10 @@ pub enum OffloadError {
 pub struct WallTime {
     /// The offloaded transform, as `package:entrypoint`.
     pub action: String,
-    /// The device that ran it.
     pub device: DeviceKey,
     /// How long it took: on another device the whole remote run, transfers
     /// included; here the local run alone.
     pub elapsed: Duration,
-    /// The bytes of the inputs it ran over.
     pub input_bytes: u64,
 }
 
@@ -198,7 +195,6 @@ enum Command {
     Cancel(ComputeJobBinding),
 }
 
-/// Aborts a task when dropped.
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
@@ -494,10 +490,6 @@ impl Offloader {
 
     /// The bytes of `digest`, an input bound or an output kept here, read
     /// as it was bound.
-    ///
-    /// # Errors
-    ///
-    /// A diagnostic when the content can no longer be read as those bytes.
     pub async fn content(&self, digest: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
         self.content.read(digest).await
     }

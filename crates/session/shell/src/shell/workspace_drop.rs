@@ -106,13 +106,11 @@ mod tests {
 
     #[test]
     fn dropped_paths_route_by_kind_and_case_insensitive_extension() {
-        // Phase `folder_drop_opens_files`.
         {
             let item = DraggedItem::folder("src");
             assert_eq!(decide_app_for_drop(&item), AppKind::FileExplorer);
         }
 
-        // Phase `code_file_extensions_route_to_editor`.
         {
             for ext in EDITOR_EXTENSIONS {
                 let item = DraggedItem::file(format!("example.{ext}"));
@@ -124,25 +122,21 @@ mod tests {
             }
         }
 
-        // Phase `code_file_extension_matching_is_case_insensitive`.
         {
             let item = DraggedItem::file("README.MD");
             assert_eq!(decide_app_for_drop(&item), AppKind::Other("Editor".into()));
         }
 
-        // Phase `unknown_file_extension_falls_back_to_files`.
         {
             let item = DraggedItem::file("logo.png");
             assert_eq!(decide_app_for_drop(&item), AppKind::FileExplorer);
         }
 
-        // Phase `file_without_extension_falls_back_to_files`.
         {
             let item = DraggedItem::file("Makefile");
             assert_eq!(decide_app_for_drop(&item), AppKind::FileExplorer);
         }
 
-        // Phase `from_path_extracts_filename_for_existing_file`.
         {
             let tmp = std::env::temp_dir();
             let path = tmp.join("tilo-drop-test.md");

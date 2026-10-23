@@ -45,7 +45,6 @@ pub enum OverviewPick {
     Window(TabId),
     /// Go to another workspace.
     Workspace(WorkspaceId),
-    /// Make a workspace and go there.
     NewWorkspace,
     /// Leave the overview where it was.
     Dismiss,
@@ -134,7 +133,6 @@ impl Default for Metrics {
 #[derive(Clone, Debug, Default)]
 struct PictureStrip {
     name: String,
-    /// The strip you are on.
     current: bool,
     windows: Vec<SwitcherWindow>,
     /// Each one's share of the strip, in per-mille of its width.
@@ -143,7 +141,6 @@ struct PictureStrip {
     joined: Vec<bool>,
     /// Each one is the tab its window shows.
     front: Vec<bool>,
-    /// Each one is the window you are in.
     current_window: Vec<bool>,
 }
 

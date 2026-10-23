@@ -805,7 +805,8 @@
           }
         },
         "tags": [
-          "read:document"
+          "read:document",
+          "audience:agents"
         ]
       },
       "input": {
@@ -873,7 +874,10 @@
           "schema": {
             "type": "object"
           }
-        }
+        },
+        "tags": [
+          "audience:agents"
+        ]
       },
       "input": {
         "Text": {

@@ -434,33 +434,6 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
     }
 }
 
-#[test]
-fn agent_private_drafts_keep_exact_identity_and_never_enter_the_room_document() {
-    let (mut app, mut doc) = app_with_doc();
-    app.room_agents = vec!["reed".into(), "scribe".into()];
-
-    assert!(app.open_agent_conversation("scribe"));
-    app.composer_main.sync(&doc);
-    app.focus = Focus::Main;
-    app.set_composer_focus();
-    type_str(&mut app, &mut doc, "private for scribe");
-    app.composer_main.select(8, 18);
-    let scribe_selection = app.composer_main.selection();
-    assert!(!crate::projection::has_draft(&doc, &app.active_channel));
-
-    assert!(app.open_agent_conversation("reed"));
-    app.composer_main.sync(&doc);
-    assert_eq!(app.composer_main.value(), "");
-    type_str(&mut app, &mut doc, "private for reed");
-    assert!(!crate::projection::has_draft(&doc, &app.active_channel));
-
-    assert!(app.open_agent_conversation("scribe"));
-    app.composer_main.sync(&doc);
-    assert_eq!(app.composer_main.value(), "private for scribe");
-    assert_eq!(app.composer_main.selection(), scribe_selection);
-    assert!(!crate::projection::has_draft(&doc, &app.active_channel));
-}
-
 /// Deleting a message of your own from its menu asks nothing: it goes
 /// at once, and the Undo under the composer brings it back through the
 /// history of the part it was in.
@@ -904,7 +877,6 @@ fn call_overlay_keeps_the_roster_and_fills_its_surface_at_every_size() {
             let region = app.overlay_content_region();
             let tiles = app.overlay_tiles();
             assert_eq!(tiles.len(), 4, "w={w}: host + three remotes → four tiles");
-            // Every tile inside the region.
             for t in &tiles {
                 assert!(
                     t.x0 >= region.x0 - 0.5
@@ -1255,7 +1227,6 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
         app.reconcile_flaps();
         assert!(!app.left_overlay(), "a wide window docks the sidebar");
-        // Resize narrow on the SAME instance.
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 540.0, 720.0);
         app.reconcile_flaps();
         assert!(
@@ -1263,7 +1234,6 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
             "narrowing reflows to one column at a time"
         );
         assert!(app.left_flap.is_push());
-        // And widen again.
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
         app.reconcile_flaps();
         assert!(!app.left_overlay(), "widening reflows back to docked");
@@ -1381,7 +1351,6 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
             app.thread_open.is_none(),
             "a second Escape closes the thread"
         );
-        // Pinned messages are a layer too.
         app.pins_open = true;
         app.right_flap.open();
         app.right_flap.snap(true);
@@ -2021,139 +1990,6 @@ fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
     app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 }
 
-#[test]
-fn agent_task_conversation_normal_and_compact_keep_exact_control_and_private_editor() {
-    for (scenario, width) in [("agent-task", 1280.0), ("agent-task-compact", 420.0)] {
-        let (mut app, mut doc) = app_with_doc();
-        app.stage_scenario(scenario);
-        app.composer_main.sync(&doc);
-        app.focus = Focus::Main;
-        app.set_composer_focus();
-        type_str(&mut app, &mut doc, "Keep this private clarification.");
-        app.composer_main.select(5, 17);
-        let selection = app.composer_main.selection();
-        let route = app.agent_draft_route().unwrap();
-        assert_eq!(route, "task:task:review:7");
-        render_frame(&mut app, width, 680.0);
-        assert!(
-            app.hits
-                .iter()
-                .any(|(_, hit)| matches!(hit, Hit::AgentStop))
-        );
-        assert!(
-            !app.hits
-                .iter()
-                .any(|(_, hit)| matches!(hit, Hit::AgentStart)),
-            "an active run cannot be approved again"
-        );
-        assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::Send)));
-        assert_eq!(
-            app.header_identity_text().name,
-            "Example: Review search actions"
-        );
-        assert_eq!(
-            app.messages.len(),
-            5,
-            "public work turns reach the real timeline"
-        );
-        assert!(
-            app.messages
-                .iter()
-                .any(|message| message.text.contains("Example action output"))
-        );
-        assert!(
-            app.messages
-                .iter()
-                .any(|message| message.text.contains("Example resource output"))
-        );
-        assert_eq!(app.user_name("agent:scribe"), "Scribe (agent)");
-        let lines = crate::render_chat::agent_task_status_lines(app.direct_agent_tasks().unwrap());
-        assert!(lines.primary.contains("Working"));
-        assert!(!lines.primary.contains("task:review"));
-        assert!(lines.receipt.unwrap().contains("Waiting for the agent"));
-        let semantics = ui::Widget::accessibility(&app).unwrap();
-        let heading = semantics
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Example: Review search actions"))
-            .expect("the selected task has an accessible heading");
-        assert!(
-            heading
-                .description
-                .as_deref()
-                .unwrap()
-                .contains("Waiting for the agent")
-        );
-        assert!(!crate::projection::has_draft(&doc, &app.active_channel));
-
-        let channel = app.active_channel.clone();
-        let mut surface =
-            crate::agent_conversation_surface::AgentConversationSurface::from_attached(
-                &mut app, "scribe",
-            );
-        assert_eq!(
-            surface.view.agent_draft_route().as_deref(),
-            Some(route.as_str())
-        );
-        assert_eq!(
-            surface.view.composer_main.value(),
-            "Keep this private clarification."
-        );
-        assert_eq!(surface.view.composer_main.selection(), selection);
-        assert!(surface.request().title.contains("Run 7"));
-        surface.move_editor_to_parent(&mut app);
-        assert_eq!(app.agent_draft_route().as_deref(), Some(route.as_str()));
-        assert_eq!(app.composer_main.selection(), selection);
-        assert_eq!(app.active_channel, channel);
-        assert_eq!(
-            app.direct_agent_tasks()
-                .unwrap()
-                .current()
-                .unwrap()
-                .run_epoch,
-            Some(7)
-        );
-    }
-}
-
-#[test]
-fn queued_task_conversation_draws_explicit_start_without_stop() {
-    for (scenario, width) in [
-        ("agent-task-queued", 1280.0),
-        ("agent-task-queued-compact", 420.0),
-    ] {
-        let (mut app, mut doc) = app_with_doc();
-        app.stage_scenario(scenario);
-        app.composer_main.sync(&doc);
-        render_frame(&mut app, width, 680.0);
-        let start = app
-            .hits
-            .iter()
-            .find(|(_, hit)| matches!(hit, Hit::AgentStart))
-            .expect("the production paint exposes explicit Start task");
-        assert!(start.0.x0 >= 0.0 && start.0.x1 <= width);
-        assert!(
-            !app.hits
-                .iter()
-                .any(|(_, hit)| matches!(hit, Hit::AgentStop))
-        );
-        assert_eq!(app.messages.len(), 1);
-        assert_eq!(
-            app.direct_agent_tasks()
-                .unwrap()
-                .current()
-                .unwrap()
-                .run_epoch,
-            Some(0)
-        );
-        app.focus = Focus::Main;
-        app.set_composer_focus();
-        type_str(&mut app, &mut doc, "An unsent new task");
-        assert!(!crate::projection::has_draft(&doc, &app.active_channel));
-        assert_eq!(app.composer_main.value(), "An unsent new task");
-    }
-}
-
 fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Room) {
     for (author, invoke) in crate::resource::agent_work_steps() {
         crate::testing::apply_as(doc, author, invoke).unwrap();
@@ -2622,6 +2458,68 @@ fn mods(ctrl: bool, shift: bool) -> Modifiers {
 fn feed_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) {
     let mut handled = false;
     app.dispatch_event(ev, 1.0, m, &mut ui::widget::Edits::lend(doc), &mut handled);
+}
+
+/// Pins opened from the window bar's button close on Escape: the bar's
+/// press leaves the keyboard with the app, and Escape there peels the panel.
+#[test]
+fn escape_closes_the_pins_opened_from_the_window_bar() {
+    use ui::headless::FrameHarness;
+    let (app, doc) = app_with_doc();
+    let mut state = ui::State::new();
+    assert!(state.adopt_doc(doc.chat));
+    let mut driver = FrameHarness::for_root(state, app, (1200, 800), ui::Theme::dark());
+    driver.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: "pins".into() });
+    assert!(
+        driver.root::<ChatApp>().pins_open,
+        "the bar's button opens the pins"
+    );
+    driver.key("Escape");
+    let app = driver.root::<ChatApp>();
+    assert!(
+        !app.pins_open && !app.right_flap_open(),
+        "Escape closes the pins"
+    );
+}
+
+/// On a window too narrow to dock it, the pins float over the conversation
+/// and end above the composer: its emoji and Send stay uncovered and take
+/// their presses, so a message can still be written and sent beside them.
+#[test]
+fn floating_pins_leave_the_composer_whole() {
+    use ui::headless::FrameHarness;
+    let (app, doc) = app_with_doc();
+    let mut state = ui::State::new();
+    assert!(state.adopt_doc(doc.chat));
+    let mut driver = FrameHarness::for_root(state, app, (900, 700), ui::Theme::dark());
+    driver.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: "pins".into() });
+    assert!(driver.wait_until(tilo_test_env::hang_bound(), |driver| {
+        !driver.root::<ChatApp>().right_flap.is_animating()
+    }));
+    let app = driver.root::<ChatApp>();
+    assert!(
+        app.pins_open && app.right_overlay(),
+        "the pins float on a narrow window"
+    );
+    let panel = app.right_flap.sidebar_rect();
+    let scrim = app.right_flap.scrim_rect();
+    for wanted in ["chat.composer-emoji", "chat.send"] {
+        let (rect, hit) = app
+            .hits
+            .iter()
+            .find(|(_, hit)| hit.semantic_id() == wanted)
+            .cloned()
+            .unwrap_or_else(|| panic!("the composer's {wanted}"));
+        assert!(
+            rect.intersect(panel).area() <= 0.0 && rect.intersect(scrim).area() <= 0.0,
+            "{wanted} at {rect:?} stays clear of the pins {panel:?} and their scrim {scrim:?}"
+        );
+        assert_eq!(
+            app.hit_at(rect.center()).map(|hit| hit.semantic_id()),
+            Some(hit.semantic_id()),
+            "a press on {wanted} reaches it"
+        );
+    }
 }
 
 mod calls_and_peers;

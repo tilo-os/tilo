@@ -92,7 +92,6 @@ fn track_rect(target: Rect, theme: &Theme) -> Rect {
 pub struct ToggleColors {
     /// The track: the inverted fill when on, a lift of the ground when off.
     pub track: vello::peniko::Color,
-    /// The knob.
     pub knob: vello::peniko::Color,
     /// A ring round the knob where the knob is a raised object rather than
     /// a glyph of its track (off, on a light material).
@@ -476,19 +475,16 @@ mod tests {
 
     #[test]
     fn toggle_identity_enabled_state_and_accessibility_are_reported() {
-        // Case `toggle_test_id_default_is_toggle`.
         {
             let t = Toggle::new("any", "path");
             assert_eq!(Widget::test_id(&t), Some("toggle"));
         }
 
-        // Case `toggle_test_id_can_be_overridden`.
         {
             let t = Toggle::new("any", "path").with_id("airplane_mode");
             assert_eq!(Widget::test_id(&t), Some("airplane_mode"));
         }
 
-        // Case `with_enabled_false_is_reported_by_is_enabled`.
         {
             let t = Toggle::new("any", "path").with_enabled(false);
             assert!(!Widget::is_enabled(&t));
@@ -498,7 +494,6 @@ mod tests {
             );
         }
 
-        // Case `accessibility_reports_switch_role_and_checked_state`.
         {
             use crate::a11y::Role;
             let mut t = Toggle::new("any", "path");
@@ -511,7 +506,6 @@ mod tests {
             assert_eq!(on.state.checked, Some(true));
         }
 
-        // Case `accessibility_uses_accessible_name_when_set`.
         {
             let plain = Toggle::new("any", "path");
             assert_eq!(
@@ -639,7 +633,6 @@ mod tests {
             }
         }
 
-        // Case `toggle_face_colors_track_tracks_on_state`.
         {
             let theme = Theme::dark();
             let off = toggle_face_colors(&theme, false, ToggleInteract::default());
@@ -713,7 +706,6 @@ mod tests {
             }
         }
 
-        // Case `toggle_face_colors_focus_swaps_border_and_weight`.
         {
             let theme = Theme::high_contrast();
             let rest = toggle_face_colors(&theme, true, ToggleInteract::default());
@@ -738,7 +730,6 @@ mod tests {
             assert_eq!(rest.edge_width, 1.0);
         }
 
-        // Case `toggle_face_matches_shared_colors`.
         {
             let theme = Theme::dark();
             let face = ToggleFace::new(Rect::new(0.0, 0.0, 44.0, 24.0), true).hovered(true);
@@ -758,7 +749,6 @@ mod tests {
 
     #[test]
     fn toggle_bindings_route_activation_unless_disabled() {
-        // Case `local_state_binding_is_two_way_across_toggles`.
         {
             use crate::a11y::Action;
 
@@ -801,7 +791,6 @@ mod tests {
             );
         }
 
-        // Case `document_binding_resets_after_the_boolean_path_disappears`.
         {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
@@ -819,7 +808,6 @@ mod tests {
             assert!(!toggle.is_checked(), "a mistyped path cannot stay stale");
         }
 
-        // Case `disabled_toggle_does_not_toggle`.
         {
             let mut t = Toggle::new("id", "on").with_enabled(false);
 
@@ -867,7 +855,6 @@ mod tests {
             );
         }
 
-        // Case `action_binding_owns_keyboard_and_accessibility_activation`.
         {
             let mut toggle = Toggle::new("native", "legacy")
                 .on_change(|_| panic!("legacy callback must be suppressed"))

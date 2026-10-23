@@ -279,7 +279,6 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
-            // Retain the real publication, then remove its live publisher and stream.
             let (old_target, old_stream) = target(&f, action).await;
             f.state.surfaces.lock().unwrap().remove(&200);
             f.state.invocation_subscribers.lock().unwrap().remove(&200);

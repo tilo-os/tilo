@@ -270,7 +270,6 @@ impl PixelsHost {
         }
     }
 
-    /// Whether a request is waiting for its pixels.
     #[must_use]
     pub fn waiting(&self) -> bool {
         self.current.is_some() || WANTED.with_borrow(|wanted| !wanted.is_empty())

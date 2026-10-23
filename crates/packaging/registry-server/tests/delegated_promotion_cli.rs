@@ -958,7 +958,6 @@ fn delegated_refresh_preserves_incomplete_stage_and_transaction_recovery() {
         "{}",
         String::from_utf8_lossy(&authorized.stderr)
     );
-    // Start with a real signed public member, distinct from the missing ABI.
     let retained = native_submission(
         &publisher_key,
         "so.tilo.runtime.retained",

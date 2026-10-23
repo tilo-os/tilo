@@ -153,7 +153,6 @@ pub fn export(model: &Calendar) -> String {
             }
             if let Some(end) = edit.end {
                 if e.all_day {
-                    // Match the parent event's exclusive DATE convention.
                     let exclusive = if end.time() == NaiveTime::MIN
                         && edit.start.is_some_and(|start| end.date() > start.date())
                     {
@@ -565,8 +564,6 @@ fn parse_vtodo(lines: &[Option<ContentLine>], mut i: usize) -> (Option<Task>, us
     )
 }
 
-// --- helpers -------------------------------------------------------------
-
 /// Emit a TEXT-valued property (SUMMARY, LOCATION, DESCRIPTION) with the
 /// RFC 5545 character escaping applied.
 fn line(out: &mut String, key: &str, val: &str) {
@@ -945,7 +942,6 @@ mod tests {
 
     #[test]
     fn export_envelope_and_event_task_all_day_round_trips() {
-        // Case `export_contains_required_envelope`.
         {
             let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
             let ics = export(&model);
@@ -954,7 +950,6 @@ mod tests {
             assert!(ics.contains("BEGIN:VTODO"));
             assert!(ics.trim_end().ends_with("END:VCALENDAR"));
         }
-        // Case `event_round_trips_through_ics`.
         {
             let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
             let ics = export(&model);
@@ -968,14 +963,12 @@ mod tests {
             assert_eq!(standup.start.hour(), 9);
             assert_eq!(standup.start.minute(), 30);
 
-            // All-day event keeps its flag.
             let offsite = events
                 .iter()
                 .find(|e| e.title == "Company offsite")
                 .unwrap();
             assert!(offsite.all_day);
         }
-        // Case `all_day_export_uses_exclusive_end_date_and_round_trips_the_visible_span`.
         {
             let start = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
             let model = Calendar {
@@ -1002,7 +995,6 @@ mod tests {
             assert!(event.occurs_on(start + chrono::Duration::days(2)));
             assert!(!event.occurs_on(start + chrono::Duration::days(3)));
         }
-        // Case `completed_task_round_trips`.
         {
             let model = crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
             let (_, tasks) = parse(&export(&model));
@@ -1022,7 +1014,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn timezones_recurrence_and_invite_identity_round_trip_deterministically() {
-        // Case `timezone_invites_and_complex_recurrence_round_trip`.
         {
             let mut model =
                 crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
@@ -1092,7 +1083,6 @@ mod tests {
             assert_eq!(event.occurrence_overrides.len(), 1);
             assert!(event.occurrence_overrides[0].cancelled);
         }
-        // Case `datetime_recurrence_id_and_external_attendee_identity_round_trip`.
         {
             let payload = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:11111111-1111-1111-1111-111111111111@example\r\nDTSTART;TZID=Europe/Berlin:20261020T090000\r\nDTEND;TZID=Europe/Berlin:20261020T100000\r\nRRULE:FREQ=WEEKLY\r\nATTENDEE;CN=Sam;PARTSTAT=NEEDS-ACTION:mailto:Sam@Example.COM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:11111111-1111-1111-1111-111111111111@example\r\nRECURRENCE-ID;TZID=Europe/Berlin:20261027T090000\r\nDTSTART;TZID=Europe/Berlin:20261027T110000\r\nDTEND;TZID=Europe/Berlin:20261027T120000\r\nSUMMARY:Moved\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
             let (first, _) = parse(payload);
@@ -1118,7 +1108,6 @@ mod tests {
                 NaiveTime::from_hms_opt(9, 0, 0)
             );
         }
-        // Case `nonexistent_tzid_wall_time_normalizes_deterministically`.
         {
             let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:22222222-2222-2222-2222-222222222222@example\r\nDTSTART;TZID=Europe/Berlin:20260329T023000\r\nDTEND;TZID=Europe/Berlin:20260329T033000\r\nSUMMARY:DST gap\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
             let (events, _) = parse(payload);
@@ -1131,7 +1120,6 @@ mod tests {
                 NaiveTime::from_hms_opt(3, 30, 0).unwrap()
             );
         }
-        // Case `malformed_datetime_is_rejected_without_wall_clock_fallback`.
         {
             let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:bad@example\r\nSUMMARY:Broken\r\nDTSTART:not-a-date\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
             assert!(parse(payload).0.is_empty());
@@ -1144,7 +1132,6 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn content_lines_fold_escape_and_quote_per_rfc_5545() {
-        // Case `folded_and_escaped_summaries_import`.
         {
             // RFC 5545 folds by inserting CRLF + one whitespace at an arbitrary
             // point; "Hello World" was folded mid-word here.
@@ -1152,7 +1139,6 @@ mod tests {
             let (events, _) = parse(payload);
             assert_eq!(events[0].title, "Hello World, again; line1\nline2");
         }
-        // Case `attendee_names_are_quoted_parameters_and_round_trip`.
         {
             let mut model =
                 crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
@@ -1181,7 +1167,6 @@ mod tests {
                 .expect("attendee round trips");
             assert_eq!(attendee, &guest);
         }
-        // Case `quoted_parameters_with_colons_do_not_split_the_value`.
         {
             let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:33333333-3333-3333-3333-333333333333@example\r\nDTSTART:20261020T090000Z\r\nATTENDEE;DELEGATED-FROM=\"mailto:boss@example.com\";CN=\"Lee: Ops\";PARTSTAT=ACCEPTED:mailto:lee@example.com\r\nORGANIZER;SENT-BY=\"mailto:assistant@example.com\":mailto:boss@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
             let (events, _) = parse(payload);
@@ -1200,7 +1185,6 @@ mod tests {
                 )
             );
         }
-        // Case `carriage_returns_never_reach_a_content_line`.
         {
             let mut model =
                 crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
@@ -1217,14 +1201,12 @@ mod tests {
                     .any(|event| event.title == "Line one\nLine two")
             );
         }
-        // Case `lowercase_property_names_are_accepted`.
         {
             let payload = "begin:vcalendar\r\nbegin:vevent\r\nsummary:Quiet\r\ndtstart;value=date:20260615\r\nend:vevent\r\nend:vcalendar\r\n";
             let (events, _) = parse(payload);
             assert_eq!(events[0].title, "Quiet");
             assert!(events[0].all_day);
         }
-        // Case `long_unicode_content_lines_fold_at_the_rfc_octet_limit_and_round_trip`.
         {
             let title = format!("Planning {}", "界".repeat(40));
             let event = Event {

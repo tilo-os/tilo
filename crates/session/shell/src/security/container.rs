@@ -29,11 +29,6 @@ pub fn app_log_dir_in(runtime_dir: Option<OsString>) -> Option<PathBuf> {
 }
 
 /// The private directory for sandboxed apps' logs in this session.
-///
-/// # Errors
-///
-/// Returns `NotFound` when `XDG_RUNTIME_DIR` is unset or relative. There is
-/// deliberately no shared-directory fallback.
 pub fn app_log_dir() -> io::Result<PathBuf> {
     app_log_dir_in(std::env::var_os("XDG_RUNTIME_DIR")).ok_or_else(|| {
         io::Error::new(
@@ -49,11 +44,6 @@ pub fn app_log_dir() -> io::Result<PathBuf> {
 /// this user; the file is created 0600 with `O_EXCL | O_NOFOLLOW`, so a link
 /// or file planted at either path is refused rather than followed or reused.
 /// Older logs are pruned so at most `MAX_APP_LOGS` remain.
-///
-/// # Errors
-///
-/// Returns the filesystem error, `PermissionDenied` for a foreign or linked
-/// directory, and `AlreadyExists` when anything already occupies the path.
 pub fn create_app_log(dir: &Path, tab_id: Uuid) -> io::Result<(PathBuf, File)> {
     tilo_files::native::private::directory(dir)?;
     prune_app_logs(dir, MAX_APP_LOGS.saturating_sub(1));
@@ -291,14 +281,12 @@ mod tests {
 
     #[test]
     fn container_logs_are_private_fresh_and_symlink_safe() {
-        // Phase `log_dir_lives_under_an_absolute_runtime_dir_only`.
         assert_eq!(
             app_log_dir_in(Some("/run/user/1000".into())),
             Some(PathBuf::from("/run/user/1000/tilo/app-logs"))
         );
         assert_eq!(app_log_dir_in(Some("relative/run".into())), None);
         assert_eq!(app_log_dir_in(None), None);
-        // Phase `logs_land_in_a_private_directory_with_private_modes`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let dir = app_log_dir_in(Some(runtime.path().into())).unwrap();
@@ -316,7 +304,6 @@ mod tests {
             assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
         }
-        // Phase `a_symlink_planted_at_the_log_path_is_not_followed`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let dir = runtime.path().join("app-logs");
@@ -337,7 +324,6 @@ mod tests {
             assert!(!dangling_target.exists());
             assert!(planted.symlink_metadata().unwrap().file_type().is_symlink());
         }
-        // Phase `a_symlinked_log_directory_is_refused`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let elsewhere = runtime.path().join("elsewhere");
@@ -349,7 +335,6 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
             assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
         }
-        // Phase `an_existing_log_is_not_reused`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let dir = runtime.path().join("app-logs");
@@ -365,14 +350,12 @@ mod tests {
 
     #[test]
     fn container_logs_are_pruned_and_capped() {
-        // Phase `old_logs_are_pruned_to_the_retention_cap`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let dir = runtime.path().join("app-logs");
             let mut created: Vec<PathBuf> = Vec::new();
             for age in 0..MAX_APP_LOGS as u64 + 4 {
                 let (path, file) = create_app_log(&dir, Uuid::new_v4()).unwrap();
-                // Distinct, increasing mtimes regardless of filesystem resolution.
                 file.set_modified(
                     std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + age),
                 )
@@ -389,7 +372,6 @@ mod tests {
             );
             assert!(dir.join("unrelated").exists());
         }
-        // Phase `output_beyond_the_cap_is_drained_but_not_kept`.
         {
             let output = vec![b'x'; 10_000];
             let mut log = Vec::new();

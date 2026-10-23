@@ -208,12 +208,10 @@ mod tests {
         assert!(!counts.take_arrived());
         assert_eq!(counts.count(dir.path(), None, false), Some(3));
 
-        // Showing hidden files counts them, as a separate entry.
         assert_eq!(counts.count(dir.path(), None, true), None);
         wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert_eq!(counts.count(dir.path(), None, true), Some(4));
 
-        // A new modification time reads the folder again.
         std::fs::write(dir.path().join("c.txt"), b"x").unwrap();
         let later = Some(Local::now());
         assert_eq!(counts.count(dir.path(), later, false), None);

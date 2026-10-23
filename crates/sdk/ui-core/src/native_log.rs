@@ -140,7 +140,6 @@ tilo-display-frame {"backend":"metal","cpu_frame_id":1,"drawable_id":0,"presente
     }
     #[test]
     fn native_log_rows_keep_their_bytes_in_one_complete_write() {
-        // Case `captured_rows_preserve_bytes_and_use_one_accepting_write`.
         {
             for line in CAPTURED.lines() {
                 let (prefix, body) = line.split_once(' ').unwrap();
@@ -152,7 +151,6 @@ tilo-display-frame {"backend":"metal","cpu_frame_id":1,"drawable_id":0,"presente
             }
         }
 
-        // Case `escaped_unicode_and_null_keep_existing_row_content`.
         {
             let row = serde_json::json!({"quote":"\"slash\\tab\tnewline\n", "unicode":"é🦀", "absent":null});
             let expected = format!("tilo-test {row}\n");
@@ -161,7 +159,6 @@ tilo-display-frame {"backend":"metal","cpu_frame_id":1,"drawable_id":0,"presente
             assert_eq!(writer.bytes, expected.as_bytes());
         }
 
-        // Case `serialization_finishes_before_acquiring_writer`.
         {
             struct Observed<'a>(&'a RefCell<Vec<&'static str>>);
             impl Display for Observed<'_> {
@@ -182,7 +179,6 @@ tilo-display-frame {"backend":"metal","cpu_frame_id":1,"drawable_id":0,"presente
     }
     #[test]
     fn native_log_writes_retry_partial_progress_and_report_failures() {
-        // Case `short_writes_and_interrupted_are_retried_without_data_loss`.
         {
             let row = serde_json::json!({"value":"a longer payload"});
             let expected = format!("tilo-test {row}\n");
@@ -196,11 +192,9 @@ tilo-display-frame {"backend":"metal","cpu_frame_id":1,"drawable_id":0,"presente
             assert!(writer.calls > 2);
         }
 
-        // Case `write_error_propagates_and_panic_policy_remains_explicit`.
         {
             let result = write_json_with("tilo-test", serde_json::Value::Null, || Failing);
             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
-            // Ignoring this Result remains available to the existing feedback logger.
             let _ = write_json_with("tilo-test", serde_json::Value::Null, || Failing);
             assert!(
                 std::panic::catch_unwind(|| panic_on_error(Err(io::ErrorKind::BrokenPipe.into())))
@@ -208,7 +202,6 @@ tilo-display-frame {"backend":"metal","cpu_frame_id":1,"drawable_id":0,"presente
             );
         }
 
-        // Case `zero_progress_is_reported_as_write_zero`.
         {
             let mut writer = Counter {
                 chunk: Some(0),

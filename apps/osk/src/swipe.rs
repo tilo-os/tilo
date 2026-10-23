@@ -356,8 +356,6 @@ fn index_endpoints(dict: &Dictionary) -> HashMap<(char, char), Vec<usize>> {
     index
 }
 
-// --- geometry helpers -----------------------------------------------------
-
 /// Map each single-letter `Char` key to the centre of its rect.
 fn letter_centres(key_geom: &[(KeyId, Rect)], layout: &KeyboardLayout) -> HashMap<char, Point> {
     let mut out = HashMap::new();
@@ -770,7 +768,6 @@ mod tests {
                 Point::new(100.5, 101.0),
             ];
             assert!(!is_swipe(&tap, scale), "tiny jitter is not a swipe");
-            // A drag across several keys.
             let drag = vec![
                 Point::new(0.0, 100.0),
                 Point::new(200.0, 100.0),

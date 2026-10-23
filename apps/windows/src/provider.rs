@@ -81,7 +81,6 @@ pub trait CompatibilityProvider: Send {
     fn take_operation_result(&mut self) -> Option<Result<String, String>> {
         None
     }
-    /// Sets a user route override.
     fn set_route_override(&mut self, app_id: &str, route: Route) -> Result<(), String>;
     /// Removes a user route override.
     fn reset_route_override(&mut self, app_id: &str) -> Result<(), String>;

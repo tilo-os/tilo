@@ -169,14 +169,12 @@ mod tests {
         assert_eq!(found.session, "s1");
         assert!(is_live(&found));
         assert_eq!(session_of(&records, std::process::id()), None);
-        // Both processes are this test's own.
         let _ = std::process::Command::new("kill")
             .arg(typed.to_string())
             .status();
         let _ = shell.wait();
         assert!(!is_live(&found));
         assert_eq!(session_of(&records, leader), None);
-        // The next session's record tidies the ended one away.
         mark(&records, std::process::id(), std::process::id(), "s2").expect("mark");
         assert!(!records.join(leader.to_string()).exists());
     }

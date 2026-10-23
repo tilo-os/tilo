@@ -693,7 +693,6 @@ async fn open_records_per_publisher_are_bounded() {
     assert_eq!(f.live.relay.counters().records_refused, 2);
 }
 
-/// Two native clients exchange presence both ways over loopback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn loopback_presence_exchange_reaches_both_sides() {
     let f = fixture();
@@ -856,7 +855,8 @@ async fn injection_reannounces_and_resubscribe_works_after_revocation_and_reconn
 }
 
 /// A late subscriber is not replayed an already delivered group: once a track
-/// is quiet the relay seals it with an empty group.
+/// is quiet the relay seals it with an empty group, and a late subscriber
+/// starts at the latest group.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn late_subscriber_is_not_replayed_stale_groups() {
     let f = fixture();
@@ -869,16 +869,12 @@ async fn late_subscriber_is_not_replayed_stale_groups() {
         inject_and_read(&f, &mut first, A, b"ok-old").await,
         b"ok-old"
     );
-    // The quiet track is sealed twice; the first subscriber sees both seals
-    // (one empty frame each).
-    tilo_test_env::within("the quiet track sealed twice", async {
-        let mut seals = 0;
-        while seals < 2 {
-            let mut group = first.recv_group().await.unwrap().expect("seal group");
-            let frame = group.read_frame().await.unwrap().expect("seal frame");
-            assert!(frame.payload.is_empty(), "a sealed track carried data");
-            seals += 1;
-        }
+    // The quiet track is sealed; the first subscriber sees the seal (one
+    // empty frame).
+    tilo_test_env::within("the quiet track sealed", async {
+        let mut group = first.recv_group().await.unwrap().expect("seal group");
+        let frame = group.read_frame().await.unwrap().expect("seal frame");
+        assert!(frame.payload.is_empty(), "a sealed track carried data");
     })
     .await;
     let mut late = ops_subscriber(&viewer, A).await;
@@ -899,6 +895,40 @@ async fn late_subscriber_is_not_replayed_stale_groups() {
     .await;
     drop(b);
     drop(viewer);
+}
+
+/// The last change on a state track outlives the seal for a reader that has
+/// not read it yet: a reader that stalls past the seal and the egress
+/// retention right after a change (a stream index emptied by a revocation)
+/// still receives that change, since nothing will ever repeat it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reader_behind_the_seal_still_receives_the_last_change() {
+    let f = fixture();
+    let b = connect(&f, b"grant-b", B).await;
+    assert!(!f.live.relay.inject_ops(ROOM, A, RECORD, b"ok-unread"));
+    let mut reader = ops_subscriber(&b, A).await;
+    assert_eq!(
+        inject_and_read(&f, &mut reader, A, b"ok-listed").await,
+        b"ok-listed"
+    );
+    assert!(f.live.relay.inject_ops(ROOM, A, RECORD, b"ok-revoked"));
+    // The reader falls behind: it reads on only once the quiet track is
+    // sealed and the change is older than the egress retention.
+    tokio::time::sleep(SEAL_AFTER + EGRESS_RETAIN + Duration::from_secs(1)).await;
+    let heard = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let mut group = reader.recv_group().await.unwrap().expect("ops group");
+            if let Ok(Some(frame)) = group.read_frame().await
+                && !frame.payload.is_empty()
+            {
+                return frame.payload;
+            }
+        }
+    })
+    .await
+    .expect("the last change reaches the reader that fell behind the seal");
+    assert_eq!(heard.as_ref(), b"ok-revoked");
+    drop(b);
 }
 
 /// A final withdrawal (revoked author, no host-fed replacement) is announced
@@ -1162,6 +1192,48 @@ async fn member_presence_follows_a_withdrawn_host_fed_member_to_its_new_broadcas
 
     hear_injected(&f, &mut member, &mut seq, b"after").await;
     drop(viewer);
+}
+
+/// An ops reader follows a member through withdrawal as a page's
+/// `subscribeOps` does: the subscription to the withdrawn broadcast ends,
+/// and [`super::peer::MemberOps`] subscribes to the re-announced one and
+/// reads on, never handing its reader the relay's empty seal frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn member_ops_follows_a_withdrawn_host_fed_member_to_its_new_broadcast() {
+    let f = fixture();
+    let viewer = connect(&f, b"grant-b", B).await;
+    let track = format!("{OPS_PREFIX}{RECORD}");
+    let mut ops = super::peer::MemberOps::follow(&viewer, &path(C), &track);
+    hear_injected_ops(&f, &mut ops, b"before").await;
+
+    let slot = f.live.relay.0.slot(&path(C), false).unwrap();
+    slot.state.lock_recover().host_active = None;
+    drop(slot);
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&path(C), false).is_none(),
+        "the idle host-fed namespace is withdrawn"
+    );
+
+    hear_injected_ops(&f, &mut ops, b"after").await;
+    drop(viewer);
+}
+
+/// Inject `frame` into the host-fed member C's ops track until `ops` hears
+/// it; every frame heard on the way is a non-empty injected one.
+async fn hear_injected_ops(f: &Fixture, ops: &mut super::peer::MemberOps, frame: &[u8]) {
+    tilo_test_env::within("the member's ops frame", async {
+        loop {
+            f.live.relay.inject_ops(ROOM, C, RECORD, frame);
+            while let Some(heard) = ops.next(Duration::from_millis(50)).await {
+                assert!(!heard.is_empty(), "the seal frame never reaches the reader");
+                if heard == frame {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
 }
 
 /// Inject the host-fed member C's presence until `member` hears this frame.

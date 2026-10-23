@@ -25,7 +25,6 @@ use tilo_lock::MutexRecover as _;
 pub struct PowerNotification {
     /// Toast title.
     pub summary: String,
-    /// Toast body.
     pub body: String,
     /// `true` for the critical-battery toast (maps to urgency 2), `false`
     /// for the low-battery heads-up (urgency 1).
@@ -208,7 +207,6 @@ mod tests {
 
     #[test]
     fn the_bridge_delivers_signals_commands_and_policy_once_to_shared_mailboxes() {
-        // Phase `signals_round_trip_once`.
         {
             let b = PowerBridge::new();
             b.push_signal(PowerSignal::Lock);
@@ -221,25 +219,20 @@ mod tests {
             let drained = b.drain_signals();
             assert_eq!(drained.len(), 2);
             assert_eq!(drained[0], PowerSignal::Lock);
-            // Draining empties the queue.
             assert!(b.drain_signals().is_empty());
         }
-        // Phase `commands_round_trip_once`.
         {
             let b = PowerBridge::new();
             b.request_suspend();
             assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
             assert!(b.drain_commands().is_empty());
         }
-        // Phase `clones_share_the_mailbox`.
         {
             let a = PowerBridge::new();
             let b = a.clone();
             a.request_suspend();
-            // Command pushed on `a` is visible to `b`.
             assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
         }
-        // Phase `the_active_profile_the_service_read_is_shared`.
         {
             let service = PowerBridge::new();
             let compositor = service.clone();
@@ -249,7 +242,6 @@ mod tests {
             service.note_active_profile("performance");
             assert_eq!(compositor.active_profile().as_deref(), Some("performance"));
         }
-        // Phase `policy_updates_cross_the_bridge_without_stringly_state`.
         {
             let bridge = PowerBridge::new();
             let policy = PowerPolicy::default();

@@ -205,7 +205,6 @@ fn search_lookup_replace_and_delete_work_like_libsecret_expects() {
             .is_empty()
     );
 
-    // Replace keeps the item and updates the value.
     let replaced = store
         .create_item(
             &me,

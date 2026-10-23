@@ -108,7 +108,6 @@ pub struct NavRowFace<'a> {
     /// Trailing actions shown on hover or focus, in order. While they show,
     /// they take the place of the trailing parts.
     pub actions: &'a [Icon],
-    /// The action under the pointer.
     pub action_hover: Option<usize>,
     pub style: NavRowStyle,
     /// One `Caption` line under the label (a host and port, a schedule).
@@ -355,7 +354,6 @@ pub struct NavRowLayout {
     /// The horizontal run the label is elided into.
     pub label_x0: f64,
     pub label_x1: f64,
-    /// The top of the label's line box.
     pub label_top: f64,
     /// The top of the secondary line's box.
     pub secondary_top: Option<f64>,
@@ -780,7 +778,6 @@ fn list_layout(
     let actions: Vec<Rect> = if face.actions.is_empty() {
         Vec::new()
     } else {
-        // Flush with the selection's trailing edge, the last action last.
         let mut right = selection.x1 - s1;
         let mut rects: Vec<Rect> = face
             .actions
@@ -1443,7 +1440,6 @@ mod tests {
         let nested = nav_row_layout(&theme, &mut text, &face.clone().depth(1));
         let s4 = f64::from(theme.tokens.spacing.s4);
         assert!((nested.label_x0 - layout.label_x0 - s4).abs() < 1e-9);
-        // Actions take the count's place.
         let actions = [Icon::MoreHorizontal];
         let hovered = nav_row_layout(&theme, &mut text, &face.clone().actions(&actions, None));
         assert!(hovered.count.is_none());
@@ -1525,7 +1521,6 @@ mod tests {
             lines[0].ends_with('\u{2026}') && !lines[0].contains('-'),
             "{lines:?}"
         );
-        // At stock text the rail keeps its width.
         let stock = Theme::high_contrast();
         let mut text = TextRenderer::new();
         assert!((rail_width_fitting(&stock, &mut text, ["Channels"]) - floor).abs() < 1e-9);

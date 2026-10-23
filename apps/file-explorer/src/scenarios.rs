@@ -20,6 +20,8 @@ use crate::resource::FileExplorer;
 
 /// Every screenshot scenario.
 const ALL_SCENARIOS: &[&str] = &[
+    "applications",
+    "applications-menu",
     "archive",
     "archive-menu",
     "archive-file-menu",
@@ -39,6 +41,7 @@ const ALL_SCENARIOS: &[&str] = &[
     "recent-revealed",
     "recent-forgotten",
     "remote-account",
+    "cloud-folder",
     "rename",
     "reorder",
     "select",
@@ -59,6 +62,8 @@ const ALL_SCENARIOS: &[&str] = &[
 /// all but the ones about the Tilo filesystem's projection (sync badges,
 /// host previews, file history).
 const PORTABLE_SCENARIOS: &[&str] = &[
+    "applications",
+    "applications-menu",
     "archive",
     "archive-menu",
     "archive-file-menu",
@@ -77,6 +82,7 @@ const PORTABLE_SCENARIOS: &[&str] = &[
     "recent-revealed",
     "recent-forgotten",
     "remote-account",
+    "cloud-folder",
     "rename",
     "reorder",
     "select",

@@ -702,6 +702,11 @@ impl Compiled {
 /// # Errors
 /// The parse error for malformed input, a variable the plot cannot supply
 /// (`y` in a 2D plot, or any typo), or an unknown function / wrong arity.
+/// Whether a plot reads its axes as degrees: never. A graph's axes are plain
+/// numbers, so `sin(x)` waves across a few units in 2D and 3D alike; the angle
+/// unit is for angles typed into a calculation.
+pub const PLOT_IN_DEGREES: bool = false;
+
 pub fn compile(input: &str, deg: bool, two_var: bool) -> Result<Compiled, String> {
     let ast = parse(input)?;
     validate(&ast, two_var)?;
@@ -1202,7 +1207,6 @@ mod tests {
                 Cmp::Near(1e-9),
             );
         }
-        // Angle mode and saved values survive both levels of binding.
         check(
             "nested degree context",
             evd("int(int(sin(x)+cos(y),y,0,90),x,0,90)"),

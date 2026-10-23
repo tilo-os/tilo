@@ -158,8 +158,6 @@ impl ViewportState {
         }
     }
 
-    // ---- builder-style configuration --------------------------------
-
     /// Override the inclusive zoom bounds. `min` is clamped `> 0` and `max`
     /// is raised to at least `min`.
     #[must_use]
@@ -193,8 +191,6 @@ impl ViewportState {
         self
     }
 
-    // ---- host setters -----------------------------------------------
-
     /// Set the on-screen viewport rect. Re-clamps the scroll so the content
     /// stays reachable after a resize. Call once per layout pass.
     pub fn set_rect(&mut self, rect: Rect) {
@@ -210,8 +206,6 @@ impl ViewportState {
         self.content_h = height.max(0.0);
         self.clamp_scroll();
     }
-
-    // ---- read-only accessors ----------------------------------------
 
     pub fn rect(&self) -> Rect {
         self.rect
@@ -236,8 +230,6 @@ impl ViewportState {
     pub fn content_size(&self) -> (f64, f64) {
         (self.content_w, self.content_h)
     }
-
-    // ---- geometry ---------------------------------------------------
 
     /// Total screen width the content occupies at the current zoom, plus
     /// both side pads.
@@ -353,8 +345,6 @@ impl ViewportState {
         r.contains(p)
     }
 
-    // ---- zoom -------------------------------------------------------
-
     /// Zoom by `factor` (e.g. `1.1` to zoom in 10 %) holding the content
     /// point currently under `focal` (a **screen** point) stationary, so a
     /// Ctrl+wheel zoom tracks the cursor and the content under it doesn't
@@ -419,7 +409,6 @@ impl ViewportState {
             .clamp(self.min_zoom, self.max_zoom)
     }
 
-    /// The zoom that fits the content's *width* to the viewport.
     pub fn fit_width_zoom(&self) -> f64 {
         let avail_w = self.rect.width() - 2.0 * self.pad;
         if self.content_w <= 0.0 || avail_w <= 0.0 {
@@ -454,8 +443,6 @@ impl ViewportState {
         self.scroll_y = self.rect.y0 + self.pad + centre.y * self.zoom - view.y;
         self.clamp_scroll();
     }
-
-    // ---- pan --------------------------------------------------------
 
     /// Pan by a screen-space delta (positive `dx`/`dy` reveal content to the
     /// right / below). Clamped so the content stays reachable.
@@ -602,8 +589,6 @@ impl ViewportState {
         }
     }
 
-    // ---- scrollbar geometry -----------------------------------------
-
     /// The horizontal scrollbar track rect (screen space), or `None` when
     /// the content fits horizontally. Leaves room for the vertical bar so
     /// the two don't overlap in the corner.
@@ -666,8 +651,6 @@ impl ViewportState {
         let track = self.v_track()?;
         self.vbar.thumb_rect(track, self.v_metrics())
     }
-
-    // ---- scrollbar interaction --------------------------------------
 
     /// Hit-test a left-press against either scrollbar. A press on a thumb
     /// begins a direct thumb drag; a press on the track pages the view
@@ -1371,7 +1354,6 @@ mod tests {
                 v.content_contains_screen(origin),
                 "origin is inside content"
             );
-            // Far above the content is outside.
             assert!(!v.content_contains_screen(Point::new(origin.x, origin.y - 50.0)));
         }
 
@@ -1440,7 +1422,6 @@ mod tests {
             v.set_zoom(4.0);
             v.set_scroll(100.0, 100.0);
             v.reset_to_fit();
-            // At fit zoom the content fits inside the viewport on both axes.
             assert!(!v.overflows_x() || v.zoom() == v.zoom_bounds().0);
             assert!(
                 v.scaled_content_height() <= v.rect().height() + 1.0
@@ -1474,7 +1455,6 @@ mod tests {
             let mut v = kernel();
             v.set_zoom(3.0);
             assert!(v.overflows_x(), "3x zoom must overflow horizontally");
-            // Pan to the far right.
             v.pan_by(f64::MAX, 0.0);
             let expected = (v.scaled_content_width() - v.rect().width()).max(0.0);
             assert!(
@@ -1483,7 +1463,6 @@ mod tests {
                 v.scroll_x(),
                 expected
             );
-            // The right content edge is now reachable inside the viewport.
             let right_edge = v.content_point_to_screen(Point::new(1000.0, 0.0));
             assert!(
                 right_edge.x <= v.rect().x1 + 1.0,
@@ -1496,10 +1475,8 @@ mod tests {
         fn vertical_pan_clamps_at_both_ends() {
             let mut v = kernel();
             v.set_zoom(2.0);
-            // Clamp at the top.
             v.pan_by(0.0, -10_000.0);
             assert_eq!(v.scroll_y(), 0.0, "cannot scroll above the top");
-            // Clamp at the bottom.
             v.pan_by(0.0, 10_000.0);
             assert!(
                 (v.scroll_y() - v.max_scroll_y()).abs() < 1e-6,
@@ -1623,7 +1600,6 @@ mod tests {
             assert!(v.drag_scrollbar(Point::new(mid.x, mid.y + 100.0)));
             assert!(v.scroll_y() > 0.0, "thumb drag scrolls: {}", v.scroll_y());
             assert!(v.scroll_y() <= v.max_scroll_y(), "stays clamped");
-            // A huge drag clamps at the bottom.
             v.drag_scrollbar(Point::new(mid.x, mid.y + 100_000.0));
             assert!(
                 (v.scroll_y() - v.max_scroll_y()).abs() < 1.0,
@@ -1686,7 +1662,6 @@ mod tests {
         horizontal_thumb_drag_scrolls_x();
     }
 
-    /// Zooming to an area fills the viewport with it and centres it.
     #[test]
     fn zoom_to_rect_fills_and_centres_the_area() {
         let mut v = kernel();

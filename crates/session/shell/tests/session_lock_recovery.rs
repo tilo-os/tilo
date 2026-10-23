@@ -1,5 +1,3 @@
-//! Real native-loop restart, reconnect and crash regression in a private login.
-
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;

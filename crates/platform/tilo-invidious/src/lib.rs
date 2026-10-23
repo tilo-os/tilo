@@ -210,7 +210,6 @@ mod tests {
         assert!(body_sniffs_as_html(b"<html>\r\n<head><title>gandalf"));
         assert!(body_sniffs_as_html(b"<!DOCTYPE html>\n<html lang=\"en\">"));
         assert!(body_sniffs_as_html(b"   \n<!doctype html>"));
-        // Real media begins with an ISO-BMFF box or arbitrary binary.
         assert!(!body_sniffs_as_html(&[
             0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p'
         ]));

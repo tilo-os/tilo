@@ -9,10 +9,6 @@ pub trait RootSigner {
     /// Public person key authenticated by the signer.
     fn public_key(&self) -> [u8; 32];
     /// Sign a protocol digest without exporting the private root.
-    ///
-    /// # Errors
-    ///
-    /// Returns the identity provider's error when signing is unavailable.
     fn sign_message(&self, message: &[u8]) -> anyhow::Result<[u8; 64]>;
 }
 
@@ -38,11 +34,6 @@ impl RootSigner for runtime_identity::SigningIdentity {
 }
 
 /// Open the root signer, falling back to an identity record only for an absent seed.
-///
-/// # Errors
-///
-/// Returns an error for an unusable root file, unavailable identity provider,
-/// missing active record, or identity requiring a multi-device ceremony.
 pub fn load_root(
     identity_root: &std::path::Path,
     identity_dir: Option<&std::path::Path>,
@@ -73,7 +64,10 @@ pub fn load_root(
         )
     })?;
     if !identity.is_single_device() {
-        bail!("threshold identity requires the multi-device certificate ceremony");
+        bail!(
+            "{}",
+            tilo_identity_host::certification_ceremony::cannot_sign_alone()
+        );
     }
     Ok(Box::new(identity))
 }

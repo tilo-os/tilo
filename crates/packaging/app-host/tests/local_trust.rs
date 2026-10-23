@@ -1,4 +1,3 @@
-//! Real private host + canonical installer, with pre-existing scoped trust.
 use app_host::app_host_capnp::app_host as rpc;
 use app_host::local_package::LocalReview;
 use capnp_rpc::rpc_twoparty_capnp;

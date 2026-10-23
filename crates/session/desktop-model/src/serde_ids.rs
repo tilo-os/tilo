@@ -49,11 +49,6 @@ impl<'de> Deserialize<'de> for IdKey {
 
 /// Deserialize a `HashMap` keyed by a numeric id newtype (or a bare
 /// `u64`), accepting keys written as numbers or decimal strings.
-///
-/// # Errors
-///
-/// Fails when the input is not a map, a key is neither an unsigned integer
-/// nor its decimal string, or a value does not deserialize as `V`.
 pub fn deserialize_id_map<'de, D, K, V>(deserializer: D) -> Result<HashMap<K, V>, D::Error>
 where
     D: Deserializer<'de>,
@@ -116,12 +111,10 @@ mod tests {
 
     #[test]
     fn id_keyed_maps_flatten_to_numeric_string_keys_only() {
-        // Phase `string_keys_survive_flattening`.
         {
             let outer: Outer = serde_json::from_str(r#"{"map":{"7":9}}"#).unwrap();
             assert_eq!(outer.inner.map[&WorkspaceId(7)], StripId(9));
         }
-        // Phase `non_numeric_keys_are_refused`.
         {
             assert!(serde_json::from_str::<Outer>(r#"{"map":{"seven":9}}"#).is_err());
         }

@@ -175,10 +175,6 @@ impl CollabHistoryStore {
     }
 
     /// The session store under the launcher-provided state root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `XDG_STATE_HOME` is absent or unusable.
     #[cfg(not(test))]
     pub fn open_for_session() -> std::io::Result<Self> {
         let state = tilo_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
@@ -241,10 +237,6 @@ impl CollabHistoryStore {
     /// Remember that `artifact`'s history belongs to the room `cluster_id`,
     /// beside its log, so a later session still knows which room's members
     /// may page through it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error of writing the binding.
     pub fn bind_room(&mut self, artifact: ArtifactId, cluster_id: &str) -> std::io::Result<()> {
         let path = self.room_path(artifact);
         if fs::read_to_string(&path).is_ok_and(|bound| bound == cluster_id) {
@@ -276,10 +268,6 @@ impl CollabHistoryStore {
     }
 
     /// One scrollback page from durable history.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error of reading the log.
     pub fn page_before(
         &mut self,
         artifact: ArtifactId,

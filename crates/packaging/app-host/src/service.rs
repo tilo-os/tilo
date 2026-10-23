@@ -74,8 +74,6 @@ impl AppHostServer {
     }
 }
 
-// -------- helpers ----------------------------------------------------
-
 fn wire_pinning(p: Pinning) -> WirePinning {
     match p {
         Pinning::Tried => WirePinning::Tried,
@@ -824,8 +822,6 @@ fn run_host_command(command: std::process::Command) -> Result<String, Error> {
         )))
     }
 }
-
-// -------- Server impl -----------------------------------------------
 
 // capnp-rpc capability methods are driven from a single-threaded
 // `LocalSet`: `capnp::capability::Rc` (captured as `self`) is a
@@ -1827,7 +1823,6 @@ exit 1
             assert!(super::require_offer_identity(&replacement, &expected).is_err());
         }
 
-        // Phase `a_first_open_takes_a_version_on_a_runtime_this_device_has`.
         let missing = format!("tilo-runtime/2026.07+native.{}", "f".repeat(32));
         let mut newest = offer_template(&expected);
         newest.version = "1.2.4".into();

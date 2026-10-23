@@ -155,9 +155,6 @@ pub fn prefix_heads(doc: &mut Doc, upto: usize) -> Vec<ChangeHash> {
 
 /// The document as of position `version` of [`versions`], rebuilt by
 /// replaying that prefix of the change log into a fresh replica.
-///
-/// # Errors
-/// Returns [`ModelError`] when Automerge rejects the replayed prefix.
 pub fn replay_prefix(doc: &mut Doc, version: usize) -> Result<Doc, ModelError> {
     let changes = doc.get_changes(&[]);
     let take = version.saturating_add(1).min(changes.len());
@@ -298,10 +295,6 @@ impl Walk {
     }
 }
 
-/// The resource as it was at `heads`.
-///
-/// # Errors
-/// Returns [`ModelError`] when that version does not hold this resource.
 pub fn read_at<R: Resource>(doc: &mut Doc, heads: &[ChangeHash]) -> Result<R::State, ModelError> {
     let past = doc.fork_at(heads)?;
     R::read(&past)

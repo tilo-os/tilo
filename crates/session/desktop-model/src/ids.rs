@@ -209,7 +209,6 @@ impl IdMinter {
         Self { salt, counter: 1 }
     }
 
-    /// A minter resuming at `next_counter` under `salt`.
     pub const fn resume(salt: u16, next_counter: u64) -> Self {
         Self {
             salt,
@@ -241,10 +240,6 @@ impl IdMinter {
     /// nobody mints in, a counter of `0`, and a counter beyond the 48 bits
     /// an id carries. The owner persists
     /// [`Self::next_counter`] before publishing what it minted.
-    ///
-    /// # Errors
-    ///
-    /// A description when the namespace is invalid or exhausted.
     pub fn mint_in_namespace(&mut self) -> Result<u64, String> {
         if self.salt == 0
             || self.salt == RESERVED_SALT
@@ -311,7 +306,6 @@ mod tests {
 
     #[test]
     fn id_minter_salts_counts_and_observes_within_its_bits() {
-        // Phase `minted_ids_carry_salt_and_count_up`.
         {
             let mut minter = IdMinter::new(0x1234);
             let a = minter.mint();
@@ -320,13 +314,11 @@ mod tests {
             assert_eq!(counter_of(a), 1);
             assert_eq!(counter_of(b), 2);
         }
-        // Phase `unsalted_minter_yields_small_literals`.
         {
             let mut minter = IdMinter::default();
             assert_eq!(minter.mint(), 1);
             assert_eq!(minter.mint(), 2);
         }
-        // Phase `observe_skips_only_ids_under_own_salt`.
         {
             let mut minter = IdMinter::new(0x1111);
             minter.observe(compose_id(0x1111, 5));
@@ -335,7 +327,6 @@ mod tests {
             minter.observe(compose_id(0x1111, 2));
             assert_eq!(minter.next_counter(), 6, "observing never moves backwards");
         }
-        // Phase `counter_overflow_stays_inside_its_bits`.
         {
             let id = compose_id(0xFFFF, u64::MAX);
             assert_eq!(peer_salt_of(id), 0xFFFF);

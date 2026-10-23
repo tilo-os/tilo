@@ -1,5 +1,4 @@
-//! Undoing an agent's run of a workspace task as one, from the Task Center
-//! or Activity.
+//! Undoing an agent's run of a workspace task as one, from Activity.
 //!
 //! An agent working a task stamps each change with the task's group, so every
 //! document it changed can take those changes back by naming the task: its
@@ -209,7 +208,7 @@ fn ask(
         .ok()
 }
 
-/// Undoes run by run on a thread of its own, so the Task Center's request
+/// Undoes run by run on a thread of its own, so Activity's request
 /// returns at once and its outcome is polled like any review command's.
 #[derive(Clone, Default)]
 pub(crate) struct TaskUndos {

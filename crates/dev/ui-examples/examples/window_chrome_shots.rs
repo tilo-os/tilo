@@ -153,6 +153,7 @@ fn status(out: &Path, name: &str, theme: &Theme) {
         content,
         ToastAnchor::BottomCenter,
         &ToastCard::new("Copied link to Quarterly report", ToastKind::Success).closable(true),
+        tilo_ui::time::now(),
     );
     let mut bubble = tilo_ui::StatusBubble::new();
     let now = tilo_ui::time::now();

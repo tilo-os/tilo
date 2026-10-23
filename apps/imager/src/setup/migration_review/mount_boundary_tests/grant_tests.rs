@@ -1,4 +1,3 @@
-//! Actual mounted subjects through the shared host picker completion boundary.
 use super::*;
 use crate::setup::migration_review::{HomeRootSet, MountedRootSelection, RootKind};
 use std::{fs::OpenOptions, io::Read, sync::mpsc};

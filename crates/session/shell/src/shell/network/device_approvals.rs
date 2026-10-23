@@ -83,7 +83,6 @@ impl RootApproval for SessionRoot {
 pub(crate) struct PairingInvite {
     /// What the new device's request names.
     pub id: [u8; 16],
-    /// The link to open on the new device.
     pub link: String,
     /// The host the new device asks, by its origin.
     pub origin: String,
@@ -152,10 +151,6 @@ impl ShellNetwork {
     /// Make a pairing link for a new device of the person, at the host of a
     /// workspace this computer holds through the web (the new device must
     /// reach it): single use, good for [`INVITE_LIFETIME`].
-    ///
-    /// # Errors
-    ///
-    /// When this computer holds no such workspace, or has no identity.
     pub(crate) fn invite_device(&self) -> Result<PairingInvite, String> {
         let user = self.pairing_root()?.user_public_key();
         let (room, hosted) = self
@@ -257,10 +252,6 @@ impl ShellNetwork {
     /// Approve (`approve`) or decline the device asking under `digest`. An
     /// approved device is certified as the person's and listed with their
     /// devices; either way its invite admits no other.
-    ///
-    /// # Errors
-    ///
-    /// When the request is gone, or the host or identity store refused.
     pub(crate) fn answer_device(&self, digest: [u8; 32], approve: bool) -> Result<(), String> {
         let asking = self
             .device_approvals

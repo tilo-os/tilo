@@ -88,7 +88,6 @@ mod tests {
             ),
             ("the_spec_fallback_order_is_followed", "de.UTF-8", &["de"]),
             ("the_spec_fallback_order_is_followed", "de", &["de"]),
-            // The C locale means take the unlocalised value.
             ("the_c_locale_means_take_the_unlocalised_value", "C", &[]),
             (
                 "the_c_locale_means_take_the_unlocalised_value",

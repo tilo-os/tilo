@@ -115,7 +115,6 @@ impl<V> ChunkMap<V> {
         })
     }
 
-    /// The chunk and the place in it of `key`.
     fn locate(&self, key: &str) -> Option<(usize, usize)> {
         let index = self.chunk_of(key);
         let at = self
@@ -283,7 +282,6 @@ impl<V> ChunkMap<V> {
     }
 }
 
-/// The last key of `chunk`, the one its keys end with.
 fn last_key<V>(chunk: &Shared<Chunk<V>>) -> Option<&str> {
     chunk.get().last().map(|(key, _)| key.as_str())
 }

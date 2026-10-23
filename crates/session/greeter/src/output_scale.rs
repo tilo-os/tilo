@@ -468,10 +468,6 @@ pub fn start() -> Displays {
 
 /// [`start`] on an established Wayland connection: configure until the
 /// outputs settle (bounded), then keep them configured on a watcher thread.
-///
-/// # Errors
-/// Returns a content-free reason, with the displays the watcher keeps
-/// current all the same, when startup did not settle in time.
 pub fn configure_connection(connection: &Connection) -> Result<Displays, (&'static str, Displays)> {
     let displays = Displays::default();
     let mut queue = connection.new_event_queue::<Outputs>();
@@ -807,7 +803,6 @@ mod tests {
     #[test]
     fn the_card_goes_on_the_built_in_panel_and_rotated_heads_swap_sides() {
         let mut heads = laptop_and_monitor();
-        // The monitor left of the panel, as a user may arrange them.
         heads[1].position = Some((-1920, 0));
         heads[0].scale = Some(2.0);
         let arranged = arrangement(&heads);
@@ -827,7 +822,6 @@ mod tests {
             Some(Rect::new(1920.0, 0.0, 3392.0, 920.0))
         );
 
-        // Without a built-in panel, the leftmost output carries the card.
         heads[0].name = Some("HDMI-A-1".into());
         assert_eq!(
             arrangement(&heads).primary_in_window(),

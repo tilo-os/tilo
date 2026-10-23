@@ -132,7 +132,6 @@ mod tests {
 
     #[test]
     fn permissions_gate_writes_by_role_but_never_reading_or_leaving() {
-        // Permissive admin allows everything.
         let p = ChatPermissions::permissive();
         assert!(p.can_embed(&"a".repeat(64)), "admin: embed");
         assert!(p.can_participate(), "admin: participate");

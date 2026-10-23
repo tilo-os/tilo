@@ -792,7 +792,6 @@ pub(super) const OVERVIEW_FACES_MAX: usize = 4;
 /// modal so the shell's floating surfaces arrive the same way.
 pub(super) const OVERVIEW_PANEL_RISE_PX: f64 = 20.0;
 
-/// Scale the panel starts its entrance at.
 pub(super) const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 
 /// `(alpha, dy, scale)` for the panel of workspaces at the overview zoom's

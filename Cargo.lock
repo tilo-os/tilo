@@ -144,6 +144,7 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "cloud-source",
+ "durable-store",
  "getrandom 0.4.3",
  "hex",
  "serde",
@@ -535,6 +536,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-clock",
  "tilo-control",
+ "tilo-desktop-entry",
  "tilo-files",
  "tilo-net",
  "tilo-paths",
@@ -3828,6 +3830,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-content",
+ "tilo-cpu-raster",
  "tilo-document",
  "tilo-files",
  "tilo-net",
@@ -11212,6 +11215,7 @@ dependencies = [
  "tilo-cpu-raster",
  "tilo-document",
  "tilo-files",
+ "tilo-page-raster",
  "tilo-paths",
  "tilo-pdf",
  "tilo-pdf-engine",
@@ -14778,6 +14782,7 @@ dependencies = [
  "greetd-client",
  "greeter",
  "hex",
+ "host-fs",
  "image",
  "iroh",
  "iroh-base",
@@ -16128,6 +16133,7 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-rich-text",
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -17438,8 +17444,11 @@ name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "flate2",
  "libc",
+ "lzma-rust2",
  "rustix 1.1.4",
+ "ruzstd",
  "serde",
  "serde_json",
  "serial_test",
@@ -17900,6 +17909,7 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-lock",
+ "tilo-net",
  "tilo-nm",
  "tilo-power-mgmt",
  "tilo-rt",
@@ -17923,6 +17933,19 @@ dependencies = [
  "fuser",
  "runtime-dylib",
  "runtime-fs-fuse",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-governor"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "tilo-clock",
+ "tilo-delivery-protocol",
+ "tilo-peer-state",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -18105,6 +18128,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-control",
  "tilo-desktop-model",
  "tilo-files",
  "tilo-identity-ceremony",
@@ -18238,6 +18262,7 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-files",
+ "tilo-governor",
  "tilo-identity-host",
  "tilo-moq",
  "tilo-owner-commit",
@@ -18783,6 +18808,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-page-raster"
+version = "0.1.0"
+dependencies = [
+ "tilo-clock",
+ "tilo-lock",
+ "tilo-rt",
+ "tilo-vello",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-paint-engine"
 version = "0.1.0"
 dependencies = [
@@ -19102,6 +19138,7 @@ dependencies = [
  "tilo-environment",
  "tilo-files",
  "tilo-fs",
+ "tilo-governor",
  "tilo-identity-host",
  "tilo-joined-room",
  "tilo-lock",
@@ -19889,6 +19926,7 @@ dependencies = [
  "bounded-zip",
  "hex",
  "image",
+ "resvg",
  "serde",
  "serde_json",
  "tempfile",
@@ -21233,12 +21271,12 @@ dependencies = [
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-page-raster",
  "tilo-test-env",
  "tilo-typst-engine",
  "tilo-typst-fonts",
  "tilo-vello",
  "tilo-winit",
- "tiny-skia",
  "typst",
  "typst-layout",
  "typst-pdf",
@@ -23976,6 +24014,7 @@ dependencies = [
  "litemap",
  "log",
  "lru 0.16.3",
+ "lzma-rust2",
  "memchr",
  "miniz_oxide",
  "mio",

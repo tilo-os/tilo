@@ -475,11 +475,6 @@ impl VelloDrmBridge {
     ///
     /// The one-output case of [`Self::paint_output_until`]: the scene is the output, so the
     /// bridge's own target is the output's retained surface.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the target size does not match this bridge, rendering or
-    /// submission fails, or the completion marker misses `deadline`.
     #[cfg(target_os = "linux")]
     pub fn paint_imported_until(
         &mut self,

@@ -322,7 +322,6 @@ impl WorkspaceTreeHandle {
         fresh
     }
 
-    /// A weak handle to the same tree.
     pub fn downgrade(&self) -> WeakWorkspaceTreeHandle {
         WeakWorkspaceTreeHandle(Arc::downgrade(&self.0))
     }

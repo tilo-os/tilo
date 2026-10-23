@@ -1,6 +1,3 @@
-//! The agent integration harness is compiled with `shell` as a normal dependency.
-//! These checks keep its fixture certificate authority attached in that exact graph.
-
 use ui::collaboration::CollabRequest;
 
 use crate::typed_peer;

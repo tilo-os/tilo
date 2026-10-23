@@ -188,7 +188,6 @@ impl RowShape {
         };
         self
     }
-    /// Lines of body the row shows.
     pub fn body_lines(&self) -> usize {
         self.body_lines
     }
@@ -808,7 +807,6 @@ pub enum CenterOutcome {
 enum ActionFocus {
     Clear,
     Undo,
-    /// The pager's way to newer rows.
     Newer,
     /// The pager's way to older rows.
     Older,
@@ -1179,7 +1177,6 @@ impl NotificationCenter {
         }
     }
 
-    /// The notification's own actions behind `row`.
     fn row_actions(host: &dyn NotificationHost, row: &HistoryRow) -> Vec<(String, String)> {
         match row {
             HistoryRow::Item { index, .. } => {
@@ -2921,7 +2918,6 @@ mod tests {
         // Left folds the expanded group; its members leave the rows.
         center.key(&host, &layout, &Key::Named(NamedKey::ArrowLeft));
         assert_eq!(center.rows(&host).len(), 2);
-        // Delete on the header dismisses the whole group.
         center.key(&host, &layout, &Key::Named(NamedKey::Delete));
         assert_eq!(host.log().history().len(), 1);
         assert_eq!(host.log().history()[0].title, "sys");
@@ -3145,7 +3141,6 @@ mod tests {
         );
         assert_eq!(center.start, visible);
 
-        // At the oldest page the roles swap.
         center.key(&host, &layout, &Key::Named(NamedKey::End));
         let last = center.start;
         assert!(last > visible);

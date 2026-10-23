@@ -128,7 +128,6 @@ impl PersonRecords {
         self.store.try_flush()
     }
 
-    /// The person these records belong to.
     #[must_use]
     pub fn author(&self) -> &UserId {
         &self.author
@@ -214,8 +213,6 @@ impl PersonRecords {
     /// Open the original writer for a host-owned canonical edit. Unlike the
     /// readable replica path, this must observe and edit the actual owner:
     /// a busy/missing writer is never replaced by an empty local replica.
-    /// # Errors
-    /// Refuses a replica owner and propagates the original writer's errors.
     pub fn open_original_record(
         &self,
         kind: RecordKind,
@@ -290,9 +287,6 @@ impl PersonRecord {
     /// Edit the record: `edit` changes the document, written and synced
     /// like any edit. An `undoable` change is one undo step of the
     /// person's; another (content from outside, housekeeping) is nobody's.
-    ///
-    /// # Errors
-    /// The record is busy, or `edit` failed (nothing is recorded then).
     pub fn edit<T>(
         &self,
         undoable: bool,

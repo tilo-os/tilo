@@ -169,6 +169,9 @@ fn a_book_elsewhere_shows_its_text_on_its_way_and_opens_when_it_arrives() {
     assert!(books.arriving(&entry.id).is_none());
 }
 
+// When nothing this device can reach has a book's text, opening it says so
+// on the book's own tile, as information rather than a failure, and the
+// tile stays.
 #[test]
 fn a_book_nobody_reachable_has_says_so_on_open_and_keeps_its_tile() {
     let mut app = fresh();
@@ -182,11 +185,125 @@ fn a_book_nobody_reachable_has_says_so_on_open_and_keeps_its_tile() {
         books(&mut app).settle_query();
         app.settle();
     }
-    let said = books(&mut app).load_error.clone().unwrap_or_default();
-    assert!(
-        said.contains("on another device") && said.contains("once a device that has it is online"),
-        "{said}"
+    assert_eq!(
+        tile_status(&mut app, "Lost Pages"),
+        Some((
+            "None of your online devices has this book.".to_owned(),
+            None
+        )),
+        "its tile says so, to a screen reader too"
+    );
+    assert_eq!(
+        books(&mut app).load_error.as_deref(),
+        None,
+        "nothing failed"
     );
     assert_ne!(books(&mut app).view, View::Reader);
     assert_eq!(shelf(&mut app), ["Lost Pages"], "its tile stays");
+}
+
+/// What the tile of the book titled `title` says of its text, as a screen
+/// reader hears it: its value and description.
+fn tile_status(app: &mut TestApp<EbookShell>, title: &str) -> Option<(String, Option<String>)> {
+    fn find(node: &ui::a11y::AccessNode, title: &str) -> Option<(String, Option<String>)> {
+        if node
+            .name
+            .as_deref()
+            .is_some_and(|name| name.contains(title))
+            && let Some(value) = &node.value
+        {
+            return Some((value.clone(), node.description.clone()));
+        }
+        node.children.iter().find_map(|child| find(child, title))
+    }
+    app.settle();
+    let tree = ui::widget::Widget::accessibility(books(app))?;
+    find(&tree, title)
+}
+
+// A book whose holder is offline is not fetching: opening it shows on its
+// tile that it waits for a device that has it, still, with no loading bar;
+// the moment a holder connects its tile shows the loading bar, and it opens
+// where its reader left off once its text is here.
+#[test]
+fn a_book_whose_holder_is_offline_waits_and_opens_when_the_holder_connects() {
+    use ui::collaboration::record_content::{ContentLane, RecordContent};
+
+    let mut app = fresh();
+    let bytes = crate::test_epub::long_classic(6, 3);
+    let hash = tilo_content::hash_bytes(&bytes);
+    let entry = row("The Test Odyssey", &bytes);
+    app.invoke(shelve(&entry)).unwrap();
+    let progress: ui::tilo_resource::Map<Progress> = [(
+        entry.id.clone(),
+        Progress {
+            chapter: 4,
+            block: 1,
+            fraction: 0.7,
+            opened: 1,
+        },
+    )]
+    .into_iter()
+    .collect();
+    app.invoke(Invoke::edit(&Ebook::paths().progress.set(progress)).unwrap())
+        .unwrap();
+    app.settle();
+    let lane = ContentLane::of("so.tilo.books-shelf-test", "waiting");
+    books(&mut app).content = Some(RecordContent::store(
+        tilo_content::ContentStore::memory(),
+        std::sync::Arc::clone(&lane),
+    ));
+    let settle = |app: &mut TestApp<EbookShell>| {
+        for _ in 0..3 {
+            books(app).settle_query();
+            app.settle();
+        }
+    };
+
+    books(&mut app).open_hit(&crate::resource::book_place_resource(&entry.id));
+    settle(&mut app);
+    // The host finds no device that has it connected.
+    lane.stands(hash.clone(), tilo_content::ContentState::Waiting);
+    settle(&mut app);
+    {
+        assert_eq!(
+            tile_status(&mut app, "The Test Odyssey"),
+            Some((
+                "Waiting for a device that has it".to_owned(),
+                Some("Opens when a device that has it is online.".to_owned())
+            )),
+            "its tile says it waits, to a screen reader too"
+        );
+        let books = books(&mut app);
+        assert_eq!(
+            books.load_error.as_deref(),
+            None,
+            "waiting is not a failure"
+        );
+        assert!(
+            books.arriving(&entry.id).is_none(),
+            "no loading bar while it waits"
+        );
+        assert!(!books.awaiting_arrival(), "nothing animates while it waits");
+        assert_ne!(books.view, View::Reader);
+    }
+    assert_eq!(shelf(&mut app), ["The Test Odyssey"], "its tile stays");
+
+    // A device that has it connects: it is on its way.
+    lane.stands(hash.clone(), tilo_content::ContentState::Pending);
+    settle(&mut app);
+    {
+        assert_eq!(tile_status(&mut app, "The Test Odyssey"), None);
+        let books = books(&mut app);
+        assert!(
+            books.arriving(&entry.id).is_some(),
+            "its tile shows the loading bar"
+        );
+    }
+
+    lane.arrive(hash, bytes);
+    settle(&mut app);
+    let books = books(&mut app);
+    assert_eq!(books.view, View::Reader, "it opens once its text is here");
+    assert_eq!(books.chapter, 4, "where its reader left off");
 }

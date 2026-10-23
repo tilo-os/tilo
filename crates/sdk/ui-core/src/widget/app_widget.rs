@@ -245,8 +245,6 @@ pub trait AppWidget: Widget {
     }
 
     /// Capture app-owned local presentation alongside the ordinary View.
-    /// # Errors
-    /// Rejects an invalid application contribution before either contribution is saved.
     fn capture_application_view(
         &self,
     ) -> Result<Option<crate::application_view::ApplicationLocalView>, crate::view::ThawError> {
@@ -1132,6 +1130,10 @@ mod component_adapter {
         fn accessibility_represents_child(&self, child_index: usize) -> bool {
             self.in_root(|root| root.accessibility_represents_child(child_index))
                 .unwrap_or_default()
+        }
+        fn accessibility_child_description(&self, child_index: usize) -> Option<String> {
+            self.in_root(|root| root.accessibility_child_description(child_index))
+                .flatten()
         }
         fn perform_action(
             &mut self,

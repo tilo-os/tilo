@@ -34,7 +34,6 @@ pub struct Peer(imp::Peer);
 /// What became of a frame handed to [`Peer::try_send`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sent {
-    /// Queued for the connection.
     Queued,
     /// The connection's queue is full; the frame was dropped.
     Full,

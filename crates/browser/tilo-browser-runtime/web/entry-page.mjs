@@ -968,15 +968,18 @@ export async function startEntryPage({mode}) {
     // Stopped after the host let the person in: opening the desktop failed.
     const inside = Boolean(admitted) && ['open', 'draw'].includes(root.arrival);
     arrive('stopped');
-    // A refusal is the host's answer, which trying again does not change.
-    document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
     // Plain words and a way to try again (index.html); the cause, thrown
     // on, reaches the console and the host's error report.
     // The room's name as its people last set it, where the room's desktop
     // reached the page; else the name the page was served or remembered.
     const named = (typeof admitted?.workspaceName === 'string' && admitted.workspaceName) || workspaceName;
-    status.textContent = failureMessage(error, {workspace: named, loaded: Boolean(runtime), admitted: inside,
+    const said = failureMessage(error, {workspace: named, loaded: Boolean(runtime), admitted: inside,
       messages: await localeMessagesSoon()});
+    // A refusal is the host's answer, which trying again does not change.
+    // Marked together with its words: a page that says it was refused
+    // while still reading "Loading Tilo…" tells a reader nothing.
+    document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
+    status.textContent = said;
     const known = admitting && remembering(() => rememberedRoom(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the room.

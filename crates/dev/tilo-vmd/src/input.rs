@@ -204,7 +204,6 @@ impl Encoder {
         Ok(())
     }
 
-    /// The plugged touchpad, with its device.
     fn touchpad(&self) -> Result<(Device, DeviceProfile), String> {
         self.plugged
             .iter()
@@ -1212,7 +1211,6 @@ mod tests {
 
     #[test]
     fn input_events_press_type_click_and_route_per_slot() {
-        // Phase `combos_press_in_order_and_release_in_reverse`.
         {
             let steps = events(&[InputAction::Key {
                 combos: vec!["ctrl+t".into()],
@@ -1226,7 +1224,6 @@ mod tests {
             assert!(evs.iter().all(|e| e.device == Device::Keyboard));
             assert_eq!(evs.iter().filter(|e| e.kind == EV_SYN).count(), 4);
         }
-        // Phase `typing_holds_shift_only_for_shifted_characters`.
         {
             let steps = events(&[InputAction::Type { text: "aB".into() }]).unwrap();
             assert_eq!(
@@ -1234,7 +1231,6 @@ mod tests {
                 [(30, 1), (30, 0), (42, 1), (48, 1), (48, 0), (42, 0)]
             );
         }
-        // Phase `clicks_move_first_and_use_the_pointer`.
         {
             let evs = emitted(
                 &events(&[InputAction::Click {
@@ -1249,13 +1245,11 @@ mod tests {
             assert!(evs.contains(&ev(Device::Pointer, EV_KEY, 0x111, 1)));
             assert_eq!(evs.last(), Some(&ev(Device::Pointer, EV_SYN, 0, 0)));
         }
-        // Phase `modes_parse`.
         {
             assert_eq!(parse_mode("1024x768\n800x600\n"), Some((1024, 768)));
             assert_eq!(parse_mode("1920x1080i\n"), Some((1920, 1080)));
             assert_eq!(parse_mode(""), None);
         }
-        // Phase `unit_and_socket_follow_the_slot`.
         {
             assert_eq!(unit_name("a"), "tilo-vm-input-a.service");
             assert_eq!(socket_path("a"), Path::new("/run/tilo-vm-input/a.sock"));
@@ -1593,7 +1587,6 @@ mod tests {
         let abs = on(&steps, pad, EV_ABS);
         assert!(abs.contains(&(ABS_MT_POSITION_X, 1570)), "{abs:?}");
         assert!(abs.contains(&(ABS_MT_POSITION_Y, 921)), "{abs:?}");
-        // The pad names what touched it, like the real one.
         assert!(abs.contains(&(ABS_MT_TOOL_TYPE, 0)));
         assert_eq!(
             on(&steps, pad, EV_KEY),
@@ -1640,7 +1633,6 @@ mod tests {
         assert_eq!(ys.len(), 2 * (1 + 4));
         assert_eq!(ys[0], 921 + 240);
         assert_eq!(ys[ys.len() - 1], 921 - 240);
-        // The fingers stay a hand's width apart horizontally.
         let xs: Vec<i32> = on(&steps, pad, EV_ABS)
             .into_iter()
             .filter(|(code, _)| *code == ABS_MT_POSITION_X)

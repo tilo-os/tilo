@@ -50,10 +50,6 @@ pub struct DiffReport {
 /// counts as different. Alpha is intentionally ignored — wgpu's
 /// premultiplied output can wobble in the bottom bits without changing
 /// what the user sees.
-///
-/// # Errors
-///
-/// Returns an error if the baseline directory does not exist or if any filesystem operations fail.
 pub fn compare_tree(baseline: &Path, current: &Path, threshold: u8) -> Result<DiffReport, String> {
     if !baseline.is_dir() {
         return Err(format!(

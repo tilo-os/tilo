@@ -3527,7 +3527,6 @@ mod tests {
                 surface.selection = vec![first.clone()];
                 // Grouping takes two marks; ungrouping, a group.
                 if keys == "Enter" {
-                    // Entering edits a path's points or a text.
                     let editable = art
                         .marks
                         .iter()

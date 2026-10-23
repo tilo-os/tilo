@@ -156,8 +156,6 @@ impl HostedTileInputs {
     /// Files reads only this owned temporary directory, terminals open no
     /// session, and the apps keep their records in a profile of the
     /// fixture's own. This does not advertise a host provider.
-    /// # Errors
-    /// Returns filesystem errors while creating the fixture.
     pub fn fixture() -> std::io::Result<Self> {
         Self::create_fixture(&std::env::temp_dir(), None)
     }
@@ -165,8 +163,6 @@ impl HostedTileInputs {
     /// Create an owned fixture child with thumbnails and document opening absent.
     /// The caller supplies an existing absolute, private temporary parent and
     /// retains it until every input/widget using the child has been dropped.
-    /// # Errors
-    /// Returns an error for a relative/missing parent or fixture filesystem errors.
     pub fn fixture_in(parent: &std::path::Path) -> std::io::Result<Self> {
         if !parent.is_absolute() || parent.parent().is_none() || !parent.is_dir() {
             return Err(std::io::Error::new(
@@ -265,8 +261,6 @@ impl HostedTileInputs {
     /// An owned fixture whose apps reach the session's broker at
     /// `collab`, as a session's do: a capture of a room whose session
     /// service is gone points it at a socket nobody serves.
-    /// # Errors
-    /// Returns an error if these inputs belong to a live host.
     pub fn with_session_broker_at(
         self,
         collab: std::path::PathBuf,
@@ -293,8 +287,6 @@ impl HostedTileInputs {
     }
 
     /// Give an owned fixture a stable clock, without changing the live source.
-    /// # Errors
-    /// Returns an error if these inputs belong to a live host.
     pub fn with_fixture_clock(
         mut self,
         clock: tilo_desktop::chrome::ClockSnapshot,
@@ -747,7 +739,6 @@ mod document_lifecycle_tests {
                 inputs.document(tabs[0]),
                 Some(HostedDocumentState::Ready(_))
             ));
-            // Simulate an older profile that retained the already closed tab.
             session
                 .tree
                 .write()
@@ -778,7 +769,6 @@ mod document_lifecycle_tests {
         );
         let mut driver =
             ui::headless::FrameHarness::new(ui::State::new(), Box::new(reopened.host), (1280, 800));
-        // Tree reconciliation can remove tabs without using the close gesture.
         assert!(crate::shell::tab_binding::remove_tab(
             &mut reopened.tree.write(),
             tabs[0]

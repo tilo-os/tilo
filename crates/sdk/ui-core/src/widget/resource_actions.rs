@@ -20,11 +20,6 @@ use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Wid
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
 
 /// Build one resource with a unit operation.
-///
-/// # Panics
-///
-/// Panics only if serializing Rust's unit value fails, which the JSON encoder
-/// represents unconditionally as `null`.
 #[expect(
     clippy::expect_used,
     reason = "serializing the unit operation payload is infallible"
@@ -85,10 +80,6 @@ pub trait ActionValue: Clone + Send + Sync + 'static {
     fn into_json(self) -> serde_json::Value;
 
     /// Decode a validated action argument.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `value` does not have this action value's type.
     fn from_json(value: &serde_json::Value) -> Result<Self, String>;
 }
 
@@ -230,11 +221,6 @@ impl ActionForm {
 
     /// Bind one control's typed output while filling every other argument
     /// from its current live state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the field is absent, has another action type, or
-    /// the generated binding does not match the exported action.
     pub fn binding<T: ActionValue>(&self, name: &str) -> Result<ActionBinding<T>, String> {
         let field = self
             .fields
@@ -269,11 +255,6 @@ impl ActionForm {
 
     /// A button binding that restores the values captured when the form was
     /// declared.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only if the generated initial values violate the
-    /// generated action contract.
     pub fn reset_binding(&self) -> Result<ActionBinding<()>, String> {
         ActionBinding::static_json_for(
             &self.resource(),
@@ -509,7 +490,6 @@ mod tests {
 
     #[test]
     fn action_form_validates_controls_and_connects_invocation() {
-        // Case `action_form_connects_controls_discovery_and_external_invocation`.
         {
             let name = crate::LocalState::new(String::from("Ada"));
             let enabled = crate::LocalState::new(true);
@@ -540,7 +520,6 @@ mod tests {
             assert_eq!(reset.arguments["enabled"], true);
         }
 
-        // Case `action_form_rejects_wrong_control_types_before_mounting`.
         {
             let value = crate::LocalState::new(String::new());
             let form = ActionForm::new("profile", "Profile", "save", "Save").field(

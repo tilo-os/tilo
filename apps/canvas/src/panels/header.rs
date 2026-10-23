@@ -27,7 +27,6 @@ pub fn title(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) ->
             zoom_readout(&zoom_tools)
         }
     });
-    // Finish editing the title as one resource action and undo step.
     let titled = cx.value(|art: &Artwork| art.title.clone());
     let title = cx.switch(&titled, |cx, title| {
         Box::new(
@@ -241,7 +240,8 @@ impl Command {
             id: id.to_owned(),
             bind: Box::new(move |button, cx| {
                 let dispatch = cx.dispatcher();
-                Box::new(button.on_effect(move || {
+                // The effect it hands on decides who may run it.
+                Box::new(button.on_own_device_effect(move || {
                     dispatch.effect(&crate::resource::ViewOp::FindArea { area: select() });
                 }))
             }),

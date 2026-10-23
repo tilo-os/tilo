@@ -181,7 +181,6 @@ mod tests {
 
     #[test]
     fn the_command_runner_hides_stdin_secrets_and_bounds_output_and_time() {
-        // Phase `debug_never_contains_stdin_secret`.
         {
             let request = CommandRequest::new("program")
                 .stdin_secret(b"do-not-log-me")
@@ -192,7 +191,6 @@ mod tests {
             assert!(debug.contains("SECRET_ENV"));
             assert!(debug.contains("redacted"));
         }
-        // Phase `runner_enforces_output_and_time_bounds`.
         {
             let runner = StdCommandRunner;
             let mut oversized = CommandRequest::new("sh").args(["-c", "head -c 4096 /dev/zero"]);

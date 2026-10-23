@@ -45,9 +45,9 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab     = "optional@2"
-tilo-fs     = "optional@2"
-shell-ui   = "optional@13"
+collab     = "optional@3"
+tilo-fs     = "optional@3"
+shell-ui   = "optional@14"
 
 [entrypoint]
 bin             = "bin/notes"

@@ -266,7 +266,6 @@ impl Verbs {
     }
 }
 
-/// The focused window group of `workspace`, if it has one.
 fn focused_group<'a>(tree: &'a DesktopTree, workspace: &'a Workspace) -> Option<&'a WindowGroup> {
     let strip = tree
         .active_strip
@@ -278,7 +277,6 @@ fn focused_group<'a>(tree: &'a DesktopTree, workspace: &'a Workspace) -> Option<
         .or_else(|| strip.window_groups.first())
 }
 
-/// The focused tab of `workspace`, if it has one.
 fn focused_tab(tree: &DesktopTree, workspace: &Workspace) -> Option<TabId> {
     let group = focused_group(tree, workspace)?;
     group

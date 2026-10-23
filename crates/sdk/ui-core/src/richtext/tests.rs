@@ -72,7 +72,6 @@ fn huge_paragraph_chunks_keep_source_offsets_and_reuse_shaping() {
         let (x, y, h) = layout.caret_geometry(byte);
         assert!(y >= last_y && h > 0.0, "caret order at {byte}");
         last_y = y;
-        // Hitting the caret position lands on the same source byte.
         let hit = layout.hit(x + 0.01, y + h / 2.0);
         assert!(hit.abs_diff(byte) <= 12, "hit {hit} for {byte}");
     }
@@ -1204,7 +1203,6 @@ fn run_styles_paint_backgrounds_superscripts_and_line_heights() {
             (a2 - 2.0 * a1).abs() < a1 * 0.1,
             "2.0 multiple should ~double the per-line advance: 1.0={a1} 2.0={a2}",
         );
-        // And the reported block height scales with it too.
         assert!(doubled.height() > single.height() * 1.8);
     }
 }

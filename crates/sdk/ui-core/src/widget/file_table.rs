@@ -55,6 +55,12 @@ pub trait FileRow: 'static {
     fn size_text(&self) -> String;
     /// When the entry last changed, if known.
     fn modified(&self) -> Option<chrono::DateTime<chrono::Local>>;
+    /// What kind of thing the entry is, for a list of things that are not
+    /// files (an app: Flatpak, `AppImage`, …). A list any of whose rows has a
+    /// kind shows a Kind column where it would show when each changed.
+    fn kind(&self) -> Option<String> {
+        None
+    }
     /// Paint the name cell. The default is the file's icon and its name,
     /// which is all a list without previews needs.
     fn paint_name(
@@ -212,6 +218,9 @@ pub enum Modified {
 pub struct Shape {
     pub size: bool,
     pub modified: Modified,
+    /// The rows have kinds ([`FileRow::kind`]): the modified column's place
+    /// shows them instead. It follows the rows, not the width.
+    pub kind: bool,
 }
 
 impl Shape {
@@ -224,6 +233,7 @@ impl Shape {
             return Self {
                 size: true,
                 modified: Modified::DateTime,
+                kind: false,
             };
         }
         let unit = metrics.unit * metrics.scale * metrics.text_scale;
@@ -236,6 +246,7 @@ impl Shape {
             } else {
                 Modified::Hidden
             },
+            kind: false,
         }
     }
 }
@@ -415,7 +426,16 @@ impl<R: FileRow> FileTable<R> {
                 .with_text(|held: &Held<R>| held.row.size_text()),
             );
         }
-        if shape.modified != Modified::Hidden {
+        if shape.kind && shape.modified != Modified::Hidden {
+            columns.push(
+                ColumnDef::new(
+                    "kind",
+                    tr("widget-filetable-column-kind"),
+                    ColumnWidth::Fixed(px(metrics.date_col * metrics.text_scale)),
+                )
+                .with_text(|held: &Held<R>| held.row.kind().unwrap_or_default()),
+            );
+        } else if shape.modified != Modified::Hidden {
             let with_time = shape.modified == Modified::DateTime;
             let width = if with_time {
                 metrics.modified_col
@@ -476,7 +496,10 @@ impl<R: FileRow> FileTable<R> {
     pub fn sync(&mut self, inputs: FileTableInputs<'_, R>) {
         self.header_h = header_height(inputs.theme);
         self.metrics = Some(inputs.metrics);
-        let shape = Shape::for_width(self.width, &inputs.metrics);
+        let shape = Shape {
+            kind: inputs.rows.iter().any(|row| row.kind().is_some()),
+            ..Shape::for_width(self.width, &inputs.metrics)
+        };
         if self.table.is_none() || self.shape != Some(shape) {
             let scroll = self.table.as_ref().map_or(0.0, |table| table.scroll_y());
             let mut table = self.build_table(shape, &inputs.metrics);
@@ -644,8 +667,14 @@ impl<R: FileRow> FileTable<R> {
             }
         }
         self.width = rect.width();
-        self.metrics
-            .is_some_and(|metrics| self.shape != Some(Shape::for_width(self.width, &metrics)))
+        let kind = self.shape.is_some_and(|shape| shape.kind);
+        self.metrics.is_some_and(|metrics| {
+            self.shape
+                != Some(Shape {
+                    kind,
+                    ..Shape::for_width(self.width, &metrics)
+                })
+        })
     }
 
     pub fn draw(

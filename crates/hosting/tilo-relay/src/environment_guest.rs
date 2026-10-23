@@ -81,7 +81,6 @@ use tilo_lock::MutexRecover as _;
 /// How members are separated by uid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemberIsolation {
-    /// Every member's supervisor runs as the worker's own uid.
     SharedUid,
     /// Each member gets a uid of their own from `first..first + count`.
     /// Requires the worker to run as root.
@@ -165,7 +164,6 @@ impl Drop for Supervisor {
 }
 
 impl UshGuestLauncher {
-    /// A launcher with `config`.
     #[must_use]
     pub fn new(config: UshLauncherConfig) -> Self {
         if config.cgroup_root.is_none() {
@@ -414,11 +412,6 @@ impl GuestLauncher for UshGuestLauncher {
 }
 
 /// Ask a `ush` supervisor for a guest and wrap its pty master.
-///
-/// # Errors
-///
-/// Returns an error when the supervisor is unreachable, denies the
-/// request, or sends no pty.
 pub fn open_ush_session(
     socket: &Path,
     record_key: &str,
@@ -867,11 +860,9 @@ mod tests {
             }]
         );
         assert!(mounts[0].source.is_dir());
-        // The same grant from another member resolves into their own area.
         let theirs = grant_mounts(&bob, &spec(&["/home/alice/Projects"])).unwrap();
         assert!(theirs[0].source.starts_with(bob.files()));
         assert!(!theirs[0].source.starts_with(alice.root()));
-        // Nothing escapes the area.
         assert!(grant_mounts(&alice, &spec(&["/home/../../etc"])).is_err());
         assert!(alice.grant_source("relative").is_none());
         assert_eq!(alice.grant_source("/").unwrap(), alice.files());
@@ -930,7 +921,6 @@ mod tests {
                 images: [(this_architecture().to_owned(), tool)].into(),
             }]
         );
-        // A new session starts from what the device resolved again.
         write_record(&area, &record, &spec, None).unwrap();
         assert!(launcher.current_tools(&member, &record).unwrap().is_empty());
     }

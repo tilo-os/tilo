@@ -11,6 +11,7 @@ totp-add-title-provision = Set up on this device
 ## Ways to import an account
 totp-add-scan-title = Scan a QR image
 totp-add-scan-description = Read the code from a screenshot or photo
+totp-scan-unreadable = Couldn’t read a code from that image
 totp-add-link-title = Paste a setup link
 totp-add-link-description = Fill everything from an otpauth link
 totp-add-link-label = Setup link

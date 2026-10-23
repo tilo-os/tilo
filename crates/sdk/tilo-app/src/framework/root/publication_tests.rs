@@ -271,7 +271,6 @@ fn outline(resource: &tilo_actions::Resource) -> serde_json::Value {
     })
 }
 
-/// The shelf app holding `items` items.
 fn shelf(items: i64) -> Result<TestApp<ShelfApp>, String> {
     let mut app = TestApp::<ShelfApp>::new().map_err(|error| format!("{error:?}"))?;
     app.call("grow", json!({ "by": items }))

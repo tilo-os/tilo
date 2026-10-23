@@ -1075,7 +1075,6 @@ mod tests {
 
     #[test]
     fn stats_summaries_use_nearest_rank_and_handle_empty_input() {
-        // Case `percentile_is_nearest_rank`.
         {
             let v: Vec<u64> = (1..=100).collect();
             assert_eq!(percentile(&v, 50.0), 50);
@@ -1084,7 +1083,6 @@ mod tests {
             assert_eq!(percentile(&v, 100.0), 100);
         }
 
-        // Case `stat_summary_captures_spread`.
         {
             let s = StatSummary::of(&[10, 20, 30, 40, 50]);
             assert_eq!(s.count, 5);
@@ -1094,7 +1092,6 @@ mod tests {
             assert_eq!(s.max_us, 50);
         }
 
-        // Case `empty_stats_are_zero_not_a_panic`.
         {
             let s = StatSummary::of(&[]);
             assert_eq!(s.count, 0);
@@ -1104,7 +1101,6 @@ mod tests {
 
     #[test]
     fn profiler_records_passes_commits_and_over_budget_frames() {
-        // Case `profiler_records_passes_and_commits`.
         {
             let mut p = FrameProfiler::for_capture();
             p.record(Pass::Sync, Duration::from_micros(100));
@@ -1126,7 +1122,6 @@ mod tests {
             assert!(!f.over_budget());
         }
 
-        // Case `diagnostic_passes_accumulate_serialize_and_reset`.
         {
             let mut profiler = FrameProfiler::for_capture();
             profiler.record(Pass::ResourceAvailability, Duration::from_micros(11));
@@ -1168,7 +1163,6 @@ mod tests {
             assert_eq!(lines.count(), 1, "one header, two frames");
         }
 
-        // Case `live_input_banks_event_count_maximum_and_phases_per_frame`.
         {
             let mut profiler = FrameProfiler::for_capture();
             let started = crate::time::now();
@@ -1233,7 +1227,6 @@ mod tests {
             assert_eq!(clock.phases().dispatch, Duration::ZERO);
         }
 
-        // Case `over_budget_frames_are_counted_in_the_report`.
         {
             let mk = |total: u64| FrameTiming {
                 total_us: total,
@@ -1247,7 +1240,6 @@ mod tests {
             assert_eq!(r.draw.max_us, 30_000);
         }
 
-        // Case `scenario_named_click_reaches_the_real_control`.
         {
             let clicks = std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = clicks.clone();
@@ -1266,9 +1258,6 @@ mod tests {
             assert!(report.frames >= 2);
         }
 
-        // Case `scenario_cannot_report_success_after_a_missing_click`: the run
-        // panics naming the control it could not click (formerly
-        // `#[should_panic(expected = "missing-control")]`).
         {
             let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut driver = crate::headless::FrameHarness::new(

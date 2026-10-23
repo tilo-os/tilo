@@ -67,7 +67,6 @@ pub(super) struct CausalEffects {
     groups: HashMap<InvocationId, Group>,
 }
 
-/// Reads the resource's state from a document.
 pub(super) type ReadState = fn(&tilo_resource::Doc) -> Result<Box<dyn Any>, String>;
 
 impl CausalEffects {

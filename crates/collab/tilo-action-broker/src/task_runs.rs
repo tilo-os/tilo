@@ -19,7 +19,6 @@ const MAX_ENDED_RUNS: usize = 64;
 /// An agent's run of a workspace task that ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EndedTaskRun {
-    /// The room of the workspace the task is in.
     pub room: String,
     /// The task's id: the group id its changes are stamped with.
     pub task_id: String,

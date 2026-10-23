@@ -16,9 +16,6 @@ pub struct ApplicationRecord {
 
 impl ApplicationRecord {
     /// Bind the SDK's exact kind to a host-verified installed declaration.
-    ///
-    /// # Errors
-    /// The route is malformed or the installed package does not declare the kind.
     pub fn declared(
         app: &str,
         record: &str,

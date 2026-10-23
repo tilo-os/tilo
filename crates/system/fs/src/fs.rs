@@ -450,7 +450,6 @@ mod staging_limit_tests {
         fs.write_buffer(b, 0, b"b").unwrap();
         fs.truncate_inode(b, offset).unwrap();
         assert_eq!(fs.staged_len(b), Some(offset));
-        // A stage-directory failure during create uses the protected memory backing.
         std::fs::remove_dir_all(fs.stage_dir.as_ref().unwrap()).unwrap();
         fs.buffers().insert(c, fs.empty_stage(false).shared());
         assert_eq!(fs.write_buffer(c, offset, b"x"), Err(EFBIG));
@@ -1138,7 +1137,6 @@ impl QuickFS {
         }
     }
 
-    /// The stage of `ino`, if it has one.
     fn stage(&self, ino: u64) -> Option<SharedStage> {
         self.buffers().get(&ino).cloned()
     }
@@ -2316,10 +2314,6 @@ impl QuickFS {
 
     /// Attach the signed record publisher and backfill locally authored
     /// history that predates the record transport.
-    ///
-    /// # Errors
-    ///
-    /// Returns a publisher error when backfill or projection rebuilding fails.
     pub fn with_record_publisher(
         mut self,
         publisher: Arc<crate::record_publisher::RecordPublisher>,

@@ -50,6 +50,9 @@ pub struct HostApp {
     /// `Icon=`: an icon-theme name or an absolute path, resolved by
     /// [`crate::app_icons`].
     pub icon: Option<String>,
+    /// For a program the person downloaded: the file it starts and whether
+    /// that file is still there ([`desktop_entry::downloaded`]).
+    pub downloaded: Option<desktop_entry::downloaded::DownloadedProgram>,
 }
 
 /// A palette launch held until the compositor can mint its external
@@ -250,6 +253,7 @@ impl HostApp {
             mime_types: entry.mime_types.clone(),
             terminal: entry.terminal,
             icon: entry.icon.clone(),
+            downloaded: entry.downloaded.clone(),
         }
     }
 
@@ -272,7 +276,7 @@ impl HostApp {
 }
 
 pub fn host_apps() -> Vec<HostApp> {
-    deduplicate_host_apps(
+    deduplicate(
         desktop_entry::cache::cached_scan()
             .entries
             .iter()
@@ -287,7 +291,7 @@ pub fn host_apps_snapshot() -> (u64, Vec<HostApp>) {
     let (generation, scan) = desktop_entry::cache::cached_scan_snapshot();
     (
         generation,
-        deduplicate_host_apps(scan.entries.iter().map(HostApp::from_entry).collect()),
+        deduplicate(scan.entries.iter().map(HostApp::from_entry).collect()),
     )
 }
 
@@ -301,7 +305,7 @@ pub fn host_apps_generation() -> u64 {
 /// modes. A shared display name alone is not identity; a shared declared
 /// window identity is. Prefer Flatpak when a user/system export and a distro
 /// file both describe the same app because it retains its original sandbox.
-fn deduplicate_host_apps(apps: Vec<HostApp>) -> Vec<HostApp> {
+pub(crate) fn deduplicate(apps: Vec<HostApp>) -> Vec<HostApp> {
     let mut out: Vec<HostApp> = Vec::new();
     for app in apps {
         let duplicate = out.iter().position(|existing| {
@@ -769,6 +773,7 @@ mod tests {
             mime_types: Vec::new(),
             terminal: false,
             icon: None,
+            downloaded: None,
             window_identities: identities
                 .iter()
                 .map(std::string::ToString::to_string)
@@ -899,12 +904,12 @@ mod tests {
                 source_label: "Flatpak",
                 ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
             };
-            let apps = deduplicate_host_apps(vec![system, flatpak.clone()]);
+            let apps = deduplicate(vec![system, flatpak.clone()]);
             assert_eq!(apps, vec![flatpak]);
         }
 
         fn same_named_distinct_modes_remain_visible() {
-            let apps = deduplicate_host_apps(vec![
+            let apps = deduplicate(vec![
                 app("org.example.Editor", "Editor", &["Editor"]),
                 app("org.example.EditorSafe", "Editor", &["EditorSafe"]),
             ]);
@@ -920,7 +925,7 @@ mod tests {
                 source_label: "Flatpak",
                 ..app("org.example.Chat", "Chat", &["org.example.Chat", "Chat"])
             };
-            let canonical = deduplicate_host_apps(vec![system, flatpak.clone()]);
+            let canonical = deduplicate(vec![system, flatpak.clone()]);
             assert_eq!(app_for_window_id_in("Chat", canonical), Some(flatpak));
         }
 

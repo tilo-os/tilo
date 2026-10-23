@@ -271,7 +271,8 @@ pub(crate) fn build(
                     Box::new(
                         Button::icon_only(&format!("api.kv-remove.{id}"), Icon::X, "Remove row")
                             .role(ButtonRole::Plain)
-                            .on_effect(move || {
+                            // The removal is an edit, decided as one.
+                            .on_own_device_effect(move || {
                                 sink.borrow_mut().push(Cmd::Edit {
                                     table,
                                     row: row.clone(),

@@ -154,7 +154,6 @@ pub(crate) fn surface_named(package_id: &str, surface: [u8; 32]) {
 /// A signed surface by its hash.
 type Surface = ([u8; 32], Arc<[u8]>);
 
-/// What the installed store holds of an app.
 #[derive(Clone)]
 enum Installed {
     /// The app is not installed.

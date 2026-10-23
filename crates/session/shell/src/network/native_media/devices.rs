@@ -548,7 +548,6 @@ mod tests {
             "the table kept refreshing after the call ended"
         );
 
-        // A second call wakes it again.
         let _watch = devices.watch();
         wait_for("a second watch never woke the loop", || {
             refreshes(&devices) > parked

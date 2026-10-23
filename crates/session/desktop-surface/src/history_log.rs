@@ -61,9 +61,6 @@ pub fn record(log: &mut AutoCommit, value: &serde_json::Value, author: &str, tim
 
 /// Save a changed log through the host's store. A refusal keeps it pending,
 /// including when the next attempt records no additional change.
-///
-/// # Errors
-/// Returns the host's storage error without acknowledging the save.
 pub fn save_pending<E>(
     log: &mut AutoCommit,
     pending: &std::cell::Cell<bool>,

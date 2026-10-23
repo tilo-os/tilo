@@ -38,7 +38,6 @@ pub fn config() -> Option<(Provider, Registration)> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HubSignIn {
     pub tokens: TokenSet,
-    /// The account's Hugging Face username.
     pub username: String,
     /// Their display name, when it differs from the username.
     #[serde(default, skip_serializing_if = "Option::is_none")]

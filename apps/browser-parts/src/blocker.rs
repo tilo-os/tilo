@@ -91,13 +91,21 @@ const CACHE_MAX_AGE: Duration = Duration::from_secs(604_800);
 /// ([`user_scripts`]) is installed separately by the app, since it maps
 /// to a different engine capability (user scripts, not content filters).
 ///
+/// `then` (the window's first navigation) is sent once the engine has the
+/// rules it can have at once: an engine that filters natively is handed the
+/// cached lists first, read off the calling thread; otherwise it is sent
+/// now, as compiling takes long.
+///
 /// If the OS refuses to spawn the background loader thread (e.g. the
 /// process is out of resources), ad blocking is simply left disabled for
 /// this session rather than taking the whole app down with it.
-pub fn spawn_filter_loader(engine: SharedEngine) {
+pub fn spawn_filter_loader(engine: SharedEngine, then: Option<WebViewCommand>) {
     if engine.supports_native_filtering() {
-        crate::native_blocker::start(engine);
+        crate::native_blocker::start(&engine, then);
         return;
+    }
+    if let Some(then) = then {
+        engine.send(then);
     }
     let spawned = std::thread::Builder::new()
         .name("filter-loader".into())
@@ -396,10 +404,8 @@ fn source_version(texts: &[String]) -> u64 {
 mod tests {
     use super::*;
 
-    /// Bundled user scripts.
     #[test]
     fn bundled_user_scripts_are_present_and_skip_youtube_ads() {
-        // Phase `user_scripts_are_present_and_non_empty`.
         {
             let scripts = user_scripts();
             assert!(!scripts.is_empty(), "expected at least one user script");
@@ -408,7 +414,6 @@ mod tests {
             }
         }
 
-        // Phase `youtube_ad_skip_script_is_included_and_functional`.
         {
             let scripts = user_scripts();
             let yt = scripts
@@ -423,10 +428,8 @@ mod tests {
                 yt.to_lowercase().contains("skip"),
                 "no skip logic in YouTube script"
             );
-            // Detects an ad in progress and fast-forwards past it.
             assert!(yt.contains("ad-showing"), "no ad-in-progress detection");
             assert!(yt.contains("currentTime"), "no fast-forward seek");
-            // Survives SPA navigation.
             assert!(
                 yt.contains("MutationObserver") && yt.contains("setInterval"),
                 "no SPA-navigation resilience",
@@ -434,10 +437,8 @@ mod tests {
         }
     }
 
-    /// Filter list selection.
     #[test]
     fn filter_list_set_covers_sources_and_excludes_page_blanking_lists() {
-        // Phase `filter_list_set_covers_the_expected_sources`.
         {
             let names: Vec<&str> = LISTS.iter().map(|(n, _)| *n).collect();
             for expected in [
@@ -451,13 +452,11 @@ mod tests {
             ] {
                 assert!(names.contains(&expected), "missing filter list {expected}");
             }
-            // Every entry points at an https raw source.
             for (_, url) in LISTS {
                 assert!(url.starts_with("https://"), "non-https list URL: {url}");
             }
         }
 
-        // Phase `page_blanking_filter_lists_stay_excluded`.
         {
             // uBO quick-fixes and AdGuard Base convert to over-broad WebKit
             // `block` rules that catch a page's own first-party document, so a

@@ -32,7 +32,6 @@ impl Default for FetchLimits {
     }
 }
 
-/// A fetched page.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FetchedPage {
     /// Where the page ended up, after redirects.
@@ -101,10 +100,6 @@ impl std::error::Error for FetchError {}
 /// Every hop, the first and each redirect, is checked by [`check_url`], and
 /// where the name resolves here by [`check_address`], before a request goes
 /// out, so a redirect cannot lead somewhere the first address could not.
-///
-/// # Errors
-///
-/// The [`FetchError`] saying why there is no page.
 pub async fn fetch(
     client: &tilo_net::Client,
     url: &str,

@@ -97,7 +97,18 @@ impl ResourceApp for CodeEditorShell {
                 Ok(ui::framework::Effected::Pending)
             },
         );
-        cx.surface(app)
+        let explorer = crate::explorer::ExplorerFeed::default();
+        let events = crate::explorer::ExplorerEvents::default();
+        let shell = ui::widget::NavShell::new()
+            .with_id("code-editor-shell")
+            .content_kind(ui::widget::ContentKind::Document)
+            .with_window_toolbar();
+        let app = app.in_shell(&explorer, &events, shell.window_bar_link());
+        Box::new(
+            shell
+                .sidebar(crate::explorer::sidebar(&explorer, &events))
+                .content(cx.surface(app)),
+        )
     }
 
     /// Every folder and every file opened on its own is a project of its own,
@@ -131,8 +142,8 @@ impl ResourceApp for CodeEditorShell {
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
-            // Below the sidebar breakpoint the tree is an overlay.
-            Some("narrow" | "narrow-sidebar") => (720, 800),
+            // Too narrow to dock the sidebar beside the code: it is a drawer.
+            Some("narrow" | "narrow-sidebar") => (480, 800),
             _ => (1280, 800),
         }
     }
@@ -346,11 +357,9 @@ mod tests {
     #[test]
     fn effects_open_files_and_reveal_symbols_and_search_results() {
         let mut sample = sample();
-        // Opening a file reads the folders on its way into the tree.
         sample.open("src/main.rs");
         let prime = file_id(&sample.app.state(), "ferris-cli/src/prime.rs");
 
-        // A file's own row opens it, as a search hit on it does.
         sample
             .app
             .call_on(
@@ -364,7 +373,6 @@ mod tests {
             Some("prime.rs".to_string())
         );
 
-        // A symbol the scan found reveals where it is declared.
         sample.app.settle();
         let (address, line) = editor(&mut sample.app, |app| {
             let source =
@@ -391,7 +399,6 @@ mod tests {
             "the caret lands on the declaration"
         );
 
-        // A hit of the project search shows it beside the results.
         sample
             .app
             .effect(&CodeEditorEffect::Reveal {

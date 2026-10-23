@@ -200,7 +200,6 @@ async fn a_terminal_reaches_an_environment_on_the_persons_relay_and_re_attaches(
             }
         };
 
-        // The supervisor lists the relay for the picker.
         (&stream).write_all(b"{\"op\":\"list-relays\"}\n").unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();

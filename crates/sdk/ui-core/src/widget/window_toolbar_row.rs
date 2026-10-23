@@ -86,7 +86,6 @@ const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as 
 /// would be narrower than this.
 const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;
 
-/// One slot of the row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Slot {
     Sidebar,
@@ -306,7 +305,6 @@ fn equal_segments(strip: Rect, n: usize) -> Vec<Rect> {
 enum MenuEntry {
     /// Declared action `n`.
     Action(usize),
-    /// View `n` of the switcher.
     View(usize),
     /// Item `.1` of menu button `.0`.
     Item(usize, usize),
@@ -328,7 +326,6 @@ fn menu_item(action: &crate::window_toolbar::ToolbarAction) -> MenuItem {
 
 /// The slots of the tab the window shows, in one row of its bar.
 pub(crate) struct ToolbarRow {
-    /// The tab whose slots show, and its toolbar.
     shown: Option<(u64, WindowToolbar)>,
     /// The tab whose slots show (`None`: none), cross-fading on a switch.
     fade: CrossFade<Option<u64>>,
@@ -582,7 +579,6 @@ impl ToolbarRow {
         true
     }
 
-    /// The toolbar showing, if any.
     pub(crate) fn toolbar(&self) -> Option<&WindowToolbar> {
         self.shown.as_ref().map(|(_, toolbar)| toolbar)
     }
@@ -1156,7 +1152,6 @@ impl ToolbarRow {
             .flatten()
     }
 
-    /// Whether one of the row's menus is open.
     pub(crate) fn popup_open(&self) -> bool {
         self.menu.is_open() || self.suggestions_open()
     }
@@ -1295,7 +1290,6 @@ impl ToolbarRow {
         took
     }
 
-    /// Whether `p` is on one of the slots.
     pub(crate) fn hit(&self, p: Point) -> bool {
         self.slots.hit(p).is_some()
     }
@@ -1454,7 +1448,6 @@ impl ToolbarRow {
         }
     }
 
-    /// Paint the row.
     pub(crate) fn paint(
         &mut self,
         scene: &mut Scene,
@@ -1720,7 +1713,6 @@ impl ToolbarRow {
         ran
     }
 
-    /// Whether the open menu is `slot`'s.
     fn menu_open_for(&self, slot: &Slot) -> bool {
         self.menu.is_open() && self.menu_slot.as_ref() == Some(slot)
     }
@@ -2605,7 +2597,6 @@ mod tests {
             vec![(4, ToolbarEvent::Action { id: "save".into() })]
         );
 
-        // Edited, the location is a text field.
         let mut row = address_book_row(false, 900.0);
         assert!(row.begin_edit());
         assert!(

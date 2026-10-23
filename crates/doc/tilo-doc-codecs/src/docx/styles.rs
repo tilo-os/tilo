@@ -501,7 +501,6 @@ mod tests {
 
     #[test]
     fn styles_and_numbering_resolve() {
-        // Phase `resolves_named_heading_and_character_styles`.
         {
             let xml = br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
             <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/><w:jc w:val="center"/></w:pPr><w:rPr><w:b/></w:rPr></w:style>
@@ -530,14 +529,12 @@ mod tests {
                     .any(|(n, _)| n == "strong")
             );
         }
-        // Phase `heading_level_falls_back_to_well_known_ids`.
         {
             // No styles.xml registered, but "Heading2" is a recognised id.
             let reg = StyleRegistry::default();
             assert_eq!(reg.heading_level("Heading2"), Some(2));
             assert_eq!(reg.heading_level("Normal"), None);
         }
-        // Phase `detects_ordered_vs_bulleted_numbering`.
         {
             let xml = br#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
             <w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl></w:abstractNum>

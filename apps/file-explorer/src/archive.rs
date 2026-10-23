@@ -116,7 +116,6 @@ struct ListingJob {
     done: Arc<Mutex<Option<EntriesRead>>>,
 }
 
-/// A finished read of an archive's entries.
 type EntriesRead = io::Result<Arc<Vec<Entry>>>;
 
 impl std::fmt::Debug for Listing {
@@ -196,7 +195,6 @@ impl Listing {
         }
     }
 
-    /// Whether `archive` is being read.
     pub fn is_reading(&self, archive: &Path) -> bool {
         self.job.as_ref().is_some_and(|job| job.archive == archive)
     }

@@ -281,7 +281,6 @@ fn reservation_counts_transport_bytes_with_bounded_hash_allowance() {
         });
         let mut doc = AutoCommit::new();
         let mut host = crate::action_host::ActionHost::new();
-        // Include authenticated provenance in both capture identity and budget.
         let custody = runtime_collab::committed_document::ConnectionSnapshot {
             root: [1; 32],
             device: [2; 32],

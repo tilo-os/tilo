@@ -230,7 +230,6 @@ mod tests {
 
     #[test]
     fn spacers_push_or_separate_by_their_resolved_extent() {
-        // Case `flexible_spacer_still_pushes_trailing_siblings_to_the_far_edge`.
         {
             let mut row = Row::new()
                 .no_wrap()
@@ -249,7 +248,6 @@ mod tests {
             );
         }
 
-        // Case `fixed_spacer_is_exactly_its_pixels_in_a_row_and_does_not_grow`.
         {
             let mut row = Row::new()
                 .no_wrap()
@@ -266,7 +264,6 @@ mod tests {
             );
         }
 
-        // Case `fixed_spacer_separates_column_children_by_its_pixels_plus_the_gap`.
         {
             let theme = Theme::dark();
             let mut column = Column::new()
@@ -285,7 +282,6 @@ mod tests {
             );
         }
 
-        // Case `token_spacer_resolves_the_theme_step_and_follows_ui_scale`.
         {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut nodes = std::collections::HashMap::new();
@@ -322,7 +318,6 @@ mod tests {
             assert!(!spacer.is_layout_dirty(), "laid out once is laid out");
         }
 
-        // Case `negative_fixed_extent_is_clamped_to_zero`.
         {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut nodes = std::collections::HashMap::new();

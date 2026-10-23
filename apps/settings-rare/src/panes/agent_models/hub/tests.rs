@@ -258,7 +258,13 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
             "the window's search queries the pane"
         );
         driver.open(offer);
-        assert!(driver.drive(settings, "helpful", None, false));
+        assert!(driver.drive(
+            settings,
+            "helpful",
+            ui::widget::FindOptions::default(),
+            None,
+            false
+        ));
     }
     assert!(
         app.harness()
@@ -274,7 +280,13 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
 
     {
         let settings = app.surface_mut::<SettingsApp>();
-        driver.drive(settings, "helpful", None, true);
+        driver.drive(
+            settings,
+            "helpful",
+            ui::widget::FindOptions::default(),
+            None,
+            true,
+        );
     }
     app.settle();
     assert!(

@@ -474,7 +474,6 @@ mod tests {
         );
         assert_eq!(home.recent, ["org.example.Second", "org.example.Popular"]);
         assert!(home.updates.is_empty(), "no shelf without real updates");
-        // A refresh that changes the ranking keeps the shelf where it was.
         let mut items = items;
         items[0].listing.featured_rank = Some(0);
         items[1].listing.featured_rank = Some(5);

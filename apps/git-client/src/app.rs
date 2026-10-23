@@ -60,7 +60,6 @@ use crate::settings::{DiffLayout, Settings};
 enum Field {
     /// The commit-message field.
     Commit,
-    /// The new-branch name field on the Branches screen.
     Branch,
     /// The repository-path field on the "open a repository" screen.
     Open,
@@ -247,7 +246,6 @@ pub struct GitClientApp {
     /// No repository is bound: keep the "open a repository" empty state
     /// until an explicit path or restored record selects a repository.
     awaiting_repo: bool,
-    /// Which embedded text field holds focus, if any.
     focus: Option<Field>,
     /// Commit-message field (toolkit `TextInput`, local mode).
     commit_input: TextInput,
@@ -705,8 +703,6 @@ impl GitClientApp {
         matches!(self.selected_change, Some((ChangeArea::Staged, _)))
     }
 
-    // --- Mutations on the model (mirror a real git op) -----------------
-
     /// Stage or unstage a single file. Against a real repo this calls
     /// `git2` (`add` / `reset HEAD -- path`) and re-reads the model so the
     /// list reflects the actual index. For the sample it falls back to the
@@ -1119,8 +1115,6 @@ impl GitClientApp {
             .get(idx)
             .map(|f| f.path.clone())
     }
-
-    // --- Layout and paint ------------------------------------------------
 
     /// The header row's height: the shell metric, grown so a control and its
     /// `s3` insets always fit at a large text scale.
@@ -1888,8 +1882,6 @@ impl GitClientApp {
         }
     }
 
-    // --- Activation -----------------------------------------------------
-
     /// Switch the active screen.
     fn switch_screen(&mut self, screen: Screen) {
         self.screen = screen;
@@ -2093,7 +2085,6 @@ impl GitClientApp {
         }
     }
 
-    /// Scroll the region under `pos`.
     fn scroll_at(&mut self, pos: Point, dx: f64, dy: f64) {
         let Some(region) = self
             .scroll_regions
@@ -2296,8 +2287,6 @@ impl GitClientApp {
         }
         self.scrollbar_region = hovered;
     }
-
-    // --- Accessibility --------------------------------------------------
 
     /// The semantic inventory of the last paint: one node per control and
     /// row, keyed by a stable action target.
@@ -2694,7 +2683,6 @@ fn rect_hit(rect: Rect, p: Point) -> bool {
     rect.width() > 0.0 && rect.height() > 0.0 && rect.contains(p)
 }
 
-/// The files of one change area.
 fn change_list(model: &RepoModel, area: ChangeArea) -> &[FileChange] {
     match area {
         ChangeArea::Staged => &model.staged,
@@ -2885,7 +2873,6 @@ impl Widget for GitClientApp {
                         (p.x / ctx.scale_factor, p.y / ctx.scale_factor)
                     }
                 };
-                // Shift turns a vertical wheel sideways.
                 let (dx, dy) = if ctx.modifiers.state().shift_key() && dx == 0.0 {
                     (dy, 0.0)
                 } else {

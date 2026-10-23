@@ -523,7 +523,6 @@ enum ViewerCall {
     Renew(String),
 }
 
-/// The agent run an MCP session is.
 fn agent_run_id(session: &str) -> String {
     format!("mcp:{session}")
 }

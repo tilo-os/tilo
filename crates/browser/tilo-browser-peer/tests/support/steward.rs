@@ -176,7 +176,6 @@ impl Steward {
         HeldAdmission(gate)
     }
 
-    /// The current content keys of `route`'s channel.
     pub fn content_keys(&self, route: &tilo_browser_peer::DocumentRoute) -> ChannelContentKeys {
         self.channels
             .lock()

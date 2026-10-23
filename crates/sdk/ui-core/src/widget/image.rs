@@ -151,10 +151,6 @@ impl Image {
     /// see decode errors immediately. JPEG bytes will be rejected
     /// here; decode them yourself and use [`Image::from_rgba`] until
     /// the multi-format decoder lands.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ImageDecodeError`] if `bytes` isn't a decodable PNG.
     pub fn from_encoded(bytes: &[u8]) -> Result<Self, ImageDecodeError> {
         let (rgba, width, height) = decode_png(bytes)?;
         Ok(Self::from_rgba(Arc::from(rgba), width, height))
@@ -168,9 +164,6 @@ impl Image {
     /// first stop, while unsupported text and raster nodes are skipped.
     /// The parser is native only: the browser toolkit core leaves it out of
     /// its start module, and there every SVG is unsupported.
-    ///
-    /// # Errors
-    /// Returns an error for invalid SVG or artwork without supported paths.
     pub fn from_svg(bytes: &[u8], width: u32, height: u32) -> Result<Self, ImageDecodeError> {
         let (bounds, shapes) = tilo_paint_stream::svg::drawing(bytes)
             .ok_or_else(|| ImageDecodeError::Decode("unsupported SVG artwork".into()))?;

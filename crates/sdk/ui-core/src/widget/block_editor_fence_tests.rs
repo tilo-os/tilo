@@ -237,7 +237,6 @@ fn typed_fences_promote_track_language_and_undo() {
                 .any(|op| matches!(op, BlockEditOp::SetKind { kind, .. } if kind == "code:python"))
         );
         assert_eq!(editor.blocks[0].text(), "");
-        // A canonical undo/remote kind update invalidates the local header mode.
         editor.try_convert_to(0, BlockKind::Paragraph);
         type_text(&mut editor, &mut doc, "ordinary text");
         assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);

@@ -1196,6 +1196,14 @@ impl ui::widget::Decorator for SnippetsApp {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.core.borrow_mut().pointer = ctx.logical(position);
         }
+        // A popup of the shell (the language list) stands over the body
+        // while open: its clicks and wheels, and the click outside that
+        // closes it, are its own, never the editor's under it.
+        let shell_holds_pointer = Widget::modal_capture(&self.shell).is_some()
+            && matches!(
+                event,
+                WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
+            );
         let consumed = {
             let mut core = self.core.borrow_mut();
             // The variables dialog is modal: it owns all input while open.
@@ -1207,7 +1215,7 @@ impl ui::widget::Decorator for SnippetsApp {
             } else if core.menu.is_some() {
                 core.route_menu_event(event, ctx);
                 !matches!(event, WindowEvent::CursorMoved { .. })
-            } else if core.route_body_event(event, ctx) {
+            } else if !shell_holds_pointer && core.route_body_event(event, ctx) {
                 true
             } else if let WindowEvent::KeyboardInput {
                 event:

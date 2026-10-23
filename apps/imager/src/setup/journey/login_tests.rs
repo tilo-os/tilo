@@ -1,5 +1,3 @@
-//! Exercise the actual overview row and source-owned sign-in controls.
-
 #[test]
 fn current_website_signins_brand_pixels() {
     use super::super::visual_review_tests::evidence;

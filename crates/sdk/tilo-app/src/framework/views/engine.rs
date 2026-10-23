@@ -141,7 +141,6 @@ pub struct ResultGroup {
 pub enum RemoteState {
     /// The query is not one it answers.
     Idle,
-    /// Its answer is on the way.
     Waiting,
     /// It answered.
     Loaded,
@@ -1006,7 +1005,6 @@ impl QueryEngine {
         self.results.remote.clear();
     }
 
-    /// Whether a query is open.
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.open

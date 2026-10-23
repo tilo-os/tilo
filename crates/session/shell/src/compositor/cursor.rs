@@ -1090,7 +1090,6 @@ mod tests {
             );
             assert!(first.rgba.chunks_exact(4).any(|pixel| pixel[3] == 0));
         }
-        // Phase `software_composite_clips_and_preserves_uncovered_pixels`.
         {
             let cursor = bitmap(CursorShape::Default, 24);
             let mut dst = vec![17_u8; 12 * 12 * 4];
@@ -1253,7 +1252,6 @@ mod tests {
         assert_eq!((cursor.width, cursor.height), (24, 24));
         assert_eq!(cursor.hotspot, (6, 9));
 
-        // Oversized cursors are bounded to the plane, aspect preserved.
         let wide: Vec<u8> = vec![255; 256 * 64 * 4];
         let cursor = CursorBitmap::from_client(&wide, 256, 64, (300, 300), 1.0, 1.0).unwrap();
         assert_eq!((cursor.width, cursor.height), (PLANE_SIZE, 16));

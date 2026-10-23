@@ -484,11 +484,6 @@ impl I18nManager {
     /// Atomically install every bundled Fluent catalog and select an explicit
     /// active locale. Lookup falls back from the active language to
     /// `source_locale`, then to the key itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns a locale/resource/duplicate error without replacing the live
-    /// catalog.
     pub fn install(
         source_locale: &str,
         active_locale: &str,
@@ -1356,7 +1351,6 @@ mod tests {
         };
         assert_eq!(missing.read("xx-XX"), None);
         assert!(!missing.has("xx-XX"));
-        // The languages offered are the ones that are installed.
         assert_eq!(PACKED.languages(), ["en-US", "de-DE"]);
     }
 
@@ -1425,7 +1419,6 @@ mod tests {
     #[test]
     fn lookup_falls_back_through_language_catalogues_then_source() {
         let _restore = RestoreLookupState::capture();
-        // The shared toolkit history is readable without app catalogs.
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
         TOOLKIT_SOURCE.with(|source| assert!(source.is_ok(), "bundled toolkit catalog must parse"));
         assert_eq!(
@@ -1563,7 +1556,6 @@ mod tests {
         assert_eq!(I18nManager::revision(), revision);
         assert_eq!(I18nManager::lookup("greeting", None), "Hello");
 
-        // A translation that fails to format falls back to one that does.
         install_plain(
             "en-US",
             "de",
@@ -1588,7 +1580,6 @@ mod tests {
         // Russian puts 21 in the `one` category; the English copy follows.
         I18nManager::set_locale("ru-RU");
         assert_eq!(items(), "21 item");
-        // A language without CLDR rules formats with English ones.
         I18nManager::set_locale("xx-ZZ");
         assert_eq!(items(), "21 items");
     }
@@ -1657,7 +1648,6 @@ mod tests {
             );
         }
 
-        // It joins a host manager without replacing its locale.
         {
             let _restore = RestoreLookupState::capture();
             I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
@@ -1673,7 +1663,6 @@ mod tests {
             assert_eq!(EMBEDDED.t("embedded-probe"), "Probe");
         }
 
-        // A pinned catalog overrides the host locale.
         {
             let _restore = RestoreLookupState::capture();
             I18nManager::install("en-US", "de", &[("en-US", EN), ("de", DE)]).unwrap();
@@ -1699,7 +1688,6 @@ mod tests {
             assert_eq!(manager_id(), None);
         }
 
-        // A German host gets German copy, with the count choosing the form.
         {
             let _restore = RestoreLookupState::capture();
             install_plain("en-US", "de-DE", &[("en-US", EN), ("de-DE", DE)]);

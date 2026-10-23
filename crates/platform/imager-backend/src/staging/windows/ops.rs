@@ -122,7 +122,6 @@ pub fn parse_resized(json: &Value, guid: &str, size: u64) -> OpResult<()> {
     Ok(())
 }
 
-/// The partition with `guid` on `disk`.
 pub fn find<'a>(disk: &'a Disk, guid: &str) -> OpResult<&'a Partition> {
     let guid = normalize_guid(guid).ok_or("not a partition GUID")?;
     disk.partitions

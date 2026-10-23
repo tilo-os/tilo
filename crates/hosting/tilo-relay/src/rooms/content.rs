@@ -27,6 +27,34 @@ const PIECE_BYTES: usize = 192 * 1024;
 /// Content the host answers with at most.
 const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 
+/// Word from the host `host` that it keeps none of what `body`, a
+/// member's `NeighbourMsg::RecordContentWant`, asks for, as a frame for the
+/// member's device alone: the member stops counting on this host for it.
+/// `None` for any other presence.
+pub(crate) fn lacks_answer(host: &[u8; 32], body: &[u8]) -> Option<Vec<u8>> {
+    let Ok(NeighbourMsg::RecordContentWant {
+        requester,
+        app_id,
+        cluster_id,
+        hash,
+    }) = postcard::from_bytes(body)
+    else {
+        return None;
+    };
+    let hash = hash.to_ascii_lowercase();
+    if !tilo_content::valid_hash(&hash) {
+        return None;
+    }
+    postcard::to_allocvec(&NeighbourMsg::RecordContentLacks {
+        responder: peer_handle(host),
+        requester,
+        app_id,
+        cluster_id,
+        hash,
+    })
+    .ok()
+}
+
 /// Where a host's content comes from.
 pub trait RoomContent: Send + Sync {
     /// The bytes named `hash` (lowercase BLAKE3 hex) that a record of `app`
@@ -112,9 +140,10 @@ impl Rooms {
             .await
     }
 
-    /// The pieces answering `body`, a presence `room`'s member published,
-    /// when it asks for content this host keeps: frames for the member's
-    /// device alone. Empty for any other presence.
+    /// The answer to `body`, a presence `room`'s member published, when it
+    /// asks for content: the pieces of what this host keeps, or word that
+    /// it keeps none, as frames for the member's device alone. Empty for
+    /// any other presence.
     pub(crate) fn content_answer(&self, room: &str, body: &[u8]) -> Vec<Vec<u8>> {
         let Ok(NeighbourMsg::RecordContentWant {
             requester,
@@ -129,6 +158,7 @@ impl Rooms {
         if cluster_id != room || !tilo_content::valid_hash(&hash) {
             return Vec::new();
         }
+        let responder = peer_handle(&self.inner.host.cert.device_public_key);
         let Some(bytes) = self
             .inner
             .content
@@ -136,9 +166,10 @@ impl Rooms {
             .and_then(|content| content.read(room, &app_id, &hash))
             .filter(|bytes| bytes.len() <= MAX_CONTENT_BYTES)
         else {
-            return Vec::new();
+            return lacks_answer(&self.inner.host.cert.device_public_key, body)
+                .into_iter()
+                .collect();
         };
-        let responder = peer_handle(&self.inner.host.cert.device_public_key);
         let total = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let piece = |offset: u64, chunk: &[u8]| NeighbourMsg::RecordContentPiece {
             responder,
@@ -204,16 +235,17 @@ mod tests {
         clippy::significant_drop_tightening,
         reason = "the relay stays live until its consuming shutdown"
     )]
-    async fn a_member_asking_for_kept_content_gets_it_in_pieces_and_nothing_else() {
+    async fn a_member_asking_for_content_gets_it_in_pieces_or_word_that_it_is_not_kept() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = crate::rooms::tests::governor();
         let relay = crate::rooms::tests::view_read_relay(scratch.path(), &key, &cert).await;
         let rooms = relay.rooms().unwrap().clone();
         let avatar = vec![7_u8; PIECE_BYTES + 10];
         let hash = blake3::hash(&avatar).to_hex().to_string();
-        assert!(
-            rooms.content_answer(ROOM, &want(ROOM, &hash)).is_empty(),
-            "nothing before the host serves content"
+        assert_eq!(
+            lacks(&rooms.content_answer(ROOM, &want(ROOM, &hash))),
+            Some((peer_handle(&cert.device_public_key), 42)),
+            "a host that serves no content keeps none"
         );
         rooms.serve_content(Arc::new(One(avatar.clone())));
 
@@ -245,12 +277,27 @@ mod tests {
             rooms.content_answer(other, &want(ROOM, &hash)).is_empty(),
             "another room's request"
         );
-        assert!(
-            rooms
-                .content_answer(ROOM, &want(ROOM, &"0".repeat(64)))
-                .is_empty(),
-            "not kept"
+        assert_eq!(
+            lacks(&rooms.content_answer(ROOM, &want(ROOM, &"0".repeat(64)))),
+            Some((peer_handle(&cert.device_public_key), 42)),
+            "not kept: the member is told so"
         );
         assert!(rooms.content_answer(ROOM, b"not a request").is_empty());
+    }
+
+    /// Who said, to whom, that it keeps none of what was asked: the one
+    /// frame `frames` holds when it is such word.
+    fn lacks(frames: &[Vec<u8>]) -> Option<(u64, u64)> {
+        let [frame] = frames else {
+            return None;
+        };
+        match postcard::from_bytes(frame).ok()? {
+            NeighbourMsg::RecordContentLacks {
+                responder,
+                requester,
+                ..
+            } => Some((responder, requester)),
+            _ => None,
+        }
     }
 }

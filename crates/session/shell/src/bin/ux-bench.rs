@@ -176,7 +176,6 @@ fn execute() -> Result<bool, String> {
     }
     let report = ui::ux_bench::run_with_state(&mut driver, &scenario, &out, state_snapshot)?;
     session.records.try_flush()?;
-    // Match the native runner's normal shutdown persistence boundary.
     let state_path = options.state_dir.join("state.json");
     shell::shell::persist::save_shared_tree_to(&session.tree, &state_path)
         .map_err(|e| e.to_string())?;

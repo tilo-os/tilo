@@ -45,7 +45,6 @@ use tilo_automation::{
 };
 use ui::collaboration::{CollabRequest, ExportedAction, ExportedInput};
 
-/// The one transform resource the agent publishes.
 pub const RESOURCE_ID: &str = tilo_automation::AGENT_TRANSFORM_RESOURCE;
 
 /// Largest text input, inline or read from content.
@@ -1322,7 +1321,6 @@ mod tests {
                 "{wrong}"
             );
         }
-        // Nothing selected is still a request.
         assert!(
             bind(
                 AGENT_RESPOND_ACTION,

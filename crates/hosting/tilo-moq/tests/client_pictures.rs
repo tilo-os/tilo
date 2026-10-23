@@ -129,7 +129,6 @@ async fn a_participant_sends_only_the_layers_shown_and_a_viewer_switches_layers(
     let mut sequence = 0;
     let received = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
-            // A layer starts with a keyframe.
             let _ = camera.send_picture(Source::Camera, &picture(Layer::Mid, sequence, true));
             sequence += 1;
             if let Some(picture) = viewer.try_recv_picture() {

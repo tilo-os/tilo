@@ -207,7 +207,6 @@ impl MicrophoneStatus {
 pub struct CalibrationMicrophoneInfo {
     pub device: String,
     pub device_label: String,
-    /// The microphone's own label on that device.
     pub label: String,
     pub local: bool,
     pub status: MicrophoneStatus,

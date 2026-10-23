@@ -56,7 +56,6 @@ pub enum BranchAction {
     Checkout(String),
     /// Delete the named local branch.
     Delete(String),
-    /// Apply the stash at the given index.
     StashApply(usize),
 }
 
@@ -64,7 +63,6 @@ pub enum BranchAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PanelHit {
     Branch(BranchAction),
-    /// The new branch name field.
     BranchName,
     /// The "Create branch" button.
     CreateBranch,
@@ -102,11 +100,9 @@ pub struct PanelsDraw {
     pub content_height: f64,
 }
 
-/// One section of the page.
 struct SectionRows<'a> {
     title: String,
     rows: Vec<RowSpec<'a>>,
-    /// Holds the new branch form.
     form: bool,
     /// Stands in the leading column of a two-column page.
     leading: bool,

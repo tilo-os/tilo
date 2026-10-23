@@ -378,6 +378,8 @@ impl Tracker {
         #[param("The resource's kind")] kind: String,
         #[param("The resource's address in its app")] resource: String,
         #[param("How the link reads")] label: String,
+        #[param("The app's record that keeps it; its record of the workspace without")]
+        record: Option<String>,
     ) -> Result<(), Refusal> {
         if resource.trim().is_empty() || app.trim().is_empty() {
             return Err(Refusal::new("A link names a resource"));
@@ -390,6 +392,7 @@ impl Tracker {
                 app,
                 kind,
                 resource,
+                record: record.filter(|record| !record.is_empty()),
             },
         );
         Ok(())

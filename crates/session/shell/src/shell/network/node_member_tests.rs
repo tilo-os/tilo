@@ -72,7 +72,6 @@ fn document(title: &str) -> Vec<u8> {
     doc.save()
 }
 
-/// Whether any file under `dir` contains `needle`.
 fn holds(dir: &std::path::Path, needle: &[u8]) -> bool {
     std::fs::read_dir(dir).unwrap().any(|entry| {
         let path = entry.unwrap().path();

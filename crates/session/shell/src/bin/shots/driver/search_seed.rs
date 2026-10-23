@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use super::ShellDriver;
 
+mod open_app_scene;
+
 impl ShellDriver {
     /// What universal search reaches beyond the apps here: Flathub's cached
     /// apps, Tilo apps the registries offer that this device lacks, and a

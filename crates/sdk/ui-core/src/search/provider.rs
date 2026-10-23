@@ -478,11 +478,6 @@ impl SearchCatalog {
     /// counterpart to [`Self::upsert`]: the whole snapshot is indexed in one
     /// build, while later incremental updates retain their existing
     /// semantics.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed, duplicate, or non-canonical rows, or
-    /// when catalogue generation/browse identities are exhausted.
     pub fn replace_all(
         &self,
         rows: impl IntoIterator<Item = (String, String, SearchResult)>,
@@ -590,11 +585,6 @@ impl SearchCatalog {
     /// Insert or replace one durable resource. `searchable_text` may combine
     /// title, metadata and body; `result` is materialised only when it is a
     /// hit on a requested page.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SearchCatalogError`] when the stable id is empty, the result
-    /// is legacy/opaque, or its canonical action addresses another resource.
     pub fn upsert(
         &self,
         resource_id: impl Into<String>,
@@ -2128,7 +2118,6 @@ mod tests {
         );
         assert_eq!(touched(snapshot(Some(500)).collect()), 1);
         assert_eq!(catalog.stats().generation, generation + 1);
-        // One more record at the front, and one gone from the end.
         let mut records: Vec<SearchRecord> = snapshot(Some(500)).collect();
         records.pop();
         records.insert(0, sync_record(5_000, 0));

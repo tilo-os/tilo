@@ -1,12 +1,13 @@
 //! Transient status: the result of a sync, an import or an edit, as a toast
-//! in the window's top layer, until it is dismissed or replaced.
+//! in the window's top layer, until it is dismissed, replaced or has been
+//! up for a notice's lifetime (the shared [`ui::widget::toast::Transient`] keeps it).
 
 use vello::Scene;
 use vello::kurbo::Affine;
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::toast::{self, ToastAnchor, ToastCard, ToastKind};
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
 
 use super::{Action, CalendarApp};
 
@@ -28,15 +29,16 @@ impl CalendarApp {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(message) = self.status.clone() else {
+        self.status.expire();
+        let Some(message) = self.status.get() else {
             return;
         };
-        let card = ToastCard::new(&message, kind_of(&message))
+        let card = ToastCard::new(message, kind_of(message))
             .closable(true)
             .close_hovered(self.status_close.contains(self.last_mouse));
         // The toast keeps to the window's trailing corner, where it covers
         // the least of the calendar and never sits mid-grid.
-        let hit = toast::paint_transient(
+        let hit = self.status.paint(
             scene,
             t,
             text,
@@ -67,5 +69,46 @@ mod tests {
             ToastKind::Warning
         );
         assert_eq!(kind_of("Event deleted"), ToastKind::Info);
+    }
+
+    /// A status leaves on its own once it has been up for a notice's
+    /// lifetime, and the app wakes for it; a newer status starts its own.
+    #[test]
+    fn a_status_leaves_on_its_own() {
+        use ui::Widget;
+        use ui::time::testing::with_monotonic_time;
+        let mut app = CalendarApp::new_detached();
+        let start = ui::time::now();
+        let at = |seconds: u64| start + std::time::Duration::from_secs(seconds);
+        with_monotonic_time(start, || app.status.show("Event deleted".into()));
+        let due = start + ui::widget::toast::NOTICE_LIFETIME;
+        assert_eq!(app.status.deadline(), Some(due));
+        assert!(
+            app.next_wake_deadline().is_some_and(|wake| wake <= due),
+            "the app wakes when the status is due to leave"
+        );
+        with_monotonic_time(at(2), || {
+            app.status.show("Imported calendar items".into());
+        });
+        with_monotonic_time(at(5), || {
+            assert!(!app.status.expire(), "the newer status keeps its time");
+            assert_eq!(app.status.as_deref(), Some("Imported calendar items"));
+        });
+        with_monotonic_time(at(7), || {
+            app.draw_status(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::default(),
+            );
+        });
+        assert!(!app.status.is_shown());
+        assert_eq!(app.status.deadline(), None, "nothing left to wake for");
+        assert!(
+            !app.hits
+                .iter()
+                .any(|(_, action)| matches!(action, Action::DismissStatus)),
+            "the gone status leaves no close button behind"
+        );
     }
 }

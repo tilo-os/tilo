@@ -78,6 +78,51 @@ pub fn install_commands(app_id: &str, remotes: &str) -> Result<Vec<Vec<String>>,
     ])
 }
 
+/// Which Flatpak installation an app is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Installation {
+    /// The person's own (`--user`).
+    User,
+    /// The device's (`--system`), which only an administrator changes:
+    /// Flatpak's system helper asks polkit, whose rule lets a local, active
+    /// administrator through.
+    System,
+}
+
+impl Installation {
+    fn flag(self) -> &'static str {
+        match self {
+            Self::User => "--user",
+            Self::System => "--system",
+        }
+    }
+}
+
+/// The `flatpak` argument lists that uninstall `app_id` from `installation`,
+/// in order: the app, then the runtimes no app there uses any more (nothing
+/// else removes those, so each removed app would leave its runtime behind
+/// for good). The app's data (`~/.var/app/<id>`) is left for the caller,
+/// which moves it to the Trash when the person asks; Flatpak's own
+/// `--delete-data` would delete it.
+///
+/// # Errors
+///
+/// [`InstallRefusal::InvalidId`] when `app_id` is not an application id.
+pub fn uninstall_commands(
+    app_id: &str,
+    installation: Installation,
+) -> Result<Vec<Vec<String>>, InstallRefusal> {
+    if !valid_app_id(app_id) {
+        return Err(InstallRefusal::InvalidId);
+    }
+    let scope = installation.flag();
+    let args = |list: &[&str]| list.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    Ok(vec![
+        args(&["uninstall", scope, "--noninteractive", "--", app_id]),
+        args(&["uninstall", scope, "--unused", "--noninteractive"]),
+    ])
+}
+
 /// An account Flathub source must itself be trustworthy; otherwise an
 /// enabled, verifying official device source is enough.
 fn require_enabled_flathub(rows: &str) -> Result<(), InstallRefusal> {
@@ -188,6 +233,39 @@ pub fn other_processor_apps(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Uninstalling touches only the person's installation, never deletes
+    /// the app's data (`--delete-data`), and refuses anything that could be
+    /// read as an option.
+    #[test]
+    fn uninstalling_removes_the_app_from_its_installation_and_keeps_its_data() {
+        for (installation, scope) in [
+            (Installation::User, "--user"),
+            (Installation::System, "--system"),
+        ] {
+            let commands = uninstall_commands("org.gnome.Chess", installation).expect("valid id");
+            assert_eq!(
+                commands,
+                [
+                    vec![
+                        "uninstall",
+                        scope,
+                        "--noninteractive",
+                        "--",
+                        "org.gnome.Chess"
+                    ],
+                    vec!["uninstall", scope, "--unused", "--noninteractive"],
+                ]
+            );
+        }
+        for bad in ["--delete-data", "--all", "chess", "", "org.x/../y"] {
+            assert_eq!(
+                uninstall_commands(bad, Installation::User),
+                Err(InstallRefusal::InvalidId),
+                "{bad}"
+            );
+        }
+    }
 
     /// Flathub builds Steam for `x86_64` only. Listed from the other
     /// processor's summary it is an entry marked not built for this device;

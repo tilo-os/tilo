@@ -153,7 +153,6 @@ pub async fn start_host_serving(
         ..Default::default()
     };
     if !guests.is_empty() {
-        // The host's handshake admits them, as it admits a room's members.
         cfg.trust_policy = tilo_relay::TrustPolicy::AllowList {
             users: guests.iter().map(hex::encode).collect(),
         };
@@ -436,7 +435,6 @@ impl tilo_browser_peer::HttpClient for Recording {
     }
 }
 
-/// Wait for the next document event on `peer` and return its mutation.
 pub async fn next_document(peer: &PeerHandle, pending: &mut Vec<PeerEvent>) -> DocumentMutation {
     wait_for("a document", || {
         pending.extend(peer.drain());

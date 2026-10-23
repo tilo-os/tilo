@@ -1,9 +1,3 @@
-//! A call's pictures end to end on this machine: two participants, each
-//! with the moving test picture as their camera, over a loopback relay. Each
-//! captures through `GStreamer`, encodes the layer the other shows with the
-//! machine's encoder (hardware first), sends it through the relay, and the
-//! other decodes it back into a picture with the test picture's colours.
-//! Each also sees its own camera, encoded on the device for its own tile.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -13,7 +7,10 @@
     reason = "in a test these are the assertion; fixture arithmetic is small and bounded"
 )]
 
+use super::call_seal::{self, Sealing};
 use super::video::{CameraChoice, Publisher};
+use channel_crypto::ChannelContentKeys;
+use collab_types::ChannelId;
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_moq::client::{Client, ClientAuthority, Connection, ConnectionScope, Status};
@@ -84,13 +81,37 @@ fn join(relay: &LoopbackRelay, proof: &[u8], publication: char) -> Arc<Client> {
     )
 }
 
+fn keys_of(channel: ChannelId, key: u8) -> ChannelContentKeys {
+    let wire = (1_u8, channel, 1_u64, vec![(1_u64, [key; 32])]);
+    ChannelContentKeys::from_bytes(&postcard::to_stdvec(&wire).unwrap()).unwrap()
+}
+
 /// Decode `client`'s received pictures until one comes out.
-async fn decoded_picture(client: &Client, what: &str) -> (VideoObject, media::Frame) {
+async fn decoded_picture(
+    client: &Client,
+    (keys, channel): (&ChannelContentKeys, ChannelId),
+    what: &str,
+) -> (VideoObject, media::Frame) {
+    let stranger = keys_of(channel, 9);
     let mut decoder = None;
     tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             while let Some(received) = client.try_recv_picture() {
-                let object = received.object;
+                let namespace = &received.publisher.namespace;
+                assert!(
+                    call_seal::open(
+                        &stranger,
+                        channel,
+                        namespace,
+                        received.source,
+                        received.object.clone()
+                    )
+                    .is_none(),
+                    "other keys open nothing"
+                );
+                let object =
+                    call_seal::open(keys, channel, namespace, received.source, received.object)
+                        .expect("the call's keys open each picture");
                 if decoder.is_none() {
                     if !object.keyframe {
                         continue;
@@ -143,16 +164,24 @@ async fn two_people_see_each_others_camera_decoded_and_their_own_on_their_device
     .await
     .expect("both carriers live");
 
-    let ana_carrier = ana.clone();
+    let channel = collab_types::document_channel_id("so.tilo.chat", "room", "general");
+    let keys = keys_of(channel, 7);
+    let sealing = |publication: char| {
+        Some(Sealing {
+            keys: keys.clone(),
+            publication: name(publication),
+        })
+    };
+    let (ana_carrier, ana_sealing) = (ana.clone(), sealing('b'));
     let ana_camera = Publisher::camera(
         &CameraChoice::TestPattern,
-        Arc::new(move || Some(ana_carrier.clone())),
+        Arc::new(move || Some((ana_carrier.clone(), ana_sealing.clone()))),
     )
     .expect("Ana's camera starts");
-    let ben_carrier = ben.clone();
+    let (ben_carrier, ben_sealing) = (ben.clone(), sealing('c'));
     let ben_camera = Publisher::camera(
         &CameraChoice::TestPattern,
-        Arc::new(move || Some(ben_carrier.clone())),
+        Arc::new(move || Some((ben_carrier.clone(), ben_sealing.clone()))),
     )
     .expect("Ben's camera starts");
     // Ana sees herself in her own tile.
@@ -162,7 +191,7 @@ async fn two_people_see_each_others_camera_decoded_and_their_own_on_their_device
     ben.show(&name('b'), &[(Source::Camera, Layer::Mid)]);
     ana.show(&name('c'), &[(Source::Camera, Layer::Low)]);
 
-    let (object, frame) = decoded_picture(&ben, "Ben sees Ana").await;
+    let (object, frame) = decoded_picture(&ben, (&keys, channel), "Ben sees Ana").await;
     assert_eq!(object.layer, Layer::Mid);
     assert_eq!((object.width, object.height), (640, 360));
     assert_eq!((frame.width, frame.height), (640, 360));
@@ -172,7 +201,7 @@ async fn two_people_see_each_others_camera_decoded_and_their_own_on_their_device
         "Ana's picture arrives with the test picture's colours"
     );
 
-    let (object, frame) = decoded_picture(&ana, "Ana sees Ben").await;
+    let (object, frame) = decoded_picture(&ana, (&keys, channel), "Ana sees Ben").await;
     assert_eq!(object.layer, Layer::Low);
     assert_eq!((frame.width, frame.height), (320, 180));
     assert!(shows_colour_bars(

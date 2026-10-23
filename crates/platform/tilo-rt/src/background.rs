@@ -116,9 +116,6 @@ impl Background {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns [`Unsupported`] when the executor refuses background work.
     pub fn spawn(
         &self,
         name: &'static str,
@@ -720,7 +717,6 @@ mod tests {
 
     #[test]
     fn pumped_executor_runs_only_when_pumped_on_a_virtual_clock() {
-        // Case `pumped_runs_nothing_until_pumped`.
         {
             let pumped = Pumped::new();
             let ran = Arc::new(AtomicUsize::new(0));
@@ -749,7 +745,6 @@ mod tests {
             assert_eq!(ran.load(Ordering::SeqCst), 2);
         }
 
-        // Case `pumped_timers_follow_the_virtual_clock`.
         {
             let start = tilo_clock::now();
             let pumped = Pumped::starting_at(start);
@@ -764,7 +759,6 @@ mod tests {
             assert_eq!(pumped.next_deadline(), None);
         }
 
-        // Case `pumped_park_jumps_to_the_next_timer_without_waiting`.
         {
             let start = tilo_clock::now();
             let pumped = Pumped::starting_at(start);
@@ -777,7 +771,6 @@ mod tests {
             assert_eq!(pumped.now(), start + Duration::from_secs(120));
         }
 
-        // Case `entered_executor_is_captured_and_restored`.
         {
             let pumped = Pumped::new();
             {

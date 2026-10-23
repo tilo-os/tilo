@@ -165,7 +165,6 @@ pub struct Node {
     private_label: Option<String>,
     #[serde(skip)]
     own: Counts,
-    /// Root index this node belongs to.
     #[serde(skip)]
     root: u16,
     /// Paths whose entries belong to this node itself, relative to `root`.

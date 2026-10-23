@@ -183,6 +183,27 @@ pub enum PdfEffect {
         #[param("The file's name, such as report.pdf; Document.pdf when omitted")]
         name: Option<String>,
     },
+    /// Select text
+    ///
+    /// Selects `text` on a page (all of the page's text when omitted), as
+    /// a drag across it would, and answers with what it selected.
+    #[effect(job, returns)]
+    SelectText {
+        #[param(
+            "The text to select, its first occurrence on the page; the whole page when omitted"
+        )]
+        text: Option<String>,
+        #[param("The page, 1-based; the current page when omitted")]
+        page: Option<usize>,
+    },
+    /// Select all
+    #[effect(view, idempotent)]
+    SelectAll,
+    /// Copy selection
+    ///
+    /// Copies the selected text to the clipboard and answers with it.
+    #[effect(job, returns)]
+    CopySelection,
     /// Open PDF
     ///
     /// Opens a PDF on its own markup record, in this window.

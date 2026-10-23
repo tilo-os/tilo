@@ -168,7 +168,6 @@ pub fn page_of_body_resource(id: &str) -> Option<PageId> {
 /// The key [`Page::body`] is stored under.
 const BODY_KEY: &str = "body";
 
-/// The resource a tag is published as.
 #[must_use]
 pub fn tag_resource_id(tag: TagId) -> String {
     items::item_resource_id::<Notebook>("tags", &page_id(tag))
@@ -240,7 +239,6 @@ pub fn set_mark_action(
     edit_body_action(page, notebook::mark_op(block, range, mark))
 }
 
-/// Replace `page`'s body with `blocks`.
 #[must_use]
 pub fn write_body_action(page: PageId, blocks: &[BlockContent]) -> Action {
     edit_body_action(page, notebook::clips_op(blocks))

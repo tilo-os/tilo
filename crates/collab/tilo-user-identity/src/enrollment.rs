@@ -99,7 +99,6 @@ impl EnrollmentToken {
         }
     }
 
-    /// Returns `true` if `now_ns >= self.expires_at_ns`.
     pub fn is_expired_at(&self, now_ns: u64) -> bool {
         now_ns >= self.expires_at_ns
     }

@@ -28,6 +28,35 @@ pub struct RecordEnv<R: Resource> {
     pub(crate) effects: Effects<R>,
 }
 
+/// One of the documents the app's windows started in the workspace
+/// ([`RecordEnv::window_documents`]).
+pub struct WindowDocument<R: Resource> {
+    /// The record it is.
+    pub record: ui_core::record::RecordId,
+    /// What it holds, as last kept.
+    pub state: Rc<R::State>,
+    /// When it last changed, in milliseconds since the epoch; `0` when no
+    /// change of it says.
+    pub changed_ms: u64,
+}
+
+impl<R: Resource> WindowDocument<R> {
+    /// The launch argument naming it, for [`RecordEnv::open_here`].
+    pub fn uri(&self) -> String {
+        self.record.uri()
+    }
+}
+
+impl<R: Resource> Clone for WindowDocument<R> {
+    fn clone(&self) -> Self {
+        Self {
+            record: self.record.clone(),
+            state: Rc::clone(&self.state),
+            changed_ms: self.changed_ms,
+        }
+    }
+}
+
 impl<R: Resource> Clone for RecordEnv<R> {
     fn clone(&self) -> Self {
         Self {
@@ -68,6 +97,53 @@ impl<R: Resource> RecordEnv<R> {
         arguments: &[String],
     ) -> Result<ui_core::application::ReplacementOutcome, String> {
         self.run.open_here(arguments)
+    }
+
+    /// The documents this app's windows started in this workspace, each as
+    /// last kept, the most recently changed first, without the one this
+    /// window shows: what an app whose windows each show a document of their
+    /// own ([`ResourceApp::WINDOW_RESOURCE`](super::ResourceApp::WINDOW_RESOURCE))
+    /// lists, so a document made in a window that was closed is reached
+    /// again. Open one here with [`Self::open_here`] naming
+    /// [`WindowDocument::uri`]. Reads every one of them, so ask when the
+    /// list is shown, not on every frame. Empty in a past version and where
+    /// the window keeps no records in a workspace.
+    pub fn window_documents(&self) -> Vec<WindowDocument<R>> {
+        if self.is_past() {
+            return Vec::new();
+        }
+        let Some(store) = self.storage.room_store() else {
+            return Vec::new();
+        };
+        let kind = ui_core::record::RecordKind::new(R::KIND);
+        let shown = self.run.launched.record.as_ref();
+        let mut documents: Vec<WindowDocument<R>> = store
+            .window_records(&kind)
+            .into_iter()
+            .filter(|(record, _)| Some(record) != shown)
+            .filter_map(|(record, mut doc)| {
+                let changed_s = doc
+                    .get_heads()
+                    .iter()
+                    .filter_map(|head| doc.get_change_by_hash(head).map(|change| change.timestamp()))
+                    .max()
+                    .unwrap_or(0);
+                let state = tilo_resource::Reader::<R>::read(&doc)
+                    .map_err(|error| {
+                        tracing::warn!(record = %record, %error, "window document unreadable; left out");
+                    })
+                    .ok()?
+                    .state()
+                    .clone();
+                Some(WindowDocument {
+                    record,
+                    state,
+                    changed_ms: u64::try_from(changed_s).unwrap_or(0).saturating_mul(1000),
+                })
+            })
+            .collect();
+        documents.sort_by_key(|document| std::cmp::Reverse(document.changed_ms));
+        documents
     }
 
     /// The names of the participants, for showing the ids actions record
@@ -124,7 +200,7 @@ impl<R: Resource> RecordEnv<R> {
         let live = self.live.clone();
         let state = self.storage.children::<C>(move || live.get())?;
         let me = self.dispatch.me()?.to_owned();
-        Some(super::Children::new(state, me))
+        Some(super::Children::new(state, me).dispatching(&self.dispatch))
     }
 
     /// Who this view is for: the participant reading and editing through
