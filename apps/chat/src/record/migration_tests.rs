@@ -427,7 +427,12 @@ fn the_messages_a_chat_kept_read_under_their_own_ids_authors_and_times() {
             15,
             "elsewhere".to_owned(),
         ),
-        ("m2".to_owned(), "bo".to_owned(), 20, "second".to_owned()),
+        (
+            "m2".to_owned(),
+            crate::testing::BO.to_owned(),
+            20,
+            "second".to_owned(),
+        ),
     ];
     for (version, flat) in [(2, false), (1, false), (1, true)] {
         let mut doc = crate::testing::chat_with_kept_messages(version, flat);
@@ -444,7 +449,7 @@ fn two_devices_upgrading_the_same_chat_merge_into_one_copy_of_each_kept_message(
     let mut second = first.fork();
     assert!(evolution::migrate::<Chat>(&mut first).unwrap());
     assert!(evolution::migrate::<Chat>(&mut second).unwrap());
-    first.merge(&mut second).unwrap();
+    tilo_automerge::ApplyIncoming::merge_incoming(&mut first, &mut second).unwrap();
     let ids: Vec<String> = kept(&first).into_iter().map(|(id, ..)| id).collect();
     assert_eq!(ids, ["m1", "m3", "m2"]);
 }

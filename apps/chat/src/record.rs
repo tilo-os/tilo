@@ -52,9 +52,10 @@ pub const VOICE_CHANNEL: &str = "c_voice";
 /// and a read mark is a position in them. The record's messages stay under
 /// `messages`, and the counts move to `read_counts` so `read` can hold
 /// positions ([`keep_read_counts`]). Versions 1 to 3
-/// kept workspaces of the chat's own; Chat runs in its room now, so that
-/// structure is dropped and every channel and category stays
-/// ([`drop_workspaces`]). Versions 1 to 4 kept a filed report's submission,
+/// kept workspaces of the chat's own, and each channel and category named
+/// its workspace; Chat runs in its room now and reads neither, so both stay
+/// where they are, names included, and every channel and category is the
+/// room's. Versions 1 to 4 kept a filed report's submission,
 /// a triage step's update and a moderation decision's reports and
 /// take-backs as one JSON string each; they are model values now, rewritten
 /// in place. Chats made before Chat's record was a model kept each channel's
@@ -77,9 +78,6 @@ fn migrate(
     }
     if from <= 2 {
         keep_read_counts(doc)?;
-    }
-    if from <= 3 {
-        drop_workspaces(doc)?;
     }
     restore_flat_items(doc)?;
     for report in collection_items(doc, &ROOT, "feedback")? {
@@ -120,49 +118,6 @@ fn keep_read_counts(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> 
     let read = Slot::Key(&ROOT, "read");
     read.remove(doc)?;
     read.object(doc, ObjType::Map)?;
-    Ok(())
-}
-
-/// Drop the workspaces a chat of version 3 or older kept: they were the
-/// chat's own structure, not anything a person wrote. Every channel and
-/// every category stays, as the room's, without the workspace it named;
-/// nothing else is added or removed. A category that two devices' starters
-/// left without its workspace (the field whose absence made the user's chat
-/// unopenable, `categories.cat_home_text.v.workspace: required value is
-/// missing`) reads again once the field is no longer the model's.
-///
-/// # Errors
-/// The document's read or write error.
-fn drop_workspaces(doc: &mut ui::tilo_resource::Doc) -> Result<(), ui::tilo_resource::ModelError> {
-    use ui::automerge::{ObjType, ROOT, ReadDoc as _, Value, transaction::Transactable as _};
-    if doc.get(ROOT, "workspaces")?.is_some() {
-        doc.delete(ROOT, "workspaces")?;
-    }
-    for collection in ["channels", "categories"] {
-        let Some((Value::Object(ObjType::Map), map)) = doc.get(ROOT, collection)? else {
-            continue;
-        };
-        let entries: Vec<ui::automerge::ObjId> = doc
-            .map_range(&map, ..)
-            .filter(|entry| entry.value == ui::automerge::ValueRef::Object(ObjType::Map))
-            .map(|entry| entry.id())
-            .collect();
-        for entry in entries {
-            // Every copy of the entry's value: two devices that made the
-            // same item each made one, and the document keeps both.
-            let values: Vec<ui::automerge::ObjId> = doc
-                .get_all(&entry, "v")?
-                .into_iter()
-                .filter(|(value, _)| matches!(value, Value::Object(ObjType::Map)))
-                .map(|(_, id)| id)
-                .collect();
-            for value in values {
-                if doc.get(&value, "workspace")?.is_some() {
-                    doc.delete(&value, "workspace")?;
-                }
-            }
-        }
-    }
     Ok(())
 }
 
@@ -342,6 +297,23 @@ pub(crate) fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message>
     }
     kept.sort_by(|a, b| a.ts.cmp(&b.ts));
     kept
+}
+
+/// The names a chat from before its record was a model kept for the people
+/// in it, under `users`, by participant id: what the authors of its kept
+/// messages are called where the room no longer names them.
+pub(crate) fn kept_names(doc: &ui::tilo_resource::Doc) -> BTreeMap<String, String> {
+    use ui::automerge::{ROOT, ReadDoc as _};
+    let Ok(Some(users)) = map_at(doc, &ROOT, "users") else {
+        return BTreeMap::new();
+    };
+    doc.keys(&users)
+        .filter_map(|id| {
+            let user = map_at(doc, &users, &id).ok()??;
+            let name = ui::tilo_resource::read_key::<String>(doc, &user, "name").ok()?;
+            (!name.trim().is_empty()).then_some((id, name))
+        })
+        .collect()
 }
 
 /// [`upgrade_part`] of one message stored at `message`.
