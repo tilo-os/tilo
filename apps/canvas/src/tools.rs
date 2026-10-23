@@ -326,6 +326,9 @@ pub enum FileRequest {
     Open,
     /// Open the artwork at this path.
     OpenRecent(String),
+    /// Open, in this window, the workspace's artwork this launch argument
+    /// names: one an earlier window made.
+    OpenWorkspace(String),
     Save,
     /// Choose a file to save the artwork to, and keep working on it there.
     SaveAs,

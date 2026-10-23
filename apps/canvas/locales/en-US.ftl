@@ -294,6 +294,7 @@ canvas-welcome-new = New artwork…
 canvas-welcome-open = Open…
 canvas-welcome-close = Put the welcome away
 canvas-recent = Recent artworks
+canvas-recent-workspace = In this workspace
 canvas-keys-title = Keyboard shortcuts
 canvas-keys-artwork = Artwork
 canvas-keys-view = View

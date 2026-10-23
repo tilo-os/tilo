@@ -145,7 +145,7 @@ impl ResourceApp for App {
                 tools,
                 recents,
                 cx.live().clone(),
-                cx.dispatcher(),
+                (**cx).clone(),
             ),
             compact,
         ))

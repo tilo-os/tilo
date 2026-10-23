@@ -236,6 +236,58 @@ fn a_person_opens_a_recent_artwork_from_the_welcome() {
     assert_eq!(app.versions().len(), before + 1, "opening is one step");
 }
 
+/// Every Canvas window starts an artwork of its own, so one made in a
+/// window that was closed is reached again from the next window's welcome,
+/// whether or not it was ever saved to a file.
+#[test]
+fn an_artwork_drawn_in_a_closed_window_opens_from_the_next_welcome() {
+    use canvas::actions::{Draw, NewMark};
+    use canvas::model::Shape;
+
+    let mut first = TestApp::<App>::new().unwrap();
+    first
+        .invoke(canvas::Artwork::DRAW.with(Draw {
+            layer: None,
+            marks: vec![NewMark {
+                id: Some("box".into()),
+                ..NewMark::new(Shape::Rect {
+                    x: 100.0,
+                    y: 100.0,
+                    width: 300.0,
+                    height: 200.0,
+                    radius: 0.0,
+                })
+            }],
+        }))
+        .unwrap();
+    let drawn = first.record().clone();
+
+    let mut app = first.another_window().unwrap();
+    assert_ne!(
+        app.record(),
+        &drawn,
+        "a new window starts an artwork of its own"
+    );
+    assert!(app.state().marks.is_empty(), "and it starts blank");
+    app.harness().key("Shift");
+    let earlier = "canvas-recent-artwork-0";
+    assert!(
+        app.harness().targets().contains_key(earlier),
+        "the welcome lists the earlier artwork among the recent ones"
+    );
+    app.harness().click_named(earlier).unwrap();
+    app.harness().key("Shift");
+    assert_eq!(
+        app.record(),
+        &drawn,
+        "the window opened the earlier artwork"
+    );
+    assert!(
+        app.state().marks.iter().any(|mark| mark.id == "box"),
+        "and shows its drawing"
+    );
+}
+
 #[test]
 fn the_panels_stay_put_away_on_a_narrow_window() {
     let mut app = TestApp::<App>::new().unwrap();
