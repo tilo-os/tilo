@@ -165,10 +165,10 @@ pub use contract::{
     AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,
     Audience, Availability, COMPENSATED_UNDO_TAG, ConfirmationPolicy, DOCUMENT_READ_TAG,
     ExecutionMode, HOST_RENDER_TAG, HOUSEKEEPING_TAG, INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG,
-    MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG,
-    MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, OWN_DEVICE_SCOPE,
-    Offload, PEOPLE_AUDIENCE_TAG, ResultSpec, RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG,
-    action_node,
+    IRREVERSIBLE_TAG, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES,
+    MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG,
+    OWN_DEVICE_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, ResultSpec, RetryPolicy, RiskLevel,
+    UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
@@ -211,9 +211,10 @@ pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
-    ControlInvocation, FlatAction, KEY_SEP, NESTED_RESOURCE_FACET, PROMPTED_PARAM, Resource,
-    ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
-    ResourceViewRangeSpec, ResourceViewSpec, RunBy, flatten, sole_text_argument,
+    ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET, PROMPTED_PARAM,
+    Resource, ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
+    ResourceViewRangeSpec, ResourceViewSpec, RunBy, flatten, listed_row, listed_row_problems,
+    sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

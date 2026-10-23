@@ -1646,9 +1646,14 @@ impl Landed {
     }
 }
 
-/// Whether `action` needs the person's confirmation before it applies.
+/// Whether `action` needs the person's confirmation before it applies: its
+/// risk asks for it and Undo cannot take it back. A removal that only
+/// changes the document runs at once; Undo is how the person takes it back
+/// (`RiskLevel::requires_confirmation_when`).
 fn asks<A: tilo_actions::Action>(action: &A) -> bool {
-    tilo_actions::Action::risk(action).requires_confirmation()
+    let undoable = tilo_actions::Action::action_kind(action) == tilo_actions::ActionKind::Undoable
+        && tilo_actions::Action::change_kind(action).is_step();
+    tilo_actions::Action::risk(action).requires_confirmation_when(undoable)
 }
 
 /// The submissions each effect queued that have not landed yet, and the

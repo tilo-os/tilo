@@ -204,6 +204,14 @@ pub trait Action: std::fmt::Debug {
         false
     }
 
+    /// Whether this value loses something Undo cannot bring back, beside
+    /// the document change Undo reverts (an account's secret every device
+    /// forgets). See [`IRREVERSIBLE_TAG`](crate::IRREVERSIBLE_TAG). Must be
+    /// a pure function of `self`.
+    fn irreversible(&self) -> bool {
+        false
+    }
+
     /// What this value does and to which item, as history records it: a
     /// field edit with its values before and after, a verb with its plain
     /// arguments, or a group of those. Read from `doc` as it is before the

@@ -15050,10 +15050,7 @@ mod ordinary_confirmation_owner_tests {
             driver
                 .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
                 .unwrap();
-            driver.send(&super::key_input(
-                &winit::keyboard::Key::Character("CONFIRM".into()),
-                winit::event::ElementState::Pressed,
-            ));
+            assert!(driver.asking().is_some(), "the host asks");
             let old = driver.control_domain.clone();
             if replacement {
                 driver.control_domain = crate::ControlDomain::new();

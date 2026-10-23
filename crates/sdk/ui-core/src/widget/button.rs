@@ -293,9 +293,13 @@ impl Button {
         } else {
             self.label.clone()
         };
+        // Pressing the button is the control's own verb: how agents and
+        // scripts press what a person presses directly, never a row of its
+        // own in people's lists, where it would repeat the app's actions.
         let mut spec =
             tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
-                .expect("a control id is always JSON serializable");
+                .expect("a control id is always JSON serializable")
+                .for_audience(tilo_actions::Audience::Agents);
         if own_device {
             spec.contract
                 .tags

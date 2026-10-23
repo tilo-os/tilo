@@ -206,15 +206,13 @@ fn whole_text_replacements_undo_a_word_at_a_time() {
     );
 }
 
+/// A destructive verb of the record is undoable, so it applies at once:
+/// nobody is asked first.
 #[test]
-fn a_nullary_destructive_verb_asks_first() {
+fn a_nullary_destructive_verb_applies_at_once() {
     let mut board = Replica::<Board>::new();
     board.apply(Board::ADD_CARD.with(())).unwrap();
-    assert!(matches!(
-        board.apply(Board::CLEAR.with(())),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    board.apply_confirmed(Board::CLEAR.with(())).unwrap();
+    board.apply(Board::CLEAR.with(())).unwrap();
     assert_eq!(board.state().unwrap().cards, 0);
 }
 
@@ -230,8 +228,10 @@ fn a_replicas_author_is_the_invoker_its_verbs_see() {
     assert_eq!(Id::default().as_str(), "");
 }
 
+/// A field edit changes only the record: removing an item, of any
+/// collection, is undoable and asks nothing.
 #[test]
-fn removing_an_item_by_field_edit_asks_unless_the_collection_is_quiet() {
+fn removing_an_item_by_field_edit_asks_nothing() {
     let mut board = Replica::<Board>::new();
     let paths = Board::paths();
     let note = Id::from_raw("n");
@@ -241,19 +241,15 @@ fn removing_an_item_by_field_edit_asks_unless_the_collection_is_quiet() {
     board
         .apply(paths.drafts.insert_as(&note, 0, &"draft".to_owned()))
         .unwrap();
-    assert!(matches!(
-        board.apply(paths.notes.remove(&note)),
-        Err(tilo_actions::DoorError::ConfirmationRequired)
-    ));
-    board.apply_confirmed(paths.notes.remove(&note)).unwrap();
+    board.apply(paths.notes.remove(&note)).unwrap();
     board.apply(paths.drafts.remove(&note)).unwrap();
     let state = board.state().unwrap();
     assert!(state.notes.is_empty() && state.drafts.is_empty());
 }
 
 /// A door without the app's code — the broker, a relay — decides from the
-/// published field edit alone, and as the app does: only removing an item of
-/// a collection not marked quiet asks.
+/// published field edit alone, and as the app does: the record's edits are
+/// undoable, so none asks, whatever it removes.
 #[test]
 fn any_door_reads_a_field_edit_s_confirmation_from_the_published_contract() {
     use tilo_actions::ConfirmationPolicy;
@@ -274,10 +270,7 @@ fn any_door_reads_a_field_edit_s_confirmation_from_the_published_contract() {
         );
         spec.contract.confirmation_for_argument(Some(&argument))
     };
-    assert_eq!(
-        door(&paths.notes.remove(&note)),
-        ConfirmationPolicy::Confirm
-    );
+    assert_eq!(door(&paths.notes.remove(&note)), ConfirmationPolicy::None);
     assert_eq!(door(&paths.drafts.remove(&note)), ConfirmationPolicy::None);
     assert_eq!(
         door(&paths.title.set("Plan".to_owned())),
@@ -285,8 +278,8 @@ fn any_door_reads_a_field_edit_s_confirmation_from_the_published_contract() {
     );
     assert_eq!(
         spec.contract.confirmation_for_argument(Some("not an edit")),
-        ConfirmationPolicy::Confirm,
-        "an argument nobody can read asks"
+        ConfirmationPolicy::None,
+        "an argument nobody can read builds nothing; Undo covers whatever does"
     );
 }
 
@@ -667,7 +660,7 @@ fn an_agent_builds_a_field_edit_from_the_published_descriptor_alone() {
     assert!(title.contains("`title`: set, splice, replace"), "{title}");
     assert!(title.contains("(string)"), "{title}");
     let (notes, _) = described(&schema, "notes");
-    assert!(notes.contains("asks for confirmation"), "{notes}");
+    assert!(notes.contains("Undo takes it back"), "{notes}");
     let (drafts, _) = described(&schema, "drafts");
     assert!(drafts.contains("asks nothing"), "{drafts}");
 

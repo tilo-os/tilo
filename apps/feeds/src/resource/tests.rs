@@ -247,21 +247,16 @@ fn unsubscribing_and_deleting_a_folder() {
     library.apply(refreshed(&kept, &["Kept"])).unwrap();
     library.apply(refreshed(&gone, &["Gone"])).unwrap();
 
-    assert!(
-        library
-            .apply(Library::UNSUBSCRIBE.with(gone.clone()))
-            .is_err(),
-        "unsubscribing asks first"
-    );
+    // Undo takes an unsubscription back, so nobody is asked first.
     library
-        .apply_confirmed(Library::UNSUBSCRIBE.with(gone.clone()))
+        .apply(Library::UNSUBSCRIBE.with(gone.clone()))
         .unwrap();
     let state = library.state().unwrap();
     assert!(state.feed(&gone).is_none());
     assert_eq!(state.articles.len(), 1, "its articles went with it");
 
     library
-        .apply_confirmed(Library::DELETE_FOLDER.with(reading.clone()))
+        .apply(Library::DELETE_FOLDER.with(reading.clone()))
         .unwrap();
     let state = library.state().unwrap();
     assert!(state.folders.is_empty());
@@ -441,27 +436,136 @@ fn sample_app() -> TestApp<FeedsShell> {
     app
 }
 
-/// Unsubscribing from a feed's menu is confirmed by the host, once: the
-/// window asks nothing of its own, and the feed and its articles go only
-/// when the person agreed.
+/// Activate the control `name` as a person does, through the window's
+/// accessibility tree, and let the app settle.
+fn activate(app: &mut TestApp<FeedsShell>, name: &str) {
+    app.settle();
+    let harness = app.harness();
+    harness.relayout();
+    let id = harness
+        .a11y_node_named(name)
+        .unwrap_or_else(|| panic!("{name} is shown"));
+    harness
+        .perform_a11y_action(id, &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+    app.settle();
+}
+
+/// Removing a subscription runs at once and offers Undo: nothing asks first.
 #[test]
-fn unsubscribing_from_the_menu_is_confirmed_by_the_host() {
+fn an_undoable_remove_runs_at_once_with_undo() {
     let mut app = sample_app();
     let feed = app.state().feeds.ids().next().unwrap().clone();
-    // What the window's own Edits are lent for: an unsubscribe applies
-    // nothing now, it goes to the host to be confirmed.
-    let mut unused = automerge::AutoCommit::new();
-    app.surface_mut::<FeedsApp>().core_mut().apply_menu_action(
-        crate::app::MenuAction::Unsubscribe(feed.clone()),
-        &mut ui::widget::Edits::lend(&mut unused),
+    let title = app.state().feed(&feed).unwrap().title.clone();
+    let articles = app
+        .state()
+        .articles
+        .values()
+        .filter(|article| article.feed_id == feed)
+        .count();
+    assert!(articles > 0, "the sample feed has articles");
+    app.surface_mut::<FeedsApp>().core_mut().open_feed_menu(
+        feed.clone(),
+        vello::kurbo::Rect::new(0.0, 80.0, 240.0, 112.0),
     );
-    assert!(app.surface_mut::<FeedsApp>().modal.is_none());
-    assert!(app.state().feeds.contains(&feed), "not until confirmed");
-    assert!(app.confirm_asked().is_some(), "the host asks first");
+
+    activate(&mut app, "Unsubscribe");
+
+    assert!(app.asking().is_none(), "nothing asks first");
+    assert!(
+        app.surface_mut::<FeedsApp>().modal.is_none(),
+        "no dialog of its own either"
+    );
     let library = app.state();
-    assert!(!library.feeds.contains(&feed));
+    assert!(library.feed(&feed).is_none(), "it ran at once");
     assert!(!library.articles.values().any(|x| x.feed_id == feed));
-    assert!(app.confirm_asked().is_none(), "asked once");
+    assert_eq!(
+        app.surface_mut::<FeedsApp>().notice().as_deref(),
+        Some(format!("Unsubscribed from {title}").as_str()),
+        "the standard notice says what changed"
+    );
+
+    // The notice's Undo is the window bar's action beside it.
+    app.settle();
+    let undo = ui::window_toolbar::notice()
+        .and_then(|notice| notice.actions.into_iter().next())
+        .expect("the window's bar offers Undo beside its notice");
+    assert_eq!(undo.name, "Undo");
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: undo.id });
+    app.settle();
+
+    let library = app.state();
+    assert!(library.feed(&feed).is_some(), "Undo brings it back");
+    assert_eq!(
+        library
+            .articles
+            .values()
+            .filter(|article| article.feed_id == feed)
+            .count(),
+        articles,
+        "with every article it brought in"
+    );
+}
+
+/// Every action listed for people reads as an outcome: no raw ids, no
+/// separator glyphs, no implementation suffixes; the actions the app uses to
+/// land its own work are not listed for people at all.
+#[test]
+fn every_action_listed_for_people_reads_as_an_outcome() {
+    let mut app = sample_app();
+    let resources = app.harness().resources();
+    let listed: Vec<_> = ui::tilo_actions::flatten(&resources)
+        .into_iter()
+        .filter(|action| action.action.reaches_people())
+        .collect();
+    assert!(!listed.is_empty());
+    for action in &listed {
+        let row = action.row();
+        assert!(
+            ui::tilo_actions::listed_row_problems(&row).is_empty(),
+            "{:?} reads with {:?}",
+            row,
+            ui::tilo_actions::listed_row_problems(&row)
+        );
+    }
+    for internal in ["refreshed", "import-subscriptions"] {
+        assert!(
+            !listed.iter().any(|action| action.action.id == internal),
+            "{internal} is how the app lands work, never a person's row"
+        );
+    }
+}
+
+/// Unsubscribing asks nothing of any caller: the palette, a script and an
+/// agent run it at once too, and Undo takes it back.
+#[test]
+fn every_caller_unsubscribes_at_once_and_undo_takes_it_back() {
+    let mut app = sample_app();
+    let feed = app.state().feeds.ids().next().unwrap().clone();
+    let item = item_resource_id::<Library>("feeds", &feed);
+    let spec = app
+        .actions()
+        .unwrap()
+        .into_iter()
+        .find(|action| action.address.resource == item && action.address.action == "unsubscribe")
+        .expect("a feed offers unsubscribe");
+    assert_eq!(
+        spec.contract.risk,
+        ui::tilo_actions::RiskLevel::Destructive,
+        "it still deletes"
+    );
+    assert_eq!(
+        spec.contract.confirmation,
+        ui::tilo_actions::ConfirmationPolicy::None,
+        "but Undo takes it back, so nobody is asked"
+    );
+    app.call_on(&item, "unsubscribe", serde_json::json!({}))
+        .expect("runs without confirmation");
+    app.settle();
+    assert!(app.state().feed(&feed).is_none());
+    assert!(app.undo(), "Undo takes it back");
+    assert!(app.state().feed(&feed).is_some());
 }
 
 /// Opening the app writes nothing: there is no library to show.
@@ -652,9 +756,8 @@ fn an_agent_edits_and_opens_items_one_call_each() {
         "a tag reveals its articles"
     );
 
+    // Undo takes it back, so it asks nothing.
     app.call_on(&feed_item, "unsubscribe", serde_json::json!({}))
-        .expect_err("unsubscribing asks for confirmation");
-    app.call_confirmed_on(&feed_item, "unsubscribe", serde_json::json!({}))
         .unwrap();
     assert!(app.state().feed(&feed).is_none());
 }
@@ -687,8 +790,7 @@ fn unsubscribing_the_last_feed_empties_the_reader() {
     assert!(shown.contains("The Only Feed"), "{shown}");
     assert!(shown.contains("The Only Article"), "{shown}");
 
-    app.invoke_confirmed(Library::UNSUBSCRIBE.with(feed))
-        .unwrap();
+    app.invoke(Library::UNSUBSCRIBE.with(feed)).unwrap();
     app.settle();
     assert!(app.state().is_empty());
     let shown = app.harness().inspection_json().unwrap();
@@ -1101,4 +1203,62 @@ fn earlier_windows_libraries_merge_into_the_workspace_library() {
             "window records are untouched"
         );
     }
+}
+
+/// The palette a person opens in Feeds lists what they can do, each row once
+/// and in their words: no action that is only for agents (seeing the window
+/// as a picture, bringing it forward), no button's own press repeating the
+/// library's action, and no line under a row that repeats its label or
+/// another row's line.
+#[test]
+fn the_palette_rows_say_each_thing_once_and_only_to_people() {
+    let mut app = sample_app();
+    let resources = app.harness().resources();
+    app.harness().set_caller_actions(resources);
+    let rows = |app: &mut TestApp<FeedsShell>, query: &str| {
+        app.harness().open_caller_search(query).unwrap();
+        app.harness().relayout();
+        let rows = app.harness().caller_palette_rows();
+        app.harness().key("Escape");
+        rows
+    };
+    let shown = rows(&mut app, "");
+    assert!(!shown.is_empty(), "the palette lists the library's actions");
+    let mut lines = std::collections::HashSet::new();
+    for (label, line) in &shown {
+        if let Some(line) = line {
+            assert_ne!(line, label, "{label} says itself twice: {shown:?}");
+            assert!(
+                lines.insert(line.clone()),
+                "{line} under two rows: {shown:?}"
+            );
+        }
+    }
+    for agents_only in ["See the app", "Show this window"] {
+        assert!(
+            rows(&mut app, agents_only)
+                .iter()
+                .all(|(label, _)| label != agents_only),
+            "{agents_only} is for agents"
+        );
+    }
+    for label in [
+        "Add a subscription",
+        "New folder",
+        "Increase reader text size",
+        "Use reader paper",
+    ] {
+        let found = rows(&mut app, label);
+        let listed: Vec<_> = found.iter().filter(|(shown, _)| shown == label).collect();
+        assert_eq!(
+            listed,
+            [&(label.to_owned(), None)],
+            "{label} is one row with nothing under it: {found:?}"
+        );
+    }
+    let unsubscribe = rows(&mut app, "Unsubscribe");
+    assert!(
+        unsubscribe.contains(&("Unsubscribe".to_owned(), Some("Rust Blog".to_owned()))),
+        "an item's action names the item under it: {unsubscribe:?}"
+    );
 }

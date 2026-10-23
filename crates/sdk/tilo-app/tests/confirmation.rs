@@ -1,7 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
-//! A destructive verb a button submits is confirmed by the person and then
-//! applied, however long they take to confirm it.
+//! A destructive verb of a document is undoable: from whatever path it
+//! comes it applies at once, nobody is asked, and Undo takes it back. Only
+//! what Undo cannot take back is confirmed (the palette's tests cover that).
 
 use tilo_app::prelude::*;
 
@@ -58,44 +59,40 @@ impl ResourceApp for NotesApp {
     }
 }
 
+/// An undoable destructive verb applies at once and offers Undo, with no
+/// confirmation.
 #[test]
-fn a_destructive_verb_confirmed_later_still_applies() {
+fn an_undoable_destructive_verb_applies_at_once_and_undo_takes_it_back() {
     let mut app = TestApp::<NotesApp>::new().unwrap();
     app.invoke(Notes::ADD.with("Milk")).unwrap();
     let mut app = app.reopen().unwrap();
     app.harness().click_named("remove").unwrap();
-    assert_eq!(
-        app.state().notes.len(),
-        1,
-        "nothing happens before confirming"
-    );
-    // The person reads the prompt before confirming it.
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    assert!(app.confirm_asked().is_some(), "the host asks");
+    app.settle();
+    assert_eq!(app.asking(), None, "nobody is asked");
     assert!(
         app.state().notes.is_empty(),
-        "the confirmed verb applied: {:?}",
+        "the verb applied at once: {:?}",
         app.harness().control_failures()
     );
+    assert!(app.undo(), "Undo takes it back");
+    assert_eq!(app.state().notes.len(), 1);
 }
 
 #[test]
-fn a_destructive_verb_without_arguments_asks_and_applies() {
+fn an_undoable_destructive_verb_without_arguments_applies_at_once() {
     let mut app = TestApp::<NotesApp>::new().unwrap();
     app.invoke(Notes::ADD.with("Milk")).unwrap();
     app.invoke(Notes::ADD.with("Eggs")).unwrap();
     app.harness().click_named("clear").unwrap();
-    assert_eq!(
-        app.state().notes.len(),
-        2,
-        "nothing happens before confirming"
-    );
-    assert!(app.confirm_asked().is_some(), "the host asks");
+    app.settle();
+    assert_eq!(app.asking(), None, "nobody is asked");
     assert!(
         app.state().notes.is_empty(),
-        "the confirmed verb applied: {:?}",
+        "the verb applied at once: {:?}",
         app.harness().control_failures()
     );
+    assert!(app.undo(), "Undo takes it back");
+    assert_eq!(app.state().notes.len(), 2);
 }
 
 /// What a surface applies now on its next settle.
@@ -217,9 +214,9 @@ impl ResourceApp for RemoverApp {
     }
 }
 
-/// Applying `now` immediately waits for the person's consent: nothing is
-/// removed until they confirm, and then it is.
-fn asks_before_applying_now(now: Now) {
+/// Applying `now` immediately applies an undoable removal at once, from
+/// whatever path it comes, and Undo takes it back.
+fn applies_now_without_asking(now: Now) {
     let mut app = TestApp::<RemoverApp>::new().unwrap();
     app.invoke(Notes::ADD.with("Milk")).unwrap();
     app.invoke(Notes::ADD.with("Eggs")).unwrap();
@@ -230,30 +227,26 @@ fn asks_before_applying_now(now: Now) {
         [Ok(())],
         "{now:?}"
     );
-    assert_eq!(
-        app.state().notes.len(),
-        2,
-        "{now:?}: nothing is removed before the person confirms"
-    );
-    let asked = app.asking().expect("the host asks").0;
-    assert_eq!(asked.resource, "test.notes", "{now:?}");
-    assert!(app.confirm_asked().is_some());
-    assert_eq!(app.asking(), None, "{now:?}: answered once");
+    assert_eq!(app.asking(), None, "{now:?}: nobody is asked");
     assert_eq!(
         app.state().notes.len(),
         if now == Now::Group { 2 } else { 1 },
-        "{now:?}: the confirmed removal applied: {:?}",
+        "{now:?}: the removal applied at once: {:?}",
         app.harness().control_failures()
     );
     assert!(
         !app.state().notes.values().any(|note| note.text == "Milk"),
         "{now:?}: the first note is gone"
     );
+    assert!(app.undo(), "{now:?}: Undo takes it back");
+    assert!(
+        app.state().notes.values().any(|note| note.text == "Milk"),
+        "{now:?}: the first note is back"
+    );
 }
 
-/// The person's own gesture is its own confirmation: the verb applies at
-/// once. The same call under an invocation (an agent driving the surface)
-/// asks as any caller's does.
+/// The person's own gesture applies the verb at once, as any undoable
+/// change does.
 #[test]
 fn a_destructive_verb_of_the_persons_own_gesture_applies_without_asking() {
     let mut app = TestApp::<RemoverApp>::new().unwrap();
@@ -267,33 +260,33 @@ fn a_destructive_verb_of_the_persons_own_gesture_applies_without_asking() {
 }
 
 #[test]
-fn a_destructive_gesture_under_an_invocation_asks_first() {
-    asks_before_applying_now(Now::InvokedGesture);
+fn an_undoable_gesture_under_an_invocation_applies_at_once() {
+    applies_now_without_asking(Now::InvokedGesture);
 }
 
 #[test]
-fn a_destructive_verb_applied_now_asks_first() {
-    asks_before_applying_now(Now::Verb);
+fn an_undoable_destructive_verb_applied_now_applies_at_once() {
+    applies_now_without_asking(Now::Verb);
 }
 
 #[test]
-fn a_removal_applied_now_asks_first() {
-    asks_before_applying_now(Now::Removal);
+fn an_undoable_removal_applied_now_applies_at_once() {
+    applies_now_without_asking(Now::Removal);
 }
 
 #[test]
-fn a_group_holding_a_removal_applied_now_asks_first() {
-    asks_before_applying_now(Now::Group);
+fn a_group_holding_an_undoable_removal_applies_at_once() {
+    applies_now_without_asking(Now::Group);
 }
 
 #[test]
-fn a_typed_removal_applied_now_asks_first() {
-    asks_before_applying_now(Now::Typed);
+fn a_typed_undoable_removal_applied_now_applies_at_once() {
+    applies_now_without_asking(Now::Typed);
 }
 
-/// The queued door itself asks before a removal by field edit, though the
-/// field edit's declaration asks nothing: these arguments remove.
+/// The queued door applies a removal by field edit at once too: Undo takes
+/// it back.
 #[test]
-fn a_queued_removal_asks_first() {
-    asks_before_applying_now(Now::Queued);
+fn a_queued_undoable_removal_applies_at_once() {
+    applies_now_without_asking(Now::Queued);
 }

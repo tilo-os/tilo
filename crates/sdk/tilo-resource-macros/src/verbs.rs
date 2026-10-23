@@ -151,6 +151,7 @@ struct ActionOptions {
     label: Option<String>,
     field: Option<String>,
     destructive: bool,
+    irreversible: bool,
     housekeeping: bool,
     external: bool,
     /// Queues nothing though its record queues: an undoable change of the
@@ -181,6 +182,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         label: None,
         field: None,
         destructive: false,
+        irreversible: false,
         housekeeping: false,
         external: false,
         local: false,
@@ -216,6 +218,8 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.field = Some("moderation".to_owned());
         } else if meta.path.is_ident("destructive") {
             options.destructive = true;
+        } else if meta.path.is_ident("irreversible") {
+            options.irreversible = true;
         } else if meta.path.is_ident("housekeeping") {
             options.housekeeping = true;
         } else if meta.path.is_ident("incoming_message") {
@@ -249,7 +253,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.audience = Some(crate::audience_option(&meta)?);
         } else {
             return Err(meta.error(
-                "expected `id = \"...\"`, `label`, `field`, `moderation`, `destructive`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
+                "expected `id = \"...\"`, `label`, `field`, `moderation`, `destructive`, `irreversible`, `housekeeping`, `external`, `local`, `incoming_message`, `answers`, `writes = field`, `prepare = path`, `item = field`, `audience = \"agents\"` or `undo = path`",
             ));
         }
         if options.housekeeping && options.external {
@@ -964,6 +968,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     let mut fields_of = Vec::new();
     let mut change_kinds = Vec::new();
     let mut incoming = Vec::new();
+    let mut irreversibles = Vec::new();
     let mut compensations = Vec::new();
     let mut item_arms = Vec::new();
     let mut compensating = Vec::new();
@@ -1134,6 +1139,9 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         if verb.options.incoming_message {
             incoming.push(quote!(Self::#variant(..) => true,));
         }
+        if verb.options.irreversible {
+            irreversibles.push(quote!(Self::#variant(..) => true,));
+        }
 
         let const_ident = format_ident!("{}", method.to_string().to_uppercase());
         let const_doc = format!("Bind or apply the `{id}` action: {label_text}.");
@@ -1275,6 +1283,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         }
 
         let destructive = verb.options.destructive;
+        let irreversible = verb.options.irreversible;
         let housekeeping = verb.options.housekeeping;
         let answer = if verb.options.answers {
             quote!(Made)
@@ -1368,6 +1377,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 by_arguments: #by_arguments,
                 field: #field,
                 destructive: #destructive,
+                irreversible: #irreversible,
                 housekeeping: #housekeeping,
                 answer: #krate::__private::VerbAnswer::#answer,
                 incoming_message: #incoming_message,
@@ -1760,6 +1770,19 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     };
+    let irreversible_fn = if irreversibles.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn irreversible(&self) -> bool {
+                #[allow(unreachable_patterns, reason = "Undo takes every other operation back")]
+                match self {
+                    #(#irreversibles)*
+                    _ => false,
+                }
+            }
+        }
+    };
     let incoming_fn = if incoming.is_empty() {
         quote!()
     } else {
@@ -1906,6 +1929,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #risk
             #change_kind
             #incoming_fn
+            #irreversible_fn
             #compensation_fns
 
             fn writes(&self) -> #krate::footprint::Writes {

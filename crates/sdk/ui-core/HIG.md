@@ -355,6 +355,12 @@ with its exact arguments and fresh permission checks. Escape and Cancel perform
 nothing. Ordinary owner-authorized navigation needs no extra confirmation;
 explicit workspace approval rules still apply.
 
+An irreversible action that names what it destroys asks for that name in a
+labelled field in the sheet's body (`PromptBody::confirm_phrase`). Its button
+is the action's verb, destructive, and stays disabled until the name is exact;
+Enter in the field never goes ahead, even once the name matches. An action Undo
+takes back asks nothing: it runs at once and offers Undo.
+
 ---
 
 ## 5. System integration (file access, host services)

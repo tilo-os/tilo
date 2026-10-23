@@ -210,7 +210,9 @@ impl Snippets {
   It is published with the item's id as its first parameter (`snippet`), and
   on each item. A record with an invariant of its own (`#[model(check)]` on
   the record) or a `queue` hook is still read whole for it.
-- `destructive` asks for confirmation from people; it does not change the kind.
+- `destructive` marks a deletion or overwrite; it does not change the kind.
+  An undoable one (the document alone, or a compensated outside change) runs
+  at once and offers Undo; only one Undo cannot take back asks people first.
 
 The resource attribute covers what used to need a hand-written `Resource`:
 `initialize` (deterministic genesis), `seed` (first content, by the creator,

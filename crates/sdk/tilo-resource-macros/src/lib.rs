@@ -1501,8 +1501,13 @@ fn is_action_cx(ty: &Type) -> bool {
 /// like the parameter, or the record's only one; `#[action(item = field)]`
 /// names it otherwise, and anything else does not compile.
 ///
-/// Action options: `label = "..."`, `destructive` (people confirm it, through
-/// any door), `housekeeping` (a change about the record rather than to it,
+/// Action options: `label = "..."`, `destructive` (it deletes or overwrites:
+/// when Undo takes it back, as it does any change of the document alone, it
+/// runs at once and offers Undo; otherwise people confirm it, through any
+/// door), `irreversible` (it also loses what Undo cannot bring back, such
+/// as a secret every device forgets: a destructive one is confirmed even
+/// though Undo reverts its document change), `housekeeping` (a change
+/// about the record rather than to it,
 /// such as a read marker), `external` (content from outside, nobody's undo
 /// step), `local` (an action of a record with a `queue` that queues nothing,
 /// so an undoable change rather than one reaching outside), `field = "..."` (an action that writes only that field is placed

@@ -2504,16 +2504,14 @@ impl LiveAppActionsProvider {
                 "directory{ID_SEPARATOR}{peer_id}{ID_SEPARATOR}{revision}{ID_SEPARATOR}{resource}{ID_SEPARATOR}{action}"
             ),
             title: descriptor.action_label.clone(),
-            facts: if descriptor.description.is_none() {
-                row_facts(
-                    &descriptor.action_label,
-                    &descriptor.resource_label,
-                    &root.app_id,
-                )
-            } else {
-                Vec::new()
-            },
-            subtitle: descriptor.description.clone(),
+            // The record and the app, never the description written for
+            // agents and scripts (`tilo_actions::listed_row`).
+            facts: row_facts(
+                &descriptor.action_label,
+                &descriptor.resource_label,
+                &root.app_id,
+            ),
+            subtitle: None,
             badge: None,
             score,
             params,
@@ -2946,10 +2944,9 @@ impl SearchProvider for LiveAppActionsProvider {
                     title: action.action_label.clone(),
                     // Live or retained, the row reads as the record and the
                     // app a person knows; only what opening it does differs.
-                    subtitle: unavailable_reason
-                        .clone()
-                        .or_else(|| action.description.clone()),
-                    facts: if unavailable_reason.is_none() && action.description.is_none() {
+                    // Never the description written for agents and scripts.
+                    subtitle: unavailable_reason.clone(),
+                    facts: if unavailable_reason.is_none() {
                         row_facts(&action.action_label, &action.resource_label, &surface.app_id)
                     } else {
                         Vec::new()
