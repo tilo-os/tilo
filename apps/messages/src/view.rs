@@ -472,8 +472,18 @@ fn navigation(
     setup: &crate::setup::SetupView,
     groups: &crate::groups::GroupsView,
 ) -> NavShell {
+    let entries = groups.entries(sources, actions);
+    let nobody = nobody_listed(sources);
     let people = overview(sources, actions, &selected.person);
-    let overview: Element = match groups.entries(sources, actions) {
+    let shell = NavShell::new()
+        .content_kind(ui::widget::ContentKind::Reading)
+        .with_window_toolbar();
+    // With nobody and no group to list, and neither setup nor a group
+    // open, how to start is the whole window's, not a narrow list's.
+    if nobody && entries.is_none() && !setup.visible() && !groups.visible() {
+        return shell.nothing_listed(empty("messages-empty-heading", "messages-empty-hint"));
+    }
+    let overview: Element = match entries {
         Some(entries) => Box::new(Column::new().push(entries).push(people)),
         None => people,
     };
@@ -484,12 +494,19 @@ fn navigation(
             NavPane::Content
         },
     );
-    NavShell::new()
-        .content_kind(ui::widget::ContentKind::Reading)
-        .with_window_toolbar()
+    shell
         .overview(overview)
         .content(detail)
         .with_pane_state(&pane)
+}
+
+/// Whether there is nobody to message: every person removed, or none.
+fn nobody_listed(sources: &Sources) -> bool {
+    sources
+        .contacts()
+        .people
+        .iter()
+        .all(|(_, person)| person.removed)
 }
 
 fn discard_invalid_route(
@@ -671,12 +688,7 @@ fn detail(
     if selected.person.is_empty() {
         // With nobody to choose, the list beside says how to start, and
         // "Choose a person" would point at nothing.
-        if sources
-            .contacts()
-            .people
-            .iter()
-            .all(|(_, person)| person.removed)
-        {
+        if nobody_listed(sources) {
             return Box::new(Column::new());
         }
         return empty("messages-choose-heading", "messages-choose-hint");

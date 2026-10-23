@@ -746,11 +746,12 @@ fn group_text_and_membership_changes_require_confirmation_and_current_private_se
 }
 
 #[test]
-fn with_nobody_yet_the_people_pane_says_how_to_start() {
+fn with_nobody_yet_the_window_says_how_to_start() {
     let mut app =
         TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
     app.settle();
     let harness = app.harness();
+    harness.resize((1280, 800)).expect("a wide window lays out");
     let heading = harness
         .a11y_nodes()
         .into_iter()
@@ -761,6 +762,11 @@ fn with_nobody_yet_the_people_pane_says_how_to_start() {
     assert!(
         bounds.height() > 1.0 && bounds.width() > 1.0,
         "the empty state fills the pane instead of collapsing: {bounds:?}"
+    );
+    assert!(
+        (f64::midpoint(bounds.x0, bounds.x1) - 640.0).abs() < 8.0,
+        "with nothing to list, the empty state is the whole window's, not a list's beside a \
+         blank pane: {bounds:?}"
     );
     let bar = ui::window_toolbar::declared().expect("the window declares its slots");
     let location = bar.location.expect("the bar names where the window is");

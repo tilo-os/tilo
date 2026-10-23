@@ -9,6 +9,7 @@ mod adaptive;
 mod band;
 mod capabilities;
 mod hosted;
+mod nothing_listed;
 
 /// A pane that fills what it is given and counts the input it receives.
 struct Probe {
