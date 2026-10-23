@@ -230,10 +230,23 @@ pub fn follow_moves() {
 
 /// Wait until every job queued before this call has run. For tests and for
 /// a caller that must see its own change.
+///
+/// Every window reaches this worker through the X11 tracer's queue
+/// ([`crate::compositor::x11_windows`]), so the wait goes through that
+/// queue first: a window that named itself before this call has been
+/// looked at when it returns.
 pub fn settle(wait: Duration) -> bool {
     let (reply, done) = mpsc::channel();
-    send(Job::Settle(reply));
+    #[cfg(target_os = "linux")]
+    crate::compositor::x11_windows::settle(reply);
+    #[cfg(not(target_os = "linux"))]
+    settle_after(reply);
     done.recv_timeout(wait).is_ok()
+}
+
+/// Answer `reply` once every job queued here before this call has run.
+pub(crate) fn settle_after(reply: mpsc::Sender<()>) {
+    send(Job::Settle(reply));
 }
 
 fn run(job: Job, seen: &mut HashSet<(u32, Option<u64>)>) {
