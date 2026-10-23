@@ -12,7 +12,7 @@ from restart_fixture import restart_fixture
 
 OS = Path(__file__).resolve().parents[1]
 GATE = OS / 'tests/boot_chain_invariants.sh'
-REQUIRED = {'crypt', 'systemd-cryptsetup', 'tpm2-tss', 'plymouth', 'tilo-rollback', 'tilo-sibling-unlock'}
+REQUIRED = {'crypt', 'systemd-cryptsetup', 'tpm2-tss', 'plymouth', 'tilo-rollback', 'tilo-sibling-unlock', 'tilo-boot-failure'}
 # Run 9404 selected the Clevis providers and nvmf despite omitting their parents.
 # The pinned base's dracut 108 module audit also found nbd/fcoe/fcoe-uefi consumers.
 DEPENDENT_MODULES = {

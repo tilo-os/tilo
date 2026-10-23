@@ -136,7 +136,7 @@ for kver in "${kvers[@]}"; do
       if grep -qx "$want" "$mods"; then
         ok "initramfs includes the $want module"
       else
-        bad "initramfs has no $want module — it cannot unlock an encrypted root"
+        bad "initramfs has no $want module — $( [ "$want" = tilo-boot-failure ] && echo "a failed start would show the administrator console" || echo "it cannot unlock an encrypted root")"
       fi
     done
     for unwanted in network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh; do

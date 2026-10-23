@@ -211,10 +211,19 @@ check "without a splash the choices are a numbered menu" grep -q '^  2  Start th
 check "and 2 starts the previous version" grep -qx 'bootctl set-oneshot bootc_fedora-44-1.conf' "$work/calls"
 
 # --- the recovery console ------------------------------------------------------------
+# What a person types once the console asks (what was typed before is dropped).
+typed_at_prompt() {  # LINE...
+  for _ in $(seq 200); do
+    grep -q 'Enter the disk passphrase' "$work/out" 2>/dev/null && break
+    sleep 0.05
+  done
+  sleep 0.3
+  printf '%s\n' "$@"
+}
 FAILED_UNITS=systemd-cryptsetup@root.service fixture
 printf '/dev/fixture-root\n' >"$work/root-source"
 printf 'key 3\nkey 1\n' >"$work/presses"
-{ sleep 1; printf 'wrong\nsecret\necho SHELL-OPENED\nexit\n'; } \
+typed_at_prompt 'wrong' 'secret' 'echo SHELL-OPENED' 'exit' \
   | run show >"$work/out" 2>&1 || true
 check "an encrypted root offers the recovery console" grep -q '^button:[0-9]*:0:k=console$' "$work/drawn"
 check "and names the disk step" grep -q '^text:[0-9]*:step-unlock$' "$work/drawn"
@@ -225,7 +234,7 @@ fixture
 printf '/dev/fixture-root\n' >"$work/root-source"
 : >"$work/tpm"
 printf 'key 3\nkey 1\n' >"$work/presses"
-{ sleep 1; printf 'secret\necho SHELL-OPENED\nexit\n'; } \
+typed_at_prompt 'secret' 'echo SHELL-OPENED' 'exit' \
   | TPM="$work/tpm" run show >"$work/out" 2>&1 || true
 check "with a TPM, PCR 11 is extended before the shell opens" grep -qx 'pcrextend --pcr=11 tilo-recovery-console' "$work/calls"
 check "and then it opens" grep -qx 'SHELL-OPENED' "$work/out"
@@ -233,7 +242,7 @@ check "and then it opens" grep -qx 'SHELL-OPENED' "$work/out"
 fixture
 printf '/dev/fixture-root\n' >"$work/root-source"
 printf 'key 3\nkey 1\n' >"$work/presses"
-{ sleep 1; printf 'secret\necho SHELL-OPENED\nexit\n'; } \
+typed_at_prompt 'secret' 'echo SHELL-OPENED' 'exit' \
   | PCR_FAILS=1 TPM="$work/tpm" run show >"$work/out" 2>&1 || true
 check "a TPM that cannot be extended keeps the console shut" bash -c "! grep -qx SHELL-OPENED '$work/out'"
 
