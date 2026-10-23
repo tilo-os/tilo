@@ -287,6 +287,26 @@ class GeneratorTests(unittest.TestCase):
         self.assertFalse(c["build-aarch64"]["default"])
         self.assertTrue(c["pack"]["default"])
 
+    def test_the_env_tools_build_never_holds_the_publisher_identity(self):
+        c = {x["name"]: x for x in t_matrix.load(ROOT)["check"] if "env-tools" in x["name"]}
+        for arch in ("x86_64", "aarch64"):
+            for name in (f"env-tools-binaries-{arch}", f"env-tools-{arch}"):
+                self.assertNotIn("secrets", c[name], name)
+                self.assertNotIn("id_token", c[name], name)
+            self.assertEqual(c[f"env-tools-{arch}"]["optional_needs"], ["env-tools-plan"])
+        self.assertEqual(c["env-tools-plan"]["on"], ["stable"])
+        self.assertFalse(c["env-tools-plan"]["cache"])
+        self.assertEqual(c["env-tools-plan"]["optional_needs"], ["release-env-runtime"])
+        self.assertEqual(c["seal-env-tools"]["secrets"], ["TAPP_PUBLISHER_IDENTITY"])
+        self.assertIn("sign-catalog", (ROOT / "tools/ci/publish/env-tools-release.sh").read_text())
+        holders = sorted(n for n, x in c.items() if "TAPP_PUBLISHER_IDENTITY" in x.get("secrets", []))
+        self.assertEqual(holders, ["seal-env-tools"])
+        self.assertEqual(c["sign-env-tools"]["env"]["TILO_SIGN_TLOG"], "1")
+        self.assertEqual(c["sign-env-tools"]["needs"], ["env-tools-plan", "image-env-tools"])
+        self.assertIn("sign-env-tools", c["publish-env-tools"]["needs"])
+        for name in ("seal-env-tools", "sign-env-tools", "publish-env-tools"):
+            self.assertEqual(c[name]["on"], ["stable"], name)
+
     def test_the_manifest_renders(self):
         manifest = products.load()
         # A product's own signing and publishing read only what its build produced, so they
@@ -606,6 +626,63 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("is published already", result.stdout)
         self.assertTrue(self.receipt()["existing"])
         self.assertEqual(self.receipt()["digest"], self.digest)
+
+    def sign_for(self, out: Path, repository: str = "r.example/img") -> str:
+        """What oci-sign.sh leaves in OUT for its archive."""
+        digest = (out / "digest").read_text().strip()
+        (out / "payload.json").write_text(
+            '{"critical":{"identity":{"docker-reference":"' + repository + '"},"image":'
+            '{"docker-manifest-digest":"' + digest + '"},'
+            '"type":"cosign container image signature"},"optional":null}')
+        (out / "signature").write_text("sig")
+        return digest
+
+    def build_into(self, out: Path, arch: str) -> None:
+        out.mkdir(parents=True, exist_ok=True)
+        digest = self.archive(out / "image.oci.tar", f'{{"architecture":"{arch}","os":"linux"}}'.encode())
+        (out / "digest").write_text(digest + "\n")
+
+    def env_tools(self, mode: str, *args: str) -> subprocess.CompletedProcess:
+        return self.run_script("env-tools-release.sh", mode, *args, ref="stable")
+
+    def test_the_env_tools_catalog_publishes_once_under_the_plan_s_tag(self):
+        plan = self.tmp / "plan"
+        plan.mkdir()
+        tag = "set-" + "a" * 64 + "-" + "b" * 16
+        (plan / "tag").write_text(tag + "\n")
+        self.sign_for(self.out, "registry.tilo.so/tilo/env-tools")
+        result = self.env_tools("release", str(plan), str(self.out))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], [tag])
+        self.assertTrue(self.receipt()["signed"])
+        result = self.env_tools("release", str(plan), str(self.out))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.receipt()["existing"])
+        (plan / "tag").write_text("sha-" + COMMIT + "\n")
+        result = self.env_tools("release", str(plan), str(self.out))
+        self.assertIn("not a catalog tag", result.stderr)
+
+    def test_an_env_tools_catalog_published_already_is_neither_sealed_signed_nor_pushed(self):
+        plan = self.tmp / "plan"
+        plan.mkdir()
+        (plan / "published").write_text("set-" + "a" * 64 + "-" + "b" * 16 + "\n")
+        missing = str(self.tmp / "missing")
+        for mode, args in (("seal", (str(plan), missing, missing, missing)),
+                           ("image", (missing, missing, str(plan))),
+                           ("sign", (str(plan), missing)),
+                           ("release", (str(plan), missing))):
+            with self.subTest(mode=mode):
+                result = self.env_tools(mode, *args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("is published already", result.stdout)
+        self.assertFalse(self.log.exists())
+
+    def test_env_tools_are_sealed_only_with_the_publisher_identity(self):
+        plan = self.tmp / "plan"
+        (plan / "runtime").mkdir(parents=True)
+        result = self.env_tools("seal", str(plan), str(self.tmp), str(self.tmp), str(self.tmp / "sealed"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TAPP_PUBLISHER_IDENTITY is required", result.stderr)
 
     def test_an_archive_that_is_not_the_build_is_refused(self):
         (self.out / "digest").write_text("sha256:" + "0" * 64 + "\n")

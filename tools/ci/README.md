@@ -113,7 +113,6 @@ Jobs that need more than an unprivileged container:
 
 | Job | Needs |
 |---|---|
-| `build-env-tools.yml` | a privileged container |
 | `dev-disk.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
 | `release-imager.yml` | `/dev/kvm` |
 | `build-image.yml` | Docker with Buildx |
