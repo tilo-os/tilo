@@ -262,6 +262,16 @@ impl Fixture {
     fn answer(&self, choice: &str) -> shell::shell::portal_dialog::DialogView {
         let mut sheet = PortalDialogController::new(self.queue.clone());
         assert!(sheet.pump(), "the transfer sheet is up");
+        self.answer_on(sheet, choice)
+    }
+
+    /// Answer `sheet`, already up, with the choice whose label contains
+    /// `choice`.
+    fn answer_on(
+        &self,
+        mut sheet: PortalDialogController,
+        choice: &str,
+    ) -> shell::shell::portal_dialog::DialogView {
         let view = sheet.view().expect("the transfer sheet");
         let index = view
             .choices()
@@ -558,11 +568,10 @@ fn late_edits_restart_a_destination_instance_that_already_has_the_record() {
     assert!(f.notifications().iter().any(|n| n.contains("last edits")));
 }
 
-/// Run the shell's transfer step the way the frame loop does, where waiting
-/// for a commit fails the test. It still reads the disk there, which the
-/// main-thread audit lists.
+/// Run the shell's transfer step the way the frame loop does, where any
+/// wait on storage fails the test.
 fn tick_on_the_loop(f: &Fixture) {
-    let _loop = durable_store::waiting::forbid_commit_waits_strictly();
+    let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
     tick(&mut f.chrome.borrow_mut());
 }
 
@@ -580,18 +589,28 @@ fn tick_on_the_loop_until(f: &Fixture, what: &str, mut done: impl FnMut(&Fixture
     }
 }
 
-/// The frame loop drives a move and never waits for a commit: it starts each
-/// write and hands the record over (starting the new instance, retiring
-/// the source) only once the store reports it durable, so what the next
-/// process reads from the disk is already there.
+/// The frame loop drives a move and never waits on storage: planning,
+/// reading and writing the profiles happen on threads of their own, and the
+/// record is handed over (starting the new instance, retiring the source)
+/// only once those writes are on the disk, so what the next process reads
+/// from it is already there.
 #[test]
 fn a_move_on_the_frame_loop_hands_over_only_what_has_reached_the_disk() {
     let (f, old) = Fixture::new(true, false);
     let old = old.unwrap();
-    f.ask(TransferMode::Move);
     {
-        let _loop = durable_store::waiting::forbid_commit_waits_strictly();
-        f.answer("Move");
+        let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+        f.ask(TransferMode::Move);
+    }
+    let mut sheet = PortalDialogController::new(f.queue.clone());
+    tick_on_the_loop_until(
+        &f,
+        "the sheet asks once the window's record is read",
+        |_| sheet.pump(),
+    );
+    {
+        let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+        f.answer_on(sheet, "Move");
     }
     tick_on_the_loop_until(&f, "the new instance starts", |f| {
         !f.launched.borrow().is_empty()

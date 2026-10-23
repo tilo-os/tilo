@@ -52,7 +52,10 @@ fn write_record(
         address.record.clone(),
         RecordKind::new(code_editor::Project::KIND),
     );
-    if !record_hydration::kept_here(address, data) {
+    if record_hydration::kept_here(address, data)
+        .flatten()
+        .is_none()
+    {
         records.create_record(&record).unwrap();
     }
     let opened = records.try_open_record(&record);
@@ -373,7 +376,9 @@ async fn certified_cold_editor_body_fetch_reconnect_and_membership_revocation() 
         !receiving_profile.exists(),
         "transport alone must not prehydrate or initialize the receiver"
     );
-    let adopted = record_hydration::keep(&pair.address, pair.receiving.path(), &bytes).unwrap();
+    let adopted = record_hydration::keep(&pair.address, pair.receiving.path(), &bytes)
+        .unwrap()
+        .expect("a thread that may wait keeps it at once");
     assert_eq!(adopted.id, pair.address.record);
     assert_eq!(
         body_of(&read_record(pair.receiving.path(), &pair.address)),
