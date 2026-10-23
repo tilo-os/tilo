@@ -74,16 +74,22 @@
 //                  room (membership persists; TILO_ROOMS_INACTIVE_AFTER_DAYS)
 //   invite-door    the host started again taking people by invitation
 //                  (TILO_ROOMS_ADMISSION=invite): a fresh profile opening the
-//                  bare entry is refused at the door, saying it needs an
-//                  invitation, with a field to open an invite link, no
-//                  desktop and nothing kept (screenshots at 1440x900 and
-//                  390x844); a pasted text that is no invite link is said so
+//                  bare entry is refused at the door: a page of its own
+//                  headed by the workspace being invite-only, with a field to
+//                  open an invite link, no desktop and nothing kept
+//                  (screenshots at 1440x900 and 390x844); a pasted text that
+//                  is no invite link is said so
 //   invite-admits  the first person, a member, gets in as before, invites
 //                  with the desktop's Invite; that link pasted into the door
 //                  page's field asks to join, the member lets them in from
-//                  the banner, and the desktop presents as a member. Every
-//                  check before ran with the door open (TILO_ROOMS_ADMISSION
-//                  unset), as do the ones after
+//                  the banner's button, pressed through accessibility, and
+//                  the desktop presents as a member. Every check before ran
+//                  with the door open (TILO_ROOMS_ADMISSION unset), as do the
+//                  ones after
+//   invite-admits-again
+//                  three more strangers, each in a fresh browser, invited
+//                  and let in the same way, each open as a member; one that
+//                  is not keeps its console in the check's detail
 //   removed-member the host started again with the person as one of the
 //                  room's moderators (TILO_ROOMS_MODERATORS: a moderator
 //                  removes the guests ranked below them); a second person
@@ -751,34 +757,30 @@ const CONTROL_MATCHING = pattern => `(() => {
   return find(tiloMount.state()?.semantics?.root);
 })()`;
 
-/** Press the control in `tab` whose name matches `pattern`: through
- * assistive technology, else with the pointer where it is drawn. Resolves
- * to `{control, pressed, error}` once pressed, or the last attempt. */
+/** Strangers invited and let in after the first, each in a fresh browser:
+ * a failure that comes only sometimes shows in one of them. */
+const INVITEE_ROUNDS = 3;
+
+/** Press the control in `tab` whose name matches `pattern` through
+ * assistive technology, as a screen reader does: by its own node, or by the
+ * action target a synthetic child (a banner's button) publishes. Resolves
+ * to `{control, pressed: 'semantic'}` once pressed, or the last attempt
+ * with its `error`. */
 async function pressMatching(tab, pattern, timeout) {
   let last = {pressed: false, error: 'not shown'};
   const done = await until(async () => {
     const control = await tab.evaluate(CONTROL_MATCHING(pattern));
-    // Clicked, and no longer offered: the click pressed it.
-    if (!control) return last.clicked ? (last = {...last, pressed: 'pointer', error: undefined}) : null;
-    // A synthetic child with no action target of its own (a banner's
-    // button) has nothing assistive technology can activate: activating
-    // its owner would press something else. Only the pointer reaches it.
+    if (!control) return null;
+    // Activating the owner of a synthetic child without a target of its
+    // own would press something else: such a control is unreachable.
     if (!control.own && !control.target) {
       last = {control, pressed: false, error: 'no semantic target'};
-      if (control.at) {
-        await click(tab, control.at);
-        last.clicked = control.at;
-      }
       return null;
     }
     const pressed = await tab.evaluate(`tiloMount.semantic(${JSON.stringify(control.path)}, ${JSON.stringify(control.target ?? undefined)}, 'activate', '', 0, 0) === true`)
       .catch(error => ({error: error.message}));
     if (pressed === true) return (last = {control, pressed: 'semantic'});
     last = {control, pressed: false, error: pressed?.error ?? String(pressed)};
-    if (control.at) {
-      await click(tab, control.at);
-      last.clicked = control.at;
-    }
     return null;
   }, timeout, 2000);
   return done ?? last;
@@ -1200,7 +1202,13 @@ async function main() {
     }
     keepLog('invite-door', door);
     const doorJoins = joinsTo(door.requests, api);
-    const field = await door.evaluate("getComputedStyle(document.getElementById('arrival-invite')).display === 'grid'").catch(() => false);
+    // The door: shown, headed by the workspace being invite-only, the
+    // field for the link in it.
+    const field = await door.evaluate(`(() => {
+      const shown = id => { const el = document.getElementById(id); return Boolean(el) && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0; };
+      return shown('arrival-door') && shown('arrival-invite') && document.getElementById('arrival-invite').closest('#arrival-door') !== null
+        && /invite-only/.test(document.getElementById('arrival-door-heading')?.textContent ?? '');
+    })()`).catch(() => false);
     for (const [name, width, height, mobile] of [['invite-door-1440x900', 1440, 900, false], ['invite-door-390x844', 390, 844, true]]) {
       await door.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
       await sleep(500);
@@ -1259,6 +1267,39 @@ async function main() {
       doorJoins: invitedJoins.map(j => j.status)});
     if (invited.entry !== 'open') await shoot('invite-admits', door);
     await door.close();
+
+    // invite-admits-again: more strangers, each in a browser of their own,
+    // invited and let in the same way. Being let in opens the workspace
+    // every time, not most times; one that does not keeps its console.
+    const rounds = [];
+    for (let round = 1; round <= INVITEE_ROUNDS && inviting.entry === 'open'; round++) {
+      const pressedInvite = Boolean(await until(() => inviter.evaluate(PRESS_NAMED('Invite')), 60_000));
+      const link = pressedInvite ? await until(() => inviter.evaluate(
+        "document.querySelector('[data-card=share] input[name=link]')?.value || null"), 30_000) : null;
+      await inviter.evaluate("document.querySelector('[data-card=share] button[type=submit]')?.click()").catch(() => {});
+      if (!link) {
+        rounds.push({round, error: 'no invite link', pressedInvite});
+        continue;
+      }
+      const stranger = await page(browser, await browser.context());
+      await stranger.navigate(link);
+      const joinedAgain = await press(stranger, 'Join', timeout);
+      const pressed = await pressMatching(inviter, '^Let .+ in$', 90_000);
+      const now = await until(async () => {
+        const state = await settle(stranger, settleOptions);
+        return state.entry === 'open' && state.membership ? state : null;
+      }, 90_000) ?? await settle(stranger, settleOptions);
+      const opened = now.entry === 'open' && now.arrival === 'done';
+      rounds.push({round, joined: joinedAgain, letIn: pressed.pressed || pressed.error, entry: now.entry, arrival: now.arrival,
+        status: now.status, console: opened ? undefined : stranger.log.slice(-40)});
+      if (!opened) {
+        keepLog(`invite-admits-again-${round}`, stranger);
+        await shoot(`invite-admits-again-${round}`, stranger);
+      }
+      await stranger.close();
+    }
+    check('invite-admits-again', rounds.length === INVITEE_ROUNDS
+      && rounds.every(r => r.joined && r.letIn === 'semantic' && r.entry === 'open' && r.arrival === 'done'), {rounds});
     await inviter.close();
 
     // removed-member: the host started again with the person as one of the

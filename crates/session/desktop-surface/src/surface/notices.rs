@@ -783,6 +783,21 @@ impl Widget for NotificationLayer {
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         self.center.as_ref()?.reading_scroll()
     }
+    /// A banner's control pressed by assistive technology, as a click does.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ui::widget::ModelPath,
+    ) -> bool {
+        let notifications = self.notifications.clone();
+        let pressed = self
+            .stack
+            .perform_semantic(notifications.host(), target, action);
+        self.dirty |= pressed;
+        pressed
+    }
     fn apply_primary_vertical_scroll(
         &mut self,
         action: ui::widget::PrimaryScrollAction,

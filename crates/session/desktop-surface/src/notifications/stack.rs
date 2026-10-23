@@ -130,7 +130,9 @@ pub struct NotificationStack {
     /// What a press on a painted banner does, as buttons for assistive
     /// technology (and anything else that reads the semantics): each card
     /// (opening it, labelled by its title) and its action buttons.
-    action_buttons: Vec<(Rect, String)>,
+    /// Each painted control as assistive technology reads it: its rect,
+    /// its label and the target activating it (a [`BannerTarget::key`]).
+    action_buttons: Vec<(Rect, String, String)>,
     rect: Rect,
     /// Mirrored from the last paint so the frame and deadline hooks obey
     /// reduced motion without a theme argument.
@@ -230,6 +232,25 @@ impl NotificationStack {
         let key = target.key();
         self.targets.target(&key, rect, label);
         self.target_actions.push((key, target));
+    }
+
+    /// Press the control assistive technology names by `target` (one of
+    /// the action targets [`Self::accessibility`] publishes), as a click on
+    /// it does. Whether it was one of the stack's controls.
+    pub fn perform_semantic(
+        &mut self,
+        host: &dyn NotificationHost,
+        target: &str,
+        action: &ui::a11y::Action,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some((_, banner)) = self.target_actions.iter().find(|(id, _)| id == target) else {
+            return false;
+        };
+        Self::dispatch_target(host, &banner.clone());
+        true
     }
 
     /// Retain the matching release when foreground content interrupts a click.
@@ -619,7 +640,8 @@ impl NotificationStack {
             &style,
         );
         self.register_target(BannerTarget::More, rect, label);
-        self.action_buttons.push((rect, label.to_owned()));
+        self.action_buttons
+            .push((rect, label.to_owned(), BannerTarget::More.key()));
         self.focus_rows.push(FocusRow {
             controls: vec![(
                 BannerTarget::More,
@@ -744,7 +766,8 @@ impl NotificationStack {
                 controls: vec![(BannerTarget::Open(n.id), card_rect, card_radius)],
             };
             self.register_target(BannerTarget::Open(n.id), card_rect, &n.title);
-            self.action_buttons.push((card_rect, n.title.clone()));
+            self.action_buttons
+                .push((card_rect, n.title.clone(), BannerTarget::Open(n.id).key()));
             // Painted left to right: the secondary choice, then the primary.
             let mut choices = Vec::new();
             if let Some((key, label)) = actions.first() {
@@ -762,7 +785,8 @@ impl NotificationStack {
                 let target = BannerTarget::Action(n.id, key.clone());
                 self.register_target(target.clone(), rect, label);
                 self.action_rects.push((n.id, key.clone(), rect));
-                self.action_buttons.push((rect, label.clone()));
+                self.action_buttons
+                    .push((rect, label.clone(), target.key()));
                 row.controls.push((target, rect, control_radius));
             }
             if card.closable {
@@ -1110,10 +1134,13 @@ impl NotificationStack {
                 .with_children(
                     self.action_buttons
                         .iter()
-                        .map(|(rect, label)| {
+                        .map(|(rect, label, target)| {
                             AccessNode::new(Role::Button)
                                 .with_name(label.clone())
                                 .with_bounds(*rect)
+                                // Pressed by assistive technology as by a
+                                // click: [`Self::perform_semantic`].
+                                .with_action_target(target.clone())
                                 .with_state(
                                     AccessState::new()
                                         .focusable(true)
@@ -1291,6 +1318,27 @@ pub(super) mod tests {
                 ],
                 "the painted choices are buttons a reader can press"
             );
+            // Assistive technology presses them by their targets, as a
+            // click does: each choice reaches the host with its key.
+            for (_, key, _) in &actions {
+                let label = if key == "dismiss" {
+                    "Dismiss"
+                } else {
+                    "Snooze"
+                };
+                let target = buttons
+                    .iter()
+                    .find(|button| button.name.as_deref() == Some(label))
+                    .and_then(|button| button.action_target.clone())
+                    .expect("a choice a reader can press carries its target");
+                assert!(stack.perform_semantic(&host, &target, &ui::a11y::Action::Activate));
+                assert_eq!(host.invoked.borrow().last(), Some(&(id, key.clone())));
+            }
+            assert!(!stack.perform_semantic(
+                &host,
+                "notification:none",
+                &ui::a11y::Action::Activate
+            ));
             let card = stack.hit_rects[0].1;
             for (actual, _, rect) in &actions {
                 assert_eq!(*actual, id);
@@ -1588,7 +1636,7 @@ pub(super) mod tests {
                 stack
                     .action_buttons
                     .iter()
-                    .any(|(rect, name)| *rect == more && *name == label),
+                    .any(|(rect, name, _)| *rect == more && *name == label),
                 "the card names how many more: {label}"
             );
             let log = host.log();
