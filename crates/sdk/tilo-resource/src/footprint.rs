@@ -120,6 +120,7 @@ pub(crate) fn check_edits(
         let mut path = edit.path().to_vec();
         match edit.op() {
             EditOp::InsertItem { id: Some(id), .. }
+            | EditOp::UpsertItem { id: Some(id), .. }
             | EditOp::RemoveItem { id }
             | EditOp::MoveTo { id, .. } => path.push(Segment::Item(id.clone())),
             _ => {}

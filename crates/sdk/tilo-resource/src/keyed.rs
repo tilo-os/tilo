@@ -563,7 +563,7 @@ impl<R, T: Model + Identified> Path<R, Keyed<T>> {
     pub fn insert(&self, item: &T) -> Edit<R> {
         self.edit(EditOp::InsertItem {
             id: Some(item.id()),
-            at: 0,
+            at: crate::At::Index(0),
             value: item.to_json(),
         })
     }
@@ -694,7 +694,7 @@ fn diff_by_id_in(
             path.to_vec(),
             EditOp::InsertItem {
                 id: Some(id.clone()),
-                at: 0,
+                at: crate::At::Index(0),
                 value: (table.ops.to_json)(table, item),
             },
         ));
@@ -735,6 +735,42 @@ fn edit_by_id(
             }
             doc.delete(&map, id.as_str())?;
             Ok(())
+        }
+        (
+            None,
+            EditOp::UpsertItem {
+                matching,
+                value,
+                id,
+            },
+        ) => {
+            let map = slot.object(doc, ObjType::Map)?;
+            let mut candidates = Vec::new();
+            for key in doc.keys(&map).collect::<Vec<_>>() {
+                if let Some((automerge::Value::Object(ObjType::Map), fields)) =
+                    doc.get(&map, key.as_str())?
+                {
+                    candidates.push(crate::upsert::Candidate {
+                        id: Id::from_raw(key),
+                        fields,
+                    });
+                }
+            }
+            if let Some(item) = crate::upsert::matching_one(doc, &candidates, matching)? {
+                for (key, field) in crate::upsert::changed_fields(doc, &item.fields, value)? {
+                    (edits.item)(
+                        doc,
+                        Slot::Key(&map, item.id.as_str()),
+                        &[Segment::Field(key)],
+                        &EditOp::Set { value: field },
+                        cx,
+                    )
+                    .located(item.id.as_str())?;
+                }
+                return Ok(());
+            }
+            let insert = crate::collection::upserted(doc, &map, matching, value, id.as_ref())?;
+            edit_by_id(doc, slot, path, &insert, cx, edits)
         }
         _ => (edits.whole)(doc, slot, path, op),
     }
@@ -896,7 +932,7 @@ fn diff_changed_in(
             path.to_vec(),
             EditOp::InsertItem {
                 id: Some(id),
-                at: if arranged { index } else { 0 },
+                at: crate::At::Index(if arranged { index } else { 0 }),
                 value: (table.ops.to_json)(table, item),
             },
         ));
