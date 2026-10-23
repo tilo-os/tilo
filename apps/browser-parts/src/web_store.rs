@@ -10,7 +10,7 @@ use crate::extensions::ExtensionError;
 
 const UPDATE_SERVICE: &str = "https://clients2.google.com/service/update2/crx";
 /// Matches `extensions::MAX_ARCHIVE_BYTES`.
-const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 /// The Chromium the engine runs when it has not reported its version.
 pub const FALLBACK_CHROMIUM_VERSION: &str = "152.0.7977.83";
 
@@ -133,8 +133,9 @@ pub fn download(id: &str, chromium_version: &str) -> Result<Vec<u8>, ExtensionEr
     }
     if bytes.is_empty() {
         // The service answers 204 for an unknown or unavailable item.
+        // Above all a Manifest V2 extension, which Chrome no longer runs.
         return Err(ExtensionError::Download(
-            "the Web Store has no package for this extension".into(),
+            crate::CATALOG.t("browser-extension-no-version"),
         ));
     }
     Ok(bytes)
