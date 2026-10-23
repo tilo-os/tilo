@@ -3736,7 +3736,7 @@ mod tests {
     }
 
     /// A desktop showing two Alacritty windows, one titled after the app.
-    fn two_alacritty_windows() -> ChromeState {
+    fn two_alacritty_windows() -> Rc<RefCell<ChromeState>> {
         use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
         let mut tree = WorkspaceTree::bootstrap_default();
         let window = |id: u64, title: &str| WindowGroup {
