@@ -296,14 +296,44 @@ struct ResponsePayload {
     home_peers_json: Option<Vec<u8>>,
 }
 
-/// The approving device's answer, signed by its certified device key: the
-/// device the token named as its issuer, certified by the identity the
-/// certificate inside names.
+/// The approving device's answer when it holds the identity's key: signed by
+/// that key, the answer every build understands.
 #[derive(Serialize, Deserialize)]
 struct Response {
     payload: ResponsePayload,
+    signature: Vec<u8>,
+}
+
+/// The approving device's answer when it holds none of the identity's key and
+/// introduces a device the person's key holders certified: signed by its own
+/// certified device key, the device the token named as its issuer.
+#[derive(Serialize, Deserialize)]
+struct IntroducedResponse {
+    payload: ResponsePayload,
     issuer: DeviceCert,
     signature: Vec<u8>,
+}
+
+/// What signs the approving side of a pairing.
+#[derive(Clone, Copy)]
+enum Approver<'a> {
+    /// The identity's key, held here.
+    Root(&'a dyn RootSigner),
+    /// This device's certified key, introducing a device the person's key
+    /// holders certified.
+    Introducer {
+        device: &'a ed25519_dalek::SigningKey,
+        issuer: &'a DeviceCert,
+    },
+}
+
+impl Approver<'_> {
+    fn sign(&self, message: &[u8]) -> anyhow::Result<Vec<u8>> {
+        Ok(match self {
+            Self::Root(root) => root.sign_message(message)?.to_vec(),
+            Self::Introducer { device, .. } => device.sign(message).to_bytes().to_vec(),
+        })
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1290,28 +1320,50 @@ fn sign_root_cert(cert: &mut DeviceCert, root: &(impl RootSigner + ?Sized)) -> a
     Ok(())
 }
 
+/// `payload` signed by `approver`, encoded: a [`Response`] from the
+/// identity's key, an [`IntroducedResponse`] from an introducer.
 fn sign_response(
     payload: ResponsePayload,
-    device: &ed25519_dalek::SigningKey,
-    issuer: &DeviceCert,
-) -> anyhow::Result<Response> {
-    let signature = device
-        .sign(&response_preimage(&payload)?)
-        .to_bytes()
-        .to_vec();
-    Ok(Response {
-        payload,
-        issuer: issuer.clone(),
-        signature,
-    })
+    approver: Approver<'_>,
+) -> anyhow::Result<zeroize::Zeroizing<Vec<u8>>> {
+    let signature = approver.sign(&response_preimage(&payload)?)?;
+    Ok(zeroize::Zeroizing::new(match approver {
+        Approver::Root(_) => postcard::to_stdvec(&Response { payload, signature })?,
+        Approver::Introducer { issuer, .. } => postcard::to_stdvec(&IntroducedResponse {
+            payload,
+            issuer: issuer.clone(),
+            signature,
+        })?,
+    }))
 }
 
-/// Check that `response` comes from the device that minted `token`, a device
-/// of the token's identity when it minted it.
+fn verify_signature(public_key: [u8; 32], message: &[u8], signature: &[u8]) -> anyhow::Result<()> {
+    let signature: [u8; 64] = signature
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("signature has the wrong length"))?;
+    VerifyingKey::from_bytes(&public_key)?.verify(message, &Signature::from_bytes(&signature))?;
+    Ok(())
+}
+
+/// The payload of the encoded response `bytes` and the key that signed it:
+/// the identity's key of `token`, or the device that minted `token` while it
+/// was certified by that identity.
 fn verify_response(
-    response: &Response,
+    bytes: &[u8],
     token: &tilo_user_identity::EnrollmentToken,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<(ResponsePayload, [u8; 32])> {
+    if let Ok(response) = postcard::from_bytes::<Response>(bytes)
+        && verify_signature(
+            token.user_public_key,
+            &response_preimage(&response.payload)?,
+            &response.signature,
+        )
+        .is_ok()
+    {
+        return Ok((response.payload, token.user_public_key));
+    }
+    let response: IntroducedResponse = postcard::from_bytes(bytes)
+        .context("enrollment response is not signed by the identity or its device")?;
     let issuer = &response.issuer;
     if issuer.device_public_key != token.issuer_device_public_key
         || issuer.user_public_key != token.user_public_key
@@ -1320,17 +1372,13 @@ fn verify_response(
     }
     verify_device_cert_at(issuer, token.issued_at_ns)
         .context("the approving device is not certified by the identity")?;
-    let signature: [u8; 64] = response
-        .signature
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("enrollment response signature has the wrong length"))?;
-    VerifyingKey::from_bytes(&issuer.device_public_key)?
-        .verify(
-            &response_preimage(&response.payload)?,
-            &Signature::from_bytes(&signature),
-        )
-        .context("enrollment response was changed in transit")
+    verify_signature(
+        issuer.device_public_key,
+        &response_preimage(&response.payload)?,
+        &response.signature,
+    )
+    .context("enrollment response was changed in transit")?;
+    Ok((response.payload, issuer.device_public_key))
 }
 
 fn valid_solicitation(solicitation: &PairSolicitation) -> bool {
@@ -1518,18 +1566,17 @@ fn decrypt_request(
 
 /// Seal the signed response to the requester.
 fn encrypt_response(
-    response: &Response,
+    plaintext: &[u8],
     token_nonce: [u8; 16],
     recipient: [u8; 32],
     route: ResponseRoute,
 ) -> anyhow::Result<Vec<u8>> {
-    let plaintext = zeroize::Zeroizing::new(postcard::to_stdvec(response)?);
     let aad = response_aad(token_nonce, recipient);
     Ok(wrap_v2(&tilo_seal::hpke::seal(
         &tilo_seal::PublicKey::from_bytes(route.response_public_key),
         tilo_seal::Label::RelayEnrollResponse,
         &aad,
-        &plaintext,
+        plaintext,
     )?))
 }
 
@@ -1538,9 +1585,9 @@ fn decrypt_response(
     token_nonce: [u8; 16],
     recipient: [u8; 32],
     response_secret: &tilo_seal::SecretKey,
-) -> anyhow::Result<Response> {
+) -> anyhow::Result<zeroize::Zeroizing<Vec<u8>>> {
     let aad = response_aad(token_nonce, recipient);
-    let plaintext = v2_body(bytes)
+    v2_body(bytes)
         .and_then(|body| {
             tilo_seal::hpke::open_bytes(
                 response_secret,
@@ -1550,8 +1597,7 @@ fn decrypt_response(
             )
             .ok()
         })
-        .ok_or_else(|| anyhow::anyhow!("enrollment response was not encrypted for this device"))?;
-    postcard::from_bytes(&plaintext).map_err(Into::into)
+        .ok_or_else(|| anyhow::anyhow!("enrollment response was not encrypted for this device"))
 }
 
 fn response_digest(bytes: &[u8]) -> [u8; 32] {
@@ -1605,7 +1651,7 @@ fn make_finalized(
     response_bytes: &[u8],
     nonce: [u8; 16],
     device_public_key: [u8; 32],
-    approver: &ed25519_dalek::SigningKey,
+    approver: Approver<'_>,
 ) -> anyhow::Result<Vec<u8>> {
     let payload = FinalizedPayload {
         nonce,
@@ -1615,7 +1661,7 @@ fn make_finalized(
     let encoded = postcard::to_stdvec(&payload)?;
     Ok(postcard::to_stdvec(&Finalized {
         payload,
-        signature: approver.sign(&encoded).to_bytes().to_vec(),
+        signature: approver.sign(&encoded)?,
     })?)
 }
 
@@ -1633,16 +1679,11 @@ fn verify_finalized(
     {
         bail!("enrollment completion did not match this exchange");
     }
-    let signature: [u8; 64] = finalized
-        .signature
-        .as_slice()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("completion signature has the wrong length"))?;
-    VerifyingKey::from_bytes(&approver_public_key)?.verify(
+    verify_signature(
+        approver_public_key,
         &postcard::to_stdvec(&finalized.payload)?,
-        &Signature::from_bytes(&signature),
-    )?;
-    Ok(())
+        &finalized.signature,
+    )
 }
 
 fn now_ns() -> anyhow::Result<u64> {
@@ -1784,31 +1825,28 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
             Ok((len, sender)) => {
                 let response_bytes = received_packet(&reply, len)?.to_vec();
                 validate_requester(requester_lease)?;
-                let Ok(response) = decrypt_response(
+                let Ok((payload, approver_public_key)) = decrypt_response(
                     &response_bytes,
                     token.nonce,
                     device.verifying_key().to_bytes(),
                     &request_ephemeral,
-                ) else {
+                )
+                .and_then(|plaintext| verify_response(&plaintext, &token)) else {
                     continue;
                 };
-                if verify_response(&response, &token).is_err() {
-                    continue;
-                }
-                if response.payload.nonce != token.nonce
-                    || response.payload.recipient_device_public_key != request.device_public_key
-                    || response.payload.relay_service_node_id != request.relay_service_node_id
-                    || response.payload.cert.device_public_key != request.device_public_key
-                    || response.payload.cert.user_public_key != token.user_public_key
-                    || response.payload.cert.capabilities != token.capabilities
+                if payload.nonce != token.nonce
+                    || payload.recipient_device_public_key != request.device_public_key
+                    || payload.relay_service_node_id != request.relay_service_node_id
+                    || payload.cert.device_public_key != request.device_public_key
+                    || payload.cert.user_public_key != token.user_public_key
+                    || payload.cert.capabilities != token.capabilities
                 {
                     continue;
                 }
-                verify_device_cert_at(&response.payload.cert, now_ns()?)
+                verify_device_cert_at(&payload.cert, now_ns()?)
                     .context("verify enrolled device certificate validity")?;
                 if kind == EnrollmentKind::HomePeer {
-                    let home_peer_toml = response
-                        .payload
+                    let home_peer_toml = payload
                         .home_peer_toml
                         .as_ref()
                         .context("approving device omitted home-peer configuration")?;
@@ -1828,7 +1866,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                         identity_root,
                         identity_dir.context("identity directory is required")?,
                         &paths,
-                        &response.payload,
+                        &payload,
                         requester_lease,
                     )?)
                 } else {
@@ -1850,7 +1888,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                 &response_bytes,
                                 token.nonce,
                                 device.verifying_key().to_bytes(),
-                                token.issuer_device_public_key,
+                                approver_public_key,
                             )
                             .is_ok()
                             {
@@ -1881,7 +1919,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                         // identity binding.
                                         tilo_user_identity::persist::write_public_key(
                                             &paths.user_pubkey,
-                                            &response.payload.cert.user_public_key,
+                                            &payload.cert.user_public_key,
                                         )?;
                                         None
                                     };
@@ -1891,9 +1929,8 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                 // fully installed. A crash can therefore only leave a
                                 // retryable partial enrollment, never a bootable one.
                                 if kind == EnrollmentKind::HomePeer {
-                                    let per_user_cert = paths.device_cert_for_user(
-                                        &response.payload.cert.user_public_key,
-                                    );
+                                    let per_user_cert =
+                                        paths.device_cert_for_user(&payload.cert.user_public_key);
                                     share_directory_like_parent(
                                         per_user_cert
                                             .parent()
@@ -1901,19 +1938,19 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                     )?;
                                     tilo_user_identity::persist::write_device_cert(
                                         &per_user_cert,
-                                        &response.payload.cert,
+                                        &payload.cert,
                                     )?;
                                     tilo_user_identity::persist::write_device_cert(
                                         &paths.device_cert,
-                                        &response.payload.cert,
+                                        &payload.cert,
                                     )?;
                                 }
                                 // The identity directories themselves are
                                 // image layout and keep their owner and group;
                                 // only what this enrollment created below them
                                 // takes its directory's.
-                                let per_user_cert = paths
-                                    .device_cert_for_user(&response.payload.cert.user_public_key);
+                                let per_user_cert =
+                                    paths.device_cert_for_user(&payload.cert.user_public_key);
                                 for output in [
                                     per_user_cert.parent(),
                                     Some(per_user_cert.as_path()),
@@ -1932,13 +1969,13 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                     println!(
                                         "{}",
                                         serde_json::json!({
-                                            "identity": hex::encode(response.payload.cert.user_public_key),
+                                            "identity": hex::encode(payload.cert.user_public_key),
                                             "record_path": record_path.as_ref().context("record path is required")?,
-                                            "label": response.payload.cert.device_label,
+                                            "label": payload.cert.device_label,
                                         })
                                     );
                                 } else {
-                                    println!("enrolled {}", response.payload.cert.device_label);
+                                    println!("enrolled {}", payload.cert.device_label);
                                 }
                                 return Ok(record_path);
                             }
@@ -2166,6 +2203,21 @@ struct ApprovalOptions<'a> {
     approved: Option<&'a DeviceCert>,
 }
 
+impl ApprovalIdentity {
+    /// What signs this device's side: the identity's key when it holds it,
+    /// so a device on any build can pair with it; otherwise its own
+    /// certified key, as the introducer.
+    fn approver(&self) -> Approver<'_> {
+        self.root.as_deref().map_or(
+            Approver::Introducer {
+                device: &self.device,
+                issuer: &self.issuer_cert,
+            },
+            Approver::Root,
+        )
+    }
+}
+
 struct ApprovalIdentity {
     /// The identity's root when this device holds it and signs itself.
     root: Option<Box<dyn RootSigner>>,
@@ -2196,7 +2248,8 @@ struct ApprovalProjection {
 }
 
 struct PreparedApproval {
-    signed: Response,
+    cert: DeviceCert,
+    relay_service_node_id: [u8; 32],
     encrypted: Vec<u8>,
 }
 
@@ -2515,14 +2568,13 @@ fn prepare_approval(
             nonce: pending.token.nonce,
             recipient_device_public_key: pending.request.device_public_key,
             relay_service_node_id: pending.request.relay_service_node_id,
-            cert,
+            cert: cert.clone(),
             home_peer_toml: projection.home_peer_toml,
             public_identity_json: projection.public_identity_json,
             fleet_json: projection.fleet_json,
             home_peers_json: projection.home_peers_json,
         },
-        &identity.device,
-        &identity.issuer_cert,
+        identity.approver(),
     )?;
     let encrypted = encrypt_response(
         &signed,
@@ -2530,7 +2582,11 @@ fn prepare_approval(
         pending.request.device_public_key,
         pending.response_route,
     )?;
-    Ok(PreparedApproval { signed, encrypted })
+    Ok(PreparedApproval {
+        cert,
+        relay_service_node_id: pending.request.relay_service_node_id,
+        encrypted,
+    })
 }
 
 /// Redeem the pending token for the device's root-signed certificate, the way
@@ -2623,8 +2679,8 @@ fn commit_approval(
     match options.kind {
         EnrollmentKind::HomePeer => register_home_peer(
             options.identity_root,
-            &prepared.signed.payload.cert,
-            prepared.signed.payload.relay_service_node_id,
+            &prepared.cert,
+            prepared.relay_service_node_id,
             &identity.relay_workspace_ids,
             None,
         )?,
@@ -2636,7 +2692,7 @@ fn commit_approval(
                 options.identity_root,
                 &[
                     identity.device.verifying_key().to_bytes(),
-                    prepared.signed.payload.cert.device_public_key,
+                    prepared.cert.device_public_key,
                 ],
             )?;
             restore_owner_from_parent(&personal_peers)?;
@@ -2646,7 +2702,7 @@ fn commit_approval(
         &prepared.encrypted,
         pending.token.nonce,
         pending.request.device_public_key,
-        &identity.device,
+        identity.approver(),
     )?;
     for _ in 0..8 {
         socket.send_to(&finalized, pending.sender)?;
@@ -2654,7 +2710,7 @@ fn commit_approval(
     }
     println!(
         "approved nearby device {}",
-        hex::encode(prepared.signed.payload.cert.device_public_key)
+        hex::encode(prepared.cert.device_public_key)
     );
     Ok(())
 }

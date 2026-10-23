@@ -322,23 +322,17 @@ fn personal_payload(
     }
 }
 
-/// The approving device `root` holds, certified by it to admit devices, and
-/// a token it minted: the issuer a joining device checks a response against.
-fn approver(root: &ed25519_dalek::SigningKey) -> (DeviceCert, tilo_user_identity::EnrollmentToken) {
-    let user = root.verifying_key().to_bytes();
-    let mut issuer = DeviceCert {
-        user_public_key: user,
-        device_public_key: user,
-        device_label: "Approver".into(),
-        capabilities: DeviceCapabilities::primary(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut issuer, root).unwrap();
-    let token =
-        mint_enrollment_token(user, DeviceCapabilities::host(), 10, 1_000, [3; 16], root).unwrap();
-    (issuer, token)
+/// A token `issuer` minted for the identity `user`.
+fn token_from(
+    user: [u8; 32],
+    issuer: &ed25519_dalek::SigningKey,
+) -> tilo_user_identity::EnrollmentToken {
+    mint_enrollment_token(user, DeviceCapabilities::host(), 10, 1_000, [3; 16], issuer).unwrap()
+}
+
+/// A token the device holding the identity key `root` minted.
+fn token(root: &ed25519_dalek::SigningKey) -> tilo_user_identity::EnrollmentToken {
+    token_from(root.verifying_key().to_bytes(), root)
 }
 
 fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
@@ -427,15 +421,17 @@ fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
     // Phase `signed_response_rejects_bundle_tampering`.
     {
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let mut response = sign_response(payload(&root), &root, &approver(&root).0).unwrap();
-        verify_response(&response, &approver(&root).1).unwrap();
+        let signed = sign_response(payload(&root), Approver::Root(&root)).unwrap();
+        verify_response(&signed, &token(&root)).unwrap();
+        let mut response: Response = postcard::from_bytes(&signed).unwrap();
         response
             .payload
             .home_peer_toml
             .as_mut()
             .unwrap()
             .push_str("\n# changed");
-        assert!(verify_response(&response, &approver(&root).1).is_err());
+        let changed = postcard::to_stdvec(&response).unwrap();
+        assert!(verify_response(&changed, &token(&root)).is_err());
     }
     // Phase `approval_target_requires_a_complete_pair_of_bounded_ids`.
     {
@@ -474,7 +470,7 @@ fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
         let request_public = request_ephemeral.public_key().unwrap().to_bytes();
         let mut payload = payload(&root);
         payload.home_peer_toml = Some("ticket = 'secret-ticket-material'".into());
-        let signed = sign_response(payload, &root, &approver(&root).0).unwrap();
+        let signed = sign_response(payload, Approver::Root(&root)).unwrap();
         let encrypted = encrypt_response(
             &signed,
             [3; 16],
@@ -497,7 +493,7 @@ fn enrollment_responses_are_signed_encrypted_and_certificate_bound() {
             &request_ephemeral,
         )
         .unwrap();
-        verify_response(&decrypted, &approver(&root).1).unwrap();
+        verify_response(&decrypted, &token(&root)).unwrap();
         let wrong = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
         assert!(
             decrypt_response(
@@ -1565,9 +1561,7 @@ fn pairing_exchange_is_private_single_use_and_resumable() {
     {
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let response =
-            postcard::to_stdvec(&sign_response(payload(&root), &root, &approver(&root).0).unwrap())
-                .unwrap();
+        let response = sign_response(payload(&root), Approver::Root(&root)).unwrap();
         // The first datagram is modeled as dropped. Retransmission uses the
         // exact same signed bytes, and the recipient ACK binds their key,
         // nonce, and that response digest.
@@ -1581,9 +1575,7 @@ fn pairing_exchange_is_private_single_use_and_resumable() {
         let dir = tempfile::tempdir().unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        let response =
-            postcard::to_stdvec(&sign_response(payload(&root), &root, &approver(&root).0).unwrap())
-                .unwrap();
+        let response = sign_response(payload(&root), Approver::Root(&root)).unwrap();
 
         // The approver spent the nonce for this device when it redeemed
         // the token, before the response first left. However many ACKs
@@ -1598,8 +1590,13 @@ fn pairing_exchange_is_private_single_use_and_resumable() {
         nonces
             .record(&[3; 16], device.verifying_key().to_bytes())
             .unwrap();
-        let finalized =
-            make_finalized(&response, [3; 16], device.verifying_key().to_bytes(), &root).unwrap();
+        let finalized = make_finalized(
+            &response,
+            [3; 16],
+            device.verifying_key().to_bytes(),
+            Approver::Root(&root),
+        )
+        .unwrap();
         verify_finalized(
             &finalized,
             &response,
@@ -1645,9 +1642,12 @@ fn pairing_crypto_matches_known_answers() {
     // Phase `known_answer_response_signature_verifies`.
     {
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-        let signed = sign_response(payload(&root), &root, &approver(&root).0).unwrap();
-        assert_eq!(hex::encode(&signed.signature), KAT_RESPONSE_SIGNATURE);
-        verify_response(&signed, &approver(&root).1).unwrap();
+        let signed = sign_response(payload(&root), Approver::Root(&root)).unwrap();
+        assert_eq!(
+            hex::encode(postcard::from_bytes::<Response>(&signed).unwrap().signature),
+            KAT_RESPONSE_SIGNATURE
+        );
+        verify_response(&signed, &token(&root)).unwrap();
     }
     // Phase `known_answer_ack_signature`.
     {
@@ -1662,6 +1662,81 @@ fn pairing_crypto_matches_known_answers() {
         )
         .unwrap();
     }
+}
+
+/// A device holding the identity's key answers with the identity-signed
+/// `(payload, signature)` every build decodes and checks against the
+/// identity's key; only an introducer, which holds none of it, signs with its
+/// certified device key and names its certificate. A joining device accepts
+/// both, and each only from its signer.
+#[test]
+fn a_key_holder_answers_as_every_build_expects_and_an_introducer_with_its_certificate() {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let user = root.verifying_key().to_bytes();
+    let reply = sign_response(payload(&root), Approver::Root(&root)).unwrap();
+    let signature = root
+        .sign(&response_preimage(&payload(&root)).unwrap())
+        .to_bytes()
+        .to_vec();
+    assert_eq!(
+        *reply,
+        postcard::to_stdvec(&(payload(&root), signature)).unwrap()
+    );
+    assert_eq!(verify_response(&reply, &token(&root)).unwrap().1, user);
+    let finalized = make_finalized(&reply, [3; 16], [7; 32], Approver::Root(&root)).unwrap();
+    verify_finalized(&finalized, &reply, [3; 16], [7; 32], user).unwrap();
+
+    let device = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+    let mut issuer = DeviceCert {
+        user_public_key: user,
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "Orange Pi".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut issuer, &root).unwrap();
+    let introducer = Approver::Introducer {
+        device: &device,
+        issuer: &issuer,
+    };
+    let introduced = sign_response(payload(&root), introducer).unwrap();
+    let minted = token_from(user, &device);
+    assert_eq!(
+        verify_response(&introduced, &minted).unwrap().1,
+        device.verifying_key().to_bytes()
+    );
+    let finalized = make_finalized(&introduced, [3; 16], [7; 32], introducer).unwrap();
+    verify_finalized(
+        &finalized,
+        &introduced,
+        [3; 16],
+        [7; 32],
+        device.verifying_key().to_bytes(),
+    )
+    .unwrap();
+    assert!(
+        verify_response(&introduced, &token(&root)).is_err(),
+        "an introducer answers only its own token"
+    );
+    let mut uncertified = issuer.clone();
+    uncertified.capabilities = DeviceCapabilities::primary();
+    assert!(
+        verify_response(
+            &sign_response(
+                payload(&root),
+                Approver::Introducer {
+                    device: &device,
+                    issuer: &uncertified,
+                },
+            )
+            .unwrap(),
+            &minted,
+        )
+        .is_err(),
+        "an introducer's certificate must be the identity's"
+    );
 }
 
 fn sample_request() -> Request {
@@ -1692,7 +1767,7 @@ fn pairing_envelopes_are_step_bound() {
         assert_eq!(&bytes[..8], b"TLOENRL\x02");
         let (request, route) = decrypt_request(&bytes, &issuer).unwrap();
         assert_eq!(request.token, "bearer");
-        let signed = sign_response(payload(&root), &root, &approver(&root).0).unwrap();
+        let signed = sign_response(payload(&root), Approver::Root(&root)).unwrap();
         let response =
             encrypt_response(&signed, [3; 16], device.verifying_key().to_bytes(), route).unwrap();
         assert!(v2_body(&response).is_some());
@@ -1703,7 +1778,7 @@ fn pairing_envelopes_are_step_bound() {
             &response_secret,
         )
         .unwrap();
-        verify_response(&opened, &approver(&root).1).unwrap();
+        verify_response(&opened, &token(&root)).unwrap();
         let other = tilo_seal::SecretKey::generate().unwrap();
         assert!(
             decrypt_response(

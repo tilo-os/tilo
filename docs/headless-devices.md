@@ -109,10 +109,11 @@ device you are using; do it from another one.
   (`tilo_identity_host::certification_ceremony`,
   `crates/session/shell/src/shell/device_certification.rs`), gathers the
   signature (FROST shares are combined there), and runs
-  `tilo-enroll approve-device --approved-cert`. The joining device checks that
-  the answer comes from the device that minted its token, certified by the
-  identity; it never needs the root's signature on anything but its
-  certificate.
+  `tilo-enroll approve-device --approved-cert`. A device holding the key
+  signs its answer with the identity's key, as every build expects; one
+  without it signs with its own certified key and names its certificate. The
+  joining device accepts either, the latter only from the device that minted
+  its token while the identity certified it.
 - `devices` and `revoke` are the shell's `identity.devices.list` and
   `identity.device.revoke` steps.
 
