@@ -29,10 +29,6 @@ impl NativeMediaRequestContext {
         &self.record_id
     }
     /// Re-checks that the admitted connection, process and route are still live.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message once the connection, process or admission lapsed.
     pub fn revalidate(&self) -> Result<(), String> {
         (self.revalidate)()
     }

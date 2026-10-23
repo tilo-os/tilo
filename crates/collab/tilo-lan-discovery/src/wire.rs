@@ -80,17 +80,11 @@ fn random<const N: usize>() -> Option<[u8; N]> {
 #[derive(Clone, Debug)]
 pub struct SentProbe {
     pub salt: Salt,
-    /// The devices it asked for.
     pub asked: Vec<[u8; 32]>,
 }
 
 /// Build a probe from `device`, whose certificate is `cert`, asking for
 /// `asked` (at most [`SLOTS`]; the caller picks which).
-///
-/// # Errors
-///
-/// When `asked` is too long or holds a key that is not a device key, the
-/// certificate does not fit, or no randomness is available.
 pub fn probe(
     device: &SigningKey,
     cert: &DeviceCert,
@@ -252,10 +246,6 @@ fn reply_aad(salt: &Salt, asker: &[u8; 32]) -> Vec<u8> {
 
 /// Answer `probe` from `device`, naming the addresses its endpoint listens
 /// on (at most [`MAX_REPLY_ADDRS`] are kept).
-///
-/// # Errors
-///
-/// When the asker's key is not a device key or sealing fails.
 pub fn reply(
     device: &SigningKey,
     probe: &OpenedProbe,

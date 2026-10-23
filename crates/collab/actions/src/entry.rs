@@ -144,7 +144,6 @@ impl Did {
     }
 }
 
-/// A built-in edit of one field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldEdit {
     /// The model type that owns the field, kebab-case (`snippet`).
@@ -247,7 +246,6 @@ impl VerbCall {
 pub struct GroupOf {
     /// The first [`MAX_GROUP_MEMBERS`] members.
     pub members: Vec<Did>,
-    /// How many members the group had.
     pub count: u32,
     /// Every distinct action among the members, without values, however
     /// many members there were: what a receiver decides the change by.

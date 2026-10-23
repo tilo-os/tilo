@@ -150,7 +150,6 @@ fn prepare_into(
         }
         let relative = Path::new("usr/lib/tilo-runtime").join(version);
         let user = selected.runtime_paths.get(*version);
-        // Use the maintained account resolver, including nondefault XDG roots.
         let old = if let Some(path) = user {
             path.clone()
         } else if candidate.join(&relative).exists() {

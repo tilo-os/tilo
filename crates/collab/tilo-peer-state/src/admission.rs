@@ -646,7 +646,6 @@ mod tests {
             index.check(&admission(1, 501, 9)),
             Err(AdmissionError::ConflictingSequence)
         );
-        // A lower mark changes nothing.
         let before = index.encode().unwrap();
         index
             .cover(("room", "app", "record"), [([1; 32], 10)])

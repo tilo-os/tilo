@@ -32,10 +32,6 @@ pub struct DocumentRoute {
 
 impl DocumentRoute {
     /// Relay workspace that carries this route's room.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `cluster_id` is not a uuid.
     pub fn workspace_id(&self) -> Result<u64, DocumentError> {
         tilo_relay_protocol::room_workspace_id(&self.cluster_id)
             .map_err(|_| DocumentError::Route("room is not a uuid".into()))
@@ -62,10 +58,6 @@ pub trait ContentCipher: Send {
     ) -> Result<(EncryptionMetadata, Vec<u8>), String>;
 
     /// Open one sealed payload.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the payload does not open.
     fn open(
         &mut self,
         artifact: collab_types::ArtifactId,
@@ -147,9 +139,7 @@ pub struct SignedDocumentFrame {
 /// A verified inbound document frame.
 #[derive(Clone, Debug)]
 pub struct OpenedDocument {
-    /// Its route.
     pub route: DocumentRoute,
-    /// The signed envelope as received.
     pub envelope: SignedOp,
     /// The authenticated authoring device.
     pub author: [u8; 32],
@@ -386,10 +376,6 @@ pub fn peer_id(device: &[u8; 32]) -> u64 {
 
 /// Sign one cleartext document frame (one element of
 /// `DocumentMutation::encode_frames`) as the device behind `signer`.
-///
-/// # Errors
-///
-/// Returns [`DocumentError`] when sealing, signing or encoding fails.
 pub async fn sign_frame(
     route: &DocumentRoute,
     cleartext: Vec<u8>,

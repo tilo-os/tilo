@@ -126,7 +126,6 @@ pub enum Host {
     /// Its iroh endpoint (native peers).
     #[cfg(feature = "iroh")]
     Iroh {
-        /// The host's relay endpoint.
         addr: iroh_base::EndpointAddr,
         /// An iroh relay server to dial it through, if any.
         relay_url: Option<iroh_base::RelayUrl>,
@@ -204,7 +203,6 @@ pub enum FailureSubject {
     Surface(String),
     /// An asset one desktop surface could not load (`retry-asset`).
     Asset {
-        /// The surface.
         surface: String,
         /// The surface's id for the asset.
         asset: String,
@@ -242,7 +240,6 @@ pub enum LocalState {
 pub struct RouteStatus {
     /// Commits sent and not yet acknowledged.
     pub pending_operations: usize,
-    /// Commits the host acknowledged this session.
     pub durable_operations: u64,
     /// Commits the host refused this session ([`PeerEvent::CommitRefused`]).
     pub refused_operations: u64,
@@ -258,7 +255,6 @@ pub struct RouteStatus {
 /// Everything a snapshot is derived from.
 #[derive(Clone, Debug)]
 pub struct PeerStatus {
-    /// Transport phase.
     pub phase: TransportPhase,
     /// Whether the current connection completed the handshake.
     pub authenticated: bool,
@@ -303,7 +299,6 @@ pub enum PeerEvent {
     },
     /// A commit became durable on the host.
     Committed {
-        /// Its route.
         route: DocumentRoute,
         /// Host order.
         seq: u64,
@@ -314,7 +309,6 @@ pub enum PeerEvent {
     /// local change depends on them, so the record's owner withdraws them
     /// and tells whoever made them.
     CommitRefused {
-        /// Its route.
         route: DocumentRoute,
         /// The Automerge hashes of the changes it carried, as its claims
         /// name them; empty for a snapshot.
@@ -391,7 +385,6 @@ pub enum PeerEvent {
     /// received before this event: the snapshot is taken to contain them.
     /// A consumer without the document ignores it.
     CompactionRequested {
-        /// The route.
         route: DocumentRoute,
         /// Echo in [`PeerHandle::compact`].
         request: [u8; 16],
@@ -743,10 +736,6 @@ impl PeerHandle {
     }
 
     /// Subscribe to a room.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn join(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::Join(workspace_id))
     }
@@ -756,10 +745,6 @@ impl PeerHandle {
     /// history arrives as [`PeerEvent::Document`]s, then
     /// [`PeerEvent::RecordOpened`]; its changes keep arriving after, and
     /// the record is opened again whenever the session reconnects.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn open_record(&self, workspace_id: u64, route: DocumentRoute) -> Result<(), String> {
         self.send(Command::OpenRecord(workspace_id, route))
     }
@@ -784,19 +769,11 @@ impl PeerHandle {
     /// committed like any publication, sealed on an encrypted route, and
     /// the host then drops exactly the history it was told the snapshot
     /// holds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn compact(&self, request: [u8; 16], snapshot: Vec<u8>) -> Result<(), String> {
         self.send(Command::Compact(request, snapshot))
     }
 
     /// Seal `route`'s documents with `cipher` from now on.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn install_cipher(
         &self,
         route: DocumentRoute,
@@ -812,10 +789,6 @@ impl PeerHandle {
     /// stewards the channel, which hands it the keys it already holds
     /// ([`channel_crypto::ChannelSteward::content_keys`]); any other session
     /// is admitted by the steward over the channel itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn install_channel_keys(
         &self,
         route: DocumentRoute,
@@ -827,10 +800,6 @@ impl PeerHandle {
     /// Take part in `route`'s encrypted channel: when a steward governs it,
     /// ask for access so documents on it can be opened and sealed. Routes
     /// are also opened by publishing on them or receiving their documents.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn open_route(&self, route: DocumentRoute) -> Result<(), String> {
         self.send(Command::OpenRoute(route))
     }
@@ -838,19 +807,11 @@ impl PeerHandle {
     /// Name the device that governs `room` (a room id), as the room itself
     /// says: its channels are stewarded by that device only, whatever a
     /// genesis frame claims.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn pin_governor(&self, room: &str, governor: [u8; 32]) -> Result<(), String> {
         self.send(Command::PinGovernor(room.to_owned(), governor))
     }
 
     /// Join a room's live plane (after [`Self::join`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn live_join(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::LiveJoin(workspace_id))
     }
@@ -859,10 +820,6 @@ impl PeerHandle {
     /// record it names. Dropped while disconnected (live state is never
     /// queued), and dropped when it names no record or this device holds
     /// none of that record's keys: a live frame never leaves in the clear.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn publish_live(&self, workspace_id: u64, frame: Vec<u8>) -> Result<(), String> {
         self.send(Command::Live(workspace_id, frame))
     }
@@ -870,10 +827,6 @@ impl PeerHandle {
     /// Seal one canonical live frame of `workspace_id` with the channel keys
     /// of the record it names, for a carrier other than this session (the
     /// page's live plane); `done` receives the sealed frame, or `None`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn seal_live_then(
         &self,
         workspace_id: u64,
@@ -886,10 +839,6 @@ impl PeerHandle {
     /// Open one sealed live frame of `workspace_id` that another carrier
     /// delivered; `done` receives the canonical frame, or `None` when it
     /// does not open with keys this device holds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn open_live_then(
         &self,
         workspace_id: u64,
@@ -903,10 +852,6 @@ impl PeerHandle {
     /// own device reaches its app-serving plane). Dropped while
     /// disconnected: an action that ran late is worse than one that did not
     /// run, so the caller retries with the same invocation id.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn send_remote_action(
         &self,
         workspace_id: u64,
@@ -922,10 +867,6 @@ impl PeerHandle {
     /// answers itself from what it keeps; the pieces come back to this
     /// device alone as [`PeerEvent::RecordContent`]. Dropped while
     /// disconnected: the caller asks again.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn want_content(&self, workspace_id: u64, request: Vec<u8>) -> Result<(), String> {
         self.send(Command::WantContent(workspace_id, request))
     }
@@ -934,10 +875,6 @@ impl PeerHandle {
     /// for ([`PeerEvent::ContentWanted`]): `frame` is a postcard-encoded
     /// `NeighbourMsg::RecordContentPiece`. Dropped while disconnected: the
     /// asker asks again.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn send_content(
         &self,
         workspace_id: u64,
@@ -949,10 +886,6 @@ impl PeerHandle {
 
     /// A receipt that completes once every document published before this
     /// call is durable on the host.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn barrier(&self) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
         let (reply, receipt) = std::sync::mpsc::sync_channel(1);
         self.barrier_then(Box::new(move |result| {
@@ -963,20 +896,12 @@ impl PeerHandle {
 
     /// Call `done` once every document published before this call is
     /// durable on the host, or with the refusal that prevents it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn barrier_then(&self, done: Completion) -> Result<(), String> {
         self.send(Command::Barrier(done))
     }
 
     /// Ask the host for a live-plane grant for `workspace_id` over the
     /// current HTTPS session; `done` receives it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn live_grant_then(&self, workspace_id: u64, done: GrantCompletion) -> Result<(), String> {
         self.send(Command::LiveGrant(workspace_id, None, done))
     }
@@ -984,10 +909,6 @@ impl PeerHandle {
     /// [`Self::live_grant_then`] for agent `agent_id` this device runs: the
     /// grant publishes under the agent's namespace
     /// ([`tilo_relay_protocol::web::agent_publisher`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn agent_live_grant_then(
         &self,
         workspace_id: u64,
@@ -999,10 +920,6 @@ impl PeerHandle {
 
     /// Ask the host for the calls of `workspace_id`; the answer arrives as
     /// [`VoiceEvent::Calls`](crate::voice::VoiceEvent::Calls).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn voice_calls(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::VoiceCalls(workspace_id))
     }
@@ -1010,10 +927,6 @@ impl PeerHandle {
     /// Start, end or moderate a call of `workspace_id`; the answer arrives
     /// as [`VoiceEvent::CallResult`](crate::voice::VoiceEvent::CallResult)
     /// for `request`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn voice_call(
         &self,
         workspace_id: u64,
@@ -1026,29 +939,17 @@ impl PeerHandle {
     /// Take part in `call` of `workspace_id` until [`Self::voice_leave`]:
     /// the session keeps the participation alive across reconnects and
     /// hands on its grants ([`crate::voice`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn voice_join(&self, workspace_id: u64, call: [u8; 32]) -> Result<(), String> {
         self.send(Command::VoiceJoin(workspace_id, call))
     }
 
     /// Leave the call of `workspace_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn voice_leave(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::VoiceLeave(workspace_id))
     }
 
     /// Show `showing` besides this session's voice in the call of
     /// `workspace_id` (its camera, a shared screen).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn voice_show(
         &self,
         workspace_id: u64,
@@ -1059,10 +960,6 @@ impl PeerHandle {
 
     /// Send input for a legacy window a member streams
     /// ([`tilo_relay_client::https::legacy_input`]) over the current HTTPS session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn legacy_input_then(
         &self,
         request: tilo_relay_protocol::legacy_window::InputRequest,
@@ -1074,10 +971,6 @@ impl PeerHandle {
     /// Tell the host which video codecs this page decodes
     /// ([`tilo_relay_client::https::legacy_codecs`]) over the current HTTPS session;
     /// `done` receives whether the host took the advert.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn legacy_codecs_then(
         &self,
         request: tilo_relay_protocol::legacy_window::CodecsRequest,
@@ -1088,10 +981,6 @@ impl PeerHandle {
 
     /// Post this person's own recent actions ([`tilo_relay_client::https::here`]) over
     /// the current HTTPS session; `done` receives who is here.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn here_then(
         &self,
         request: tilo_relay_protocol::web::HereRequest,
@@ -1102,10 +991,6 @@ impl PeerHandle {
 
     /// Send `request` to the host's room administration over the current
     /// HTTPS session; `done` receives the answer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn rooms_then(
         &self,
         request: tilo_relay_protocol::rooms::RoomsRequest,
@@ -1117,19 +1002,11 @@ impl PeerHandle {
     /// Ask the host which device runs the person's apps beside it (a
     /// node's session), over the current HTTPS session; `done` receives it,
     /// or `None` from a host that runs none.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn node_session_then(&self, done: NodeCompletion) -> Result<(), String> {
         self.send(Command::Node(done))
     }
 
     /// Drop the connection and reconnect now, also after a failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn reconnect(&self) -> Result<(), String> {
         self.send(Command::Reconnect)
     }
@@ -1137,10 +1014,6 @@ impl PeerHandle {
     /// Ask the host for every joined room's shared state again: the rooms
     /// are subscribed anew, the host replays their retained checkpoints and
     /// answers `Ready`. Offline, this reconnects now.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the session is closed.
     pub fn refresh(&self) -> Result<(), String> {
         self.send(Command::Refresh)
     }
@@ -1219,7 +1092,6 @@ impl PeerHandle {
         Ok(())
     }
 
-    /// Clear the failure of `subject`, if any.
     pub fn clear_failure(&self, subject: &FailureSubject) {
         if !lock(&self.shared)
             .status

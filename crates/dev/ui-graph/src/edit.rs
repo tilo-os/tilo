@@ -40,10 +40,6 @@ pub enum UiGraphEdit {
 
 impl UiDocument {
     /// Apply one edit. On failure the document is left unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns the structural, property, or validation error from the edit.
     pub fn apply_edit(&mut self, edit: UiGraphEdit) -> Result<(), UiGraphError> {
         match edit {
             UiGraphEdit::Insert {
@@ -67,10 +63,6 @@ impl UiDocument {
     }
 
     /// Apply every edit against one in-memory candidate, then publish once.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first failing edit. The document is unchanged on failure.
     pub fn apply_edits(&mut self, edits: Vec<UiGraphEdit>) -> Result<(), UiGraphError> {
         if edits.is_empty() {
             return Err(UiGraphError::EmptyEditBatch);
@@ -90,11 +82,6 @@ impl UiDocument {
     }
 
     /// Set or clear one serialized property via a dotted JSON path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the node is missing, the path is invalid, or the
-    /// resulting node fails schema validation.
     pub fn set_property(
         &mut self,
         id: &str,

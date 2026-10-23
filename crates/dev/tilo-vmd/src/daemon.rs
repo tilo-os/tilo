@@ -535,7 +535,6 @@ impl Daemon {
         Ok(())
     }
 
-    /// The sessions of every slot that has one.
     fn sessions(&mut self) -> Result<Vec<Session>, DaemonError> {
         Ok(self
             .stored_slots()?

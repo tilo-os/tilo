@@ -80,10 +80,6 @@ impl NativeCommittedView {
 }
 impl NativeWorkspaceOwner {
     /// Start authenticating a delivery descriptor for `room` with the host.
-    ///
-    /// # Errors
-    /// `key` is not the enrolled device, or the descriptor does not verify
-    /// against the pinned governor and host.
     pub fn begin_bootstrap(
         &self,
         room: RoomId,

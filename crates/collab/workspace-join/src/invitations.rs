@@ -17,7 +17,6 @@ use crate::MemberRole;
 pub struct IssueInvitationRequest {
     /// Caller-chosen idempotency key; never zero.
     pub request_id: [u8; 32],
-    /// The role the redeeming person gets.
     pub role: MemberRole,
     /// Restrict redemption to devices of this person.
     pub recipient_user_public_key: Option<[u8; 32]>,
@@ -30,7 +29,6 @@ pub struct IssueInvitationRequest {
     pub inviter_name: Option<String>,
 }
 
-/// An issued invitation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssuedInvitation {
     /// Digest of `signed_invitation`.
@@ -44,7 +42,6 @@ pub struct IssuedInvitation {
 pub struct CancelInvitationRequest {
     /// Caller-chosen idempotency key.
     pub request_id: [u8; 32],
-    /// The invitation to cancel.
     pub invite_id: [u8; 32],
 }
 
@@ -59,6 +56,5 @@ pub struct PendingInvitation {
     pub recipient_user_public_key: Option<[u8; 32]>,
     /// How it names its recipient.
     pub invitee_name: Option<String>,
-    /// When it expires.
     pub expires_at_ns: u64,
 }

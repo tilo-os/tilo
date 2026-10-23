@@ -117,7 +117,6 @@ pub fn room_resource(room: &str) -> TreePath {
     TreePath::room(room).kind(ROOM_KIND)
 }
 
-/// The node of one governance action.
 #[must_use]
 pub fn governance_action(room: &str, action: &str) -> TreePath {
     room_resource(room).action(action)
@@ -372,9 +371,6 @@ impl Preset {
         }
     }
 
-    /// # Errors
-    /// When the preset is unnamed, empty, has a rule covering no kind, or two
-    /// rules contradict on one node.
     pub fn validate(&self) -> Result<(), PresetError> {
         if self.name.trim().is_empty() {
             return Err(PresetError::Unnamed);
@@ -460,7 +456,6 @@ pub fn role_rules(role: Role, room: &str) -> Vec<Rule> {
     }
 }
 
-/// An Editor's rules, with `moderation` answering for the moderation node.
 fn editor_rules(room: &str, moderation_answer: Answer) -> Vec<Rule> {
     let room_node = TreePath::room(room);
     vec![
@@ -479,7 +474,6 @@ fn editor_rules(room: &str, moderation_answer: Answer) -> Vec<Rule> {
     ]
 }
 
-/// The preset a role stands for in `room`.
 #[must_use]
 pub fn role_preset(role: Role, room: &str) -> Preset {
     let description = match role {

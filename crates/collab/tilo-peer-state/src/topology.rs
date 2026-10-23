@@ -131,10 +131,6 @@ fn entries(value: &Value) -> Result<BTreeMap<(u64, u8), Value>, String> {
 /// Registry writes require pinned governance authority. Registered owners alone
 /// may change their entries; a legacy room with no registry remains authority-owned.
 /// Record routes are stable identities: changing a live binding is never a rename.
-///
-/// # Errors
-///
-/// Returns an error if `source` may not make the registry change.
 pub fn validate(
     before: Option<&AutoCommit>,
     after: &AutoCommit,

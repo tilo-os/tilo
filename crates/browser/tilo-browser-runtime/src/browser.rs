@@ -402,9 +402,7 @@ struct Mount {
     /// reached it since the last frame.
     peer: Option<u32>,
     replica_changed: Rc<std::cell::Cell<bool>>,
-    /// The focus presence last reported to the page.
     focus_presence: RefCell<Option<serde_json::Value>>,
-    /// The last `livePlace` the page was told.
     live_place: RefCell<Option<serde_json::Value>>,
     /// The last `liveWave` the page was told.
     live_wave: RefCell<Option<serde_json::Value>>,
@@ -841,10 +839,6 @@ fn unconfigure(canvas: &web_sys::HtmlCanvasElement) {
 
 /// Terminal page-host teardown: close every mount, stop the loop, then call
 /// `done`. A later mount starts a fresh loop.
-///
-/// # Errors
-///
-/// Rejects a second shutdown while one is pending.
 #[wasm_bindgen]
 pub fn shutdown(done: Function) -> Result<(), JsValue> {
     admit_runtime()?;
@@ -2827,11 +2821,6 @@ pub fn request_component_locus(id: u64, target: &str, observe: bool) -> Result<(
 /// be published now, the mount's permissions must allow it, its arguments
 /// must bind, and a confirmation policy requires `confirmed`. `window` is
 /// as in [`component_actions`].
-///
-/// # Errors
-///
-/// Rejects a closed mount, malformed arguments, or a refused action (the
-/// message starts with the door's error code).
 #[wasm_bindgen]
 #[allow(
     clippy::needless_pass_by_value,
@@ -3403,10 +3392,6 @@ pub fn font_demands(id: u64) -> Result<String, JsValue> {
 /// digest of `bytes` from `crypto.subtle.digest`, which runs natively off the
 /// main thread; the runtime checks it and the size against the canonical
 /// manifest compiled into this build instead of hashing the font again.
-///
-/// # Errors
-///
-/// Rejects a closed mount or bytes that fail verification.
 #[wasm_bindgen]
 pub fn install_font(id: u64, name: &str, bytes: Vec<u8>, sha256: &str) -> Result<bool, JsValue> {
     let (changed, wake) = with_mount(id, |m| {

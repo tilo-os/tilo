@@ -402,7 +402,6 @@ impl Converter<'_> {
             }
             at = self.doc.parent_of(at);
         };
-        // Create layers for any rooting elements on the way down.
         let mut current = found;
         for &n in chain.iter().rev() {
             if let Some(&li) = self.doc.layout_of.get(&n)
@@ -860,10 +859,6 @@ impl Converter<'_> {
 }
 
 /// Convert a snapshot of a `viewport`-sized page into frame `seq`.
-///
-/// # Errors
-///
-/// [`SnapshotError`] when the snapshot lacks its string table or documents.
 pub fn convert(snapshot: &Value, viewport: Point, seq: u64) -> Result<Frame, SnapshotError> {
     let doc0 = snapshot["documents"]
         .get(0)

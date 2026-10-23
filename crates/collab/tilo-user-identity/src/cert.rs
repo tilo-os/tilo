@@ -877,7 +877,6 @@ mod tests {
             foreign
         );
 
-        // Neither direction of flipping the marker survives the signature.
         let mut stripped = foreign;
         stripped.capabilities.foreign = false;
         assert_eq!(

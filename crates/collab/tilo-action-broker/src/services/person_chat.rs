@@ -4,9 +4,6 @@ use std::sync::Arc;
 /// The host must read and commit through its actual joined-room owner.
 pub trait PersonChatServices: Send + Sync {
     /// Freshly authorize the pair and return its private, body-free change lane.
-    ///
-    /// # Errors
-    /// Returns an error if subscriptions are unavailable or current pair authorization fails.
     fn subscribe(
         &self,
         _room: &str,
@@ -17,9 +14,6 @@ pub trait PersonChatServices: Send + Sync {
     }
 
     /// Execute a closed person-chat command with transport-certified authority.
-    ///
-    /// # Errors
-    /// Returns an error if the command is invalid, authorization fails, or the owner is unavailable.
     fn command(
         &self,
         room: &str,

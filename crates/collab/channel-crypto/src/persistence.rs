@@ -108,10 +108,6 @@ impl ChannelGroup {
     /// and serialization/encryption/I/O failures leave the previous file in
     /// place. The parent directory must be private and is created mode 0700
     /// on Unix when absent.
-    ///
-    /// # Errors
-    ///
-    /// Returns an explicit serialization, encryption, lock, or I/O error.
     pub fn save_sealed(&self, path: &Path, key: &VaultKey) -> Result<()> {
         let sealed = self.seal(key)?;
         tilo_files::native::atomic::write_private(path, &sealed).map_err(Error::Io)
@@ -119,10 +115,6 @@ impl ChannelGroup {
 
     /// This group's state sealed under `key`, as [`Self::save_sealed`]
     /// writes it, for a store that is not a file.
-    ///
-    /// # Errors
-    ///
-    /// Returns an explicit serialization or encryption error.
     pub fn seal(&self, key: &VaultKey) -> Result<Vec<u8>> {
         let mut state = self.snapshot()?;
         let encoded = postcard::to_allocvec(&state);

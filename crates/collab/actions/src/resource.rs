@@ -191,10 +191,6 @@ impl<I> ActionBinding<I> {
 
 impl ActionBinding<()> {
     /// Bind a nullary control to a nullary exported action.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the action is not exported or requires arguments.
     pub fn unit(resource: &Resource, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
         // Refuse a required-argument action at construction, not first click.
@@ -210,10 +206,6 @@ impl ActionBinding<()> {
 
     /// Look up the real exported spec by stable id, then create a nullary
     /// binding. Useful when the resource is assembled inline or generated.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `action_id` is not exported or requires arguments.
     pub fn unit_for(resource: &Resource, action_id: &str) -> Result<Self, ActionBindingError> {
         let spec = resource
             .actions
@@ -227,11 +219,6 @@ impl ActionBinding<()> {
     }
 
     /// Bind a control to a fixed, strictly validated JSON argument object.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the action is not exported or `arguments` violate
-    /// its parameter contract.
     pub fn static_json(
         resource: &Resource,
         spec: &ActionSpec,
@@ -253,11 +240,6 @@ impl ActionBinding<()> {
     }
 
     /// Look up the real exported spec by id, then bind fixed JSON arguments.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `action_id` is not exported or `arguments` violate
-    /// its parameter contract.
     pub fn static_json_for(
         resource: &Resource,
         action_id: &str,
@@ -1040,11 +1022,6 @@ impl ActionSpec {
     }
 
     /// Strict argument validation without invoking an encoder.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`ArgError`] when the deferred declaration is malformed or
-    /// `supplied` does not bind to the declared parameters.
     pub fn validate_json(
         &self,
         supplied: &serde_json::Map<String, serde_json::Value>,
@@ -1925,11 +1902,6 @@ impl ActionSpec {
     /// refused here, and the caller never receives an [`EncodedAction`] to
     /// dispatch — so a bad call cannot become a partial mutation, because
     /// nothing was ever handed to the executor.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ArgError`] when the supplied arguments do not satisfy this
-    /// action's declared parameters.
     pub fn build_args(
         &self,
         supplied: impl IntoIterator<Item = (String, ArgValue)>,
@@ -1940,11 +1912,6 @@ impl ActionSpec {
     }
 
     /// [`build_args`](Self::build_args) for arguments that arrived as JSON.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ArgError`] when a value is unrepresentable or the supplied
-    /// arguments do not satisfy this action's declared parameters.
     pub fn build_json(
         &self,
         supplied: &serde_json::Map<String, serde_json::Value>,
@@ -2493,7 +2460,6 @@ mod tests {
                 .unwrap()
                 .clone()
         );
-        // The typed projection and the palette's one-field input build the same bytes.
         assert_eq!(named.build_json(&typed).unwrap(), encode("Plan"));
         let ActionInput::Prompted { prompt, build, .. } = &named.input else {
             panic!("a prompted action prompts");

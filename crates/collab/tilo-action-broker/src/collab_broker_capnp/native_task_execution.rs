@@ -62,7 +62,6 @@ impl ChildWait {
         }))
     }
 
-    /// Whether `update` is news to the caller.
     fn arrived(&self, update: &tilo_actions::InvocationUpdate) -> bool {
         update.is_terminal()
             || self

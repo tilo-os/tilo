@@ -94,11 +94,6 @@ impl LoadedProvider {
     }
 
     /// Load a provider module from in-memory bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the bytes are not a valid WebAssembly module or do
-    /// not implement the provider ABI.
     pub fn from_bytes(engine: &Engine, bytes: &[u8], limits: Limits) -> anyhow::Result<Self> {
         let module =
             Module::new(engine, bytes).map_err(|e| anyhow::anyhow!("invalid module: {e}"))?;
@@ -179,33 +174,18 @@ impl LoadedProvider {
     }
 
     /// Run `detect` on a file head.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `CodecError` if the guest traps, exceeds its limits, or
-    /// returns a malformed response.
     pub fn detect(&self, head: &[u8]) -> Result<Detected, CodecError> {
         let response = self.call(exports::DETECT, head)?;
         decode_detected(&response).map_err(|e| CodecError::trap(e.to_string()))
     }
 
     /// Run `import`. Returns the canonical CRDT bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns the guest's `CodecError`, or one describing a trap, exhausted
-    /// limit, or malformed response.
     pub fn import_doc(&self, bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
         let response = self.call(exports::IMPORT, bytes)?;
         decode_result(response).map_err(|e| CodecError::trap(e.to_string()))?
     }
 
     /// Run `export`. Returns the file-format bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns the guest's `CodecError`, or one describing a trap, exhausted
-    /// limit, or malformed response.
     pub fn export_doc(&self, canonical: &[u8]) -> Result<Vec<u8>, CodecError> {
         let response = self.call(exports::EXPORT, canonical)?;
         decode_result(response).map_err(|e| CodecError::trap(e.to_string()))?

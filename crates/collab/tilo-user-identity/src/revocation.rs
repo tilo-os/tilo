@@ -177,11 +177,6 @@ impl RevocationList {
     ///
     /// Wrong-user signatures return `Err(BadSignature)` — callers
     /// should log + drop, not propagate.
-    ///
-    /// # Errors
-    ///
-    /// Returns anything [`verify_revocation_entry`] can return if
-    /// `entry`'s signature does not verify.
     pub fn insert(&mut self, entry: RevocationEntry) -> Result<bool, RevocationError> {
         verify_revocation_entry(&entry)?;
         let key = entry.revoked_device_public_key;
@@ -310,7 +305,6 @@ mod tests {
         }
     }
 
-    /// Lists dedup with the earliest revocation winning and reject a bad signature.
     #[test]
     fn revocation_lists_dedup_and_reject_bad_signatures() {
         // Phase: list_dedups_earliest_wins.

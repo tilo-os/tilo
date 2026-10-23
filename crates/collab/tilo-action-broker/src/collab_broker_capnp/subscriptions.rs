@@ -115,8 +115,6 @@ mod tests {
         state.ensure_channel(&note.channel_key());
         state.ensure_channel(&other.channel_key());
         state.window_instances.lock().unwrap().insert(2, 77);
-        // The app's second window, opened in its process on a connection
-        // of its own.
         let second = CrdtRoute::record("so.tilo.notes", "room-1", "note-2");
         state.ensure_channel(&second.channel_key());
         state.window_instances.lock().unwrap().insert(4, 78);

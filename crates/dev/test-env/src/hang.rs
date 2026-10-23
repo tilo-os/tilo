@@ -49,10 +49,6 @@ const POLL_MIN: Duration = Duration::from_millis(1);
 const POLL_MAX: Duration = Duration::from_millis(20);
 
 /// How long any test waits for something before calling it hung.
-///
-/// # Panics
-///
-/// If [`HANG_BOUND_ENV`] is set to anything but a whole number of seconds.
 pub fn hang_bound() -> Duration {
     static BOUND: OnceLock<Duration> = OnceLock::new();
     *BOUND.get_or_init(|| match std::env::var(HANG_BOUND_ENV) {
@@ -64,10 +60,6 @@ pub fn hang_bound() -> Duration {
 }
 
 /// The instant [`hang_bound`] from now.
-///
-/// # Panics
-///
-/// As [`hang_bound`] does, or if that bound does not fit in an [`Instant`].
 pub fn hang_deadline() -> Instant {
     Instant::now()
         .checked_add(hang_bound())
@@ -83,20 +75,12 @@ fn hung(what: &dyn Display) -> ! {
 }
 
 /// Poll `condition` until it holds.
-///
-/// # Panics
-///
-/// Naming `what`, if it still does not hold after [`hang_bound`].
 #[track_caller]
 pub fn wait_until(what: impl Display, mut condition: impl FnMut() -> bool) {
     wait_for(what, || condition().then_some(()));
 }
 
 /// Poll `probe` until it returns a value, and return that value.
-///
-/// # Panics
-///
-/// Naming `what`, if it still returns `None` after [`hang_bound`].
 #[track_caller]
 pub fn wait_for<T>(what: impl Display, mut probe: impl FnMut() -> Option<T>) -> T {
     let deadline = hang_deadline();
@@ -115,11 +99,6 @@ pub fn wait_for<T>(what: impl Display, mut probe: impl FnMut() -> Option<T>) -> 
 }
 
 /// Receive the next message from `receiver`.
-///
-/// # Panics
-///
-/// Naming `what`, if nothing arrives within [`hang_bound`] or every sender
-/// is dropped first.
 #[track_caller]
 pub fn recv<T>(what: impl Display, receiver: &Receiver<T>) -> T {
     match receiver.recv_timeout(hang_bound()) {
@@ -135,10 +114,6 @@ pub fn recv<T>(what: impl Display, receiver: &Receiver<T>) -> T {
 ///
 /// The bound starts at the first poll and is kept by a wall-clock timer
 /// thread, so it holds under a paused or mocked runtime clock too.
-///
-/// # Panics
-///
-/// Naming `what`, if `future` is still pending after [`hang_bound`].
 #[track_caller]
 pub fn within<F: IntoFuture>(what: impl Display, future: F) -> Within<F::IntoFuture> {
     Within {

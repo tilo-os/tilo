@@ -539,10 +539,8 @@ mod tests {
         };
         let encoded = EncodedAction::encode(COUNTER_TYPE, &action).unwrap();
 
-        // A plays locally, producing an envelope to replicate.
         let env = apply_local(&mut a, &action, encoded).unwrap();
 
-        // B replays the envelope from the same base state.
         replay(&mut b, &env, &registry()).unwrap();
 
         // Identical *history*, not just identical materialized values.

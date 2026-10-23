@@ -1583,7 +1583,6 @@ mod tests {
             .map(|file| file.name)
             .collect();
         assert!(packaged.iter().any(|name| name == "arrival.mjs"));
-        // Every locale `arrivalLocale` picks, and each one shipped beside it.
         let shipped = std::fs::read_dir(sdk.join(RUNTIME).join("web/locales"))
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap());

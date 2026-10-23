@@ -30,7 +30,6 @@ pub const VIRT_MANAGER_TIP: &str = "watch it in virt-manager: File > Add Connect
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HostKind {
-    /// An image-based Linux host with rpm-ostree.
     RpmOstree,
     /// An image-based Linux host with bootc only: packages go in the image.
     Bootc,
@@ -140,7 +139,6 @@ pub const TOOLS: &[&str] = &[
     "zypper",
 ];
 
-/// The qemu system emulator for `arch`.
 pub fn qemu_system(arch: &str) -> String {
     format!("qemu-system-{arch}")
 }
@@ -289,7 +287,6 @@ impl HostFacts {
             .map(PathBuf::as_path)
     }
 
-    /// `tool` in `dir`, if `PATH` has it there.
     fn beside(&self, tool: &str, dir: &Path) -> Option<&Path> {
         self.path
             .get(tool)?
@@ -364,9 +361,6 @@ pub fn default_adapter(os: &str) -> &'static str {
 }
 
 /// The default adapter, if it works here.
-///
-/// # Errors
-/// What is missing and how to install it.
 pub fn auto(facts: &HostFacts) -> Result<Choice, Missing> {
     if facts.os == "windows" && facts.arch == "aarch64" && facts.hyperv != Some(true) {
         return evaluate(facts, "whpx");
@@ -377,9 +371,6 @@ pub fn auto(facts: &HostFacts) -> Result<Choice, Missing> {
 /// Evaluate a registered or requested VM, honoring explicit software emulation.
 /// Native libvirt VMs still require KVM; emulated ones require the same tools
 /// and user session but not a hardware virtualization device.
-///
-/// # Errors
-/// What is missing and how to install it.
 pub fn evaluate_vm(facts: &HostFacts, adapter: &str, emulated: bool) -> Result<Choice, Missing> {
     if adapter == "libvirt" && emulated {
         let tools = libvirt_tools(facts)?;
@@ -394,9 +385,6 @@ pub fn evaluate_vm(facts: &HostFacts, adapter: &str, emulated: bool) -> Result<C
 }
 
 /// Can `adapter` work here?
-///
-/// # Errors
-/// What is missing and how to install it.
 pub fn evaluate(facts: &HostFacts, adapter: &str) -> Result<Choice, Missing> {
     let missing = |detail: String, fix: String| Missing {
         adapter: adapter.to_owned(),
@@ -504,9 +492,6 @@ pub fn evaluate(facts: &HostFacts, adapter: &str) -> Result<Choice, Missing> {
 /// virsh, the qemu-img beside it, and passt, which the VM's network runs on.
 /// tilo-vm writes the domain XML itself, so nothing else (no virt-install,
 /// no libvirt storage or network driver) is needed.
-///
-/// # Errors
-/// Which is missing, or a qemu-img from another toolchain.
 pub fn libvirt_tools(facts: &HostFacts) -> Result<Vec<ToolPath>, Missing> {
     let missing = |detail: String| Missing {
         adapter: "libvirt".into(),

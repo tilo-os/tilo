@@ -112,7 +112,6 @@ pub const PEOPLE_AUDIENCE_TAG: &str = "audience:people";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Audience {
-    /// Listed for people and agents alike.
     #[default]
     Everyone,
     /// Listed for people only: an action whose point is what a person sees
@@ -368,11 +367,6 @@ read_through_json_value!(ResultSpec);
 
 impl ResultSpec {
     /// Check that a completed action returned the shape it advertised.
-    ///
-    /// # Errors
-    ///
-    /// Returns a human-readable contract violation when `output` does not
-    /// match this result specification.
     pub fn validate(&self, output: &crate::ActionOutput) -> Result<(), String> {
         match self {
             // An action with no result may still name what it created.
@@ -496,7 +490,6 @@ pub struct Offload {
     /// Whether it needs a GPU.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gpu: bool,
-    /// CPU time ceiling, in milliseconds.
     pub cpu_time_ms: u64,
     /// Memory ceiling, in bytes. The inputs count against it.
     pub memory_bytes: u64,

@@ -76,7 +76,6 @@ pub enum ChannelAccess {
     /// Asked the steward for access and not admitted yet. Nothing can be
     /// sealed or opened; the endpoint shows a waiting state.
     Waiting,
-    /// This device was removed from the channel.
     Removed,
     /// Nobody can admit this device: the room's governor is unknown here.
     Unavailable,
@@ -87,7 +86,6 @@ pub enum ChannelAccess {
 /// before it changes any state.
 #[derive(Debug, Clone)]
 pub enum InboundChannelGovernance {
-    /// A frame from a channel's steward.
     Frame {
         room: RoomId,
         frame: Box<collab_types::MlsGovernanceFrameV1>,
@@ -539,7 +537,6 @@ impl ChannelEncryption {
         }
     }
 
-    /// Whether an unopened channel waits for a policy announcement.
     fn unopened_waits_for_policy(&self) -> bool {
         self.unopened.values().any(|entry| entry.retry.is_none())
     }
@@ -1160,11 +1157,6 @@ impl ChannelKeyAccess {
     /// channel's current epoch, and only while this device reads the
     /// channel; anything else is refused. Call it only once the envelope's
     /// author, role, route and signature were verified.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the write is not sealed, this device holds no
-    /// current key for its channel, or the payload does not open.
     pub fn open_new_write(&self, room: RoomId, envelope: &SignedOp) -> Result<Vec<u8>, String> {
         let (keys, metadata, ciphertext) = self.sealed_parts(room, envelope)?;
         keys.open_current_content(envelope.artifact, &metadata, &ciphertext)
@@ -1217,12 +1209,6 @@ impl ChannelKeyAccess {
     /// sequence: the identical ciphertext while its epoch is the channel's
     /// current one, else its content re-sealed under the current epoch. The
     /// plaintext never leaves this call.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the write is not sealed with a content key,
-    /// this device holds no current key for its channel, or the payload
-    /// does not open.
     pub fn renew_sealed(
         &self,
         room: RoomId,
@@ -1534,7 +1520,6 @@ pub mod testing {
     }
 
     impl Endpoint {
-        /// Endpoint `id` of `room`, joined to its broadcast.
         pub fn join(room: &Arc<Room>, room_id: RoomId, id: usize) -> Self {
             room.queues.lock().unwrap().entry(id).or_default();
             Self {
@@ -1981,7 +1966,6 @@ mod tests {
                 .contains(&public(2))
         );
 
-        // Lifting the Deny admits the device again when it asks.
         policy.withheld.lock().unwrap().clear();
         run(&mut [&mut owner, &mut laptop], &mut now, 5);
         assert_eq!(
@@ -2092,7 +2076,6 @@ mod tests {
         }
         assert!(epoch(&mut laptop, draft, now).is_some());
 
-        // Lifting the Deny admits the device again when it asks.
         policy.withheld_apps.lock().unwrap().clear();
         run(&mut [&mut owner, &mut laptop], &mut now, 5);
         for channel in [payroll, q3] {
@@ -2262,7 +2245,6 @@ mod tests {
             laptop.service.access(room_id, channel, now),
             ChannelAccess::Waiting
         ));
-        // Both opened a channel, which wakes their pumps.
         let mut parked = [Some(now), Some(now)];
         run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 5);
         assert!(matches!(

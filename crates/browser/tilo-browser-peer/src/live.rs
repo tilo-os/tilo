@@ -177,10 +177,6 @@ impl LiveState {
 
     /// Merge a local presence update and encode the frame to publish.
     /// `update` receives the current presence to modify.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the result violates the wire bounds.
     pub fn publish_presence(
         &mut self,
         now_ms: u64,

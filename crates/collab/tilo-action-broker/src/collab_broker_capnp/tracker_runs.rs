@@ -111,10 +111,6 @@ type Confirmed = (serde_json::Map<String, serde_json::Value>, String);
 /// How the person's answer to `run`'s question lets the child with
 /// `arguments` start, `draft` being what those arguments render. `None` when
 /// the run asked nothing about exactly these arguments.
-///
-/// # Errors
-/// The question waits, the person declined it, or the draft they answered
-/// is not the one these arguments render.
 pub(super) fn answered(
     run: &TrackerRun,
     (resource, action): (&str, &str),
@@ -423,9 +419,6 @@ impl CapnpBrokerState {
 
     /// Authorize `requirement` for `run`'s agent, wherever the run is kept:
     /// the tracker for an issue's run, else the room's task owner.
-    ///
-    /// # Errors
-    /// The action is not allowed, or waits for the person's confirmation.
     pub(super) fn authorize_task_action(
         &self,
         run: &PendingTaskRun,

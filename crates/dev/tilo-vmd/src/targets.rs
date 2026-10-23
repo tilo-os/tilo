@@ -216,7 +216,6 @@ mod tests {
 
     #[test]
     fn build_targets_are_directory_safe_and_evicted_least_recently_used() {
-        // Phase `ids_are_directory_safe`.
         {
             assert!(valid_worktree_id("agent-a74-3f9c1a2b"));
             assert!(!valid_worktree_id("../etc"));
@@ -224,7 +223,6 @@ mod tests {
             assert!(!valid_worktree_id(""));
             assert!(!valid_worktree_id(&"a".repeat(65)));
         }
-        // Phase `eviction_is_least_recently_used_first`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = store_with(
@@ -267,7 +265,6 @@ mod tests {
                 ["mid", "new"]
             );
         }
-        // Phase `touch_keeps_the_measured_size`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = TargetStore::new(root.path());

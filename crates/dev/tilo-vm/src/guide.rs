@@ -248,7 +248,6 @@ mod tests {
                 "tilo-vm seat claim",
                 "ends whoever is logged in",
                 "tilo-vm shot",
-                // Board images of a build, and private ones through this host.
                 "tilo-vm:<ref>-<sha7>-<board>",
                 "credentials never reach the device",
                 "passphrase",

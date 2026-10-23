@@ -328,8 +328,6 @@ impl Boot {
         write_atomic(&self.state_path, &bytes)
     }
 
-    /// # Errors
-    /// Neither loader is present.
     pub fn loader(&self) -> Result<Loader, DaemonError> {
         // GRUB sets LoaderInfo too (its `bli` module), so read who wrote it.
         let info = fs::read(LOADER_INFO_EFIVAR)
@@ -748,7 +746,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn boot_entries_carry_one_kernel_release_and_the_running_command_line() {
-        // Phase `a_kernel_layer_carries_one_release`.
         {
             let dir = tempfile::tempdir().unwrap();
             assert!(matches!(
@@ -768,7 +765,6 @@ mod tests {
             let error = kernel_in_layer(dir.path()).unwrap_err();
             assert!(error.to_string().contains("2 kernels"), "{error}");
         }
-        // Phase `entries_take_the_running_command_line_without_loader_words`.
         {
             assert_eq!(
                 boot_options(
@@ -788,7 +784,6 @@ mod tests {
             assert_eq!(entry_field(&text, "options"), Some("root=x rw"));
             assert_eq!(entry_field(&text, "version"), Some("7.2.5+dev"));
         }
-        // Phase `entry_paths_follow_the_existing_entries`.
         {
             let boot = tempfile::tempdir().unwrap();
             fs::write(boot.path().join("vmlinuz-6.1"), b"k").unwrap();
@@ -804,7 +799,6 @@ mod tests {
             );
             assert_eq!(path_prefix(boot.path(), &[]), "");
         }
-        // Phase `the_running_entry_is_found_by_its_boot_image`.
         {
             let boot = tempfile::tempdir().unwrap();
             fs::write(boot.path().join("vmlinuz-6.19"), b"k").unwrap();
@@ -833,7 +827,6 @@ mod tests {
             );
             assert_eq!(running_entry("ro root=UUID=1", &entries, boot.path()), None);
         }
-        // Phase `only_the_new_entry_and_the_fallback_survive`.
         {
             let existing = [
                 "fedora-6.1".to_string(),
@@ -850,7 +843,6 @@ mod tests {
                 2
             );
         }
-        // Phase `the_image_dracut_arguments_are_complete_pairs`.
         {
             // Every option that takes a value has one, and the value is no option.
             for pair in IMAGE_DRACUT_ARGS.windows(2) {
@@ -873,7 +865,6 @@ mod tests {
 
     #[test]
     fn boot_loaders_are_identified_and_name_entries_their_way() {
-        // Phase `loader_info_names_the_loader`.
         {
             let var = |text: &str| {
                 let mut bytes = vec![7, 0, 0, 0];
@@ -889,7 +880,6 @@ mod tests {
             assert_eq!(efivar_string(&var("GRUB 2.12")), "GRUB 2.12");
             assert_eq!(efivar_string(&[7, 0]), "");
         }
-        // Phase `loaders_name_entries_their_way`.
         {
             assert_eq!(Loader::SystemdBoot.entry_id("tilo-vm-a"), "tilo-vm-a.conf");
             assert_eq!(Loader::Grub.entry_id("tilo-vm-a"), "tilo-vm-a");

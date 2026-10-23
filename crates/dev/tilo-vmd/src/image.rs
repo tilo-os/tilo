@@ -43,7 +43,6 @@ use crate::slots::{SlotStore, now};
 const IMAGE_FILE: &str = "image.json";
 /// The last [`ImageChange`].
 const CHANGE_FILE: &str = "image-change.json";
-/// The layers held on the booted image.
 const HELD_FILE: &str = "held-layers.json";
 /// The notice the desktop shows about held layers.
 pub const HELD_NOTICE: &str = "held-layers.json";
@@ -63,7 +62,6 @@ pub fn running_image() -> Option<String> {
 /// What a layer is checked against on the booted image.
 #[derive(Debug, Clone, Default)]
 pub struct BootedImage {
-    /// As [`booted_image`] names it.
     pub id: String,
     /// The base digest layers record (`base.json`'s `image_digest`).
     pub digest: Option<String>,
@@ -197,13 +195,11 @@ pub fn last_change(root: &Path) -> Option<ImageChange> {
     read_json(&root.join(CHANGE_FILE))
 }
 
-/// The layers held on the booted image.
 #[must_use]
 pub fn held(root: &Path) -> Vec<HeldLayer> {
     read_json(&root.join(HELD_FILE)).unwrap_or_default()
 }
 
-/// The hashes of [`held`].
 #[must_use]
 pub fn held_hashes(root: &Path) -> BTreeSet<String> {
     held(root).into_iter().map(|h| h.layer).collect()
@@ -465,7 +461,6 @@ mod tests {
         let vmd = import(&layers, "vmd");
         swap(&slots, "a", "shell", &shell, session_info());
         swap(&slots, "vm", "vmd", &vmd, vm_info());
-        // The marker an older tilo-vmd left to delete layers later.
         std::fs::write(root.path().join(COLLECT_MARKER), b"").unwrap();
         let before = state(&slots, &layers);
 
@@ -577,7 +572,6 @@ mod tests {
         );
         assert_eq!(held(root.path()), change.held);
 
-        // A swap that names the held shell brings it back deliberately.
         release(root.path(), &shell).unwrap();
         assert_eq!(
             layers.merged_paths(&generation.layers).unwrap(),
@@ -589,8 +583,6 @@ mod tests {
         );
     }
 
-    /// The record the laptop holds from the older tilo-vmd still reads as
-    /// what happened.
     #[test]
     fn a_drop_an_older_tilo_vmd_recorded_still_reads_as_one() {
         let record = r#"{"from": null, "to": "composefs:1c9ab8", "at": "2026-10-19T19:32:21Z",

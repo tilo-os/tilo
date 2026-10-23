@@ -135,7 +135,6 @@ impl Refusal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Role {
-    /// The device answering, over the dialer's nonce.
     Device = 1,
     /// The dialer, over the device's nonce.
     Administrator = 2,
@@ -148,7 +147,6 @@ pub struct Binding {
     pub device: [u8; 32],
 }
 
-/// The digest a proof signs.
 pub fn proof_digest(role: Role, nonce: &[u8; 32], binding: &Binding) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(PROOF_TAG);
@@ -172,7 +170,6 @@ pub fn prove(
         .to_vec()
 }
 
-/// Whether `proof` is `device_public_key`'s proof for `role`.
 pub fn proof_holds(
     device_public_key: &[u8; 32],
     proof: &[u8],
@@ -288,9 +285,6 @@ pub fn trust_device(
 }
 
 /// A fresh challenge nonce.
-///
-/// # Errors
-/// When the system has no randomness to give.
 pub fn nonce() -> std::io::Result<[u8; 32]> {
     let mut nonce = [0_u8; 32];
     getrandom::fill(&mut nonce).map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -406,7 +400,6 @@ mod tests {
         let none = RevocationList::new();
         let admin = person.certify(&key, DeviceCapabilities::administrator());
         assert_eq!(admit(&admin, &person.user(), &none, 50), Ok(()));
-        // Every preset without the grant is refused, the primary too.
         for preset in [
             DeviceCapabilities::primary(),
             DeviceCapabilities::member(),

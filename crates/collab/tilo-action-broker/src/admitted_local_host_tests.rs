@@ -819,7 +819,6 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
             assert_eq!(receipt.invocation, request.invocation);
             let _lease = local_host_lease(&rig, &caller, request.invocation).await;
 
-            // The admission lent to that dispatch ended with the call.
             let before = verifications();
             local_host_answer(host.query(
                 &caller,

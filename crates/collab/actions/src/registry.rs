@@ -147,9 +147,6 @@ pub fn decode_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::E
 /// A `T` from the payload of an action of type `type_id`, like
 /// [`decode_json`]: a group written with what its members share once
 /// ([`crate::group_form`]) reads as the list of them.
-///
-/// # Errors
-/// Why the payload is not a `T`.
 pub fn decode_payload<T: DeserializeOwned>(
     type_id: &str,
     payload: &[u8],

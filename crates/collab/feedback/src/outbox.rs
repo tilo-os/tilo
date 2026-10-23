@@ -43,10 +43,6 @@ pub struct Outbox {
 
 impl Outbox {
     /// Restore immutable pending submissions from the host's durable store.
-    ///
-    /// # Errors
-    /// Refuses concurrent ownership, corrupt/oversized data, or pending writes
-    /// that the host has not committed. No malformed record is silently skipped.
     pub fn open(store: Rc<dyn DurableStore>, key: StorageKey) -> Result<Self, Error> {
         let lease = store.lease(&key)?;
         store.flush(Some(&key))?;
@@ -83,9 +79,6 @@ impl Outbox {
 
     /// Persist an approved payload before the transport may see it. Queueing the
     /// identical id/payload twice is idempotent; reusing an id for edits fails.
-    ///
-    /// # Errors
-    /// Refuses invalid/conflicting submissions, a full outbox or a storage error.
     pub fn queue(&mut self, submission: Submission) -> Result<(), Error> {
         submission.validate()?;
         if let Some(existing) = self.snapshot.entries.get(&submission.id) {

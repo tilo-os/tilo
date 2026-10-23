@@ -33,7 +33,6 @@ mod tests {
         let v5 = peer.durable().unwrap();
         let decoded: DurableV5<'_> = outer::decode(&v5, limits()).unwrap();
         assert_eq!(postcard::to_allocvec(&decoded).unwrap(), v5);
-        // The exact index remains a borrow of the literal original envelope.
         assert!(decoded.exact.as_ptr() >= v5.as_ptr());
         assert!(decoded.exact.as_ptr_range().end <= v5.as_ptr_range().end);
     }

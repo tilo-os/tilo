@@ -51,10 +51,6 @@ fn persist(doc: &Map<String, Value>) -> std::io::Result<()> {
 
 /// Seed the profile's settings with the host's `json` object unless it has a
 /// stored document. `true` when the host's document was taken.
-///
-/// # Errors
-///
-/// `json` is not an object, or the store refuses it.
 pub fn provide(store: &Rc<MemoryStore>, json: &str) -> Result<bool, String> {
     if store.read(&key()).map_err(|e| e.to_string())?.is_some() {
         return Ok(false);

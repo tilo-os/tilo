@@ -283,7 +283,6 @@ fn registry_hot_reload() {
         .unwrap();
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
-        // Start empty.
         let h = HostHarness::new("").unwrap();
         let client = h.connect().await.unwrap();
         let mut list = client.list_request();

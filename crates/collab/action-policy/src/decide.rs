@@ -138,7 +138,6 @@ impl<'g> Authority<'g> {
         }
     }
 
-    /// Bounds the authority by a delegation.
     #[must_use]
     pub fn bounded_by(mut self, bound: Party<'g>) -> Self {
         self.bounds.push(bound);

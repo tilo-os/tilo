@@ -69,11 +69,6 @@ impl Payload {
     }
 
     /// Decode one frame's bytes.
-    ///
-    /// # Errors
-    ///
-    /// [`WireError`] for oversized or malformed bytes. A blob's hash is the
-    /// receiver's to verify before it trusts the bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
         if bytes.len() > MAX_PAYLOAD_BYTES {
             return Err(WireError::TooLarge(bytes.len()));

@@ -1,4 +1,3 @@
-//! Cold activation exercises the host launcher service and the real Writer UI owner.
 use super::*;
 use crate::services::{LaunchPlace, LaunchableApplication, LauncherServices};
 use app_framework::framework::testing::HeadlessApp;

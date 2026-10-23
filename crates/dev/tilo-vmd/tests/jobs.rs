@@ -209,7 +209,6 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
         .unwrap();
         assert!(record["bytes"].as_u64().unwrap() > 0);
 
-        // The same build again is the same layer.
         let (again, _) = run(root.path(), &path, &shell());
         assert!(matches!(
             again.result,

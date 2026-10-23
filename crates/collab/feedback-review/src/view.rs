@@ -99,7 +99,6 @@ struct Segment {
     hidden: bool,
 }
 
-/// One text as a model sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelText {
     pub step: u32,
@@ -303,7 +302,6 @@ mod tests {
         let name = body.shown.find('\u{2039}').unwrap();
         assert_eq!(body.original_span(name, name + 3), None);
         assert_eq!(body.original_span(0, name + 3), None);
-        // Spanning a whole placeholder addresses the original value it hides.
         let comma = body.shown.find(',').unwrap();
         let spanning = body.original_span(0, comma).unwrap();
         assert_eq!(

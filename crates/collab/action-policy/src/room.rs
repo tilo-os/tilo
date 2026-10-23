@@ -269,7 +269,6 @@ impl RoomPolicy {
         }
     }
 
-    /// The grant that blocks `person`, given by `granted_by`.
     #[must_use]
     pub fn block(&self, person: &str, granted_by: Subject) -> Grant {
         roles::block_grant(&self.room, person, granted_by)
@@ -312,7 +311,6 @@ impl RoomPolicy {
         subjects
     }
 
-    /// A person's own authority in the room.
     #[must_use]
     pub fn party(&self, person: &str) -> Party<'_> {
         let party = Party::new(self.subjects_of(person), &self.grants);
@@ -478,9 +476,6 @@ impl RoomPolicy {
 
     /// Whether `actor_person` (acting through `actor`) may invite someone with
     /// `role`. An invite never carries more than the inviter's role.
-    ///
-    /// # Errors
-    /// When the invite action is not granted or `role` exceeds the inviter's.
     pub fn check_invite(
         &self,
         actor_person: &str,

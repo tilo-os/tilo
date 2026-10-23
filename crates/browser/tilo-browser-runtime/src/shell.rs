@@ -212,10 +212,6 @@ impl DesktopChromeSource for PageChrome {
 }
 
 impl PageChrome {
-    /// Whether this desktop's person may ask for `command` on the active
-    /// workspace: the desktop's one policy
-    /// ([`tilo_desktop_model::commands::may_command`]), asked before a
-    /// control is offered and again before the change is applied.
     fn may(&self, command: &DesktopCommand) -> Result<(), String> {
         let standing = self.shared.standing_of(&self.room.author);
         let authors = self.room.authors.borrow();
@@ -244,7 +240,6 @@ impl PageChrome {
             .read(|tree| offered_edits(&standing, &authors, tree))
     }
 
-    /// Who is here, placed in `tree`.
     fn people(&self, tree: &DesktopTree) -> Vec<tilo_desktop::here::Person> {
         here_people(&self.here, &self.shared, tree)
     }
@@ -471,9 +466,7 @@ pub(crate) struct BrowserShell {
     menu_shown: Cell<bool>,
     offers: HostOffers,
     requests: HostRequests,
-    /// The menu behind the bar's workspace name.
     workspace_menu: WorkspaceMenu,
-    /// The card behind the bar's own avatar.
     profile: ProfileCard,
     /// The People popover the bar's avatars open.
     people: CollaboratorsOverlay,
@@ -1085,7 +1078,6 @@ impl BrowserShell {
         true
     }
 
-    /// Give the active workspace `name`.
     fn rename_workspace(&self, name: String) {
         let unchanged = self.handle.read(|tree| {
             tree.active_workspace()
@@ -1982,7 +1974,6 @@ mod tests {
         assert_eq!(offers("owner", Some(Role::Owner)), all);
         // Until the room has answered, nothing is offered to take back.
         assert_eq!(offers(GUEST, None), none);
-        // A desktop of one's own is theirs.
         let own = crate::desktop::Standing::default();
         assert_eq!(offered_edits(&own.of(GUEST), &authors, &tree), all);
     }

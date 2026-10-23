@@ -137,11 +137,6 @@ impl ApprovalRequest {
     }
 
     /// Sign a new request with the requester's device key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid purpose or time window, a zero
-    /// identifier/challenge, or a signing key that is not the requester.
     pub fn sign(mut self, key: &ed25519_dalek::SigningKey) -> Result<Self, ApprovalError> {
         if key.verifying_key().to_bytes() != self.requester_device {
             return Err(ApprovalError::WrongDevice);
@@ -153,11 +148,6 @@ impl ApprovalRequest {
 
     /// Verify the requester's root-certified identity, signature, target, and
     /// validity window.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any binding, certificate, signature, purpose, or
-    /// time constraint is invalid.
     pub fn verify_for(
         &self,
         requester_cert: &DeviceCert,
@@ -234,11 +224,6 @@ struct DeviceApprovalView<'a> {
 
 impl DeviceApproval {
     /// Produce an exact response after the approver has shown trusted local UI.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the key is not the requested approver or the
-    /// decision falls outside the request lifetime.
     pub fn sign_for(
         request: &ApprovalRequest,
         approved: bool,
@@ -286,11 +271,6 @@ pub struct ApprovalLedger {
 
 impl ApprovalLedger {
     /// Verify and consume one positive response exactly once.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a denial, wrong/expired device certificate,
-    /// signature or request mismatch, stale decision, or replay.
     pub fn consume(
         &mut self,
         request: &ApprovalRequest,

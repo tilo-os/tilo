@@ -23,9 +23,6 @@ use crate::vmbuild::sh_quote;
 
 /// The tag of the locally built images: `TILO_LOCAL_TAG`, `latest` when unset,
 /// so builds from different checkouts on one host can keep their images apart.
-///
-/// # Errors
-/// A value that is not an image tag.
 pub fn local_tag() -> Result<String, CliError> {
     parse_local_tag(std::env::var("TILO_LOCAL_TAG").ok().as_deref())
 }
@@ -68,7 +65,6 @@ pub const BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 /// The OCI layout in the VM that bootc switches to; in /var, so it survives
 /// the switch, and each upgrade only adds the blobs that changed.
 pub const VM_LAYOUT: &str = "/var/lib/tilo-vm/image";
-/// The tag inside that layout.
 pub const LAYOUT_TAG: &str = "tilo-vm";
 /// The bootc image reference of [`VM_LAYOUT`].
 pub fn layout_imgref() -> String {
@@ -209,7 +205,6 @@ pub fn ci_ref_candidates(
     CiCandidates { dev_images, bases }
 }
 
-/// `skopeo list-tags` for one repository.
 pub fn list_tags_command(repository: &str) -> CommandLine {
     CommandLine::new("skopeo", &["list-tags"]).arg(format!("docker://{repository}"))
 }
@@ -271,8 +266,6 @@ pub fn probe_command(image_id: &str) -> CommandLine {
     )
 }
 
-/// # Errors
-/// Output that is not `podman image inspect` JSON.
 pub fn parse_inspect(json: &str) -> Result<(String, Option<String>), String> {
     let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
     let image = value.get(0).unwrap_or(&value);
@@ -554,8 +547,6 @@ pub struct BootcStatus {
     pub rollback: Option<Deployment>,
 }
 
-/// # Errors
-/// Output that is not bootc's status JSON.
 pub fn parse_bootc_status(json: &str) -> Result<BootcStatus, String> {
     let value: Value =
         serde_json::from_str(json.trim()).map_err(|e| format!("bootc status --json: {e}"))?;
@@ -755,9 +746,6 @@ pub fn export_command(image: &str, layout: &Path, digest_file: &Path) -> Command
 
 /// Mirror the layout into [`VM_LAYOUT`]: only new blobs cross, and blobs no
 /// longer referenced go, so the VM keeps one image's worth.
-///
-/// # Errors
-/// Returns an error when the rsync SSH transport is unavailable.
 pub fn rsync_command(
     layout: &Path,
     endpoint: &SshEndpoint,
@@ -786,7 +774,6 @@ pub fn rsync_command(
     .env("LC_ALL", "C"))
 }
 
-/// Bytes rsync sent, from its `--stats`.
 pub fn rsync_sent_bytes(stats: &str) -> Option<u64> {
     let line = stats
         .lines()
@@ -1077,7 +1064,6 @@ mod tests {
         assert!(is_layout(dir.path()));
         assert!(!is_layout(Path::new("registry.tilo.so/tilo/tilo-vm:main")));
 
-        // The VM already boots this image under another manifest digest.
         assert!(is_already_booted(
             "error: Switching: Composefs Switching: Target image has the same fs-verity digest as the existing Some(Booted) deployment."
         ));
@@ -1086,7 +1072,6 @@ mod tests {
         ));
     }
 
-    /// bootc's space refusal becomes the plain sentence the user reads.
     #[test]
     fn bootcs_space_refusal_reads_as_plain_language() {
         let stderr = "error: Switching: Composefs Switching: Performing Upgrade Operation: Insufficient free space for registry.tilo.so/tilo/tilo-vm:pr-4227-4ab5dcc-lenovo-83ed (available: 2.3 GB required: 5.2 GB)";

@@ -66,7 +66,6 @@ pub enum AppearanceError {
     /// The bytes do not hash to the name.
     #[error("the avatar's bytes do not match its hash")]
     AvatarMismatch,
-    /// The service name is malformed.
     #[error("the persona's service must be 1 to 32 lowercase letters, digits or '-'")]
     BadService,
     /// The account is malformed.

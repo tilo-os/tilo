@@ -63,7 +63,6 @@ pub enum Found {
 /// Where discovery runs.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// The port to listen on.
     pub port: u16,
     /// Where probes go: the local network's broadcast address and the port
     /// the person's devices listen on.
@@ -304,7 +303,6 @@ impl LanDiscovery {
         }
     }
 
-    /// Send `datagram` to `to` from `role`'s socket, on the runtime.
     fn send(&self, role: Role, datagram: Vec<u8>, to: SocketAddr) {
         let discovery = self.clone();
         self.inner.runtime.spawn(async move {

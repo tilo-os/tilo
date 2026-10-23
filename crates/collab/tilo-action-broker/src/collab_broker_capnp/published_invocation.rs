@@ -743,10 +743,6 @@ impl OriginalInvocation {
         &self.data.time
     }
     /// The original caller's device certificate.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the original caller carried no certificate.
     pub fn certificate(&self) -> Result<&tilo_user_identity::DeviceCert, String> {
         match &self.data.caller {
             // A network caller's verified device certificate is its signed
@@ -773,10 +769,6 @@ impl OriginalInvocation {
     }
     /// Pure custody check: no owner callback, workspace snapshot or Store open.
     /// Its returned sample belongs to the original registered clock and origin.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker, worker, certificate or clock lapsed.
     pub fn check_custody(&self) -> Result<u64, String> {
         if self
             .data
@@ -1148,10 +1140,6 @@ impl OriginalInvocation {
 impl CapnpBrokerState {
     /// Allocate the actual socket and its opaque host-local callback together.
     /// A second socket with an equal route/certificate gets a different token.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker refuses the worker connection.
     pub fn connect_local_worker_with_authorizer(
         self: &Arc<Self>,
         route: CrdtRoute,

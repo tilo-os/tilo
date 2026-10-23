@@ -815,7 +815,6 @@ mod tests {
         assert!(certified_provider(&provider));
         let (allowed, blocked) = workspace_targets();
         for address in allowed {
-            // Both invocation and confirmation use this exact target gate.
             assert!(certified_target(&provider, &address), "{address:?}");
         }
         for address in blocked {

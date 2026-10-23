@@ -404,7 +404,6 @@ fn local_outbox_builds_each_pending_publication_history_once() {
                 "edit {edit}: the new history extends the previous edit's"
             );
         }
-        // What it remembered is what it computes from nothing.
         super::history::forget();
         assert_eq!(
             member
