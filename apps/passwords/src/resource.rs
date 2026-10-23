@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    RunMode, ViewCx,
+    RunMode, SurfaceCx, ViewCx,
 };
 use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
@@ -82,6 +82,10 @@ impl ResourceApp for PasswordsShell {
 
 impl ResourceSurface<Passwords, PasswordsEffect> for PasswordsSurface {
     fn present(&mut self, _state: &Rc<Passwords>) {}
+
+    fn attach(&mut self, cx: SurfaceCx<Passwords>) {
+        self.wake_through(cx.waker());
+    }
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);

@@ -3,6 +3,7 @@ use super::{
     BrokerError, CredentialBroker, CredentialGrant, CredentialScope, SecretId, SecretItem,
     SecretItemKind, SecretStore,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// The native host lends this vault view only to the matching Passwords app.
@@ -14,6 +15,8 @@ pub struct CredentialOwner {
     device: String,
     broker: Arc<OnceLock<Arc<Mutex<CredentialBroker>>>>,
     open: Option<Arc<dyn Fn() -> SecretStore + Send + Sync>>,
+    /// Set once a thread was started to open the vault.
+    opening: Arc<AtomicBool>,
     pub(super) requests: Arc<super::pending::PendingRequests>,
 }
 impl CredentialOwner {
@@ -81,6 +84,7 @@ impl CredentialOwner {
             device: device.into(),
             broker: Arc::default(),
             open: Some(Arc::new(open)),
+            opening: Arc::default(),
             requests: Arc::default(),
         })
     }
@@ -98,6 +102,7 @@ impl CredentialOwner {
             device: device.into(),
             broker: Arc::default(),
             open: None,
+            opening: Arc::default(),
             requests: Arc::default(),
         };
         owner.broker.set(broker).map_err(|_| BrokerError::Denied)?;
@@ -125,6 +130,35 @@ impl CredentialOwner {
             .get()
             .is_some_and(|current| Arc::ptr_eq(current, broker))
     }
+    /// Whether the vault is open, so reading it waits on nothing.
+    pub fn is_open(&self) -> bool {
+        self.broker.get().is_some()
+    }
+
+    /// Whether the vault is open; if it is not, open it on a thread of its
+    /// own and call `ready` once it is. For a caller that must not wait on
+    /// the disk, such as a window on the compositor's frame loop. Only the
+    /// first caller's `ready` is called.
+    pub fn open_without_waiting(&self, ready: impl FnOnce() + Send + 'static) -> bool {
+        if self.is_open() {
+            return true;
+        }
+        if self.opening.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        let owner = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("credential-vault-open".into())
+            .spawn(move || {
+                let _ = owner.broker();
+                ready();
+            });
+        if spawned.is_err() {
+            self.opening.store(false, Ordering::Release);
+        }
+        false
+    }
+
     /// Host-only access to the original current permission broker.
     /// # Errors
     /// Refuses an owner without a native initializer or existing broker.

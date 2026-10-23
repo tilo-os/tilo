@@ -404,3 +404,34 @@ fn protected_persistent_approval_survives_only_its_exact_reviewed_resource() {
     drop(reopened);
     drop(owned);
 }
+
+#[test]
+fn a_window_on_the_frame_loop_opens_the_vault_on_a_thread_of_its_own() {
+    let root = tempfile::tempdir().unwrap();
+    let mut store = SecretStore::open_in(root.path());
+    let mut item = SecretItem::login("Synthetic opened title", "user", "password");
+    store.put(&mut item).unwrap();
+    drop(store);
+    let path = root.path().to_owned();
+    let opens = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&opens);
+    let owner = CredentialOwner::deferred(&"11".repeat(32), "test-device", move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        SecretStore::open_in(&path)
+    })
+    .unwrap();
+    let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
+    let mut core = crate::vault::Core::with_model(crate::PasswordsModel::shared(owner.clone()));
+    assert!(core.opening, "the window says the vault is opening");
+    assert!(core.items.is_empty());
+    tilo_test_env::wait_until("the vault to open", || owner.is_open());
+    core.refresh_model();
+    assert!(!core.opening);
+    assert_eq!(opens.load(Ordering::SeqCst), 1, "the vault is opened once");
+    assert!(
+        core.items
+            .iter()
+            .any(|shown| shown.title == "Synthetic opened title"),
+        "the window shows the vault once it is open"
+    );
+}

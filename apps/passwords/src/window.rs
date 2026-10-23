@@ -245,6 +245,11 @@ impl PasswordsSurface {
         Self::with_core(Core::with_model(model))
     }
 
+    /// Wake the window through `wake` once its vault is open.
+    pub(crate) fn wake_through(&self, wake: ui::WakeHandle) {
+        self.core.borrow().wake_through(wake);
+    }
+
     /// The fixture vault, for tests and captures.
     pub fn demo() -> Self {
         Self::with_core(Core::demo())

@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
+use ui::lock::MutexRecover as _;
 use ui::widget::NavPane;
 use vello::kurbo::Rect;
 use zeroize::Zeroizing;
@@ -398,6 +399,11 @@ pub(crate) struct Core {
     pub(crate) page_revision: u64,
     /// Bumped whenever the item list or its title changes.
     pub(crate) list_revision: u64,
+    /// The vault is being opened on a thread of its own: a window on the
+    /// compositor's frame loop never waits on the disk for it.
+    pub(crate) opening: bool,
+    /// Wakes the window once the vault is open.
+    wake: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
 }
 
 impl Core {
@@ -444,15 +450,36 @@ impl Core {
             window: Rect::ZERO,
             page_revision: 0,
             list_revision: 0,
+            opening: false,
+            wake: std::sync::Arc::default(),
         }
     }
 
     /// The vault in `model`: the person's in a live window.
     pub(crate) fn with_model(model: crate::PasswordsModel) -> Self {
         let mut core = Self::empty(Some(model));
-        core.refresh();
-        core.select_first_visible();
+        if core.open_without_waiting() {
+            core.refresh();
+            core.select_first_visible();
+        }
         core
+    }
+
+    /// Whether the vault is open; if not, it is opened on a thread of its
+    /// own and the window shows it on the sync after that finishes.
+    fn open_without_waiting(&mut self) -> bool {
+        let Some(model) = &self.model else {
+            return true;
+        };
+        let wake = std::sync::Arc::clone(&self.wake);
+        let open = model.open_without_waiting(move || wake.lock_recover().wake());
+        self.opening = !open;
+        open
+    }
+
+    /// Wake the window through `wake` once the vault is open.
+    pub(crate) fn wake_through(&self, wake: ui::WakeHandle) {
+        *self.wake.lock_recover() = wake;
     }
 
     /// Fixture items with no vault behind them (captures and tests).
@@ -1208,6 +1235,13 @@ impl Core {
             .is_some_and(|revision| Some(revision) != self.model_revision)
     }
     pub(crate) fn refresh_model(&mut self) {
+        if self.opening {
+            if self.open_without_waiting() {
+                self.refresh();
+                self.select_first_visible();
+            }
+            return;
+        }
         let proposals_changed = !self.app_proposals.is_empty()
             && self
                 .model
