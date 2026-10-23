@@ -34,7 +34,9 @@ use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_ad
 
 mod book;
 mod resolve;
+mod rounding;
 pub use book::{Book, recalculate_in_book, recalculate_snapshot};
+use rounding::RoundMode;
 
 // ---------------------------------------------------------------------------
 // Character cursor
@@ -150,23 +152,6 @@ fn median(sample: &mut [f64]) -> Option<f64> {
     }
     let lo = *mid.checked_sub(1).and_then(|i| sample.get(i))?;
     Some(f64::midpoint(lo, hi))
-}
-
-/// `n` times ten to the `places`, moved in decimal at the 15 significant
-/// digits a spreadsheet keeps, so the digits a person typed are the digits
-/// rounded: `1.005` two places on is `100.5`, where the binary product
-/// `1.005 * 100` is `100.49999999999999` and would round to `1.00`.
-fn shift_decimal(n: f64, places: i32) -> f64 {
-    let repr = format!("{n:.14e}");
-    let Some((mantissa, exponent)) = repr.split_once('e') else {
-        return n; // infinite or NaN
-    };
-    let Ok(exponent) = exponent.parse::<i32>() else {
-        return n;
-    };
-    format!("{mantissa}e{}", exponent.saturating_add(places))
-        .parse()
-        .unwrap_or(n)
 }
 
 /// Which component `HOUR`/`MINUTE`/`SECOND` projects out of a serial.
@@ -1525,7 +1510,8 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let value = match name {
             "ABS" => self.unary_num(args, f64::abs),
             "SQRT" => self.unary_num(args, f64::sqrt),
-            "INT" | "FLOOR" => self.unary_num(args, f64::floor),
+            "INT" => self.unary_num(args, f64::floor),
+            "FLOOR" => self.round_to_multiple(args, f64::floor),
             "SIGN" => self.unary_num(args, f64::signum),
             "EXP" => self.unary_num(args, f64::exp),
             "LN" => self.unary_num(args, f64::ln),
@@ -1556,7 +1542,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 }
             }),
             "POWER" => self.binary_num(args, |a, b| Some(a.powf(b))),
-            "CEILING" => self.unary_num(args, f64::ceil),
+            "CEILING" => self.round_to_multiple(args, f64::ceil),
             _ => return None,
         };
         Some(value)
@@ -1814,41 +1800,6 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             },
             _ => CellValue::Error(FormulaError::Value),
         }
-    }
-
-    fn round_fn(&mut self, args: &[Expr], mode: RoundMode) -> CellValue {
-        let Some(value_expr) = args.first() else {
-            return CellValue::Error(FormulaError::Error);
-        };
-        let v = self.eval_expr(value_expr);
-        if v.is_error() {
-            return v;
-        }
-        let Some(n) = v.as_number() else {
-            return CellValue::Error(FormulaError::Value);
-        };
-        // Past ±308 places no digit is left to round, so clamping there
-        // loses nothing and keeps the exponent in range.
-        let digits = args.get(1).map_or(0, |a| {
-            let scale = self.eval_expr(a).as_number().unwrap_or(0.0);
-            i32::try_from(number_to_int(scale).clamp(-308, 308)).unwrap_or(0)
-        });
-        let scaled = shift_decimal(n, digits);
-        if !scaled.is_finite() {
-            return CellValue::Number(n);
-        }
-        let rounded = match mode {
-            RoundMode::Nearest => scaled.round(),
-            RoundMode::Down => scaled.trunc(),
-            RoundMode::Up => {
-                if scaled >= 0.0 {
-                    scaled.ceil()
-                } else {
-                    scaled.floor()
-                }
-            }
-        };
-        CellValue::Number(shift_decimal(rounded, digits.saturating_neg()))
     }
 
     fn unary_text(&mut self, args: &[Expr], f: impl Fn(&str) -> String) -> CellValue {
@@ -2332,13 +2283,6 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             TimeComponent::Second => seconds,
         }))
     }
-}
-
-#[derive(Clone, Copy)]
-enum RoundMode {
-    Nearest,
-    Down,
-    Up,
 }
 
 /// Which way a lookup scans its table.
