@@ -5649,7 +5649,7 @@ mod tests {
             &identity,
             "Source owner",
             [20, 30, 40],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         runtime_identity::set_active_identity(&identity, "primary").unwrap();
