@@ -666,6 +666,18 @@ fn lost_reasoning(response: &ModelResponse) -> Option<String> {
     thought.get(from..).map(str::to_owned)
 }
 
+/// What the `plan` tool's description says of values the host fills in
+/// ([`crate::values`]): the same for every model and task, so the prompt
+/// cache keeps it.
+pub(crate) const VALUES_NOTE: &str = " Any argument may quote a value a document holds as \
+    {{Sheet1!B2}} (a range: {{Sheet1!B2:B9}}) or {{<app>:<record>/<read>#/json/pointer}}, or \
+    compute one as {{= expr }} (+ - * / %, sum, avg, min, max, round, abs, and dates: \
+    workday(date, n) for n business days, add_days, days_between), with references such as \
+    Sheet1!B2 as operands and an optional format after | ($, %, 0.00, long): the host fills it \
+    in when the step runs. Never work numbers or dates out yourself. In a collection, address \
+    an item by its fields (field-edit upsert-item {match: {field: value}, value}), never by \
+    position.";
+
 /// The [`READ_VIEW`] tool definition.
 fn read_view_definition() -> ToolDefinition {
     ToolDefinition {
@@ -746,6 +758,7 @@ pub(crate) fn planning_tools(
         if tool.name != tilo_agent::tools::PLAN {
             continue;
         }
+        tool.description.push_str(VALUES_NOTE);
         let schema = &mut tool.input_schema;
         if let Some(properties) = schema
             .get_mut("properties")
