@@ -17,7 +17,6 @@ nav-header-actions 1 apps/monitor/src/app.rs
 nav-header-actions 1 apps/notes/src/app/window_bar.rs
 nav-header-actions 1 apps/passwords/src/window.rs
 nav-header-actions 1 apps/snippets/src/app.rs
-nav-header-actions 1 apps/tube/src/app.rs
 nav-header-actions 1 apps/weather/src/app.rs
 # A column header holding what the bar has no slot for keeps the shell's
 # own header row, until the bar can show it.
@@ -48,7 +47,6 @@ own-search 2 apps/sheets/src/app.rs
 own-search 1 apps/snippets/src/app.rs
 own-search 1 apps/store/src/app.rs
 own-search 1 apps/terminal/src/view.rs
-own-search 1 apps/tube/src/screens.rs
 own-search 2 apps/word-processor/src/find_bar.rs
 toolbar-row 1 apps/git-client/src/app.rs
 # The composer's formatting strip, inside the New message sheet over the mailbox.
