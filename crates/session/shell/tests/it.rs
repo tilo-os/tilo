@@ -109,6 +109,8 @@ mod foreign_surface_compositing;
 mod fractional_scale_protocol;
 #[path = "freeze_bench.rs"]
 mod freeze_bench;
+#[path = "full_screen_under_search.rs"]
+mod full_screen_under_search;
 #[path = "gpu_loss.rs"]
 mod gpu_loss;
 #[path = "hardware_encode.rs"]

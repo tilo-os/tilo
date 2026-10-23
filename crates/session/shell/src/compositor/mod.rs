@@ -58,6 +58,8 @@ pub mod foreign;
 pub mod frame;
 pub mod frame_stall;
 #[cfg(target_os = "linux")]
+pub mod fullscreen_presentation;
+#[cfg(target_os = "linux")]
 pub mod gpu_health;
 #[cfg(target_os = "linux")]
 pub mod gpu_import;

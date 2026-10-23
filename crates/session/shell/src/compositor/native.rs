@@ -12438,9 +12438,12 @@ pub fn run() {
         // takes the input over it (the search palette, a sheet): then the
         // client is laid out full screen in the desktop itself, on its own
         // display, beneath the shell's surfaces, which would otherwise draw
-        // under it unseen ([`client_fullscreen_beneath_shell`]).
-        let beneath_shell = client_fullscreen_beneath_shell(&state, &frame_builder);
-        frame_builder.set_fullscreen(beneath_shell);
+        // under it unseen
+        // ([`crate::compositor::fullscreen_presentation`]).
+        crate::compositor::fullscreen_presentation::lay_out_beneath_shell(
+            &state,
+            &mut frame_builder,
+        );
         // A window the person opened or went to ends a full screen: the
         // full-screen window steps back into the strip, which scrolls to it.
         let user_fullscreen = frame_builder.chrome().user_fullscreen_group();
@@ -12787,7 +12790,7 @@ pub fn run() {
             &state.pending_floating_toplevels,
             &state.floating_toplevels,
         );
-        let fullscreen_output = reconcile_fullscreen_overlay(
+        let fullscreen_output = crate::compositor::fullscreen_presentation::reconcile_overlay(
             &mut state,
             &mut frame_builder,
             &output_globals,
@@ -21022,96 +21025,6 @@ fn publish_output_colors(
     state.color_manager.set_preferred(preferred);
 }
 
-/// The group of the client in full screen when the shell takes the input
-/// over it: it is then drawn in the desktop's full-screen layout beneath the
-/// shell's surfaces rather than as the overlay above them. A presenter view
-/// the compositor placed is not a full screen of the person's.
-fn client_fullscreen_beneath_shell(state: &State, frame: &FrameBuilder) -> Option<u64> {
-    state
-        .fullscreen_target
-        .as_ref()
-        .filter(|target| target.pinned_output.is_none())
-        .and(state.fullscreen_group)
-        .filter(|_| client_input::chrome_captures_input(frame))
-}
-
-/// Place the fullscreen client, if any, and return the output it covers.
-fn reconcile_fullscreen_overlay(
-    state: &mut State,
-    frame: &mut FrameBuilder,
-    globals: &output_globals::OutputGlobals,
-    outputs: &[crate::compositor::backend::Output],
-) -> Option<crate::compositor::backend::OutputId> {
-    let Some(target) = state.fullscreen_target.as_mut() else {
-        frame.set_fullscreen_surface(None);
-        return None;
-    };
-    let requested_id = target.pinned_output.or_else(|| {
-        target
-            .requested_output
-            .as_ref()
-            .and_then(|output| globals.id_for_resource(output))
-    });
-    let current_rect = frame.foreign_surface_rect(target.surface_id);
-    let centre = current_rect.map(|rect| rect.center());
-    let output = select_fullscreen_output(requested_id, centre, outputs);
-    let Some(output) = output else {
-        frame.set_fullscreen_surface(None);
-        return None;
-    };
-    // Logical, like every other configure: a 2x output's fullscreen client
-    // is asked for half its pixels and renders them at scale 2.
-    let size = size_to_signed(output.logical_size());
-    // A compositor-placed presenter view is sized through its pinned
-    // placement by the ordinary configure pass, never told it is fullscreen.
-    if target.pinned_output.is_none() && target.configured_size != Some(size) {
-        target.surface.with_pending_state(|pending| {
-            pending.states.set(
-                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
-            );
-            pending.size = Some(size.into());
-        });
-        target.surface.send_configure();
-        target.configured_size = Some(size);
-    }
-    if target.pinned_output.is_none() {
-        crate::shell::foreign::store().note_fullscreen_extent(target.surface_id, size);
-    }
-    let rect = output.logical_rect();
-    if frame.chrome().fullscreen_group().is_some()
-        && frame.chrome().user_fullscreen_group().is_none()
-    {
-        // Laid out in the desktop beneath the shell's surfaces this frame
-        // ([`client_fullscreen_beneath_shell`]); nothing is drawn above
-        // them, and no frame of it goes straight to the display.
-        frame.set_fullscreen_surface(None);
-    } else {
-        frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
-    }
-    Some(output.id)
-}
-
-fn select_fullscreen_output(
-    requested: Option<crate::compositor::backend::OutputId>,
-    current_center: Option<vello::kurbo::Point>,
-    outputs: &[crate::compositor::backend::Output],
-) -> Option<&crate::compositor::backend::Output> {
-    requested
-        .and_then(|id| outputs.iter().find(|output| output.id == id))
-        .or_else(|| {
-            current_center.and_then(|point| {
-                outputs
-                    .iter()
-                    .find(|output| output.logical_rect().contains(point))
-            })
-        })
-        .or_else(|| {
-            outputs
-                .iter()
-                .find(|output| output.size.0 > 0 && output.size.1 > 0)
-        })
-}
-
 /// Logical output rectangles exposed as `InputCapture` zones.  Invalid outputs
 /// are omitted so a transient KMS modeset never offers a zero-sized capture
 /// target to a portal client.
@@ -21330,8 +21243,9 @@ mod gesture_wireup_tests {
 #[cfg(test)]
 #[cfg(test)]
 mod output_geometry_tests {
-    use super::{input_capture_zones, output_geometry, select_fullscreen_output};
+    use super::{input_capture_zones, output_geometry};
     use crate::compositor::backend::{Output, OutputId};
+    use crate::compositor::fullscreen_presentation::select_fullscreen_output;
 
     /// A 2x 2560x1600 laptop panel with a 1x 2560x1440 monitor to its right:
     /// logically the monitor starts at 1280, in the scene at 2560.
