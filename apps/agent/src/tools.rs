@@ -69,6 +69,15 @@ use serde_json::{Value, json};
 use crate::plan;
 use crate::surface::{self, APPLICATION_KIND, Catalogue, Offer};
 
+mod summary;
+mod wait;
+
+pub use summary::{
+    MOST_LISTED_ALIKE, MOST_SUMMARISED, Naming, catalogue_summary, catalogue_summary_with,
+};
+use wait::read_wait;
+pub use wait::{MOST_WAIT_SECONDS, WAIT_FOR, Wait, typed_waiting_definitions};
+
 pub const LIST_APPLICATIONS: &str = "list_applications";
 pub const LIST_OPERATIONS: &str = "list_operations";
 pub const DESCRIBE_OPERATION: &str = "describe_operation";
@@ -412,6 +421,10 @@ pub struct Answer {
     /// The optional chat reply to the person who asked, bounded; the task's
     /// terminal message when present.
     pub reply: Option<String>,
+    /// What the plan waits for once its steps ran ([`WAIT_FOR`]): something
+    /// another person or agent sends, after which the request is planned
+    /// again with what arrived.
+    pub wait: Option<Wait>,
 }
 
 /// The `plan` tool's optional `reply` property, as the model is told it.
@@ -882,9 +895,6 @@ pub fn read_invoke(input: &Value, revealed: &Revealed) -> Result<Invocation, Str
     })
 }
 
-/// How many operations the first turn's catalogue shows.
-pub const MOST_SUMMARISED: usize = 60;
-
 /// An operation's parameters as a compact signature (`{text: text, n?:
 /// integer [a|b]}`), or what it takes instead; empty for none.
 pub fn parameter_signature(offer: &Offer) -> String {
@@ -952,141 +962,6 @@ pub fn named_applications<'a>(catalogue: &'a Catalogue, request: &str) -> Vec<(&
                 }
         })
         .collect()
-}
-
-/// The published operations, compactly, for the first turn (of the task loop
-/// and of a plan decision): enough to invoke or plan the common ones directly
-/// without a discovery round trip. Every id shown is revealed. Every
-/// running application gets its share (document operations first, then
-/// view, then the rest) of the first half; the opens — how a closed
-/// application is started — follow, Tilo's applications first; a cut
-/// summary says how to reach what it left out.
-pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: usize) -> String {
-    let rank = |offer: &&Offer| match offer.descriptor.kind {
-        _ if opened_app(offer).is_some() => 0,
-        tilo_actions::OperationKind::Document => 1,
-        tilo_actions::OperationKind::View => 2,
-        tilo_actions::OperationKind::Effect => 3,
-    };
-    // Per application, best first; then round-robin so a large application
-    // cannot crowd the others (or the opens) out of the summary.
-    let mut per_app: std::collections::BTreeMap<&str, Vec<&Offer>> =
-        std::collections::BTreeMap::default();
-    for offer in &catalogue.offers {
-        per_app.entry(offer.app.as_str()).or_default().push(offer);
-    }
-    for offers in per_app.values_mut() {
-        offers.sort_by_key(rank);
-    }
-    // Round-robin over the applications' own operations (opens aside),
-    // `depth` deep so far, until `shown` holds `until`.
-    let shown = summarised(catalogue, &per_app, most);
-    if shown.is_empty() {
-        return "No application publishes an operation you may perform right now.\n".into();
-    }
-    // Grouped by application, then by resource in first-appearance order.
-    let mut groups: Vec<(&str, &str)> = Vec::new();
-    for app in per_app.keys() {
-        for offer in shown.iter().filter(|o| o.app == *app) {
-            let resource = offer.address().resource.as_str();
-            if !groups.contains(&(app, resource)) {
-                groups.push((app, resource));
-            }
-        }
-    }
-    let mut s = String::new();
-    for (app, resource) in groups {
-        let mut first = true;
-        for offer in shown
-            .iter()
-            .filter(|o| o.app == app && o.address().resource == resource)
-        {
-            if first {
-                let _ = writeln!(
-                    s,
-                    "In {app}: {} ({}) — resource {resource}",
-                    offer.descriptor.resource_label, offer.descriptor.resource_kind
-                );
-                first = false;
-            }
-            revealed.reveal(offer.id());
-            let _ = write!(s, "  {} — {}", offer.id(), offer.descriptor.action_label);
-            if let Some(opened) = opened_app(offer) {
-                s.push_str(&open_note(catalogue, opened));
-            }
-            if let tilo_actions::Availability::Unavailable { reason, .. } =
-                &offer.descriptor.contract.availability
-            {
-                let _ = write!(s, " (currently unavailable: {reason})");
-            }
-            if let Some(note) = confirmation_note(offer) {
-                let _ = write!(s, " ({note})");
-            }
-            let signature = parameter_signature(offer);
-            if !signature.is_empty() {
-                let _ = write!(s, " {signature}");
-            }
-            s.push('\n');
-        }
-    }
-    let rest = catalogue.offers.len().saturating_sub(shown.len());
-    if rest > 0 {
-        let _ = writeln!(
-            s,
-            "… and {rest} more; ask `{LIST_OPERATIONS}` (by application, kind, resource or \
-             search) to reach them, or `{LIST_APPLICATIONS}` for the applications there are."
-        );
-    }
-    s
-}
-
-/// The offers [`catalogue_summary`] shows, at most `most`: the running
-/// applications' own operations take the first half, so the opens of
-/// everything installed (a desktop lists every host application too) cannot
-/// crowd them out; the opens follow, Tilo's applications before the host's,
-/// whose windows publish nothing once open; what is left goes to more of
-/// the running applications.
-fn summarised<'a>(
-    catalogue: &'a Catalogue,
-    per_app: &std::collections::BTreeMap<&str, Vec<&'a Offer>>,
-    most: usize,
-) -> Vec<&'a Offer> {
-    fn fill<'a>(
-        per_app: &std::collections::BTreeMap<&str, Vec<&'a Offer>>,
-        shown: &mut Vec<&'a Offer>,
-        depth: &mut usize,
-        until: usize,
-    ) {
-        while shown.len() < until {
-            let mut any = false;
-            for offers in per_app.values() {
-                if let Some(offer) = offers.get(*depth) {
-                    any = true;
-                    if opened_app(offer).is_none() && shown.len() < until {
-                        shown.push(offer);
-                    }
-                }
-            }
-            if !any {
-                break;
-            }
-            *depth += 1;
-        }
-    }
-    let mut shown: Vec<&'a Offer> = Vec::new();
-    let mut depth = 0;
-    fill(per_app, &mut shown, &mut depth, most.div_ceil(2));
-    let mut opens: Vec<&Offer> = catalogue
-        .offers
-        .iter()
-        .filter(|offer| opened_app(offer).is_some())
-        .collect();
-    opens
-        .sort_by_key(|offer| opened_app(offer).is_some_and(|app| app.starts_with(HOST_APP_PREFIX)));
-    let room = most.saturating_sub(shown.len());
-    shown.extend(opens.into_iter().take(room));
-    fill(per_app, &mut shown, &mut depth, most);
-    shown
 }
 
 /// What one [`INVOKE`] did, as the model reads it.
@@ -1597,8 +1472,36 @@ fn describe_arguments(s: &mut String, offer: &Offer, id: &str) {
 /// Returns an error when `input` has no `steps` array, when a step names no
 /// `operation`, when an `operation` is not one a listing in this
 /// conversation actually returned, when `steps` leaves nothing to do, or
-/// when it names more operations than `most_steps` allows.
+/// when it names more operations than `most_steps` allows. A plan that
+/// names no step but a [`WAIT_FOR`] is an answer: the wait is what it does.
 pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Result<Answer, String> {
+    read_plan_as(input, revealed, most_steps, false)
+}
+
+/// [`read_plan`], for a turn on which nothing left to do is a fair answer
+/// (the check of a task's finished work, the turn after its reads): no
+/// steps, with a `reply` saying so, is that answer rather than a slip.
+/// Without the `reply` an empty plan is still refused, so a model that
+/// wrote nothing is asked to say why.
+///
+/// # Errors
+///
+/// As [`read_plan`], except for no steps with a `reply`.
+pub fn read_plan_allowing_none(
+    input: &Value,
+    revealed: &Revealed,
+    most_steps: usize,
+) -> Result<Answer, String> {
+    read_plan_as(input, revealed, most_steps, true)
+}
+
+/// [`read_plan`]; `allows_none` when no steps with a `reply` is an answer.
+fn read_plan_as(
+    input: &Value,
+    revealed: &Revealed,
+    most_steps: usize,
+    allows_none: bool,
+) -> Result<Answer, String> {
     let steps = input
         .get("steps")
         .and_then(Value::as_array)
@@ -1636,8 +1539,23 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
         actions.push(operation);
         arguments.push(arguments_object.clone());
     }
-    if actions.is_empty() {
-        return Err("the plan named nothing to do".to_string());
+    let reply = input
+        .get("reply")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reply| !reply.is_empty())
+        .map(bound_reply);
+    let wait = read_wait(input)?;
+    if actions.is_empty() && wait.is_none() {
+        if !allows_none {
+            return Err("the plan named nothing to do".to_string());
+        }
+        if reply.is_none() {
+            return Err(
+                "the plan named nothing to do; if nothing is left to do, say so in `reply`"
+                    .to_string(),
+            );
+        }
     }
     // The cap, enforced rather than asked for, and refused rather than
     // truncated: half of a misread sequence is still a run of edits to
@@ -1668,12 +1586,8 @@ pub fn read_plan(input: &Value, revealed: &Revealed, most_steps: usize) -> Resul
             .map(str::trim)
             .filter(|t| !t.is_empty())
             .map(|t| t.chars().take(240).collect()),
-        reply: input
-            .get("reply")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|reply| !reply.is_empty())
-            .map(bound_reply),
+        reply,
+        wait,
     })
 }
 
@@ -1749,7 +1663,7 @@ mod tests {
         );
     }
 
-    fn offer(
+    pub(super) fn offer(
         app: &'static str,
         resource: &str,
         kind: &str,
@@ -2424,6 +2338,28 @@ mod tests {
         assert_eq!(kept.chars().count(), MAX_REPLY_BYTES / "語".len());
     }
 
+    /// A check of finished work may answer that nothing is left, with a
+    /// reply saying so; anywhere else, and without a reply, no steps is
+    /// still refused.
+    #[test]
+    fn an_empty_plan_is_an_answer_only_where_allowed_and_with_a_reply() {
+        let revealed = Revealed::new();
+        let none = json!({"reply": " All done. ", "steps": [], "why": "", "then": ""});
+        let answer = read_plan_allowing_none(&none, &revealed, STEPS).expect("allowed");
+        assert!(answer.actions.is_empty());
+        assert_eq!(answer.reply.as_deref(), Some("All done."));
+        let refused = read_plan(&none, &revealed, STEPS).expect_err("a first plan");
+        assert_eq!(refused, "the plan named nothing to do");
+        let silent = json!({"steps": [], "why": "", "then": ""});
+        let refused = read_plan_allowing_none(&silent, &revealed, STEPS).expect_err("no reply");
+        assert!(refused.contains("say so in `reply`"), "{refused}");
+        let blank = json!({"reply": "   ", "steps": [], "why": "", "then": ""});
+        assert!(
+            read_plan_allowing_none(&blank, &revealed, STEPS).is_err(),
+            "a blank reply says nothing"
+        );
+    }
+
     /// The plan tool set names no ids, so it is the same bytes on every turn
     /// however much the conversation has revealed; what the first turn's
     /// summary showed can be planned with no listing, a prefix-less copy
@@ -2718,7 +2654,11 @@ mod tests {
                 }
             }
         }
-        for set in [definitions(8), loop_definitions()] {
+        for set in [
+            definitions(8),
+            loop_definitions(),
+            json!(typed_waiting_definitions(8, &["mail", "chat"], 4)),
+        ] {
             for tool in set.as_array().unwrap() {
                 check(&tool["input_schema"], tool["name"].as_str().unwrap());
             }

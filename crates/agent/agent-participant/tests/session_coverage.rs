@@ -76,7 +76,7 @@ impl Driveable for Agent<'_> {
                 .agent
                 .invoke(&self.route, address, arguments)
                 .map(|_| ()),
-            StepAction::Open | StepAction::Continue(_) => Ok(()),
+            StepAction::Open | StepAction::Continue(_) | StepAction::Wait(_) => Ok(()),
         }
     }
 }
