@@ -17,7 +17,7 @@ use std::{
 use tilo_files::native::atomic::test_support::{Checkpoint, with_observer};
 use tilo_joined_room::testing::{APP, ROOM, raw_fixture};
 
-/// One frame at 60 Hz: what a tick of the frame loop may take.
+/// One frame at 60 Hz: what a tick of the frame loop may cost its thread.
 const FRAME: Duration = Duration::from_millis(16);
 
 /// One data sync on a disk under write load.
@@ -134,23 +134,62 @@ fn a_tick_off_the_loop_publishes_its_admission_on_its_own_thread() {
     );
 }
 
+/// One frame-loop tick, and the CPU it cost its thread: the work the
+/// loop did, apart from time the thread was preempted on a loaded machine.
+fn frame_tick_cost(net: &ShellNetwork) -> Duration {
+    let started = tilo_rt::thread_cpu_time().expect("the thread's CPU clock");
+    net.frame_tick();
+    tilo_rt::thread_cpu_time()
+        .expect("the thread's CPU clock")
+        .saturating_sub(started)
+}
+
 #[test]
 fn the_frame_loop_admits_signed_input_off_its_thread_in_arrival_order() {
     let mut fixture = queued_write_then_departure();
+    // The worker stops inside the admission's first data sync until the
+    // test lets it go: the loop must keep ticking while it is there.
+    let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = Mutex::new(released);
+    *fixture.net.native_admission.on_worker_sync.lock().unwrap() = Some(Arc::new(move || {
+        let _ = entered_tx.send(());
+        released
+            .lock()
+            .unwrap()
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the test let the held sync go");
+    }));
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(30))
         .expect("deadline");
     let ((slowest, overtaken), syncs) = on_a_slow_disk(|| {
         let mut slowest = Duration::ZERO;
         let mut overtaken = false;
+        while entered.try_recv().is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "the frame loop never handed the signed write to the worker"
+            );
+            slowest = slowest.max(frame_tick_cost(&fixture.net));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The worker is inside its sync: each tick returns without it, and
+        // handles nothing that arrived after the write.
+        for _ in 0..16 {
+            slowest = slowest.max(frame_tick_cost(&fixture.net));
+            assert!(
+                fixture.net.peer_departures().is_empty(),
+                "an event that arrived after the signed write was handled while it was admitted"
+            );
+        }
+        release.send(()).expect("the worker waits in its sync");
         while fixture.net.peer_departures().is_empty() {
             assert!(
                 Instant::now() < deadline,
                 "the frame loop never handled the queued events"
             );
-            let started = Instant::now();
-            fixture.net.frame_tick();
-            slowest = slowest.max(started.elapsed());
+            slowest = slowest.max(frame_tick_cost(&fixture.net));
             // The departure arrived after the write: it may not be handled
             // before the write reached the broker.
             overtaken |= !fixture.net.peer_departures().is_empty()
@@ -166,7 +205,7 @@ fn the_frame_loop_admits_signed_input_off_its_thread_in_arrival_order() {
     );
     assert!(
         slowest <= FRAME,
-        "a frame-loop network tick took {slowest:?} admitting signed input, over one frame ({FRAME:?})"
+        "a frame-loop network tick spent {slowest:?} of its thread's CPU admitting signed input, over one frame ({FRAME:?})"
     );
     assert!(admitted(&fixture), "the signed write was admitted");
     assert!(
