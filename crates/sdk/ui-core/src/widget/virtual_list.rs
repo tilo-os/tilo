@@ -2656,6 +2656,28 @@ mod tests {
             assert_eq!(list.focused_key, Some(1));
             assert_eq!(list.scroll_offset(), 0.0);
         }
+
+        {
+            // A list that fits its viewport: Page Down and Page Up move to
+            // its last and first rows rather than doing nothing.
+            let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
+            let mut list = VirtualList::new(model, 24.0, |_, _, key| {
+                Box::new(ProbeRow::new(
+                    key.to_string(),
+                    24.0,
+                    false,
+                    Rc::new(Cell::new(0)),
+                ))
+            })
+            .with_viewport_height(100.0);
+            list.focused_key = Some(1);
+
+            assert!(list.on_key(&Key::Named(NamedKey::PageDown), false, false));
+            assert_eq!(list.focused_key, Some(3));
+            assert!(list.on_key(&Key::Named(NamedKey::PageUp), false, false));
+            assert_eq!(list.focused_key, Some(1));
+            assert_eq!(list.scroll_offset(), 0.0);
+        }
     }
 
     #[test]
