@@ -692,7 +692,7 @@ fn gossip_neighbours_only_messages_cross_a_pruned_link() {
         let mut queue: VecDeque<(u64, topic::InEvent<u64>)> = first.into();
         while let Some((at, event)) = queue.pop_front() {
             let state = states.get_mut(&at).expect("a peer of the triangle");
-            for out in state.handle(event, now).collect::<Vec<_>>() {
+            for out in state.handle(event, now) {
                 match out {
                     topic::OutEvent::SendMessage(to, message) => {
                         queue.push_back((to, topic::InEvent::RecvMessage(at, message)));

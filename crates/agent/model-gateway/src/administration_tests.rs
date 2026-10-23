@@ -192,25 +192,14 @@ async fn lists_models_with_the_stored_key(
     assert_eq!(listed[0].context_window, Some(8192));
 }
 
-async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<T>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let first = within(
-        "configuring the provider and its key",
-        configure(
-            admin,
-            format!("http://{}/v1", listener.local_addr().unwrap()),
-        ),
-    )
-    .await;
-    let profile = first.config.profiles[0].clone();
-    within(
-        "listing the provider's models",
-        lists_models_with_the_stored_key(admin, &listener, &profile),
-    )
-    .await;
-    let (began, mut started) = tokio::sync::mpsc::channel(1);
-    let (release, released) = tokio::sync::oneshot::channel();
-    let provider = tokio::spawn(async move {
+/// The provider of [`lifecycle`]: it answers a turn on `first`, holding the
+/// reply until `released` after saying it `began`, then one on `second`.
+fn answer_two_turns(
+    listener: tokio::net::TcpListener,
+    began: tokio::sync::mpsc::Sender<()>,
+    released: tokio::sync::oneshot::Receiver<()>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         use tokio::io::AsyncWriteExt as _;
         let mut released = Some(released);
         for expected in ["first", "second"] {
@@ -244,7 +233,28 @@ async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<
             let reply = serde_json::json!({"id":"answer","object":"chat.completion","created":0,"model":expected,"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}).to_string();
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes()).await.unwrap();
         }
-    });
+    })
+}
+
+async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<T>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first = within(
+        "configuring the provider and its key",
+        configure(
+            admin,
+            format!("http://{}/v1", listener.local_addr().unwrap()),
+        ),
+    )
+    .await;
+    let profile = first.config.profiles[0].clone();
+    within(
+        "listing the provider's models",
+        lists_models_with_the_stored_key(admin, &listener, &profile),
+    )
+    .await;
+    let (began, mut started) = tokio::sync::mpsc::channel(1);
+    let (release, released) = tokio::sync::oneshot::channel();
+    let provider = answer_two_turns(listener, began, released);
     let request = Conversation::new("system", "hello").request(vec![], 32);
     let mut next = first.config.clone();
     next.profiles[0].default_model = Some("second".into());
@@ -506,106 +516,114 @@ const MODEL_WAIT: Duration = Duration::from_secs(30);
 
 async fn child(http: bool) {
     if http {
-        let service = crate::http_service::HttpService::new(Arc::new(Auth), 4).unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/model/rpc", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let service = service.clone();
-                tokio::spawn(async move {
-                    service.serve_io(stream).await.unwrap();
-                });
-            }
-        });
-        for token in ["agent", "chat", "settings"] {
-            within(format!("{token} being refused administration"), async {
-                let denied = AdministrationClient::new(Http {
-                    url: url.clone(),
-                    token,
-                });
-                assert_eq!(
-                    denied.get_config().await.unwrap_err().kind,
-                    ErrorKind::PermissionDenied
-                );
-                assert_eq!(
-                    denied
-                        .set_config("stale".into(), ProviderConfig::default())
-                        .await
-                        .unwrap_err()
-                        .kind,
-                    ErrorKind::PermissionDenied
-                );
-                assert_eq!(
-                    denied
-                        .set_api_key("test-provider".into(), "write-only-test-key".into())
-                        .await
-                        .unwrap_err()
-                        .kind,
-                    ErrorKind::PermissionDenied
-                );
-                assert_eq!(
-                    denied
-                        .list_models("test-provider".into())
-                        .await
-                        .unwrap_err()
-                        .kind,
-                    ErrorKind::PermissionDenied
-                );
-            })
-            .await;
-        }
-        lifecycle(
-            &AdministrationClient::new(Http {
-                url: url.clone(),
-                token: "manager",
-            }),
-            &ModelClient::default_model(
-                Http {
-                    url,
-                    token: "agent",
-                },
-                MODEL_WAIT,
-            ),
-        )
-        .await;
-        server.abort();
+        child_http().await;
     } else {
-        for app in [AGENT_APP, CHAT_APP] {
-            within(format!("{app} being refused administration"), async {
-                let (transport, server) = fd(app);
-                let denied = AdministrationClient::new(transport);
-                assert_eq!(
-                    denied.get_config().await.unwrap_err().kind,
-                    ErrorKind::PermissionDenied
-                );
-                assert_eq!(
-                    denied
-                        .set_config("stale".into(), ProviderConfig::default())
-                        .await
-                        .unwrap_err()
-                        .kind,
-                    ErrorKind::PermissionDenied
-                );
-                server.abort();
-            })
-            .await;
+        child_fd().await;
+    }
+}
+
+async fn child_http() {
+    let service = crate::http_service::HttpService::new(Arc::new(Auth), 4).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/model/rpc", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let service = service.clone();
+            tokio::spawn(async move {
+                service.serve_io(stream).await.unwrap();
+            });
         }
-        let (management, server) = fd(SETTINGS_APP);
-        let (inference, infer_server) = fd(AGENT_APP);
-        lifecycle(
-            &AdministrationClient::new(management),
-            &ModelClient::default_model(inference, MODEL_WAIT),
-        )
-        .await;
-        server.abort();
-        infer_server.abort();
-        within(
-            "a stopped edit waiting for its commit",
-            mutation_stop_waits_for_commit(),
-        )
+    });
+    for token in ["agent", "chat", "settings"] {
+        within(format!("{token} being refused administration"), async {
+            let denied = AdministrationClient::new(Http {
+                url: url.clone(),
+                token,
+            });
+            assert_eq!(
+                denied.get_config().await.unwrap_err().kind,
+                ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                denied
+                    .set_config("stale".into(), ProviderConfig::default())
+                    .await
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                denied
+                    .set_api_key("test-provider".into(), "write-only-test-key".into())
+                    .await
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                denied
+                    .list_models("test-provider".into())
+                    .await
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::PermissionDenied
+            );
+        })
         .await;
     }
+    lifecycle(
+        &AdministrationClient::new(Http {
+            url: url.clone(),
+            token: "manager",
+        }),
+        &ModelClient::default_model(
+            Http {
+                url,
+                token: "agent",
+            },
+            MODEL_WAIT,
+        ),
+    )
+    .await;
+    server.abort();
+}
+
+async fn child_fd() {
+    for app in [AGENT_APP, CHAT_APP] {
+        within(format!("{app} being refused administration"), async {
+            let (transport, server) = fd(app);
+            let denied = AdministrationClient::new(transport);
+            assert_eq!(
+                denied.get_config().await.unwrap_err().kind,
+                ErrorKind::PermissionDenied
+            );
+            assert_eq!(
+                denied
+                    .set_config("stale".into(), ProviderConfig::default())
+                    .await
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::PermissionDenied
+            );
+            server.abort();
+        })
+        .await;
+    }
+    let (management, server) = fd(SETTINGS_APP);
+    let (inference, infer_server) = fd(AGENT_APP);
+    lifecycle(
+        &AdministrationClient::new(management),
+        &ModelClient::default_model(inference, MODEL_WAIT),
+    )
+    .await;
+    server.abort();
+    infer_server.abort();
+    within(
+        "a stopped edit waiting for its commit",
+        mutation_stop_waits_for_commit(),
+    )
+    .await;
 }
 
 /// Run the end-to-end administration test `name` over `kind` (`http` or
