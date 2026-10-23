@@ -700,11 +700,14 @@ fn publication(
     })
 }
 
+/// The extension of the marker beside a room file this host released.
+const RELEASED: &str = "released";
+
 /// What the room authority needs from the relay hosting its rooms.
 #[derive(Clone)]
-pub(crate) struct RoomHost {
+pub(crate) struct RoomServices {
     pub(crate) workspaces: WorkspaceRegistry,
-    pub(crate) access: crate::daemon::GovernedAccessWriter,
+    pub(crate) access: crate::host::GovernedAccessWriter,
     pub(crate) records: crate::room_records::RoomRecords,
     pub(crate) endpoint: iroh::Endpoint,
     pub(crate) cert: DeviceCert,
@@ -718,6 +721,9 @@ pub(crate) struct RoomHost {
     /// Agent delegations, for [`crate::room_access::decide`] and for
     /// refusing an agent the administration only a person holds.
     pub(crate) agents: crate::peer::AgentRegistry,
+    /// What the join answers say the host is: a certified host, or the
+    /// governing device serving its own rooms.
+    pub(crate) mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode,
 }
 
 /// The rooms this relay governs.
@@ -727,7 +733,7 @@ pub struct Rooms {
 }
 
 struct RoomsInner {
-    host: RoomHost,
+    host: RoomServices,
     dir: PathBuf,
     rooms: AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedRoom>>>>,
     calls: Arc<voice::Calls>,
@@ -850,13 +856,17 @@ impl Rooms {
     /// Open every room recorded under `dir` and bind each to the relay:
     /// its workspace pinned and admitting only governed members, its
     /// unpublished governance retained, its members' new records created.
-    pub(crate) async fn open(host: RoomHost, dir: PathBuf) -> Result<Self, String> {
+    pub(crate) async fn open(host: RoomServices, dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         let mut rooms = BTreeMap::new();
         let entries = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
         for entry in entries {
             let path = entry.map_err(|error| error.to_string())?.path();
             if path.extension().is_none_or(|extension| extension != "room") {
+                continue;
+            }
+            // A room this host released stays on disk, unserved.
+            if path.with_extension(RELEASED).exists() {
                 continue;
             }
             let room = GovernedRoom::open(path.clone(), &host.cert, &host.key)
@@ -901,7 +911,6 @@ impl Rooms {
             this.carry_revocations(&mut room, &[]).await?;
         }
         this.settle_layouts().await;
-        this.watch_calls();
         this.follow_activity();
         Ok(this)
     }
@@ -928,6 +937,11 @@ impl Rooms {
             && self.inner.rooms.lock().await.contains_key(room)
         {
             return Err("this host has that room already".into());
+        }
+        if let Some(room) = room
+            && self.inner.dir.join(room).with_extension(RELEASED).exists()
+        {
+            return Err("this host released that room; its files stay here".into());
         }
         let room = match room {
             Some(room) => GovernedRoom::create_in(
@@ -956,6 +970,54 @@ impl Rooms {
         self.settle(&mut *room.lock().await).await?;
         tracing::info!(room = %summary.room, workspace_id = summary.workspace_id, "governed room created");
         Ok(summary)
+    }
+
+    /// Stop governing and serving `room`: its workspace admits nobody from
+    /// now on, which ends its sessions here, and the host leaves it closed
+    /// when it opens again. Its files stay on disk. A device releases a
+    /// room after moving it to another host, whose hints its members follow.
+    ///
+    /// # Errors
+    ///
+    /// The room is not governed here, or the release could not be recorded
+    /// or its access narrowed.
+    pub async fn release(&self, room: &str) -> Result<(), String> {
+        let governed = self
+            .inner
+            .rooms
+            .lock()
+            .await
+            .get(room)
+            .cloned()
+            .ok_or("this host does not govern that room")?;
+        let governed = governed.lock().await;
+        // Recorded first: a host stopped halfway keeps it released.
+        let marker = governed.path.with_extension(RELEASED);
+        let file = std::fs::File::create(&marker).map_err(|error| error.to_string())?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        if let Some(dir) = marker.parent() {
+            std::fs::File::open(dir)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|error| error.to_string())?;
+        }
+        self.inner.rooms.lock().await.remove(room);
+        self.inner
+            .host
+            .access
+            .replace(
+                governed.workspace_id(),
+                true,
+                GovernedAccess {
+                    member_devices: Vec::new(),
+                    member_user_roots: Vec::new(),
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        tracing::info!(%room, workspace_id = governed.workspace_id(), "governed room released");
+        drop(governed);
+        let _ = self.inner.changes.send(room.to_owned());
+        Ok(())
     }
 
     /// Name `room` `name`, in its governance (what members show) and in
@@ -2010,7 +2072,7 @@ impl Rooms {
             .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
         tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
             version: 1,
-            mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::CertifiedHost,
+            mode: host.mode,
             room: room.room().to_owned(),
             workspace_id: room.workspace_id(),
             governing_authority: room.peer().authority().clone(),
