@@ -174,10 +174,7 @@ impl Actor {
             (self.port.wake)();
         }
     }
-    fn prepare(
-        &self,
-        apps: &mut super::super::InProcessApps,
-    ) -> Result<EnrollmentReview, SendError> {
+    fn prepare(&self, apps: &super::super::InProcessApps) -> Result<EnrollmentReview, SendError> {
         if self.attempt.borrow().is_some()
             || !self.active.borrow().is_empty()
             || apps.native_messaging_transport.is_none()

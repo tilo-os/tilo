@@ -255,7 +255,7 @@ impl super::super::InProcessApps {
         }
     }
     pub(super) fn default_native_accounts(
-        &mut self,
+        &self,
         service: &str,
     ) -> Result<Vec<(String, accounts::person::PersonAccount)>, SendError> {
         let service = service.to_owned();

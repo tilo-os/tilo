@@ -83,7 +83,7 @@ impl NativeVerifiedSignalEnrollment {
 
 impl super::super::InProcessApps {
     pub(super) fn publish_native_whatsapp_account(
-        &mut self,
+        &self,
         identity: &NativeMessagingIdentity,
         name: String,
         jid: String,
@@ -206,7 +206,7 @@ impl super::super::InProcessApps {
     pub(super) fn publish_native_account<
         P: serde::Serialize + From<(String, String, String, u64)>,
     >(
-        &mut self,
+        &self,
         identity: &NativeMessagingIdentity,
         service: tilo_messaging_protocol::Service,
         publish: tilo_resource::ActionRef<PersonAccounts, P>,

@@ -497,7 +497,7 @@ impl Actor {
     }
     fn review(
         &self,
-        apps: &mut super::super::InProcessApps,
+        apps: &super::super::InProcessApps,
         account: &ServiceAccount,
         name: String,
     ) -> Result<String, SendError> {
@@ -545,7 +545,7 @@ impl Actor {
     }
     fn publish(
         &self,
-        apps: &mut super::super::InProcessApps,
+        apps: &super::super::InProcessApps,
         attempt: &mut Attempt,
         name: String,
     ) -> Result<String, SendError> {
