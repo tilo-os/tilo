@@ -118,7 +118,6 @@ impl RichTextSurface<RichTextField> {
 }
 
 impl<S: RichTextSource + 'static> RichTextSurface<S> {
-    /// An editor over rich text from `source`.
     pub fn over(source: S) -> Self {
         Self {
             editor: default_editor(),

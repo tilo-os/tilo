@@ -1250,7 +1250,6 @@ mod tests {
         let general = children
             .create(serde_json::json!({ "name": "general" }), None, None)
             .unwrap();
-        // Each child is its own record, under the id it was made with.
         let record = RecordId::room_default().child(ui.as_str()).unwrap();
         assert_eq!(
             store.read(&record, |doc| Reader::<Topic>::read(doc)
@@ -1281,7 +1280,6 @@ mod tests {
         );
         assert_eq!(children.child(&ui).unwrap().name, "ui");
         assert!(store.read(&record, |_| ()).is_some());
-        // Into a group again, last there.
         children.move_to(&general, Some(&design), None).unwrap();
         assert_eq!(
             order(&children)[2],
@@ -1314,7 +1312,6 @@ mod tests {
             order(&children),
             [("ui".to_owned(), Some("design".to_owned()))]
         );
-        // Its record and everything in it are kept.
         let record = RecordId::room_default().child(design.as_str()).unwrap();
         assert_eq!(
             store.read(&record, |doc| Reader::<Topic>::read(doc)
@@ -1325,7 +1322,6 @@ mod tests {
             Some("kept".to_owned())
         );
         assert_eq!(children.child(&design).unwrap().note, "kept");
-        // Its group gone, a child restored comes back at the top.
         children.delete(&ui).unwrap();
         children.restore(&ui).unwrap();
         assert_eq!(order(&children), [("ui".to_owned(), None)]);
@@ -1360,7 +1356,6 @@ mod tests {
             let encoded = spec.build_json(args.as_object().unwrap()).unwrap();
             children.invoke_published(&encoded, &agent)
         };
-        // An agent makes a child through the container's own `create`.
         let made = invoke(
             &children.published(),
             lifecycle::CREATE,
@@ -1381,7 +1376,6 @@ mod tests {
                 "{verb} on the child"
             );
         }
-        // The child's own action changes its record.
         invoke(child, "jot", serde_json::json!({ "text": "agenda" })).unwrap();
         let id = Id::from_raw(address.rsplit('/').next().unwrap());
         assert_eq!(children.child(&id).unwrap().note, "agenda");

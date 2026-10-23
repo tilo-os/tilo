@@ -146,19 +146,11 @@ impl LaunchedApp {
     }
 
     /// Wait for the app to exit.
-    ///
-    /// # Errors
-    ///
-    /// Returns the `waitpid` error.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         wait_pid(self.pid)
     }
 
     /// Send `SIGKILL`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the `kill` error.
     pub fn kill(&self) -> io::Result<()> {
         signal(self.pid, libc::SIGKILL)
     }
@@ -363,10 +355,6 @@ fn user_cache_dir() -> io::Result<PathBuf> {
 
 /// Apply `profile` to a throwaway child that then tries to exec a path that
 /// cannot exist. Only "applied, and the exec failed" passes.
-///
-/// # Errors
-///
-/// Returns `sandbox-exec`'s diagnostics when the profile did not apply.
 pub(crate) fn preflight(profile: &SeatbeltProfile) -> Result<(), String> {
     let output = Command::new(SANDBOX_EXEC)
         .args(profile_args(profile))

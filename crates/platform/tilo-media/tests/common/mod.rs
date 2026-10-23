@@ -332,7 +332,6 @@ pub struct Drift {
 
 #[cfg(feature = "decode")]
 impl Drift {
-    /// The drift of `actual` from `target`.
     pub fn between(actual: u64, target: u64) -> Self {
         Self {
             ms: actual.abs_diff(target),

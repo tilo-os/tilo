@@ -1550,14 +1550,12 @@ mod admit_share_tests {
 
     #[test]
     fn share_admission_and_registration_hand_over_only_what_is_owed() {
-        // Phase `registration_descriptor_releases_process_entry_exactly_once`.
         {
             let (mut release, wait) = UnixStream::pair().unwrap();
             let writer = std::thread::spawn(move || release.write_all(&[1]));
             wait_for_registration_fd(wait.into_raw_fd()).unwrap();
             writer.join().unwrap().unwrap();
         }
-        // Phase `admission_sends_the_bearer_only_in_the_service_frame`.
         {
             let uri = "tilo-file://v2/payload#bearer-secret".to_string();
             let mut stream = response("/home/alice/Shared/record");
@@ -1575,7 +1573,6 @@ mod admit_share_tests {
                 fs_protocol::RecipientControlOperationV1::AdmitV2 { uri: got } if got == uri
             ));
         }
-        // Phase `admission_refuses_a_relative_mount_from_the_service`.
         {
             let mut stream = response("relative/path");
             assert!(request_received_mount("redacted".into(), &mut stream).is_err());

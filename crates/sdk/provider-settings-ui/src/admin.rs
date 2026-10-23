@@ -113,10 +113,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
     }
 
     /// Submit host-specific metadata through the same serialized, revision-bound controller.
-    ///
-    /// # Errors
-    /// Returns an error while another operation is pending, administration is unavailable,
-    /// or the authoritative configuration has not been loaded.
     pub fn submit_config(
         &mut self,
         config: ProviderConfig,
@@ -187,10 +183,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
     }
 
     /// Queue an administration effect against the current authoritative snapshot.
-    ///
-    /// # Errors
-    /// Returns an error when administration is busy or unavailable, the snapshot is
-    /// missing, the proposed change is invalid, or account custody forbids a key edit.
     pub fn submit_provider(
         &mut self,
         effect: ProviderEffect,

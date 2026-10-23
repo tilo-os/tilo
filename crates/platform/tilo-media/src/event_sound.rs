@@ -23,7 +23,6 @@ pub enum SoundBackend {
 pub struct SoundCue {
     /// freedesktop sound-naming-spec ids, most specific first.
     pub ids: &'static [&'static str],
-    /// Accessible description of the event.
     pub description: &'static str,
     /// freedesktop sound theme to look the ids up in.
     pub theme: String,

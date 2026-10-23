@@ -116,7 +116,6 @@ impl<W: Widget + 'static> Placed<W> {
         );
     }
 
-    /// The tooltip of the control under `point`, when one is.
     pub fn tooltip_at(&self, point: ui_core::vello::kurbo::Point) -> Option<String> {
         fn find(widget: &dyn Widget, point: ui_core::vello::kurbo::Point) -> Option<String> {
             for child in widget.children() {
@@ -132,7 +131,6 @@ impl<W: Widget + 'static> Placed<W> {
     }
 }
 
-/// One embedded part of the page.
 pub struct PagePart<A> {
     pub host: Placed<Column>,
     key: String,

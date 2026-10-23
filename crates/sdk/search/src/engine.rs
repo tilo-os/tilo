@@ -115,7 +115,6 @@ pub trait Engine: Send + Sync {
 /// Makes the engine for a new index.
 pub type MakeEngine = fn() -> Box<dyn Engine>;
 
-/// The tantivy engine, for [`install_engine`].
 #[must_use]
 pub fn tantivy_engine() -> Box<dyn Engine> {
     Box::new(TantivyEngine::new())
@@ -246,7 +245,6 @@ pub(crate) struct Fields {
     pub boost: Field,
     pub length: Field,
     pub grams: [Field; INDEXED_WEIGHTS.len()],
-    /// Words of title fields, for typo matching.
     pub title_words: Field,
     /// Words of keyword fields, matched by typo below the titles' words.
     pub keyword_words: Field,
@@ -647,7 +645,6 @@ impl TantivyEngine {
             if !from.exists(&path)? {
                 continue;
             }
-            // Read without its footer, which the write adds back.
             let bytes = from.open_read(&path)?.read_bytes()?;
             let mut file = to.open_write(&path)?;
             file.write_all(&bytes)?;

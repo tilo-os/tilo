@@ -178,7 +178,6 @@ impl Notes {
             self.row("", NOTEBOOK, "notes.notebook", "Notebook", None, true),
             self.row("", TODO_BODY, "tilo.rich-text", "Todo", None, false),
             self.row("", SHOP_BODY, "tilo.rich-text", "Groceries", None, false),
-            // The notebook's own actions, then its pages.
             self.row(
                 NOTEBOOK,
                 NOTEBOOK,
@@ -600,7 +599,6 @@ fn an_app_lists_its_pages_and_actions_by_the_names_a_person_uses() {
             !text.contains("tilo-ui-bound") && !text.contains("3fa2c1d0"),
             "{text}"
         );
-        // Narrowed to one kind.
         let (actions, _) = tool(
             &agent(&host),
             "tilo_ls",
@@ -615,7 +613,6 @@ fn an_app_lists_its_pages_and_actions_by_the_names_a_person_uses() {
         )
         .await;
         assert!(!resources.contains('#'), "{resources}");
-        // Paged.
         let (first, _) = tool(&agent(&host), "tilo_ls", json!({"path":"notes","limit":1})).await;
         assert!(first.contains("… 4 more: cursor \"1\""), "{first}");
         let (rest, _) = tool(
@@ -715,7 +712,6 @@ fn a_page_reads_as_markdown_with_the_ids_edits_take() {
         let (resource, action, arguments) = invoked.last().unwrap();
         assert_eq!((resource.as_str(), action.as_str()), (NOTEBOOK, "read"));
         assert_eq!(*arguments, json!({"item": TODO}));
-        // Markdown is a fraction of the structured answer it is read from.
         let structured = todo_page().to_string();
         eprintln!(
             "page read: {} bytes as text, {} as JSON",
@@ -762,7 +758,6 @@ fn a_do_answers_with_its_result_and_never_a_receipt() {
         assert_eq!(*resource, host.id(TODO_BODY));
         assert_eq!(action, "append-paragraph");
         assert_eq!(*arguments, json!({"text": "Buy milk"}));
-        // An action with nothing to say is `ok`.
         let (text, failed) = tool(
             &agent(&host),
             "tilo_do",
@@ -789,7 +784,6 @@ fn a_refused_action_says_why_and_what_it_takes() {
             "{text}"
         );
         assert!(text.contains("\n  title"), "the parameters follow: {text}");
-        // A missing action lists the ones there are.
         let (text, failed) = tool(
             &agent(&host),
             "tilo_do",
@@ -941,7 +935,6 @@ fn a_search_ranks_apps_then_resources_then_actions_and_lists_ready_paths() {
                 .any(|line| line.starts_with("notes/Todo/body#append-paragraph(text)")),
             "a body is found under the note that owns it: {text}"
         );
-        // A path in a hit is one tilo_do takes.
         let path = text
             .lines()
             .next()

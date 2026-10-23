@@ -48,11 +48,9 @@ pub struct JoinChallengeView {
     pub room: String,
     /// The room's relay workspace.
     pub workspace_id: u64,
-    /// The device governing the room.
     pub authority_device_public_key: [u8; 32],
     /// The joining person.
     pub user_public_key: [u8; 32],
-    /// The joining device.
     pub device_public_key: [u8; 32],
     /// The device's request.
     pub request_id: [u8; 32],
@@ -65,7 +63,6 @@ pub struct JoinChallengeView {
 /// What a member may do in a room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoomRole {
-    /// Reads.
     Viewer,
     /// Reads and comments.
     Commenter,
@@ -86,7 +83,6 @@ pub struct RoomMember {
     pub name: Option<String>,
     /// Their role.
     pub role: RoomRole,
-    /// They own the room.
     pub owner: bool,
     /// They were removed.
     pub removed: bool,
@@ -99,7 +95,6 @@ pub struct Room {
     pub room: String,
     /// The relay workspace carrying it.
     pub workspace_id: u64,
-    /// Its name.
     pub name: String,
     /// Its committed governance generation.
     pub generation: u64,
@@ -149,7 +144,6 @@ pub const MAX_PRE_ADMISSION_LABEL_CHARS: usize = 128;
 pub struct PreAdmission {
     /// The room's UUID.
     pub room: String,
-    /// The role the person gets.
     pub role: RoomRole,
     /// SHA-256 of the token the person presents.
     pub token_sha256: [u8; 32],
@@ -212,10 +206,6 @@ impl PreAdmission {
     }
 
     /// Whether the key it names signed it and its label is printable.
-    ///
-    /// # Errors
-    ///
-    /// Returns why it does not verify.
     pub fn verify(&self) -> Result<(), String> {
         let label = self.label.trim();
         if label.is_empty()
@@ -251,7 +241,6 @@ pub enum RoomNotice {
         label: String,
         /// Their role.
         role: RoomRole,
-        /// When.
         at_ns: u64,
     },
     /// Someone reported the public workspace through its door
@@ -261,7 +250,6 @@ pub enum RoomNotice {
         user_public_key: [u8; 32],
         /// What they said is wrong.
         reason: String,
-        /// When.
         at_ns: u64,
     },
 }
@@ -281,22 +269,18 @@ pub struct PendingInvite {
 /// the room as it is after it, except as noted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoomsRequest {
-    /// Every room the host governs.
     List,
     /// Create a governed workspace named `name` (1–80 characters).
     Create {
-        /// Its name.
         name: String,
     },
     /// Admit the calling device to `room` as its owner.
     Enter {
-        /// The room.
         room: String,
     },
     /// Issue an invitation anyone holding it may redeem; the owner admits
     /// each redemption.
     Invite {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key; never zero.
         request_id: [u8; 32],
@@ -311,7 +295,6 @@ pub enum RoomsRequest {
     /// Cancel an invitation not yet redeemed: answered with
     /// [`RoomsReply::Pending`].
     Cancel {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -320,42 +303,35 @@ pub enum RoomsRequest {
     },
     /// The invitations to `room` still redeemable.
     Pending {
-        /// The room.
         room: String,
     },
     /// The people waiting to join `room`.
     Requests {
-        /// The room.
         room: String,
     },
     /// Admit a waiting person.
     Admit {
-        /// The room.
         room: String,
         /// Their request.
         request_id: [u8; 32],
     },
     /// Decline a waiting person: answered with [`RoomsReply::Requests`].
     Decline {
-        /// The room.
         room: String,
         /// Their request.
         request_id: [u8; 32],
     },
     /// Change a member's role.
     SetRole {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
         /// The member.
         user_public_key: [u8; 32],
-        /// Their new role.
         role: RoomRole,
     },
     /// Remove a member and every device of theirs.
     Remove {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -365,7 +341,6 @@ pub enum RoomsRequest {
     /// Remove a person, when a member, and keep them out until unbanned.
     /// The owner, and a Moderator for members ranked below Moderator.
     Ban {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -374,7 +349,6 @@ pub enum RoomsRequest {
     },
     /// Let a banned person be admitted again.
     Unban {
-        /// The room.
         room: String,
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
@@ -394,7 +368,6 @@ pub enum RoomsRequest {
     },
     /// What happened in `room` without the owner deciding it then.
     Notices {
-        /// The room.
         room: String,
     },
     /// Whether the calling device's person may make an undoable change at
@@ -402,7 +375,6 @@ pub enum RoomsRequest {
     /// with [`RoomsReply::Permits`]. A page asks before it offers what only
     /// some members may do, such as acting on what other people made.
     Permits {
-        /// The room.
         room: String,
         /// A node of the room's published tree, in its text form
         /// (`room:<id>/app:<app>/…`).
@@ -415,7 +387,6 @@ pub enum RoomsRequest {
 pub enum RoomsReply {
     /// Every governed room.
     Rooms(Vec<Room>),
-    /// The room as it is now.
     Room(Room),
     /// The issued invitation.
     Invitation {
@@ -449,7 +420,6 @@ pub enum JoinStep {
     Ask {
         /// The signed invitation.
         invitation: Vec<u8>,
-        /// The joining device.
         device_cert: DeviceCert,
         /// The device's request, random and kept until it is answered.
         request_id: [u8; 32],
@@ -470,7 +440,6 @@ pub enum JoinStep {
     Status {
         /// The device's request.
         request_id: [u8; 32],
-        /// The joining device.
         device_public_key: [u8; 32],
     },
     /// [`JoinStep::Prove`] with the one-time token of the owner's
@@ -484,7 +453,6 @@ pub enum JoinStep {
         /// How the person names themself: a display name
         /// ([`tilo_user_identity::display_name`]).
         name: String,
-        /// The token.
         token: Vec<u8>,
     },
 }
@@ -498,7 +466,6 @@ pub enum JoinReply {
         room: String,
         /// Its relay workspace.
         workspace_id: u64,
-        /// Its name.
         name: String,
         /// The role it grants.
         role: RoomRole,
@@ -521,9 +488,7 @@ pub enum JoinReply {
         room: String,
         /// Its relay workspace.
         workspace_id: u64,
-        /// Its name.
         name: String,
-        /// The role it holds.
         role: RoomRole,
     },
     /// The owner declined.

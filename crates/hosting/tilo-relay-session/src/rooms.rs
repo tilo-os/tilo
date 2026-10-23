@@ -63,7 +63,6 @@ pub const GRANT_APP_AUTHORSHIP: &str = "room.grant-app-authorship";
 /// The provider a relay answers a room member's own business under, on the
 /// room's workspace: what they do for themselves, never governance.
 pub const MEMBER_ACTIONS_PROVIDER: &str = "tilo.member";
-/// The resource kind of a member's own business in a room.
 pub const MEMBER_RESOURCE_KIND: &str = "workspace.member";
 /// Claim the caller's own topology namespace `salt` (1–65535). Answers the
 /// room's `generation` that carries it.
@@ -110,7 +109,6 @@ pub struct ActionInvitation {
 }
 
 impl ActionInvitation {
-    /// `issued`, as an action answers it.
     #[must_use]
     pub fn of(issued: &IssuedInvitation) -> Self {
         Self {
@@ -120,10 +118,6 @@ impl ActionInvitation {
     }
 
     /// The invitation's id and its signed bytes.
-    ///
-    /// # Errors
-    ///
-    /// When either is not the hex it should be.
     pub fn decode(&self) -> Result<IssuedInvitation, String> {
         let mut invite_id = [0; 32];
         hex::decode_to_slice(&self.invite, &mut invite_id)
@@ -140,7 +134,6 @@ impl ActionInvitation {
 /// What [`CREATE_ROOM`] answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreatedRoom {
-    /// The room.
     #[serde(flatten)]
     pub room: RoomListing,
     /// Its first invitation, when one was asked for.
@@ -211,7 +204,6 @@ pub struct RoomSummary {
     pub workspace_id: u64,
     /// The workspace's name.
     pub name: String,
-    /// The room's committed governance generation.
     pub generation: u64,
     /// Every person governance records, removed ones included.
     pub members: Vec<GovernedMember>,
@@ -234,16 +226,11 @@ pub enum RoomCommand {
     },
     /// Issue an invitation to `room`.
     Invite {
-        /// The room.
         room: String,
-        /// The invitation.
         request: IssueInvitationRequest,
     },
-    /// Cancel an invitation to `room`.
     Cancel {
-        /// The room.
         room: String,
-        /// The invitation.
         request: CancelInvitationRequest,
     },
     /// The invitations to `room` still redeemable.
@@ -253,14 +240,11 @@ pub enum RoomCommand {
     },
     /// Change a member's role in `room`.
     SetRole {
-        /// The room.
         room: String,
         /// The change.
         request: SetMemberRoleRequest,
     },
-    /// Remove a member from `room`.
     Remove {
-        /// The room.
         room: String,
         /// The removal.
         request: RemoveMemberRequest,
@@ -340,18 +324,15 @@ pub enum RoomReply {
     Room(RoomSummary),
     /// Every governed room.
     Rooms(Vec<RoomSummary>),
-    /// The caller is in the room.
     Entered {
         /// Whether governance changed to admit it.
         changed: bool,
     },
-    /// The issued invitation.
     Invitation(IssuedInvitation),
     /// The redeemable invitations.
     Pending(Vec<PendingInvitation>),
     /// A committed governance change.
     Governance {
-        /// The room generation that carries it.
         generation: u64,
     },
     /// Done, with nothing to report.
@@ -397,10 +378,6 @@ impl RoomAdminClient {
 
     /// Send `command` to the relay at `relay` and return its reply.
     /// A refusal is returned as [`RoomAdminError::Refused`].
-    ///
-    /// # Errors
-    ///
-    /// Returns why the exchange failed or the relay refused it.
     pub async fn send(
         &self,
         relay: iroh::EndpointAddr,

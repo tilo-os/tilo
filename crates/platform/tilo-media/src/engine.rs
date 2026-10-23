@@ -875,8 +875,6 @@ impl MediaEngine {
         }
     }
 
-    // --- Collaborative transport ------------------------------------------
-
     /// Snapshot the engine's transport for a host to publish. `now_ms` is the
     /// wall-clock (unix millis) epoch the snapshot is authoritative at.
     pub fn transport_state(&self, now_ms: u64) -> TransportState {
@@ -1207,7 +1205,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn synthesized_engine_transport_orders_events_and_follows_the_host() {
-        // Phase `waiting_without_a_deadline_is_a_wait_not_an_abort`.
         {
             // "Block until the frame lands, however long that takes" is spelled
             // `Duration::MAX`. Turning that into a deadline overflows `Instant`,
@@ -1222,7 +1219,6 @@ mod tests {
                 "an unbounded wait still returns the frame it waited for"
             );
         }
-        // Phase `opens_and_orders_duration_before_position`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1245,7 +1241,6 @@ mod tests {
             {
                 assert!(dur_idx.unwrap() < pos_idx, "DurationKnown before Position");
             }
-            // Duration announced exactly once.
             let evts2 = e.poll_at(50);
             assert!(
                 !evts2
@@ -1253,7 +1248,6 @@ mod tests {
                     .any(|x| matches!(x, MediaEvent::DurationKnown { .. }))
             );
         }
-        // Phase `playhead_advances_with_virtual_time`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1272,7 +1266,6 @@ mod tests {
             e.poll_at(3_000);
             assert_eq!(e.position_ms(), 1_000, "paused playhead does not advance");
         }
-        // Phase `playback_rate_is_clamped_and_drives_synthesized_transport`.
         {
             let mut engine = MediaEngine::new_synthesized();
             engine.open(Source::Remote {
@@ -1287,7 +1280,6 @@ mod tests {
             engine.set_rate(99.0);
             assert!((engine.rate() - 4.0).abs() < f32::EPSILON);
         }
-        // Phase `reaching_duration_emits_position_then_ended_last`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1309,7 +1301,6 @@ mod tests {
             assert!(!e.is_playing(), "stopped at the end");
             assert_eq!(e.position_ms(), e.duration_ms().unwrap());
         }
-        // Phase `follower_applies_host_transport_and_seeks_on_large_drift`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1340,7 +1331,6 @@ mod tests {
                 "no seek when already aligned"
             );
         }
-        // Phase `transport_state_snapshots_engine`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1357,7 +1347,6 @@ mod tests {
 
     #[test]
     fn synthesized_engine_produces_frames_only_once_opened() {
-        // Phase `synthesized_engine_produces_a_frame`.
         {
             let mut e = MediaEngine::new_synthesized();
             e.open(Source::Remote {
@@ -1367,7 +1356,6 @@ mod tests {
             assert_eq!((f.width, f.height), (SYNTH_W, SYNTH_H));
             assert_eq!(f.rgba.len(), (SYNTH_W * SYNTH_H * 4) as usize);
         }
-        // Phase `no_frame_is_produced_until_a_source_is_opened`.
         {
             let mut e = MediaEngine::new_synthesized();
             // Pumping a never-opened engine must not fabricate a picture — the

@@ -109,10 +109,6 @@ pub struct SignedModerationMutation {
 
 impl SignedModerationMutation {
     /// Recover the exact approved JSON action payload from a request.
-    ///
-    /// # Errors
-    /// Returns an error for a request at another protocol or without a
-    /// destination.
     pub fn external_operation(
         &self,
     ) -> Result<crate::ExternalModerationOperation, ModerationWireError> {
@@ -144,7 +140,6 @@ pub struct ModerationCase {
 }
 
 impl ModerationCase {
-    /// The case `event` opens, open as of it.
     #[must_use]
     pub fn opened_by(event: &ModerationEvent) -> Self {
         Self {
@@ -272,9 +267,6 @@ pub fn moderation_signing_message(
 }
 
 /// Verify an actor's public key and signature over the complete request.
-///
-/// # Errors
-/// Returns a public-key, signature, or encoding error when verification fails.
 pub fn verify_moderation_mutation(
     request: &SignedModerationMutation,
 ) -> Result<(), ModerationWireError> {
@@ -322,10 +314,6 @@ pub fn verify_moderation_mutation(
 
 /// Verify a contiguous page whose first `previous_hash_hex` is the caller's
 /// trusted prior head (empty for sequence one). Returns the resulting head.
-///
-/// # Errors
-/// Returns the first invalid sequence when any link, digest, signature or
-/// signed-request projection is invalid.
 pub fn verify_transparency_chain(
     events: &[ModerationEvent],
     prior_head_hex: &str,
@@ -358,9 +346,6 @@ pub fn verify_transparency_chain(
 /// Verify a complete moderation log against the head committed by an
 /// owner-signed registry snapshot and derive one case from authenticated
 /// events. The server's mutable `status` projection is never trusted.
-///
-/// # Errors
-/// Returns an integrity, head, authorization, or case-shape error.
 pub fn derive_verified_case(
     events: &[ModerationEvent],
     case_id: &str,
@@ -426,9 +411,6 @@ pub fn derive_verified_case(
 
 /// Validate role authorization and immutable case identity for every event in
 /// a previously cryptographically verified complete log.
-///
-/// # Errors
-/// Returns the first unauthorized actor or inconsistent case identity.
 pub fn verify_moderation_authorization(
     events: &[ModerationEvent],
     owner_pubkey_hex: &str,

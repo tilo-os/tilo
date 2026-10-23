@@ -251,7 +251,6 @@ mod tests {
     }
     #[test]
     fn actual_child_normal_hooks_and_forced_shutdown_produce_different_checkpoints() {
-        // One test owns the process-wide STOP flag and SIGTERM handler.
         let wake = install_stop().unwrap();
         let (_root, child) =
             live("trap 'exit 143' TERM; touch \"$1\"; while :; do sleep 0.02; done");

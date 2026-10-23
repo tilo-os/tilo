@@ -1348,7 +1348,6 @@ mod tests {
     fn what_a_surface_applied_through_actions_stays() {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "title", "applied").unwrap();
-        // The executor commits every action it applies.
         doc.commit();
         let heads = doc.get_heads();
         refuse_raw_writes(&doc, 0, "sync");

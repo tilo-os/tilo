@@ -15,9 +15,6 @@ pub struct Cancellation(Arc<Mutex<Lifetime>>);
 
 impl Cancellation {
     /// Register the request connection before sending anything on it.
-    ///
-    /// # Errors
-    /// Returns an error if cancelled, poisoned or unable to clone the connection.
     #[cfg(unix)]
     pub fn track(&self, socket: &std::os::unix::net::UnixStream) -> std::io::Result<()> {
         let mut guard = self
@@ -62,9 +59,6 @@ pub struct PendingResponse<T> {
 
 impl<T: Send + 'static> PendingResponse<T> {
     /// Start a request away from the host's event thread.
-    ///
-    /// # Errors
-    /// Returns the thread creation error.
     pub fn start(
         name: &str,
         work: impl FnOnce(Cancellation) -> T + Send + 'static,
@@ -95,9 +89,6 @@ impl<T: Send + 'static> PendingResponse<T> {
     }
 
     /// Transfer the answer's lifetime to its caller without blocking.
-    ///
-    /// # Errors
-    /// Returns `Disconnected` if the worker ended without an answer.
     pub fn take_answer(&self) -> Result<T, mpsc::TryRecvError> {
         let answer = self.answer.try_recv()?;
         self.cancellation.detach();
@@ -132,9 +123,6 @@ impl SessionLifetime {
     /// the lifetime's answer, read like any other end of the session, so the
     /// socket's own address and type are checked, never its peer's, which
     /// macOS stops answering for once the peer is gone.
-    ///
-    /// # Errors
-    /// Refuses a descriptor that is not a Unix stream socket.
     #[cfg(unix)]
     pub fn adopt(descriptor: std::os::fd::OwnedFd) -> std::io::Result<Self> {
         use std::os::fd::AsRawFd;
@@ -228,9 +216,7 @@ impl ReaderLifetime {
 /// ended before closing it (a relay session's `end_report`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LeaseState {
-    /// The peer holds the session open.
     Open,
-    /// The peer closed the lease without a word.
     Closed,
     /// The peer said how the session ended (one line, without its newline)
     /// and closes the lease.

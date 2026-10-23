@@ -981,7 +981,6 @@ fn a_one_item_change_asks_only_the_items_it_touched_for_their_ids() {
         replica
             .apply(tilo_resource::Invoke::edit(&edit).unwrap())
             .unwrap();
-        // A view keeps the state it was shown, as a surface's `present` may.
         let shown = Rc::clone(reader.state());
         let before = ids_asked();
         assert!(reader.sync(replica.doc()).unwrap());
@@ -1393,15 +1392,12 @@ fn the_edits_of_a_local_copy_match_comparing_every_item() {
             edits_of(&apart(&before), &apart(&after)),
             "seed {seed}"
         );
-        // Items whose ids changed in place are found by their new ids.
         for shot in &after.shots {
             let first = after.shots.iter().position(|other| other.id == shot.id);
             assert_eq!(after.shots.position_of(&shot.id()), first, "seed {seed}");
         }
     }
 }
-
-// --- Saving a map over the state it was copied from --------------------------
 
 thread_local! {
     static PAGES_COMPARED: Cell<usize> = const { Cell::new(0) };
@@ -2078,7 +2074,6 @@ fn a_keyed_list_saved_over_its_copy_writes_what_a_whole_write_does() {
                 peer_shots(&mut doc, &mut rng, step);
             }
             let dirty = tracker.delta(&mut doc);
-            // What the slot holds now, brought up to date as a reader does.
             let mut was = held.clone();
             let id = root_map(&doc, "shots");
             let value = Value::Object(tilo_resource::__private::ObjType::Map);
@@ -2117,7 +2112,6 @@ fn a_keyed_list_saved_over_its_copy_writes_what_a_whole_write_does() {
             saves += 1;
             doc = changed;
             tracker.start(&mut doc);
-            // Two items under one id are one item in the document.
             held = if ids_unique(&now) {
                 now
             } else {

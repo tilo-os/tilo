@@ -86,7 +86,6 @@ mod probe {
         let _ = JsFuture::from(promise).await;
     }
 
-    /// `future`'s output if it finishes within `ms`.
     async fn within<F: Future>(ms: u32, future: F) -> Option<F::Output> {
         let mut future = pin!(future);
         let mut timer = pin!(sleep(ms));
@@ -101,8 +100,6 @@ mod probe {
         })
         .await
     }
-
-    // ---- the conformance cases, as in tests/conformance.rs ----
 
     async fn writes_replace_whole_contents_and_create_parents(dir: &Dir) -> Outcome {
         let file = p("notes/2026/a.md");
@@ -654,8 +651,6 @@ mod probe {
     pub async fn cleanup(profile: String) -> Result<(), JsValue> {
         remove_profile(&profile).await
     }
-
-    // ---- the page's mirror and watches ----
 
     fn changes(watch: &tilo_files::Watch) -> Vec<String> {
         std::iter::from_fn(|| watch.try_next())

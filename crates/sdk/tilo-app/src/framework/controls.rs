@@ -143,7 +143,6 @@ type Arguments<I> =
 pub(crate) struct ActionTable {
     /// The app whose resource this is, for the keys of its actions.
     app: &'static str,
-    /// The resource's kind.
     kind: &'static str,
     resource: Rc<RefCell<Published>>,
     /// Another record than the app's own, published at this id, whose
@@ -209,7 +208,6 @@ impl ActionTable {
         }
     }
 
-    /// The key of action `id`.
     fn key(&self, id: &str) -> ActionKey {
         ActionKey::new(self.app, self.kind, id)
     }
@@ -650,7 +648,6 @@ impl<R: Resource> Actions<R> {
         )
     }
 
-    /// `control`, bound to effect `effect`.
     pub fn bind_effect<E: Effect, I: 'static, C: ActionControl<I>>(
         &self,
         control: C,
@@ -675,14 +672,12 @@ impl<R: Resource> Actions<R> {
     }
 }
 
-/// `value` with its result in its JSON form, the same for every resource.
 fn json_of<V: tilo_resource::Model, I>(
     value: impl Fn(I) -> Result<V, String> + Send + Sync + 'static,
 ) -> Box<dyn Fn(I) -> Result<serde_json::Value, String> + Send + Sync> {
     Box::new(move |input| value(input).map(|value| value.to_json()))
 }
 
-/// A control's value, set as it is.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "the shape every value conversion has"

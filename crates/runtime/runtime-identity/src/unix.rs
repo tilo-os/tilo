@@ -220,11 +220,6 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
 }
 
 /// Resolve the per-login-user identity directory using XDG rules.
-///
-/// # Errors
-///
-/// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set to an
-/// absolute path.
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     if let Some(config) = tilo_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
         return Ok(config.join("tilo").join("identity"));
@@ -1134,11 +1129,6 @@ enum SigningSource {
     Local(Option<SigningKey>),
     /// Restored device-local FROST share. It stays inside the host and is
     /// usable only by the trusted quorum coordinator, never exported to apps.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when this is not a host-local threshold share,
-    /// the identity lock is poisoned, or FROST round-one generation fails.
     LocalThreshold(Mutex<ThresholdIdentity>),
     Broker(Mutex<std::os::unix::net::UnixStream>),
     ActionBroker(Arc<BrokerSigningIdentity>),
@@ -1175,11 +1165,6 @@ impl SigningIdentity {
     /// device's share. This succeeds only for a threshold identity loaded by
     /// the trusted launcher; sandbox clients receive a broker source and
     /// cannot invoke the local-share path.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when this is not a host-local threshold share,
-    /// the identity lock is poisoned, or FROST round-one setup fails.
     pub fn threshold_sign_round1<R: rand_core::CryptoRng + ?Sized>(
         &self,
         rng: &mut R,
@@ -1205,11 +1190,6 @@ impl SigningIdentity {
 
     /// Produce this device's partial after the trusted coordinator has
     /// collected and human-authorized a quorum of commitments.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when this is not a host-local threshold share,
-    /// the identity lock is poisoned, or the FROST session data is invalid.
     pub fn threshold_sign_round2(
         &self,
         nonces: SigningSessionNonces,
@@ -1237,11 +1217,6 @@ impl SigningIdentity {
 
     /// Aggregate a confirmed quorum's partials into the ordinary Ed25519
     /// signature consumed by the rest of Tilo.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when this is not a host-local threshold share,
-    /// the identity lock is poisoned, or the partial quorum is invalid.
     pub fn aggregate_threshold_signature(
         &self,
         partials: &[SigningRound2Partial],
@@ -1304,7 +1279,6 @@ impl SigningIdentity {
         self.threshold
     }
 
-    /// `n` in t-of-n.
     pub fn total_shares(&self) -> u16 {
         self.total_shares
     }
@@ -1767,9 +1741,6 @@ pub fn load_metadata_from_path(path: &std::path::Path) -> Result<IdentityMetadat
 
 /// Decode bounded canonical public identity metadata from an already-held read.
 /// This does not unlock a signing share or change source custody.
-///
-/// # Errors
-/// Returns an error when the canonical record or bounded profile is invalid.
 pub fn load_metadata_from_bytes(bytes: &[u8]) -> Result<IdentityMetadata, NotAvailable> {
     Ok(metadata_from_record(parse_record(bytes)?))
 }

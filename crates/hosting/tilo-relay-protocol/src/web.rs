@@ -79,7 +79,6 @@ pub const INSTALL_ROUTE: &str = "/install";
 /// What a waiting host says about itself on `GET /install` (JSON).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallInfo {
-    /// The host's device key, hex.
     pub device_public_key: String,
     /// On a node, the session that runs the person's apps and agents beside
     /// the host.
@@ -90,7 +89,6 @@ pub struct InstallInfo {
 /// The device key of the session beside a node, vouched for by the node.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeSession {
-    /// The session's device key, hex.
     pub device_public_key: String,
     /// The node's device key's Ed25519 signature over
     /// [`node_session_message`], hex. A page that got the node's key out of
@@ -112,7 +110,6 @@ pub fn node_session_message(node: &[u8; 32], session: &[u8; 32]) -> Vec<u8> {
 /// `certifyDevice` resolves.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallCertificates {
-    /// The host's certificate.
     pub certificate: String,
     /// The session's certificate, when the host has one beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,7 +119,6 @@ pub struct InstallCertificates {
 /// A waiting host's answer to an accepted `/install` (JSON).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Installed {
-    /// The host's device key, hex.
     pub device_public_key: String,
     /// The identity it now serves, hex.
     pub user_public_key: String,
@@ -321,10 +317,6 @@ pub const FETCH_PATH: &str = "/fetch";
 
 /// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
 /// host's feature bits.
-///
-/// # Errors
-///
-/// Returns an error if postcard fails to encode.
 pub fn encode_grant(grant: &SessionGrant, features: u64) -> Result<Vec<u8>, postcard::Error> {
     let mut bytes = postcard::to_allocvec(grant)?;
     bytes.extend(postcard::to_allocvec(&features)?);
@@ -333,10 +325,6 @@ pub fn encode_grant(grant: &SessionGrant, features: u64) -> Result<Vec<u8>, post
 
 /// Decode a `/session/finish` answer into the grant and the host's feature
 /// bits.
-///
-/// # Errors
-///
-/// Returns an error if the grant or the feature bits do not decode.
 pub fn decode_grant(bytes: &[u8]) -> Result<(SessionGrant, u64), postcard::Error> {
     let (grant, rest) = postcard::take_from_bytes::<SessionGrant>(bytes)?;
     Ok((grant, postcard::from_bytes(rest)?))
@@ -430,7 +418,6 @@ pub const WORKSPACE_JOIN_PATH: &str = "/workspace-join";
 /// The record whose channel's content keys a spectator asks for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelKeysRequest {
-    /// The record's app.
     pub app_id: String,
     /// The room (the record's cluster).
     pub room: String,

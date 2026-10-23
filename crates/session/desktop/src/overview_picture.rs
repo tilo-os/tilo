@@ -37,7 +37,6 @@ pub struct GridMetrics {
     pub title_gap: f64,
     /// Line height of a window's title.
     pub title_lh: f64,
-    /// Air between two strips.
     pub row_gap: f64,
     /// Air between two windows of a strip.
     pub window_gap: f64,

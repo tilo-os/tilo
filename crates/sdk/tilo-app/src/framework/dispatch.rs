@@ -820,9 +820,6 @@ impl<R: Resource> Dispatcher<R> {
     /// and nothing took yet — a destructive verb or a removal waiting for
     /// the person's confirmation — as the actions the door would apply once
     /// they agreed. Taking them empties the queue.
-    ///
-    /// # Errors
-    /// Returns why a queued invocation does not build.
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_asked(&self) -> Result<Vec<R::Action>, String> {
         self.core
@@ -1257,8 +1254,6 @@ impl<R: Resource> Dispatcher<R> {
         applied
     }
 
-    /// Hand an action that needs confirming to the host's door, which asks
-    /// before it applies: nothing applied now skips the person's consent.
     fn ask_first(&self, invoke: Invoke<R>, action: &R::Action) -> Result<(), ActionError> {
         if let Some(reason) = self.core.unreadable() {
             return Err(ActionError::Refused(reason));

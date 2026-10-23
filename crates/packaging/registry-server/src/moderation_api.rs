@@ -43,11 +43,6 @@ impl ModerationApiService {
     /// Verify, authorize and durably apply one mutation. A byte-identical
     /// retry returns the prior authoritative case; request-id reuse with a
     /// changed signed body is rejected.
-    ///
-    /// # Errors
-    /// Returns validation, authentication, authorization, moderation, log
-    /// integrity, or durable-storage errors without partially acknowledging a
-    /// mutation.
     #[allow(
         clippy::too_many_lines,
         reason = "this is the intentionally linear, auditable transaction boundary: validation, replay recovery, authoritative side effect, then three ordered durable renames"
@@ -244,9 +239,6 @@ impl ModerationApiService {
     }
 
     /// Read and, after a crash, repair a case materialization from the signed log.
-    ///
-    /// # Errors
-    /// Returns validation, log-integrity, or storage errors.
     pub fn case(&self, case_id: &str) -> Result<Option<ModerationCase>, ModerationApiError> {
         validate_id(case_id)?;
         let mut events = self.storage.load_transparency::<ModerationEvent>()?;
@@ -265,9 +257,6 @@ impl ModerationApiService {
     }
 
     /// Read one bounded, ordered page of the public transparency log.
-    ///
-    /// # Errors
-    /// Returns an invalid-limit, log-integrity, or storage error.
     pub fn transparency(
         &self,
         from_sequence: u64,

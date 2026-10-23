@@ -363,10 +363,6 @@ impl Parser<'_> {
 }
 
 /// The applications of an `AppStream` collection read from `input`.
-///
-/// # Errors
-///
-/// The XML is malformed.
 pub fn parse(
     input: impl BufRead,
     source: &AppstreamSource,

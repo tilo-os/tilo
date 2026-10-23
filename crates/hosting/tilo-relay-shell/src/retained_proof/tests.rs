@@ -525,7 +525,6 @@ fn exact_coverage_receipt_hash_heads_watermarks_required() {
         }
         tilo_peer_state::durability::put(&mut doc, receipts).unwrap();
         if case >= 7 {
-            // A trailing byte on one stored route value.
             let field = if case == 7 {
                 tilo_peer_state::coverage::FIELD_V2
             } else {
@@ -805,7 +804,6 @@ fn hostile_tail_is_rejected_without_in_process_decode() {
         );
         let mut cursor = proof.ordered_tail_readiness();
         assert!(!cursor.append(source, channel, &hostile), "{case}");
-        // A refused increment leaves the cursor where it was.
         assert!(cursor.append(source, channel, &accepted), "{case}");
     }
 }

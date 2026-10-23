@@ -9,7 +9,6 @@ use ui::widget::{ChipFace, ChipLead};
 /// How long the bar says who waved.
 pub(super) const WAVE_NOTICE_FOR: Duration = Duration::from_secs(6);
 
-/// The notice leads with a waving hand.
 const WAVE_NOTICE_LEAD: ChipLead = ChipLead::Glyph(ui::icons::Icon::Hand);
 
 impl TopBarChrome {

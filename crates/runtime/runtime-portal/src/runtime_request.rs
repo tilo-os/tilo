@@ -57,7 +57,6 @@ pub enum Request {
 pub struct OfferedLanguage {
     /// The locale, a BCP 47 tag (`de-DE`).
     pub locale: String,
-    /// Whether its pack is installed.
     pub installed: bool,
 }
 
@@ -97,10 +96,6 @@ pub enum Response {
 }
 
 /// Write one message.
-///
-/// # Errors
-///
-/// Returns the I/O error, or `InvalidData` for a message over the limit.
 pub fn write_message<W: Write, T: Serialize>(writer: &mut W, message: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec(message).map_err(io::Error::other)?;
     if bytes.len() > MAX_MESSAGE_BYTES {
@@ -116,10 +111,6 @@ pub fn write_message<W: Write, T: Serialize>(writer: &mut W, message: &T) -> io:
 }
 
 /// Read one message; `None` when the peer closed before it began.
-///
-/// # Errors
-///
-/// Returns the I/O error, or `InvalidData` for an oversized or malformed one.
 pub fn read_message<R: Read, T: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> io::Result<Option<T>> {
@@ -183,10 +174,6 @@ impl Client {
     }
 
     /// Ask the host to ensure `runtime`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the transport error, or `UnexpectedEof` if the host hung up.
     pub fn ensure(&mut self, runtime: &str) -> io::Result<Response> {
         self.exchange(&Request::Ensure {
             runtime: runtime.to_owned(),
@@ -246,7 +233,6 @@ impl Client {
     }
 }
 
-/// The service the request travels on.
 pub const SERVICE: &str = "app-host";
 
 #[cfg(test)]

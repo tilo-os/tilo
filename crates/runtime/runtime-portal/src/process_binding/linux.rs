@@ -36,9 +36,6 @@ impl ExecutingPeer {
         self.credentials.gid.as_raw()
     }
     /// Kernel socket-creator supplementary groups, never a destination NSS lookup.
-    ///
-    /// # Errors
-    /// Returns an error if the kernel's socket-creator group evidence was unavailable.
     pub fn supplementary_groups(&self) -> io::Result<&[u32]> {
         self.supplementary_groups.as_deref().map_err(|error| {
             io::Error::new(

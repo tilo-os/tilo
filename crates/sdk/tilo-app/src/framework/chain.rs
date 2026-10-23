@@ -449,10 +449,6 @@ impl<P: Chained> ChainState<P> {
     /// `invoker`: checked as an undoable change where the chain publishes
     /// the verb, and written into the part's history as any of its steps.
     /// Answers the part and its version after.
-    ///
-    /// # Errors
-    /// The participant may not, the part is neither here nor known to the
-    /// room, or history refused the edit.
     fn apply_history(
         &self,
         edit: &PartEdit,
@@ -748,9 +744,6 @@ impl<P: Chained> Chain<P> {
     /// Hold the earlier part `index` too: read it from this device, which
     /// asks the room for it when it has not got it yet (its changes arrive
     /// and [`Self::revision`] moves).
-    ///
-    /// # Errors
-    /// The part is neither here nor known to the room yet.
     pub fn hold(&self, index: u64) -> Result<(), String> {
         self.state.hold(index)
     }

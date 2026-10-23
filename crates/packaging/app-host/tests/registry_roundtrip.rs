@@ -80,7 +80,6 @@ async fn registry_packages_publish_resolve_and_install_only_when_trusted_and_int
         let tmp = tempfile::tempdir().unwrap();
         let regdir = tmp.path().join("registry");
 
-        // A live provider node serving the registry's blob store.
         let node = BlobNode::persistent(registry_dir::blobs_dir(&regdir))
             .await
             .unwrap();
@@ -99,7 +98,6 @@ async fn registry_packages_publish_resolve_and_install_only_when_trusted_and_int
         assert_eq!(receipt.app_id, "so.tilo.editor");
         assert_eq!(receipt.version, "1.0.0");
 
-        // Client trusts the registry operator key.
         let config = RegistriesConfig::from_registries(vec![RegistryRef {
             name: "test".into(),
             base_url: file_url(&regdir),
@@ -206,7 +204,6 @@ async fn registry_packages_publish_resolve_and_install_only_when_trusted_and_int
         .await
         .unwrap();
 
-        // Operator rewrites the advertised hash and re-signs the index.
         let mut index = registry_dir::read_index(&regdir).unwrap();
         index.packages[0].tapp_hash = hex::encode([0x22u8; 32]);
         index.sign(&registry_key).unwrap();

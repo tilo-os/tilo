@@ -61,7 +61,6 @@ fn main() {
             unsafe { libc::_exit(42) };
         }
         let fd = collab.as_raw_fd();
-        // SO_PASSCRED on the host attaches this actual sender's outer PID.
         if unsafe { libc::write(fd, b"R".as_ptr().cast(), 1) } != 1 {
             unsafe { libc::_exit(43) };
         }

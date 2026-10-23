@@ -29,7 +29,6 @@ use crate::weight::{FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MatchTier, Ranks
 /// tantivy, whose postings outpace a scan.
 pub(crate) const DIRECT_LIMIT: usize = 1024;
 
-/// One record as [`Direct`] reads it.
 #[derive(Debug)]
 struct Record {
     key: u64,

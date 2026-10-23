@@ -32,10 +32,6 @@ pub enum Route {
 /// explicit choice of a profile (`--standalone`, `--profile` or
 /// `TILO_RUNTIME_PROFILE`); `door` is [`agent_socket_path`]'s answer and
 /// `exists` whether something is there.
-///
-/// # Errors
-/// Inside a Tilo login with no door, says why the desktop's door is not
-/// available instead of starting a second authority beside the desktop.
 pub fn route(
     standalone: bool,
     tilo_login: bool,
@@ -323,9 +319,6 @@ pub fn is_control_request(line: &[u8]) -> bool {
 }
 
 /// Serve one accepted session-door connection.
-///
-/// # Errors
-/// Returns the I/O error that ended the connection.
 #[cfg(unix)]
 pub fn serve<H>(
     stream: std::os::unix::net::UnixStream,
@@ -340,9 +333,6 @@ where
 
 /// [`serve`] a connection whose first line, `first`, was already read
 /// ([`read_first_line`]).
-///
-/// # Errors
-/// Returns the I/O error that ended the connection.
 #[cfg(unix)]
 pub fn serve_after<H>(
     mut stream: std::os::unix::net::UnixStream,
@@ -483,8 +473,6 @@ mod tests {
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
         assert!(missing.to_string().contains("--standalone"), "{missing}");
         assert!(route(false, true, None, |_| true).is_err());
-        // The client's own explicit choice, and every other desktop, keep the
-        // standalone runtime.
         assert_eq!(
             route(true, true, Some(door.clone()), |_| true).unwrap(),
             Route::Standalone

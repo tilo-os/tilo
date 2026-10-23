@@ -323,7 +323,6 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
             "Shared desktop page",
         ),
     ] {
-        // Chat keeps its messages in parts beside its record.
         let record = if app == "so.tilo.chat" {
             chat::parts::part(0)
         } else {

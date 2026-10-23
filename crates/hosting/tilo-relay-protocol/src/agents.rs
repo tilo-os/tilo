@@ -38,11 +38,8 @@ use serde::{Deserialize, Serialize};
 
 /// Provider token of the host's agent supervisor in remote-action targets.
 pub const AGENTS_PROVIDER: &str = "agents";
-/// The supervisor's own resource.
 pub const SUPERVISOR_RESOURCE: &str = "agents";
-/// Resource kind of the supervisor.
 pub const SUPERVISOR_KIND: &str = "tilo.agents";
-/// Resource kind of one agent.
 pub const AGENT_KIND: &str = "tilo.agent";
 /// Prefix of one agent's resource id: `agent:<agent id>`.
 pub const AGENT_RESOURCE_PREFIX: &str = "agent:";
@@ -50,7 +47,6 @@ pub const AGENT_RESOURCE_PREFIX: &str = "agent:";
 pub const STATUS_ACTION: &str = "status";
 /// Start an agent under an approved delegation with a first task.
 pub const SPAWN_ACTION: &str = "spawn";
-/// Give an agent a new task.
 pub const MESSAGE_ACTION: &str = "message";
 /// Hold the agent: it finishes nothing new until resumed.
 pub const PAUSE_ACTION: &str = "pause";
@@ -65,7 +61,6 @@ pub const REQUEST_GRANT_ACTION: &str = "request-grant";
 /// Withdraw a grant: its agent stops and the host refuses its device.
 pub const REVOKE_ACTION: &str = "revoke";
 
-/// The resource id of agent `agent_id`.
 #[must_use]
 pub fn agent_resource(agent_id: &str) -> String {
     format!("{AGENT_RESOURCE_PREFIX}{agent_id}")
@@ -139,7 +134,6 @@ pub enum TaskState {
     Queued,
     /// Being worked on.
     Running,
-    /// Done.
     Completed,
     /// Could not be done; see its error.
     Failed,
@@ -153,7 +147,6 @@ pub enum TaskState {
 pub struct AgentStep {
     /// App the action belongs to.
     pub app: String,
-    /// Resource id.
     pub resource: String,
     /// Action id.
     pub action: String,
@@ -164,11 +157,9 @@ pub struct AgentStep {
     pub error: Option<String>,
 }
 
-/// One task.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTask {
-    /// Task id.
     pub id: String,
     /// What was asked.
     pub text: String,
@@ -187,7 +178,6 @@ pub struct AgentTask {
 pub enum MessageRole {
     /// A person.
     User,
-    /// The agent.
     Agent,
 }
 
@@ -197,7 +187,6 @@ pub enum MessageRole {
 pub struct AgentMessage {
     /// Speaker.
     pub role: MessageRole,
-    /// Text.
     pub text: String,
 }
 
@@ -205,7 +194,6 @@ pub struct AgentMessage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentInfo {
-    /// Agent id, as in its delegation.
     pub id: String,
     /// Display name.
     pub label: String,
@@ -218,7 +206,6 @@ pub struct AgentInfo {
     /// Short activity line, as in its presence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
-    /// The room it works in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<String>,
     /// Newest first is not implied; tasks in the order they were given.
@@ -239,7 +226,6 @@ pub struct AgentGrant {
     pub id: String,
     /// Display name.
     pub label: String,
-    /// Rooms it covers.
     pub rooms: Vec<String>,
     /// Apps it covers; empty is every app.
     pub apps: Vec<String>,

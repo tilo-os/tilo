@@ -49,8 +49,6 @@ const NAMES_LISTED: usize = 12;
 /// What a bound UI resource's id starts with (ui-core's publication prefix).
 const BOUND_PREFIX: &str = "tilo-ui-bound:v1:";
 
-// ---------------------------------------------------------------- tools
-
 /// The agent tools, built once.
 pub(super) fn tool_definitions() -> &'static [Value] {
     static TOOLS: std::sync::LazyLock<Vec<Value>> = std::sync::LazyLock::new(tools);
@@ -199,8 +197,6 @@ pub(super) fn text_result(result: Result<Reply, String>) -> Value {
     json!({"content":[{"type":"text","text":text}],"isError":failed})
 }
 
-// ----------------------------------------------------------------- paths
-
 /// A path, taken apart: `app/segment/segment#action`.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct ParsedPath {
@@ -266,8 +262,6 @@ fn path_name(name: &str) -> String {
     }
     written
 }
-
-// ----------------------------------------------------------------- nodes
 
 /// The logical id a bound UI resource's id carries in hex at its end
 /// (`tilo-ui-bound:v1:<publication>:<instance>:<hex>`): what the app calls
@@ -514,8 +508,6 @@ fn list_names(names: &[String]) -> String {
     }
     shown.join(", ")
 }
-
-// ------------------------------------------------------------- rendering
 
 /// Cut `text` to at most `chars` characters at a line break. The count of
 /// characters left out, when any.
@@ -836,8 +828,6 @@ fn next_cursor(value: &Value) -> Option<String> {
         _ => None,
     }
 }
-
-// -------------------------------------------------------------- resolving
 
 /// What an app name names.
 enum AppRef {
@@ -1216,8 +1206,6 @@ fn app_names(ids: &[String]) -> Vec<String> {
     names.dedup();
     names
 }
-
-// ----------------------------------------------------------------- tools
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Answer one agent tool call.

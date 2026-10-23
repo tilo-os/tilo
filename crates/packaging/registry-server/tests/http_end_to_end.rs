@@ -635,7 +635,6 @@ async fn server_serves_identity_snapshot_and_staged_blobs() {
             blobs.fetch_all(&[binary]).await.unwrap()[0].as_ref(),
             b"reviewed binary"
         );
-        // The backfill writes exactly the missing twin.
         let report = h.storage.compress_stored_objects().unwrap();
         assert_eq!(report.written, 1, "{report:?}");
         assert!(report.present >= 2, "{report:?}");
@@ -714,7 +713,6 @@ async fn change_requests_stay_private_until_approval_and_are_validated() {
             "server preserves entry sig"
         );
 
-        // GET /entries/<id> returns the same row.
         let single: SignedRegistrySnapshot = client
             .get(url(h.addr, "/entries/so.tilo.editor"))
             .send()
@@ -920,7 +918,6 @@ async fn unauthorised_change_requests_are_refused_with_403() {
 
         let entry = sample_entry(&h.publisher, 100);
         let mut req = sign_change_request(EntryAction::Add, entry, &h.publisher);
-        // Flip a byte in the change-level signature.
         let mut bytes = hex::decode(&req.publisher_signature_hex).unwrap();
         bytes[0] ^= 1;
         req.publisher_signature_hex = hex::encode(bytes);
@@ -956,7 +953,6 @@ async fn unauthorised_change_requests_are_refused_with_403() {
         let h = spawn_server(true).await;
         let client = tilo_net::http::client().build().expect("http client");
 
-        // The allowlisted publisher creates an entry.
         let entry_v1 = sample_entry(&h.publisher, 100);
         client
             .post(url(h.addr, "/entries"))
@@ -1082,7 +1078,6 @@ async fn publisher_without_namespace_cannot_add_so_tilo_entry() {
     assert!(h.storage.load_pending_submissions().unwrap().is_empty());
 }
 
-/// A package signed by `key`, in full.
 fn signed_package(dir: &std::path::Path, key: &SigningKey) -> Vec<u8> {
     let identity = tilo_app_package::SigningIdentity::from_signing_key(key.clone());
     let payload = dir.join(hex::encode(key.verifying_key().to_bytes()));

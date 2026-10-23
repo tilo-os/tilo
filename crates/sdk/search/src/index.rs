@@ -145,7 +145,6 @@ pub struct Hits {
     pub more: bool,
 }
 
-/// Which page of matches to return.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Page {
     /// Matches to skip.

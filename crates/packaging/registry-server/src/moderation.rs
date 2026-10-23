@@ -26,7 +26,6 @@ pub struct ModerationService {
 }
 
 impl ModerationService {
-    /// Create a moderation service backed by `storage`.
     pub fn new(storage: Storage) -> Self {
         Self {
             storage,
@@ -39,11 +38,6 @@ impl ModerationService {
     /// Signature and allowlist verification deliberately occur at approval.
     /// This method nevertheless validates public and pending ownership and
     /// timestamps, giving publishers immediate feedback on stale submissions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid ownership or timestamps, lock failures, or
-    /// persistence failures.
     pub fn submit(
         &self,
         change: EntryChangeRequest,
@@ -458,10 +452,6 @@ impl ModerationService {
     /// publisher revision must be reviewed before it can be rejected.
     /// Like ordinary rejection, this also clears malformed or revoked
     /// requests without re-verifying their signatures.
-    ///
-    /// # Errors
-    /// Returns a changed-request error without mutation if the queued
-    /// request was replaced, or an existing storage/promotion error.
     pub fn reject_reviewed(
         &self,
         candidate: &PendingSubmission,

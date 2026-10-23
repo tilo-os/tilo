@@ -180,7 +180,6 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
         let inspection = app.harness().inspection_json().unwrap();
         assert!(inspection.contains("2 open"), "{inspection}");
 
-        // The row's checkbox is bound to set-done for its own item.
         let checkbox = app
             .harness()
             .targets()
@@ -300,7 +299,6 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
     // phase: a_destructive_typed_value_is_confirmed_like_its_named_action
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        // An ordinary typed edit applies directly.
         app.invoke(typed(ChecklistAction::Rename(checklist::Rename {
             title: "Weekly".into(),
         })))

@@ -605,10 +605,6 @@ impl SoftwarePin {
 
 /// The software pin from the manifests installed under `search`, or why
 /// there is none (no lavapipe manifest, or several).
-///
-/// # Errors
-///
-/// A line for the boot log when lavapipe has not exactly one manifest.
 pub fn software_pin(search: &IcdSearch) -> Result<SoftwarePin, String> {
     let vulkan_icd_json = unique_manifest_for(
         &search.vulkan_icd_dirs,
@@ -1109,7 +1105,6 @@ mod tests {
         assert!(pin.env().contains(&(VK_ICD_FILENAMES_ENV, lavapipe)));
         assert_eq!(pin.manifest_files().len(), 2);
 
-        // What a launch reads back from the compositor's environment.
         assert_eq!(
             software_pin_from(
                 Some(pin.vulkan_icd_json.clone().into()),

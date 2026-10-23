@@ -1,4 +1,3 @@
-//! Actual signed runtime, signed installed service and canonical capture launch.
 use launcher::{
     owned_service::{
         CaptureAdmission, ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey,

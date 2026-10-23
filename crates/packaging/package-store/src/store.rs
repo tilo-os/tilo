@@ -111,7 +111,6 @@ pub enum InstallSelection {
     Preserved(Box<InstalledPackage>),
 }
 
-/// The result of an install.
 #[derive(Clone, Debug)]
 pub struct Installed {
     pub package: InstalledPackage,
@@ -129,7 +128,6 @@ pub struct Installed {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Removed {
     pub package: Option<InstalledPackage>,
-    /// Blobs evicted from the content store.
     pub evicted_blobs: usize,
 }
 
@@ -534,10 +532,6 @@ impl PackageStore {
 
     /// Remove the image `id` and evict the blobs nothing else references.
     /// Removing an image that is not held does nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an I/O or content-store error.
     pub fn remove_image(&self, id: PackageId) -> Result<Removed, StoreError> {
         let _lock = self.lock()?;
         if self.image(id)?.is_some() {

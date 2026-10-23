@@ -41,10 +41,6 @@ impl Drop for Release {
 }
 /// Hold the next [`pause`] of `operation` on `root` until the returned
 /// [`Release`] drops; the receiver fires when it is reached.
-///
-/// # Panics
-///
-/// Panics when a barrier for the same root and operation is already armed.
 pub fn install(
     root: &Path,
     operation: &'static str,
@@ -100,20 +96,12 @@ impl Drop for Fault {
 }
 /// Make every [`check`] of `operation` on `root` fail until the returned
 /// [`Fault`] drops.
-///
-/// # Panics
-///
-/// Panics when the same fault is already injected.
 pub fn fail(root: &Path, operation: &'static str) -> Fault {
     let key = (root.to_path_buf(), operation);
     assert!(lock(faults()).insert(key.clone()));
     Fault(key)
 }
 /// [`pause`], then fail when a fault for `operation` on `root` is injected.
-///
-/// # Errors
-///
-/// Returns the injected failure.
 pub fn check(root: &Path, operation: &'static str) -> std::io::Result<()> {
     pause(root, operation);
     if lock(faults()).contains(&(root.to_path_buf(), operation)) {

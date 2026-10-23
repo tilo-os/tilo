@@ -23,7 +23,6 @@ const ACTION_TYPE: &str = "child-resources.query";
 )]
 #[serde(crate = "tilo_resource::__private::serde")]
 enum QueryAction {
-    /// One edit of the SQL.
     EditSql(TextEdit),
     Rename(String),
 }

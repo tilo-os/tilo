@@ -67,7 +67,6 @@ pub enum OperatorCommand {
         token_sha256: String,
         /// How the room's notices name the guest.
         label: String,
-        /// The role the guest gets.
         role: RoomRole,
     },
     /// Certify an in-memory browser device as the persistent room's one
@@ -110,7 +109,6 @@ pub enum RoomEvent {
         device: String,
         /// The device label the browser asked for.
         label: String,
-        /// The admitted pairing code.
         pairing_code: String,
     },
     /// An admitted pairing code certified nobody.

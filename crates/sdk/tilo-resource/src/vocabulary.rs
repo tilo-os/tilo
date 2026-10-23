@@ -68,7 +68,6 @@ impl<R: Resource> AnyAction for Typed<R> {
 }
 
 impl Built {
-    /// `action`, an action of `R`.
     #[must_use]
     pub fn of<R: Resource>(action: R::Action) -> Self {
         Self(Box::new(Typed::<R>(action)))
@@ -310,7 +309,6 @@ impl<R: Resource> VocabularyOf<R> {
     };
 }
 
-/// The vocabulary of `R`.
 #[must_use]
 pub fn vocabulary<R: Resource>() -> &'static Vocabulary {
     &VocabularyOf::<R>::VOCABULARY

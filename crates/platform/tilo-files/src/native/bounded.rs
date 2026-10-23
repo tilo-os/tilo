@@ -36,9 +36,6 @@ pub fn read(
 
 /// [`read`], reporting a file over the bound as the caller's `too_large`
 /// error and other failures through its `From<io::Error>`.
-///
-/// # Errors
-/// `too_large` for a file over `max_bytes`, else the converted I/O error.
 pub fn read_or<E: From<std::io::Error>>(
     path: &std::path::Path,
     max_bytes: impl TryInto<u64>,

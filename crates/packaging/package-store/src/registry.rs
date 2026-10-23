@@ -38,7 +38,6 @@ impl Pinning {
     }
 }
 
-/// One installed package.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledPackage {
     /// Reverse-DNS app id, from the manifest's `[package].id`.
@@ -61,7 +60,6 @@ pub struct InstalledPackage {
     /// Pinned packages are kept under size pressure.
     #[serde(default)]
     pub pinned: bool,
-    /// Unix seconds of install.
     #[serde(default)]
     pub installed_at: u64,
     /// Unix seconds of the last launch (or install); orders eviction.
@@ -210,7 +208,6 @@ impl Registry {
         self.entries.is_empty()
     }
 
-    /// The row for `app_id`.
     pub fn find(&self, app_id: &str) -> Option<&InstalledPackage> {
         self.entries.iter().find(|entry| entry.id == app_id)
     }

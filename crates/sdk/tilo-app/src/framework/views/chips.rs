@@ -29,7 +29,6 @@ pub struct FacetValue {
     pub value: String,
     /// How many of the results have it.
     pub count: usize,
-    /// It is chosen.
     pub chosen: bool,
     /// It was typed as a token.
     pub typed: bool,

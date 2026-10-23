@@ -1050,7 +1050,6 @@ fn store_upload(
     ))
 }
 
-/// The allowlist row of the entry's publisher, if it has one.
 fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::PublisherRow> {
     let key: [u8; 32] = hex::decode(&entry.publisher_pubkey_hex)
         .ok()?
@@ -1063,8 +1062,6 @@ fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::Publi
         .ok()
         .and_then(|allowlist| allowlist.get(&key).cloned())
 }
-
-// ---- response helpers ------------------------------------------
 
 /// A payload blob of a reviewed package, by BLAKE3 hash, so a client that
 /// downloaded a thin package fetches only the blobs it lacks. Content

@@ -1,5 +1,3 @@
-//! A derived record describes its stored layout.
-
 use tilo_resource::{Collection, FieldShape, Model, Resource, Shape, resource};
 
 #[derive(Model, Default)]

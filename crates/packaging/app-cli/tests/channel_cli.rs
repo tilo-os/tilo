@@ -1,5 +1,3 @@
-//! Exercise explicit channel selection through the public catalogue CLI.
-
 use std::process::Command;
 
 #[test]

@@ -506,7 +506,6 @@ pub(crate) mod tests {
     fn rewritten_certificate_or_key_mints_again() {
         let fixture = Fixture::new();
         trusted_current_join_proof(&fixture.room).expect("trusted device");
-        // An in-place rewrite of the same bytes still changes the stamp.
         for path in [fixture.cert_file(), fixture.paths.device_privkey.clone()] {
             let bytes = std::fs::read(&path).expect("read");
             std::fs::write(&path, &bytes).expect("rewrite");

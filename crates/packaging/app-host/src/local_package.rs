@@ -179,10 +179,6 @@ fn review_with_trust(
 
 #[cfg(feature = "service")]
 /// Revalidate review and current host trust, then use the canonical installer.
-///
-/// # Errors
-/// Refuses changed bytes/root, changed trust, missing payload/runtime and normal
-/// installer policy errors. Existing local-update publisher and pin policy apply.
 pub fn install(bytes: &[u8], root: &str, archive_hash: &str) -> Result<String, String> {
     let checked = review(bytes)?;
     if checked.root != root || checked.archive_hash != archive_hash {

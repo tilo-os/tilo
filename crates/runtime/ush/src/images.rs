@@ -14,9 +14,6 @@ use tilo_environment::{PackageId, ToolBuildError, ToolBuilder};
 pub trait Images: Send + Sync {
     /// The read-only root of an image, fetching and materialising it first
     /// when it is not on this device.
-    ///
-    /// # Errors
-    /// Returns why the image is unavailable.
     fn tree(&self, id: &PackageId) -> Result<PathBuf, String>;
 
     /// Whether [`Self::tree`] of `id` can be answered from this device's own
@@ -28,24 +25,15 @@ pub trait Images: Send + Sync {
 
     /// Whether the tool image `tool` was built for `runtime`. A tool is
     /// never stacked on a runtime it was not built for.
-    ///
-    /// # Errors
-    /// Returns why it may not be stacked there.
     fn check_tool(&self, tool: &PackageId, runtime: &PackageId) -> Result<(), String>;
 
     /// The `env-runtime` a new environment starts on — its release and this
     /// architecture's image: the newest one this device holds, the system
     /// store's shipped one included.
-    ///
-    /// # Errors
-    /// Returns why there is none.
     fn current_runtime(&self) -> Result<(String, PackageId), String>;
 
     /// Make the image `id`, built here, available to the user's other
     /// devices, so they fetch it rather than build it again.
-    ///
-    /// # Errors
-    /// Returns why it could not be shared.
     fn share(&self, _id: &PackageId) -> Result<(), String> {
         Ok(())
     }
@@ -180,7 +168,6 @@ impl ToolBuilder for SharedBuilds {
     }
 }
 
-/// The publisher [`TRUSTED_PUBLISHER_ENV`] names.
 fn trusted_publisher_from_env() -> Result<Option<[u8; 32]>, String> {
     let Some(hex_key) = std::env::var_os(TRUSTED_PUBLISHER_ENV).filter(|key| !key.is_empty())
     else {
@@ -199,9 +186,6 @@ fn trusted_publisher_from_env() -> Result<Option<[u8; 32]>, String> {
 /// `$XDG_CACHE_HOME/tilo/env-images`. `None` on a device without a cache
 /// directory. Where an image came from earns it no trust: the CI key the
 /// system store names, or one of the user's devices, must have signed it.
-///
-/// # Errors
-/// Returns why [`IMAGE_SOURCES_ENV`] or [`IMAGE_CACHE_ENV`] is unusable.
 pub fn registry_images() -> Result<Option<tilo_oci_images::OciImages>, String> {
     let Some(sources) = std::env::var_os(IMAGE_SOURCES_ENV).filter(|s| !s.is_empty()) else {
         return Ok(tilo_paths::xdg::cache_home()
@@ -529,7 +513,6 @@ mod tests {
         assert!(tree.starts_with(dir.path().join("relay")));
         assert!(tree.join("usr/bin/pandoc").is_file());
 
-        // The laptop is removed from the user's devices.
         let mut removal = tilo_user_identity::RevocationEntry {
             user_public_key: user.public_key,
             revoked_device_public_key: laptop.public_key_bytes(),

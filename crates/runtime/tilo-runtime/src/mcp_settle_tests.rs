@@ -578,7 +578,6 @@ fn a_session_refuses_calls_beyond_those_it_admits() {
         let ids: Vec<_> = (0..MAX_ADMITTED).map(|_| InvocationId::new()).collect();
         let calls = invoke_all(&endpoint, &session, &ids);
         until_invoked(&host, MAX_WORKING).await;
-        // Time for every call to take its place.
         tokio::time::sleep(Duration::from_millis(100)).await;
         let request = json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{
             "name":"tilo_invoke","arguments":long_invoke(InvocationId::new())

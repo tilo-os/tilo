@@ -16,11 +16,6 @@ use std::time::Duration;
 /// Connect to `socket`, which lies below `root`, once `root`, every directory
 /// between it and `socket`, and `socket` itself are owned by this process's
 /// user and closed to group and others. Gives up after `timeout`.
-///
-/// # Errors
-/// `InvalidInput` when `root` is relative or `socket` is not below it,
-/// `PermissionDenied` when anything on the way is not owner-only, `TimedOut`
-/// when the service does not accept in time, else the connect error.
 pub fn connect_owner_only(root: &Path, socket: &Path, timeout: Duration) -> io::Result<UnixStream> {
     let invalid = |why| io::Error::new(io::ErrorKind::InvalidInput, why);
     if !root.is_absolute() {

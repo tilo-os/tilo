@@ -583,7 +583,6 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 impl #impl_generics #krate::Settable for #name #type_generics #where_clause {}
 
                 impl #impl_generics #krate::Model for #name #type_generics #where_clause {
-                    // Run by one set of functions for every such enum.
                     const TABLE: &'static #table::ModelTable = &#table::ModelTable::of_unit(&Self::__UNIT);
                     type Paths<__R> = #krate::Path<__R, Self>;
 

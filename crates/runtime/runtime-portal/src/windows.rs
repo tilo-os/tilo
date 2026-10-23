@@ -23,7 +23,6 @@ pub const SERVICE: &str = "windows";
 /// In-sandbox descriptor slot of the door.
 pub const CHILD_FD: i32 = 36;
 
-/// The verb of a request to open a window.
 pub const OPEN_VERB: &[u8] = b"open";
 
 /// The verb an app says on its door once it reads it: it opens the windows
@@ -210,10 +209,6 @@ pub fn has_message(door: &Descriptor) -> io::Result<bool> {
 
 /// The next request on `door` and the descriptors it came with; `None` at end
 /// of file, when the shell closed its end.
-///
-/// # Errors
-///
-/// The socket's error, or a message that is not a request to open a window.
 pub fn receive_open(door: &Descriptor) -> io::Result<Option<(Vec<u8>, Vec<Descriptor>)>> {
     #[cfg(target_os = "linux")]
     {

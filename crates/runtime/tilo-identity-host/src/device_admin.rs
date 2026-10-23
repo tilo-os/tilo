@@ -33,10 +33,6 @@ pub enum PairRole {
 
 impl PairRole {
     /// The role `text` names: `personal-device` or `home-peer`.
-    ///
-    /// # Errors
-    ///
-    /// When it names neither.
     pub fn parse(text: &str) -> Result<Self, String> {
         match text.trim() {
             "personal-device" => Ok(Self::PersonalDevice),
@@ -73,7 +69,6 @@ impl PairRole {
 /// A device found nearby, as `tilo-enroll discover` reports it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Candidate {
-    /// The device's key, lowercase hex.
     pub device_node_id: String,
     /// The relay service node id it announced, lowercase hex.
     pub relay_service_node_id: String,
@@ -83,7 +78,6 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// The candidate as discovery answers it, for `role`.
     #[must_use]
     pub fn answer(&self, role: PairRole) -> serde_json::Value {
         serde_json::json!({
@@ -97,11 +91,6 @@ impl Candidate {
 }
 
 /// The device a finished `tilo-enroll discover[-device]` reports.
-///
-/// # Errors
-///
-/// Why none was found, as the program said it, or that its answer is not a
-/// device.
 pub fn discovered(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Candidate, String> {
     if !success {
         return Err(command_error(stderr, "no new device was found nearby"));
@@ -118,11 +107,9 @@ pub fn discovered(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Candida
     })
 }
 
-/// An approval of a discovered device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Approval {
     pub role: PairRole,
-    /// The device's key, in lowercase hex.
     pub device: String,
     /// The relay service node id it announced, in lowercase hex.
     pub service: String,
@@ -285,10 +272,6 @@ fn fingerprint(key: &[u8; 32]) -> String {
 }
 
 /// The revocation reason `text` names.
-///
-/// # Errors
-///
-/// When it names none.
 pub fn revocation_reason(text: &str) -> Result<RevocationReason, String> {
     match text.trim().to_ascii_lowercase().as_str() {
         "lost" => Ok(RevocationReason::Lost),

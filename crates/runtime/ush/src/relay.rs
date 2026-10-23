@@ -318,7 +318,6 @@ pub fn bridge_command(
     cmd
 }
 
-/// One status line from the bridge.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BridgeStatus {
@@ -347,9 +346,6 @@ pub enum BridgeStatus {
 }
 
 /// A pipe whose write end the bridge gets as descriptor 3.
-///
-/// # Errors
-/// Returns the pipe's creation error.
 pub fn status_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
     // SAFETY: `fds` holds the two descriptors pipe2 creates.

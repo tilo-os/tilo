@@ -27,7 +27,6 @@ pub enum ControlKind {
     Switch { on: bool },
 }
 
-/// One of the app's actions as the control it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ControlDecl {
     /// The id of the published action or effect.
@@ -44,7 +43,6 @@ pub struct ControlDecl {
 }
 
 impl ControlDecl {
-    /// The action `action` as a button.
     #[must_use]
     pub fn button(action: impl Into<String>) -> Self {
         Self {
@@ -56,7 +54,6 @@ impl ControlDecl {
         }
     }
 
-    /// The action `action` as a switch that is `on` now.
     #[must_use]
     pub fn switch(action: impl Into<String>, on: bool) -> Self {
         Self {

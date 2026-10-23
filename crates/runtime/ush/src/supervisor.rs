@@ -342,10 +342,6 @@ impl Session {
     /// The guest's network: a namespace of its own and egress for the
     /// record's `NetHost` grants. Fails closed — a policy that cannot be
     /// enforced is an error, never an open network.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the namespace or its egress could not be set up.
     pub fn network(&self, resolved: &Resolved) -> anyhow::Result<(Netns, Egress)> {
         let netns = Netns::create()
             .map_err(|e| anyhow::anyhow!("{NOT_STARTED}:\nush: its network namespace: {e}"))?;
@@ -501,7 +497,6 @@ impl Session {
     }
 }
 
-/// A policy in words, for `-v`.
 fn describe_policy(policy: &tilo_egress::EgressPolicy) -> String {
     match policy {
         tilo_egress::EgressPolicy::Any => "unrestricted (a * grant)".into(),
@@ -604,7 +599,6 @@ pub enum ServeRequest {
 pub struct EnvironmentEntry {
     pub key: String,
     pub name: String,
-    /// The packages its tools provide.
     pub tools: Vec<String>,
     /// Granted directories, `(path, writable)`.
     pub grants: Vec<(String, bool)>,
@@ -1710,7 +1704,6 @@ fn start_relay_bridge(
 /// How a relay session's bridge ended, as it said on its status channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RelayEnd {
-    /// The shell on the relay exited.
     Exited,
     /// The connection to the relay was lost; the session may still run
     /// there, and the tab re-attaches to it.

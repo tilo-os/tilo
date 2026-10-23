@@ -611,7 +611,6 @@ fn a_connection_continues_the_run_an_earlier_one_was_answered_with() {
         )
         .await;
 
-        // An HTTP session continues a run the same way.
         let request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{"experimental":{"so.tilo.mcp":{"run":run_id}}},"clientInfo":{"name":"Painter","version":"1"}}});
         let response = endpoint
             .dispatch(

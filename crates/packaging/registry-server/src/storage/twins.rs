@@ -27,7 +27,6 @@ use super::{Storage, StorageError, atomic_write, is_hex_digest, list_digests};
 pub struct TwinReport {
     /// Twins written by this run.
     pub written: usize,
-    /// Objects that already had one.
     pub present: usize,
     /// Bytes of the objects twinned by this run.
     pub raw_bytes: u64,
@@ -48,9 +47,6 @@ impl Storage {
 
     /// Write the twin of the stored payload object `hash` from its verified
     /// `bytes`, unless it has one. Returns the twin's length when written.
-    ///
-    /// # Errors
-    /// Returns an error if compression or the durable write fails.
     pub(super) fn write_payload_twin(
         &self,
         hash: &BlobHash,

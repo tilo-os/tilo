@@ -247,9 +247,6 @@ impl BlockingClient {
     }
 
     /// Open an explicitly owned connected capability in a test host.
-    ///
-    /// # Errors
-    /// Returns why the runtime or supplied connection could not be opened.
     #[cfg(all(unix, feature = "test-support"))]
     pub fn from_connected_fd(fd: std::os::fd::OwnedFd) -> Result<Self, String> {
         use std::os::fd::IntoRawFd as _;
@@ -283,9 +280,6 @@ impl BlockingClient {
     }
 
     /// Inspect an installed app's exact optional runtime without fetching payload.
-    ///
-    /// # Errors
-    /// Returns signed declaration, installed identity or repository refusal.
     pub fn inspect_optional_runtime(
         &self,
         app_id: &str,
@@ -303,9 +297,6 @@ impl BlockingClient {
 
     /// Acquire the exact displayed review after explicit consent. The call
     /// completes only after verified installation. Disconnect is not rollback.
-    ///
-    /// # Errors
-    /// Returns changed consumer/offer, download, signer or installation failure.
     pub fn acquire_optional_runtime(
         &self,
         review: &crate::runtime_transaction::RuntimeReview,
@@ -315,9 +306,6 @@ impl BlockingClient {
 
     /// Acquire with connection-owned, best-effort real download/install progress.
     /// Disconnecting the observer does not cancel or roll back installation.
-    ///
-    /// # Errors
-    /// Returns the same exact admission and installation errors as acquisition.
     pub fn acquire_optional_runtime_reporting(
         &self,
         review: &crate::runtime_transaction::RuntimeReview,
@@ -336,9 +324,6 @@ impl BlockingClient {
     }
 
     /// Review immutable file bytes using the host's current trusted attestors.
-    ///
-    /// # Errors
-    /// Returns why the host refused the local package.
     pub fn review_local(&self, bytes: &[u8]) -> Result<crate::local_package::LocalReview, String> {
         let mut request = self.client.review_local_request();
         request.get().set_tapp_bytes(bytes);
@@ -353,9 +338,6 @@ impl BlockingClient {
     }
 
     /// Install exactly the immutable archive/root previously reviewed.
-    ///
-    /// # Errors
-    /// Returns current trust, payload, runtime or local update policy refusal.
     pub fn install_local(
         &self,
         bytes: &[u8],
@@ -372,10 +354,6 @@ impl BlockingClient {
     }
 
     /// Install a verified package through the privileged host service.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the service rejects the package or the response is malformed.
     pub fn install(
         &self,
         bytes: &[u8],
@@ -402,9 +380,6 @@ impl BlockingClient {
     }
 
     /// Install the exact signed catalogue offer through the shared installer.
-    ///
-    /// # Errors
-    /// Returns why the selected offer, runtime or installation was refused.
     pub fn install_offer(
         &self,
         registry: &str,
@@ -553,9 +528,6 @@ impl BlockingClient {
     /// Resolve a signed offer providing exactly this runtime, without
     /// installation, as its JSON catalogue entry (`null` when none is offered).
     /// The caller owns parsing, so this client stays free of the installer.
-    ///
-    /// # Errors
-    /// Returns a repository proof, transport or response error.
     pub fn runtime_offer(&self, registry: &str, runtime: &str) -> Result<String, String> {
         let mut request = self.client.runtime_offer_request();
         request.get().set_registry(registry);
@@ -577,9 +549,6 @@ impl BlockingClient {
     /// The verified metadata the host last accepted from an enabled
     /// repository, without the network. Fails when there is none, or when it
     /// no longer verifies (it expired, or a newer one was accepted since).
-    ///
-    /// # Errors
-    /// Returns why no verified catalogue is held for the repository.
     pub fn last_verified_catalogue(&self, registry: &str) -> Result<String, CatalogueError> {
         self.complete(self.begin_last_verified_catalogue(registry))
     }
@@ -597,9 +566,6 @@ impl BlockingClient {
     }
 
     /// Install from a configured repository belonging to this account.
-    ///
-    /// # Errors
-    /// Returns why the repository or installation was refused.
     pub fn flatpak_install_remote(
         &self,
         remote: &str,
@@ -629,9 +595,6 @@ impl BlockingClient {
     }
 
     /// Enable or disable an existing repository in this account's scope.
-    ///
-    /// # Errors
-    /// Returns why the repository change was refused or failed.
     pub fn set_remote_enabled(&self, name: &str, enabled: bool) -> Result<String, String> {
         let mut request = self.client.remote_request();
         request.get().set_action(if enabled {

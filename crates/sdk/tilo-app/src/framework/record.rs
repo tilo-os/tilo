@@ -84,7 +84,6 @@ impl<P: Resource> Held<P> {
         }
     }
 
-    /// The id the record is published under.
     pub(crate) fn id(&self) -> &str {
         &self.id
     }
@@ -107,9 +106,6 @@ impl<P: Resource> Held<P> {
     }
 
     /// Apply `action` for `invoker`.
-    ///
-    /// # Errors
-    /// The record is read here only, or the action refused.
     pub(crate) fn apply(
         &self,
         action: &P::Action,

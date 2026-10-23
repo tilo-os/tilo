@@ -638,9 +638,6 @@ pub struct Passt {
 
 impl Passt {
     /// Start passt on `socket` (a path that does not exist yet) and wait for it to listen.
-    ///
-    /// # Errors
-    /// passt is missing, failed, or did not listen within five seconds.
     pub fn start(socket: &Path) -> io::Result<Self> {
         let child = Command::new("passt")
             .args(["--foreground", "--one-off", "--quiet", "--no-map-gw"])

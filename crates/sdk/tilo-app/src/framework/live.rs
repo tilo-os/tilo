@@ -183,9 +183,6 @@ impl<R: Resource> Live<R> {
     /// read yet from `doc` — the document the view was synced with, which in
     /// History mode is the past version on screen. Returns whether the state
     /// changed.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document does not hold the resource.
     #[inline(never)]
     pub fn demand(&self, doc: &Doc, demand: Demand) -> Result<bool, ModelError>
     where
@@ -216,9 +213,6 @@ impl<R: Resource> Live<R> {
     /// it after an immediate edit ([`Dispatcher::apply_now`](super::Dispatcher::apply_now))
     /// to read its own result within the same event. Returns whether the
     /// state changed.
-    ///
-    /// # Errors
-    /// Returns [`ModelError`] when the document no longer holds the resource.
     #[inline(never)]
     pub fn sync(&self, doc: &Doc) -> Result<bool, ModelError> {
         let _profile = tilo_resource::profiling::Phase::start("framework.live_sync");

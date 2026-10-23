@@ -47,10 +47,6 @@ fn canonical_id(value: &str) -> bool {
 }
 impl SelectedReplacementPermitRecord {
     /// Validate descriptive identities and the bounded raw replacement locus.
-    ///
-    /// # Errors
-    /// Returns invalid data for malformed identities, mismatched devices or an
-    /// empty, escaped or oversized locus. This does not authenticate authority.
     pub fn validate(&self) -> io::Result<()> {
         let raw_bytes = self.components.iter().try_fold(0usize, |total, component| {
             if component.is_empty()
@@ -96,9 +92,6 @@ impl SelectedReplacementPermitRecord {
         Ok(())
     }
     /// Encode a validated record in its canonical wire representation.
-    ///
-    /// # Errors
-    /// Refuses invalid or oversized records and propagates serialization errors.
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         self.validate()?;
         let bytes = serde_json::to_vec(self).map_err(io::Error::other)?;

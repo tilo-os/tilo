@@ -211,7 +211,6 @@ bin = "bin/app"
 
     #[test]
     fn shipped_manifests_declare_what_they_need_to_open() {
-        // Phase `shipped_browser_requires_semantic_continuity`.
         {
             let manifest = read_manifest(&repo().join("apps/browser/tilo-app.toml"))
                 .expect("shipped browser manifest parses through installed-app schema");

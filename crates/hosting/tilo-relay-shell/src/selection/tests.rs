@@ -1,4 +1,3 @@
-//! Shell selection regressions over public real-owner and signed synthetic inputs.
 #![allow(
     clippy::similar_names,
     reason = "paired test fixtures are named after the roles they mirror"
@@ -29,8 +28,6 @@ use tilo_relay_store::frames::incoming_identity;
 use tilo_relay_store::shell::RetainOutcome;
 
 mod tail_cache_tests;
-
-// ---- shared drivers -------------------------------------------------------
 
 fn finish<T>(mut step: impl FnMut() -> Step<T>) -> T {
     loop {
@@ -138,8 +135,6 @@ fn assert_selected_complete(store: &WorkspaceStore) {
     assert!(selected.basis.complete());
 }
 
-// ---- replay and admission -------------------------------------------------
-
 fn encoded(frames: &[Envelope]) -> Vec<Vec<u8>> {
     frames
         .iter()
@@ -167,8 +162,6 @@ fn active_retained_count(store: &WorkspaceStore) -> usize {
         })
         .sum()
 }
-
-// ---- real-owner producer fixture ------------------------------------------
 
 fn producer_frames(meta: &serde_json::Value, group: &str, time: u64) -> Vec<Vec<u8>> {
     meta[group]
@@ -215,8 +208,6 @@ fn reopen_bound(tmp: &Path, id: u64, authority: RetentionAuthority) -> Workspace
     store.bind_shell_authority(authority).unwrap();
     store
 }
-
-// ---- signed synthetic owner -----------------------------------------------
 
 const SYNTHETIC_ROOM: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
@@ -432,7 +423,6 @@ fn changed_snapshot_frame(raw: &[u8], change: &str) -> Vec<u8> {
         "source" => author_device_public_key[0] ^= 1,
         "channel" => channel[0] ^= 1,
         "body" => {
-            // Preserve the route, invalidate the signature.
             let mut message: NeighbourMsg = postcard::from_bytes(&body).unwrap();
             let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
                 panic!()
@@ -452,8 +442,6 @@ fn changed_snapshot_frame(raw: &[u8], change: &str) -> Vec<u8> {
     .unwrap();
     tilo_relay::transport::encode(&envelope).unwrap()
 }
-
-// ---- captured shell replay ------------------------------------------------
 
 #[test]
 fn captured_shell_store_selection_replays_exact_current_pairs() {
@@ -564,8 +552,6 @@ fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is
         "restart must finish proven retirement after old originals were unlinked"
     );
 }
-
-// ---- producer fixture selection -------------------------------------------
 
 #[test]
 fn producer_fixture_replays_through_real_retained_admission() {
@@ -813,8 +799,6 @@ fn retained_authority_accepts_only_its_exact_room_binding() {
     let mut store = WorkspaceStore::open(tmp.path(), unrelated, true).unwrap();
     assert!(store.bind_shell_authority(authority).is_err());
 }
-
-// ---- selector internals over the producer fixture -------------------------
 
 #[test]
 fn unchanged_basis_does_not_repeat_snapshot_verification() {
@@ -1521,8 +1505,6 @@ fn promoted_prefix_repairs_on_reopen_and_suffix_republish_completes_the_cut() {
     );
 }
 
-// ---- selected generation durability ---------------------------------------
-
 #[test]
 fn selected_switch_failure_keeps_previous_durable_basis_and_retires_no_input() {
     let (_tmp, store) = setup();
@@ -1812,8 +1794,6 @@ fn recovery_cursor_rejects_other_workspace_before_publication() {
         "recovery emitted an envelope from another workspace"
     );
 }
-
-// ---- signed synthetic selection -------------------------------------------
 
 #[test]
 fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite() {

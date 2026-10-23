@@ -87,7 +87,6 @@ pub const MAX_CODEC_LABEL_BYTES: usize = 32;
 pub enum InputEvent {
     /// The pointer moved to surface-local `(x, y)`.
     PointerMotion {
-        /// Surface-local x, pixels.
         x: f64,
         /// Surface-local y, pixels.
         y: f64,
@@ -99,14 +98,10 @@ pub enum InputEvent {
         /// Pressed or released.
         pressed: bool,
     },
-    /// The pointer entered the window.
     PointerEnter {
-        /// The window's surface.
         surface: u64,
     },
-    /// The pointer left the window.
     PointerLeave {
-        /// The window's surface.
         surface: u64,
     },
     /// A key changed.
@@ -120,7 +115,6 @@ pub enum InputEvent {
     },
     /// Keyboard focus moved to or away from the window.
     KeyboardFocus {
-        /// The window's surface.
         surface: u64,
         /// Gained or lost.
         focused: bool,
@@ -235,7 +229,6 @@ pub struct Stream {
     pub app: String,
     /// `SurfaceStreamStart` codec label: one of [`VIDEO_CODECS`], or [`PAINT`].
     pub codec: String,
-    /// Picture width the session announced, pixels.
     pub width: u32,
     /// Picture height the session announced, pixels.
     pub height: u32,
@@ -262,7 +255,6 @@ impl Stream {
             && self.record == format!("@tilo:legacy-window:{}", self.surface)
     }
 
-    /// The stream of `surface`.
     pub fn new(surface: u64, app: &str, codec: &str, width: u32, height: u32) -> Self {
         Self {
             surface: format!("{surface:016x}"),
@@ -310,7 +302,6 @@ pub fn parse_grant(capability: &str) -> Option<(u64, bool)> {
     Some((surface.parse().ok()?, granted))
 }
 
-/// One legacy-window frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Frame {
     /// The publisher's current streams.
