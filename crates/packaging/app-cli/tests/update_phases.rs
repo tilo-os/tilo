@@ -187,8 +187,8 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
     let second = snapshot(publish(&registry, &base, &versions), &owner, Some(&first));
     registry.put("/entries", serde_json::to_vec(&second).unwrap());
     let mut phases = Vec::new();
-    let installed = timed(&mut phases, "installed versions", || {
-        app_cli::installed_versions().unwrap()
+    let installed = timed(&mut phases, "installed apps", || {
+        app_cli::installed_for_update().unwrap()
     });
     let listing = timed(&mut phases, "catalogue", app_cli::all_offers);
     let outdated: Vec<&app_cli::CatalogueApp> = timed(&mut phases, "compare", || {
@@ -196,9 +196,9 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
             .apps
             .iter()
             .filter(|app| {
-                installed.get(&app.package_id).is_some_and(|version| {
-                    tilo_app_package::version::compare(&app.version, version).is_gt()
-                        || !app_cli::installed_current(&app.package_id)
+                installed.get(&app.package_id).is_some_and(|installed| {
+                    tilo_app_package::version::compare(&app.version, &installed.version).is_gt()
+                        || !installed.current
                 })
             })
             .collect()

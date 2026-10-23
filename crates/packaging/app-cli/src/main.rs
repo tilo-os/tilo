@@ -1027,7 +1027,7 @@ fn update(query: Option<&str>) -> ExitCode {
     }
     // Updating everything can take minutes; say what is happening from the
     // first moment, whether or not a terminal is watching.
-    let installed = match app_cli::installed_versions() {
+    let installed = match app_cli::installed_for_update() {
         Ok(installed) => installed,
         Err(error) => {
             eprintln!("app: {error}");
@@ -1049,6 +1049,11 @@ fn update(query: Option<&str>) -> ExitCode {
         }
     );
     let _ = std::io::stdout().flush();
+    // The hourly update is also what removes downloads a process that died
+    // left behind, whether or not anything is new.
+    if let Some(staging) = app_cli::install::staging_dir() {
+        app_cli::install::sweep_abandoned_downloads(&staging);
+    }
     let listing = app_cli::all_offers();
     update_from_listing(&listing, &installed)
 }
@@ -1056,19 +1061,19 @@ fn update(query: Option<&str>) -> ExitCode {
 /// The offers newer than what is installed, with the installed version.
 fn outdated<'a>(
     listing: &'a app_cli::CatalogueListing,
-    installed: &'a std::collections::HashMap<String, String>,
+    installed: &'a std::collections::HashMap<String, app_cli::InstalledVersion>,
 ) -> (Vec<(&'a CatalogueApp, &'a str)>, usize) {
     let mut checked = 0usize;
     let mut outdated = Vec::new();
     for app in &listing.apps {
-        let Some(version) = installed.get(&app.package_id) else {
+        let Some(installed) = installed.get(&app.package_id) else {
             continue;
         };
         checked = checked.saturating_add(1);
-        if tilo_app_package::version::compare(&app.version, version).is_gt()
-            || !app_cli::installed_current(&app.package_id)
+        if tilo_app_package::version::compare(&app.version, &installed.version).is_gt()
+            || !installed.current
         {
-            outdated.push((app, version.as_str()));
+            outdated.push((app, installed.version.as_str()));
         }
     }
     (outdated, checked)
@@ -1076,7 +1081,7 @@ fn outdated<'a>(
 
 fn update_from_listing(
     listing: &app_cli::CatalogueListing,
-    installed: &std::collections::HashMap<String, String>,
+    installed: &std::collections::HashMap<String, app_cli::InstalledVersion>,
 ) -> ExitCode {
     report_unreachable(&listing.unreachable);
     let mut failed = !listing.unreachable.is_empty();

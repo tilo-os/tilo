@@ -650,10 +650,43 @@ pub fn installed_current(package_id: &str) -> bool {
     package_store::find_installed(package_id)
         .ok()
         .flatten()
-        .is_none_or(|entry| {
-            package_store::integrity::record_current(&entry)
-                && (entry.runtime.is_empty() || runtime_installed(&entry.runtime))
+        .is_none_or(|entry| entry_current(&entry))
+}
+
+fn entry_current(entry: &package_store::InstalledPackage) -> bool {
+    package_store::integrity::record_current(entry)
+        && (entry.runtime.is_empty() || runtime_installed(&entry.runtime))
+}
+
+/// One installed package as a bulk update compares it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledVersion {
+    pub version: String,
+    /// [`installed_current`]: nothing but a newer version would change it.
+    pub current: bool,
+}
+
+/// Every installed package's version and whether it is current, from one
+/// read of the installed set: asking [`installed_current`] per app read the
+/// whole set again for each of them.
+///
+/// # Errors
+///
+/// Returns an error if the installed-app registry or any installed package
+/// manifest cannot be read.
+pub fn installed_for_update() -> Result<std::collections::HashMap<String, InstalledVersion>, String>
+{
+    let entries = package_store::list_installed()
+        .map_err(|error| format!("could not read the installed app registry: {error}"))?;
+    entries
+        .into_iter()
+        .map(|entry| {
+            let version = installed_manifest_version(&entry.manifest_path)
+                .ok_or_else(|| format!("could not read the installed manifest for {}", entry.id))?;
+            let current = entry_current(&entry);
+            Ok((entry.id, InstalledVersion { version, current }))
         })
+        .collect()
 }
 
 /// Installed package versions, parsed once for bulk update checks.
