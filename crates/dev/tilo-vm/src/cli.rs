@@ -655,7 +655,7 @@ pub enum TouchpadCommand {
     },
     /// Fingers move DX, DY millimetres: one moves the pointer, two scroll, three swipe.
     #[command(
-        after_help = "Examples:\n  tilo-vm input touchpad swipe 30 0                 # pointer right\n  tilo-vm input touchpad swipe 0 -30 --fingers 2    # scroll\n  tilo-vm input touchpad swipe 40 0 --fingers 3     # workspace gesture"
+        after_help = "Examples:\n  tilo-vm input touchpad swipe 30 0                 # pointer right\n  tilo-vm input touchpad swipe 0 -30 --fingers 2    # scroll\n  tilo-vm input touchpad swipe 40 0 --fingers 3     # workspace gesture\n  tilo-vm input touchpad swipe 80 0 --press         # drag what is under the pointer"
     )]
     Swipe {
         /// Millimetres right.
@@ -670,6 +670,9 @@ pub enum TouchpadCommand {
         /// How long the movement takes, in milliseconds.
         #[arg(long, default_value_t = 300)]
         duration: u32,
+        /// Hold the clickpad down while the fingers move: a drag.
+        #[arg(long)]
+        press: bool,
     },
     /// Press the clickpad's physical button.
     #[command(after_help = "Examples:\n  tilo-vm input touchpad click")]
