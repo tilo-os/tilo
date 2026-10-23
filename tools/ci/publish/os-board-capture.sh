@@ -6,7 +6,8 @@
 # Reads the kernel configuration, the hardware profile, the UKI (its command line, device tree
 # and initramfs) out of the image, then boots the UKI's kernel and initramfs under KVM, makes
 # the initrd fail and warm-resets (os/tests/board_initrd_pstore_vm.py), so the failure has to
-# reach the next boot's pstore console record. Runs as root in a micro-VM step, like
+# reach the next boot's pstore console record. Then boots the whole UKI from an ESP beside a
+# LUKS2 root, where a typed passphrase has to open it (os/tests/board_unlock_vm.py). Runs as root in a micro-VM step, like
 # kernel-acceptance.sh, installing what it needs.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
@@ -19,7 +20,8 @@ in=${2:-}
 [[ -e /dev/kvm ]] || die 'no /dev/kvm'
 
 dnf install -y --setopt=install_weak_deps=False podman qemu-system-aarch64-core dracut \
-  python3 binutils zstd >/dev/null
+  python3 binutils zstd edk2-aarch64 qemu-device-display-virtio-gpu qemu-device-display-virtio-gpu-pci \
+  dosfstools mtools cryptsetup dtc util-linux >/dev/null
 podman=(podman --cgroup-manager=cgroupfs --events-backend=file)
 work=$scratch/board-capture
 rm -rf "$work"
@@ -84,4 +86,8 @@ if ((${#problems[@]})); then
   exit 1
 fi
 printf 'board image: kernel configuration, command line, device tree and initramfs carry the crash capture\n'
-python3 -I os/tests/board_initrd_pstore_vm.py "$work/uki"
+failed=0
+python3 -I os/tests/board_initrd_pstore_vm.py "$work/uki" || failed=1
+# The same UKI from an ESP through its own stub, taking a typed passphrase at the unlock prompt.
+python3 -I os/tests/board_unlock_vm.py "${ukis[0]}" "$work/unlock" || failed=1
+exit "$failed"

@@ -1192,7 +1192,7 @@ each = [{ arch = "aarch64", board = "lenovo-83ed" }]
 [[matrix.check]]
 name = "os-board-capture-{board}"
 run = "bash tools/ci/publish/os-board-capture.sh {board} /target/publish/os-board/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-board-capture.sh", "tools/ci/publish/uki_sections.py", "os/tests/board_initrd_pstore_vm.py"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-board-capture.sh", "tools/ci/publish/uki_sections.py", "os/tests/board_initrd_pstore_vm.py", "os/tests/board_unlock_vm.py"]
 needs = ["os-board-{board}"]
 requires = ["arch=arm64", "/dev/kvm", "disk-100g"]
 isolation = "vm"

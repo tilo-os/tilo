@@ -5776,7 +5776,7 @@ board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board 
 [[check]]
 name = "os-board-capture-lenovo-83ed"
 run = "bash tools/ci/publish/os-board-capture.sh lenovo-83ed /target/publish/os-board/lenovo-83ed"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-board-capture.sh", "tools/ci/publish/uki_sections.py", "os/tests/board_initrd_pstore_vm.py"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-board-capture.sh", "tools/ci/publish/uki_sections.py", "os/tests/board_initrd_pstore_vm.py", "os/tests/board_unlock_vm.py"]
 needs = ["os-board-lenovo-83ed"]
 requires = ["arch=arm64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
