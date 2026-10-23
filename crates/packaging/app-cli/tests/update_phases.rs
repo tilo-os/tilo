@@ -3,8 +3,9 @@
 //! real one, and the registry offers either nothing new or one newer app.
 //!
 //! The work must follow what changed: one catalogue request however many
-//! apps are installed, a download only for the app that changed, and nothing
-//! re-read or re-verified for the apps that did not. The test pins those
+//! apps are installed, answered `304 Not Modified` when nothing is new, a
+//! download only for the app that changed, and nothing re-read or
+//! re-verified for the apps that did not. The test pins those
 //! counts and reports where the time goes (catalogue, comparison, download
 //! and verification, install, and the collection an install runs after it)
 //! without judging the wall time, which depends on the machine.
@@ -160,7 +161,7 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
     // The device: every app installed at 1.0.0.
     let mut versions = vec!["1.0.0"; APPS];
     let first = snapshot(publish(&registry, &base, &versions), &owner, None);
-    registry.put("/entries", serde_json::to_vec(&first).unwrap());
+    registry.put_catalogue(&first);
     let started = Instant::now();
     for offer in app_cli::available().apps {
         app_cli::install::install_app(&offer).unwrap();
@@ -181,13 +182,16 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
         ["/entries"],
         "an update with nothing new fetched {seen:?}"
     );
+    // And the catalogue is not downloaded again: the registry answers that
+    // the one this device holds is current.
+    assert_eq!(registry.not_modified(), 1);
 
     // One app is newer, measured phase by phase as `app update` runs them.
     versions[0] = "1.0.1";
     let second = snapshot(publish(&registry, &base, &versions), &owner, Some(&first));
-    registry.put("/entries", serde_json::to_vec(&second).unwrap());
+    registry.put_catalogue(&second);
     let mut phases = Vec::new();
-    let installed = timed(&mut phases, "installed apps", || {
+    let held = timed(&mut phases, "installed apps", || {
         app_cli::installed_for_update().unwrap()
     });
     let listing = timed(&mut phases, "catalogue", app_cli::all_offers);
@@ -196,7 +200,7 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
             .apps
             .iter()
             .filter(|app| {
-                installed.get(&app.package_id).is_some_and(|installed| {
+                held.get(&app.package_id).is_some_and(|installed| {
                     tilo_app_package::version::compare(&app.version, &installed.version).is_gt()
                         || !installed.current
                 })
@@ -243,7 +247,7 @@ fn an_update_with_little_to_fetch_does_work_only_for_what_changed() {
     // Another app is newer, end to end.
     versions[1] = "1.0.1";
     let third = snapshot(publish(&registry, &base, &versions), &owner, Some(&second));
-    registry.put("/entries", serde_json::to_vec(&third).unwrap());
+    registry.put_catalogue(&third);
     let one = app_update();
     let seen = registry.take_seen();
     eprintln!("perf app update with one changed app ({APPS} apps installed): {one:?}");

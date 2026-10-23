@@ -53,6 +53,10 @@ pub(crate) struct FarRegistry {
     requests: Arc<Mutex<Vec<String>>>,
     /// Every request, near or far, until [`Self::take_seen`].
     seen: Arc<Mutex<Vec<String>>>,
+    /// The `ETag` an object is served with, when it has one.
+    etags: Arc<Mutex<HashMap<String, String>>>,
+    /// Requests answered `304 Not Modified`.
+    not_modified: Arc<AtomicUsize>,
     connections: Arc<AtomicUsize>,
     open: Arc<AtomicUsize>,
     peak: Arc<AtomicUsize>,
@@ -79,6 +83,21 @@ impl FarRegistry {
         self.objects.lock().unwrap().insert(path.to_owned(), bytes);
     }
 
+    /// Serve `snapshot` as the catalogue with its hash as the `ETag`, as the
+    /// registry does, answering a request that names it with a `304`.
+    pub(crate) fn put_catalogue(&self, snapshot: &SignedRegistrySnapshot) {
+        self.put("/entries", serde_json::to_vec(snapshot).unwrap());
+        self.etags.lock().unwrap().insert(
+            "/entries".to_owned(),
+            format!("\"{}\"", registry_types::snapshot_hash(snapshot).unwrap()),
+        );
+    }
+
+    /// Requests answered `304 Not Modified` so far.
+    pub(crate) fn not_modified(&self) -> usize {
+        self.not_modified.load(Ordering::SeqCst)
+    }
+
     fn serve(&self, mut stream: TcpStream) {
         let far = self.far.load(Ordering::SeqCst);
         if far {
@@ -91,12 +110,19 @@ impl FarRegistry {
             if reader.read_line(&mut request).unwrap_or(0) == 0 {
                 return;
             }
+            let mut if_none_match = None;
             loop {
                 let mut line = String::new();
                 match reader.read_line(&mut line) {
                     Ok(0) | Err(_) => return,
                     Ok(_) if line.trim().is_empty() => break,
-                    Ok(_) => {}
+                    Ok(_) => {
+                        if let Some((name, value)) = line.split_once(':')
+                            && name.trim().eq_ignore_ascii_case("if-none-match")
+                        {
+                            if_none_match = Some(value.trim().to_owned());
+                        }
+                    }
                 }
             }
             let path = request.split_whitespace().nth(1).unwrap_or("/");
@@ -120,7 +146,13 @@ impl FarRegistry {
                 self.open.fetch_sub(1, Ordering::SeqCst);
             }
             let body = self.objects.lock().unwrap().get(&path).cloned();
+            let etag = self.etags.lock().unwrap().get(&path).cloned();
+            let unchanged = etag.is_some() && etag == if_none_match;
             let (status, body) = match body {
+                Some(_) if unchanged => {
+                    self.not_modified.fetch_add(1, Ordering::SeqCst);
+                    ("304 Not Modified", Vec::new())
+                }
                 Some(body) => ("200 OK", body),
                 None => ("404 Not Found", b"not found".to_vec()),
             };
