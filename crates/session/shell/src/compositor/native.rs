@@ -4376,6 +4376,16 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "screenshot_markup_strokes".into(),
                 serde_json::json!(self.fb.host().screenshot_markup_strokes()),
             );
+            // Whether this device's identity waits for the clock: intact,
+            // with a certificate the clock's reading refuses.
+            fields.insert(
+                "identity".into(),
+                serde_json::json!({
+                    "waits_for_clock": chrome.identity_waits_for_clock(),
+                    "recovery": std::env::var_os(crate::shell::identity_provisioning::IDENTITY_RECOVERY_ENV)
+                        .is_some_and(|value| value == "1"),
+                }),
+            );
         }
         dump
     }
@@ -9516,12 +9526,21 @@ pub fn run() {
     // identity before the identity ceremony completes. Keep a one-shot
     // deferred start so that completion brings this session online, rather
     // than requiring the person to restart the desktop they just set up.
-    let enable_peer_sync = peer_sync_requested && onboarding_identity_dir.is_none();
-    let mut deferred_peer_sync = peer_sync_requested && onboarding_identity_dir.is_some();
+    // An identity whose certificate the clock refuses is intact: the
+    // session starts without first-use setup or recovery, says so, and
+    // starts its network and broker once the clock admits the certificate,
+    // as a finished first login does.
+    let identity_clock_refusal = onboarding_identity_dir
+        .is_none()
+        .then(crate::shell::identity_provisioning::identity_clock_refusal)
+        .flatten();
+    let identity_pending = onboarding_identity_dir.is_some() || identity_clock_refusal.is_some();
+    let enable_peer_sync = peer_sync_requested && !identity_pending;
+    let mut deferred_peer_sync = peer_sync_requested && identity_pending;
     // Without peer sync the broker is local-only, but it still reads the
     // session's identity and device key once when it starts. Start it after
     // first-login setup too, or it keeps the pre-identity view all session.
-    let mut deferred_local_broker = !peer_sync_requested && onboarding_identity_dir.is_some();
+    let mut deferred_local_broker = !peer_sync_requested && identity_pending;
     if deferred_peer_sync {
         tracing::info!("peer-sync: waiting for first-login identity setup to complete");
     }
@@ -10037,6 +10056,22 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    let mut identity_clock_wait = identity_clock_refusal.as_ref().and_then(|refusal| {
+        let identity_dir = identity_store.path().parent()?.to_path_buf();
+        tracing::warn!(
+            valid_from_ns = refusal.valid_from_ns,
+            clock_ns = refusal.clock_ns,
+            "this device's certificate waits for the clock; workspaces connect when it is right"
+        );
+        frame_builder.with_chrome(|chrome| chrome.set_identity_waits_for_clock(true));
+        // Apps opened meanwhile start with the broker, not before it.
+        crate::shell::launcher::hold_launches();
+        Some(crate::identity_clock_wait::IdentityClockWait::start(
+            refusal,
+            identity_dir,
+            Arc::clone(&session_wake),
+        ))
+    });
     let mut dictation_vocabulary =
         crate::compositor::dictation::host::VocabularyBinding::new(Arc::clone(&session_wake));
     dictation_vocabulary.refresh(&mut state);
@@ -13485,6 +13520,29 @@ pub fn run() {
         let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");
         deliver_held_key_releases!();
+        if let Some(wait) = identity_clock_wait.as_mut() {
+            match wait.pump() {
+                crate::identity_clock_wait::ClockWaitStep::Waiting => {}
+                crate::identity_clock_wait::ClockWaitStep::Verified => {
+                    identity_clock_wait = None;
+                    tracing::info!(
+                        "the clock admits this device's certificate; starting the session's services"
+                    );
+                    frame_builder.with_chrome(|chrome| chrome.set_identity_waits_for_clock(false));
+                    if let Some(identity_dir) = identity_store.path().parent() {
+                        crate::firstboot::keep_device_certificates_renewed(identity_dir);
+                    }
+                }
+                crate::identity_clock_wait::ClockWaitStep::NeedsRecovery => {
+                    identity_clock_wait = None;
+                    frame_builder.with_chrome(|chrome| chrome.set_identity_waits_for_clock(false));
+                    if let Some(identity_dir) = identity_store.path().parent() {
+                        frame_builder.enable_recovery_onboarding(identity_dir.to_path_buf());
+                    }
+                }
+            }
+        }
+        let identity_setup_active = identity_setup_active || identity_clock_wait.is_some();
         if take_deferred_peer_sync_activation(&mut deferred_peer_sync, identity_setup_active) {
             // `pump_apps` just observed the trusted onboarding completion.
             // Apps were withheld until this edge. The network starts off the
