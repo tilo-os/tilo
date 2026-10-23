@@ -16328,6 +16328,7 @@ dependencies = [
  "base64",
  "libc",
  "portable-pty",
+ "regex",
  "runtime-dylib",
  "runtime-portal",
  "serde",

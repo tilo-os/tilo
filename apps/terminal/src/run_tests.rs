@@ -10,7 +10,6 @@ use ui::tilo_actions::{ActionInvoker, ActorKind};
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Bytes, Settled};
 
-use crate::TerminalWidget;
 use crate::resource::{ItemKind, RunAnswer, Terminal};
 use crate::sessions::Sessions;
 use crate::target::RecentTarget;
@@ -121,7 +120,7 @@ fn run_shell(app: &mut App, output: &'static str) -> (Sender<Vec<u8>>, Receiver<
         backend.runs = Some(KEY.into());
         Ok(backend)
     });
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .expect("the terminal surface is hosted");
     app.settle();
     print.send(prompt().into_bytes()).unwrap();
@@ -139,7 +138,7 @@ fn settle_until(app: &mut App, done: impl Fn(&Terminal) -> bool) {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let inspected = app
-        .with_surface(|terminal: &mut TerminalWidget| terminal.inspect_session())
+        .with_surface(|terminal: &mut crate::TerminalView| terminal.inspect_session())
         .unwrap();
     panic!(
         "the session record never got there: {:#?} {inspected}",
@@ -368,11 +367,11 @@ fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
         backend.writer = Box::new(Typed(typed));
         Ok(backend)
     });
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
         .expect("the terminal surface is hosted");
     app.settle();
     let grid = app
-        .with_surface(|terminal: &mut TerminalWidget| terminal.grid_rect())
+        .with_surface(|terminal: &mut crate::TerminalView| terminal.grid_rect())
         .unwrap();
     assert!(grid.area() > 0.0, "the grid is laid out: {grid:?}");
     let centre = grid.center();
@@ -380,7 +379,9 @@ fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
     app.settle();
     while typed.try_recv().is_ok() {}
     let focused = app
-        .with_surface(|terminal: &mut TerminalWidget| ui::widget::Widget::is_focused(terminal))
+        .with_surface(|terminal: &mut crate::TerminalView| {
+            ui::widget::Widget::is_focused(terminal.terminal())
+        })
         .unwrap();
     assert!(focused, "a click on the grid gives it the keyboard");
 

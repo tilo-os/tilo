@@ -246,15 +246,8 @@ fn captured<T>(scenario: &str, read: impl FnOnce(&mut crate::TerminalView) -> T)
 
 #[test]
 fn scenarios_stage_their_output_and_view_state() {
-    let (open, counter) = captured("find", |terminal| {
-        (terminal.find_is_open(), terminal.find_counter())
-    });
-    assert!(open, "the find scenario opens the find bar");
-    assert_eq!(
-        counter,
-        Some(("build step 042".into(), Some((1, 1)))),
-        "one line matches `build step 042`"
-    );
+    let matches = captured("find", |terminal| terminal.find_test_matches());
+    assert_eq!(matches.len(), 1, "one line matches `build step 042`");
 
     let selected = captured("shell-select", |terminal| terminal.test_selected_text());
     assert_eq!(

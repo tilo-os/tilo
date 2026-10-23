@@ -1,5 +1,5 @@
 //! Native standalone sessions over one real inherited connection, never scripted opens.
-use super::{App, OpenState, Requester, SessionTarget, Sessions, TerminalWidget, on_tab, recorded};
+use super::{App, OpenState, Requester, SessionTarget, Sessions, on_tab, recorded};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsFd, IntoRawFd};
 use std::os::unix::net::UnixStream;
@@ -126,8 +126,10 @@ fn native_mounted_terminal_switches_default_host_default_on_one_inherited_connec
         terminal.into_raw_fd().to_string(),
     );
     let mut app = App::new().unwrap();
-    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(Sessions::standalone()))
-        .unwrap();
+    app.with_surface(|terminal: &mut crate::TerminalView| {
+        terminal.set_sessions(Sessions::standalone());
+    })
+    .unwrap();
     app.settle();
     assert_eq!(
         on_tab(&mut app, |terminal| terminal.session_state().clone()),
