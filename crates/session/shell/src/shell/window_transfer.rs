@@ -41,6 +41,13 @@
 //! 6. A **Copy** stops after step 3: the source keeps its window and record,
 //!    and the two histories diverge from there.
 //!
+//! The frame loop drives all of this and never waits for a commit. Each
+//! write the transfer makes for another process to read (the imported
+//! record and its presentation, late edits merged in) is started and left
+//! to the store's own thread; the step that hands the record over (starting
+//! the destination instance, restarting it, retiring the source) comes only
+//! once the store reports those writes durable ([`Phase::Landing`]).
+//!
 //! A native app without records keeps one document for itself in the room
 //! ([`ui::persist`]); that document is what its window carries, arriving as
 //! a record the new instance opens by its saved presentation.
@@ -186,8 +193,56 @@ impl Carried {
     }
 }
 
+/// Writes a step made for another process to read, on their way to the
+/// disk, and the profile whose store accepted them: only that store can say
+/// how they went.
+struct Arriving {
+    profile: NativeProfile,
+    landings: Vec<transfer::Landing>,
+}
+
+impl Arriving {
+    fn new(
+        profile: NativeProfile,
+        landings: impl IntoIterator<Item = Option<transfer::Landing>>,
+    ) -> Box<Self> {
+        Box::new(Self {
+            profile,
+            landings: landings.into_iter().flatten().collect(),
+        })
+    }
+
+    fn durability(&self) -> durable_store::Durability {
+        transfer::Landing::all(self.profile.store().as_ref(), &self.landings)
+    }
+}
+
+/// The hand-off a [`Phase::Landing`] transfer makes once its writes are
+/// on the disk.
+enum Then {
+    /// Start the destination instance on the imported record.
+    Start {
+        mode: TransferMode,
+        resume: Option<(u16, Vec<u8>)>,
+    },
+    /// Restart the destination instance on the record late edits were
+    /// merged into.
+    Reopen { resume: Option<(u16, Vec<u8>)> },
+    /// Retire the source and finish the move, late edits merged in.
+    Finish,
+}
+
 enum Phase {
     Consent(oneshot::Receiver<WindowTransferDecision>),
+    /// Waiting for writes the next step hands over to reach the disk: the
+    /// process that reads them reads the disk.
+    Landing {
+        tab: TabId,
+        carried: Box<Carried>,
+        arriving: Box<Arriving>,
+        then: Then,
+        since: Instant,
+    },
     /// Waiting for the old instance to make what it shows durable, so the
     /// transfer reads it as the person left it.
     Checkpointing {
@@ -920,6 +975,9 @@ struct Follower {
     address: crate::shell::record_hydration::RecordAddress,
     workspace: WorkspaceId,
     title: String,
+    /// The instance its window will open as, once its View names the
+    /// record and is on its way to the disk.
+    instance: Option<u64>,
 }
 
 /// Bring a moved document here and, once it is kept, open it in its new
@@ -927,10 +985,26 @@ struct Follower {
 fn follow(
     st: &mut ChromeState,
     transfers: &WindowTransfers,
-    follower: Follower,
+    mut follower: Follower,
 ) -> Option<Follower> {
-    use crate::shell::record_hydration::{Hydration, forget, hydrate, kept_here, reopen_on};
+    use crate::shell::record_hydration::{
+        Hydration, forget, hydrate, kept_here, landing, reopen_on,
+    };
     let data_home = transfers.data_home()?;
+    if let Some(instance) = follower.instance {
+        // Its View was written on an earlier round.
+        return match landing(&follower.address) {
+            Ok(true) => Some(follower),
+            Ok(false) => {
+                open_followed(st, follower, instance);
+                None
+            }
+            Err(reason) => {
+                tracing::warn!(%reason, app = %follower.address.app_id, "a moved document could not be kept here");
+                None
+            }
+        };
+    }
     let record = if kept_here(&follower.address, &data_home) {
         None
     } else {
@@ -947,6 +1021,14 @@ fn follow(
     forget(&follower.address);
     let instance = crate::shell::state::next_id();
     reopen_on(&follower.address, &data_home, instance, record.as_ref());
+    // Its launch reads the record and its View from the disk.
+    follower.instance = Some(instance);
+    follow(st, transfers, follower)
+}
+
+/// Open a followed document's window as `instance`, now that its record and
+/// View are on the disk.
+fn open_followed(st: &mut ChromeState, follower: Follower, instance: u64) -> Option<()> {
     let strip = destination_strip(st, follower.workspace)?;
     let tab = place_in(
         st,
@@ -967,7 +1049,7 @@ fn follow(
     tree.remember_local_app_record(tab, instance);
     tree.queue_save();
     drop(tree);
-    None
+    Some(())
 }
 
 /// Tell the person that the document a window of theirs shows was moved to
@@ -1037,6 +1119,7 @@ fn moved_away(
                     },
                     workspace,
                     title: window.clone(),
+                    instance: None,
                 });
             }
             t_args(
@@ -1078,7 +1161,13 @@ fn advance(
     if let Some(surface) = transfer.plan.surface
         && !matches!(
             transfer.phase,
-            Phase::Releasing { .. } | Phase::Redelivering { .. } | Phase::Reopening { .. }
+            Phase::Releasing { .. }
+                | Phase::Redelivering { .. }
+                | Phase::Reopening { .. }
+                | Phase::Landing {
+                    then: Then::Reopen { .. } | Then::Finish,
+                    ..
+                }
         )
         && !matches!(
             tab_tile(st, transfer.plan.tab),
@@ -1190,6 +1279,25 @@ fn advance(
                 None
             }
         },
+        Phase::Landing {
+            tab,
+            carried,
+            arriving,
+            then,
+            since,
+        } => land(
+            st,
+            transfers,
+            &plan,
+            Landing {
+                tab,
+                carried,
+                arriving,
+                then,
+                since,
+            },
+            source_lost,
+        ),
         Phase::Releasing { tab, carried } => {
             release(st, transfers, &plan, tab, carried, source_lost)
         }
@@ -1399,7 +1507,8 @@ fn transfer_reason(error: &TransferError) -> String {
 
 /// Read the source record as it was last made durable, rehome it into the
 /// destination under a fresh id, and give `instance` there the presentation
-/// it had. Returns the arrived record and the source heads it was read at.
+/// it had. Returns the arrived record and the writes the destination
+/// instance reads, on their way to the disk.
 fn import(
     plan: &Plan,
     origin: &Origin,
@@ -1407,7 +1516,7 @@ fn import(
     view: &SavedInstanceView,
     instance: u64,
     destination_root: &Path,
-) -> Result<RecordCheckout, String> {
+) -> Result<(RecordCheckout, Box<Arriving>), String> {
     let storage = |_| t("window-transfer-failed-storage");
     std::fs::create_dir_all(destination_root).map_err(|_| t("window-transfer-failed-storage"))?;
     let destination =
@@ -1421,17 +1530,20 @@ fn import(
         &RecordId::minted(),
     )
     .map_err(|error| transfer_reason(&error))?;
-    let target = transfer::install(
+    let (target, record) = transfer::install(
         destination.store(),
         &plan.app_id,
         destination.workspace_id(),
         &mut rehomed,
     )
     .map_err(|error| transfer_reason(&error))?;
-    destination
+    let presentation = destination
         .adopt_view(view, instance, &target)
         .map_err(storage)?;
-    Ok(target)
+    Ok((
+        target,
+        Arriving::new(destination, [Some(record), presentation]),
+    ))
 }
 
 /// The continuity instance a plan carries, or 0 when it carries nothing.
@@ -1533,13 +1645,14 @@ fn begin(
             },
         );
     }
-    let target = match import(plan, origin, &snapshot, view, instance, &destination_root) {
-        Ok(target) => target,
-        Err(reason) => {
-            failed(st, plan, &reason);
-            return None;
-        }
-    };
+    let (target, arriving) =
+        match import(plan, origin, &snapshot, view, instance, &destination_root) {
+            Ok(imported) => imported,
+            Err(reason) => {
+                failed(st, plan, &reason);
+                return None;
+            }
+        };
     let carried = Box::new(Carried {
         origin: origin.clone(),
         target,
@@ -1549,7 +1662,7 @@ fn begin(
         instance,
         retired_at: None,
     });
-    let Some(strip) = destination_strip(st, plan.destination.workspace) else {
+    let Some(tab) = opening_card(st, plan) else {
         roll_back(
             st,
             plan,
@@ -1559,7 +1672,29 @@ fn begin(
         );
         return None;
     };
-    let tab = place_in(
+    land(
+        st,
+        transfers,
+        plan,
+        Landing {
+            tab,
+            carried,
+            arriving,
+            then: Then::Start {
+                mode,
+                resume: resume.clone(),
+            },
+            since: Instant::now(),
+        },
+        false,
+    )
+}
+
+/// The destination's card for the window while its instance starts, or
+/// `None` when the destination workspace is gone.
+fn opening_card(st: &mut ChromeState, plan: &Plan) -> Option<TabId> {
+    let strip = destination_strip(st, plan.destination.workspace)?;
+    Some(place_in(
         st,
         plan.destination.workspace,
         strip,
@@ -1572,8 +1707,80 @@ fn begin(
                 note: crate::shell::peer_windows::OPENING.to_string(),
             },
         },
-    );
-    start(st, transfers, plan, mode, tab, carried, resume.clone())
+    ))
+}
+
+/// A transfer whose writes are on their way to the disk.
+struct Landing {
+    tab: TabId,
+    carried: Box<Carried>,
+    arriving: Box<Arriving>,
+    then: Then,
+    since: Instant,
+}
+
+/// Make the hand-off `landing` waits for once its writes are durable, roll
+/// back or give up if they fail or never land, and otherwise keep waiting.
+/// Asks the store each round; never waits for the commit.
+fn land(
+    st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
+    plan: &Plan,
+    landing: Landing,
+    source_lost: bool,
+) -> Option<Phase> {
+    let Landing {
+        tab,
+        carried,
+        arriving,
+        then,
+        since,
+    } = landing;
+    let reason = match arriving.durability() {
+        durable_store::Durability::Durable => {
+            drop(arriving);
+            return match then {
+                Then::Start { mode, resume } => {
+                    start(st, transfers, plan, mode, tab, carried, resume)
+                }
+                Then::Reopen { resume } => {
+                    reopen(st, transfers, plan, tab, carried, resume, source_lost)
+                }
+                Then::Finish => {
+                    finish_move(st, plan, &carried, true, source_lost);
+                    None
+                }
+            };
+        }
+        durable_store::Durability::Pending if since.elapsed() < OPEN_TIMEOUT => {
+            return Some(Phase::Landing {
+                tab,
+                carried,
+                arriving,
+                then,
+                since,
+            });
+        }
+        durable_store::Durability::Pending => "the disk did not take the record in time".to_owned(),
+        durable_store::Durability::Failed(reason) => reason,
+    };
+    tracing::warn!(%reason, app = %plan.app_id, "a transferred record did not reach the disk");
+    drop(arriving);
+    match then {
+        Then::Start { .. } => roll_back(
+            st,
+            plan,
+            Some(tab),
+            &carried,
+            &t("window-transfer-failed-storage"),
+        ),
+        // The source still holds the late edits: it is not retired.
+        Then::Reopen { .. } | Then::Finish => {
+            set_note(st, tab, String::new());
+            failed(st, plan, &t("window-transfer-failed-storage"));
+        }
+    }
+    None
 }
 
 /// Start the destination instance in `tab`, or roll the transfer back.
@@ -1749,7 +1956,7 @@ fn successor(plan: &Plan, carried: &Carried) -> Successor {
 /// document says where it went, and wait for it to let go of the record.
 fn close_source(
     st: &mut ChromeState,
-    transfers: &WindowTransfers,
+    transfers: &mut WindowTransfers,
     plan: &Plan,
     tab: TabId,
     carried: Box<Carried>,
@@ -1790,7 +1997,7 @@ fn destination_profile(plan: &Plan, carried: &Carried) -> Option<NativeProfile> 
 /// move.
 fn release(
     st: &mut ChromeState,
-    transfers: &WindowTransfers,
+    transfers: &mut WindowTransfers,
     plan: &Plan,
     tab: TabId,
     carried: Box<Carried>,
@@ -1839,7 +2046,7 @@ fn release(
         hosted::late_edits_stay(st, plan);
         return None;
     }
-    merge_late(st, plan, tab, carried, last, source_lost)
+    merge_late(st, transfers, plan, tab, carried, last, source_lost)
 }
 
 /// Merge what the old instance wrote after the transfer read it into the
@@ -1847,6 +2054,7 @@ fn release(
 /// merge when it already has the record open, then finish the move.
 fn merge_late(
     st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
     plan: &Plan,
     tab: TabId,
     carried: Box<Carried>,
@@ -1864,10 +2072,21 @@ fn merge_late(
         &carried.target,
         &last,
     ) {
-        Ok(_) => {
-            finish_move(st, plan, &carried, true, source_lost);
-            None
-        }
+        // Retiring the source waits for the merge to be on the disk: until
+        // then the source is where those edits are safe.
+        Ok((_, merged)) => land(
+            st,
+            transfers,
+            plan,
+            Landing {
+                tab,
+                carried,
+                arriving: Arriving::new(destination, [merged]),
+                then: Then::Finish,
+                since: Instant::now(),
+            },
+            source_lost,
+        ),
         Err(TransferError::Busy) => {
             // The destination instance already has the record open. Restart
             // it around the merge rather than race its writer.
@@ -1917,7 +2136,7 @@ fn redeliver(
         failed(st, plan, &t("window-transfer-failed-storage"));
         return None;
     };
-    match transfer::catch_up(
+    let merged = match transfer::catch_up(
         destination.store(),
         &plan.app_id,
         destination.workspace_id(),
@@ -1932,14 +2151,14 @@ fn redeliver(
                 since,
             });
         }
-        Ok(_) => {}
+        Ok((_, merged)) => merged,
         Err(error) => {
             // Keep the source record: it still holds the late edits.
             set_note(st, tab, String::new());
             failed(st, plan, &transfer_reason(&error));
             return None;
         }
-    }
+    };
     // The new instance's latest resume projection, reported under its tab.
     let resume = LaunchIntent::app(plan.app_id.clone())
         .ok()
@@ -1950,6 +2169,32 @@ fn redeliver(
                 .continuation_for_tab(plan.destination.room, AppInstanceId(tab), &launch)
                 .map(|found| (found.resume.schema_version(), found.resume.bytes().to_vec()))
         });
+    land(
+        st,
+        transfers,
+        plan,
+        Landing {
+            tab,
+            carried,
+            arriving: Arriving::new(destination, [merged]),
+            then: Then::Reopen { resume },
+            since: Instant::now(),
+        },
+        source_lost,
+    )
+}
+
+/// Restart the destination instance on the record late edits were merged
+/// into, now that the merge is on the disk.
+fn reopen(
+    st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
+    plan: &Plan,
+    tab: TabId,
+    carried: Box<Carried>,
+    resume: Option<(u16, Vec<u8>)>,
+    source_lost: bool,
+) -> Option<Phase> {
     set_note(st, tab, crate::shell::peer_windows::OPENING.to_string());
     if let Err(reason) = launch(st, transfers, plan, tab, carried.instance, resume) {
         set_note(st, tab, t("window-transfer-reopen-failed"));

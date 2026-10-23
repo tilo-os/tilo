@@ -266,9 +266,18 @@ impl InstanceViewStore {
     /// and reports a replacement the store failed to commit. A store waiting
     /// on its host to commit is not a failure.
     pub fn save(&self, instance: &SavedInstanceView) -> Result<(), ThawError> {
+        self.save_landing(instance).map(drop)
+    }
+
+    /// [`Self::save`], and the write a durable store is committing: `None`
+    /// where nothing waits on a commit (an ephemeral or portable View).
+    pub(crate) fn save_landing(
+        &self,
+        instance: &SavedInstanceView,
+    ) -> Result<Option<crate::record::transfer::Landing>, ThawError> {
         self.validate(instance, instance.instance_id)?;
         if self.ephemeral {
-            return Ok(());
+            return Ok(None);
         }
         let bytes = postcard::to_stdvec(instance).map_err(ThawError::Envelope)?;
         if let Some(cache) = &self.portable {
@@ -276,16 +285,20 @@ impl InstanceViewStore {
             return cache
                 .put(key.clone(), bytes, None)
                 .and_then(|()| cache.flush(&key))
+                .map(|()| None)
                 .map_err(|e| ThawError::Io(std::io::Error::other(e)));
         }
         let key = self.key(instance.instance_id);
-        self.store
+        let revision = self
+            .store
             .write(&key, WriteOp::Replace(bytes), None)
             .map_err(storage_error)?;
         // Never waits on the frame loop: there the store commits on its own
         // thread, and a later read already sees the saved View.
         match self.store.flush_where_allowed(&key) {
-            Ok(()) | Err(StoreError::Pending(_)) => Ok(()),
+            Ok(()) | Err(StoreError::Pending(_)) => {
+                Ok(Some(crate::record::transfer::Landing::new(key, revision)))
+            }
             Err(error) => Err(storage_error(error)),
         }
     }

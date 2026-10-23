@@ -411,8 +411,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let native =
             ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
-        ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
-            .map_err(operation)?;
+        // A test thread may wait: the record is on the disk once installed.
+        let _installed =
+            ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
+                .map_err(operation)?;
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         Self::open(
             Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
@@ -436,8 +438,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
             for document in documents {
-                ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
-                    .map_err(operation)?;
+                let _installed =
+                    ui_core::record::transfer::install(native.store(), A::ID, TEST_ROOM, document)
+                        .map_err(operation)?;
             }
         }
         Self::open(
@@ -465,7 +468,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
-            ui_core::record::transfer::install_room_document(
+            let _installed = ui_core::record::transfer::install_room_document(
                 native.store(),
                 A::ID,
                 TEST_ROOM,
