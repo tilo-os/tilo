@@ -634,6 +634,10 @@ pub struct ChatApp {
     pub(crate) channel_sheet: Option<crate::channel_sheet::ChannelSheet>,
     /// The detail drawer shows the open channel's pinned messages.
     pub(crate) pins_open: bool,
+    /// The top of the main composer as last drawn, `None` when none was. A
+    /// detail drawer floating over the conversation ends above it, so the
+    /// composer stays whole and usable while pins or people are open.
+    pub(crate) composer_top: Option<f64>,
     pub(crate) composer_thread: crate::composer::DraftComposer,
 
     // Per-peer view state.
@@ -1072,6 +1076,7 @@ impl ChatApp {
             last_post: None,
             channel_sheet: None,
             pins_open: false,
+            composer_top: None,
             composer_thread: crate::composer::DraftComposer::shared(),
             active_channel: "c_crit".into(),
             focus: Focus::Main,
@@ -3473,9 +3478,28 @@ impl ChatApp {
             return false;
         }
         let content = self.left_flap.resolve(self.rect);
-        self.right_flap.resolve(content);
+        self.resolve_detail_drawer(content);
         self.flap_animating = self.left_flap.is_animating() || self.right_flap.is_animating();
         self.flap_animating
+    }
+
+    /// Resolve the detail drawer against `content`, the conversation the
+    /// navigation drawer leaves. Floating over the conversation, pins and
+    /// people end above the composer (and so does the scrim that dismisses
+    /// them), so its emoji and Send stay in reach; a thread is a page of its
+    /// own there and takes the whole window.
+    fn resolve_detail_drawer(&mut self, content: Rect) {
+        self.right_flap.resolve(content);
+        if !self.right_flap.is_overlay() || self.thread_open.is_some() {
+            return;
+        }
+        if let Some(top) = self.composer_top
+            && top > content.y0
+            && top < content.y1
+        {
+            self.right_flap
+                .resolve(Rect::new(content.x0, content.y0, content.x1, top));
+        }
     }
 
     /// Adopt `theme`'s metrics and advance both drawers' reveals for this
@@ -3489,7 +3513,7 @@ impl ChatApp {
         }
         self.left_flap.tick(theme);
         let content = self.left_flap.content_rect();
-        self.right_flap.resolve(content);
+        self.resolve_detail_drawer(content);
         self.right_flap.tick(theme);
         self.flap_animating = self.left_flap.is_animating() || self.right_flap.is_animating();
     }
@@ -3825,7 +3849,11 @@ impl ChatApp {
                     Hit::EditSave => ("Save message edit".into(), Role::Button, false),
                     Hit::EditCancel => ("Cancel message edit".into(), Role::Button, false),
                     Hit::CallMute => (
-                        "Mute microphone".into(),
+                        if self.microphone_missing() {
+                            crate::i18n::t("chat-call-no-microphone")
+                        } else {
+                            "Mute microphone".into()
+                        },
                         Role::ToggleButton,
                         self.call.muted,
                     ),
@@ -3882,6 +3910,7 @@ impl ChatApp {
                     Hit::ToggleLeftFlap
                         | Hit::ToggleRightFlap
                         | Hit::TogglePins
+                        | Hit::CallMute
                         | Hit::Attach
                         | Hit::Send
                         | Hit::ComposerEmoji(_)
