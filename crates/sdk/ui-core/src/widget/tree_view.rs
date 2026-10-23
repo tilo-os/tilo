@@ -4008,6 +4008,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
     )]
     fn route_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let scale_factor = ctx.scale_factor;
+        self.momentum.set_device_scale(scale_factor);
         let modifiers = ctx.modifiers;
         let state = &mut ctx.state;
         let path = ctx.path;

@@ -2031,11 +2031,7 @@ impl PdfApp {
     /// Carry a glide on to `now`: the page moves by what the glide covered
     /// since the last frame, and stops at either end of the document.
     fn advance_glide(&mut self, now: ui::time::Instant) {
-        // Whole device pixels, so each glide frame is a copy of what stays
-        // on screen and the strip that scrolled in, never a repaint.
-        let dy = self
-            .glide
-            .advance_whole_pixels(now, ui::scroll_copy::host_device_scale());
+        let dy = self.glide.advance(now);
         if dy == 0.0 {
             return;
         }
