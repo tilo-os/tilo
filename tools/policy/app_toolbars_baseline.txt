@@ -2,8 +2,6 @@
 # (tools/policy/check_app_toolbars.py). Counts only shrink.
 history-in-row 2 apps/maps/src/app.rs
 history-in-row 2 apps/typst-editor/src/chrome.rs
-nav-header-actions 1 apps/file-explorer/src/files_app/cloud_browse.rs
-nav-header-actions 1 apps/file-explorer/src/files_app/window_bar.rs
 # A column header holding what the bar has no slot for keeps the shell's
 # own header row, until the bar can show it.
 nav-header-leading 1 apps/canvas/src/lib.rs
