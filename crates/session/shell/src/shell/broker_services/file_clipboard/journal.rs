@@ -1128,14 +1128,37 @@ impl PendingReceipt {
             Ok(())
         })
     }
-    pub(super) fn trash_intent(&self, source: &Source, trash: &Path) -> Result<(), String> {
-        self.item_change(source, |item| {
+    /// [`Self::undo_intent`] for a batch of entries, in one durable write.
+    pub(super) fn undo_intents(
+        &self,
+        entries: &[(&Source, PathBuf, fs::Metadata)],
+    ) -> Result<(), String> {
+        let sources: Vec<&Source> = entries.iter().map(|(source, ..)| *source).collect();
+        self.batch_change(&sources, |position, item| {
+            let (_, recovery, metadata) = entries
+                .get(position)
+                .ok_or("clipboard undo intent unavailable")?;
+            if let Some((_, seal)) = &mut item.staged {
+                *seal = Seal::of(metadata);
+            }
+            item.undo_recovery = Some(recovery.as_os_str().as_bytes().into());
+            Ok(())
+        })
+    }
+    /// Where each entry of a batch goes in Trash, in one durable write.
+    pub(super) fn trash_intents(&self, entries: &[(&Source, &Path)]) -> Result<(), String> {
+        let sources: Vec<&Source> = entries.iter().map(|(source, _)| *source).collect();
+        self.batch_change(&sources, |position, item| {
+            let (_, trash) = entries
+                .get(position)
+                .ok_or("clipboard Trash intent unavailable")?;
             item.trash = Some(trash.as_os_str().as_bytes().into());
             Ok(())
         })
     }
-    pub(super) fn undone(&self, source: &Source) -> Result<(), String> {
-        self.item_change(source, |item| {
+    /// A batch of entries undone, in one durable write.
+    pub(super) fn all_undone(&self, sources: &[&Source]) -> Result<(), String> {
+        self.batch_change(sources, |_, item| {
             item.undone = true;
             Ok(())
         })

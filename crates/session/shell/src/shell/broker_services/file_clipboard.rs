@@ -1954,22 +1954,28 @@ impl Operation {
             .lock()
             .map_err(|_| "clipboard receipts unavailable")?;
         let mut error = None;
-        for record in records.iter_mut().rev().filter(|record| !record.undone) {
-            if let Err(reason) = self.undo_one(tree, context, record) {
-                error = Some(reason);
-                break;
+        if self.offer.public.cut {
+            for record in records.iter_mut().rev().filter(|record| !record.undone) {
+                if let Err(reason) = self.undo_one(tree, context, record) {
+                    error = Some(reason);
+                    break;
+                }
+                if let Err(reason) = self.after_undo(tree, context, &mut [record]) {
+                    error = Some(reason);
+                    break;
+                }
             }
-            if let Some(slot) = record.replaced.take()
-                && let Some(name) = record.destination.file_name()
-                && let Err(reason) = self.restore_replaced(&slot, name)
-            {
-                error = Some(reason);
-                break;
+        } else {
+            let mut remaining: Vec<&mut Record> = records
+                .iter_mut()
+                .rev()
+                .filter(|record| !record.undone)
+                .collect();
+            while !remaining.is_empty() && error.is_none() {
+                let rest = remaining.split_off(remaining.len().min(BATCH_ITEMS));
+                let batch = std::mem::replace(&mut remaining, rest);
+                error = self.undo_copies(tree, context, batch).err();
             }
-            self.receipt()?
-                .restore_source_info(&record.source, tree, context)?;
-            self.receipt()?.undone(&record.source)?;
-            record.undone = true;
         }
         let undone = records.iter().all(|record| record.undone);
         drop(records);
@@ -2021,6 +2027,293 @@ impl Operation {
         Ok(name)
     }
 
+    /// After its item is undone, a record's own leftovers: the item it
+    /// replaced comes back from Trash and its source's metadata is restored;
+    /// then the records undone so far are journaled as such in one write.
+    fn after_undo(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        context: &FileClipboardContext,
+        records: &mut [&mut Record],
+    ) -> Result<(), String> {
+        let mut done = 0_usize;
+        let mut failure = None;
+        for record in records.iter_mut() {
+            let restored = match (record.replaced.take(), record.destination.file_name()) {
+                (Some(slot), Some(name)) => self.restore_replaced(&slot, name),
+                _ => Ok(()),
+            }
+            .and_then(|()| {
+                self.receipt()?
+                    .restore_source_info(&record.source, tree, context)
+            });
+            if let Err(reason) = restored {
+                failure = Some(reason);
+                break;
+            }
+            done = done.saturating_add(1);
+        }
+        let finished = records.get_mut(..done).unwrap_or_default();
+        if !finished.is_empty() {
+            let sources: Vec<&Source> = finished
+                .iter()
+                .map(|record| record.source.as_ref())
+                .collect();
+            self.receipt()?.all_undone(&sources)?;
+        }
+        for record in finished {
+            record.undone = true;
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// Undo a batch of a Copy paste's records: each pasted item goes to
+    /// Trash. The batch's journal steps are one write each and its folders
+    /// are synced once, not per item, so undoing hundreds of items costs a
+    /// few durable writes per batch.
+    fn undo_copies(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        context: &FileClipboardContext,
+        mut batch: Vec<&mut Record>,
+    ) -> Result<(), String> {
+        // 1. Each item is still the one this paste made.
+        let mut failure = None;
+        let mut names = Vec::with_capacity(batch.len());
+        for record in &batch {
+            let found = self
+                .verify_undo(tree, context, record)
+                .and_then(|name| Ok((name.to_os_string(), self.destination_metadata(name)?)));
+            match found {
+                Ok(found) => names.push(found),
+                Err(reason) => {
+                    failure = Some(reason);
+                    break;
+                }
+            }
+        }
+        batch.truncate(names.len());
+        if batch.is_empty() {
+            return failure.map_or(Ok(()), Err);
+        }
+        // 2. and 3. Set aside, under one intent.
+        let aside = self.set_aside(tree, context, &batch, &names)?;
+        // 4. Their Trash metadata, synced together; one intent names where
+        // each goes.
+        let originals: Vec<PathBuf> = batch
+            .iter()
+            .map(|record| record.destination.clone())
+            .collect();
+        let slots = match trash::TrashSlots::prepare(&originals).and_then(|slots| {
+            let intents: Vec<(&Source, &Path)> = batch
+                .iter()
+                .zip(&slots.paths)
+                .map(|(record, path)| (record.source.as_ref(), path.as_path()))
+                .collect();
+            self.receipt()?.trash_intents(&intents)?;
+            Ok(slots)
+        }) {
+            Ok(slots) => slots,
+            Err(reason) => return Err(aside.put_back(self, &names, reason)),
+        };
+        // 5. Into Trash, then the folders synced once.
+        let (trashed, moved) = self.trash_aside(tree, context, &batch, &names, &aside, &slots);
+        if let Err(reason) = moved {
+            failure = Some(reason);
+        }
+        slots.sync()?;
+        aside.finish()?;
+        File::open(self.destination.directory.anchored_root())
+            .and_then(|folder| folder.sync_all())
+            .map_err(|error| error.to_string())?;
+        // 6. What the undone records leave, and one write saying they are
+        // undone.
+        let after = self.after_undo(tree, context, batch.get_mut(..trashed).unwrap_or_default());
+        failure.map_or(after, Err)
+    }
+
+    /// Phases 2 and 3 of a batched undo: one intent names where each item
+    /// is set aside in one private folder, then each is renamed there and
+    /// must be the object the paste made. On refusal all go back.
+    fn set_aside(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        context: &FileClipboardContext,
+        batch: &[&mut Record],
+        names: &[(OsString, fs::Metadata)],
+    ) -> Result<SetAside, String> {
+        let name = OsString::from(format!(".tilo-clipboard-undo-{}", uuid::Uuid::new_v4()));
+        let aside = SetAside {
+            path: self.destination.directory.anchored_root().join(&name),
+            shown: self.destination.path.join(&name),
+            folder: self.destination.directory.private_child(&name)?,
+            leaves: (0..batch.len())
+                .map(|index| OsString::from(index.to_string()))
+                .collect(),
+        };
+        let intents: Vec<(&Source, PathBuf, fs::Metadata)> = batch
+            .iter()
+            .zip(names)
+            .zip(&aside.leaves)
+            .map(|((record, (_, metadata)), leaf)| {
+                (
+                    record.source.as_ref(),
+                    aside.shown.join(leaf),
+                    metadata.clone(),
+                )
+            })
+            .collect();
+        if let Err(reason) = self.receipt()?.undo_intents(&intents) {
+            let _ = fs::remove_dir(&aside.path);
+            return Err(reason);
+        }
+        drop(intents);
+        let mut refused = None;
+        for ((record, (name, _)), leaf) in batch.iter().zip(names).zip(&aside.leaves) {
+            if let Err(reason) =
+                rename_entry(&self.destination.directory, name, &aside.folder, leaf)
+            {
+                refused = Some(reason);
+                break;
+            }
+            let identity = aside
+                .folder
+                .entry(leaf)
+                .and_then(|entry| entry.metadata().map_err(|error| error.to_string()))
+                .map(|metadata| Identity::of(&metadata));
+            if identity != Ok(record.identity) {
+                refused = Some("receipt destination changed before undo".into());
+                break;
+            }
+        }
+        let admitted = refused.map_or_else(
+            || {
+                context.authorize(Permission::Undoable).and_then(|()| {
+                    self.destination
+                        .check(tree, context.workspace(), context.owner())
+                })
+            },
+            Err,
+        );
+        match admitted {
+            Ok(()) => Ok(aside),
+            Err(reason) => Err(aside.put_back(self, names, reason)),
+        }
+    }
+
+    /// Phase 5 of a batched undo: each set-aside item into its Trash slot,
+    /// renamed when Trash is on the same filesystem, else through the
+    /// durable cross-device move. How many went, and why the rest did not
+    /// (those are back in the receiving folder unless a move is pending).
+    fn trash_aside(
+        &self,
+        tree: &WorkspaceTreeHandle,
+        context: &FileClipboardContext,
+        batch: &[&mut Record],
+        names: &[(OsString, fs::Metadata)],
+        aside: &SetAside,
+        slots: &trash::TrashSlots,
+    ) -> (usize, Result<(), String>) {
+        let same_device = match (aside.folder.metadata(), slots.files.metadata()) {
+            (Ok(folder), Ok(files)) => folder.dev() == files.dev(),
+            (Err(reason), _) | (_, Err(reason)) => {
+                return (0, Err(aside.put_back(self, names, reason)));
+            }
+        };
+        for (trashed, ((record, leaf), target)) in batch
+            .iter()
+            .zip(&aside.leaves)
+            .zip(&slots.paths)
+            .enumerate()
+        {
+            let moved = if same_device {
+                target
+                    .file_name()
+                    .ok_or_else(|| "Trash slot has no name".to_owned())
+                    .and_then(|slot| rename_entry(&aside.folder, leaf, &slots.files, slot))
+            } else {
+                self.receipt().and_then(|receipt| {
+                    receipt.relocate_source(
+                        &record.source,
+                        (&aside.shown.join(leaf), target),
+                        tree,
+                        context,
+                    )
+                })
+            };
+            if let Err(reason) = moved {
+                let pending = self
+                    .receipt()
+                    .and_then(|receipt| receipt.has_active_move(&record.source));
+                let reason = match pending {
+                    Ok(false) => aside.put_back(self, names, reason),
+                    Ok(true) => {
+                        format!("{reason}; recover the recorded clipboard transfer before retrying")
+                    }
+                    Err(error) => format!("{reason}; {error}"),
+                };
+                return (trashed, Err(reason));
+            }
+        }
+        (batch.len(), Ok(()))
+    }
+}
+
+/// The private folder a batched undo sets its items aside in, inside the
+/// receiving folder: item `n` of the batch is its leaf `n`.
+struct SetAside {
+    folder: SecureNearbyDestination,
+    /// Where the folder is, anchored.
+    path: PathBuf,
+    /// Where the folder is, as shown and journaled.
+    shown: PathBuf,
+    leaves: Vec<OsString>,
+}
+
+impl SetAside {
+    /// Return what is still set aside to its name in the receiving folder,
+    /// and say why the undo stopped.
+    fn put_back(
+        &self,
+        operation: &Operation,
+        names: &[(OsString, fs::Metadata)],
+        reason: String,
+    ) -> String {
+        let mut reason = reason;
+        for ((name, _), leaf) in names.iter().zip(&self.leaves) {
+            if self.folder.entry(leaf).is_err() {
+                continue;
+            }
+            if let Err(restore) =
+                rename_entry(&self.folder, leaf, &operation.destination.directory, name)
+            {
+                reason = format!(
+                    "{reason}; undo recovery retained at {}: {restore}",
+                    self.shown.join(leaf).display()
+                );
+            }
+        }
+        let _ = fs::remove_dir(&self.path);
+        reason
+    }
+
+    /// Sync and remove the emptied folder.
+    fn finish(self) -> Result<(), String> {
+        match File::open(&self.path).and_then(|folder| folder.sync_all()) {
+            Ok(()) => {}
+            // Emptied and removed when the rest went back.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        }
+        drop(self.folder);
+        let _ = fs::remove_dir(&self.path);
+        Ok(())
+    }
+}
+
+impl Operation {
+    /// Undo one record of a Cut paste: its item goes back to where it was
+    /// cut from.
     fn undo_one(
         &self,
         tree: &WorkspaceTreeHandle,
@@ -2058,7 +2351,7 @@ impl Operation {
             Err("receipt destination changed before undo".into())
         } else if let Err(reason) = admitted {
             Err(reason)
-        } else if self.offer.public.cut {
+        } else {
             record
                 .source
                 .check_parent(tree, context.workspace(), context.owner())
@@ -2073,26 +2366,6 @@ impl Operation {
                         context,
                     )
                 })
-        } else {
-            // The standard Trash owns recovery, including edits made after
-            // Paste. Its existing typed Restore action returns this exact item.
-            trash::TrashSlot::prepare(&record.destination)
-                .and_then(|slot| {
-                    self.receipt()?.trash_intent(&record.source, slot.path())?;
-                    let target = slot.path().to_path_buf();
-                    slot.publish_with(&recovery, &retained, || {
-                        self.receipt()?.relocate_source(
-                            &record.source,
-                            (
-                                &self.destination.path.join(&recovery_name).join(&retained),
-                                &target,
-                            ),
-                            tree,
-                            context,
-                        )
-                    })
-                })
-                .map(|_| ())
         };
         if let Err(reason) = result {
             if self.receipt()?.has_active_move(&record.source)? {
@@ -2116,11 +2389,9 @@ impl Operation {
             };
         }
         let _ = fs::remove_dir(&recovery_path);
-        if self.offer.public.cut {
-            File::open(record.source.parent.anchored_root())
-                .and_then(|file| file.sync_all())
-                .map_err(|error| error.to_string())?;
-        }
+        File::open(record.source.parent.anchored_root())
+            .and_then(|file| file.sync_all())
+            .map_err(|error| error.to_string())?;
         File::open(self.destination.directory.anchored_root())
             .and_then(|file| file.sync_all())
             .map_err(|error| error.to_string())?;
