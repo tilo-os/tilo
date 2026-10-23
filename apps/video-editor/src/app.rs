@@ -5350,6 +5350,12 @@ impl VideoEditorApp {
             VideoEditorEffect::Render { .. } => {
                 return Err("a render is answered as a job of its own".into());
             }
+            VideoEditorEffect::ExportVideoContent { .. }
+            | VideoEditorEffect::ExportVideoStatus { .. }
+            | VideoEditorEffect::CancelVideoExport { .. }
+            | VideoEditorEffect::ViewFrameContent { .. } => {
+                return Err(crate::agent_render::HOST_ONLY.into());
+            }
             VideoEditorEffect::ImportContent { .. } | VideoEditorEffect::ExportTimelineContent => {
                 return Err("answered by crate::agent_timeline".into());
             }
