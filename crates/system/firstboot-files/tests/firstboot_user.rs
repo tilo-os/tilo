@@ -126,7 +126,6 @@ after() {
 "#;
 
 const TRANSACTION_TOOLS: &[(&str, &str)] = &[
-    ("sync", r#"fail intent-sync; exec /usr/bin/sync "$@""#),
     ("id", r#"[ -e "$r/shadow" ]"#),
     (
         "stat",
@@ -202,6 +201,16 @@ impl Transaction {
             );
         }
         attesting_helper(r);
+        // The built helper, unless the case fails the intent's publication,
+        // whose syncs are what make the intent durable.
+        write_tool(
+            r,
+            "files-helper",
+            &format!(
+                "{TRANSACTION_COMMON}[ \"$1\" != intent ] || fail intent\nexec {:?} \"$@\"",
+                helper().display().to_string()
+            ),
+        );
         let display = |path: &str| r.join(path).display().to_string();
         let source = script(&[
             ("/etc/tilo", display("etc"), 10),
@@ -219,7 +228,7 @@ impl Transaction {
             ),
             (
                 HELPER_LINE,
-                format!(r#"FILES_HELPER="{}""#, helper().display()),
+                format!(r#"FILES_HELPER="{}""#, display("files-helper")),
                 1,
             ),
         ]);
@@ -412,7 +421,7 @@ fn intent_does_not_adopt_wrong_shadow() {
 #[test]
 fn intent_is_durable_before_account_creation() {
     let t = Transaction::new();
-    assert!(!t.boot("intent-sync").status.success());
+    assert!(!t.boot("intent").status.success());
     assert!(!t.path("shadow").exists());
     assert!(t.credential().exists());
     assert!(t.boot("").status.success());
