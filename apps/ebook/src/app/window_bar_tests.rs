@@ -347,3 +347,40 @@ fn a_hosted_window_declares_its_slots_and_hears_their_presses() {
     let declared = ui::window_toolbar::declared().expect("the window declares its slots");
     assert_eq!(location(&declared), Some("Settings"));
 }
+
+#[test]
+fn opening_settings_and_showing_the_library_are_published_actions() {
+    let mut app = TestApp::<crate::EbookShell>::new().expect("Books opens");
+    app.settle();
+    app.call_on(
+        "ebook.library/derived/settings",
+        "settings",
+        serde_json::json!({}),
+    )
+    .expect("the settings open");
+    app.settle();
+    assert_eq!(app.surface_mut::<BooksApp>().view, View::Settings);
+
+    app.call("show-library", serde_json::json!({}))
+        .expect("the library shows");
+    app.settle();
+    assert_eq!(app.surface_mut::<BooksApp>().view, View::Library);
+}
+
+#[test]
+fn the_bars_back_and_settings_run_the_published_actions() {
+    let mut app = sample();
+    let mut doc = library_doc();
+    frame(&mut app, &mut doc);
+    app.reading_settings.open();
+    press(&mut app, &mut doc, &ToolbarEvent::Back);
+    assert_eq!(app.view, View::Library);
+    assert!(
+        !app.reading_settings.is_open(),
+        "showing the library closes what the reader had open"
+    );
+
+    press(&mut app, &mut doc, &action(SETTINGS));
+    assert_eq!(app.view, View::Settings);
+    assert_eq!(app.settings_scroll, 0.0, "the settings open at their top");
+}

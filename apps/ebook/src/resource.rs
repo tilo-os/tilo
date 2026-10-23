@@ -1049,6 +1049,12 @@ pub enum BooksEffect {
     /// Open reading settings
     #[effect(view, row)]
     Settings,
+    /// Show library
+    ///
+    /// Shows the shelf of every book, leaving the book, the settings or the
+    /// search that showed.
+    #[effect(view)]
+    ShowLibrary,
     /// Open
     ///
     /// Shows a book at a chapter, page and block. A place that the book no
