@@ -11372,6 +11372,20 @@ pub fn run() {
                     if state.input_origin == InputOrigin::Here {
                         state.remote_input_firewall.note_local_input(Instant::now());
                     }
+                    // Super going down asks for a fullscreen window's bar,
+                    // as reaching for the top edge does; the key never
+                    // reaches the app, so this takes nothing from it.
+                    if let WindowEvent::KeyboardInput { event: key, .. } = wev
+                        && key.state == ElementState::Pressed
+                        && !key.repeat
+                        && matches!(
+                            key.logical_key,
+                            Key::Named(NamedKey::Super | NamedKey::Meta)
+                        )
+                        && !session.is_locked()
+                    {
+                        frame_builder.host_mut().reveal_fullscreen_bar_by_key();
+                    }
                     // Super alone, tapped or held, opens the Super surface.
                     // Observed ahead of every branch below, so a chord one of
                     // them handles still disarms it.

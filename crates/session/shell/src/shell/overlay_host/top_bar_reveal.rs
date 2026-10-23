@@ -19,7 +19,7 @@
 //! A press in the band while the bar hides belongs to the window under it
 //! and cancels the reveal until the pointer leaves the band.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tilo_desktop::chrome::TopBarPresence;
 use ui::widget::top_edge_reveal::{DWELL, EdgeGeometry, TopEdgeReveal};
@@ -162,27 +162,54 @@ impl TopBarReveal {
     }
 }
 
+/// How long a fullscreen window's bar stays after it is shown without the
+/// pointer on it: entering fullscreen, a key or a swipe from the top edge
+/// shows it, and it goes once this passes with nothing holding it.
+pub(crate) const FULLSCREEN_BAR_IDLE: Duration = Duration::from_secs(2);
+
 /// A fullscreen window's bar, which hides with the rest of the desktop's
-/// chrome: reaching for the top edge brings it back over the window, by the
-/// same edge model as the top bar the person hides. A finger swipes down
-/// from the edge; the pointer pushes into it or rests there. It shows over
-/// the window, which keeps its whole size, and goes when the pointer or a
-/// tap goes elsewhere.
+/// chrome. It shows as the window enters fullscreen, so the person sees
+/// where it went, and collapses after [`FULLSCREEN_BAR_IDLE`]. Reaching for
+/// the top edge brings it back, by the same edge model as the top bar the
+/// person hides, and so do a finger swiping down from the edge and a key
+/// (Super, which never reaches the app). It shows over the window, which
+/// keeps its whole size, so nothing moves as it comes and goes.
+///
+/// Shown by the pointer, it stays while the pointer is on it and goes when
+/// the pointer goes elsewhere. Shown by entering, a key or a swipe, it stays
+/// for the idle time whatever the pointer does over the window, and longer
+/// while the pointer rests on it or the bar is in use (its location field,
+/// its search, a tab being dragged).
 #[derive(Debug, Default)]
 pub(crate) struct FullscreenBarReveal {
     /// The fullscreen window, whose bar this is.
     group: Option<u64>,
     edge: TopEdgeReveal,
+    /// Shown without the pointer: it collapses at this instant unless
+    /// something holds it.
+    linger: Option<Instant>,
+    /// The pointer's last sample was on the bar.
+    on_bar: bool,
 }
 
 impl FullscreenBarReveal {
-    /// Follow the window that is fullscreen now; another (or none) starts
-    /// hidden.
-    pub(crate) fn follow(&mut self, group: Option<u64>) {
+    /// Follow the window that is fullscreen now. A window entering
+    /// fullscreen shows its bar for the idle time; none hides it.
+    pub(crate) fn follow(&mut self, group: Option<u64>, now: Instant) {
         if self.group != group {
             self.group = group;
             self.edge.reset();
+            self.linger = None;
+            self.on_bar = false;
+            if group.is_some() {
+                self.show_for_idle(now);
+            }
         }
+    }
+
+    fn show_for_idle(&mut self, now: Instant) -> bool {
+        self.linger = now.checked_add(FULLSCREEN_BAR_IDLE);
+        self.edge.pin(now)
     }
 
     /// Whether the fullscreen window's bar shows.
@@ -198,7 +225,11 @@ impl FullscreenBarReveal {
     /// A pointer sample at `p` over the window `display` with its bar at
     /// `bar`. Returns whether it may have changed.
     pub(crate) fn on_motion(&mut self, p: Point, display: Rect, bar: Rect, now: Instant) -> bool {
-        if self.group.is_none() || (self.edge.shown() && bar.contains(p)) {
+        if self.group.is_none() {
+            return false;
+        }
+        self.on_bar = bar.contains(p);
+        if self.edge.shown() && self.on_bar {
             return false;
         }
         let bars = [bar];
@@ -215,19 +246,49 @@ impl FullscreenBarReveal {
         }
     }
 
-    /// A finger swiped down from the top edge: show the bar.
+    /// A finger swiped down from the top edge: show the bar for the idle
+    /// time, as no pointer rests on it to keep it.
     pub(crate) fn reveal_by_touch(&mut self, now: Instant) -> bool {
-        self.group.is_some() && self.edge.reveal_by_touch(now)
+        self.on_bar = false;
+        self.group.is_some() && self.show_for_idle(now)
     }
 
-    /// Advance the timers to `now`.
-    pub(crate) fn settle(&mut self, now: Instant) -> bool {
-        self.group.is_some() && self.edge.settle(now)
+    /// The key that asks for the bar went down: show it for the idle time,
+    /// or keep it that long again.
+    pub(crate) fn reveal_by_key(&mut self, now: Instant) -> bool {
+        self.group.is_some() && self.show_for_idle(now)
     }
 
-    /// When [`Self::settle`] next has something to do.
+    /// Advance the timers to `now`; `in_use` says the bar is being used
+    /// (which holds it). Returns whether it may have changed.
+    pub(crate) fn settle(&mut self, now: Instant, in_use: bool) -> bool {
+        if self.group.is_none() {
+            return false;
+        }
+        let mut changed = self.edge.settle(now);
+        if let Some(due) = self.linger
+            && now >= due
+        {
+            if in_use {
+                self.linger = now.checked_add(FULLSCREEN_BAR_IDLE);
+            } else {
+                self.linger = None;
+                self.edge.unpin();
+                // On the bar the pointer keeps it, as one that reached for
+                // it does; anywhere else it goes now, sample or not.
+                if !self.on_bar {
+                    changed |= self.edge.hide(now);
+                }
+            }
+        }
+        changed
+    }
+
+    /// When [`Self::settle`] next has something to do. Nothing while the
+    /// bar is hidden and the pointer is away from the edge.
     pub(crate) fn deadline(&self) -> Option<Instant> {
-        self.group.and(self.edge.deadline())
+        self.group?;
+        self.edge.deadline().into_iter().chain(self.linger).min()
     }
 }
 
@@ -368,5 +429,76 @@ mod tests {
         assert_eq!(r.deadline(), None, "the rest is cancelled");
         r.settle(ms(t, 2000));
         assert_eq!(r.presence(false), TopBarPresence::Hidden);
+    }
+
+    #[test]
+    fn a_fullscreen_windows_bar_shows_on_entering_and_collapses_when_idle() {
+        let mut r = FullscreenBarReveal::default();
+        let t0 = Instant::now();
+        r.follow(Some(7), t0);
+        assert!(r.shown(), "entering fullscreen shows where the bar went");
+        // The pointer moving over the window does not cut it short.
+        r.on_motion(Point::new(600.0, 500.0), DISPLAY, BAR, ms(t0, 100));
+        r.on_motion(Point::new(640.0, 520.0), DISPLAY, BAR, ms(t0, 140));
+        assert!(r.shown());
+        let due = r.deadline().expect("it is due to collapse");
+        assert_eq!(due, t0 + FULLSCREEN_BAR_IDLE);
+        assert!(r.settle(due, false));
+        assert!(!r.shown(), "idle, it collapses");
+        assert_eq!(r.deadline(), None, "and nothing wakes for it");
+        // The same window again is nothing new; leaving fullscreen forgets it.
+        r.follow(Some(7), ms(t0, 5000));
+        assert!(!r.shown());
+        r.follow(None, ms(t0, 5000));
+        assert_eq!(r.deadline(), None);
+    }
+
+    #[test]
+    fn a_key_or_a_swipe_brings_it_back_for_the_idle_time() {
+        let mut r = FullscreenBarReveal::default();
+        let t0 = Instant::now();
+        r.follow(Some(7), t0);
+        r.settle(t0 + FULLSCREEN_BAR_IDLE, false);
+        assert!(!r.shown());
+        let t = ms(t0, 3000);
+        assert!(r.reveal_by_key(t), "the key shows it");
+        assert_eq!(r.deadline(), Some(t + FULLSCREEN_BAR_IDLE));
+        // Pressed again, it stays that long again.
+        let again = ms(t, 1500);
+        assert!(!r.reveal_by_key(again));
+        assert!(!r.settle(t + FULLSCREEN_BAR_IDLE, false));
+        assert!(r.shown());
+        r.settle(again + FULLSCREEN_BAR_IDLE, false);
+        assert!(!r.shown());
+        let t = ms(t, 9000);
+        assert!(r.reveal_by_touch(t), "a swipe from the top edge shows it");
+        r.settle(t + FULLSCREEN_BAR_IDLE, false);
+        assert!(
+            !r.shown(),
+            "and, no finger resting on it, it goes when idle"
+        );
+    }
+
+    #[test]
+    fn the_pointer_on_it_or_using_it_keeps_it() {
+        let mut r = FullscreenBarReveal::default();
+        let t0 = Instant::now();
+        r.follow(Some(7), t0);
+        // In use (its location field, say), it stays past the idle time.
+        let due = t0 + FULLSCREEN_BAR_IDLE;
+        r.settle(due, true);
+        assert!(r.shown(), "in use, it stays");
+        assert_eq!(r.deadline(), Some(due + FULLSCREEN_BAR_IDLE));
+        // Resting on it, it stays; leaving it for the window hides it.
+        r.on_motion(Point::new(600.0, 12.0), DISPLAY, BAR, ms(t0, 2500));
+        r.settle(due + FULLSCREEN_BAR_IDLE, false);
+        assert!(r.shown(), "the pointer on it keeps it");
+        let t = ms(t0, 7000);
+        for (i, y) in [60.0, 200.0, 400.0].into_iter().enumerate() {
+            let at = ms(t, 40 * (u64::try_from(i).unwrap_or(0) + 1));
+            r.on_motion(Point::new(600.0, y), DISPLAY, BAR, at);
+        }
+        r.settle(ms(t, 2000), false);
+        assert!(!r.shown(), "off it, into the window: gone");
     }
 }

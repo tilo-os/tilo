@@ -131,6 +131,8 @@ pub enum Action {
     Notify(&'static str, &'static str),
     /// The focused window goes full screen, or leaves it.
     FullScreenFocused(bool),
+    /// The key that asks for a fullscreen window's bar (Super) goes down.
+    FullscreenBarKey,
     /// Synthesise a left-button `Pressed` at the current cursor.
     /// Caller owns the matching `MouseRelease`.
     MousePress,
@@ -996,6 +998,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             None => eprintln!("scenario: could not resolve named target '{name}'"),
         },
         Action::TouchSwipe(from, to) => one_place::touch_swipe(driver, *from, *to),
+        Action::FullscreenBarKey => driver.host_mut().reveal_fullscreen_bar_by_key(),
         Action::Notify(title, body) => {
             driver
                 .chrome_handle()
@@ -3818,6 +3821,7 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         one_place::one_place(),
+        one_place::fullscreen_bar(),
         Scenario {
             name: "strip_deck",
             description: "Four strips, each a full-height screen: the first fills the work \
