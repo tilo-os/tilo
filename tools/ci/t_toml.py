@@ -737,7 +737,7 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
 
 
 # The packages the test family runs on x86_64 only, as `test-x86_64`.
-X86_64_ONLY_TESTS = ["launcher", "shell", "store", "tilo-sandbox", "tilo-vmd"]
+X86_64_ONLY_TESTS = ["shell"]
 
 
 def untested(packages: dict[str, dict]) -> list[str]:

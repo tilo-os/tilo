@@ -1313,6 +1313,8 @@ mod tests {
             let fd = owner.namespace_init_fd().unwrap();
             // Qualify the real kernel/production namespace owner without an
             // unsigned package or synthetic runtime becoming a trusted launch.
+            // A merged-/usr root: the ELF loader is /lib64's on x86_64 and
+            // /lib's on aarch64, so the fixture has both.
             let mut command = std::process::Command::new("/usr/bin/bwrap");
             command
                 .args([
@@ -1324,8 +1326,11 @@ mod tests {
                     "--ro-bind",
                     "/usr",
                     "/usr",
-                    "--ro-bind",
-                    "/lib64",
+                    "--symlink",
+                    "usr/lib",
+                    "/lib",
+                    "--symlink",
+                    "usr/lib64",
                     "/lib64",
                     "--symlink",
                     "/usr/bin",
@@ -1459,6 +1464,7 @@ mod tests {
             .unwrap(),
         );
         let fd = owner.namespace_init_fd().unwrap();
+        // /lib and /lib64 as in the fixture above: the loader of either architecture.
         let mut command = std::process::Command::new("/usr/bin/bwrap");
         command.args([
             "--unshare-all",
@@ -1469,8 +1475,11 @@ mod tests {
             "--ro-bind",
             "/usr",
             "/usr",
-            "--ro-bind",
-            "/lib64",
+            "--symlink",
+            "usr/lib",
+            "/lib",
+            "--symlink",
+            "usr/lib64",
             "/lib64",
             "--symlink",
             "/usr/bin",

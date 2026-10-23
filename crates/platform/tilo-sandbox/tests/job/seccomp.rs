@@ -1,6 +1,8 @@
 //! The CI seccomp filter refuses what builds never need and kernel exploits
 //! do, while leaving the ordinary calls of a build working.
 
+use std::fmt::Write as _;
+
 use crate::needs_sandbox;
 use crate::support::{run, shell};
 use tilo_sandbox::job::NESTING_ID;
@@ -10,17 +12,34 @@ fn exploit_primitives_are_refused_with_eperm() {
     needs_sandbox!();
     // Each line runs a tiny program that makes one refused syscall and
     // prints its errno name. `python3` is in the host root the tests use.
-    let script = r#"
-for probe in \
-  'import ctypes,os; libc=ctypes.CDLL(None,use_errno=True); libc.syscall(321,0,0,0,0); print("bpf", os.strerror(ctypes.get_errno()))' \
-  'import ctypes,os; libc=ctypes.CDLL(None,use_errno=True); libc.syscall(425,0,0,0); print("io_uring", os.strerror(ctypes.get_errno()))' \
-  'import ctypes,os; libc=ctypes.CDLL(None,use_errno=True); libc.syscall(323,0,0,0); print("userfaultfd", os.strerror(ctypes.get_errno()))' \
-  'import ctypes,os; libc=ctypes.CDLL(None,use_errno=True); libc.syscall(308,0,-1,0); print("setns", os.strerror(ctypes.get_errno()))' \
-  'import ctypes,os; libc=ctypes.CDLL(None,use_errno=True); libc.unshare(0x10000000); print("unshare_newuser", os.strerror(ctypes.get_errno()))' ; do
-  python3 -c "$probe"
-done
-"#;
-    let (status, out) = run(|s| shell(s, script));
+    // The numbers are this architecture's own (x86_64 and aarch64 number
+    // most syscalls differently), as is the filter the job runs under.
+    let probes = [
+        ("bpf", format!("syscall({},0,0,0,0)", libc::SYS_bpf)),
+        (
+            "io_uring",
+            format!("syscall({},0,0,0)", libc::SYS_io_uring_setup),
+        ),
+        (
+            "userfaultfd",
+            format!("syscall({},0,0,0)", libc::SYS_userfaultfd),
+        ),
+        ("setns", format!("syscall({},0,-1,0)", libc::SYS_setns)),
+        (
+            "unshare_newuser",
+            format!("unshare({})", libc::CLONE_NEWUSER),
+        ),
+    ];
+    let mut script = String::new();
+    for (name, call) in &probes {
+        writeln!(
+            script,
+            "python3 -c 'import ctypes,os; libc=ctypes.CDLL(None,use_errno=True); libc.{call}; \
+             print(\"{name}\", os.strerror(ctypes.get_errno()))'"
+        )
+        .unwrap();
+    }
+    let (status, out) = run(|s| shell(s, &script));
     if out.contains("No such file or directory") && out.lines().count() < 3 {
         eprintln!("skipped: no python3 in the host root: {out}");
         return;
