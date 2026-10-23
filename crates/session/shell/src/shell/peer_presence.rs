@@ -226,12 +226,10 @@ pub struct PeerPresence {
     /// roster reads (a pointer heard, placed or retired, typed presence, a
     /// departure), so a pump that folded nothing costs the roster nothing.
     presence_epoch: AtomicU64,
-    /// The replica's tree, whose write generation tells [`Self::refresh_roster`]
+    /// The tree, whose write generation tells [`Self::refresh_roster`]
     /// whether the room's naming, governance or the active workspace can
-    /// have changed, without taking the replica's lock to ask.
+    /// have changed, without taking its lock to ask.
     roster_tree: crate::shell::state::WorkspaceTreeHandle,
-    /// [`crate::network::replica::WorkspaceTreeReplica::participants_epoch`].
-    participants_epoch: Arc<AtomicU64>,
     /// What the roster was last derived from; `None` before the first refresh.
     roster_seen: Mutex<Option<RosterSeen>>,
     /// The record each window shows, by tab, as learned from the local app
@@ -277,8 +275,6 @@ pub struct ChatTarget {
 struct RosterInputs {
     /// [`crate::shell::state::WorkspaceTreeHandle::generation`].
     tree: u64,
-    /// [`crate::network::replica::WorkspaceTreeReplica::participants_epoch`].
-    participants: u64,
     /// [`PeerPresence::presence_epoch`].
     presence: u64,
 }
@@ -596,12 +592,9 @@ impl PeerPresence {
                 )
             })
             .collect();
-        // Cloned once, so the roster can read their change signals without
-        // locking the replica on every frame.
-        let (roster_tree, participants_epoch) = {
-            let replica = net.replica.lock_recover();
-            (replica.tree.clone(), replica.participants_epoch())
-        };
+        // Cloned once, so the roster can read its change signal without
+        // locking the tree on every frame.
+        let roster_tree = net.tree.clone();
         Self {
             cursor,
             anchored: Mutex::new(HashMap::new()),
@@ -623,7 +616,6 @@ impl PeerPresence {
             colours_applied: AtomicU64::new(u64::MAX),
             presence_epoch: AtomicU64::new(0),
             roster_tree,
-            participants_epoch,
             roster_seen: Mutex::new(None),
             window_records: Arc::default(),
             window_instances: Box::new(Vec::new),
@@ -1125,7 +1117,6 @@ impl PeerPresence {
         // leaves a signal this refresh did not record, and is read next time.
         let inputs = RosterInputs {
             tree: self.roster_tree.generation(),
-            participants: self.participants_epoch.load(Ordering::Acquire),
             presence: self.presence_epoch.load(Ordering::Acquire),
         };
         let mut seen = self.roster_seen.lock_recover();
@@ -1138,7 +1129,6 @@ impl PeerPresence {
             // Only presence moved. A peer's pointer moving says nothing new
             // about who is here, and is told apart without the replica.
             if last.inputs.tree == inputs.tree
-                && last.inputs.participants == inputs.participants
                 && roster_presence_print(presence, &self.anchored, &self.absent, &last.room)
                     == last.presence
             {
@@ -1178,10 +1168,7 @@ impl PeerPresence {
         // is short, and holding it through an unrelated write extends
         // every contending wait by however long that write takes.
         let (active, rows, room) = {
-            let Ok(replica) = self.net.replica.lock() else {
-                return None;
-            };
-            let tree = replica.tree.read();
+            let tree = self.net.tree.read();
             let Some(ws) = tree.desktop.active_workspace() else {
                 return Some((false, String::new(), generation));
             };
@@ -1193,7 +1180,7 @@ impl PeerPresence {
                 tree.room_peer_labels(ws.room()),
                 self.net.live_labels_of(&ws.room().to_string()),
             );
-            // Two ways to be present: moving cursor, or CRDT participation.
+            // Present: a moving cursor.
             let room = ws.room().to_string();
             let mut arrived = handles_seen_in(presence, &room);
             // A pointer this device can't place (its tab isn't shown here)
@@ -1206,21 +1193,6 @@ impl PeerPresence {
                         .filter_map(|(user, _)| user.strip_prefix("peer@")?.parse::<u64>().ok()),
                 );
             }
-            // Taking part in the room's documents is being here, unless the
-            // person said they are not: someone who shows nothing there.
-            // Their pointer, if they show one again, brings them back above.
-            let absent = self
-                .absent
-                .lock_recover()
-                .get(&room)
-                .cloned()
-                .unwrap_or_default();
-            arrived.extend(
-                replica
-                    .participants_in(ws.room())
-                    .into_iter()
-                    .filter(|handle| !absent.contains(handle)),
-            );
             let principals = tree.room_peer_principals(ws.room());
             let own_devices = tree.room_own_devices(ws.room());
             let mut rows = room_roster(ws, &labels, &arrived, local, &principals, &own_devices);
@@ -1263,10 +1235,7 @@ impl PeerPresence {
             }
             (active, rows, room)
         };
-        let Ok(replica) = self.net.replica.lock() else {
-            return None;
-        };
-        let mut tree = replica.tree.write();
+        let mut tree = self.net.tree.write();
         // The write lock is held, so nobody else writes before this guard's
         // release advances the generation by one.
         let written = if self.roster_tree.generation() == generation {
@@ -1495,7 +1464,7 @@ pub const POINTER_STAYS: Duration = Duration::MAX;
 /// The people in `ws`'s room. Two sources, neither sufficient alone:
 /// `labels` is the room document's answer (everyone its authority has
 /// named, including an invitee who never moved their mouse), `arrived`
-/// is who actually turned up (presence plus CRDT participants).
+/// is who actually turned up (presence).
 ///
 /// A named peer that hasn't arrived is marked `Collaborator::invited`,
 /// keyed off the transport-authenticated identity so a peer cannot
@@ -2681,9 +2650,9 @@ mod two_sessions {
     /// everybody in it.
     fn host_naming(people: &[(&str, &str)]) -> (WorkspaceTree, RoomId) {
         let mut tree = WorkspaceTree::default();
-        let ws = tree.append_empty_workspace("Design review");
+        let ws = tree.create_hosted_workspace("Design review").0;
         let room = tree.room_of(ws).expect("a fresh workspace mints a room");
-        tree.adopt_ownerless_workspaces(&OWNER.to_string());
+        tree.own_workspaces_for_test(|_| OWNER.to_string().clone());
         for (peer, called) in people {
             assert!(
                 tree.name_peer(room, &OWNER.to_string(), peer, called),
@@ -2697,7 +2666,7 @@ mod two_sessions {
     /// the room's document the way production does it.
     fn guest_joining(host: &mut WorkspaceTree, room: RoomId) -> WorkspaceTree {
         let mut tree = WorkspaceTree::default();
-        let ws = tree.append_empty_workspace("Mine");
+        let ws = tree.create_hosted_workspace("Mine").0;
         assert!(
             tree.stand_in_room(ws, room),
             "the guest has to end up in the room it joined",
@@ -2961,7 +2930,7 @@ mod two_sessions {
             let (host_tree, _room) = host_naming(&[(&stranger_peer, "Nobody")]);
 
             let mut stranger_tree = WorkspaceTree::default();
-            let stranger_ws = stranger_tree.append_empty_workspace("Elsewhere");
+            let stranger_ws = stranger_tree.create_hosted_workspace("Elsewhere").0;
             let elsewhere = stranger_tree
                 .room_of(stranger_ws)
                 .expect("a fresh workspace mints a room");
@@ -3579,7 +3548,6 @@ mod two_sessions {
 
             // Redeems it: the same request `accept_invite` sends.
             {
-                let mut replica = host_net.replica.lock().expect("the replica lock");
                 replica.handle_from(
                     &crate::shell::state::PeerOrigin::peer_id(&guest_peer),
                     &NeighbourMsg::SyncReq {
@@ -3634,7 +3602,6 @@ mod two_sessions {
         std::fs::create_dir_all(&dir).expect("a temp dir");
         let (host, host_net, _host_cmds) = session(&dir, "h.sock", &host_handle, &host_peer);
         {
-            let mut replica = host_net.replica.lock().expect("the replica lock");
             replica.handle_from(
                 &crate::shell::state::PeerOrigin::peer_id(&guest_peer),
                 &NeighbourMsg::SyncReq {
@@ -3728,11 +3695,9 @@ mod two_sessions {
         let released_flag = &released;
         std::thread::scope(|scope| {
             scope.spawn(move || {
-                let held = net.replica.lock().expect("the replica lock");
                 let _ = locked.send(());
                 let _ = finished.recv_timeout(patience);
                 released_flag.store(true, Ordering::SeqCst);
-                drop(held);
             });
             is_locked
                 .recv()
@@ -3804,7 +3769,6 @@ mod two_sessions {
         // Phase `an_arrival_is_listed_on_the_next_frame`. Joining without a
         // pointer — the request `accept_invite` sends.
         {
-            let mut replica = host_net.replica.lock().expect("the replica lock");
             replica.handle_from(
                 &crate::shell::state::PeerOrigin::peer_id(&guest_peer),
                 &NeighbourMsg::SyncReq {

@@ -1257,7 +1257,7 @@ mod tests {
         let kept = grant("so.tilo.kept", "/disposable/kept");
         let withdrawn = grant("so.tilo.withdrawn", "/disposable/withdrawn");
         let mut write = tree.write();
-        write.append_empty_workspace("Ordinary room");
+        write.create_hosted_workspace("Ordinary room");
         let workspace = write.desktop.workspaces.last_mut().unwrap();
         workspace.sandbox.extend([kept.clone(), withdrawn.clone()]);
         let ordinary = workspace.room();

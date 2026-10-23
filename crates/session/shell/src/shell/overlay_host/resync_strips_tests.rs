@@ -1031,7 +1031,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         local.set_salt_override(HOST_SALT);
         let local_workspace = local.desktop.active;
         let room = local.room_of(local_workspace).expect("local room");
-        local.adopt_ownerless_workspaces(&"owner".to_string());
+        local.own_workspaces_for_test(|_| "owner".to_string().clone());
 
         let mut peer = WorkspaceTree::bootstrap_demo();
         peer.set_salt_override(PEER_SALT);
@@ -1043,7 +1043,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         peer.room_share_floor.remove(&room);
         // Matching governance makes this a legitimate member layout
         // update, not a rejected attempt to replace the room owner.
-        peer.adopt_ownerless_workspaces(&"owner".to_string());
+        peer.own_workspaces_for_test(|_| "owner".to_string().clone());
         let remote_strip = StripId::from(remote_id(1));
         let remote_group = remote_id(2);
         let tab = |id, title: &str, kind| Tab {

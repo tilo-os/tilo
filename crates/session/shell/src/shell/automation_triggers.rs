@@ -1378,7 +1378,7 @@ mod tests {
     impl Device {
         fn new(name: &str, online: &[&str], clock: &Arc<ManualClock>) -> Self {
             let mut tree = crate::shell::state::WorkspaceTree::default();
-            let workspace = tree.append_empty_workspace("Personal");
+            let workspace = tree.create_hosted_workspace("Personal").0;
             assert!(tree.stand_in_room(workspace, personal_room()));
             let mut triggers = TriggerHost::new(Arc::clone(clock) as Arc<dyn Clock>, None);
             triggers.set_devices(Arc::new(FixedDevices::new(PersonalDevices {

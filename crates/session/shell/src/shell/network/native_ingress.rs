@@ -163,10 +163,7 @@ impl ShellNetwork {
             .unwrap_or(false)
     }
     pub(super) fn native_topic_required(&self, ws: u64) -> bool {
-        let Ok(replica) = self.replica.lock() else {
-            return true;
-        };
-        let tree = replica.tree.read();
+        let tree = self.tree.read();
         tree.desktop
             .workspaces
             .iter()
@@ -367,10 +364,10 @@ impl ShellNetwork {
     /// Whether `room` is an enrolled room whose records are sealed
     /// channels its members write themselves (its governor stewards them).
     pub(super) fn native_room_seals_records(&self, room: RoomId) -> bool {
-        self.replica.lock().is_ok_and(|replica| {
-            let tree = replica.tree.read();
+        {
+            let tree = self.tree.read();
             tree.requires_native_owner(room) && !tree.commits_native_documents(room)
-        })
+        }
     }
     /// Whether `input` is admitted together with the inputs of its session
     /// queued right before and after it: an app write the owner commits.

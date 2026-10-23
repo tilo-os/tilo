@@ -404,18 +404,13 @@ impl ShellNetwork {
     /// Whether this computer governs `room` itself, as the person who runs
     /// it: a workspace that lives only here.
     fn governs_here(&self, room: RoomId) -> bool {
-        self.replica
-            .lock()
-            .is_ok_and(|replica| replica.tree.read().governs_room(room))
+        self.tree.read().governs_room(room)
     }
 
     /// Move the workspace showing `room` onto this person's home relay and
     /// wait until this device holds it there, as the room's administrator.
     fn move_to_host(&self, room: RoomId) -> Result<super::relay_rooms::HeldRoom, String> {
         let (local, name) = self
-            .replica
-            .lock()
-            .map_err(|_| "the workspaces are unavailable")?
             .tree
             .read()
             .desktop

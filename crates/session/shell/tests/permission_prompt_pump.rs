@@ -57,7 +57,7 @@ fn chrome_with_pending_grant(
             .expect("fixture workspace")
             .room();
         let owner = st.local_user_for_room(&room);
-        st.tree_mut().adopt_ownerless_workspaces(&owner);
+        st.tree_mut().own_workspaces_for_test(|_| owner.clone());
         st.pending_grants
             .push_back(PendingPrompt::new(app_id.to_string(), capability));
     }

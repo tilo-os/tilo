@@ -57,7 +57,6 @@ pub fn prepare(options: &Options) -> Result<Session, Error> {
     };
     tree.persist_path = Some(path.clone());
     inputs.restore_documents(&mut tree);
-    tree.adopt_ownerless_workspaces(&crate::shell::state::local_user_id());
     persist::save_tree_to(&tree, &path)?;
     let tree = tree.shared();
     let records = ui::record::RecordOwners::new(state_dir.join("records"))

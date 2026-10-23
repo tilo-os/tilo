@@ -541,7 +541,7 @@ impl Session {
         for claim in self.claims.drain(..) {
             if let Some(person) = &person {
                 for id in claim.ids {
-                    tree.revoke_sandbox_in_workspace(claim.workspace, person, &id);
+                    tree.narrow_sandbox(claim.workspace, person, &id);
                 }
             }
         }
