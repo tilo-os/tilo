@@ -16,6 +16,13 @@ In production Rust under `crates/session/` and `apps/` this refuses:
 - raw-colour: a colour literal (`Color::from_rgb8`, `Color::from_rgba8`,
   `Color::new([...])`, `Color::WHITE`/`BLACK`) instead of a theme token.
 
+Text an agent's model reads is not interface: the agent's tool schemas,
+tool descriptions and operation summaries (`MODEL_TEXT`) are prompts, in the
+notation the model is prompted with (`id — label`, `| variant`), and no
+person reads them on a surface. The two string-literal rules (glyph-join,
+glyph-icon) skip them, as they skip logs and panics; a control painted or a
+colour picked there is still counted.
+
 Code that still does any of this is listed in `primitives_baseline.txt`, one
 line per file and rule with how many it may still have. A count only
 shrinks: more than listed fails, fewer fails until the line is lowered, so
@@ -59,6 +66,18 @@ TEXT_RUN = re.compile(r"\.draw_(?:text|style)\s*\(")
 NEAR_LINES = 12
 
 RULES = ("hand-rolled", "glyph-join", "glyph-icon", "raw-colour")
+
+# Sources whose string literals are written for an agent's model, not shown to
+# a person: the agent's tools (their schemas, descriptions and the operation
+# summaries it is handed). A path ending in "/" names a directory.
+MODEL_TEXT = ("apps/agent/src/tools.rs", "apps/agent/src/tools/")
+# The rules about string literals a person reads.
+TEXT_RULES = ("glyph-join", "glyph-icon")
+
+
+def is_model_text(relative: str) -> bool:
+    return any(relative == entry or (entry.endswith("/") and relative.startswith(entry))
+               for entry in MODEL_TEXT)
 
 
 def sources(root: Path) -> list[Path]:
@@ -119,6 +138,8 @@ def scan(root: Path) -> dict[tuple[str, str], int]:
         counts = count_file(path.read_text(errors="replace"))
         relative = path.relative_to(root).as_posix()
         for rule, count in counts.items():
+            if rule in TEXT_RULES and is_model_text(relative):
+                continue
             if count:
                 found[(relative, rule)] = count
     return found
