@@ -6547,14 +6547,16 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 # doesn't run it on its own), main's head is built and pushed as
 # registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
 # sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
-# follow on their own (DEVELOPMENT.md, "Board dev images on real hardware").
+# follow on their own; its flashable disk, which os-board-<board> installs (with the Lenovo's audio
+# stack checked inside the image first), replaces tilo-vm-disk-latest/aarch64-<board> in the
+# generic packages (DEVELOPMENT.md, "Board dev images on real hardware").
 [[check]]
 name = "os-board-{board}"
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh board {board} /target/publish/os-dev/aarch64 /target/publish/os-board/{board}"
-inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
+inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", "os/account.env", "os/tests/board_audio_contract.sh", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
 needs = ["image-rpms-aarch64", "os-dev-image-aarch64", "os-assets", "signing-tools"]
-outputs = ["/target/publish/os-board/{board}/image.oci.tar", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board"]
+outputs = ["/target/publish/os-board/{board}/image.oci.tar", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board", "/target/publish/os-board/{board}/disk/disk.qcow2"]
 git = true
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -6591,12 +6593,13 @@ board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board 
 name = "publish-os-board-{board}"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh"]
 needs = ["os-board-{board}", "os-board-size-{board}"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch"]
+secrets = ["TILO_PACKAGES_TOKEN"]
 
 [check.matrix]
 board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]

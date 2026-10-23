@@ -746,6 +746,8 @@ class ScriptTests(unittest.TestCase):
         """os-board-publish.sh on what `os-image.sh board` leaves in OUT."""
         (self.out / "board").write_text(board + "\n")
         (self.out / "revision").write_text(revision + "\n")
+        (self.out / "disk").mkdir(exist_ok=True)
+        (self.out / "disk/disk.qcow2").write_bytes(b"flashable disk")
         return self.run_script("os-board-publish.sh", "lenovo-83ed", str(self.out), ref="main")
 
     def moving_tag_names(self, revision: str) -> None:
@@ -764,6 +766,11 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(receipt["repository"], "registry.tilo.so/tilo/tilo-vm")
         self.assertEqual(receipt["tags"], [f"main-{COMMIT[:7]}-lenovo-83ed", "lenovo-83ed-ci"])
         self.assertEqual((receipt["digest"], receipt["signed"]), (self.digest, False))
+        # Its flashable disk, named for the board, with the commit it is of.
+        disks = self.tmp / "registry/packages/aarch64-lenovo-83ed"
+        self.assertEqual((disks / "tilo-vm-lenovo-83ed.qcow2").read_bytes(), b"flashable disk")
+        self.assertTrue((disks / "tilo-vm-lenovo-83ed.qcow2.sha256").read_text().endswith("  tilo-vm-lenovo-83ed.qcow2\n"))
+        self.assertEqual((disks / "revision").read_text(), COMMIT + "\n")
 
     def test_the_board_moving_tag_moves_only_forward_along_main(self):
         older = "f" * 40
