@@ -16,9 +16,13 @@ dev_signing_env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:1256501473
 [[product]]
 family = "services"
 name = "room-service"
-about = "The room service: tested before it is published, deployed by digest from stable's receipt."
+about = """
+The room service: tested before it is published, deployed by digest from stable's receipt.
+Development tags are published only when dispatched (`t dispatch publish-room-service --ref
+main`): what runs is stable's."""
 repository = "registry.tilo.so/tilo/room-service"
 dev = ["dev-{commit}"]
+dispatch = true
 release = ["sha-{commit}"]
 
 [product.context]
@@ -54,9 +58,11 @@ about = """
 The web entry: the Tilo app on the web, tested before it is published, deployed by digest from
 stable's receipt. A release carries the version of the image production serves, so tabs open on
 it survive the deploy: carry-web-entry derives that image from the build and tests it, and it is
-what stable signs and publishes. Main's development tags are the build as it is."""
+what stable signs and publishes. Development tags, published only when dispatched (`t dispatch
+publish-web-entry --ref main`), are the build as it is."""
 repository = "registry.tilo.so/tilo/web-entry"
 dev = ["dev-{commit}"]
+dispatch = true
 release = ["sha-{commit}"]
 
 [product.context]
@@ -98,10 +104,14 @@ family = "services"
 name = "registry-server"
 about = """
 The app registry server (crates/packaging/registry-server): x86_64 only, like the cluster it
-runs in. Rust compiles inside the Containerfile; the image is tested before main publishes it
-and the GitOps repository pins the receipt's digest."""
+runs in. Rust compiles inside the Containerfile; the image is tested before it is published, and
+the GitOps repository pins the receipt's digest. Stable publishes it signed with the release key
+as `sha-<commit>`; a dispatch on main (`t dispatch publish-registry-server --ref main`) publishes
+the unsigned development tag `dev-<commit>`."""
 repository = "registry.tilo.so/tilo/tilo-registry-server"
-dev = ["sha-{commit}"]
+dev = ["dev-{commit}"]
+dispatch = true
+release = ["sha-{commit}"]
 publish = { requirement = { cores = 1, memory = "1GiB" } }
 
 [product.build]
