@@ -3291,14 +3291,12 @@ mod tests {
 
     impl Broker {
         /// Answer an ask of the action that waits for its person with its
-        /// draft still waiting, as the host's confirmation gate does;
+        /// draft still waiting, as the host's confirmation gate does once a
+        /// held ask's wait ends;
         /// `false` once the person confirmed it, or for anything else.
         fn answer_awaiting(&mut self, request: &CollabRequest) -> bool {
             let CollabRequest::InvokeTaskAction {
-                request_id,
-                action,
-                wait: None,
-                ..
+                request_id, action, ..
             } = request
             else {
                 return false;

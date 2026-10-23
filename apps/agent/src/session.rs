@@ -768,6 +768,16 @@ impl Session {
         request_id: u64,
     ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
         let deadline = self.task_wait_deadline(Duration::from_secs(10));
+        self.task_action_result_until(request_id, deadline)
+    }
+
+    /// The broker's answer to task action request `request_id`, given by
+    /// `deadline`.
+    fn task_action_result_until(
+        &mut self,
+        request_id: u64,
+        deadline: Instant,
+    ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
         let mut deferred = Vec::new();
         loop {
             // Keep a streaming model turn moving while the step settles.

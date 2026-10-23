@@ -88,8 +88,20 @@ async fn append_as(
     invocation: u128,
     argument: String,
 ) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
+    append_held(channel, run, invocation, argument, 0).await
+}
+
+/// [`append_as`], asking the broker to hold the answer up to `wait_ms`.
+async fn append_held(
+    channel: &channel_handle::Client,
+    run: &runtime_collab::TaskRunEnvelope,
+    invocation: u128,
+    argument: String,
+    wait_ms: u32,
+) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
     let mut request = channel.invoke_task_action_request();
     let mut p = request.get();
+    p.set_wait_ms(wait_ms);
     p.set_run_id(run.run_id);
     p.set_lease(&run.lease);
     p.set_peer_id(200);
@@ -321,6 +333,49 @@ async fn an_asking_action_pauses_the_run_and_runs_exactly_what_the_person_confir
             let argument: serde_json::Value =
                 serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
             assert_eq!(argument["text"], "Reviewed line", "the person's edit ran");
+            drop(f);
+        })
+        .await;
+}
+
+/// An ask that waits for its person is held by the host, not asked again
+/// on a clock: it runs as soon as the person's answer is announced.
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_ask_runs_once_its_person_answers() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (_target, stream) = append_target(&f).await;
+            ask_first_for_notes(&f);
+            ask_append(&f, "Draft line");
+
+            let line = serde_json::json!({ "text": "Draft line" }).to_string();
+            let held = tokio::task::spawn_local({
+                let (agent, run) = (agent.clone(), run.clone());
+                async move { append_held(&agent, &run, 9150, line, 10_000).await }
+            });
+            tokio::task::yield_now().await;
+            assert!(!held.is_finished(), "the ask is held while nobody answered");
+            assert!(nothing_delivered());
+
+            confirm_as(&f, "Reviewed line");
+            tilo_identity_host::policy_change::announce();
+            let (_, update) = tilo_test_env::within("the held ask's answer", held)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                update,
+                tilo_actions::InvocationUpdate::Accepted { .. }
+            ));
+            let delivered = stream.read_request().send().promise.await.unwrap();
+            let wire = delivered.get().unwrap();
+            let argument: serde_json::Value =
+                serde_json::from_str(wire.get_argument().unwrap().to_str().unwrap()).unwrap();
+            assert_eq!(argument["text"], "Reviewed line");
             drop(f);
         })
         .await;

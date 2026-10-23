@@ -826,7 +826,7 @@ async fn hold_until_stale(
 /// most that far ahead. Every clocked wait re-checks on the same ticks, so
 /// however many readers wait, the broker thread wakes five times a second,
 /// not five times a second per reader.
-fn next_unannounced_recheck() -> tokio::time::Instant {
+pub(super) fn next_unannounced_recheck() -> tokio::time::Instant {
     static GRID: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
     let now = tokio::time::Instant::now();
     let origin = *GRID.get_or_init(|| now);

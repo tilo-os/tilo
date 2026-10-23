@@ -500,14 +500,18 @@ fn a_redelivered_run_resumes_at_its_paused_step_instead_of_planning_over() {
                 invocation,
                 action,
                 arguments,
-                wait: None,
+                wait,
                 ..
-            } => Some((*invocation, action.clone(), arguments.clone())),
+            } => Some((*invocation, action.clone(), arguments.clone(), *wait)),
             _ => None,
         })
         .collect();
     assert_eq!(asks.len(), 2, "asked, then asked again once: {asks:?}");
-    for (invocation, action, asked) in &asks {
+    assert!(
+        asks[1].3.is_some(),
+        "asked again to be held until the person answers"
+    );
+    for (invocation, action, asked, _) in &asks {
         assert_eq!(action, "append-paragraph");
         assert_eq!(asked, &arguments, "exactly the drafted arguments");
         assert_eq!(*invocation, asks[0].0, "one child, asked again by its id");
