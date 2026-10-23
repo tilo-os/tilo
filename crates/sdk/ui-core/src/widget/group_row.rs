@@ -758,6 +758,11 @@ pub struct Pan {
     /// Absolute external viewport navigation ([`GroupRow::pan_to`]) stays
     /// bounded through geometry changes.
     absolute: bool,
+    /// A person's own pan last came to rest in the empty canvas past the
+    /// last window ([`Self::pan_max_scroll_x`]'s allowance). Only then does
+    /// the pan keep that allowance when the strip ends sooner; otherwise it
+    /// stays within the windows.
+    past_windows: bool,
 }
 
 impl Pan {
@@ -894,6 +899,7 @@ impl Pan {
         let max = self.pan_max_scroll_x();
         let coast = from + velocity / fling_omega();
         let to = coast.clamp(0.0, max);
+        self.past_windows = to > self.max_scroll_x() + 0.5;
         if velocity.abs() < FLING_MIN_VELOCITY && (to - from).abs() <= SNAP_SETTLED_PX {
             self.scroll_x = to;
             return false;
@@ -2880,9 +2886,11 @@ impl GroupRow {
         }
     }
 
+    /// Leave the pan at `x` as a person's own pan would.
     #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn set_scroll_x_for_test(&mut self, x: f64) {
         self.pan.scroll_x = x;
+        self.pan.past_windows = x > self.pan.max_scroll_x() + 0.5;
     }
 
     /// The groups presented as children ([`Widget::children_mut`]): none
@@ -4675,8 +4683,19 @@ impl Widget for GroupRow {
             // or a release settle is in flight. At rest, geometry changes
             // clamp to the deliberate trailing allowance instead of the old
             // three-viewports of unbounded empty canvas.
+            // When the strip ends sooner (its last window closed, or the
+            // screen widened), the pan stays within the windows: left in the
+            // trailing allowance it would strand the view in empty canvas
+            // nobody panned to, with windows cut off at the other edge. Only
+            // a person's own pan there keeps it.
             if !edge_resizing && pan.strip_pan_origin.is_none() && !pan.animating() {
-                pan.scroll_x = pan.scroll_x.clamp(0.0, pan.pan_max_scroll_x());
+                let end = if pan.past_windows {
+                    pan.pan_max_scroll_x()
+                } else {
+                    pan.max_scroll_x()
+                };
+                pan.scroll_x = pan.scroll_x.clamp(0.0, end);
+                pan.past_windows &= pan.scroll_x > pan.max_scroll_x() + 0.5;
             }
             if spans_aligned {
                 pan.note_laid_spans(s);
@@ -6724,6 +6743,39 @@ mod tests {
 
     fn relayout_row_owned(row: GroupRow, viewport_w: f64) -> (GroupRow, TaffyTree<()>, NodeId) {
         relayout_row_owned_with(row, viewport_w, &Theme::dark())
+    }
+
+    /// Closing the last window with the strip at its end leaves the windows
+    /// that remain in view: the pan comes to rest at the new end of the
+    /// windows, not in the empty canvas past them with the first window cut
+    /// off at the other edge.
+    #[test]
+    fn closing_the_last_window_at_the_end_rests_on_the_windows_that_remain() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let (mut row, _taffy, _root) = relayout_row_owned_with(row, 1200.0, &theme);
+        let end = row.max_scroll_x();
+        assert!(end > 1.0, "fixture: three windows overflow the strip");
+        row.set_scroll_x_for_test(end);
+        let (mut row, _taffy, _root) = relayout_row_owned_with(row, 1200.0, &theme);
+        assert!(
+            (row.scroll_x() - end).abs() < 0.5,
+            "fixture: panned to the last window"
+        );
+        let last = row.groups[2].id;
+        assert!(row.remove_group_by_id(last));
+        let (row, _taffy, _root) = relayout_row_owned_with(row, 1200.0, &theme);
+        let (row, _taffy, _root) = relayout_row_owned_with(row, 1200.0, &theme);
+        assert!(
+            row.pan_max_scroll_x() > row.max_scroll_x() + 1.0,
+            "fixture: the strip keeps an allowance past its last window"
+        );
+        assert!(
+            row.scroll_x() <= row.max_scroll_x() + 0.5,
+            "the pan rests within the windows: {} past an end of {}",
+            row.scroll_x(),
+            row.max_scroll_x()
+        );
     }
 
     fn relayout_row_owned_with(
