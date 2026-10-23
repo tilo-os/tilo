@@ -80,8 +80,11 @@ pub(super) enum Preparation {
 }
 
 impl Shared {
-    /// The wake of the thread that declined waiting, when that is the
-    /// calling thread.
+    /// How to wake the calling thread once work done for it is ready, when
+    /// it must not wait on the disk: the wake it declined waiting with, or,
+    /// on a thread [`durable_store::waiting`] forbids from waiting that
+    /// declined nothing, none (it asks again when it next runs). `None` for a
+    /// thread that may wait.
     pub(super) fn declined_here(&self) -> Option<ReadyWake> {
         let state = lock(&self.state);
         let declined = state
@@ -90,7 +93,9 @@ impl Shared {
             .filter(|(thread, _)| *thread == std::thread::current().id())
             .map(|(_, wake)| std::sync::Arc::clone(wake));
         drop(state);
-        declined
+        declined.or_else(|| {
+            durable_store::waiting::forbidden().then(|| -> ReadyWake { std::sync::Arc::new(|| {}) })
+        })
     }
 
     /// Take the preparation of `key` for `access`, or have the store's
