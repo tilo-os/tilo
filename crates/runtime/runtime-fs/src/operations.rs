@@ -708,9 +708,6 @@ impl FsSession {
         Ok(prepared)
     }
     /// Admit a bounded mutation job only after a durable scoped receipt exists.
-    /// # Errors
-    /// Returns `StoreUnavailable`, `Busy`, `LimitExceeded`, or live scope errors
-    /// before admission. Individual source failures are durable item outcomes.
     pub fn start(&self, operation: FsOperation) -> Result<FsJob, FsError> {
         if matches!(operation, FsOperation::Replace { .. })
             && self.has_selected_replace_authority()?

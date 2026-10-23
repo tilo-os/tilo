@@ -59,9 +59,6 @@ impl IdentifyRequest {
     }
 
     /// Write the same identify handshake through the session-owned source.
-    ///
-    /// # Errors
-    /// Returns a persistence error without installing a global app writer.
     pub fn request_in(source: &dyn crate::SettingsSource, request: Self) -> std::io::Result<Self> {
         let value = serde_json::to_value(&request).map_err(std::io::Error::other)?;
         source.update_section(

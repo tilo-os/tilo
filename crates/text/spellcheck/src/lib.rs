@@ -849,7 +849,6 @@ mod tests {
 
     #[test]
     fn check_flags_misspellings_but_accepts_conversational_english_and_names() {
-        // Phase `teh_is_flagged_and_suggests_the`.
         {
             let dict = builtin();
             let result = check(&dict, "teh");
@@ -861,7 +860,6 @@ mod tests {
                 result[0].suggestions
             );
         }
-        // Phase `correct_sentence_has_no_misspellings`.
         {
             let dict = builtin();
             let text = "the quick brown fox jumps over the lazy dog";
@@ -871,7 +869,6 @@ mod tests {
                 "expected zero misspellings, got {result:?}"
             );
         }
-        // Phase `conversational_english_accepts_contractions_smart_quotes_and_common_names`.
         {
             let dict = builtin();
             for word in ["I'm", "I\u{2019}m", "James", "Emma", "Michael", "Sophia"] {
@@ -885,7 +882,6 @@ mod tests {
                 );
             }
         }
-        // Phase `titlecase_unknowns_are_treated_as_names_only_inside_a_sentence`.
         {
             let dict = builtin();
             assert!(spans(&dict, "I met Qwordz today").is_empty());
@@ -893,12 +889,10 @@ mod tests {
             assert_eq!(spans(&dict, "Hello. Qwordz arrived"), vec![(7, 13)]);
             assert_eq!(spans(&dict, "Hello\nQwordz arrived"), vec![(6, 12)]);
         }
-        // Phase `mixed_case_identifiers_and_brands_are_not_spellchecked`.
         {
             let dict = builtin();
             assert!(spans(&dict, "TextInput iPhone GitHub").is_empty());
         }
-        // Phase `unknown_word_with_suggestions_records_span`.
         {
             let dict = builtin();
             let text = "a wrold of color";
@@ -931,7 +925,6 @@ mod tests {
                 .collect();
             assert_eq!(spans(&dict, text), full);
             assert!(!full.is_empty(), "the fixture has to contain a misspelling");
-            // Guards against both paths agreeing on the same wrong answer.
             let flagged: Vec<&str> = full.iter().map(|&(s, e)| &text[s..e]).collect();
             assert_eq!(flagged, vec!["recieve", "teh"]);
         }
@@ -954,7 +947,6 @@ mod tests {
                 );
             }
         }
-        // Phase `numbers_urls_and_allcaps_are_skipped`.
         {
             let dict = builtin();
             let text =
@@ -966,7 +958,6 @@ mod tests {
                 "numbers/URLs/emails/ALL-CAPS should be skipped, but flagged: {flagged:?}"
             );
         }
-        // Phase `allcaps_acronym_alone_is_skipped`.
         {
             let dict = builtin();
             assert!(check(&dict, "NASA").is_empty());
@@ -974,7 +965,6 @@ mod tests {
             // A single capital is a real one-letter word, still checked (and valid).
             assert!(check(&dict, "I").is_empty());
         }
-        // Phase `pure_numbers_skipped`.
         {
             let dict = builtin();
             for n in ["0", "42", "3.14", "1,000", "2024", "100th"] {
@@ -984,7 +974,6 @@ mod tests {
                 );
             }
         }
-        // Phase `tokenize_offsets_round_trip_a_slice`.
         {
             let text = "Hello, world! It's a   test.";
             for tok in tokenize(text) {
@@ -999,20 +988,17 @@ mod tests {
 
     #[test]
     fn dictionaries_and_corrections_are_usable_ranked_and_conservative() {
-        // Phase `case_insensitive_membership`.
         {
             let dict = builtin();
             // Mixed/upper case of a known word must not be flagged.
             assert!(check(&dict, "The Quick Brown Fox").is_empty());
         }
-        // Phase `add_word_removes_a_word_from_check_results`.
         {
             let mut dict = Dictionary::from_words(["the", "quick", "brown", "fox"]);
             // "tilo" is unknown → flagged.
             let before = check(&dict, "the tilo fox");
             assert_eq!(before.len(), 1, "got {before:?}");
             assert_eq!(before[0].word, "tilo");
-            // Accept it into the user dictionary.
             assert!(dict.add_word("tilo"));
             // Re-check: no longer flagged.
             let after = check(&dict, "the tilo fox");
@@ -1021,7 +1007,6 @@ mod tests {
                 "expected no misspellings after add_word, got {after:?}"
             );
         }
-        // Phase `from_words_builds_a_usable_dictionary`.
         {
             let dict = Dictionary::from_words(["alpha", "beta", "gamma"]);
             assert!(dict.contains("ALPHA"));
@@ -1032,7 +1017,6 @@ mod tests {
             // None of the three short, distant words is within edit distance 2.
             assert!(result[0].suggestions.is_empty());
         }
-        // Phase `suggestions_are_ranked_by_distance_then_length`.
         {
             // Build a small dictionary where ordering is deterministic and checkable.
             let dict = Dictionary::from_words(["cat", "cart", "cats", "scat", "cataract"]);
@@ -1040,7 +1024,6 @@ mod tests {
             // "cat" is distance 1; the 4-letter ones are distance >= 1 too but longer.
             assert_eq!(s.first().map(String::as_str), Some("cat"));
         }
-        // Phase `probable_corrections_are_conservative_and_preserve_case`.
         {
             assert_eq!(probable_correction("en_US", "teh").as_deref(), Some("the"));
             assert_eq!(
@@ -1084,7 +1067,6 @@ mod tests {
             }
             assert_eq!(probable_correction("fr_FR", "doesnt"), None);
         }
-        // Phase `builtin_dictionary_is_substantial`.
         {
             let dict = builtin();
             assert!(
@@ -1113,7 +1095,6 @@ mod tests {
             "{:?}",
             spans_for_language("en_US", letter)
         );
-        // A sentence-initial capital is judged in lowercase, as any other word.
         assert!(spans(&dict, "Website first. Minutes later.").is_empty());
 
         // A compound is judged by its parts: only the misspelled part is marked.

@@ -129,7 +129,6 @@ pub use tilo_desktop_model::{
 };
 
 impl GovernanceOperation {
-    /// The governance action this operation is.
     #[must_use]
     pub fn action_id(&self) -> &'static str {
         match self {
@@ -3024,7 +3023,6 @@ pub fn draw_agents_pane(
             "workspace-settings-view-only"
         }),
     );
-    // Add agent stands under the intro whatever the pane lists.
     draw_primary_button(
         scene,
         transform,
@@ -3847,7 +3845,6 @@ pub fn permissions_pane_layout(
         return layout;
     }
 
-    // ---- Composer -------------------------------------------------
     let card = permission_composer_card(pane_rect);
     layout_composer_controls(&mut layout, ws, card, compact_pane(pane_rect));
     layout_capability_rows(&mut layout, (ws, local_user), pane_rect, card, apps);
@@ -4095,7 +4092,6 @@ pub fn draw_permissions_pane(
         (&mut *text_renderer, theme),
     );
 
-    // ---- Capability rows ------------------------------------------
     if layout.rows.is_empty() {
         // Empty content belongs directly to the composer it explains. A
         // full-height body centred the message in otherwise blank space and
@@ -4759,7 +4755,6 @@ mod members_pane_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn member_roles_come_from_the_roster_and_change_only_within_owner_authority() {
-        // Phase `members_rows_come_from_the_roster`.
         {
             let ws = ws_with_two_members();
             let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
@@ -4781,7 +4776,6 @@ mod members_pane_tests {
             }
         }
 
-        // Phase `owner_can_promote_a_member_and_role_of_agrees`.
         {
             let mut ws = ws_with_two_members();
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
@@ -4800,7 +4794,6 @@ mod members_pane_tests {
             assert!(may_write(&ws, PEER));
         }
 
-        // Phase `owner_can_demote_a_member`.
         {
             let mut ws = ws_with_two_members();
             set_member_role(
@@ -4823,7 +4816,6 @@ mod members_pane_tests {
             );
         }
 
-        // Phase `non_owner_cannot_change_a_role`.
         {
             let mut ws = ws_with_two_members();
             let edit = set_member_role(
@@ -4839,7 +4831,6 @@ mod members_pane_tests {
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
         }
 
-        // Phase `the_recorded_owner_role_is_structural`.
         {
             let mut ws = ws_with_two_members();
             let edit = set_member_role(
@@ -4852,7 +4843,6 @@ mod members_pane_tests {
             assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
         }
 
-        // Phase `role_chip_cycles_through_the_positive_roles`.
         {
             assert_eq!(next_role(CapRole::Viewer), CapRole::Commenter);
             assert_eq!(next_role(CapRole::Commenter), CapRole::Editor);
@@ -4860,7 +4850,6 @@ mod members_pane_tests {
             assert_eq!(next_role(CapRole::Owner), CapRole::Viewer);
         }
 
-        // Phase `role_control_cannot_create_or_transfer_ownership`.
         {
             let mut ws = ws_with_two_members();
             let edit = set_member_role(
@@ -4874,7 +4863,6 @@ mod members_pane_tests {
             assert_eq!(ws.owner().map(String::as_str), Some(OWNER));
         }
 
-        // Phase `delegated_admin_cannot_partially_demote_or_remove_itself`.
         {
             let mut ws = ws_with_two_members();
             let admin = Grant::new(
@@ -4910,9 +4898,7 @@ mod members_pane_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn member_removal_and_ownership_protect_the_owner() {
-        // Phase `removing_a_member_takes_their_grants_but_never_removes_the_owner`.
         {
-            // Phase `removing_a_member_takes_their_grants_with_them`.
             {
                 let mut ws = ws_with_two_members();
                 let cap = CapOverride::grant(
@@ -4951,7 +4937,6 @@ mod members_pane_tests {
                 );
             }
 
-            // Phase `the_owner_cannot_be_removed`.
             {
                 let mut ws = ws_with_two_members();
                 let edit = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
@@ -4960,9 +4945,7 @@ mod members_pane_tests {
             }
         }
 
-        // Phase `ownership_is_a_separate_ceremony_named_by_person`.
         {
-            // Phase `ownership_ceremony_is_separate_typed_confirmed_and_accessible`.
             {
                 let (owner_key, owner_public) = collab_types::generate_keypair();
                 let (_, recipient_public) = collab_types::generate_keypair();
@@ -5015,7 +4998,6 @@ mod members_pane_tests {
                 );
             }
 
-            // Phase `ownership_status_prefers_a_known_person_name_to_a_key`.
             {
                 let mut ws = ws_with_two_members();
                 let owner_key = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
@@ -5143,7 +5125,6 @@ mod members_pane_tests {
 
     #[test]
     fn draw_members_pane_paints_members_and_skips_a_zero_area_pane() {
-        // Phase `draw_members_pane_paints_more_with_members_than_without`.
         {
             let theme = Theme::dark();
             let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
@@ -5183,7 +5164,6 @@ mod members_pane_tests {
             );
         }
 
-        // Phase `draw_members_pane_no_op_on_zero_area_pane`.
         {
             let ws = ws_with_two_members();
             let mut scene = Scene::new();
@@ -5235,7 +5215,6 @@ mod agents_pane_tests {
         ws
     }
 
-    /// What `agent` may do on its own at the app `app`.
     fn agent_answer(ws: &Workspace, app: &str, kind: ActionKind) -> Answer {
         ws.subject_authority(tilo_action_policy::Subject::agent(AGENT))
             .decide(
@@ -5252,9 +5231,7 @@ mod agents_pane_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn agents_are_scoped_permission_subjects_presented_honestly() {
-        // Phase `agent_rows_and_profiles_present_scoped_bundles_honestly`.
         {
-            // Phase `agent_rows_are_separate_and_count_only_scoped_permissions`.
             {
                 let ws = ws_with_agent();
                 assert_eq!(
@@ -5273,7 +5250,6 @@ mod agents_pane_tests {
                 assert!(rows[0].review_rect.x1 < rows[0].remove_rect.x0);
             }
 
-            // Phase `profiles_describe_scoped_bundles_not_human_roles`.
             {
                 let mut ws = Workspace::new(WorkspaceId::from(18), "profile-test");
                 ws.set_owner(OWNER);
@@ -5310,7 +5286,6 @@ mod agents_pane_tests {
                 assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
             }
 
-            // Phase `sensitive_or_broad_agent_grants_are_never_hidden_behind_a_preset`.
             {
                 let mut ws = ws_with_agent();
                 ws.grant_as(
@@ -5325,7 +5300,6 @@ mod agents_pane_tests {
                 assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Custom);
             }
 
-            // Phase `agent_onboarding_and_review_geometry_are_separate_from_revocation`.
             {
                 let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
                 let add = agents_add_rect(pane);
@@ -5338,9 +5312,7 @@ mod agents_pane_tests {
             }
         }
 
-        // Phase `agent_admission_and_revocation_are_scoped_permission_subjects`.
         {
-            // Phase `admission_does_not_become_ambient_human_role_authority`.
             {
                 let ws = ws_with_agent();
                 assert_eq!(
@@ -5354,7 +5326,6 @@ mod agents_pane_tests {
                 );
             }
 
-            // Phase `revoking_an_agent_removes_membership_and_scoped_grants`.
             {
                 let mut ws = ws_with_agent();
                 let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
@@ -5366,7 +5337,6 @@ mod agents_pane_tests {
                 );
             }
 
-            // Phase `non_owner_cannot_remove_an_agent`.
             {
                 let mut ws = ws_with_agent();
                 let before = ws.policy.clone();
@@ -5374,7 +5344,6 @@ mod agents_pane_tests {
                 assert_eq!(ws.policy, before);
             }
 
-            // Phase `admitted_agent_is_a_first_class_permission_subject`.
             {
                 let ws = ws_with_agent();
                 let subjects = grant_subjects(&ws);
@@ -5392,7 +5361,6 @@ mod agents_pane_tests {
                 assert_eq!(cap.subject, Subject::agent(AGENT));
             }
 
-            // Phase `agent_membership_is_not_duplicated_in_permissions`.
             {
                 let ws = ws_with_agent();
                 let layout = permissions_pane_layout(
@@ -5488,7 +5456,6 @@ mod permissions_pane_tests {
 
     const OWNER: &str = "owner-user";
 
-    /// The sandbox actor the app `app` is in `ws`.
     fn app_actor(ws: &Workspace, app: &str) -> collab_types::caps::Actor {
         collab_types::caps::Actor::app(app).in_room(ws.room().to_string())
     }
@@ -5522,7 +5489,6 @@ mod permissions_pane_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn permission_rows_list_each_grant_with_its_real_scope_and_subject() {
-        // Phase `stable_file_record_scope_is_presented_without_inventing_a_path`.
         {
             let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
             assert_eq!(
@@ -5542,7 +5508,6 @@ mod permissions_pane_tests {
             );
         }
 
-        // Phase `rows_are_one_per_granted_capability`.
         {
             let ws = ws_with_grants();
             let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory, VIEWER);
@@ -5558,7 +5523,6 @@ mod permissions_pane_tests {
             assert_eq!(layout.overflow, 0);
         }
 
-        // Phase `membership_capabilities_are_not_listed_as_permissions`.
         {
             let ws = ws_with_grants();
             let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory, VIEWER);
@@ -5571,7 +5535,6 @@ mod permissions_pane_tests {
             );
         }
 
-        // Phase `a_persons_membership_is_left_to_the_members_tab`.
         {
             let ws = ws_with_grants();
             let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory, VIEWER);
@@ -5588,7 +5551,6 @@ mod permissions_pane_tests {
             );
         }
 
-        // Phase `person_and_role_subjects_are_listed_too`.
         {
             let mut ws = ws_with_grants();
             ws.grant_as(
@@ -5674,7 +5636,6 @@ mod permissions_pane_tests {
             }
         }
 
-        // Phase `rows_carry_the_scope_and_grantor_the_model_recorded`.
         {
             let mut ws = Workspace::new(WorkspaceId::from(4), "labels");
             ws.set_owner(OWNER);
@@ -5775,9 +5736,7 @@ mod permissions_pane_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
-        // Phase `granting_from_the_composer_is_owner_only_and_enforced`.
         {
-            // Phase `the_composer_offers_the_roster_and_the_workspaces_apps`.
             {
                 let ws = ws_with_grants();
                 let subjects = grant_subjects(&ws);
@@ -5795,7 +5754,6 @@ mod permissions_pane_tests {
                 }));
             }
 
-            // Phase `granting_from_the_composer_writes_a_capability_that_enforces`.
             {
                 let mut ws = ws_with_grants();
                 let subjects = grant_subjects(&ws);
@@ -5829,7 +5787,6 @@ mod permissions_pane_tests {
                 );
             }
 
-            // Phase `granting_records_the_chosen_expiry`.
             {
                 let mut ws = ws_with_grants();
                 let subjects = grant_subjects(&ws);
@@ -5858,7 +5815,6 @@ mod permissions_pane_tests {
                 );
             }
 
-            // Phase `re_granting_never_shortens_an_existing_grant`.
             {
                 // `grant_capability` keeps the longer expiry for the same
                 // (subject, scope, effect, verb).
@@ -5901,7 +5857,6 @@ mod permissions_pane_tests {
                 );
             }
 
-            // Phase `a_non_owner_cannot_grant`.
             {
                 let mut ws = ws_with_grants();
                 let subjects = grant_subjects(&ws);
@@ -5917,7 +5872,6 @@ mod permissions_pane_tests {
                 assert_eq!(ws.sandbox.len(), before);
             }
 
-            // Phase `every_offered_capability_produces_a_scope_an_enforcement_point_reads`.
             {
                 let ws = ws_with_grants();
                 let subjects = grant_subjects(&ws);
@@ -5979,9 +5933,7 @@ mod permissions_pane_tests {
             }
         }
 
-        // Phase `revoking_a_permission_row_is_owner_only_and_enforced`.
         {
-            // Phase `a_workspace_scoped_app_grant_is_listed_and_revocable`.
             {
                 let mut ws = ws_with_grants();
                 let now = tilo_clock::unix_now();
@@ -6011,7 +5963,6 @@ mod permissions_pane_tests {
                 assert!(!ws.app_is_author_at("firefox", now));
             }
 
-            // Phase `revoking_a_row_stops_the_capability_working`.
             {
                 let mut ws = ws_with_grants();
                 let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory, VIEWER);
@@ -6034,7 +5985,6 @@ mod permissions_pane_tests {
                 assert_eq!(after.rows.len(), 1);
             }
 
-            // Phase `a_non_owner_cannot_revoke`.
             {
                 let mut ws = ws_with_grants();
                 let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory, VIEWER);
@@ -6049,7 +5999,6 @@ mod permissions_pane_tests {
                 );
             }
 
-            // Phase `revoking_an_unknown_id_is_a_no_op`.
             {
                 let mut ws = ws_with_grants();
                 let edit = apply_revoke(&mut ws, &OWNER.to_string(), "cap-does-not-exist");
@@ -6065,9 +6014,7 @@ mod permissions_pane_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn the_permissions_pane_draws_every_state_and_fits_its_rows() {
-        // Phase `draw_permissions_pane_paints_empty_and_granted_states`.
         {
-            // Phase `draw_permissions_pane_paints_an_empty_state_with_no_grants`.
             {
                 let ws = Workspace::new(WorkspaceId::default(), "empty");
                 let mut scene = Scene::new();
@@ -6089,7 +6036,6 @@ mod permissions_pane_tests {
                 );
             }
 
-            // Phase `draw_permissions_pane_paints_more_with_grants_than_without`.
             {
                 let theme = Theme::dark();
                 let mut tr = TextRenderer::new();
@@ -6124,7 +6070,6 @@ mod permissions_pane_tests {
                 assert!(full.encoding().draw_tags.len() > empty.encoding().draw_tags.len());
             }
 
-            // Phase `draw_permissions_pane_no_op_on_zero_area_pane`.
             {
                 let ws = ws_with_grants();
                 let mut scene = Scene::new();
@@ -6144,9 +6089,7 @@ mod permissions_pane_tests {
             }
         }
 
-        // Phase `permission_rows_fit_their_pane_without_clipping_or_overlap`.
         {
-            // Phase `rows_that_do_not_fit_are_counted_rather_than_clipped`.
             {
                 let mut ws = Workspace::new(WorkspaceId::from(9), "many");
                 ws.set_owner(OWNER);
@@ -6173,7 +6116,6 @@ mod permissions_pane_tests {
                 }
             }
 
-            // Phase `expiry_segments_are_laid_out_in_picker_order_without_overlap`.
             {
                 let ws = ws_with_grants();
                 let layout = permissions_pane_layout(&ws, pane(), &NoAppDirectory, VIEWER);
@@ -6187,7 +6129,6 @@ mod permissions_pane_tests {
                 assert!(layout.choice_rect.x1 <= layout.expiry_rects[0].x0);
             }
 
-            // Phase `narrow_panes_stack_policy_controls_inside_their_rows`.
             {
                 let ws = ws_with_grants();
                 let pane = Rect::new(0.0, 0.0, 326.0, 620.0);
@@ -6245,7 +6186,6 @@ mod permissions_pane_tests {
                 );
             }
 
-            // Phase `long_identifiers_are_shortened_rather_than_overrun`.
             {
                 let long = "a".repeat(64);
                 let shortened = short_id(&long);
@@ -6318,7 +6258,6 @@ mod default_app_authority_tests {
 
     #[test]
     fn default_app_authority_is_separately_authorized_and_cycles_inheritance_first() {
-        // Phase `admin_policy_and_personal_escape_hatch_are_separately_authorized`.
         {
             let candidates = [candidate("so.tilo.viewer"), candidate("so.tilo.other")];
             let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
@@ -6367,7 +6306,6 @@ mod default_app_authority_tests {
             );
         }
 
-        // Phase `controls_cycle_through_inheritance_before_apps`.
         {
             let candidates = [candidate("so.tilo.viewer")];
             let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
@@ -6392,7 +6330,6 @@ mod rest_edge_tests {
 
     #[test]
     fn rest_panes_keep_edges_and_the_section_step() {
-        // Phase `pane_cards_and_footer_keep_an_edge_on_every_palette`.
         {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let colors = &theme.tokens.colors;

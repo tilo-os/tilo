@@ -2117,7 +2117,6 @@ mod quick_settings_tests {
 
     #[test]
     fn quick_settings_order_dedupes_persists_and_keeps_recovery_controls() {
-        // Phase `quick_settings_config_deduplicates_and_keeps_network_recovery`.
         {
             let config = QuickSettingsConfig {
                 controls: vec![
@@ -2131,7 +2130,6 @@ mod quick_settings_tests {
                 vec![QuickSettingsControl::Wifi, QuickSettingsControl::NightLight]
             );
         }
-        // Phase `an_unknown_control_is_skipped_and_the_arrangement_kept`.
         {
             let config = QuickSettingsConfig::from_section(
                 serde_json::json!({"controls": ["night_light", "teleporter", "wifi"]})
@@ -2144,7 +2142,6 @@ mod quick_settings_tests {
                 vec![QuickSettingsControl::NightLight, QuickSettingsControl::Wifi]
             );
         }
-        // Phase `quick_settings_order_survives_restart_without_replacing_other_settings`.
         {
             let temp = crate::test_dir();
             let path = temp.path().join("tilo/settings.json");
@@ -2896,7 +2893,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn display_layouts_reject_unadvertised_modes_and_invalid_mirrors() {
-        // Phase `rejects_modes_the_connector_does_not_advertise`.
         {
             let mut cfg = DisplayConfig::default();
             cfg.outputs.insert(
@@ -2915,7 +2911,6 @@ mod tests {
                 Err(DisplayConfigError::UnsupportedMode { .. })
             ));
         }
-        // Phase `legacy_unqualified_connector_never_cross_targets_qualified_duplicates`.
         {
             let first = OutputDescriptor {
                 connector: "pci:0000:01:00.0/HDMI-A-1".into(),
@@ -2959,7 +2954,6 @@ mod tests {
             assert_eq!(legacy.label(), "HDMI-A-1");
             assert_eq!(legacy.card_qualifier(), None);
         }
-        // Phase `rejects_mirror_cycles`.
         {
             let mut cfg = DisplayConfig::default();
             cfg.outputs.insert(
@@ -2981,7 +2975,6 @@ mod tests {
                 Err(DisplayConfigError::MirrorCycle { .. })
             ));
         }
-        // Phase `rejects_mirror_pair_with_different_explicit_modes`.
         {
             let mut left = display("DP-1");
             left.modes.push(OutputMode {
@@ -3011,7 +3004,6 @@ mod tests {
                 Err(DisplayConfigError::IncompatibleMirrorModes { .. })
             ));
         }
-        // Phase `mirror_pair_accepts_same_resolution_at_different_refresh_rates`.
         {
             let mut panel = display("eDP-1");
             panel.modes[0].refresh_mhz = 60_000;
@@ -3057,7 +3049,6 @@ mod tests {
 
     #[test]
     fn display_confirmations_are_precise_transitions_without_phantom_requests() {
-        // Phase `display_confirmation_expiry_is_a_precise_state_transition`.
         {
             let mut transaction = DisplayTransaction {
                 state: DisplayTransactionState::AwaitingConfirmation,
@@ -3069,7 +3060,6 @@ mod tests {
             transaction.state = DisplayTransactionState::Confirmed;
             assert!(!transaction.expired(u64::MAX));
         }
-        // Phase `missing_transaction_section_does_not_create_a_phantom_request`.
         {
             assert!(DisplayTransaction::from_section(serde_json::Map::new()).is_none());
         }
@@ -3190,12 +3180,10 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn shortcuts_are_normalised_conflict_free_and_reload_unchanged() {
-        // Phase `shortcut_parser_normalises_and_rejects_plain_letters`.
         {
             assert_eq!(KeyChord::parse("meta + K").unwrap().display(), "Super+k");
             assert!(KeyChord::parse("k").is_err());
         }
-        // Phase `window_management_defaults_are_coherent_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
             assert_eq!(
@@ -3249,7 +3237,6 @@ mod tests {
             );
             assert!(cfg.validate().is_ok());
         }
-        // Phase `shortcut_conflicts_are_rejected_without_overwriting`.
         {
             let mut cfg = ShortcutConfig::default();
             let old = cfg.bindings[&ShortcutAction::Lock].clone();
@@ -3262,7 +3249,6 @@ mod tests {
             );
             assert_eq!(cfg.bindings[&ShortcutAction::Lock], old);
         }
-        // Phase `reserved_and_duplicate_shortcuts_are_rejected_at_the_public_setter`.
         {
             let mut cfg = ShortcutConfig::default();
             for key in ["f1", "printscreen"] {
@@ -3285,7 +3271,6 @@ mod tests {
                 Err(ShortcutConfigError::Conflict(ShortcutAction::Search))
             );
         }
-        // Phase `corrupt_persisted_shortcuts_normalise_without_ambiguous_ownership`.
         {
             let mut corrupt = ShortcutConfig::default();
             corrupt.bindings.insert(
@@ -3329,7 +3314,6 @@ mod tests {
             );
             assert!(repaired.validate().is_ok());
         }
-        // Phase `a_table_saved_under_retired_defaults_takes_the_new_ones`.
         {
             let mut saved_by_an_older_release = ShortcutConfig::default();
             for action in [
@@ -3365,7 +3349,6 @@ mod tests {
             );
             assert!(repaired.validate().is_ok());
         }
-        // Phase `saved_shortcuts_reload_as_the_same_valid_effective_config`.
         {
             let dir = crate::test_dir();
             let path = dir.path().join("tilo/settings.json");
@@ -3380,7 +3363,6 @@ mod tests {
             assert_eq!(reloaded, saved);
             assert!(reloaded.validate().is_ok());
         }
-        // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
             assert_eq!(cfg.bindings.len(), 63);
@@ -3522,7 +3504,6 @@ mod tests {
 
     #[test]
     fn input_sources_and_pointer_settings_migrate_validate_and_survive_damage() {
-        // Phase `legacy_single_keyboard_layout_migrates_into_sources`.
         {
             let section = serde_json::json!({ "keyboard_layout": "de" })
                 .as_object()
@@ -3533,7 +3514,6 @@ mod tests {
             assert_eq!(cfg.keyboard_layouts, ["de"]);
             assert_eq!(cfg.active_source_index(), 0);
         }
-        // Phase `an_unset_layout_follows_the_machine_and_a_chosen_one_wins`.
         {
             let machine = || vec!["de".to_string(), "us".to_string()];
             let unset = RichInputConfig::from_section_or(&serde_json::Map::new(), &machine);
@@ -3567,13 +3547,11 @@ mod tests {
             let engine_only = RichInputConfig::from_section_or(&engine_only, &machine);
             assert_eq!(engine_only.keyboard_layouts, ["de", "ime/rime"]);
         }
-        // Phase `scroll_defaults_match_gnome`.
         {
             let empty = RichInputConfig::from_section(&serde_json::Map::new());
             assert!(empty.touchpad_natural_scroll);
             assert!(!empty.mouse_natural_scroll);
         }
-        // Phase `keyboard_sources_are_validated_deduplicated_and_bounded`.
         {
             let section = serde_json::json!({
                 "keyboard_layout": "de:nodeadkeys",
@@ -3590,7 +3568,6 @@ mod tests {
             assert_eq!(cfg.active_source_index(), 1);
             assert_eq!(cfg.sources()[1].variant.as_deref(), Some("nodeadkeys"));
         }
-        // Phase `keyboard_options_do_not_steal_the_shell_search_shortcut`.
         {
             let mut cfg = RichInputConfig {
                 keyboard_layouts: vec!["us".into(), "de".into()],
@@ -3608,7 +3585,6 @@ mod tests {
                 "Super+Alt+Space"
             );
         }
-        // Phase `malformed_pointer_field_does_not_discard_keyboard_sources`.
         {
             let section = serde_json::json!({
                 "pointer_speed": "fast",

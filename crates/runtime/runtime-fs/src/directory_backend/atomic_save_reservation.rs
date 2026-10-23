@@ -20,8 +20,6 @@ impl<T> Default for AtomicSaveReservation<T> {
 }
 impl<T> AtomicSaveReservation<T> {
     /// Store the actual returned owner before any fallible caller validation.
-    /// # Errors
-    /// Returns the provider's refusal or unknown-outcome error, retaining that state.
     pub fn capture(&mut self, outcome: AtomicSavePreparation<T>) -> Result<(), String> {
         match outcome {
             AtomicSavePreparation::Prepared(owner) => {
@@ -47,8 +45,6 @@ impl<T> AtomicSaveReservation<T> {
         }
     }
     /// Failure retains the actual reservation; cancellation remains possible.
-    /// # Errors
-    /// Refuses unprepared reservations or propagates the caller's validation error.
     pub fn validate(&self, check: impl FnOnce(&T) -> Result<(), String>) -> Result<(), String> {
         check(self.prepared()?)
     }

@@ -9,7 +9,6 @@
 
 use crate::Key;
 
-/// The section holding every power preference.
 pub const SECTION: &str = "power";
 
 /// The Settings default idle-suspend timeout, in minutes.
@@ -73,16 +72,13 @@ pub const PROFILES: &[&str] = &["saver", "balanced", "performance"];
 /// the same are one timer, whichever leaves hold it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SuspendTimers {
-    /// `suspend_minutes`.
     pub plugged_in: u32,
-    /// `battery_suspend_minutes`, when set.
     pub battery: Option<u32>,
     /// The saver, balanced and performance timers, when set ([`PROFILES`]).
     pub profiles: [Option<u32>; 3],
 }
 
 impl SuspendTimers {
-    /// The timers stored in the `power` section.
     #[must_use]
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let stored = |name: &str| {
@@ -231,7 +227,6 @@ mod tests {
             assert_eq!(split.applying(profile, false), 30);
         }
 
-        // Profile timers that are all the same are that one timer.
         let same = timers(&json!({
             "suspend_minutes": 15,
             "saver_suspend_minutes": 45,
