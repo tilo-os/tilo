@@ -574,9 +574,6 @@ impl WordProcessorWidget {
         if let Some(palette) = self.compact_swatch_palette.accessibility() {
             children.push(A11yTreeNode::leaf(palette));
         }
-        if let Some(find) = self.find.accessibility() {
-            children.push(A11yTreeNode::leaf(find.with_bounds(self.find_band)));
-        }
 
         A11yTreeNode {
             node: AccessNode::new(Role::Document).with_state(

@@ -39,8 +39,8 @@ use ui::{PathSegment, PresenceKey};
 
 use crate::WpFormat;
 use crate::compact_swatch_palette::CompactSwatchPalette;
+use crate::document_find::DocumentFind;
 use crate::file_menu::FileMenu;
-use crate::find_bar::{Blocks, FindBar};
 use crate::i18n::t;
 use crate::num;
 use crate::outline_pane::OutlinePane;
@@ -1029,8 +1029,9 @@ pub struct WordProcessorWidget {
     /// writes there without asking, and only Save As asks again.
     kept: Option<(ui::portal::SaveDestination, WpFormat)>,
     format: Option<WpFormat>,
-    /// Find & Replace owns its query modes, match cursor, drawing, and hit map.
-    find: FindBar,
+    /// The window bar's search over the document: its query, matches and
+    /// the replacements waiting for the document.
+    find: DocumentFind,
     /// Image bytes (content address → bytes) fetched from the content store for the images the
     /// document references, plus a
     /// lazily-decoded image cache (`None` = decode failed / unsupported format).
@@ -1072,8 +1073,6 @@ pub struct WordProcessorWidget {
     dbg_layout_misses: usize,
     /// The command each of the window bar's slots runs, as last declared.
     bar_commands: Vec<(String, window_bar::BarCommand)>,
-    /// The Find bar's band this frame (empty while it is closed).
-    find_band: Rect,
     paper_theme: Theme,
     /// The window's theme this frame, for what is drawn on the desk.
     desk_theme: Theme,
@@ -1367,7 +1366,7 @@ impl WordProcessorWidget {
             drag_unit: None,
             path: None,
             format: None,
-            find: FindBar::default(),
+            find: DocumentFind::default(),
             blobs: std::collections::BTreeMap::new(),
             image_cache: std::collections::HashMap::new(),
             blocks: Vec::new(),
@@ -1387,7 +1386,6 @@ impl WordProcessorWidget {
             dbg_layout_hits: 0,
             dbg_layout_misses: 0,
             bar_commands: Vec::new(),
-            find_band: Rect::ZERO,
             paper_theme: Theme::light(),
             desk_theme: Theme::dark(),
             text_scale: 1.0,
@@ -1771,15 +1769,11 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    /// Put the production Find bar into a deterministic populated state for
-    /// visual review. The query still runs through the complete-document search
-    /// path, so this catches virtualized/offscreen result regressions rather
-    /// than painting a mock search surface.
+    /// Show the matches of `query` for visual review. The query runs through
+    /// the complete-document search path, so this catches virtualized or
+    /// offscreen result regressions rather than painting mock highlights.
     pub fn stage_find_for_shot(&mut self, state: &AutoCommit, query: &str) {
-        let blocks = self.search_blocks(state);
-        let effect = self.find.open(Some(query), &mut Blocks(&blocks));
-        self.apply_find_effect(state, effect);
-        self.lifecycle.dirty = true;
+        self.find_now(state, query);
     }
 
     /// Open one materialized durable comment thread for visual/a11y review.
@@ -2045,6 +2039,9 @@ impl WordProcessorWidget {
             return;
         }
         let moved = self.refresh_live(state) | std::mem::take(&mut self.source_unseen);
+        // Search ranges are character offsets, not stable anchors: an open
+        // search reads the paragraphs again when the document moves.
+        self.follow_find(state, moved);
         if let Some(body) = self.with_live(|s| std::rc::Rc::clone(s.body())) {
             self.body_order = body;
         }
@@ -2138,12 +2135,6 @@ impl WordProcessorWidget {
         let live: std::collections::HashSet<&str> =
             self.blocks.iter().map(|b| b.id.as_str()).collect();
         self.spell_cache.retain(|id, _| live.contains(id.as_str()));
-        if moved && self.find.is_open() {
-            // Search ranges are character offsets, not stable anchors. Follow
-            // edits before navigation or replacement can use the old ranges.
-            let blocks = self.search_blocks(state);
-            self.find.refresh(&mut Blocks(&blocks));
-        }
     }
 
     /// The running region (if any) whose reference-page band contains content-
@@ -2540,13 +2531,6 @@ impl CommentThreadLayout {
             ),
         }
     }
-}
-
-/// The editor as the Find bar's host: it searches the whole document and
-/// replaces matches through the editor's own undoable splice.
-struct EditorFind<'a, 'doc> {
-    wp: &'a mut WordProcessorWidget,
-    state: &'a mut ui::widget::Edits<'doc>,
 }
 
 #[cfg(test)]
