@@ -1251,8 +1251,21 @@ fn ensure_collaboration_identity_in_context(
     prepare_identity_directory(identity_dir)?;
     let class = DeviceClass::of(identity_dir, class);
 
-    match persist::joined_device_is_ready(paths, tilo_clock::unix_now_ns()) {
-        Ok(true) => return Ok(ProvisionOutcome::Existing),
+    let now_ns = tilo_clock::unix_now_ns();
+    match persist::joined_device_is_ready(paths, now_ns) {
+        Ok(true) => {
+            // `Existing` promises a record this account can resolve. The
+            // enrollment (person's key, device key, certificate) lives in the
+            // system identity tree, the public record in this account's
+            // config, and the two can part: a login account that never ran
+            // the join, or a config tree reset while the enrollment
+            // survived. Take the person up again here rather than report an
+            // identity that nothing can read.
+            if runtime_identity::resolve_active_identity(identity_dir).is_none() {
+                complete_enrolled_device(identity_dir, paths, now_ns)?;
+            }
+            return Ok(ProvisionOutcome::Existing);
+        }
         Ok(false) => {}
         Err(error) => return Err(joined_device_unusable(error)),
     }
@@ -1884,11 +1897,30 @@ mod tests {
         )
         .unwrap();
 
+        // Every consumer resolves the person through the account's active
+        // record: an `Existing` with nothing to resolve strands the session
+        // in recovery although the enrollment is sound.
+        let held_by_account = || {
+            let record = runtime_identity::resolve_active_identity(&identity_dir)
+                .expect("the joined person has a record the account resolves");
+            runtime_identity::load_metadata_from_path(&record)
+                .unwrap()
+                .group_public_key
+        };
         let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
         assert_eq!(outcome, ProvisionOutcome::Existing);
+        assert_eq!(held_by_account(), root.verifying_key().to_bytes());
         assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
         assert!(!paths.user_privkey.exists());
         assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
+
+        // The account's config is reset while the system-wide enrollment
+        // survives: the person is taken up again, never replaced.
+        fs::remove_dir_all(&identity_dir).unwrap();
+        let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
+        assert_eq!(outcome, ProvisionOutcome::Existing);
+        assert_eq!(held_by_account(), root.verifying_key().to_bytes());
+        assert!(!paths.user_privkey.exists());
     }
 
     /// A device approved from a nearby device: a public-only record selected
