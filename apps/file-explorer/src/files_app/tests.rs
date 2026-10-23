@@ -3674,7 +3674,8 @@ mod command_path_tests {
         xattr::set(&after, fs_protocol::SYNC_XATTR, b"local").unwrap();
         widget.next_metadata_refresh = Some(ui::time::now());
 
-        assert!(widget.refresh_metadata_if_due(ui::time::now()));
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        assert!(widget.settle_directory_refresh());
         assert_eq!(widget.entries[0].path, after);
         assert_eq!(
             widget.entries[0].sync_state,
@@ -7660,13 +7661,19 @@ fn a_listing_read_that_finds_nothing_asks_for_no_sync() {
     files.last_directory_read = long_ago;
     assert!(
         !files.serve_deadline(now),
+        "a read under way asks for no sync"
+    );
+    assert!(files.directory_refresh.is_reading(), "the due read started");
+    assert!(
+        !files.settle_directory_refresh(),
         "the folder is as it was: no sync"
     );
     std::fs::write(directory.path().join("b.txt"), b"b").unwrap();
     files.directory_changed = true;
     files.last_directory_read = long_ago;
+    let _ = files.serve_deadline(now);
     assert!(
-        files.serve_deadline(now),
+        files.settle_directory_refresh(),
         "a new file asks for the sync that shows it"
     );
     assert!(files.entries.iter().any(|entry| entry.name == "b.txt"));
