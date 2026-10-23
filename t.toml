@@ -3,11 +3,20 @@
 #
 # Main is where changes integrate, not a release: every push to it runs the cheap checks that
 # catch breakage in what it touched (fmt, clippy, the tests of the packages it reaches, the
-# policy and suite scripts), and t bisects each of their failures to the commit that caused it.
-# Release candidates on `stable` run the extensive ones as well: images, VM and FUSE suites,
-# size budgets, certification, the full web and SDK suites, Android, the goldens. Those say
-# `on = ["stable", "dispatch"]` and `default = false`; `t test <name>` runs one for a working
-# tree, `t dispatch <name>` on a branch. Most of them are keyed by the packages they build
+# policy and suite scripts, the lockfile, deny and hakari), and t bisects each of their failures
+# to the commit that caused it. Release candidates on `stable` run the extensive ones as well:
+# OS images and their boots, VM, micro-VM and FUSE suites, the whole-workspace nightly-* and
+# weekly-* sets, the perf runs, size budgets, certification, the full web and SDK suites,
+# Android, the goldens, development signing. Those say `on = ["stable", "dispatch"]` and
+# `default = false`; `t test <name>` runs one for a working tree, `t dispatch <name>` on a
+# branch. Nothing heavy runs on a schedule on main's head either; what does is cheap and
+# watches something outside the tree (certificate expiry, live third-party services, loop
+# devices, mirrors, extension manifests). A few heavy checks also say `idle`: main's newest head
+# runs them when CI has room left, at the lowest priority, and t bisects their failures like a
+# default check's. Publishing steps stay on main where something consumes main's development
+# tags (the builder pin below, the CI images, the mirrors, the services' dev images); those
+# only a release or a person uses (the release rehearsal and tools, the board images) are
+# dispatched. Most of the extensive checks are keyed by the packages they build
 # (`cargo_packages`) and the files they read, so running one for a change that doesn't touch
 # them takes its cached result: run those your change reaches (sdk-web for the web runtime,
 # real-fuse for the filesystem, render-counters for the toolkit's renderer, the goldens of the
@@ -147,10 +156,10 @@ video-player = ["tools/test-assets-build.rs", "tools/test-assets.py"]
 word-processor = ["crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
 # END generated
 
-# The test family's packages whose tests fail on aarch64 for reasons of the architecture, as the
-# nightly arm64 workspace test shows every night: launcher's owned-service namespaces, store's
-# package import, tilo-vmd's slot provenance, shell's contents picker and tilo-sandbox's seccomp
-# filters (syscall numbers are the architecture's). Everything else as `test`.
+# The test family's packages whose tests fail on aarch64 for reasons of the architecture, as
+# nightly-arm64-workspace-test shows: launcher's owned-service namespaces, store's package
+# import, tilo-vmd's slot provenance, shell's contents picker and tilo-sandbox's seccomp filters
+# (syscall numbers are the architecture's). Everything else as `test`.
 [[cargo]]
 name = "test-x86_64"
 tool = "nextest"
@@ -1052,6 +1061,10 @@ inputs = ["keys/**", "tools/signing/**", "os/etc/containers/**", "os/tests/relea
 requires = ["arch=x86_64"]
 isolation = "vm"
 cost = "minutes"
+# Release candidates and dispatches only: release-trust-expiry checks the certificates every
+# day, and the release-trust suite group (suite-release-trust) the policy's generator on main.
+on = ["stable", "dispatch"]
+default = false
 
 # The certificates again every day, uncached: one nearing expiry fails here, with the renewal
 # step in its message, two weeks before signing would refuse it.
@@ -2181,6 +2194,10 @@ cp "$(cargo test --locked -p ush --test it --no-run --message-format json | test
 outputs = ["/target/vm/ush-lib", "/target/vm/ush-it", "/target/debug/tilo-ush"]
 cargo_packages = ["ush"]
 inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
+# A micro-VM run per change to ush: release candidates and dispatches only. Main runs ush's
+# tests in the test family, where these guests skip.
+on = ["stable", "dispatch"]
+default = false
 
 [[check]]
 name = "ush-guests"
@@ -2226,6 +2243,8 @@ run_tests 5 setpriv --reuid=1000 --regid=1000 --clear-groups \\
   --nocapture --test-threads=1
 """
 inputs = []
+on = ["stable", "dispatch"]
+default = false
 
 [[check]]
 name = "launcher-root-build"
@@ -2246,6 +2265,10 @@ cp "$(cargo test --locked -p launcher --test it --no-run --message-format json |
 outputs = ["/target/vm/launcher-lib", "/target/vm/launcher-it", "/target/debug/tilo-launcher"]
 cargo_packages = ["launcher"]
 inputs = []
+# Builds launcher's tests at 16 cores for a micro-VM: release candidates and dispatches only.
+# Main runs launcher's tests in the test-x86_64 family, where these fixtures skip.
+on = ["stable", "dispatch"]
+default = false
 
 # The launcher's root-only fixtures: descriptors and protected trees owned by
 # root and other users, and capture readers confined in a mount namespace of
@@ -2291,6 +2314,8 @@ run_tests 2 /target/vm/launcher-it --exact --test-threads=1 \\
   capture_service::mounted_source::signed_original_mounted_roots_project_before_caller_drop_and_close_all_inputs
 """
 inputs = []
+on = ["stable", "dispatch"]
+default = false
 
 # The imager's and its backend's fixtures that give files to another user or become one: in
 # the job sandbox (uid 0 without capabilities) they skip with that reason, so they are built
@@ -2377,10 +2402,14 @@ on = ["stable", "dispatch", "idle"]
 default = false
 
 # ---------------------------------------------------------------------------
-# Scheduled suites: nightly-* every night, weekly-* on Sundays, and on request:
-# `t test 'nightly-*'` or `t dispatch <check>`. t reserves `/` in check names for package
-# families, hence the `nightly-` and `weekly-` prefixes. The nightly goldens,
-# app certification and vendored crates are the `goldens`, `certify` and
+# The whole-workspace suites: the nightly-* and weekly-* sets, named for when they used to run.
+# Each takes the whole workspace (or a release build of it), so they run on release candidates
+# and on request, not on main: `t test 'nightly-*'` for a working tree, `t dispatch <check>` on a
+# branch. The two live checks (nightly-live-music, nightly-live-sign-in) still run every night
+# on main's head: they test one package each against third-party services, which can change
+# under an unchanged tree, and a release candidate shouldn't wait on those services' uptime.
+# t reserves `/` in check names for package families, hence the `nightly-` and `weekly-`
+# prefixes. The goldens, app certification and vendored crates are the `goldens`, `certify` and
 # `vendored` checks above.
 
 [[check]]
@@ -2406,7 +2435,7 @@ bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "n
 """
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_GPU = "1", TILO_REQUIRE_AUDIO = "1" }
 writable_sources = true
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 cost = "heavy"
 default = false
 
@@ -2417,7 +2446,7 @@ run = """
 export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
 cargo check --workspace --locked --all-targets
 """
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 cost = "heavy"
 default = false
@@ -2429,7 +2458,7 @@ run = """
 export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
 bash tools/with-test-environment.sh cargo test --workspace --examples --locked
 """
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 cost = "heavy"
 default = false
@@ -2453,7 +2482,7 @@ TILO_TERMINAL_BINARY=$CARGO_TARGET_DIR/debug/terminal bash tools/with-test-envir
 """
 requires = ["arch=x86_64"]
 writable_sources = true
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
 cost = "heavy"
 default = false
@@ -2489,7 +2518,7 @@ cache = false
 cost = "minutes"
 default = false
 
-# The nightly's native aarch64 leg: the whole workspace's tests, every target,
+# The native aarch64 leg of the nightly-* set: the whole workspace's tests, every target,
 # every example, the app certification, the ignored tests a headless node
 # supports and the visual goldens, in the same builder image.
 [[check]]
@@ -2515,7 +2544,7 @@ bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "n
 """
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_GPU = "1", TILO_REQUIRE_AUDIO = "1" }
 writable_sources = true
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 cost = "heavy"
 default = false
 
@@ -2526,7 +2555,7 @@ run = """
 export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
 cargo check --workspace --locked --all-targets
 """
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
 cost = "heavy"
 default = false
@@ -2538,7 +2567,7 @@ run = """
 export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
 bash tools/with-test-environment.sh cargo test --workspace --examples --locked
 """
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
 cost = "heavy"
 default = false
@@ -2551,7 +2580,7 @@ export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACH
 cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace
 """
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1" }
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 cost = "heavy"
 default = false
 
@@ -2563,7 +2592,7 @@ requires = ["arch=arm64"]
 run = "bash tools/test-env.sh cargo nextest run --locked --profile ci --tests --no-tests=pass -p ebook -p shell -p tilo-ui -E '(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and test(e2e_shell_flows::))'"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }
 writable_sources = true
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 cost = "heavy"
 default = false
 # END generated
@@ -2586,7 +2615,7 @@ TILO_TERMINAL_BINARY=$CARGO_TARGET_DIR/debug/terminal bash tools/with-test-envir
 """
 requires = ["arch=arm64"]
 writable_sources = true
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json" }
 cost = "heavy"
 default = false
@@ -2608,7 +2637,7 @@ done
 env = { RUST_BACKTRACE = "1" }
 inputs = ["fuzz/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
 writable_sources = true
-on = ["schedule:0 3 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 timeout_secs = 5400
 cost = "heavy"
 default = false
@@ -2619,7 +2648,7 @@ run = "tools/ci/check-warnings.sh"
 # Counts warnings instead of failing on the first, so warnings stay warnings.
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 cost = "heavy"
-on = ["schedule:0 4 * * 0", "dispatch"]
+on = ["stable", "dispatch"]
 default = false
 
 # The workspace-wide form of the clippy family, with every package's tested features and the
@@ -2629,7 +2658,7 @@ name = "weekly-clippy"
 run = "python3 tools/ci/t_cargo_compile.py cargo clippy --locked --workspace --all-targets --keep-going -- -D warnings"
 inputs = ["tools/ci/t_cargo_compile.py", "tools/ci/package_sets.py", "tools/ci/package_features.py"]
 cost = "heavy"
-on = ["schedule:0 4 * * 0", "dispatch"]
+on = ["stable", "dispatch"]
 default = false
 
 [[check]]
@@ -2640,7 +2669,7 @@ cargo doc --workspace --no-deps --locked
 """
 env = { RUSTDOCFLAGS = "-D warnings" }
 cost = "heavy"
-on = ["schedule:0 4 * * 0", "dispatch"]
+on = ["stable", "dispatch"]
 default = false
 
 [[check]]
@@ -2652,14 +2681,14 @@ cargo build --release --workspace --locked
 tools/check-binary-size.sh "$CARGO_TARGET_DIR/release"
 """
 cost = "heavy"
-on = ["schedule:0 4 * * 0", "dispatch"]
+on = ["stable", "dispatch"]
 default = false
 
 [[check]]
 name = "weekly-latency"
 run = "cargo test --locked -p tilo-media --features realtime --test realtime -- --ignored --exact realtime_latency_per_frame --nocapture"
 cost = "heavy"
-on = ["schedule:0 4 * * 0", "dispatch"]
+on = ["stable", "dispatch"]
 default = false
 
 # Getting in, end to end, on the stack the web entry and room service images
@@ -2702,7 +2731,7 @@ inputs = ["apps/**", "crates/**", "vendor/**", "scripts/moq-browser/**", "script
 outputs = ["/target/auth-e2e/**"]
 git = true
 requires = ["arch=x86_64"]
-on = ["schedule:45 2 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 timeout_secs = 9000
 cost = "heavy"
 default = false
@@ -2749,8 +2778,8 @@ default = false
 # Tenant and agent isolation of hosted rooms: one relay governing several
 # tenants' rooms, the agents delegated into them and the host's compute, against
 # both relay builds that ship (the default one and the room service's `agents`
-# build). Each suite also runs with its crate's tests; this runs them together
-# every night, each test in its own process as the test family runs them. The
+# build). Each suite also runs with its crate's tests on main; this runs them together
+# on release candidates, each test in its own process as the test family runs them. The
 # relays run in process; nothing reaches a deployed host.
 [[check]]
 name = "security-isolation"
@@ -2771,7 +2800,7 @@ env = { RUST_BACKTRACE = "1" }
 inputs = ["apps/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
 # nextest's ci profile keeps its store and JUnit report under the source tree's target/.
 writable_sources = true
-on = ["schedule:40 2 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 timeout_secs = 5400
 cost = "heavy"
 default = false
@@ -3079,16 +3108,17 @@ on = ["dispatch"]
 plan = "full"
 
 # ---------------------------------------------------------------------------
-# The nightly performance run: one check
+# The performance run, on release candidates and when dispatched: one check
 # per KPI group, each writing its records to /target/perf/<group>/, and
-# perf-scheduled, which compares them with the store and publishes them from
-# main. Groups run alone with `t test perf-render`; the whole run with
+# perf-scheduled, which compares them with the store and publishes them when it
+# runs for main (`t dispatch perf-scheduled --ref main`; TILO_PACKAGES_TOKEN is
+# main's). Groups run alone with `t test perf-render`; the whole run with
 # `t dispatch perf-scheduled` (inputs: accept, synthetic_series,
 # synthetic_factor). Measurements of the node they ran on, never stored results.
 
 [[check]]
 name = "perf-fs"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh fs"
 inputs = ["crates/**", "vendor/**", "apps/**", "tools/perf/**", "Cargo.toml", "Cargo.lock"]
@@ -3100,7 +3130,7 @@ default = false
 
 [[check]]
 name = "perf-agent"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh agent"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
@@ -3113,7 +3143,7 @@ default = false
 
 [[check]]
 name = "perf-footprint"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint"
 image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
@@ -3126,7 +3156,7 @@ default = false
 
 [[check]]
 name = "perf-footprint-image"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh footprint-image"
 image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
@@ -3139,7 +3169,7 @@ default = false
 
 [[check]]
 name = "perf-latency"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh latency"
 env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
@@ -3152,7 +3182,7 @@ default = false
 
 [[check]]
 name = "perf-render"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh render"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" }
@@ -3165,7 +3195,7 @@ default = false
 
 [[check]]
 name = "perf-wakeups"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh wakeups"
 inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
@@ -3177,7 +3207,7 @@ default = false
 
 [[check]]
 name = "perf-search"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh search"
 inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
@@ -3189,7 +3219,7 @@ default = false
 
 [[check]]
 name = "perf-hosting"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
@@ -3202,7 +3232,7 @@ default = false
 
 [[check]]
 name = "perf-hosting-room"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting-room"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
@@ -3217,7 +3247,7 @@ default = false
 
 [[check]]
 name = "perf-browser"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh browser"
 # The release bundle names its commit through Git, which the script sets up
@@ -3235,7 +3265,7 @@ default = false
 
 [[check]]
 name = "perf-stream"
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh stream"
 writable_sources = true
@@ -3259,7 +3289,7 @@ outputs = ["/target/perf/compare/**"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 cache = false
 default = false
-on = ["schedule:15 1 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 
 [check.dispatch_inputs]
 accept = ""
@@ -3347,8 +3377,9 @@ apps = ""
 # dev disk of the newest main commit before it that has one (tools/ci/vm-acceptance.sh).
 # `t dispatch vm-acceptance --input swap=all --input only=input` runs a selection;
 # `t test vm-acceptance` the checks a working tree's changes select; `t outputs
-# vm-acceptance` gives the report. vm-acceptance-perf runs it nightly on main and
-# publishes its performance records.
+# vm-acceptance` gives the report. vm-acceptance-perf runs it on release candidates and when
+# dispatched, and publishes its performance records when it runs for main (`t dispatch
+# vm-acceptance-perf --ref main`).
 [[check]]
 name = "vm-acceptance"
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
@@ -3379,7 +3410,7 @@ run = """
 records=/target/vm-acceptance/report/records.jsonl
 [[ -s $records ]] || { echo "the acceptance run wrote no performance records" >&2; exit 1; }
 publish=false
-[[ ${T_REF:-} == main && ${T_TRIGGER:-} == schedule ]] && publish=true
+[[ ${T_REF:-} == main ]] && publish=true
 status=0
 python3 tools/perf/compare.py --results "$records" --store https://code.tilo.so --owner tilo \
   --lane vm-acceptance --groups boot,session,idle,memory,disk,app,render --publish-dir "$TMPDIR/publish" \
@@ -3399,7 +3430,7 @@ inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 cache = false
 default = false
-on = ["schedule:23 2 * * *"]
+on = ["stable", "dispatch"]
 
 # The imager's staging helper and reclaim proofs over loop devices. Needs a privileged node with loop
 # devices.
@@ -3425,7 +3456,7 @@ default = false
 # fanotify, Btrfs and loop devices.
 [[check]]
 name = "native-tier1"
-on = ["schedule:50 2 * * *", "dispatch"]
+on = ["stable", "dispatch"]
 requires = ["native-storage"]
 privileged = true
 devices = ["/dev/loop-control"]
@@ -3672,7 +3703,8 @@ on = ["main", "dispatch"]
 
 # The release rehearsal (tools/ci/publish/rehearsal): a one-file image that runs the whole chain
 # as a release does, so the chain is proven on t without publishing anything anyone deploys.
-# Main publishes `dev-<commit>` when its inputs change. A tag `v0-rehearsal-<n>` (or `t dispatch
+# `t dispatch publish-release-rehearsal --ref main` publishes `dev-<commit>`; main doesn't on its
+# own, since nothing deploys it. A tag `v0-rehearsal-<n>` (or `t dispatch
 # publish-release-rehearsal --ref stable`) runs it as a release: it is signed with the release key in
 # KMS (identity token, AWS role), published as `sha-<commit>` with the signature and a receipt, and
 # the reference's `release-rehearsal` pointer is set. No other check runs on such a tag.
@@ -3710,7 +3742,7 @@ outputs = ["/target/publish/release-rehearsal/receipt.json"]
 pointers = { release-rehearsal = "/target/publish/release-rehearsal/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["main", "dispatch", "dispatch", "tag:v0-rehearsal-*"]
+on = ["dispatch", "tag:v0-rehearsal-*"]
 # END generated
 
 # BEGIN generated by tools/ci/t_toml.py: products-ci-images
@@ -3772,8 +3804,9 @@ on = ["main", "dispatch"]
 
 # The release tools image (os/Containerfile.release-tools): the compiler-free environment the
 # release jobs run in, built and tested natively per architecture and published from main as
-# one index. Its consumers pin the index by digest; jobs pull it before they can log in, so it
-# must be anonymously pullable.
+# one index when someone asks (`t dispatch publish-release-tools --ref main`). Its consumers pin
+# the index by digest by hand, so a push to main has nothing to publish it for; jobs pull it
+# before they can log in, so it must be anonymously pullable.
 [[check]]
 name = "image-release-tools-{arch}"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -3813,7 +3846,7 @@ needs = ["image-release-tools"]
 outputs = ["/target/publish/release-tools/index/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["main", "dispatch"]
+on = ["dispatch"]
 
 # The CI builder (os/Containerfile.builder, tools/ci/publish/ci-builder.sh): the image t's checks
 # and the CI jobs run in, with the pinned toolchain baked in, built natively per architecture and
@@ -5306,10 +5339,10 @@ default = false
 # BEGIN generated by tools/ci/t_toml.py: products-development-signing
 # The development signing tools proven natively on both architectures (os/tests/
 # development_signing_native.sh): a fixture image with private keys and a local registry,
-# whose tests nest Podman, so it runs as root in a micro-VM step. It runs on main whenever
-# what it reads changes (the signing tools, their tests, tilo-crypto and what it depends on);
-# T_INPUT_PROOF=prediction|retention|prediction-retention selects one proof once it can also
-# be dispatched.
+# whose tests nest Podman, so it runs as root in a micro-VM step. It builds and boots fixture
+# images on both architectures, so it runs on release candidates and when dispatched, not on
+# every push to main. `t dispatch development-signing-x86_64 --input
+# proof=prediction|retention|prediction-retention` runs one proof.
 [[check]]
 name = "development-signing-context-{arch}"
 run = "bash os/tests/development_signing_native.sh context /target/development-signing/{arch}"
@@ -5318,6 +5351,8 @@ cargo_packages = ["tilo-crypto"]
 outputs = ["/target/development-signing/{arch}/**"]
 requires = ["arch={arch}"]
 cost = "heavy"
+on = ["stable", "dispatch"]
+default = false
 
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -5331,6 +5366,11 @@ requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 requirement = { cores = 4, memory = "16GiB" }
 timeout_secs = 2700
+on = ["stable", "dispatch"]
+default = false
+
+[check.dispatch_inputs]
+proof = "full"
 
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -5834,14 +5874,16 @@ default = false
 [check.matrix]
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
 
-# The image os-image-{arch} built, checked as a device gets it, every night main's image inputs
-# changed (tools/ci/publish/os-image-smoke.sh): inside the image, every ELF resolves its libraries,
-# every script its interpreter and every package its dependencies, the enabled units exist and
-# verify, every GStreamer plugin loads and Miracast's software encoders work, and the programs
-# the desktop runs start (tools/ci/image_smoke.py); then the image is installed onto a disk as a
-# release validation installs one and booted under KVM until the greeter accepts input, with no
-# unit failed on the way. It installs from the RPM set of the same run when no snapshot of it is
-# published, so a package-set change is checked on main before it reaches stable.
+# The image os-image-{arch} built, checked as a device gets it, on every release candidate and
+# when dispatched (tools/ci/publish/os-image-smoke.sh): inside the image, every ELF resolves its
+# libraries, every script its interpreter and every package its dependencies, the enabled units
+# exist and verify, every GStreamer plugin loads and Miracast's software encoders work, and the
+# programs the desktop runs start (tools/ci/image_smoke.py); then the image is installed onto a
+# disk as a release validation installs one and booted under KVM until the greeter accepts input,
+# with no unit failed on the way. It installs from the RPM set of the same run when no snapshot
+# of it is published, so a package-set change is checked before stable ships it (`t dispatch
+# nightly-os-image-x86_64 --ref main` checks it on main sooner). It builds the whole OS image, so
+# pushes to main don't run it.
 [[check]]
 name = "nightly-os-image-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
@@ -5855,7 +5897,7 @@ isolation = "vm"
 cost = "heavy"
 requirement = { cores = 8, memory = "16GiB" }
 timeout_secs = 5400
-on = ["schedule:30 1 * * *"]
+on = ["stable", "dispatch"]
 default = false
 
 [check.matrix]
@@ -5863,8 +5905,9 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 
 # Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 # firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
-# since bootc takes a device tree only from one. Every night, and when dispatched (`t dispatch
-# publish-os-board-lenovo-83ed --ref main`), main's head is built and pushed as
+# since bootc takes a device tree only from one. When dispatched (`t dispatch
+# publish-os-board-lenovo-83ed --ref main`; it builds the whole aarch64 OS image, so main
+# doesn't run it on its own), main's head is built and pushed as
 # registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
 # sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 # follow on their own (DEVELOPMENT.md, "Board dev images on real hardware").
@@ -5896,7 +5939,7 @@ needs = ["os-board-{board}"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["schedule:30 1 * * *", "dispatch"]
+on = ["dispatch"]
 
 [check.matrix]
 board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
