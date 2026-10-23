@@ -650,7 +650,7 @@ impl Widget for MusicApp {
         // callbacks queue requests; apply them at the next sync through the
         // same canonical actions as the palette, without waiting for another
         // pointer event.
-        self.take_window_toolbar_events();
+        self.take_window_toolbar_events(state);
         self.take_shell_events(state);
         if self.back_requested.replace(false) {
             self.on_back();
@@ -1058,12 +1058,6 @@ impl Widget for MusicApp {
                 );
             }
             View::Playlists => {
-                page_content.push(
-                    AccessNode::new(Role::Button)
-                        .with_hashed_key("new-playlist")
-                        .with_name("New playlist")
-                        .with_action_target("music.new-playlist"),
-                );
                 let total = self.lib.playlists.len();
                 list_items.extend(
                     self.lib
@@ -1211,7 +1205,6 @@ impl Widget for MusicApp {
         let action = match target {
             "music.open-search" => Action::OpenSearch,
             "music.connect-source" => Action::SpotifyEffect(crate::actions::MusicEffect::Sources),
-            "music.new-playlist" => Action::BeginNewPlaylist,
             _ => {
                 if let Some(id) = target.strip_prefix("music.nav.") {
                     let Some(view) = Self::top_level_view(id) else {
@@ -3043,7 +3036,8 @@ impl MusicApp {
         self.draw_media_grid(ctx, look, body, y, &cards)
     }
 
-    /// The Playlists destination: a "New playlist" action over the cards.
+    /// The Playlists destination: the playlists' cards. New playlist is the
+    /// window bar's action.
     fn draw_playlist_grid(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -3052,7 +3046,6 @@ impl MusicApp {
         y: f64,
         pls: &[PlaylistDisp],
     ) -> f64 {
-        let span = (body.x0 + look.gutter, body.x1 - look.gutter);
         if self.spotify_catalogue {
             let y = self.position_source_buttons(ctx, look, body, y);
             return if pls.is_empty() {
@@ -3061,16 +3054,6 @@ impl MusicApp {
                 self.draw_playlist_cards(ctx, look, body, y, pls)
             };
         }
-        let y = self.page_part(ctx, span, y, "new-playlist".into(), |asked| {
-            Box::new(
-                ui::widget::Row::new().no_wrap().push(Box::new(
-                    Button::new("music.new-playlist", "New playlist")
-                        .with_icon(Icon::Plus)
-                        .role(ButtonRole::Secondary)
-                        .on_click(super::page_part::asking(asked, Action::BeginNewPlaylist)),
-                )),
-            )
-        }) + look.gutter;
         if pls.is_empty() {
             return Self::note(ctx, look, body, y, "Playlists you make appear here.");
         }
