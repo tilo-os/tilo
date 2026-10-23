@@ -1846,7 +1846,10 @@ fn the_shell_shows_musics_places_and_transport_and_runs_what_is_chosen() {
             ui::widget::NavList::new(Vec::new()).fed_by(&app.places),
         ))
         .content(Box::new(ui::widget::Spacer::new()))
-        .bottom_band(Box::new(ui::widget::MediaTransport::new(&app.transport)));
+        .bottom_band(Box::new(ui::widget::MediaTransport::new(
+            &app.transport,
+            ui::widget::TransportActions::default(),
+        )));
     let size = (1280, 800);
     let mut harness =
         ui::headless::FrameHarness::for_root(ui::State::new(), shell, size, Theme::dark());
@@ -1860,15 +1863,60 @@ fn the_shell_shows_musics_places_and_transport_and_runs_what_is_chosen() {
         .and_then(|list| list.row_rect(&place))
         .expect("the playlist is a row");
     harness.click_at(row.center().x, row.center().y);
-    let play = widget_rect(harness.root::<ui::widget::NavShell>(), "transport.play")
-        .expect("the transport is in the band");
-    harness.click_at(play.center().x, play.center().y);
     app.take_shell_events(&mut ui::widget::Edits::lend(&mut doc));
     assert_eq!(app.view, View::Playlist("pl_drive".into()));
-    assert!(app.pb.playing, "play reached the player");
     let (_, selected) = app.places.shown().expect("the places are shown");
     assert_eq!(selected, Some(place), "the chosen place is the open one");
-    assert!(app.transport.shown().playing, "and the transport shows it");
+}
+
+/// The transport's controls run Music's own playback effects through the
+/// action door, as an agent's invocation does: shuffle and repeat reach
+/// this device's player, and the transport shows what the player has.
+#[test]
+fn the_transport_steers_the_player_through_its_effects() {
+    let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
+    let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+    app.surface_mut::<MusicApp>()
+        .absorb_album(&crate::backend::AlbumPage {
+            id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
+            tracks: vec![crate::backend::TrackHit {
+                video_id: track.into(),
+                title: "Transport fixture".into(),
+                artist: "Fixture artist".into(),
+                artist_id: None,
+                album: Some("Fixture album".into()),
+                album_id: Some("spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into()),
+                duration_s: 213,
+                cover_url: String::new(),
+            }],
+            ..Default::default()
+        });
+    app.settle();
+    app.effect_on(
+        &crate::actions::track_resource_id(track),
+        &crate::actions::MusicEffect::AddToQueue {
+            track: track.into(),
+        },
+    )
+    .unwrap();
+    app.settle();
+    // Wide enough for shuffle and repeat to stand beside the transport.
+    for _ in 0..3 {
+        app.harness()
+            .relayout_at((1600, 900))
+            .expect("the window lays out");
+    }
+    for id in ["transport.shuffle", "transport.repeat"] {
+        let rect = widget_rect(app.harness().root_widget(), id)
+            .unwrap_or_else(|| panic!("{id} is in the band"));
+        app.harness().click_at(rect.center().x, rect.center().y);
+        app.settle();
+    }
+    let player = &app.surface_mut::<MusicApp>().pb;
+    assert!(player.shuffle, "shuffle reached the player");
+    assert_eq!(player.repeat, RepeatMode::All, "and repeat");
+    let shown = app.surface_mut::<MusicApp>().transport.shown();
+    assert_eq!(shown.shuffle, Some(true), "the transport shows it");
 }
 
 // ---- text truncation --------------------------------------------------

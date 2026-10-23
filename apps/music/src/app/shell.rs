@@ -5,17 +5,63 @@
 //! sidebar's places (the destinations, the person's kept views and the
 //! playlists) through a [`NavFeed`], and what plays through a
 //! [`TransportFeed`]; what the person chose in either comes back as the
-//! window's own actions, never stored on the shell's side.
+//! window's own actions, never stored on the shell's side. The transport's
+//! controls run Music's own playback effects ([`MusicApp::transport_actions`]),
+//! the ones an agent invokes, so the person and an agent steer one player
+//! the same way.
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ui::LocalState;
 use ui::icons::Icon;
+use ui::tilo_resource::{Binds, Effect as _};
 use ui::widget::{
-    NavAction, NavFeed, NavItem, NavPane, NavSection, TransportArt, TransportEvent, TransportFeed,
-    TransportRepeat, TransportState, WindowBarLink,
+    NavAction, NavFeed, NavItem, NavPane, NavSection, TransportActions, TransportArt,
+    TransportEvent, TransportFeed, TransportRepeat, TransportState, WindowBarLink,
 };
 
 use super::{Action, MusicApp, View};
-use crate::model::RepeatMode;
+use crate::actions::MusicEffect;
+use crate::model::{Library, RepeatMode};
+
+/// What the scrubber's action reads when it is invoked: the length of the
+/// song that plays, as this window last showed it.
+#[derive(Default)]
+pub(crate) struct Playing {
+    duration_ms: AtomicU64,
+}
+
+/// `effect` on this device's player row, which offers it whatever plays:
+/// the control follows the row's own offer of it.
+fn on_player(effect: &MusicEffect) -> Option<ui::tilo_actions::ActionBinding<()>> {
+    let player = ui::tilo_actions::Resource::new(
+        crate::actions::PLAYER_RESOURCE_ID,
+        "music.player",
+        "Player",
+    )
+    .with_action(effect.bound());
+    ui::tilo_actions::ActionBinding::unit_for(&player, effect.id()).ok()
+}
+
+/// What a transport control's input makes the arguments of its effect.
+type Arguments<I> =
+    Box<dyn Fn(I) -> Result<serde_json::Map<String, serde_json::Value>, String> + Send + Sync>;
+
+/// An effect a transport control invokes with what its input makes of it.
+struct Invokes<I> {
+    id: &'static str,
+    arguments: Arguments<I>,
+}
+
+impl<I: 'static> Binds<MusicEffect, I> for Invokes<I> {
+    fn action_id(&self) -> &'static str {
+        self.id
+    }
+
+    fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        (self.arguments)(input)
+    }
+}
 
 /// The library's destinations in sidebar order: their icon, label and the
 /// view they open.
@@ -75,6 +121,60 @@ impl MusicApp {
         self.bar = Some(bar);
         self.pane = Some(pane.clone());
         self
+    }
+
+    /// The transport's controls, each bound to the playback effect an agent
+    /// invokes: play and pause, previous and next, shuffle, repeat and mute
+    /// on the player row, the scrubber's position and the volume on the
+    /// library. Liking a song is that song's own row action, so the
+    /// transport leaves it to the song.
+    pub(crate) fn transport_actions(
+        &self,
+        actions: &ui::framework::Actions<Library>,
+    ) -> TransportActions {
+        let seek = {
+            let playing = self.playing_now.clone();
+            Invokes {
+                id: MusicEffect::Seek { position_ms: 0 }.id(),
+                arguments: Box::new(move |fraction: f64| {
+                    let duration = playing.duration_ms.load(Ordering::Relaxed);
+                    if duration == 0 {
+                        return Err("the song's length is not known yet".to_owned());
+                    }
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        clippy::cast_precision_loss,
+                        reason = "a position within the song, in whole milliseconds"
+                    )]
+                    let position_ms = (fraction.clamp(0.0, 1.0) * duration as f64).round() as u64;
+                    Ok(MusicEffect::Seek { position_ms }.arguments())
+                }),
+            }
+        };
+        let volume = Invokes {
+            id: MusicEffect::SetVolume { volume: 0 }.id(),
+            arguments: Box::new(|level: f64| {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a volume of 0 to 100"
+                )]
+                let volume = (level.clamp(0.0, 1.0) * 100.0).round() as u8;
+                Ok(MusicEffect::SetVolume { volume }.arguments())
+            }),
+        };
+        TransportActions {
+            play_pause: on_player(&MusicEffect::PlayPause),
+            previous: on_player(&MusicEffect::Previous),
+            next: on_player(&MusicEffect::Next),
+            shuffle: on_player(&MusicEffect::ToggleShuffle),
+            repeat: on_player(&MusicEffect::CycleRepeat),
+            like: None,
+            mute: on_player(&MusicEffect::ToggleMute),
+            seek: actions.effect_binding(seek),
+            volume: actions.effect_binding(volume),
+        }
     }
 
     /// Declare the sidebar's places and what plays. A page this window
@@ -147,6 +247,9 @@ impl MusicApp {
         let pb = &self.pb;
         let idle = pb.current.is_none() && pb.queue.is_empty();
         let track = pb.current.as_deref().and_then(|id| self.playback_track(id));
+        self.playing_now
+            .duration_ms
+            .store(self.current_duration_ms(), Ordering::Relaxed);
         let mut state = TransportState {
             title: "Nothing playing".to_owned(),
             playing: pb.playing,
@@ -203,24 +306,9 @@ impl MusicApp {
         }
         for event in self.transport.take_events() {
             let action = match event {
-                TransportEvent::TogglePlay => Action::TogglePlay,
+                // A swipe across the band skips as the buttons do.
                 TransportEvent::Previous => Action::Prev,
                 TransportEvent::Next => Action::Next,
-                TransportEvent::Seek(ms) => {
-                    let duration = f64_of(self.current_duration_ms());
-                    if duration <= 0.0 {
-                        continue;
-                    }
-                    Action::SeekFrac((ms / duration).clamp(0.0, 1.0))
-                }
-                TransportEvent::Volume(volume) => Action::VolumeFrac(volume.clamp(0.0, 1.0)),
-                TransportEvent::ToggleMute => Action::ToggleMute,
-                TransportEvent::ToggleShuffle => Action::ToggleShuffle,
-                TransportEvent::CycleRepeat => Action::CycleRepeat,
-                TransportEvent::ToggleLike => match self.pb.current.clone() {
-                    Some(track) => Action::ToggleLike(track),
-                    None => continue,
-                },
                 TransportEvent::Lyrics => Action::Nav(View::Lyrics),
                 TransportEvent::Queue => Action::ToggleQueue,
                 TransportEvent::More(anchor) => Action::OpenPlayerMenu(anchor),
