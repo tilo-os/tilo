@@ -739,26 +739,23 @@ impl BooksApp {
         query.scroll = query.scroll.clamp(0.0, query.max_scroll);
     }
 
-    /// The search page: the chips, the library's results grouped by type,
-    /// and the store's below them.
+    /// What the search page shows, as the window bar names it: the words
+    /// searched for, or the chips alone when nothing is typed.
+    pub(super) fn query_title(&self) -> String {
+        let query = &self.query.engine.results().query;
+        match query.text.trim() {
+            "" if query.chips.is_empty() => "Search".to_owned(),
+            "" => ui::framework::views::KeptViews::default_name(query, self.query.engine.kinds()),
+            text => text.to_owned(),
+        }
+    }
+
+    /// The search page: how many results, the chips, the library's results
+    /// grouped by type, and the store's below them.
     pub(super) fn draw_query_view(&mut self, ctx: &mut PaintCtx<'_>) {
         self.query.rows.clear();
         let theme = ctx.theme;
-        let band = self.draw_page_header(ctx);
-        let height = ButtonFace::height(ControlSize::Regular, theme);
-        let inset = f64::from(theme.tokens.spacing.s3);
-        let back = Rect::new(
-            band.x0 + inset,
-            band.center().y - height / 2.0,
-            band.x0 + inset + height,
-            band.center().y + height / 2.0,
-        );
-        self.button(
-            ctx,
-            ButtonFace::icon_only(back, Icon::ArrowLeft, "Back"),
-            Action::CloseSearch,
-        );
-        let body = Rect::new(self.rect.x0, band.y1, self.rect.x1, self.rect.y1);
+        let body = self.rect;
         self.query.viewport = body;
         let rhythm = &theme.tokens.spacing.rhythm;
         let (gutter, section) = (f64::from(rhythm.group), f64::from(rhythm.section));
@@ -776,22 +773,11 @@ impl BooksApp {
             1 => "1 result".to_owned(),
             n => format!("{n} results"),
         });
-        // The title names what is shown: the words searched for, or the
-        // chips alone when nothing is typed (their chips stand below).
-        let title = match results.query.text.trim() {
-            "" if results.query.chips.is_empty() => "Search".to_owned(),
-            "" => ui::framework::views::KeptViews::default_name(
-                &results.query,
-                self.query.engine.kinds(),
-            ),
-            text => text.to_owned(),
+        let top = body.y0 + gutter - self.query.scroll;
+        let mut y = match count {
+            Some(count) => Self::draw_page_count(ctx, Point::new(span.0, top), &count) + gutter,
+            None => top,
         };
-        let mut y = Self::draw_page_title(
-            ctx,
-            Point::new(span.0, body.y0 + gutter - self.query.scroll),
-            &title,
-            count.as_deref(),
-        ) + gutter;
         y = self.query_chips(ctx, span, y, body, &results) + section;
         if results.query.is_empty() {
             y = Self::query_note(

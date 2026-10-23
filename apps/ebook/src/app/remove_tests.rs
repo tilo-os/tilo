@@ -66,11 +66,19 @@ fn activate(app: &mut TestApp<EbookShell>, target: &str) {
     app.settle();
 }
 
+/// Leave the reader for the shelf with the window bar's Back, as the
+/// desktop hands the press to the app.
+fn back_to_library(app: &mut TestApp<EbookShell>) {
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+    app.settle();
+}
+
 /// Press the remove button on the cover of the book `id`, which shows while
 /// the pointer is over its card on the shelf.
 fn press_remove(app: &mut TestApp<EbookShell>, id: &str) {
     if books(app).view != View::Library {
-        activate(app, "books.reader.back");
+        back_to_library(app);
     }
     app.harness().relayout();
     let books = books(app);
@@ -104,7 +112,7 @@ fn opens_after_reopening(app: TestApp<EbookShell>, id: &str) -> TestApp<EbookShe
         books(&mut app).load_error
     );
     if books(&mut app).view != View::Library {
-        activate(&mut app, "books.reader.back");
+        back_to_library(&mut app);
     }
     app.harness().relayout();
     activate(&mut app, &format!("books.book.open:{id}"));

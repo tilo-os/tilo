@@ -6,9 +6,6 @@ history-in-row 2 apps/maps/src/app.rs
 own-search 1 apps/maps/src/offline_panel.rs
 # The composer's formatting strip, inside the New message sheet over the mailbox.
 toolbar-row 1 apps/mail/src/compose.rs
-# Books' shelf header: sort, Hide finished, Settings and Open book in a row of
-# its own; sort and Hide finished become the window bar's views and menu items.
-toolbar-band 1 apps/ebook/src/app.rs
 # The browser's address row; the hairline under it is the page's edge.
 # Not a toolbar row, only the band's hairline borrowed: Writer's ruler wants
 # a divider of its own instead.

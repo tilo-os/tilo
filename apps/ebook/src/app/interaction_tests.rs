@@ -178,6 +178,14 @@ fn wait_for_import(app: &mut BooksApp, doc: &mut AutoCommit) {
     );
 }
 
+/// Press the window bar's control `id`, as the bar delivers the press.
+fn bar_press(app: &mut BooksApp, doc: &mut AutoCommit, id: &str) {
+    app.run_window_bar_event(
+        &ui::window_toolbar::ToolbarEvent::Action { id: id.into() },
+        &mut Edits::lend(doc),
+    );
+}
+
 fn find_semantic_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
     if node.action_target.as_deref() == Some(target) {
         return Some(node);
@@ -211,7 +219,7 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
         assert_eq!(Widget::tooltip(&app), None);
     }
 
-    // --- phase: accessibility_exposes_library_controls_and_routes_their_real_actions ---
+    // --- phase: the_library_controls_are_bar_slots_and_route_their_real_actions ---
     {
         let mut app = app_with_sample();
         let mut doc = library_doc();
@@ -220,20 +228,22 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
 
         let tree = Widget::accessibility(&app).expect("Books semantic root");
         assert_eq!(tree.role, Role::Window);
-        assert!(find_semantic_target(&tree, "books.library.open").is_some());
-        assert!(find_semantic_target(&tree, "books.library.sort").is_some());
-        let hide =
-            find_semantic_target(&tree, "books.library.hide-read").expect("hide-finished switch");
-        assert_eq!(hide.role, Role::Switch);
-        assert_eq!(hide.state.checked, Some(false));
+        let toolbar = app.window_toolbar();
+        assert!(
+            toolbar
+                .actions
+                .iter()
+                .any(|action| action.id == window_bar::OPEN_BOOK)
+        );
+        assert!(toolbar.views.is_some(), "the sort order is the bar's views");
+        let hide = toolbar
+            .actions
+            .iter()
+            .find(|action| action.id == window_bar::HIDE_FINISHED)
+            .expect("Hide finished is in the bar's menu");
+        assert!(!hide.on);
 
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            "books.library.hide-read",
-            &A11yAction::ToggleCheck,
-            &mut Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
+        bar_press(&mut app, &mut doc, window_bar::HIDE_FINISHED);
         assert!(TestLibrary::read_library_prefs(&doc).hide_read);
     }
 
@@ -288,19 +298,16 @@ fn reader_controls_are_accessible_and_live() {
             .expect("current page document");
         assert!(!document.children.is_empty(), "visible prose is navigable");
         assert!(document.children.iter().all(|node| node.name.is_some()));
-        assert!(find_semantic_target(&tree, "books.reader.back").is_some());
-        let bookmark =
-            find_semantic_target(&tree, "books.reader.bookmark").expect("bookmark toggle");
-        assert_eq!(bookmark.role, Role::ToggleButton);
-        assert_eq!(bookmark.state.checked, Some(false));
+        let toolbar = app.window_toolbar();
+        assert!(toolbar.navigation.is_some_and(|navigation| navigation.back));
+        let bookmark = toolbar
+            .actions
+            .iter()
+            .find(|action| action.id == window_bar::BOOKMARK)
+            .expect("the bookmark toggle is a bar action");
+        assert!(!bookmark.on);
 
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            "books.reader.bookmark",
-            &A11yAction::Activate,
-            &mut Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
+        bar_press(&mut app, &mut doc, window_bar::BOOKMARK);
         assert!(
             TestLibrary::list_annotations(&doc)
                 .iter()
@@ -379,45 +386,22 @@ fn reader_controls_are_accessible_and_live() {
         assert!(TestLibrary::read_settings(&doc).font_scale > before);
     }
 
-    // --- phase: narrow_large_text_settings_tabs_are_complete_and_semantic ---
+    // --- phase: the_settings_tabs_are_the_bars_views ---
     {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Shortcuts;
-        app.read_record(&doc);
-        app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        let theme = Theme::light().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        let mut scene = Scene::new();
-        app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::empty(),
-        );
+        frame(&mut app, &mut doc, 390.0, 844.0);
 
-        let tabs = app
-            .hits
-            .iter()
-            .filter(|hit| matches!(hit.action, Action::SetSettingsTab(_)))
-            .collect::<Vec<_>>();
-        assert_eq!(tabs.len(), 4, "the active tab remains discoverable");
-        assert!(tabs.iter().all(|hit| {
-            hit.rect.x0 >= app.rect.x0
-                && hit.rect.x1 <= app.rect.x1
-                && hit.rect.y0 >= app.rect.y0
-                && hit.rect.y1 <= app.rect.y1
-        }));
-        let first_y = tabs.first().map_or(0.0, |hit| hit.rect.y0);
-        assert!(
-            tabs.iter().any(|hit| (hit.rect.y0 - first_y).abs() > 1.0),
-            "large text reflows settings navigation into two bounded rows"
-        );
+        let views = app
+            .window_toolbar()
+            .views
+            .expect("the tabs are the bar's views");
+        assert_eq!(views.choices.len(), 4, "every tab is a choice");
+        assert_eq!(views.chosen, window_bar::tab_id(SettingsTab::Shortcuts));
+        bar_press(&mut app, &mut doc, &window_bar::tab_id(SettingsTab::Fonts));
+        assert_eq!(app.settings_tab, SettingsTab::Fonts);
     }
 }
 
@@ -981,8 +965,7 @@ fn font_choice_applies_persists_and_falls_back() {
         assert!(!mono0, "serif is a proportional face");
         // Open the settings popover and switch to the sans "Default" pill — the
         // real click path — which must apply and persist to the CRDT.
-        let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
-        click(&mut app, &mut doc, aa);
+        bar_press(&mut app, &mut doc, window_bar::APPEARANCE);
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let sans = find_reading_hit(
             &app,
@@ -1890,8 +1873,7 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(!app.reading_settings.is_open());
-        let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
-        assert!(click(&mut app, &mut doc, aa));
+        bar_press(&mut app, &mut doc, window_bar::APPEARANCE);
         assert!(app.reading_settings.is_open(), "popover opened");
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let dark = find_reading_hit(&app, |action| {
@@ -1915,7 +1897,7 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
 
         let (px0, px1) = ReadingSettings::panel_x_bounds(
             app.rect,
-            app.type_button,
+            app.appearance_anchor(),
             f64::from(Theme::dark().tokens.metrics.panel_width_utility),
             f64::from(Theme::dark().tokens.spacing.s3),
         );
@@ -1974,8 +1956,7 @@ fn type_popover_values_edit_and_persist() {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
-        click(&mut app, &mut doc, aa);
+        bar_press(&mut app, &mut doc, window_bar::APPEARANCE);
 
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let base = TestLibrary::read_settings(&doc).font_scale;
@@ -2017,8 +1998,7 @@ fn type_popover_values_edit_and_persist() {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
-        click(&mut app, &mut doc, aa);
+        bar_press(&mut app, &mut doc, window_bar::APPEARANCE);
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let val = app
             .reading_settings
@@ -3179,7 +3159,7 @@ fn library_shelf_layout_filtering_and_keyboard() {
     // --- phase: populated_shelf_offers_an_open_book_affordance ---
     {
         // A shelf that already has books still offers the trailing "Add a book"
-        // tile plus the top-bar Open action, so there is always a way in.
+        // tile plus the window bar's Open book action, so there is always a way in.
         let mut app = app_with_sample();
         app.view = View::Library;
         let mut doc = library_doc();
@@ -3314,17 +3294,11 @@ fn library_shelf_layout_filtering_and_keyboard() {
             "book 0 (fraction=1.0) is furthest read"
         );
 
-        assert!(
-            app.shelf_controls
-                .accessibility_nodes(app.library_prefs, None)
-                .iter()
-                .any(|node| node.action_target.as_deref() == Some("books.library.sort")),
-            "a sort control is present"
-        );
-        assert!(
-            app.shelf_controls
-                .has_action(ShelfControlAction::ToggleHideRead),
-            "a hide-read toggle is present"
+        bar_press(&mut app, &mut doc, &window_bar::sort_id(LibrarySort::Title));
+        assert_eq!(
+            TestLibrary::read_library_prefs(&doc).sort,
+            LibrarySort::Title,
+            "the bar's views sort the shelf"
         );
     }
 }
@@ -4037,9 +4011,8 @@ fn bookmarks_and_their_shortcuts() {
                 .count()
         };
         assert_eq!(bookmarks(&doc), 0, "no bookmark yet");
-        let bm = find_hit(&app, |a| matches!(a, Action::ToggleBookmark)).expect("bookmark icon");
-        assert!(click(&mut app, &mut doc, bm), "bookmark icon handled");
-        assert_eq!(bookmarks(&doc), 1, "icon added a bookmark");
+        bar_press(&mut app, &mut doc, window_bar::BOOKMARK);
+        assert_eq!(bookmarks(&doc), 1, "the bar's toggle added a bookmark");
         // Remove via the 'b' shortcut (same page position -> same anchor).
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(key_char(&mut app, &mut doc, "b"), "'b' consumed");
@@ -4152,10 +4125,10 @@ fn reader_shots_render_within_the_page_box() {
         assert!(app.toc_open(), "contents rail remains docked-open");
         assert!(app.notes_open(), "annotation rail remains docked-open");
         assert!(
-            app.hits
-                .iter()
-                .any(|hit| matches!(hit.action, Action::Back)),
-            "the equivalent reader top bar remains actionable"
+            app.window_toolbar()
+                .navigation
+                .is_some_and(|navigation| navigation.back),
+            "the window bar still leads back to the library"
         );
     }
 
@@ -4410,12 +4383,13 @@ fn continuation_opens_the_reader_from_the_library() {
         "the first frame must show the continued book"
     );
     assert_eq!(receiver.library[receiver.book_idx].id, sender.book_id());
-    assert!(
-        find_semantic_target(
-            &Widget::accessibility(&receiver).expect("reader semantics"),
-            "books.reader.back"
-        )
-        .is_some()
+    assert_eq!(
+        receiver
+            .window_toolbar()
+            .location
+            .map(|location| location.label),
+        Some(receiver.library[receiver.book_idx].title.clone()),
+        "the window bar names the continued book"
     );
 }
 
@@ -4983,34 +4957,9 @@ fn hit_rect(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Rect> {
         .map(|h| h.rect)
 }
 
-/// The reading-appearance button holds its 2x label inside the header row,
-/// and a font's size stepper is as wide as every value it can show.
+/// A font's size stepper is as wide as every value it can show.
 #[test]
 fn reader_controls_fit_their_labels() {
-    // --- phase: reader_type_button_contains_its_label_at_2x_text ---
-    {
-        for scale in [1.0_f32, 2.0] {
-            let mut app = app_with_sample();
-            let mut doc = library_doc();
-            frame_at_text_scale(&mut app, &mut doc, 800.0, 900.0, scale);
-            let button = app.type_button;
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(scale);
-            let (_, label_h) = tr.measure_style("Aa", None, &theme.text(TextRole::Label));
-            assert!(
-                button.height() >= f64::from(label_h) - 0.01,
-                "at {scale}× the button ({}) is shorter than its label ({label_h})",
-                button.height()
-            );
-            assert!(
-                button.y0 >= app.rect.y0 && button.y1 <= app.rect.y0 + app.header_h + 0.01,
-                "at {scale}× the button {button:?} leaves the {}px header row",
-                app.header_h
-            );
-        }
-    }
-
     // --- phase: size_stepper_holds_the_widest_value ---
     {
         let mut app = app_with_sample();
