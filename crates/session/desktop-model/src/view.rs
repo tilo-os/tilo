@@ -54,7 +54,6 @@ impl DesktopTree {
         std::mem::take(&mut self.room_records_inbound)
     }
 
-    /// Show workspace `id`, if the tree has it.
     pub fn set_active(&mut self, id: WorkspaceId) {
         if self.workspaces.iter().any(|w| w.id == id) {
             self.active = id;

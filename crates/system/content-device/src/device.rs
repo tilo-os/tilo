@@ -238,7 +238,6 @@ mod tests {
         let mut cache = Cache::new(10);
         cache.insert("a", item(1));
         cache.insert("b", item(2));
-        // Touching `a` makes `b` the least recently used.
         assert_eq!(cache.get("a").as_deref(), Some([1; 4].as_slice()));
         cache.insert("c", item(3));
         assert!(

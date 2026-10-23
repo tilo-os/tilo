@@ -271,7 +271,6 @@ pub enum Admitted {
     NotificationCenter(bool),
 }
 
-/// The scroll region key of `route`'s primary region `key`.
 pub fn scroll_region(route: RouteIds, key: &str) -> String {
     format!(
         "{}/{}/{}/{}/{key}",
@@ -710,7 +709,6 @@ pub struct PaneState {
 pub struct NotificationsState {
     /// Banners on screen.
     pub active: usize,
-    /// Notifications retained in the centre.
     pub retained: usize,
     pub center_open: bool,
 }
@@ -843,7 +841,6 @@ pub struct Snapshot {
     pub notifications: Option<NotificationsState>,
 }
 
-/// Project `tree` into the navigation snapshot for `generation`.
 pub fn snapshot(tree: &DesktopTree, generation: &str, applications: Vec<Application>) -> Snapshot {
     snapshot_with(tree, generation, applications, &Presentation::default())
 }

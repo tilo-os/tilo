@@ -1801,8 +1801,6 @@ fn published_selection_prefers_keyboard_focus_inside_the_window() {
     assert_eq!(published_selection(None, &[]), None);
 }
 
-/// A window's new-tab control asks which application to open, as the
-/// native shell's does, and the one chosen opens as a tab of that window.
 #[test]
 fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     // Mounted as its own type, so the test can find the control to press.

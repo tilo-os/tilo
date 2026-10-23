@@ -534,7 +534,6 @@ fn page_vault() -> tilo_files::VPath {
     tilo_files::VPath::new("accounts/vault/vault.enc").unwrap_or_else(|_| tilo_files::VPath::root())
 }
 
-/// As [`load_entries`], for a vault in page storage.
 fn load_page_entries(page: &tilo_files::Dir) -> Result<BTreeMap<String, Secret>, String> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
@@ -968,7 +967,6 @@ mod tests {
 
     #[test]
     fn vault_key_is_created_once_and_owner_only() {
-        // Phase `simultaneous_vault_creators_use_the_one_persisted_private_key`.
         {
             let root = temp_root();
             let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
@@ -996,7 +994,6 @@ mod tests {
             std::fs::remove_dir_all(&root).unwrap();
         }
 
-        // Phase `key_file_is_owner_only`.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1020,7 +1017,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn windows_key_custody_never_leaks_rotates_or_falls_back() {
-        // Phase `insecure_windows_vault_key_does_not_rotate_or_overwrite_the_vault`.
         {
             let root = temp_root();
             let mut vault =
@@ -1048,7 +1044,6 @@ mod tests {
             std::fs::remove_dir_all(&root).unwrap();
         }
 
-        // Phase `windows_dpapi_secret_store_does_not_publish_plaintext_key`.
         {
             let root = temp_root();
             let mut item = crate::SecretItem::login("Owned fixture", "user", "fixture secret");
@@ -1066,7 +1061,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `windows_dpapi_insecure_protected_key_cannot_replace_existing_vault`.
         {
             let root = temp_root();
             let mut vault = SecretVault::open_in(&root);
@@ -1093,7 +1087,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `windows_dpapi_corrupt_protected_key_never_falls_back_to_a_plaintext_key`.
         {
             let root = temp_root();
             let dir = crate::vault_dir_in(&root);
@@ -1123,7 +1116,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `windows_dpapi_concurrent_creation_returns_one_persisted_key`.
         {
             let root = temp_root();
             let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
@@ -1150,7 +1142,6 @@ mod tests {
 
     #[test]
     fn a_vault_that_cannot_be_opened_is_never_overwritten_or_misread() {
-        // Phase `missing_key_never_rekeys_an_existing_vault`.
         {
             let root = temp_root();
             let mut vault = SecretVault::open_in(&root);
@@ -1169,7 +1160,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `failed_open_cannot_overwrite_vault_after_key_is_restored`.
         {
             let root = temp_root();
             let mut vault = SecretVault::open_in(&root);
@@ -1192,7 +1182,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `save_preserves_ciphertext_corrupted_after_open`.
         {
             let root = temp_root();
             let mut vault = SecretVault::open_in(&root);
@@ -1208,7 +1197,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `authenticated_but_invalid_document_is_preserved`.
         {
             let root = temp_root();
             let dir = crate::vault_dir_in(&root);
@@ -1222,7 +1210,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `wrong_key_cannot_decrypt_a_persisted_vault`.
         {
             let root = temp_root();
             let id = AccountId::from("x");
@@ -1257,27 +1244,22 @@ mod tests {
 
     #[test]
     fn sealed_vault_round_trips_and_never_exposes_the_secret() {
-        // Phase `seal_open_round_trips_and_rejects_tampering`.
         {
             let key = VaultKey::from_bytes([7u8; KEY_LEN]);
             let plaintext = b"secret vault bytes";
             let blob = seal(&key, plaintext).expect("seal");
             // The sealed blob is not the plaintext.
             assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
-            // It is a versioned `tilo-seal` envelope bound to this vault format.
             assert!(blob.starts_with(b"TSEAL"));
-            // Round-trips under the same key.
             assert_eq!(open(&key, &blob).unwrap().as_slice(), plaintext);
             // A different key can't open it.
             assert!(open(&VaultKey::from_bytes([9u8; KEY_LEN]), &blob).is_none());
-            // A single flipped ciphertext byte fails authentication.
             let mut tampered = blob;
             let last = tampered.len() - 1;
             tampered[last] ^= 0x01;
             assert!(open(&key, &tampered).is_none());
         }
 
-        // Phase `vault_put_save_load_round_trips`.
         {
             let root = temp_root();
             let id = AccountId::from("ada@example.com");
@@ -1296,7 +1278,6 @@ mod tests {
             std::fs::remove_dir_all(&root).ok();
         }
 
-        // Phase `secret_never_appears_in_the_sealed_file`.
         {
             let root = temp_root();
             let mut v = SecretVault::open_in(&root);

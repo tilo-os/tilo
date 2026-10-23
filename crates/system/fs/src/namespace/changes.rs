@@ -93,7 +93,6 @@ impl ChangeTrackedDoc {
         self.doc.diff_obj(obj, before, after, recursive)
     }
 
-    /// Whether the document holds the change `hash`.
     pub(super) fn has_change(&mut self, hash: &ChangeHash) -> bool {
         self.doc.get_change_meta_by_hash(hash).is_some()
     }

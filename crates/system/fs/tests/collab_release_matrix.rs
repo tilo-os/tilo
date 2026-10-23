@@ -1067,11 +1067,6 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         });
         let updated_manifest = Hash::from(updated_manifest);
         let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
-        // The replica advertises a complete generation that is exactly the
-        // namespace it holds durably, and that namespace has the change. The
-        // namespace may move on after the change first lands (the records
-        // that go with it are projected after it); the proof is for the
-        // generation the replica advertises.
         tilo_test_env::wait_for("the replica to hold the change durably", || {
             if let Some(exit) = nas.child.try_wait().unwrap() {
                 panic!(

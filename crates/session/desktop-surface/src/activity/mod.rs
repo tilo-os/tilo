@@ -35,10 +35,6 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
     fn document(&self) -> &AutoCommit;
     fn document_mut(&mut self) -> &mut AutoCommit;
     /// Rebuild the desktop projection from the causal document.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the document no longer projects to a desktop.
     fn resync_activity_cache(&mut self) -> Result<(), String>;
     fn replay_presentation_note(&self) -> Option<String> {
         None
@@ -87,10 +83,6 @@ pub struct ActivitySnapshot {
 }
 impl ActivitySnapshot {
     /// Snapshot the active room of `desktop` from its admitted owner document.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when there is no active workspace or the room does not project.
     pub fn new(desktop: DesktopTree, doc: AutoCommit) -> Result<Self, String> {
         let room = desktop
             .active_workspace()
@@ -168,9 +160,6 @@ pub trait ActivityHost {
         None
     }
     /// Submit a chosen source command through the existing admitted action session.
-    ///
-    /// # Errors
-    /// Returns a localized refusal if the source or caller is no longer admitted.
     fn submit_morning_command(
         &self,
         _room: &str,
@@ -228,9 +217,6 @@ pub trait ActivityHost {
         Some(Err(crate::i18n::t("activity-task-review-unavailable")))
     }
     /// Queue an authenticated owner command without blocking the paint/input thread.
-    ///
-    /// # Errors
-    /// The owner adapter is unavailable or its bounded queue is full.
     fn submit_task_review(&self, _request: TaskReviewRequest) -> Result<(), String> {
         Err(crate::i18n::t("activity-task-review-unavailable"))
     }
@@ -239,18 +225,10 @@ pub trait ActivityHost {
         None
     }
     /// Dispatch a workspace task to its agent.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when dispatch is unavailable or refused.
     fn dispatch_task(&self, _room: &str, _task: &str) -> Result<(), String> {
         Err(crate::i18n::t("activity-agent-dispatch-unavailable"))
     }
     /// Launch an agent into `workspace`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when launching is unavailable or refused.
     fn launch_agent(&self, _agent: &str, _workspace: &Workspace) -> Result<(), String> {
         Err(crate::i18n::t("activity-agent-launch-unavailable"))
     }

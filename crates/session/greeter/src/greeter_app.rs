@@ -535,7 +535,6 @@ pub enum AuthScenario {
     PersonalSessionFailed,
     /// Personal-device form when greetd cannot be reached.
     PersonalServiceDown,
-    /// Personal-device form with an expired passcode.
     PersonalPasscodeExpired,
     /// Personal-device form on a machine with a second session installed,
     /// so the footer offers the choice.
@@ -1833,7 +1832,6 @@ impl GreeterApp {
         env
     }
 
-    /// The username this attempt is for.
     fn attempt_username(&self) -> String {
         // A known account's identity comes from conservative host discovery,
         // not the editable field. Otherwise the visible field counts, with
@@ -3206,7 +3204,6 @@ mod tests {
                 ["/usr/libexec/tilo-session", "--backend", "drm"]
             );
         }
-        // Phase `two_sessions_put_the_picker_in_the_footer`.
         {
             let app = GreeterApp::with_sessions(test_sessions());
             assert!(app.offers_session_choice());
@@ -3228,7 +3225,6 @@ mod tests {
             );
             assert_eq!(app.session_label(), "Tilo", "the human name, not the id");
         }
-        // Phase `picker_selection_drives_the_started_session`.
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let doc = AutoCommit::new();
@@ -3239,7 +3235,6 @@ mod tests {
             assert_eq!(app.selected_session, 0);
             assert_eq!(app.session_choice.with(Clone::clone), "Tilo");
 
-            // What the picker stores on a selection.
             app.session_choice.set("Weston".to_owned());
             app.sync(&doc, &root);
             assert_eq!(app.selected_session, 1);
@@ -3256,7 +3251,6 @@ mod tests {
             assert_eq!(app.selected_session, 1, "choice survives a stale label");
             assert!(untouched(&doc), "the choice stays out of the document");
         }
-        // Phase `no_session_is_a_clear_error_not_a_crash`.
         {
             let mut app = GreeterApp::with_sessions_and_login_user(Vec::new(), Some(quick_user()));
             let doc = AutoCommit::new();
@@ -3274,7 +3268,6 @@ mod tests {
 
     #[test]
     fn fingerprint_login_is_offered_only_for_enrolled_accounts_and_sends_no_password() {
-        // Phase `fingerprint_enrollment_output_fails_closed`.
         {
             assert!(fingerprint_list_has_enrollment(
                 "Fingerprints for user quickuser:\n - #0: right-index-finger\n"
@@ -3287,7 +3280,6 @@ mod tests {
             ));
             assert!(!fingerprint_list_has_enrollment("right-index-finger"));
         }
-        // Phase `fingerprint_action_is_hidden_and_rejected_without_enrollment`.
         {
             let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
                 one_session(),
@@ -3305,7 +3297,6 @@ mod tests {
             assert_eq!(app.notice, Notice::Hint("greeter-hint-no-fingerprint"));
             assert_eq!(app.phase, AuthPhase::Idle);
         }
-        // Phase `multi_account_fingerprint_is_resolved_for_the_typed_username`.
         {
             let mut app = GreeterApp::with_sessions_login_user_and_fingerprint(
                 one_session(),
@@ -3319,7 +3310,6 @@ mod tests {
             assert!(!app.fingerprint_available_for("alice"));
             assert!(!app.fingerprint_available_for(""));
         }
-        // Phase `fingerprint_auth_explicitly_uses_no_password`.
         {
             let mut app = GreeterApp::with_sessions(one_session());
             let doc = AutoCommit::new();
@@ -3336,7 +3326,6 @@ mod tests {
                 "fingerprint PAM conversation must begin without a dummy password"
             );
         }
-        // Phase `fingerprint_prompt_renders_as_feedback`.
         {
             let app = GreeterApp::for_shot(AuthScenario::Fingerprint);
             assert_eq!(app.phase, AuthPhase::Authenticating);
@@ -3358,7 +3347,6 @@ mod tests {
 
     #[test]
     fn submit_validates_fields_keeps_the_passcode_private_and_ignores_repeats() {
-        // Phase `submit_without_username_is_a_hint`.
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let mut doc = AutoCommit::new();
@@ -3368,7 +3356,6 @@ mod tests {
             assert!(!app.requests.sign_in.get(), "the request is taken once");
             assert!(untouched(&doc), "an attempt writes nothing to the document");
         }
-        // Phase `submit_without_password_is_a_hint`.
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let mut doc = AutoCommit::new();
@@ -3386,7 +3373,6 @@ mod tests {
             assert_eq!(app.notice, Notice::Hint("greeter-hint-passcode"));
             assert_eq!(app.phase, AuthPhase::Idle);
         }
-        // Phase `without_greetd_the_screen_says_so_plainly`.
         {
             let mut app =
                 GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
@@ -3399,7 +3385,6 @@ mod tests {
             assert_eq!(app.notice, Notice::Error("greeter-error-service"));
             assert!(!app.status_text().contains("GREETD_SOCK"));
         }
-        // Phase `a_hint_and_an_error_look_different`.
         {
             let mut hint = GreeterApp::with_sessions(one_session());
             hint.set_hint("greeter-hint-passcode");
@@ -3426,7 +3411,6 @@ mod tests {
                 "Incorrect username or password. Try again."
             );
         }
-        // Phase `passcode_never_enters_automerge_or_its_saved_history`.
         {
             let app = GreeterApp::with_sessions(one_session());
             let mut doc = AutoCommit::new();
@@ -3449,7 +3433,6 @@ mod tests {
             assert_eq!(secret.as_str(), "correct horse battery staple");
             assert!(app.password_buffer.lock().unwrap().is_empty());
         }
-        // Phase `submit_while_busy_is_ignored`.
         for phase in [AuthPhase::Authenticating, AuthPhase::Starting] {
             let mut app = GreeterApp::with_sessions(one_session());
             let doc = AutoCommit::new();
@@ -3561,7 +3544,6 @@ mod tests {
 
     #[test]
     fn a_personal_device_greets_the_person_and_asks_only_for_the_passcode() {
-        // Phase `sole_local_user_gets_a_one_passcode_form_with_passcode_focus_first`.
         {
             let mut app =
                 GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
@@ -3607,7 +3589,6 @@ mod tests {
             assert!(accessible_name_for(card.as_ref(), "greeter.username").is_none());
             assert_eq!(count_named(card.as_ref(), "Avatar"), 1);
         }
-        // Phase `one_passcode_autofocus_is_exposed_to_assistive_technology`.
         {
             let greeter =
                 GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
@@ -3623,7 +3604,6 @@ mod tests {
                 .and_then(|node| node.name.as_deref());
             assert_eq!(focused, Some("Password"));
         }
-        // Phase `ambiguous_account_discovery_keeps_named_two_field_fallback`.
         {
             let app = GreeterApp::with_sessions_and_login_user(one_session(), None);
             let card = card_of(&app);
@@ -3641,7 +3621,6 @@ mod tests {
                 Some("greeter.username")
             );
         }
-        // Phase `the_person_is_named_before_the_passcode_is_asked`.
         {
             let app = GreeterApp::for_shot(AuthScenario::Personal);
             let said = spoken(card_of(&app).as_ref());
@@ -3663,7 +3642,6 @@ mod tests {
             assert_eq!(app.notice, Notice::Hint("greeter-hint-username"));
             assert!(untouched(&doc));
         }
-        // Phase `focused_alternate_controls_own_enter`.
         for control in [
             "greeter.session",
             "greeter.fingerprint",
@@ -3709,7 +3687,6 @@ mod tests {
 
     #[test]
     fn in_flight_feedback_is_said_once_with_appropriate_urgency() {
-        // Phase `signing_in_says_so_beside_a_spinner`.
         {
             let app = GreeterApp::for_shot(AuthScenario::PersonalAuthenticating);
             assert_eq!(app.status_text(), "Signing in…");
@@ -3722,7 +3699,6 @@ mod tests {
                 "the in-flight sentence appears exactly once: {said:?}"
             );
         }
-        // Phase `feedback_is_a_live_region_with_appropriate_urgency`.
         for (scenario, message, expected) in [
             (
                 AuthScenario::PersonalHint,
@@ -3747,7 +3723,6 @@ mod tests {
                 "{scenario:?} feedback must be announced at the right urgency"
             );
         }
-        // Phase `worker_prompt_update_reflects_in_feedback`.
         {
             let mut app = GreeterApp::with_sessions(one_session());
             let mut doc = AutoCommit::new();
@@ -3764,7 +3739,6 @@ mod tests {
             assert_eq!(app.phase, AuthPhase::Authenticating);
             assert_eq!(app.status_text(), "Place your finger on the reader");
         }
-        // Phase `accepted_resolves_into_a_visible_success_state`.
         {
             let mut app = GreeterApp::with_sessions(one_session());
             let mut doc = AutoCommit::new();
@@ -3882,7 +3856,6 @@ mod tests {
                 "the passcode field is editable again"
             );
         }
-        // Phase `focus_reset_after_failure_lands_on_the_passcode_field`.
         {
             let mut greeter =
                 GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
@@ -3905,7 +3878,6 @@ mod tests {
 
     #[test]
     fn authentication_and_power_actions_lock_input_and_reset_focus() {
-        // Phase `authenticating_disables_inputs_and_requests_focus_reset`.
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             app.begin_authenticating();
@@ -3926,7 +3898,6 @@ mod tests {
                 "focus reset is one-shot"
             );
         }
-        // Phase `authenticating_focus_reset_lands_on_the_sign_in_action`.
         {
             let mut greeter = GreeterApp::with_sessions(one_session());
             greeter.begin_authenticating();
@@ -3943,7 +3914,6 @@ mod tests {
                 .and_then(|node| node.name.as_deref());
             assert_eq!(focused, Some("Sign in"));
         }
-        // Phase `the_power_menu_runs_each_action_once`.
         for action in PowerAction::ALL {
             let mut app = GreeterApp::with_sessions(one_session());
             let doc = AutoCommit::new();

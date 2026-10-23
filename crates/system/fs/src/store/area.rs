@@ -394,7 +394,6 @@ impl FileArea {
         self.state.lock_recover()
     }
 
-    /// The file holding `key`'s bytes.
     pub fn path_of(&self, key: &AreaKey) -> PathBuf {
         self.data.join(hex::encode(key))
     }
@@ -661,11 +660,6 @@ impl FileArea {
     /// the file's data has been synced: with `durable` now, otherwise once
     /// [`SYNC_BATCH`] bytes have accumulated or the entry is complete, so a
     /// recorded range is never one whose bytes a crash could lose.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the entry is missing or the sync or record
-    /// fails.
     pub fn mark_resident(
         &self,
         key: &AreaKey,
@@ -675,7 +669,6 @@ impl FileArea {
         self.mark_resident_in(key, None, ranges, durable)
     }
 
-    /// The current generation of `key`'s file.
     pub fn generation(&self, key: &AreaKey) -> Option<u64> {
         self.lock().entries.get(key).map(|e| e.generation)
     }
@@ -770,11 +763,6 @@ impl FileArea {
     }
 
     /// Reads `len` bytes at `offset` of `key`. Every byte must be resident.
-    ///
-    /// # Errors
-    ///
-    /// `NotFound` when part of the range is not resident, or the read's
-    /// error.
     pub fn read_at(&self, key: &AreaKey, offset: u64, len: u64) -> io::Result<Vec<u8>> {
         let range = offset..offset.saturating_add(len);
         if !self.missing(key, &range).is_empty() {
@@ -828,10 +816,6 @@ impl FileArea {
     /// Makes `key` a complete entry holding the first `len` bytes of
     /// `source`: cloned where the filesystem shares extents, copied
     /// otherwise. `chunks` are indexed as by [`Self::ensure`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the copy or the record fails.
     pub fn adopt_clone(
         &self,
         key: &AreaKey,
@@ -863,10 +847,6 @@ impl FileArea {
     }
 
     /// Makes `key` a complete entry holding `bytes`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the write or the record fails.
     pub fn adopt_bytes(
         &self,
         key: &AreaKey,
@@ -996,10 +976,6 @@ impl FileArea {
     /// `size` bytes, created if needed) and records them resident. A keyed
     /// entry that becomes complete is fingerprinted and shares extents with
     /// an identical one.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `body` ends early or a write or record fails.
     pub fn fill_from(
         &self,
         key: &AreaKey,
@@ -1048,11 +1024,6 @@ impl FileArea {
     /// Copies `range` of `key` into `dest` at the same offsets: a clone of
     /// shared extents where the filesystem allows, a copy elsewhere. Every
     /// byte must be resident.
-    ///
-    /// # Errors
-    ///
-    /// `NotFound` when part of the range is not resident, or the copy's
-    /// error.
     pub fn copy_to(&self, key: &AreaKey, range: &Range<u64>, dest: &File) -> io::Result<()> {
         if !self.missing(key, range).is_empty() {
             return Err(io::Error::new(
@@ -1203,10 +1174,6 @@ impl FileArea {
 
     /// Syncs and records every entry's residency and last use, so progress
     /// and eviction order survive a restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a sync or the record fails.
     pub fn flush(&self) -> io::Result<()> {
         let unsynced: Vec<AreaKey> = self
             .lock()
@@ -1314,10 +1281,6 @@ pub fn read_entry_unlocked(
 }
 
 /// BLAKE3 of a file, streamed.
-///
-/// # Errors
-///
-/// Returns the read's error.
 pub fn hash_file(path: &Path) -> io::Result<[u8; 32]> {
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(File::open(path)?)?;
@@ -1361,10 +1324,6 @@ fn clone_or_copy(source: &File, target: &File, len: u64) -> io::Result<()> {
 
 /// Copies `len` bytes from `source` at `from` to `dest` at `to`. The kernel
 /// clones shared extents where it can (`copy_file_range`).
-///
-/// # Errors
-///
-/// Returns the copy's error, or `UnexpectedEof` when `source` is short.
 pub fn copy_range(source: &File, from: u64, dest: &File, to: u64, len: u64) -> io::Result<()> {
     #[cfg(all(target_os = "linux", feature = "filesystem"))]
     {

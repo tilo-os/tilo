@@ -165,10 +165,6 @@ pub struct ContentRevisionV1 {
 
 impl ContentRevisionV1 {
     /// Validate version, identity, and immutable revision identifiers.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] when a version is unsupported or an ID is nil.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.schema_version != CONTENT_REVISION_VERSION {
             return Err(FileRecordError::UnsupportedContentRevisionVersion(
@@ -224,10 +220,6 @@ pub struct FileBindingV1 {
 
 impl FileBindingV1 {
     /// Validate the structural binding and its bounded exact-byte name.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] for unsupported, nil, cyclic, or invalid bindings.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.schema_version != FILE_BINDING_VERSION {
             return Err(FileRecordError::UnsupportedBindingVersion(
@@ -298,10 +290,6 @@ pub struct FilePropertiesV1 {
 
 impl FilePropertiesV1 {
     /// Validate all bounds in this replicated rich-properties record.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] for unsupported, empty, inconsistent, or oversized values.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.schema_version != FILE_PROPERTIES_VERSION {
             return Err(FileRecordError::UnsupportedPropertiesVersion(
@@ -466,10 +454,6 @@ impl<'de> Deserialize<'de> for FileMetadataV1 {
 
 impl FileMetadataV1 {
     /// Validate the metadata schema and every bounded nested value.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] for unsupported or out-of-bounds metadata.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if !matches!(
             self.schema_version,
@@ -562,10 +546,6 @@ impl FileMutationParticipant {
     }
 
     /// Compute the canonical digest binding this participant's proposed projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical serialization fails.
     pub fn computed_projection_hash(&self) -> Result<ContentHash, CanonicalError> {
         let bytes = canonical_bytes(&self.projection_view())?;
         Ok(ContentHash(Sha256::digest(bytes).into()))
@@ -741,11 +721,6 @@ struct TransactionSigningView<'a> {
 
 impl FileMutationTransactionManifest {
     /// Validate the complete, operation-specific atomic transaction manifest.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] when its scope, ordering, participants, or
-    /// operation-specific invariants are invalid.
     #[allow(
         clippy::too_many_lines,
         reason = "keeping the mutually exclusive signed operation variants in one validator makes their complete invariants auditable"
@@ -1055,11 +1030,6 @@ impl FileMutationTransaction {
     }
 
     /// Validate and sign an atomic file-mutation transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid manifest, mismatched device key, or
-    /// canonical signing failure.
     pub fn signed(
         manifest: FileMutationTransactionManifest,
         signing_key: &ed25519_dalek::SigningKey,
@@ -1077,10 +1047,6 @@ impl FileMutationTransaction {
     }
 
     /// Validate the manifest and verify its device signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when manifest validation or signature verification fails.
     pub fn verify(&self) -> Result<(), FileMutationTransactionError> {
         self.manifest.validate()?;
         verify_event(
@@ -1092,10 +1058,6 @@ impl FileMutationTransaction {
     }
 
     /// Return the canonical wire bytes for this signed transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical serialization fails.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(self)
     }
@@ -1130,10 +1092,6 @@ pub struct FileVersionV1 {
 
 impl FileVersionV1 {
     /// Validate bounded, acyclic parent references.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] for too many parents or self-parenting.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.parents.len() > MAX_VERSION_PARENTS {
             return Err(FileRecordError::TooManyParents);
@@ -1164,10 +1122,6 @@ pub struct FileConflictV1 {
 
 impl FileConflictV1 {
     /// Validate the bounded conflict membership and status/resolution pairing.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FileRecordError`] for invalid membership or lifecycle state.
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if self.versions.len() < 2 {
             return Err(FileRecordError::ConflictNeedsTwoVersions);

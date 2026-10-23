@@ -89,11 +89,6 @@ impl Service {
     }
 
     /// Serve until the broker goes away.
-    ///
-    /// # Errors
-    ///
-    /// When the broker socket fails, or the GPU is lost (the broker starts a
-    /// new service, and apps send their frames again).
     pub fn run(mut self, broker: &Channel) -> Result<(), ChannelError> {
         let device = self
             .gpu

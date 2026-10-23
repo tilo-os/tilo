@@ -1,5 +1,3 @@
-//! Drive-specific behaviour beyond the conformance suite, against the fake.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

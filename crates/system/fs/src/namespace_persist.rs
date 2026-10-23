@@ -192,7 +192,6 @@ mod tests {
         let started = Instant::now();
         let persister = spawn_persister(Arc::clone(&namespace), flush);
 
-        // What loading left is written once it settles.
         tokio::time::sleep(Duration::from_secs(1)).await;
         {
             let flushes = flushes.lock().unwrap().clone();

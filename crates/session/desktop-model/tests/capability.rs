@@ -50,7 +50,6 @@ fn capability_grants_start_empty_and_round_trip() {
     }
     // Phase `grants_round_trip_via_serde_json`.
     {
-        // Pins the on-disk schema for portal-side consumers.
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
         ws.grant_app(
             "org.gnome.gedit",
@@ -166,7 +165,6 @@ fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label() {
         assert_eq!(AppKind::Settings.app_id(), "so.tilo.settings");
         // A bare `Other` label no package answers to keeps its built-in id.
         assert_eq!(AppKind::Other("Editor".into()).app_id(), "org.tilo.Editor");
-        // The app-id is distinct from the display label for every kind.
         for kind in [
             AppKind::FileExplorer,
             AppKind::Terminal,

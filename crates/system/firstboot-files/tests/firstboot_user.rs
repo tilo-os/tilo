@@ -96,8 +96,6 @@ fn script(replacements: &[(&str, String, usize)]) -> String {
     source
 }
 
-// ---- Interruption and retry ------------------------------------------------
-
 /// What the transaction stubs share: the fixture root, the failure the case
 /// injects, and the checks that delivery only ever runs on a locked, expired
 /// account. A failing stub can also signal the script, as systemd would.
@@ -324,7 +322,6 @@ fn every_failed_delivery_is_locked_and_retryable() {
         );
         assert!(!t.credential().exists(), "{stage}");
         assert!(!t.path("etc/install-user.transaction").exists(), "{stage}");
-        // Reset just this completed synthetic transaction for the next case.
         fs::remove_file(t.path("shadow")).unwrap();
         fs::remove_file(t.path("expiry")).unwrap();
         t.seed();
@@ -495,8 +492,6 @@ fn home_symlink_cannot_unlock_or_modify_outside() {
     assert!(t.credential().exists());
     assert_eq!(t.read("expiry"), "1970-01-02");
 }
-
-// ---- Credential transport --------------------------------------------------
 
 /// Only the credential-file ownership view is mocked; the production parser,
 /// account creation branches and cleanup run unchanged.

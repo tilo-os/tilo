@@ -8,9 +8,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-//! The service over its real socket, with a backend that stands in for
-//! devices, drivers and mounts.
-
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

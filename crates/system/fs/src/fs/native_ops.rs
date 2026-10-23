@@ -54,7 +54,6 @@ pub enum LeaseSource {
     /// Taken or renewed here: no other device arbitrates this room, or this
     /// device does.
     Local,
-    /// Granted by the room's lease authority.
     Granted,
     /// Taken without an answer from the lease authority, which could not be
     /// reached: versions written under it lose to a granted tenancy.
@@ -63,10 +62,6 @@ pub enum LeaseSource {
 
 /// Splits a root-relative path into its name components. Anything that is
 /// not a plain name (`..`, a root, a prefix) is refused.
-///
-/// # Errors
-///
-/// `EINVAL` for a component that is not a plain name.
 pub fn path_components(rel: &Path) -> Result<Vec<Vec<u8>>, i32> {
     use std::os::unix::ffi::OsStrExt as _;
     rel.components()
@@ -186,11 +181,6 @@ impl QuickFS {
     /// at `mtime_ms` (the file's own modification time, which peers
     /// materialise). Nothing
     /// is published when the record already has exactly this content.
-    ///
-    /// # Errors
-    ///
-    /// The errno of the record operation that failed (`EDQUOT` when the
-    /// record's history is full, `EIO` when publication failed).
     pub fn apply_local_file(&self, rel: &Path, data: &[u8], mtime_ms: u64) -> Result<(), i32> {
         self.apply_local_file_as(rel, data, mtime_ms, PosixAttrs::default_for(false), None)
     }
@@ -660,11 +650,6 @@ impl QuickFS {
     /// The whole file at `rel` as a reader of the mount sees it: a
     /// document exported through its format's codec, other content hydrated
     /// first when it is not local.
-    ///
-    /// # Errors
-    ///
-    /// `ENOENT` when `rel` is not a file here, `EIO` when its content could
-    /// not be exported or hydrated.
     pub fn read_path(&self, rel: &Path) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
@@ -714,10 +699,6 @@ impl QuickFS {
 
     /// The entries of the directory at `rel`, as [`Self::tree_snapshot`]
     /// describes them.
-    ///
-    /// # Errors
-    ///
-    /// `ENOENT` when `rel` is not here, `ENOTDIR` when it is not a directory.
     pub fn list_path(&self, rel: &Path) -> Result<Vec<TreeEntry>, i32> {
         use std::os::unix::ffi::OsStrExt as _;
         let components = path_components(rel)?;
@@ -830,7 +811,6 @@ impl QuickFS {
         committed
     }
 
-    /// The write lease of the file at `rel`, if it has one.
     pub fn write_lease_at(&self, rel: &Path) -> Option<WriteLease> {
         let components = path_components(rel).ok()?;
         let ino = self.ino_at(&components)?;
@@ -868,10 +848,6 @@ impl QuickFS {
     /// free lease comes from the room's lease authority when that is
     /// another device: `me` asks and waits up to `wait` for its answer,
     /// and takes the lease optimistically when none comes.
-    ///
-    /// # Errors
-    ///
-    /// Another holder's live lease, or `None` when there is no such file.
     pub fn acquire_write_lease(
         &self,
         rel: &Path,
@@ -1018,10 +994,6 @@ impl QuickFS {
     /// Takes or renews the write lease of the file at `rel` for device `me`
     /// and broadcasts the change. `Err(Some(lease))` is another device's
     /// live lease; `Err(None)` means there is no such file.
-    ///
-    /// # Errors
-    ///
-    /// Another holder's live lease, or `None` when there is no such file.
     pub fn take_write_lease(
         &self,
         rel: &Path,

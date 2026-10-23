@@ -113,11 +113,6 @@ impl FileInviteV1 {
     }
 
     /// Verify the issuer signature, expiry, and redemption-limit shape.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the signature is invalid, the invite is expired,
-    /// or its redemption limit is zero.
     pub fn verify_at(&self, now_ms: u64) -> Result<(), FileInviteError> {
         verify_event(&self.view(), &self.signature, &self.issuer)
             .map_err(FileInviteError::BadSignature)?;
@@ -155,10 +150,6 @@ impl FileInviteV1 {
 }
 
 /// Mint a signed invite for the supplied specification.
-///
-/// # Errors
-///
-/// Returns an error for an invalid redemption limit or failed canonical signing.
 pub fn mint_file_invite(
     spec: FileInviteSpec,
     issuer: &ed25519_dalek::SigningKey,
@@ -167,10 +158,6 @@ pub fn mint_file_invite(
 }
 
 /// Generate a fresh bearer secret and mint its signed invite.
-///
-/// # Errors
-///
-/// Returns an error for an invalid redemption limit or failed canonical signing.
 pub fn mint_bearer_file_invite(
     mut spec: FileInviteSpec,
     issuer: &ed25519_dalek::SigningKey,

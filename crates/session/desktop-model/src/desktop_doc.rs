@@ -70,7 +70,6 @@ fn map_or_create(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjI
     }
 }
 
-/// Every workspace entry with its id.
 fn workspace_entries(doc: &AutoCommit) -> Vec<(u64, ObjId)> {
     let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY) else {
         return Vec::new();
@@ -815,7 +814,6 @@ pub fn set_member(
     upsert_blob(doc, workspace_id, MEMBERS_KEY, person, &role)
 }
 
-/// Remove a member.
 pub fn remove_member(doc: &mut AutoCommit, workspace_id: WorkspaceId, person: &str) -> bool {
     delete_blob(doc, workspace_id, MEMBERS_KEY, person)
 }
@@ -849,7 +847,6 @@ pub fn upsert_preset(doc: &mut AutoCommit, workspace_id: WorkspaceId, preset: &P
     upsert_blob(doc, workspace_id, PRESETS_KEY, &key, preset)
 }
 
-/// Record a task under its id.
 pub fn upsert_task(doc: &mut AutoCommit, workspace_id: WorkspaceId, task: &WorkspaceTask) -> bool {
     upsert_blob(doc, workspace_id, TASKS_KEY, &task.id, task)
 }

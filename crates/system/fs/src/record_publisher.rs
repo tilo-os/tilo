@@ -78,11 +78,6 @@ pub struct RecordPublisher {
 
 impl RecordPublisher {
     /// Create a publisher bound to one workspace and certified actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a nil workspace, invalid human root key, or a
-    /// signing key that does not match the actor's certified device key.
     pub fn new(
         repository: Arc<RecordRepository>,
         workspace_id: Uuid,
@@ -126,10 +121,6 @@ impl RecordPublisher {
     /// Start a publish batch on this thread: what this publisher signs from
     /// here on is kept back from peers until [`Self::commit_changeset`]
     /// writes it as one signed changeset.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if another thread is publishing a batch.
     pub fn begin_changeset(&self) -> Result<(), RecordPublisherError> {
         Ok(self
             .repository
@@ -214,11 +205,6 @@ impl RecordPublisher {
 
     /// Sign, journal, commit, persist, and broadcast one replacement rename
     /// while holding the same local mutation lock as ordinary publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if publication is unavailable, the transaction scope
-    /// is invalid, or any durable transaction phase fails.
     pub fn execute_replacement_transaction<F>(
         &self,
         manifest: FileMutationTransactionManifest,
@@ -328,11 +314,6 @@ impl RecordPublisher {
     }
 
     /// Resume every journaled transaction before a mount becomes visible.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if publication is unavailable, a journal entry is out
-    /// of scope, or durable transaction recovery fails.
     pub fn recover_replacement_transactions<F>(
         &self,
         journal: &mut crate::record_transaction::RecordTransactionJournal,
@@ -407,10 +388,6 @@ impl RecordPublisher {
 
     /// Verified converged state for a locally owned record, used to rebuild
     /// the non-Automerge signed content projection after restart/cutover.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the durable repository rejects the snapshot.
     pub fn snapshot(
         &self,
         record_id: FileRecordId,
@@ -425,11 +402,6 @@ impl RecordPublisher {
     /// Publish the authenticated structural binding for one stable record.
     /// This is separate from content metadata so a rename never needs to
     /// rewrite or reinterpret content authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid or stale bindings, unavailable
-    /// publication, or a repository failure.
     pub fn publish_binding(
         &self,
         binding: &FileBindingV1,
@@ -470,11 +442,6 @@ impl RecordPublisher {
 
     /// Publish one immutable structural history node for records, such as
     /// directories, which have no content metadata projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid version, unavailable publication, or a
-    /// repository failure.
     pub fn publish_structural_version(
         &self,
         version: &FileVersionV1,
@@ -501,10 +468,6 @@ impl RecordPublisher {
 
     /// Publish missing immutable versions followed by changed metadata.
     /// Completed prefixes are safe to retry after a crash or restart.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if validation or durable repository publication fails.
     pub fn publish(
         &self,
         metadata: &FileMetadataV1,
@@ -517,11 +480,6 @@ impl RecordPublisher {
     /// DAG has multiple live heads. The operation is signed by this certified
     /// local device; deterministic identity makes concurrent detectors
     /// idempotent across replicas.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid record, unavailable publication, or a
-    /// repository failure.
     pub fn publish_concurrent_head_conflict(
         &self,
         record_id: FileRecordId,
@@ -1283,7 +1241,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn publisher_seeds_and_resumes_only_deltas_for_the_certified_device() {
-        // Phase `seeds_metadata_and_bounded_immutable_history`.
         {
             let fixture = Fixture::new();
             let publisher = fixture.publisher();
@@ -1316,7 +1273,6 @@ mod tests {
                 Some(4)
             );
         }
-        // Phase `unchanged_state_is_idempotent_and_updates_only_deltas`.
         {
             let fixture = Fixture::new();
             let publisher = fixture.publisher();
@@ -1350,7 +1306,6 @@ mod tests {
             assert_eq!(updated.published_versions, 1);
             assert_eq!(updated.skipped_versions, 1);
         }
-        // Phase `restart_resumes_sequence_and_skips_persisted_state`.
         {
             let fixture = Fixture::new();
             let first = fixture.version(FileVersionId::new(), 1);
@@ -1390,7 +1345,6 @@ mod tests {
                 Some(before + 3)
             );
         }
-        // Phase `wrong_device_key_is_rejected_before_any_state_exists`.
         {
             let fixture = Fixture::new();
             let (wrong, _) = generate_keypair();
@@ -1413,7 +1367,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn publisher_signs_bindings_and_conflicts_deterministically_and_durably() {
-        // Phase `concurrent_dag_heads_publish_one_deterministic_open_conflict`.
         {
             let fixture = Fixture::new();
             let publisher = fixture.publisher();
@@ -1447,7 +1400,6 @@ mod tests {
             expected.sort();
             assert_eq!(conflict.versions, expected);
         }
-        // Phase `binding_publication_is_signed_idempotent_and_rejects_stale_projection`.
         {
             let fixture = Fixture::new();
             let publisher = fixture.publisher();
@@ -1488,7 +1440,6 @@ mod tests {
                 Err(RecordPublisherError::StaleBinding)
             ));
         }
-        // Phase `resolved_conflict_is_durable_and_idempotent_across_restart`.
         {
             let fixture = Fixture::new();
             let first = fixture.version(FileVersionId::new(), 1);

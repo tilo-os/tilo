@@ -526,7 +526,6 @@ mod tests {
         );
         assert_eq!(entries(directory.path()), vec![path.clone()]);
 
-        // Storage that refuses the publication keeps the previous record.
         let gone = directory.path().join("gone").join("latest.log");
         assert!(!persist(&gone, b"record"));
         assert_eq!(entries(directory.path()), vec![path]);

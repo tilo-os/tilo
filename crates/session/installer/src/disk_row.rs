@@ -451,19 +451,16 @@ mod tests {
 
     #[test]
     fn disk_row_selection_is_one_action_for_keys_and_assistive_activation() {
-        // Phase `enter_and_space_select_a_focused_disk`.
         {
             assert_key_selects(NamedKey::Enter);
             assert_key_selects(NamedKey::Space);
         }
-        // Phase `disk_without_a_live_identity_is_not_selectable`.
         {
             let mut target = disk();
             target.major_minor.clear();
             let row = row(target, false);
             assert!(!row.is_focusable());
         }
-        // Phase `assistive_activation_runs_the_same_selection_action`.
         {
             let (control, presses) = select();
             let mut row = DiskRow::new(disk(), control, false);
@@ -485,7 +482,6 @@ mod tests {
 
     #[test]
     fn disk_row_accessibility_names_the_disk_and_every_barrier() {
-        // Phase `accessibility_names_the_human_disk_without_hardware_identifiers`.
         {
             let mut target = disk();
             target.model = "QEMU Fast Storage".into();
@@ -512,7 +508,6 @@ mod tests {
                     .contains("secret-wwn")
             );
         }
-        // Phase `accessibility_uses_a_clear_fallback_when_model_is_missing`.
         {
             let node = row(disk(), false)
                 .accessibility()
@@ -549,7 +544,6 @@ mod tests {
             ));
             assert!(presses.take().is_none());
         }
-        // Phase `staged_installer_disk_is_selectable_and_says_what_it_holds`.
         {
             let mut target = disk();
             target.is_system = true;

@@ -54,16 +54,11 @@ impl PeerPolicy {
         })
     }
 
-    /// Whether `uid` still has any session.
     pub fn has_session(&self, uid: u32) -> bool {
         self.users.join(uid.to_string()).exists()
     }
 
     /// Decide who `peer` is, or why it is turned away.
-    ///
-    /// # Errors
-    ///
-    /// The reason, for a caller that is not the person at the seat.
     pub fn decide(&self, peer: &PeerFacts) -> Result<Caller, String> {
         if self.active_uid() != Some(peer.uid) {
             return Err("only the person at this computer may use its drives".into());
@@ -79,10 +74,6 @@ impl PeerPolicy {
 }
 
 /// Read a connected peer's facts from the kernel.
-///
-/// # Errors
-///
-/// Returns the I/O error if the socket has no peer credentials.
 #[cfg(target_os = "linux")]
 pub fn facts(stream: &std::os::unix::net::UnixStream) -> std::io::Result<PeerFacts> {
     use std::io;

@@ -213,10 +213,6 @@ impl PendingPeerChallenges {
 
     /// Register an explicit nonce. This is useful for deterministic protocol
     /// tests; production callers should use [`Self::issue`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the nonce is duplicated or capacity is exhausted.
     pub fn register(
         &mut self,
         nonce: [u8; 32],
@@ -248,11 +244,6 @@ impl PendingPeerChallenges {
     /// certified device key, and freshness. It does not grant workspace
     /// access; sync admission must next evaluate the human/device against the
     /// workspace ACL.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown, replayed, expired, revoked,
-    /// mismatched, incorrectly certified, or incorrectly signed proof.
     pub fn verify(
         &mut self,
         proof: &PeerAuthProof,

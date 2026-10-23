@@ -1,5 +1,3 @@
-//! Placeholders filled through fanotify pre-content events.
-
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::{FileExt, MetadataExt, PermissionsExt};
@@ -246,7 +244,6 @@ fn fetches_are_shared_prefetched_and_fail_with_eio_when_unreachable() {
         let mut buf = [0u8; 16];
         let err = File::open(&path).unwrap().read_at(&mut buf, 0).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EIO), "{err}");
-        // Metadata is untouched and a later read succeeds once online.
         assert_eq!(fs::metadata(&path).unwrap().len(), MIB);
         fetcher.fail.store(false, Ordering::Relaxed);
         File::open(&path)
@@ -448,7 +445,6 @@ fn hydrators_adopt_placeholders_replace_versions_and_gate_writers() {
         fs::write(&path, vec![7u8; 64 * 1024]).unwrap();
         h.gate_writes(&path, libc::EBUSY).unwrap();
 
-        // A reader is unaffected.
         let mut buf = vec![0u8; 4096];
         File::open(&path)
             .unwrap()
@@ -475,7 +471,6 @@ fn hydrators_adopt_placeholders_replace_versions_and_gate_writers() {
         w.read_exact_at(&mut probe, 16).unwrap();
         assert_eq!(probe, vec![7u8; 16]);
 
-        // Once the lease is back, the same descriptor writes.
         h.ungate_writes(&path).unwrap();
         w.write_at(b"x", 0).unwrap();
         let mut want = vec![7u8; 64 * 1024];

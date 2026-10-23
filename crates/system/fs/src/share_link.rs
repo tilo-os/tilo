@@ -121,11 +121,6 @@ impl FileShareLinkV2 {
     }
 
     /// Encode this validated link as its secret-bearing V2 URI.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when validation/encoding fails or the payload exceeds
-    /// its protocol bound.
     pub fn encode_uri_at(&self, now_ms: u64) -> Result<String, FileShareLinkError> {
         self.validate_at(now_ms)?;
         let payload = canonical_bytes(&WireV2 {
@@ -155,11 +150,6 @@ impl FileShareLinkV2 {
 
     /// Decode V2 only. A V1 token gets a specific reachability error rather
     /// than being silently treated as this stronger format.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed, legacy, oversized, unsupported, or
-    /// cryptographically invalid links.
     pub fn decode_uri_at(uri: &str, now_ms: u64) -> Result<Self, FileShareLinkError> {
         let link = Self::decode_uri_shape(uri)?;
         link.validate_at(now_ms)?;
@@ -319,7 +309,6 @@ mod tests {
 
     #[test]
     fn share_links_round_trip_canonically_and_reject_tampering_expiry_and_oversize() {
-        // Phase `roundtrip_is_canonical_and_secret_exists_only_in_fragment`.
         {
             let link = fixture();
             let uri = link.encode_uri_at(NOW).unwrap();
@@ -329,7 +318,6 @@ mod tests {
             assert_eq!(FileShareLinkV2::decode_uri_at(&uri, NOW).unwrap(), link);
             assert_eq!(link.encode_uri_at(NOW).unwrap(), uri);
         }
-        // Phase `endpoint_token_and_secret_tampering_fail`.
         {
             let link = fixture();
             let mut wire = WireV2 {
@@ -357,7 +345,6 @@ mod tests {
                 Err(FileShareLinkError::WrongSecret)
             ));
         }
-        // Phase `expiry_legacy_routeless_and_oversize_are_explicit`.
         {
             let link = fixture();
             let uri = link.encode_uri_at(NOW).unwrap();

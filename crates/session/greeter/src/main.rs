@@ -22,7 +22,6 @@ use greeter::greeter_app::AuthScenario;
 use ui::app::UserEvent;
 use winit::event_loop::EventLoopProxy;
 
-/// Default offscreen viewport for `--shots`.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
 /// # Errors

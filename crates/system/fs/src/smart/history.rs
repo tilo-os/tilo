@@ -599,14 +599,12 @@ mod tests {
     fn files_opened_together_on_two_occasions_predict_each_other() {
         let start = Instant::now();
         let mut history = AccessHistory::new();
-        // The report and its figure, opened together this morning.
         history.record(DIR, 7, start);
         history.record(2, 900, start + Duration::from_secs(20));
         assert!(
             history.predict(DIR, 7, &[7]).together.is_empty(),
             "one occasion is not a habit"
         );
-        // Opening both again inside the window is still the same occasion.
         history.record(DIR, 7, start + Duration::from_secs(40));
         history.record(2, 900, start + Duration::from_secs(50));
         assert!(history.predict(DIR, 7, &[7]).together.is_empty());
@@ -657,8 +655,6 @@ mod tests {
         let kept = earlier.pairs(now);
         assert_eq!(kept.len(), 2);
 
-        // Restored a week later, older than this process can express as an
-        // `Instant`.
         let mut later = AccessHistory::new();
         let restart = Instant::now();
         for pair in kept {

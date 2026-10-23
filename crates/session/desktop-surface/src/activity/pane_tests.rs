@@ -1,4 +1,3 @@
-//! The activity pane's own tests, over a causal test room.
 use super::*;
 
 #[cfg(test)]
@@ -286,8 +285,6 @@ mod tests {
             );
         }
 
-        // What the incremental refreshes derived is what one refresh of the
-        // whole history derives.
         let mut fresh = native_pane();
         fresh.refresh(&mut tree);
         assert_eq!(
@@ -344,7 +341,6 @@ mod tests {
         }
         assert_eq!(renamed(&pane), 1, "the rename is still in Activity");
         assert_eq!(pane.derived.len(), rows, "no switch became a row");
-        // A pane reading the whole document from scratch agrees.
         let mut fresh = native_pane();
         fresh.refresh(&mut tree);
         assert_eq!(renamed(&fresh), 1);
@@ -2198,7 +2194,6 @@ mod tests {
         pane.refresh(&mut tree);
         assert!(pane.entries().len() > versions_before);
 
-        // Revert to the version the mistake was made on top of.
         let target = pane.entries()[versions_before - 1].id;
         assert!(
             pane.revert_to(&mut tree, &target),
@@ -2643,7 +2638,6 @@ mod tests {
             .clone();
         let changes_before = pane.entries().len();
 
-        // An empty label is the request to take the name off.
         assert!(pane.apply_name(
             &mut tree,
             &GroupNameRequest {
@@ -2910,7 +2904,6 @@ mod tests {
         assert!(out.named, "the pane reports a document write");
         assert!(!pane.wants_keyboard(), "the field is gone");
 
-        // The name is in the room document, over the range the band covered.
         let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
         assert_eq!(ranges.len(), 1, "one name, from one gesture: {ranges:?}");
         assert_eq!(ranges[0].label, "Set up the room");
@@ -3008,7 +3001,6 @@ mod tests {
             "the band's changes neither appeared nor went away"
         );
 
-        // And back, addressing the same band by the same key.
         click_at(&mut pane, &mut tree, on_header);
         assert_eq!(
             pane.timeline().group_at_row(band).map(|(_, e)| e),
@@ -3372,7 +3364,6 @@ mod tests {
             snapshot.bounds.map(ui::AccessBounds::to_rect),
             Some(pane.rect())
         );
-        // The chip families laid out above, by the labels the tree speaks.
         let chip_names: Vec<String> = ActivityView::ALL
             .iter()
             .map(|view| view.label())
@@ -3411,7 +3402,6 @@ mod tests {
         let mut pane = pane_over(&mut tree);
         paint(&mut pane);
 
-        // Name it once, through the gesture.
         let band = first_band(&pane);
         let (chip, _) = pane.timeline().group_chip_rects(band).unwrap();
         click_at(&mut pane, &mut tree, chip.center());
@@ -3817,7 +3807,6 @@ mod tests {
         let mut pane = native_pane();
         pane.refresh(&mut tree);
 
-        // A collaborator's device on the same room, kept in sync by hand.
         let mut peer = tree.clone();
         peer.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
         let receipt = || {
@@ -3866,7 +3855,6 @@ mod tests {
                 }
                 1 => {
                     next_tab += 1;
-                    // Home has a window group to open the tab in.
                     tree.set_active(home);
                     assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
                         next_tab,
@@ -3926,7 +3914,6 @@ mod tests {
                 ui::I18nManager::revision()
             );
 
-            // What a pane that reads the whole log once derives.
             let mut fresh = native_pane();
             let mut fresh_tree = tree.clone();
             fresh.refresh(&mut fresh_tree);
@@ -3956,7 +3943,6 @@ mod tests {
                 frames(&fresh),
                 "step {step} ({kind}): replay"
             );
-            // Undo and restore address a row by the document's heads at it.
             for (entry, _) in &pane.derived {
                 assert_eq!(
                     pane.history_log.heads_for_entry(&entry.id),
@@ -4827,8 +4813,6 @@ mod task_review_tests {
             snapshot.tasks[0].title = "Send note X by mail to Bob".into();
             snapshot.controls.get_mut(&id).unwrap().confirmation = Some(confirmation);
         }
-        // The person here manages the workspace, and its roster names the
-        // agent.
         tree.adopt_ownerless_workspaces(&"local".to_owned());
         if let Some(workspace) = tree.desktop.active_workspace_mut() {
             workspace
@@ -4911,7 +4895,6 @@ mod task_review_tests {
             last > viewport.y0 && last <= viewport.y1,
             "scrolled to the end, the last button is in view"
         );
-        // Keyboard focus brings a control back into view by itself.
         pane.review_scroll.offset = 0.0;
         pane.keyboard_focus = Some(ActivityFocus::TaskAction(TaskAction::ConfirmDraft));
         paint(&mut pane, &theme);

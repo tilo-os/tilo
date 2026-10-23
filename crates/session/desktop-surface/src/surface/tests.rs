@@ -440,7 +440,6 @@ fn windows_stand_clear_of_the_desktop_edges_at_both_ends_of_the_strip() {
             "the first window focused again rests home"
         );
 
-        // Panned as far as a host navigates, to the strip's end.
         let surface = frame.root_mut::<DesktopSurface>();
         surface.shown_row().unwrap().pan_to(f64::MAX);
         frame.relayout();
@@ -1361,7 +1360,6 @@ fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
     );
 }
 
-/// One window group of `title`, as the room sends it.
 fn room_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::WindowGroup {
     tilo_desktop_model::WindowGroup {
         id: group,

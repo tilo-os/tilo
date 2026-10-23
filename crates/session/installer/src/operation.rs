@@ -219,7 +219,6 @@ mod tests {
 
     #[test]
     fn operations_round_trip_and_refusals_never_echo_secrets() {
-        // Phase `operations_round_trip_and_unknown_fields_are_refused`.
         {
             for operation in [
                 Operation::Next,
@@ -244,7 +243,6 @@ mod tests {
             );
             assert!(Operation::decode(br#"{"op":"format_everything"}"#).is_err());
         }
-        // Phase `a_refused_payload_never_echoes_its_secret`.
         {
             let error = Operation::decode(
                 br#"{"op":"set_passphrase","passphrase":"hunter2-correct-horse","confirmation":5}"#,

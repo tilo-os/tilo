@@ -102,7 +102,6 @@ mod tests {
     fn every_key_used_in_code_is_in_every_catalogue() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut dirs = vec![manifest.join("src")];
-        // The native desktop resolves the rest of this catalogue.
         let desktop = manifest.join("../desktop/src");
         if desktop.is_dir() {
             dirs.push(desktop);

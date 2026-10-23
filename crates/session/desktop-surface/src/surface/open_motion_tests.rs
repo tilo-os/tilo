@@ -121,7 +121,6 @@ fn an_opened_window_lands_whole_beside_the_one_in_use_which_keeps_its_name() {
             weather.tab_rects()[0].x1 <= desk.width,
             "{width}: and its name"
         );
-        // The shared widths are the desktop's, as a resize's are.
         let widths = desk.handle.read(|tree| {
             tree.workspaces[0].strips[0]
                 .window_groups

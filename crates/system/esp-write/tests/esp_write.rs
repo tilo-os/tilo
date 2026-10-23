@@ -201,8 +201,6 @@ impl Fixture {
         let text = deployment();
         let helpers = between(&text, "esp_path() {", "# --- listing");
         let (counters, repair_stub) = if repair {
-            // Everything up to the subcommand dispatch, the one `case` that
-            // starts a line.
             (between(&text, "cmd_entries() {", "\ncase \""), "")
         } else {
             (
@@ -233,7 +231,6 @@ cmd_entries
         };
         let root_source =
             source.map_or_else(|| format!("composefs:{}", "a".repeat(128)), str::to_owned);
-        // The UKI editor is this binary under its installed link name.
         let uki_cmdline = self.root.join("tilo-uki-cmdline");
         if !uki_cmdline.exists() {
             std::os::unix::fs::symlink(helper(), &uki_cmdline).unwrap();
@@ -546,10 +543,8 @@ fn malformed_dev_kernel_initrd_entries_are_refused() {
             "linux {managed}/vmlinuz\ninitrd /EFI/Linux/bootc_composefs-{}/initrd\n",
             "b".repeat(128)
         ),
-        // Missing or repeated payload lines.
         format!("linux {managed}/vmlinuz\n"),
         format!("linux {managed}/vmlinuz\ninitrd {managed}/initrd\ninitrd {managed}/initrd\n"),
-        // A split entry that also selects an EFI image is neither shape.
         format!("linux {managed}/vmlinuz\ninitrd {managed}/initrd\nefi /EFI/Linux/x.efi\n"),
     ];
     for body in shapes {
@@ -647,7 +642,6 @@ fn only_the_callers_operations() {
         f.stage("x.efi", b"x");
         let out = f.run(&json!([op.clone()]));
         assert_refused(&out, "refused");
-        // A refused plan is removed with its staged files.
         assert_eq!(f.plan_dir_entries(), Vec::<String>::new(), "{op}");
     }
     assert!(f.esp.join("loader/entries/bootc_fedora-44-1.conf").exists());

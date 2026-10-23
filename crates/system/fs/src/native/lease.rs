@@ -136,7 +136,6 @@ enum Gate {
 /// whether a descriptor raises pre-content events).
 #[derive(Default)]
 pub struct WriteGates {
-    /// Gate of each absolute path.
     by_path: Mutex<HashMap<PathBuf, Gate>>,
     /// Files gated with `Ask`, by `(st_dev, st_ino)`, with their path.
     asking: Mutex<HashMap<(u64, u64), PathBuf>>,

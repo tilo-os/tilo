@@ -3227,8 +3227,6 @@ impl RoomActivityPane {
         self.source.authors_mut()
     }
 
-    // ---------- Geometry ----------
-
     /// Wide: right-anchored, so the room stays visible behind it. Narrow:
     /// full-bleed — a 360px sheet over a 600px desktop is two unusable halves.
     pub fn layout(&mut self, viewport: Rect) {
@@ -3338,8 +3336,6 @@ impl RoomActivityPane {
         self.view == ActivityView::Explore
             && (self.sheet.width() >= 900.0 || self.explorer_pane == ExplorerPane::Timeline)
     }
-
-    // ---------- Paint ----------
 
     pub fn draw(
         &mut self,
@@ -5564,8 +5560,6 @@ impl RoomActivityPane {
         // Everyone is repeated to preserve a stable escape from a person filter.
         self.author_more_advance = page.shown.saturating_sub(1).max(1);
     }
-
-    // ---------- Events ----------
 
     /// `tree` is the live room document: a revert writes into it as a
     /// new forward change and commits, exactly as a `doc_*` mirror would.
@@ -8771,7 +8765,6 @@ impl BriefCardMetrics {
             gap: f64::from(tokens.spacing.s1),
         }
     }
-    /// Top of the byline, below `title_lines` title lines.
     fn byline_top(self, title_lines: usize) -> f64 {
         self.pad + small_count_to_f64(title_lines) * self.title_lh + self.gap
     }

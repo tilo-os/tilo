@@ -45,7 +45,6 @@ impl NativeSource {
                     extension: extension.into(),
                 }],
             }),
-            // Provider-native size is deliberately unrelated to exported bytes.
             size: Some(999_999),
             modified: None,
             revision: Some(Revision::new(

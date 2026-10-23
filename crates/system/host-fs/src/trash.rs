@@ -193,11 +193,6 @@ pub fn user_trash_dir() -> Option<PathBuf> {
 
 /// Permanently remove everything in the home Trash. Returns how many items
 /// were purged.
-///
-/// # Errors
-///
-/// Returns an error if the platform trash is unavailable, or listing or
-/// purging its items fails.
 pub fn empty() -> Result<usize, String> {
     #[cfg(unix)]
     {
@@ -217,11 +212,6 @@ pub fn empty() -> Result<usize, String> {
 /// `files` directory, such as [`trash`] returns) to their original
 /// locations. Returns how many were restored; an entry no longer in Trash is
 /// not counted.
-///
-/// # Errors
-///
-/// Returns an error if the platform trash is unavailable, or restoring an
-/// item fails (e.g. something else now has its original name).
 pub fn restore(entries: &[PathBuf]) -> Result<usize, String> {
     #[cfg(unix)]
     {
@@ -236,11 +226,6 @@ pub fn restore(entries: &[PathBuf]) -> Result<usize, String> {
 
 /// Permanently delete the trashed items backing `entries` (file + info).
 /// Returns how many were purged; an entry no longer in Trash is not counted.
-///
-/// # Errors
-///
-/// Returns an error if the platform trash is unavailable, or purging an item
-/// fails.
 pub fn purge(entries: &[PathBuf]) -> Result<usize, String> {
     #[cfg(unix)]
     {

@@ -56,7 +56,6 @@ const STAGING: &str = "sync-folder.staging";
 /// What one pass carried across.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pass {
-    /// Paths written from the folder into the workspace.
     pub imported: usize,
     /// Paths written from the workspace into the folder.
     pub exported: usize,
@@ -161,7 +160,6 @@ impl SyncFolder {
         })
     }
 
-    /// The folder.
     pub fn root(&self) -> &Path {
         &self.root
     }

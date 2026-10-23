@@ -1,4 +1,3 @@
-//! Capacity selection exercises the same field, published operation and argv as installation.
 use super::*;
 
 fn capacity_app() -> InstallerApp {

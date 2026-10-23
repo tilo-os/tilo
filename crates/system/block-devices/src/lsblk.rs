@@ -140,7 +140,6 @@ pub fn parse(json: &Value) -> Option<Vec<BlockDevice>> {
     Some(devices.iter().map(BlockDevice::from_json).collect())
 }
 
-/// [`parse`] over raw `lsblk -J` output.
 pub fn parse_slice(output: &[u8]) -> Option<Vec<BlockDevice>> {
     parse(&serde_json::from_slice(output).ok()?)
 }
@@ -269,7 +268,6 @@ mod tests {
 
     #[test]
     fn parses_captured_disks_imager_and_installer_inventories() {
-        // Phase `parses_a_captured_disks_inventory`.
         {
             let devices = fixture(include_str!("../tests/fixtures/disks.json"));
             let names: Vec<_> = devices.iter().map(|d| d.name.as_str()).collect();
@@ -304,7 +302,6 @@ mod tests {
             assert_eq!(unmounted.fsused, None);
             assert!(unmounted.all_mountpoints().is_empty());
         }
-        // Phase `parses_a_captured_imager_inventory`.
         {
             let devices = fixture(include_str!("../tests/fixtures/imager.json"));
             let nvme = find(&devices, "nvme1n1");
@@ -316,7 +313,6 @@ mod tests {
                 Some("/boot/efi")
             );
         }
-        // Phase `parses_a_captured_installer_inventory_with_every_mount`.
         {
             let devices = fixture(include_str!("../tests/fixtures/installer.json"));
             let disk = find(&devices, "/dev/nvme0n1");
@@ -346,7 +342,6 @@ mod tests {
 
     #[test]
     fn parser_accepts_older_shapes_walks_holders_and_distinguishes_malformed_documents() {
-        // Phase `accepts_the_value_shapes_older_lsblk_emits`.
         {
             let devices = fixture(
                 r#"{"blockdevices":[{"name":"sdc","model":"Old Stick  ","size":"8000000000",
@@ -363,13 +358,11 @@ mod tests {
             assert_eq!(stick.mountpoint, None, "blank is absent");
             assert_eq!(stick.mountpoints, ["/media"]);
         }
-        // Phase `malformed_and_empty_documents_are_distinguished`.
         {
             assert_eq!(parse_slice(br#"{"blockdevices":[]}"#), Some(Vec::new()));
             assert_eq!(parse_slice(b"{}"), None);
             assert_eq!(parse_slice(b"not json"), None);
         }
-        // Phase `descendants_walk_the_holder_tree_depth_first`.
         {
             let devices = fixture(
                 r#"{"blockdevices":[{"name":"sda","type":"disk","children":[

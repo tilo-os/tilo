@@ -375,9 +375,6 @@ impl RoomActivityPane {
     /// it. Returns the request's invocation, which
     /// [`ActivityHost::poll_task_review`](crate::activity::ActivityHost::poll_task_review)
     /// answers.
-    ///
-    /// # Errors
-    /// The room's review is unavailable or the host refused the request.
     pub fn answer_paused_draft(
         &mut self,
         draft: &PausedDraft,

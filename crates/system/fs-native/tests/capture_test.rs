@@ -118,7 +118,6 @@ fn capture_epochs_hash_whole_trees_and_only_changed_extents() {
         ] {
             assert!(paths.contains(&want), "{want} missing from {paths:?}");
         }
-        // Parents precede children.
         let pos = |p: &str| paths.iter().position(|x| *x == p).unwrap();
         assert!(pos("src") < pos("src/deep") && pos("src/deep") < pos("src/deep/mid.bin"));
         for (p, id) in &ups {
@@ -350,7 +349,6 @@ fn capture_follows_renames_links_and_subtree_moves() {
         paths.sort();
         assert_eq!(paths, ["z", "z/b", "z/b/f", "z/new"]);
 
-        // A directory moved into place, and a subdirectory then moved out of it.
         fs::rename(s.live.join("z"), s.live.join("y")).unwrap();
         fs::rename(s.live.join("y/b"), s.live.join("x")).unwrap();
         let cs = cap
@@ -468,7 +466,6 @@ fn capture_rescans_resumes_and_marked_paths_find_unjournaled_changes() {
         let state = cap.state().unwrap();
         assert_eq!(state.next_epoch, 2);
         assert_eq!(state.nodes.len(), 5, "{:?}", state.nodes);
-        // The process goes away without releasing its snapshot.
         drop(cap);
 
         fs::write(s.live.join("a"), b"changed while stopped").unwrap();
@@ -499,20 +496,17 @@ fn capture_rescans_resumes_and_marked_paths_find_unjournaled_changes() {
         cap.track(Path::new("remote.txt")).unwrap();
         assert!(cap.node_state(Path::new("remote.txt")).is_some());
 
-        // A journal entry that names it without a change publishes nothing.
         let cs = cap
             .capture(&batch(&[(JournalOp::Attrib, "remote.txt", false)]))
             .unwrap();
         assert!(cs.ops.is_empty(), "{:?}", op_paths(&cs));
 
-        // A local delete of it is captured.
         fs::remove_file(s.live.join("remote.txt")).unwrap();
         let cs = cap
             .capture(&batch(&[(JournalOp::Delete, "remote.txt", false)]))
             .unwrap();
         assert_eq!(op_paths(&cs), ["-remote.txt"]);
 
-        // Untracking forgets a path the consumer removed itself.
         fs::write(s.live.join("gone"), b"x").unwrap();
         cap.track(Path::new("gone")).unwrap();
         fs::remove_file(s.live.join("gone")).unwrap();
@@ -666,7 +660,6 @@ fn capture_skips_local_only_special_and_staging_files_while_writers_continue() {
                 .find(|(p, _)| *p == Path::new("log"))
                 .map(|(_, n)| n.size)
                 .unwrap();
-            // The snapshot holds a whole number of completed writes.
             assert_eq!(size % 4096, 0);
             assert!(size >= before);
             sizes.push(size);

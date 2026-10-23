@@ -14,11 +14,8 @@ pub enum Value {
     Bool(bool),
     /// An integer.
     Int(i64),
-    /// A float.
     Float(f64),
-    /// A string.
     Str(String),
-    /// A list.
     List(Vec<Value>),
     /// A map, in insertion order.
     Map(Vec<(String, Value)>),
@@ -63,7 +60,6 @@ impl Value {
         }
     }
 
-    /// The string, if this is one.
     #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         match self {

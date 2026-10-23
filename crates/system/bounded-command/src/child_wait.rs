@@ -172,8 +172,6 @@ pub struct WakeFd {
 }
 
 impl WakeFd {
-    /// # Errors
-    /// Returns the error of creating the eventfd (Linux) or pipe.
     #[cfg(target_os = "linux")]
     pub fn new() -> io::Result<Self> {
         // SAFETY: eventfd takes an initial count and flags and returns a new
@@ -188,8 +186,6 @@ impl WakeFd {
         })
     }
 
-    /// # Errors
-    /// Returns the error of creating the eventfd (Linux) or pipe.
     #[cfg(not(target_os = "linux"))]
     pub fn new() -> io::Result<Self> {
         let mut fds = [0; 2];
@@ -355,7 +351,6 @@ mod tests {
         );
         child.kill().unwrap();
         child.wait().unwrap();
-        // An already reaped child reports its status without waiting.
         assert!(matches!(
             wait_child_or(&mut child, None, Some(began)).unwrap(),
             Wakeup::Exited(_)

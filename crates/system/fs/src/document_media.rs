@@ -102,10 +102,6 @@ impl DocumentMedia {
 
     /// Store `bytes` for `scope`. The whole payload is always hashed and
     /// imported before answering, so timing does not reveal prior presence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error above [`MAX_BLOB_BYTES`] or when the store fails.
     pub async fn store(&self, scope: &BlobScope, bytes: Vec<u8>) -> Result<Hash, BlobError> {
         let len = bytes.len() as u64;
         if len > MAX_BLOB_BYTES {

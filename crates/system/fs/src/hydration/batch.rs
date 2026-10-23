@@ -60,7 +60,6 @@ impl Want {
         }
     }
 
-    /// A chunk of the manifest `root`.
     #[must_use]
     pub const fn chunk(hash: Hash, size_hint: u64, root: Hash) -> Self {
         Self {
@@ -105,10 +104,6 @@ fn batches(wants: Vec<Want>) -> Vec<Vec<Want>> {
 impl Hydrator {
     /// The pooled blob-protocol connection to `peer`, opened on first use
     /// and reused for every later request until it closes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no connection can be opened in time.
     pub async fn blob_connection(&self, peer: &EndpointAddr) -> Result<Connection> {
         self.blob_connection_lane(peer, 0).await
     }
@@ -116,10 +111,6 @@ impl Hydrator {
     /// The pooled connection to `peer` in `lane`. One QUIC connection is
     /// processed by one task on each side, which bounds its throughput;
     /// large transfers therefore spread their requests over a few lanes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no connection can be opened in time.
     pub(super) async fn blob_connection_lane(
         &self,
         peer: &EndpointAddr,
@@ -212,7 +203,6 @@ impl Hydrator {
     ) -> (usize, u64, Vec<Hash>) {
         let mut fetched = 0_usize;
         let mut bytes = 0_u64;
-        // Start at the peer `index` selects and go round the others.
         let (earlier, later) = peers.split_at(index.checked_rem(peers.len()).unwrap_or(0));
         for peer in later.iter().chain(earlier) {
             let started = Instant::now();
@@ -354,10 +344,6 @@ impl Hydrator {
     /// Stores content an authenticated peer sent along with the records
     /// naming it. Every blob is hash-checked before anything is stored, and
     /// counts as fetched from `peer`, as a verified download does.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on a hash mismatch or when the store fails.
     pub async fn accept_inline(
         &self,
         peer: &EndpointAddr,

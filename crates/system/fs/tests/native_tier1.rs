@@ -1650,7 +1650,6 @@ fn the_lease_authority_gives_a_free_lease_to_one_of_two_devices_asking_at_once()
         assert_eq!(loser, Err(libc::EBUSY), "the other is refused at once");
         let winner = if host.is_ok() { b'h' } else { b'p' };
         winners.push(winner);
-        // Both converge on the winner's bytes.
         wait_for(
             &mut [&mut pair.host, &mut pair.peer],
             "both devices on the winner's version",
