@@ -316,3 +316,88 @@ fn a_name_the_item_holds_is_kept_over_its_flat_one() {
         Some("Text")
     );
 }
+
+/// Everything stored under `key` of the document's root, as JSON.
+fn stored(doc: &ui::tilo_resource::Doc, key: &str) -> Option<ui::serde_json::Value> {
+    use ui::automerge::{ObjType, ReadDoc as _, Value};
+    fn json_of(
+        doc: &ui::tilo_resource::Doc,
+        value: Value<'_>,
+        id: &ui::automerge::ObjId,
+    ) -> ui::serde_json::Value {
+        match value {
+            Value::Object(ObjType::Text) => json!({ "$text": doc.text(id).unwrap() }),
+            Value::Object(ObjType::List) => (0..doc.length(id))
+                .map(|index| {
+                    let (item, item_id) = doc.get(id, index).unwrap().unwrap();
+                    json_of(doc, item, &item_id)
+                })
+                .collect(),
+            Value::Object(_) => doc
+                .keys(id)
+                .map(|key| {
+                    let (item, item_id) = doc.get(id, key.as_str()).unwrap().unwrap();
+                    (key.clone(), json_of(doc, item, &item_id))
+                })
+                .collect::<ui::serde_json::Map<_, _>>()
+                .into(),
+            Value::Scalar(scalar) => json!(format!("{scalar:?}")),
+        }
+    }
+    let (found, id) = doc.get(ROOT, key).unwrap()?;
+    Some(json_of(doc, found, &id))
+}
+
+#[test]
+fn a_chat_of_version_one_or_two_keeps_every_message_draft_and_read_count() {
+    use ui::tilo_resource::Resource as _;
+    let body = vec![tilo_document::ClipBlock {
+        kind: "paragraph".into(),
+        text: "hi @Bo".into(),
+        marks: Vec::new(),
+        level: None,
+        ordered: None,
+        align: None,
+        attrs: std::collections::BTreeMap::new(),
+    }];
+    let mut record = version_one_message(&body);
+    record["messages"]["m2"] = json!({
+        "k": "b",
+        "v": { "channel": "c_general", "author": "bo", "ts": 20, "text": "hello" },
+    });
+    record["drafts"] = json!({ "c_general": { "$text": "half a thought" } });
+    record["read"] = json!({ "ada": { "c_general": 2 }, "bo": { "c_general": 1 } });
+    let kept_flat = json!({
+        "messages": {
+            "c_general": [
+                { "id": "m1", "author": "ada", "ts": 10, "text": { "$text": "first" } },
+                { "id": "m2", "author": "bo", "ts": 20, "text": { "$text": "second" } },
+            ],
+        },
+    });
+    for (version, shape) in [(2, &record), (1, &record), (1, &kept_flat)] {
+        let mut replica = Replica::<Chat>::new();
+        let doc = replica.doc_mut();
+        evolution::fixture(doc, &ROOT, shape).unwrap();
+        at_version(doc, version);
+        doc.commit();
+        let mut old = doc.fork();
+        let messages = stored(&old, "messages");
+        let drafts = stored(&old, "drafts");
+        assert!(evolution::migrate::<Chat>(&mut old).unwrap());
+        assert_eq!(evolution::stored_version(&old), Chat::VERSION);
+        assert!(evolution::read_checked::<Chat>(&old).is_ok());
+        assert!(messages.is_some());
+        assert_eq!(stored(&old, "messages"), messages, "version {version}");
+        assert_eq!(stored(&old, "drafts"), drafts, "version {version}");
+        if shape.get("read").is_some() {
+            assert_eq!(
+                stored(&old, "read_counts"),
+                Some(json!({
+                    "ada": { "c_general": "Int(2)" },
+                    "bo": { "c_general": "Int(1)" },
+                }))
+            );
+        }
+    }
+}
