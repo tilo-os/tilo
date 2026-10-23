@@ -180,6 +180,12 @@ pub struct AgentArgs {
     /// `gpt-4.1-mini-2025-04-14`). Default `$TILO_AGENT_MODEL_NAME`.
     #[arg(long = "agent-model-name", value_name = "ID")]
     pub model_name: Option<String>,
+    /// Without `--agents`, still serve the rooms' records to their pages:
+    /// the host runs an action of a room record for whoever the room's
+    /// policy lets ask, such as a member linking their own account on the
+    /// room's Discord from their profile card. `--agents` serves them too.
+    #[arg(long)]
+    pub room_records: bool,
 }
 
 #[cfg(feature = "agents")]
@@ -245,7 +251,8 @@ fn announce_web_entry(cfg: &mut tilo_relay::RelayConfig, args: &WebArgs) {
 }
 
 /// Start the relay; with `--agents`, with its agent supervisor as the
-/// app-serving plane and the agents kept under `state_root/agents`.
+/// app-serving plane and the agents kept under `state_root/agents`; with
+/// `--room-records` alone, serving the rooms' records without agents.
 ///
 /// # Errors
 /// The relay did not start, or the agent state could not be read.
@@ -273,6 +280,16 @@ pub async fn start_relay(
         return Ok(HostedRelay {
             relay,
             agents: Some(agents),
+        });
+    }
+    #[cfg(feature = "agents")]
+    if args.agents.room_records {
+        let relay = tilo_relay::agents::start_serving_records(cfg, identity, None)
+            .await
+            .context("start the relay serving its rooms' records")?;
+        return Ok(HostedRelay {
+            relay,
+            agents: None,
         });
     }
     let relay = Relay::start(cfg, identity)
