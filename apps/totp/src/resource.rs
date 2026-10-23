@@ -21,7 +21,7 @@ use crate::app::{AuthenticatorApp, Notice};
 pub use crate::model::Totp;
 use crate::model::{Account, StoredAccount, demo_accounts};
 
-#[resource(kind = "totp.vault", label = "Accounts", search = Totp::search)]
+#[resource(kind = "totp.vault", label = "Authenticator", search = Totp::search)]
 impl Totp {
     /// Move an account one place up.
     #[action]
@@ -513,6 +513,19 @@ mod tests {
         bytes
             .windows(secret.len())
             .any(|window| window == secret.as_bytes())
+    }
+
+    /// A person meets the app by one name: the window it opens, its
+    /// manifest and its catalogue entry all say Authenticator.
+    #[test]
+    fn the_app_goes_by_one_name() {
+        use ui::tilo_resource::Resource as _;
+        assert_eq!(Totp::LABEL, "Authenticator");
+        let manifest = include_str!("../tilo-app.toml");
+        assert!(
+            manifest.contains("name     = \"Authenticator\""),
+            "the manifest names it Authenticator"
+        );
     }
 
     #[test]
