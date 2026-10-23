@@ -17,7 +17,7 @@ use os_actions::AppRemoval;
 use ui::LocalState;
 use ui::widget::{Column, ListRow, ModalDialog, Text, Toggle};
 
-use crate::shell::app_list::{AppListItem, AppSource};
+use crate::shell::app_list::{AppListItem, AppSource, FlatpakInstallation};
 use crate::shell::i18n::{t, t_args};
 
 /// The sheet's address; its footer buttons are `<this>.primary` and
@@ -78,7 +78,16 @@ impl Asking {
         };
         let mut body = Column::new().with_intrinsic_height().with_no_padding();
         match (&item.source, removal) {
-            (_, AppRemoval::UninstallWithData) => {
+            (source, AppRemoval::UninstallWithData) => {
+                if matches!(
+                    source,
+                    AppSource::Flatpak {
+                        installation: FlatpakInstallation::Device { .. },
+                        ..
+                    }
+                ) {
+                    body = body.push(Box::new(Text::new(&t("app-uninstall-device-body"))));
+                }
                 body = body.push(Box::new(
                     ListRow::new(REMOVE_DATA, t("app-uninstall-remove-data"))
                         .secondary(t("app-uninstall-remove-data-detail"))

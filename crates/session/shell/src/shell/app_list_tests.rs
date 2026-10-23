@@ -176,6 +176,61 @@ fn switch_in(dialog: &ui::widget::ModalDialog<ui::widget::Column>) -> bool {
     walk(dialog.content())
 }
 
+fn words_in(sheet: &mut Asking) -> Vec<String> {
+    let dialog = std::mem::replace(
+        &mut sheet.dialog,
+        ui::widget::ModalDialog::new("", ui::widget::Column::new()),
+    );
+    let mut framed = ui::headless::Framed::new(
+        ui::State::new(),
+        dialog,
+        (1280, 800),
+        ui::theme::Theme::dark(),
+    );
+    let _ = ui::headless::Framed::harness_mut(&mut framed).poll_frame();
+    ui::headless::Framed::harness(&framed)
+        .a11y_tree_update()
+        .nodes
+        .iter()
+        .flat_map(|(_, node)| {
+            [
+                node.label().map(str::to_owned),
+                (node.role() == ui::accesskit::Role::Switch)
+                    .then(|| node.description().map(|it| format!("switch: {it}")))
+                    .flatten(),
+            ]
+        })
+        .flatten()
+        .collect()
+}
+
+#[test]
+fn a_device_flatpak_says_it_goes_for_everyone_and_the_data_is_only_yours() {
+    let administrator = Person {
+        administrator: true,
+        removed_from_apps: Vec::new(),
+    };
+    let home = Path::new("/home/ute");
+    let mut device =
+        Asking::new(item(&every_kind_for(home, &administrator), "org.gnome.Maps").clone());
+    let words = words_in(&mut device);
+    assert!(
+        words
+            .iter()
+            .any(|it| it == "It's removed for everyone on this computer."),
+        "{words:?}"
+    );
+    assert!(
+        words
+            .iter()
+            .any(|it| it
+                == "switch: Your settings and saved files go to the Trash, where you can restore them."),
+        "{words:?}"
+    );
+    let mut own = Asking::new(item(&every_kind(home), "org.gnome.Chess").clone());
+    assert!(!words_in(&mut own).iter().any(|it| it.contains("everyone")));
+}
+
 /// Uninstalling asks first, and the "remove data" switch is on by default for a
 /// Flatpak and absent for every other kind.
 #[test]

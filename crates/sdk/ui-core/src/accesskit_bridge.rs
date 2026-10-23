@@ -708,6 +708,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
         scale,
         focused,
         walk_counter: 0,
+        child_description: None,
         nodes: Vec::new(),
         active_descendant: None,
     };
@@ -829,6 +830,9 @@ struct TreeWalk<'m> {
     scale: f64,
     focused: Option<TaffyNodeId>,
     walk_counter: u64,
+    /// What the parent says describes the widget visited next
+    /// ([`Widget::accessibility_child_description`]).
+    child_description: Option<String>,
     nodes: Vec<(AkNodeId, AkNode)>,
     /// Set when the *focused* widget marks one of its synthetic descendants
     /// focused — the active-descendant target (see the module docs).
@@ -851,10 +855,16 @@ impl TreeWalk<'_> {
     /// DFS helper: if `w.accessibility()` is `None` (presentational), reparent
     /// the children's ids straight onto `parent_children` instead of emitting a node.
     fn visit<const BOUND: bool>(&mut self, w: &dyn Widget, parent_children: &mut Vec<AkNodeId>) {
+        let described = self.child_description.take();
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
             return;
         };
-        let access = w.accessibility();
+        let mut access = w.accessibility();
+        if let Some(node) = &mut access
+            && node.description.is_none()
+        {
+            node.description = described;
+        }
         let taffy_id = self.ptr_to_taffy.get(w);
 
         if let Some(access_node) = access {
@@ -885,6 +895,7 @@ impl TreeWalk<'_> {
                         .or_default()
                         .push((child_path, child));
                 } else {
+                    self.child_description = w.accessibility_child_description(child_index);
                     self.visit::<BOUND>(child, &mut my_children);
                 }
             }
@@ -1540,6 +1551,28 @@ mod tests {
     }
 
     /// Exactly as the App does before `build_tree_update`.
+    #[test]
+    fn a_rows_secondary_line_describes_its_trailing_switch() {
+        let mut row = crate::widget::ListRow::new("remove-data", "Remove its data")
+            .secondary("Your settings and saved files go to the Trash.")
+            .trailing(Box::new(
+                crate::widget::Toggle::new("remove-data-switch", "remove_data")
+                    .with_accessible_name("Remove its data"),
+            ));
+        let (_taffy, node_map, _root) = lay_out(&mut row);
+        let update = build_tree_update(&row, &node_map, None, 1.0);
+        let switch = update
+            .nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| node.role() == AkRole::Switch)
+            .expect("the switch is exported");
+        assert_eq!(
+            switch.description(),
+            Some("Your settings and saved files go to the Trash.")
+        );
+    }
+
     fn lay_out(
         root: &mut dyn Widget,
     ) -> (

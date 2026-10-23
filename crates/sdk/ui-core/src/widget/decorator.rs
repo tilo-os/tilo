@@ -433,6 +433,7 @@ decorator_trait! {
         fn accessibility_child_parent(child_index: usize) -> Option<usize>;
         fn accessibility_child_path(child_index: usize) -> Option<Vec<usize>>;
         fn accessibility_represents_child(child_index: usize) -> bool;
+        fn accessibility_child_description(child_index: usize) -> Option<String>;
         fn is_enabled() -> bool;
         fn ime_requires_deferred_ack() -> bool;
         fn ime_edit_fingerprint(key: &[u8; 32]) -> Option<[u8; 32]>;
