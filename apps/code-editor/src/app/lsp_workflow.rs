@@ -70,20 +70,10 @@ impl CodeApp {
         };
         let (node, lang) = (buf.node, buf.language);
         if self.lsp.is_some() && self.lsp_language == Some(lang) {
-            // Already serving this language; just make sure the right document
-            // is open on it.
-            let uri = self.node_uri(node);
-            if self.lsp_uri.as_deref() != Some(uri.as_str()) {
-                let text =
-                    EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
-                self.lsp_version += 1;
-                let version = self.lsp_version;
-                if let Some(c) = self.lsp.as_mut() {
-                    c.did_open(&uri, Self::language_id(lang), version, &text);
-                }
-                self.lsp_sent_text = text;
-                self.lsp_uri = Some(uri);
-            }
+            self.open_on_language_server(doc, node, lang);
+            return;
+        }
+        if self.lsp_launching {
             return;
         }
         if crate::lsp::LspClient::server_command(lang).is_none() {
@@ -96,23 +86,69 @@ impl CodeApp {
         let Some(root) = self.session.project.root_path() else {
             return;
         };
-        match crate::lsp::LspClient::start(lang, &root) {
-            Ok(mut client) => {
-                let uri = self.node_uri(node);
-                let text =
-                    EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
+        // Launching a server spawns a process and looks at the project
+        // directory: on the frame loop that happens on a background thread.
+        self.lsp_launching = true;
+        self.on_disk(
+            "code-language-server",
+            move || {
+                let started = crate::lsp::LspClient::start(lang, &root);
+                (root, started)
+            },
+            move |app, (root, started)| app.language_server_started(lang, &root, started),
+        );
+        if self.lsp.is_some() && self.lsp_language == Some(lang) {
+            self.open_on_language_server(doc, node, lang);
+        }
+    }
+
+    /// Make sure the language server serving `lang` has `node` open.
+    fn open_on_language_server(
+        &mut self,
+        doc: &AutoCommit,
+        node: TreeId,
+        lang: crate::model::Language,
+    ) {
+        let uri = self.node_uri(node);
+        if self.lsp_uri.as_deref() == Some(uri.as_str()) {
+            return;
+        }
+        let text = EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
+        self.lsp_version += 1;
+        let version = self.lsp_version;
+        if let Some(c) = self.lsp.as_mut() {
+            c.did_open(&uri, Self::language_id(lang), version, &text);
+        }
+        self.lsp_sent_text = text;
+        self.lsp_uri = Some(uri);
+    }
+
+    /// Fold in launching the server for `lang`. The file it serves is opened
+    /// on it at the next sync ([`Self::open_on_language_server`]).
+    fn language_server_started(
+        &mut self,
+        lang: crate::model::Language,
+        root: &std::path::Path,
+        started: Result<crate::lsp::LspClient, String>,
+    ) {
+        self.lsp_launching = false;
+        match started {
+            Ok(client) => {
+                // Turned off, or another project opened, while it launched.
+                if !self.lsp_enabled() || self.session.project.root_path().as_deref() != Some(root)
+                {
+                    return;
+                }
                 let server = client.server_name().to_string();
                 tracing::info!(
                     "started language server {server} for {} at {}",
                     lang.label(),
                     root.display()
                 );
-                self.lsp_version = 1;
-                client.did_open(&uri, Self::language_id(lang), self.lsp_version, &text);
-                self.lsp_sent_text = text;
+                self.lsp_version = 0;
                 self.lsp = Some(client);
                 self.lsp_language = Some(lang);
-                self.lsp_uri = Some(uri);
+                self.lsp_uri = None;
                 self.lsp_status = LspStatus::Starting { server };
             }
             Err(e) => {
