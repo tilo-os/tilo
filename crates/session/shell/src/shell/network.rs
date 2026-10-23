@@ -8042,7 +8042,7 @@ impl ShellNetwork {
             | NeighbourMsg::RecordContentLacks { .. }) => {
                 self.dispatch_record_content(ws, peer, message);
             }
-            other => self.dispatch_to_replica(peer, &other),
+            other => self.dispatch_to_replica(peer, other),
         }
     }
 
@@ -8426,7 +8426,14 @@ impl ShellNetwork {
     /// replicates through the shell-tree replica. `SyncReq`
     /// additionally carries an invite id which is redeemed before the
     /// replica answers, so roster and reply land together.
-    fn dispatch_to_replica(&self, peer: iroh::EndpointId, msg: &NeighbourMsg) {
+    fn dispatch_to_replica(&self, peer: iroh::EndpointId, msg: NeighbourMsg) {
+        let origin = crate::shell::state::PeerOrigin::peer(&peer);
+        if let NeighbourMsg::SyncResp { room, changes } = msg {
+            if let Some(room) = crate::network::replica::batch_room(&origin, &room) {
+                self.merge_room_batch_off_loop(peer, room, changes);
+            }
+            return;
+        }
         // A poisoned replica lock here just drops this one message
         // rather than panicking the whole compositor.
         let Ok(mut rep) = self.replica.lock() else {
@@ -8435,15 +8442,23 @@ impl ShellNetwork {
         // The peer's own identity, not the liveness-handle
         // digest: this decides whether the payload may rewrite
         // a room's governance.
-        rep.handle_from(&crate::shell::state::PeerOrigin::peer(&peer), msg);
-        let refreshed_room = match msg {
-            NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } => {
-                RoomId::parse(room)
-            }
+        rep.handle_from(&origin, &msg);
+        let refreshed_room = match &msg {
+            NeighbourMsg::SyncReq { room, .. } => RoomId::parse(room),
             _ => None,
         };
+        self.finish_replica_turn(rep, refreshed_room);
+    }
+
+    /// Publish what the replica queued, and the trusted identities of the
+    /// room it touched.
+    fn finish_replica_turn(
+        &self,
+        rep: std::sync::MutexGuard<'_, WorkspaceTreeReplica>,
+        room: Option<RoomId>,
+    ) {
         let refreshed_projection =
-            refreshed_room.map(|room| (room, rep.tree.read().trusted_identity_projection(room)));
+            room.map(|room| (room, rep.tree.read().trusted_identity_projection(room)));
         let outgoing = rep.drain_outgoing();
         drop(rep);
         if let Some((room, projection)) = refreshed_projection {
