@@ -69,11 +69,23 @@ pub struct BrowserWindow {
     observed_content_fullscreen: bool,
     fullscreen_hint_deadline: Option<Instant>,
     fullscreen_hint: Option<Box<dyn Widget>>,
+    /// This window among the profile's open Browser windows, in every
+    /// process: closing the last of them is the Browser closing.
+    open_window: Option<crate::storage::OpenWindow>,
 }
 
 impl BrowserWindow {
     /// A window showing `page`. `focus_address` puts the caret in the
     /// address field, for a window opened without a page to show.
+    /// Count this window among the open windows of the profile at `root`
+    /// instead of the Browser's own.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn counted_in(mut self, root: &std::path::Path) -> Self {
+        self.open_window = crate::storage::open_window(root).ok();
+        self
+    }
+
     pub fn new(page: BrowserWidget, focus_address: bool) -> Self {
         Self {
             page: Box::new(page),
@@ -92,6 +104,8 @@ impl BrowserWindow {
             observed_content_fullscreen: false,
             fullscreen_hint_deadline: None,
             fullscreen_hint: None,
+            open_window: crate::storage::data_dir()
+                .and_then(|root| crate::storage::open_window(&root).ok()),
         }
     }
 
@@ -821,7 +835,16 @@ impl FloatingSurfaceProvider for BrowserWindow {
 
 impl Drop for BrowserWindow {
     fn drop(&mut self) {
-        self.page.clear_history_on_workspace_exit();
+        // "Clear browsing data on exit" clears the person's history when the
+        // Browser closes: its last window, not each tab. The history is the
+        // person's on every device, and a tab closing is no exit.
+        if self
+            .open_window
+            .take()
+            .is_some_and(crate::storage::OpenWindow::close)
+        {
+            self.page.clear_history_on_workspace_exit();
+        }
     }
 }
 
