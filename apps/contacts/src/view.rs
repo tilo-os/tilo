@@ -177,6 +177,18 @@ fn select_target(id: ContactId) -> String {
     format!("contacts.select:{id}")
 }
 
+/// A contact's row: the name, and under it the organization or title when
+/// there is one. A row with neither centres the name instead of keeping an
+/// empty second line.
+fn row_face(row: &ListEntry) -> ListRowFace<'_> {
+    let face = ListRowFace::new(&row.name);
+    if row.secondary.trim().is_empty() {
+        face
+    } else {
+        face.secondary(&row.secondary)
+    }
+}
+
 /// The list of people: one [`ListRowFace`] per contact, avatar leading and
 /// the organization as the secondary line. Only the rows in view are
 /// measured and painted, so a book of many thousands stays responsive.
@@ -301,8 +313,7 @@ impl ContactList {
                 let selected = bridge.selected == Some(row.id);
                 let identity = row.id.to_string();
                 let picture = bridge.picture(&row.photo);
-                let mut face = ListRowFace::new(&row.name)
-                    .secondary(&row.secondary)
+                let mut face = row_face(row)
                     .leading(RowLeading::Avatar(
                         AvatarFace::new(&row.name, &identity).image(picture.as_ref()),
                     ))
@@ -525,8 +536,7 @@ impl Widget for ContactList {
                 let row = bridge.rows.iter().find(|row| row.id == *id)?;
                 let identity = row.id.to_string();
                 let picture = bridge.picture(&row.photo);
-                let mut face = ListRowFace::new(&row.name)
-                    .secondary(&row.secondary)
+                let mut face = row_face(row)
                     .leading(RowLeading::Avatar(
                         AvatarFace::new(&row.name, &identity).image(picture.as_ref()),
                     ))
