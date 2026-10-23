@@ -111,3 +111,7 @@ upstream = "Tilo's own, not posted; mainline still records a GX_BW_PERF_VOTE the
 [[patch]]
 file = "0020-drm-msm-a6xx-log-what-is-left-in-an-HFI-queue-the-GMU-stopped-servicing.patch"
 upstream = "Tilo's own, not posted; mainline still discards unserviced HFI queues silently"
+
+[[patch]]
+file = "0021-arm64-dts-qcom-x1e80100-lenovo-yoga-slim7x-reserve-a-ramoops-region.patch"
+upstream = "Tilo's own, not posted; mainline describes no ramoops region for any X1E board"
