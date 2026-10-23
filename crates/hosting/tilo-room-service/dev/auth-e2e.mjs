@@ -144,8 +144,10 @@ export function parseBanner(text) {
   return match ? {room: match[1]} : null;
 }
 
-/** The membership `memberships` (localStorage's JSON) keeps for `origin`, or `null`. */
+/** The membership `memberships` (localStorage's JSON) keeps for `origin`, or `null`;
+ * `null` too without an origin (a caller that accepts any host, as the site web view). */
 export function membershipFor(memberships, origin) {
+  if (!origin) return null;
   let all;
   try { all = JSON.parse(memberships ?? '{}') ?? {}; } catch { return null; }
   return all[new URL(origin).origin] ?? null;

@@ -4511,24 +4511,40 @@ cost = "heavy"
 timeout_secs = 5400
 default = false
 
-# A Tilo computer joins a real site's home workspace through its door, the acceptance of "a
-# workspace is its room" (dist/dev/site-door-acceptance.py): two headless nested sessions of fresh
+# A Tilo computer joins a site's home workspace through its door, the acceptance of "a workspace is
+# its room" (dist/dev/site-door-acceptance.py): it starts a site here as tilo.coffee runs (the room
+# service in persistent mode with its relay, and the web entry serving the desktop bundle, through
+# crates/hosting/tilo-room-service/dev/run.py), then two headless nested sessions of fresh
 # identities and the site's web view (headless Chrome) check that the workspace is the room the
 # door names, that a post reaches the other session and the web view, and that joining again keeps
-# the same workspace. Against the test site on eu1, never the production Lounge: it posts for real.
+# the same workspace. Nothing is stubbed: admission, enrollment and posting take the real door path.
+# Never against the production Lounge from here: it posts for real.
 [[check]]
 name = "site-door-acceptance"
-run = "bash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --out /target/site-door-acceptance"
-# nested-session.sh takes the nested-session check's output where t puts it, so the
-# sources stay read-only.
-env = { TILO_ACCEPTANCE_SITE = "https://acceptance.tilo.coffee/", TILO_NESTED_SESSION_BUILD = "/target/nested-session" }
+run = """
+export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts
+python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
+cp -r scripts/moq-browser "$TMPDIR/moq-browser"
+TILO_MOQ_BROWSER_DIR=$TMPDIR/moq-browser crates/browser/tilo-browser-runtime/scripts/build.sh "$TMPDIR/desktop-bundle" --bundle desktop
+bash tools/ci/ensure-browser-dependencies.sh
+npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
+export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
+bash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --bundle "$TMPDIR/desktop-bundle" --out /target/site-door-acceptance
+"""
+# nested-session.sh and the local site take the nested-session check's output where t puts it, so
+# the sources stay read-only.
+env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
 needs = ["nested-session"]
-inputs = ["dist/dev/site-door-acceptance.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "crates/hosting/tilo-room-service/dev/site-web-view.mjs", "crates/hosting/tilo-room-service/dev/auth-e2e.mjs", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs", "tools/test-env.sh", "tools/with-test-environment.sh"]
+inputs = ["apps/**", "crates/**", "vendor/**", "dist/dev/site-door-acceptance.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "scripts/moq-browser/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/site-door-acceptance/**"]
+git = true
 requires = ["arch=x86_64"]
 requirement = { cores = 8, memory = "16GiB" }
+# The sessions launch their apps confined (bwrap), which needs user namespaces the job sandbox
+# does not give; a micro-VM does.
+isolation = "vm"
 cost = "heavy"
-timeout_secs = 3600
+timeout_secs = 7200
 on = ["idle"]
 default = false
 
