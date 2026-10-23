@@ -4204,21 +4204,8 @@ impl RecordStore {
                     heads
                 }
                 collab_types::DocumentMutation::Incremental(bytes) => {
-                    // load_incremental deliberately accepts a valid prefix of
-                    // corrupt input. Validate the entire payload first. Missing
-                    // dependencies are valid for an incremental message and are
-                    // checked only after Automerge has parsed every chunk.
-                    match AutoCommit::load_with_options(
-                        &bytes,
-                        automerge::LoadOptions::new()
-                            .on_partial_load(automerge::OnPartialLoad::Error),
-                    ) {
-                        Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
-                        Err(error) => return Err(error.to_string()),
-                    }
                     candidate = local.clone();
-                    candidate
-                        .load_incoming(&bytes)
+                    crate::history_mode::routes::load_incremental(&mut candidate, &bytes)
                         .map_err(|error| error.to_string())?;
                     // The new heads stand for every change the payload added:
                     // listing each one re-encodes them all, which costs as
