@@ -18,7 +18,7 @@ impl Fixture {
         let source = source(&rig, &lifecycle, &socket);
         let mut apps = super::super::super::super::InProcessApps::native_for_profile(
             &rig.root.path().join("apps"),
-            Some(rig.root.path().join("apps").join("person")),
+            &rig.root.path().join("apps").join("person"),
             &rig.owner.principal,
             socket,
         )

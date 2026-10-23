@@ -615,9 +615,7 @@ impl super::InProcessApps {
             self.messaging_records = Some(records::Records::open(
                 &self.author.0,
                 &self.device_id,
-                self.person_records
-                    .clone()
-                    .ok_or(LaunchError::BindingMismatch)?,
+                self.person_records.clone(),
                 wake,
             ));
         }

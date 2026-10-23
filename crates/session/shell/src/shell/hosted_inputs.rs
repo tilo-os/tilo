@@ -143,8 +143,12 @@ impl HostedTileInputs {
     pub fn for_host_directory_privately(directory: &std::path::Path) -> std::io::Result<Self> {
         let profile =
             std::env::temp_dir().join(format!("tilo-shell-apps-{}", uuid::Uuid::new_v4()));
-        let apps = super::in_process::InProcessApps::at(&profile, "fixture-person")
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let apps = super::in_process::InProcessApps::at(
+            &profile,
+            &profile.join("person"),
+            "fixture-person",
+        )
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
         let owned = Arc::new(FixtureDirectory(vec![profile]));
         let mut inputs = Self::for_host_directory(directory, apps)?;
         inputs.opens_sessions = false;
@@ -192,8 +196,12 @@ impl HostedTileInputs {
         let fixture = Arc::new(FixtureDirectory(vec![directory.clone(), profile.clone()]));
         // A fixture's apps keep their records in its own profile, as a
         // fixture person, and never reach the session's.
-        let apps = super::in_process::InProcessApps::at(&profile, "fixture-person")
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let apps = super::in_process::InProcessApps::at(
+            &profile,
+            &profile.join("person"),
+            "fixture-person",
+        )
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
         std::fs::write(directory.join("Welcome.txt"), "Shell capture fixture\n")?;
         Ok(Self {
             picker_scope: Some(crate::portal::PickerScope {

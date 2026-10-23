@@ -114,8 +114,6 @@ impl super::super::InProcessApps {
     ) -> Result<(), LaunchError> {
         let admitted = identity.clone();
         self.person_records
-            .as_ref()
-            .ok_or(LaunchError::BindingMismatch)?
             .change_accounts(invoke, move || {
                 admitted
                     .check()

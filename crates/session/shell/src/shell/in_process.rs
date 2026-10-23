@@ -49,9 +49,8 @@ pub struct InProcessApps {
     credential_owner: Option<accounts::CredentialOwner>,
     /// The person's records the session keeps (their accounts and contacts
     /// among them), held on this thread where its settings are: the apps
-    /// open the person's records of other apps there. `None` keeps the
-    /// session's messaging from them.
-    person_records: Option<crate::shell::settings_records::Holder>,
+    /// open the person's records of other apps there.
+    person_records: crate::shell::settings_records::Holder,
     messaging_records: Option<Rc<dyn messaging::records::RecordQueries>>,
     messaging_record_wake: Option<crate::session_runtime::Wake>,
     messaging_transport:
@@ -92,8 +91,14 @@ impl InProcessApps {
     }
 
     /// Apps keeping their records in `store`, mounted for `author` on
-    /// `device_id`.
-    pub fn new(store: Rc<dyn durable_store::DurableStore>, device_id: &str, author: &str) -> Self {
+    /// `device_id`, opening the person's records of other apps in
+    /// `person_records`.
+    pub(crate) fn new(
+        store: Rc<dyn durable_store::DurableStore>,
+        device_id: &str,
+        author: &str,
+        person_records: crate::shell::settings_records::Holder,
+    ) -> Self {
         Self {
             feedback: None,
             native_feedback: None,
@@ -110,7 +115,7 @@ impl InProcessApps {
             first_accounts: None,
             messaging_registry: None,
             credential_owner: None,
-            person_records: None,
+            person_records,
             messaging_records: None,
             messaging_record_wake: None,
             messaging_transport: None,
@@ -355,18 +360,30 @@ impl InProcessApps {
     }
 
     /// The apps of a session whose state lives in `profile_root`: their
-    /// records and views there, as this device.
+    /// records and views there, as this device, with the person's records
+    /// in `person` held on this thread.
     ///
     /// # Errors
-    /// A relative root or corrupt device identity.
-    pub fn at(profile_root: &std::path::Path, author: &str) -> Result<Self, LaunchError> {
+    /// A relative root, corrupt device identity or unreadable person's
+    /// records.
+    pub(crate) fn at(
+        profile_root: &std::path::Path,
+        person: &std::path::Path,
+        author: &str,
+    ) -> Result<Self, LaunchError> {
         std::fs::create_dir_all(profile_root)
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         let profile = ui::application::NativeProfile::open(profile_root, None)?;
+        let held = crate::shell::settings_records::Holder::held(
+            (person.to_path_buf(), author.to_owned()),
+            profile_root,
+        )
+        .map_err(LaunchError::Operation)?;
         Ok(Self::new(
             Rc::new(app_state::FsStore::new(profile_root.to_path_buf())),
             profile.device_id(),
             author,
+            held,
         ))
     }
 
@@ -376,9 +393,11 @@ impl InProcessApps {
     /// # Errors
     /// As [`Self::at`].
     pub fn native(author: &str) -> Result<Self, LaunchError> {
+        let person = crate::shell::settings_records::person_dir()
+            .ok_or_else(|| LaunchError::Operation("no data home".into()))?;
         let mut apps = Self::native_for_profile(
             &crate::shell::settings_records::session_apps(),
-            crate::shell::settings_records::person_dir(),
+            &person,
             author,
             launcher::services::collab_socket(),
         )?;
@@ -418,24 +437,21 @@ impl InProcessApps {
     /// isolated integration fixtures.
     pub(crate) fn native_for_profile(
         profile: &std::path::Path,
-        person: Option<std::path::PathBuf>,
+        person: &std::path::Path,
         author: &str,
         socket: std::path::PathBuf,
     ) -> Result<Self, LaunchError> {
         let connector = socket.clone();
-        let mut apps = Self::at(profile, author)?.reaching_broker(Rc::new(move |app, room| {
-            session_connector(
-                connector.clone(),
-                launcher::services::identity_socket(),
-                app,
-                room,
-            )
-        }));
+        let mut apps =
+            Self::at(profile, person, author)?.reaching_broker(Rc::new(move |app, room| {
+                session_connector(
+                    connector.clone(),
+                    launcher::services::identity_socket(),
+                    app,
+                    room,
+                )
+            }));
         apps.native_broker_socket = Some(socket);
-        apps.person_records = Some(crate::shell::settings_records::Holder::held(
-            (person, author.to_owned()),
-            profile,
-        ));
         apps.feedback_destination = feedback_native::configured_destination(profile)?;
         apps.native_messaging_root = Some(profile.join("private-messages"));
         let registry = tilo_messaging::messaging_registry(&apps.author.0)
@@ -539,21 +555,18 @@ impl InProcessApps {
             ),
             Err(error) => return Err(LaunchError::Record(error)),
         };
+        // The person's records of other apps (their accounts and contacts)
+        // are the ones the session holds.
+        let held = self
+            .person_records
+            .person_records()
+            .map_err(LaunchError::Operation)?;
         if let Ok(person) = ui::record::person::PersonRecords::open(
             &mut self.owners,
             definition.app_id,
             self.author.clone(),
         ) {
-            // The person's records of other apps (their accounts and
-            // contacts) are the ones the session holds.
-            let held = self
-                .person_records
-                .as_ref()
-                .and_then(crate::shell::settings_records::Holder::person_records);
-            context.provide_person_records(match held {
-                Some(held) => person.sharing(&held),
-                None => person,
-            });
+            context.provide_person_records(person.sharing(&held));
         }
         if definition.app_id == "so.tilo.messages" {
             #[cfg(target_os = "linux")]
@@ -882,7 +895,12 @@ mod tests {
     #[test]
     fn a_terminal_mounted_without_waiting_on_the_disk_mounts_once_its_record_is_ready() {
         let profile = tempfile::tempdir().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let (woken, wakes) = std::sync::mpsc::channel();
         let woken = std::sync::Mutex::new(woken);
         durable_store::waiting::decline_on_this_thread(std::sync::Arc::new(move || {
@@ -913,7 +931,12 @@ mod tests {
     #[test]
     fn hosted_terminal_missing_ush_reports_startup_failure_and_refuses_input() {
         let profile = tempfile::tempdir().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let mut harness = mount_terminal(&mut apps);
         let address = |operation| ui::bound_dispatch::BoundActionAddress {
             instance_id: TAB,
@@ -956,7 +979,12 @@ mod tests {
     #[test]
     fn a_hosted_terminal_tab_publishes_its_actions_and_keeps_its_record() {
         let profile = tempfile::tempdir().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let mut harness = mount_terminal(&mut apps);
         let session = harness
             .resources()
@@ -1013,7 +1041,12 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join("harbour-plan.txt"), "plan").unwrap();
         let folder = folder.path().canonicalize().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let mount = |apps: &mut InProcessApps, tab: u64| {
             let startup = file_explorer::StartupInputs {
                 initial_dir: folder.clone(),
@@ -1129,7 +1162,12 @@ mod tests {
     #[test]
     fn each_notes_tab_is_a_notebook_of_its_own_kept_in_its_record() {
         let profile = tempfile::tempdir().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let write = |apps: &mut InProcessApps, tab: u64, title: &str| {
             let component = apps
                 .mount(
@@ -1216,7 +1254,14 @@ mod tests {
         std::fs::write(&file, "moor at the east quay\n").unwrap();
         let file = file.canonicalize().unwrap();
         let mut inputs = crate::shell::hosted_inputs::HostedTileInputs::default();
-        inputs.mount_apps_in_process(InProcessApps::at(profile.path(), "test-person").unwrap());
+        inputs.mount_apps_in_process(
+            InProcessApps::at(
+                profile.path(),
+                &profile.path().join("person"),
+                "test-person",
+            )
+            .unwrap(),
+        );
 
         let notes = mount_tab(&inputs, 71, notes_kind());
         assert!(
@@ -1262,7 +1307,12 @@ mod tests {
     #[test]
     fn a_notes_tab_runs_its_launch_and_keeps_the_note_it_opened() {
         let profile = tempfile::tempdir().unwrap();
-        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut apps = InProcessApps::at(
+            profile.path(),
+            &profile.path().join("person"),
+            "test-person",
+        )
+        .unwrap();
         let (file, _receipt) = ui::application::OpenFile::new(
             "Harbour plan.md",
             "text/markdown",
@@ -1467,11 +1517,15 @@ mod tests {
         let session = crate::runtime_host::Session::start(&profile).unwrap();
         let collab = session.broker.capnp_socket().to_path_buf();
         let identity = session.identity_socket().to_path_buf();
-        let mut apps = InProcessApps::at(&profile.join("apps"), &session.actor)
-            .unwrap()
-            .reaching_broker(Rc::new(move |app, room| {
-                session_connector(collab.clone(), identity.clone(), app, room)
-            }));
+        let mut apps = InProcessApps::at(
+            &profile.join("apps"),
+            &profile.join("apps").join("person"),
+            &session.actor,
+        )
+        .unwrap()
+        .reaching_broker(Rc::new(move |app, room| {
+            session_connector(collab.clone(), identity.clone(), app, room)
+        }));
         let room = session.room.clone();
         // The Notes tab is opened on a note whose body has a word no title has.
         let (file, _receipt) = ui::application::OpenFile::new(

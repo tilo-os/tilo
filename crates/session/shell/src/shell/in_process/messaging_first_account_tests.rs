@@ -63,7 +63,7 @@ fn empty_native_messages_first_account_protected_review_receive_reply_and_revoke
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("first-apps"),
-        Some(rig.root.path().join("first-apps").join("person")),
+        &rig.root.path().join("first-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -302,7 +302,7 @@ fn interrupted_first_account_reset_retires_old_review_before_fresh_pairing() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("first-apps"),
-        Some(rig.root.path().join("first-apps").join("person")),
+        &rig.root.path().join("first-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
