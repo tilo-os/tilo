@@ -598,28 +598,37 @@ async function postInChat(tab, text) {
   })()`).catch(error => ({error: error.message}));
 }
 
+/** In the page: the messages the Chat window `window` holds in the
+ * channel with id `channel`, through the channel's own `read-messages`
+ * (published on the channel's row, not the chat's root), as
+ * `{messages}` or `{refused}`. An app's action answers at once and may
+ * throw at once, so the call is made inside the try. */
+export const READ_CHANNEL = (window, channel) => `(async () => {
+  try {
+    const result = await tiloMount.invokeAction(${JSON.stringify(`chat.workspace/channels/${channel}`)}, 'read-messages',
+      {pageSize: 32}, {window: ${JSON.stringify(window)}});
+    const messages = result?.output?.value?.messages;
+    return Array.isArray(messages) ? {messages} : {refused: result?.error ?? result?.state ?? 'no messages'};
+  } catch (error) {
+    return {refused: String(error?.message ?? error)};
+  }
+})()`;
+
 /** What `tab`'s Chat reads in the channel with id `channel`, for a
  * failure's detail: the last few texts, or why it read none. */
 async function chatReads(tab, channel) {
   const chat = await tab.evaluate(CHAT_CHANNEL).catch(() => null);
   if (!chat) return {error: 'no Chat channel'};
-  return tab.evaluate(`(async () => {
-    const result = await tiloMount.invokeAction('chat.workspace', 'read-messages',
-      {channel: ${JSON.stringify(channel)}, page_size: 32}, {window: ${JSON.stringify(chat.window)}});
-    const messages = result?.output?.value?.messages;
-    return messages ? {count: messages.length, last: messages.slice(-3).map(m => m.text)} : {state: result?.state ?? null};
-  })()`).catch(error => ({error: error.message}));
+  const read = await tab.evaluate(READ_CHANNEL(chat.window, channel)).catch(error => ({refused: error.message.slice(-300)}));
+  return read.messages ? {count: read.messages.length, last: read.messages.slice(-3).map(m => m.text)} : read;
 }
 
 /** Whether `tab`'s Chat shows `text` in the channel with id `channel`. */
 export async function chatShows(tab, channel, text) {
   const chat = await tab.evaluate(CHAT_CHANNEL);
   if (!chat) return false;
-  return tab.evaluate(`(async () => {
-    const result = await tiloMount.invokeAction('chat.workspace', 'read-messages',
-      {channel: ${JSON.stringify(channel)}, pageSize: 32}, {window: ${JSON.stringify(chat.window)}});
-    return Boolean(result?.output?.value?.messages?.some(message => message.text === ${JSON.stringify(text)}));
-  })()`);
+  const read = await tab.evaluate(READ_CHANNEL(chat.window, channel));
+  return Boolean(read.messages?.some(message => message.text === text));
 }
 
 /** In the page: where the widget with test id `id` is on the page (CSS px,
@@ -671,9 +680,6 @@ const NAMES_MATCHING = pattern => `(() => {
   return found.slice(0, 20);
 })()`;
 
-/** In the page: press the first control whose name matches `pattern`. */
-const PRESS_MATCHING = pattern => PRESS_WHERE(`name => new RegExp(${JSON.stringify(pattern)}).test(name ?? '')`);
-
 /** In the page: press the first control whose name `named` (the source of
  * a function of the name) takes. */
 const PRESS_WHERE = named => `(() => {
@@ -707,6 +713,61 @@ const PRESS_WHERE = named => `(() => {
   if (!control) return null;
   return tiloMount.semantic(control.path, control.target, 'activate', '', 0, 0) === true || null;
 })()`;
+
+/** In the page: the control whose name matches `pattern`, wherever the
+ * desktop shows it (its own node or one of a node's synthetic children):
+ * `{path, target, own, at}`, `at` its middle on the page where it has a
+ * rect, or null while it shows none. */
+const CONTROL_MATCHING = pattern => `(() => {
+  const named = name => new RegExp(${JSON.stringify(pattern)}).test(name ?? '');
+  const canvas = tiloMount.canvas.getBoundingClientRect();
+  const middle = rect => rect && rect.length === 4
+    ? {x: Math.round(canvas.left + rect[0] + rect[2] / 2), y: Math.round(canvas.top + rect[1] + rect[3] / 2)} : null;
+  const find = node => {
+    if (!node) return null;
+    const own = node.semantics;
+    if (own && named(own.name)) return {path: node.path, target: own.action_target ?? null, own: true, at: middle(node.rect)};
+    const synthetic = access => {
+      for (const child of access?.children ?? []) {
+        if (named(child.name)) {
+          return {path: node.path, target: child.action_target ?? null, own: false, at: middle(child.rect) ?? middle(node.rect)};
+        }
+        const found = synthetic(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const inside = synthetic(own);
+    if (inside) return inside;
+    for (const child of node.children ?? []) {
+      const found = find(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  return find(tiloMount.state()?.semantics?.root);
+})()`;
+
+/** Press the control in `tab` whose name matches `pattern`: through
+ * assistive technology, else with the pointer where it is drawn. Resolves
+ * to `{control, pressed, error}` once pressed, or the last attempt. */
+async function pressMatching(tab, pattern, timeout) {
+  let last = {pressed: false, error: 'not shown'};
+  const done = await until(async () => {
+    const control = await tab.evaluate(CONTROL_MATCHING(pattern));
+    if (!control) return null;
+    const pressed = await tab.evaluate(`tiloMount.semantic(${JSON.stringify(control.path)}, ${JSON.stringify(control.target ?? undefined)}, 'activate', '', 0, 0) === true`)
+      .catch(error => ({error: error.message}));
+    if (pressed === true) return (last = {control, pressed: 'semantic'});
+    last = {control, pressed: false, error: pressed?.error ?? String(pressed)};
+    if (control.at) {
+      await click(tab, control.at);
+      last.clicked = control.at;
+    }
+    return null;
+  }, timeout, 2000);
+  return done ?? last;
+}
 
 /** Click at `at` in `tab`, as a person's pointer does. */
 async function click(tab, at) {
@@ -1153,7 +1214,7 @@ async function main() {
     const sinceInvite = door.requests.length;
     let invited = {entry: 'not asked'};
     let joined = false;
-    let letIn = false;
+    let letIn = {pressed: false, error: 'no invitation'};
     if (inviteLink) {
       await leaving(door);
       await door.evaluate(`(() => {
@@ -1162,7 +1223,13 @@ async function main() {
       })()`).catch(() => {});
       await door.waitFor('!globalThis.__authE2eLeft', {timeout}).catch(() => {});
       joined = await press(door, 'Join', timeout);
-      letIn = Boolean(await until(() => inviter.evaluate(PRESS_MATCHING('^Let .+ in$')), 90_000));
+      // Let in from the banner the inviter's desktop offers; once the
+      // invitee is in, nothing more is offered.
+      letIn = await pressMatching(inviter, '^Let .+ in$', 90_000);
+      if (!letIn.pressed && letIn.clicked) {
+        const gone = await until(async () => !(await inviter.evaluate(CONTROL_MATCHING('^Let .+ in$'))), 10_000);
+        if (gone) letIn = {...letIn, pressed: 'pointer'};
+      }
       invited = await until(async () => {
         const now = await settle(door, settleOptions);
         return now.entry === 'open' && now.membership ? now : null;
@@ -1170,13 +1237,13 @@ async function main() {
     }
     keepLog('invite-admits', door);
     const invitedJoins = joinsTo(door.requests.slice(sinceInvite), api);
-    const asking = letIn ? null : await inviter.evaluate(NAMES_MATCHING('asks to join|^Let |Waiting')).catch(error => error.message);
+    const asking = letIn.pressed ? null : await inviter.evaluate(NAMES_MATCHING('asks to join|^Let |Waiting')).catch(error => error.message);
     check('invite-admits', inviting.entry === 'open' && inviting.membership?.userPublicKey === me && Boolean(inviteLink)
-      && /[?&]invite=/.test(inviteLink ?? '') && joined && letIn && invited.entry === 'open' && invited.arrival === 'done'
+      && /[?&]invite=/.test(inviteLink ?? '') && joined && Boolean(letIn.pressed) && invited.entry === 'open' && invited.arrival === 'done'
       && /^[0-9a-f]{64}$/.test(invited.membership?.userPublicKey ?? '') && invited.membership.userPublicKey !== me
       && invitedJoins.length === 0,
     {inviter: {entry: inviting.entry, membership: inviting.membership, status: inviting.status}, invitePressed, inviteLink,
-      joined, letIn, asking, inviterLog: letIn ? undefined : inviter.log.slice(-8), entry: invited.entry, arrival: invited.arrival, membership: invited.membership, status: invited.status,
+      joined, letIn, asking, inviterLog: letIn.pressed ? undefined : inviter.log.slice(-8), entry: invited.entry, arrival: invited.arrival, membership: invited.membership, status: invited.status,
       doorJoins: invitedJoins.map(j => j.status)});
     if (invited.entry !== 'open') await shoot('invite-admits', door);
     await door.close();
