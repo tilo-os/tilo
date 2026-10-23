@@ -568,6 +568,10 @@ impl HostContext {
             &record,
         )
         .map_err(|error| LaunchError::Record(RecordOpenError::Initialization(error)))?;
+        // Another replica's change to the window's records (a collaborator's
+        // edit, a room's bot posting) wakes the window to show it.
+        let wake_scope = WakeScope::new();
+        records.wake_on_arrival(wake_scope.handle());
         Ok(Self {
             app_id: package,
             instance_id,
@@ -582,7 +586,7 @@ impl HostContext {
             author,
             action_context,
             writes_as_author: false,
-            wake_scope: WakeScope::new(),
+            wake_scope,
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),

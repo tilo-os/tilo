@@ -1020,3 +1020,37 @@ fn a_handed_over_file_posts_as_a_file() {
         .is_err()
     );
 }
+
+/// A message another replica posts (a room's bot bridging Discord, another
+/// member's device) shows in a window that is only being watched: its
+/// arrival in the window's store wakes the window, so the window's own
+/// frames show it, with no input and no frame forced to sync.
+#[test]
+fn a_message_another_replica_posts_shows_without_input() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    crate::testing::mounted_post(&mut app, "c_chat", "hello from here");
+    app.settle();
+    let shows = |app: &mut TestApp<ChatShell>, text: &str| {
+        app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.label().is_some_and(|label| label.contains(text)))
+    };
+    assert!(shows(&mut app, "hello from here"));
+    let text = "hello from the bridge";
+    let changed = app
+        .replica_arrives(&crate::parts::part(0), |doc| {
+            let mut bot =
+                ui::tilo_resource::Replica::<crate::parts::ChatPart>::from_doc(std::mem::take(doc))
+                    .as_author("bot");
+            bot.apply(crate::testing::post("c_chat", text, None))
+                .expect("the bot posts");
+            *doc = bot.doc().clone();
+        })
+        .unwrap();
+    assert!(changed, "the bot's post is new here");
+    for _ in 0..4 {
+        app.frame();
+    }
+    assert!(shows(&mut app, text), "the bot's post shows with no input");
+}

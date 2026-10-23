@@ -1362,6 +1362,10 @@ pub struct RecordSet {
     /// Records of this store's trees peers wrote that it does not hold yet
     /// ([`RecordStore::announce`]).
     announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
+    /// The windows that read this store's records
+    /// ([`RecordStore::wake_on_arrival`]): woken when another replica's
+    /// change arrives, which no input or wake of theirs announces.
+    readers: std::cell::RefCell<Vec<crate::WakeHandle>>,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
     _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
@@ -1430,6 +1434,7 @@ impl RecordSet {
             native_initial: crate::collaboration::native_initial::capture_bridge(),
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
+            readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
     }
@@ -1458,6 +1463,7 @@ impl RecordSet {
             native_initial: None,
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
+            readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
     }
@@ -2510,6 +2516,7 @@ impl RecordOwners {
                 .flatten(),
             kept: std::cell::Cell::new(0),
             announced: std::cell::RefCell::default(),
+            readers: std::cell::RefCell::default(),
             _profile_lifetime: self.profile_lifetime.clone(),
         });
         if let Some(cache) = &self.portable {
@@ -3362,6 +3369,7 @@ impl RecordStore {
         if let Ok(set) = self.0.try_borrow() {
             set.kept.set(set.kept.get().wrapping_add(1));
         }
+        self.wake_readers();
     }
 
     /// Peers wrote `records` of this store's trees ([`RecordId::tree`]),
@@ -3375,6 +3383,7 @@ impl RecordStore {
                 .extend(records.into_iter().filter(|record| record.tree().is_some()));
             set.kept.set(set.kept.get().wrapping_add(1));
         }
+        self.wake_readers();
     }
 
     /// The numbers of the parts of the chain `base` peers wrote
@@ -4156,7 +4165,7 @@ impl RecordStore {
         mutation: collab_types::DocumentMutation,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
         let identity = self.replica_identity_stamp(checkout)?;
-        self.with_action_state(&checkout.id, |doc, history, actions| {
+        let merged = self.with_action_state(&checkout.id, |doc, history, actions| {
             let mut local = doc.clone();
             actions.commit_for_save(&mut local);
             let before = local.get_heads();
@@ -4240,7 +4249,11 @@ impl RecordStore {
             *doc = candidate;
             Ok((changed, observed))
         })
-        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        if let Ok((true, _)) = &merged {
+            self.wake_readers();
+        }
+        merged
     }
 
     /// Merge a peer's full document into an open record, exactly as a
@@ -4621,6 +4634,7 @@ pub fn tick(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod identity_tests;
 
+mod arrival;
 #[cfg(test)]
 mod replica_merge_tests;
 

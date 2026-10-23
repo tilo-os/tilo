@@ -89,3 +89,81 @@ fn a_change_that_arrives_before_the_one_it_builds_on_survives_a_snapshot() {
     );
     assert_eq!(read("body").as_deref(), Some("mine"));
 }
+
+/// A window reading the store is woken when another replica's change
+/// arrives in it, merged or kept, and not by a delivery that changes
+/// nothing; a closed window is not woken.
+#[test]
+fn a_change_from_another_replica_wakes_the_windows_reading_the_store() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut owners = RecordOwners::with_store(Rc::new(MemoryStore::queued()));
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
+    let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+    store
+        .reserve_record(&want)
+        .unwrap()
+        .initialize(|doc| {
+            put_text(doc, "body", "mine");
+            Ok(())
+        })
+        .unwrap();
+    let mut window = crate::WakeScope::new();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&woken);
+    window
+        .bind(move |event| {
+            if event.requires_sync() {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+        .unwrap();
+    store.wake_on_arrival(window.handle());
+    store.wake_on_arrival(window.handle());
+
+    let empty = AutoCommit::new().save();
+    store
+        .merge_replica(&want, collab_types::DocumentMutation::Snapshot(empty))
+        .unwrap();
+    assert_eq!(woken.load(Ordering::SeqCst), 0, "nothing arrived");
+
+    let peer_change = |key: &str| {
+        let mut peer = store.read(&want.id, |doc| doc.clone().fork()).unwrap();
+        let before = peer.get_heads();
+        put_text(&mut peer, key, "theirs");
+        peer.commit();
+        peer.save_after(&before)
+    };
+    let (changed, _) = store
+        .merge_replica(
+            &want,
+            collab_types::DocumentMutation::Incremental(peer_change("seat")),
+        )
+        .unwrap();
+    assert!(changed);
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        1,
+        "woken once, though registered twice"
+    );
+
+    store.note_kept();
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        2,
+        "a record kept for the window"
+    );
+
+    window.close();
+    store
+        .merge_replica(
+            &want,
+            collab_types::DocumentMutation::Incremental(peer_change("deal")),
+        )
+        .unwrap();
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        2,
+        "a closed window is not woken"
+    );
+}

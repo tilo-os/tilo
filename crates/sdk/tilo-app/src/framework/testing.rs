@@ -1574,6 +1574,43 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(())
     }
 
+    /// Another replica's change to `record`, a record open in the app's
+    /// store (its own, or a part of a chain beside it), arriving as a room's
+    /// replication delivers it: `edit` writes on that replica as it stands
+    /// now, under its own actor, and the change is merged into the store.
+    /// Nothing else runs: no frame is laid out or forced, so what the window
+    /// shows of it is what its own frames ([`Self::frame`]) take up, as for
+    /// a person who is only watching. Whether the record changed.
+    ///
+    /// # Errors
+    /// The record is not open here, or the change does not merge.
+    pub fn replica_arrives(
+        &mut self,
+        record: &RecordId,
+        edit: impl FnOnce(&mut tilo_resource::Doc),
+    ) -> Result<bool, String> {
+        let checkout = self
+            .records
+            .open_records()
+            .into_iter()
+            .find(|open| open.id == *record)
+            .ok_or("the record is not open here")?;
+        let mut replica = self
+            .records
+            .read(record, |doc| doc.clone().fork())
+            .ok_or("the record is not open here")?;
+        let before = replica.get_heads();
+        edit(&mut replica);
+        replica.commit();
+        let change = replica.save_after(&before);
+        self.records
+            .merge_replica(
+                &checkout,
+                ui_core::collaboration::DocumentMutation::Incremental(change),
+            )
+            .map(|(changed, _)| changed)
+    }
+
     /// The record's version history.
     pub fn versions(&self) -> Vec<tilo_resource::history::Version> {
         self.records
