@@ -48,7 +48,6 @@ own-search 2 apps/sheets/src/app.rs
 own-search 1 apps/snippets/src/app.rs
 own-search 1 apps/store/src/app.rs
 own-search 1 apps/terminal/src/view.rs
-own-search 1 apps/totp/src/resource.rs
 own-search 1 apps/tube/src/screens.rs
 own-search 2 apps/word-processor/src/find_bar.rs
 toolbar-row 1 apps/git-client/src/app.rs
