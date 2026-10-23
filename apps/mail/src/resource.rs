@@ -580,12 +580,21 @@ fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
 }
 
 /// `text` as HTML: each line a paragraph, a line starting with `> `
-/// quoted, nothing in it taken as markup.
+/// quoted, nothing in it taken as markup. A bare `>` is a quoted blank
+/// line, as a reply quotes the original's paragraph breaks: it stays a
+/// quoted line rather than showing as a `>` of its own.
 fn quoted_html(text: &str) -> String {
     text.split('\n')
-        .map(|line| match line.strip_prefix("> ") {
-            Some(quoted) => format!("<blockquote><p>{}</p></blockquote>", escape_html(quoted)),
-            None => format!("<p>{}</p>", escape_html(line)),
+        .map(|line| {
+            let quoted = if line == ">" {
+                Some("")
+            } else {
+                line.strip_prefix("> ")
+            };
+            match quoted {
+                Some(quoted) => format!("<blockquote><p>{}</p></blockquote>", escape_html(quoted)),
+                None => format!("<p>{}</p>", escape_html(line)),
+            }
         })
         .collect()
 }

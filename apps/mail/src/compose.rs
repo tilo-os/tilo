@@ -2793,6 +2793,39 @@ mod tests {
         }
     }
 
+    /// A reply quotes the original's blank lines as a bare `>`. Those lines
+    /// stay inside the quote: neither the formatted message nor its text
+    /// alternative shows a stray `>` paragraph between the quoted ones.
+    #[test]
+    fn a_reply_quote_keeps_its_blank_lines_inside_the_quote() {
+        let mut w = win();
+        let mut doc = crate::resource::TestMail::doc();
+        w.set_focus(Field::Body);
+        w.start_body(DraftBodySeed::text(
+            "\n\nOn Jun 30, Maya wrote:\n> Lunch at noon?\n>\n> Maya",
+        ));
+        w.to.set_text("maya@example.com");
+        let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
+        let html = d.html_body.expect("an HTML part");
+        assert!(
+            !html.contains("&gt;"),
+            "a quoted blank line is part of the quote, not a `>` paragraph: {html}"
+        );
+        let quoted: Vec<&str> = d
+            .body
+            .lines()
+            .skip_while(|line| !line.ends_with("wrote:"))
+            .skip(1)
+            .map(str::trim_end)
+            .collect();
+        assert_eq!(
+            quoted,
+            ["> Lunch at noon?", ">", "> Maya"],
+            "every quoted line, the blank one too, reads as quoted once: {:?}",
+            d.body
+        );
+    }
+
     #[test]
     fn composer_formats_and_drafts_round_trip_content() {
         {
