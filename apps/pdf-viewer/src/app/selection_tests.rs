@@ -13,6 +13,8 @@ use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 use super::PdfApp;
 use super::tests::open_settled;
 
+mod in_the_desktop;
+
 const LINES: usize = 40;
 
 /// The words of line `line` on page `page` of [`text_pdf`].
