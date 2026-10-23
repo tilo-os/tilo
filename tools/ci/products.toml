@@ -769,11 +769,51 @@ default = false
 on = ["dispatch"]
 
 [[matrix.check]]
+name = "host-session-e2e"
+run = '''
+dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y \
+  qemu-system-x86-core qemu-device-display-virtio-vga qemu-device-display-virtio-gpu \
+  qemu-device-display-virtio-gpu-pci qemu-img openssh-clients xorriso python3 curl
+python3 os/dev/probe-kvm.py x86_64
+work=$(mktemp -d /var/tmp/host-session-e2e.XXXXXX)
+rpms=dist/ci-output/fedora-44-amd64
+rm -rf target/host-session-e2e && mkdir -p target/host-session-e2e
+python3 dist/session/vm-e2e/run.py source --rpms "$rpms" --producer desktop-package-amd64
+cp "$rpms/source.json" target/host-session-e2e/source.json
+python3 dist/session/vm-e2e/run.py test --rpms "$rpms" --out target/host-session-e2e \
+  --work "$work/vm" --image-cache "$work/images" --apps "${T_INPUT_APPS:-}"
+'''
+inputs = ["dist/session/**", "os/dev/probe-kvm.py"]
+# Only a lane that passed has outputs, so the RPMs a failed lane keeps for diagnosis
+# (failed-rpms/) never reach the VM; run.py takes the top-level *.rpm only.
+needs = ["desktop-package-amd64"]
+outputs = ["target/host-session-e2e/**"]
+# source.json names the commit (T_COMMIT) in every run, not only dispatched ones.
+git = true
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+privileged = true
+writable_sources = true
+timeout_secs = 5400
+cost = "heavy"
+default = false
+on = ["stable", "dispatch"]
+dispatch_inputs = { apps = "" }
+comment = """
+The desktop session's Fedora 44 RPMs (desktop-package-amd64) on stock Fedora 44 Cloud under KVM,
+as a person runs them: dnf install, the keyring unlocked, SDDM autologin into tilo.desktop, then
+apps opened through search; the compositor must survive each (dist/session/README.md, "VM
+test"). In the privileged VM's own Fedora, which takes QEMU from dnf. Stable publishes the
+desktop payload only after it passes. `t dispatch host-session-e2e --input apps=so.tilo.notes`
+opens only those apps (empty: all); `t outputs host-session-e2e` gives the report and
+source.json, each tested RPM's size and SHA-256."""
+
+[[matrix.check]]
 name = "publish-desktop-payload"
 image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
 run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
 inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"]
-needs = ["desktop-package-amd64", "desktop-package-arm64"]
+# Only packages that logged in on stock Fedora become the payload an OS build installs.
+needs = ["desktop-package-amd64", "desktop-package-arm64", "host-session-e2e"]
 outputs = ["/target/publish/desktop/payload.json"]
 pointers = { desktop-payload = "/target/publish/desktop/payload.json" }
 secrets = ["REGISTRY_TOKEN"]

@@ -94,12 +94,14 @@ screenshots. Each app must start, and the compositor must stay the same
 process for the dwell after it, with no crash log, core dump, unexpected
 session exit or panic in the journal or `latest.log`.
 
-It runs in CI only (`.forgejo/workflows/host-session-e2e.yml`, on the KVM
-runners): after every Release / desktop package lane with that run's RPMs,
-and on dispatch or a pull request changing the test with RPMs built from that
-commit first (`dist/ci/run-package-job.sh` with the fedora-44 target of
-`dist/ci/package-targets.txt`). `report.md`, screenshots, the guest journal and session logs
-are the run's artifact.
+It runs in CI only, as t's check `host-session-e2e` (tools/ci/products.toml) on a
+node with KVM, on the Fedora RPMs `desktop-package-amd64` built and install-tested
+from the same commit (`dist/ci/run-package-job.sh` with the fedora-44 target of
+`dist/ci/package-targets.txt`): on `stable`, where the desktop payload is published
+only after it passes, and with `t dispatch host-session-e2e`. `run.py source` first
+writes `source.json` beside the RPMs, each one's size and SHA-256, which the report
+repeats. `report.md`, `source.json`, screenshots, the guest journal and session logs
+are its outputs (`t outputs host-session-e2e`).
 
 ## Files workspace recovery before first initialization
 
