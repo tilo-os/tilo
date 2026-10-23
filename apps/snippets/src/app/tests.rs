@@ -870,6 +870,32 @@ fn click_label(app: &mut TestApp<SnippetsShell>, label: &str) {
     app.settle();
 }
 
+/// The language picked with the pointer applies: a click opens the list
+/// below the picker and a click on a language there chooses it.
+#[test]
+fn a_pointer_click_picks_the_language() {
+    let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
+    open_row(&mut app, "Deploy");
+    let nodes = app.harness().a11y_nodes();
+    let picker = nodes
+        .iter()
+        .filter(|(_, node)| node.label() == Some("Language"))
+        .find_map(|(_, node)| node.bounds().filter(|b| b.width() > 0.0))
+        .expect("the language picker is drawn");
+    click_label(&mut app, "Language");
+    // The list opens under the picker, one 32 px row per language: Plain
+    // text, Shell, then Rust.
+    app.harness()
+        .click_at(picker.x0 + 30.0, picker.y1 + 28.0 + 64.0);
+    app.settle();
+    assert_eq!(
+        by_title(&app, "Deploy").1.language,
+        Language::Rust,
+        "the clicked language applies: {:?}",
+        app.harness().control_failures()
+    );
+}
+
 #[test]
 fn a_pointer_click_on_copy_copies() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
