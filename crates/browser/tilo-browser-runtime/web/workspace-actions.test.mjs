@@ -74,6 +74,25 @@ test('a member the room lets invite hears who asks to join and lets them in', as
   assert.deepEqual(calls.at(-1), ['admit', '02'.repeat(32)]);
 });
 
+test('a member who just invited someone hears who asks to join, though the host did not show them at first', async () => {
+  const {peer, calls} = adasRoom({owner: false, letsIn: false});
+  let shownWaiting = false;
+  const member = {...peer, userPublicKey: 'bb'.repeat(32), membership: {...peer.membership,
+    requests: async () => { if (!shownWaiting) throw new Error('not yet'); return [{requestId: '03'.repeat(32), name: 'Cy', role: 'editor'}]; }}};
+  const {mount, shown, banners} = desktop();
+  const polls = [];
+  const actions = createWorkspaceActions({peer: member, every: run => { polls.push(run); return () => {}; },
+    inviteLink: text => text, ui: {share: async () => {}, fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  assert.deepEqual(ids(shown.at(-1)), [INVITE.id]);
+  shownWaiting = true;
+  await actions.perform(INVITE.id);
+  assert.deepEqual(calls, [['invite', {role: 'editor'}]]);
+  await polls[0]?.();
+  assert.deepEqual(ids(shown.at(-1)), [INVITE.id, WAITING.id]);
+  assert.equal(banners.at(-1)?.title, 'Cy asks to join');
+});
+
 test('someone the room does not let invite is never asked to let anyone in', async () => {
   const {peer} = adasRoom({owner: false});
   const {mount, shown, banners} = desktop();

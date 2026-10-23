@@ -79,7 +79,7 @@ export function createWorkspaceActions({
 
   const askWaiting = async () => {
     let people;
-    try { people = await peer.membership.requests(); } catch (error) { onError(error); return; }
+    try { people = await peer.membership.requests(); } catch (error) { onError(error); return false; }
     const now = new Set(people.map(person => person.requestId));
     for (const id of offered) if (!now.has(id)) offered.delete(id);
     for (const person of people) {
@@ -90,6 +90,17 @@ export function createWorkspaceActions({
         title: `${person.name} asks to join`,
         body: `${person.name} wants to join “${workspaceName ?? 'this workspace'}” as ${person.role}. Let in only someone you invited.`});
     }
+    return true;
+  };
+
+  /** Hear who asks to join from now on, and offer the list of them. */
+  const letPeopleIn = async () => {
+    if (stop) return;
+    // Someone the host does not show who asks hears nothing more.
+    if (!await askWaiting()) return;
+    lettingIn = true;
+    refresh();
+    stop = every(() => { void askWaiting(); }, WAITING_POLL_MS);
   };
 
   const newWorkspace = async (on = null) => {
@@ -128,6 +139,9 @@ export function createWorkspaceActions({
     }
     let text;
     try { text = await peer.createInvitation({role: 'editor'}); } catch (error) { say(error, 'Could not invite someone'); return; }
+    // Whom they invite asks to join, and they let them in here: the host
+    // that let them invite shows them who asks.
+    if (!lettingIn) void letPeopleIn();
     await ui.share({
       title: `Invite someone to “${workspaceName ?? 'this workspace'}”`,
       body: 'Send this link to the person you invite. They ask to join with it, and you let them in here.',
@@ -164,12 +178,8 @@ export function createWorkspaceActions({
       // The host shows who asks to join to whoever it lets invite, and
       // they let in whom they invited: the owner, and members of a room
       // that has its members invite people.
-      lettingIn = owner || await peer.membership.requests().then(() => true, () => false);
-      refresh();
-      if (lettingIn && !stop) {
-        stop = every(() => { void askWaiting(); }, WAITING_POLL_MS);
-        await askWaiting();
-      }
+      if (owner || await peer.membership.requests().then(() => true, () => false)) await letPeopleIn();
+      else refresh();
     },
     /** Make a workspace on the machine at `origin` (one just set up). */
     async createOn(origin) {
