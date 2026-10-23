@@ -26,11 +26,11 @@ tracing = "0.1"
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
 zbus = { workspace = true, features = ["tokio"] }
-tokio = { version = "1.52.3", features = ["rt", "macros", "time", "sync"] }
+tokio = { version = "1.53.3", features = ["rt", "macros", "time", "sync"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tokio = { version = "1.52.3", features = ["full", "test-util"] }
+tokio = { version = "1.53.3", features = ["full", "test-util"] }
 
 [lints]
 workspace = true
