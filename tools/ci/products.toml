@@ -1353,6 +1353,29 @@ timeout_secs = 10800
 on = ["stable", "dispatch", "idle"]
 default = false
 
+[[matrix.check]]
+name = "publish-os-dev-{arch}"
+comment = """
+Main's dev VM image and its gated disk, once os-acceptance-{arch} passed on them
+(tools/ci/publish/os-dev-publish.sh): registry.tilo.so/tilo/tilo-ci:main-<commit7>-{arch} (the
+OS image), registry.tilo.so/tilo/tilo-vm:main-<commit7>-ci (an index of the architectures
+published so far) and its disk in the tilo-vm-disk package, which `tilo-vm vm create` and `vm
+upgrade --from sha:<commit>` take; tilo-vm:latest and, with both architectures, tilo-vm:main-ci
+move forward to it. Dispatched on main (`t dispatch publish-os-dev-x86_64 --ref main`): it builds
+the whole OS image, so main doesn't run it on its own."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-dev-publish.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh"]
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-acceptance-{arch}"]
+git = true
+id_token = ["registry.tilo.so"]
+secrets = ["TILO_PACKAGES_TOKEN"]
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+requirement = { cores = 2, memory = "4GiB" }
+timeout_secs = 3600
+on = ["dispatch"]
+
 [[matrix]]
 family = "os"
 about = """
