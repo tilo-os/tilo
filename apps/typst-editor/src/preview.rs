@@ -950,6 +950,12 @@ impl PreviewPane {
             .count()
     }
 
+    /// The pages asked of the renderer and not yet delivered.
+    #[cfg(test)]
+    pub(crate) fn pending_pages(&self) -> std::collections::BTreeSet<usize> {
+        self.raster.pending_pages()
+    }
+
     /// The number of the chapter whose heading is on page `page`.
     #[cfg(test)]
     pub(crate) fn chapter_on(&self, page: usize) -> Option<usize> {

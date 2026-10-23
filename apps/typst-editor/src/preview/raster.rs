@@ -203,6 +203,12 @@ impl PageRaster {
         self.renderer.as_ref().map_or(0, PageRenderer::rendered)
     }
 
+    /// The pages asked of the renderer and not yet delivered.
+    #[cfg(test)]
+    pub(super) fn pending_pages(&self) -> std::collections::BTreeSet<usize> {
+        self.pending.iter().map(|(page, _)| *page).collect()
+    }
+
     fn request(&mut self, order: &[PageKey], tiles: Vec<TileKey>) {
         let batch = tilo_page_raster::admit(order, &self.pending, Admission::FRAME);
         if let Some(renderer) = &self.renderer {

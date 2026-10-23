@@ -261,10 +261,62 @@ fn scrolling_never_waits_on_rendering() {
     );
 }
 
+/// Scroll the preview down `px` per frame for `frames` frames against a
+/// renderer that delivers every page within `lead` frames of being asked
+/// for it: before each frame, the frames run until nothing asked `lead` or
+/// more frames ago is still pending. A page that is then blank on screen was
+/// asked for too late, however loaded the machine is.
+fn drive_scroll_rendering_within(
+    app: &mut Live,
+    frames: usize,
+    px: f64,
+    lead: usize,
+) -> Vec<ScrollFrame> {
+    cursor_over_preview(app);
+    let mut asked = std::collections::BTreeMap::<usize, usize>::new();
+    let mut out = Vec::with_capacity(frames);
+    for frame in 0..frames {
+        let deadline = ui::time::now() + tilo_test_env::hang_bound();
+        while preview(app, |p| p.pending_pages())
+            .iter()
+            .any(|page| asked.get(page).is_some_and(|at| at + lead <= frame))
+        {
+            assert!(
+                ui::time::now() < deadline,
+                "the renderer never delivered the pages asked for before frame {frame}"
+            );
+            app.harness().relayout();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        app.harness().send(&wheel(px));
+        let (scroll_y, blank_pages, bitmap_bytes, pending) = preview(app, |p| {
+            (
+                p.scroll_y(),
+                p.blank_pages_on_screen(),
+                p.bitmap_bytes(),
+                p.pending_pages(),
+            )
+        });
+        asked.retain(|page, _| pending.contains(page));
+        for page in pending {
+            asked.entry(page).or_insert(frame);
+        }
+        out.push(ScrollFrame {
+            cpu_ms: 0.0,
+            scroll_y,
+            blank_pages,
+            bitmap_bytes,
+        });
+    }
+    out
+}
+
 #[test]
 fn scrolling_never_shows_a_blank_page() {
+    // Pages are asked for a screen ahead of the scroll, so a renderer that
+    // takes up to a sixth of a second (ten frames) per page keeps up.
     let mut app = opened(60);
-    let frames = drive_scroll(&mut app, 300, 24.0);
+    let frames = drive_scroll_rendering_within(&mut app, 300, 24.0, 10);
     let blank: Vec<usize> = frames
         .iter()
         .enumerate()
