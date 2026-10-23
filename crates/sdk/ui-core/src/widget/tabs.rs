@@ -4221,6 +4221,7 @@ impl Widget for TabBar {
             out.push(("window_forward".to_string(), slots.forward));
             out.push(("window_location".to_string(), slots.location));
             out.push(("window_more".to_string(), slots.overflow));
+            out.push(("window_views_menu".to_string(), slots.views_menu));
             out.push(("window_sidebar".to_string(), slots.sidebar));
             for (i, rect) in slots.actions.iter().enumerate() {
                 out.push((format!("window_action:{i}"), *rect));
@@ -4229,7 +4230,9 @@ impl Widget for TabBar {
                 out.push((format!("window_suggestion:{i}"), rect));
             }
             for (i, rect) in slots.leading.iter().enumerate() {
-                out.push((format!("window_leading:{i}"), *rect));
+                if rect.area() > 0.0 {
+                    out.push((format!("window_leading:{i}"), *rect));
+                }
             }
             for (i, rect) in slots.views.iter().enumerate() {
                 out.push((format!("window_view:{i}"), *rect));
@@ -8599,6 +8602,7 @@ mod tests {
                 on: false,
                 menu: false,
                 items: Vec::new(),
+                navigates: false,
             }],
             ..WindowToolbar::default()
         }
@@ -8804,6 +8808,7 @@ mod tests {
                 on: false,
                 menu: false,
                 items: Vec::new(),
+                navigates: false,
             });
         }
         slots

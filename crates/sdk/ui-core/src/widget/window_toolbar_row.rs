@@ -70,6 +70,7 @@ pub const SUGGESTION_TARGET_PREFIX: &str = "window-toolbar-suggestion:";
 pub const CHOICE_TARGET_PREFIX: &str = "window-toolbar-choice:";
 pub const LEADING_TARGET_PREFIX: &str = "window-toolbar-leading:";
 pub const VIEW_TARGET_PREFIX: &str = "window-toolbar-view:";
+pub const VIEWS_MENU_TARGET: &str = "window-toolbar-views";
 
 /// The size of the view switcher's segments: a strip no taller than the
 /// bar's buttons.
@@ -96,6 +97,9 @@ pub(crate) enum Slot {
     Location,
     /// One choice of the view switcher.
     View(usize),
+    /// The views folded into a menu: the chosen one named, the others a
+    /// press away.
+    ViewsMenu,
     Action(usize),
     /// The button whose menu holds the actions the row has no room for.
     Overflow,
@@ -110,30 +114,102 @@ pub(crate) struct Slots {
     /// The leading actions, after the navigation.
     pub leading: Vec<Rect>,
     pub location: Rect,
-    /// The view switcher's segments (none: its choices are in the overflow
-    /// menu).
+    /// The view switcher's segments (none: folded into the views menu, or
+    /// into the overflow menu).
     pub views: Vec<Rect>,
+    /// The views menu, where the row has no room for the switcher
+    /// (`Rect::ZERO`: none).
+    pub views_menu: Rect,
     /// The actions standing in the row, the first of the declared ones.
     pub actions: Vec<Rect>,
     /// The overflow button (`Rect::ZERO`: every action is in the row).
     pub overflow: Rect,
 }
 
-/// What the row lays out beside the toolbar: the view switcher's size, as
-/// the theme draws its labels (none before it is measured).
-pub(crate) type ViewsSize = Option<(f64, f64)>;
+/// What the row lays out beside the toolbar: the view switcher's size and
+/// the views menu's width, as the theme draws their labels (none before
+/// they are measured).
+pub(crate) type ViewsSize = Option<ViewsMeasure>;
+
+/// The two forms the views take in the row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ViewsMeasure {
+    /// The segmented switcher's width and height.
+    pub strip: (f64, f64),
+    /// The views menu's width: as wide as its widest label needs, so
+    /// choosing another view never moves the row.
+    pub menu: f64,
+}
+
+/// Where the views stand in one layout of the row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ViewsPlace {
+    /// The segmented switcher, this wide and tall.
+    Strip(f64, f64),
+    /// The views menu, this wide.
+    Menu(f64),
+    /// The overflow menu's first rows (or there are no views).
+    Overflow,
+}
+
+/// What one layout keeps in the row: the first `plain` leading actions
+/// that do not move through the content, the first `navigating` that do,
+/// and the first `inline` actions.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Kept {
+    plain: usize,
+    navigating: usize,
+    inline: usize,
+}
+
+impl Kept {
+    /// Every leading action, and the first `inline` actions.
+    fn all(toolbar: &WindowToolbar, inline: usize) -> Self {
+        let navigating = toolbar
+            .leading
+            .iter()
+            .filter(|action| action.navigates)
+            .count();
+        Self {
+            plain: toolbar.leading.len().saturating_sub(navigating),
+            navigating,
+            inline,
+        }
+    }
+
+    /// Whether leading action `index` stands in the row.
+    fn shows(self, toolbar: &WindowToolbar, index: usize) -> bool {
+        let Some(action) = toolbar.leading.get(index) else {
+            return false;
+        };
+        let rank = toolbar
+            .leading
+            .iter()
+            .take(index)
+            .filter(|other| other.navigates == action.navigates)
+            .count();
+        rank < if action.navigates {
+            self.navigating
+        } else {
+            self.plain
+        }
+    }
+}
 
 impl Slots {
     /// Lay `toolbar`'s slots out across `row`, centred on its centre line:
-    /// navigation and the leading actions leading, the view switcher and the
+    /// navigation and the leading actions leading, the views and the
     /// actions trailing, the location filling between. At most
     /// [`crate::window_toolbar::MAX_ACTIONS`] actions stand in the row;
     /// while the location would be narrower than
     /// [`COMFORTABLE_LOCATION_PX`] (or, without one, while the buttons would
-    /// overlap) the last of them move into the overflow menu, then the view
-    /// switcher's choices, as do the declared actions past that many and
-    /// those declared for the menu. One action never goes into the menu
-    /// alone: the menu's button would take its place and hide it.
+    /// overlap) the last of them move into the overflow menu, as do the
+    /// declared actions past that many and those declared for the menu, and
+    /// the view switcher folds into the views menu. Where that leaves the
+    /// location narrower than [`MIN_LOCATION_PX`], the rest goes into the
+    /// overflow menu in [`Slots::yielding`]'s order, so the location stays
+    /// in the row, elided. One action never goes into the menu alone: the
+    /// menu's button would take its place and hide it.
     pub(crate) fn lay_out(toolbar: &WindowToolbar, row: Rect, views: ViewsSize) -> Self {
         if row.width() <= 0.0 || row.height() <= 0.0 {
             return Self::default();
@@ -141,26 +217,37 @@ impl Slots {
         let row_actions = toolbar
             .row_actions()
             .min(crate::window_toolbar::MAX_ACTIONS);
-        let views = views.filter(|_| toolbar.views.is_some());
+        let measured = views.filter(|_| {
+            toolbar
+                .views
+                .as_ref()
+                .is_some_and(|views| !views.choices.is_empty())
+        });
         // A menu holding one action alone saves no width: its button takes
         // the action's place and hides it.
-        let lone = |inline: usize, views: ViewsSize| {
+        let lone = |inline: usize, place: ViewsPlace| {
             row_actions - inline == 1
                 && toolbar.actions.len() == row_actions
-                && (toolbar.views.is_none() || views.is_some())
+                && (toolbar.views.is_none() || place != ViewsPlace::Overflow)
         };
-        // The switcher in the row first, then in the menu.
-        let tries = if views.is_some() { 2 } else { 1 };
-        for views in [views, None].into_iter().take(tries) {
+        let places = match measured {
+            Some(m) => vec![
+                ViewsPlace::Strip(m.strip.0, m.strip.1),
+                ViewsPlace::Menu(m.menu),
+            ],
+            None => vec![ViewsPlace::Overflow],
+        };
+        let all = Kept::all(toolbar, row_actions);
+        for &place in &places {
             let mut inline = row_actions;
             loop {
-                let slots = Self::with_inline(toolbar, row, inline, views);
+                let slots = Self::with_inline(toolbar, row, Kept { inline, ..all }, place);
                 let room = if toolbar.location.is_some() {
                     slots.location.width() >= COMFORTABLE_LOCATION_PX
                 } else {
                     slots.fits(row)
                 };
-                if room && !lone(inline, views) {
+                if room && !lone(inline, place) {
                     return slots;
                 }
                 if inline == 0 {
@@ -169,14 +256,49 @@ impl Slots {
                 inline -= 1;
             }
         }
-        let inline = if lone(0, None) { row_actions } else { 0 };
-        Self::with_inline(toolbar, row, inline, None)
+        let mut last = Self::default();
+        for (kept, place) in Self::yielding(toolbar, measured) {
+            let inline =
+                if kept.plain == all.plain && kept.navigating == all.navigating && lone(0, place) {
+                    row_actions
+                } else {
+                    0
+                };
+            let slots = Self::with_inline(toolbar, row, Kept { inline, ..kept }, place);
+            let located = toolbar.location.is_none() || slots.location.area() > 0.0;
+            if slots.fits(row) && located {
+                return slots;
+            }
+            last = slots;
+        }
+        last
     }
 
-    /// The slots with the first `inline` actions in the row and the rest in
-    /// the overflow menu, and the view switcher in the row at `views`' size
-    /// (none: in the menu).
-    fn with_inline(toolbar: &WindowToolbar, row: Rect, inline: usize, views: ViewsSize) -> Self {
+    /// What goes into the overflow menu, in order, where the row is too
+    /// narrow for the location beside everything else: the plain leading
+    /// actions, the last first; then the views (the views menu's place);
+    /// then the leading actions that move through the content, the last
+    /// first. The location yields to none of them: it stays, elided.
+    fn yielding(toolbar: &WindowToolbar, measured: ViewsSize) -> Vec<(Kept, ViewsPlace)> {
+        let all = Kept::all(toolbar, 0);
+        let views = measured.map_or(ViewsPlace::Overflow, |m| ViewsPlace::Menu(m.menu));
+        let plain = (0..=all.plain)
+            .rev()
+            .map(|plain| (Kept { plain, ..all }, views));
+        let navigating = (0..=all.navigating).rev().map(|navigating| {
+            let kept = Kept {
+                plain: 0,
+                navigating,
+                inline: 0,
+            };
+            (kept, ViewsPlace::Overflow)
+        });
+        plain.chain(navigating).collect()
+    }
+
+    /// The slots with the leading actions and the actions `kept` keeps in
+    /// the row and the rest in the overflow menu, and the views at `place`.
+    fn with_inline(toolbar: &WindowToolbar, row: Rect, kept: Kept, place: ViewsPlace) -> Self {
         let mut slots = Self::default();
         let y0 = row.center().y - CONTROL_PX / 2.0;
         let square = |x0: f64| Rect::new(x0, y0, x0 + CONTROL_PX, y0 + CONTROL_PX);
@@ -190,18 +312,28 @@ impl Slots {
             slots.forward = square(slots.back.x1 + CONTROL_GAP);
             x0 = slots.forward.x1 + SECTION_GAP;
         }
-        if !toolbar.leading.is_empty() {
-            for _ in &toolbar.leading {
+        let mut folded = false;
+        let mut any = false;
+        for index in 0..toolbar.leading.len() {
+            if kept.shows(toolbar, index) {
                 let rect = square(x0);
                 x0 = rect.x1 + CONTROL_GAP;
                 slots.leading.push(rect);
+                any = true;
+            } else {
+                slots.leading.push(Rect::ZERO);
+                folded = true;
             }
+        }
+        if any {
             x0 = x0 - CONTROL_GAP + SECTION_GAP;
         }
+        let inline = kept.inline;
         let mut x1 = row.x1;
         let mut trailing = false;
-        let in_menu =
-            toolbar.actions.len() > inline || (toolbar.views.is_some() && views.is_none());
+        let in_menu = toolbar.actions.len() > inline
+            || folded
+            || (toolbar.views.is_some() && place == ViewsPlace::Overflow);
         if in_menu {
             slots.overflow = Rect::new(x1 - CONTROL_PX, y0, x1, y0 + CONTROL_PX);
             x1 = slots.overflow.x0 - CONTROL_GAP;
@@ -219,19 +351,26 @@ impl Slots {
         if trailing {
             x1 = x1 + CONTROL_GAP - SECTION_GAP;
         }
-        if let (Some((width, height)), Some(choices)) = (
-            views,
-            toolbar.views.as_ref().map(|views| views.choices.len()),
-        ) && choices > 0
-        {
-            let strip = Rect::new(
-                x1 - width,
-                row.center().y - height / 2.0,
-                x1,
-                row.center().y + height / 2.0,
-            );
-            slots.views = equal_segments(strip, choices);
-            x1 = strip.x0 - SECTION_GAP;
+        let choices = toolbar
+            .views
+            .as_ref()
+            .map_or(0, |views| views.choices.len());
+        match place {
+            ViewsPlace::Strip(width, height) if choices > 0 => {
+                let strip = Rect::new(
+                    x1 - width,
+                    row.center().y - height / 2.0,
+                    x1,
+                    row.center().y + height / 2.0,
+                );
+                slots.views = equal_segments(strip, choices);
+                x1 = strip.x0 - SECTION_GAP;
+            }
+            ViewsPlace::Menu(width) if choices > 0 => {
+                slots.views_menu = Rect::new(x1 - width, y0, x1, y0 + CONTROL_PX);
+                x1 = slots.views_menu.x0 - SECTION_GAP;
+            }
+            _ => {}
         }
         if toolbar.location.is_some() && x1 - x0 >= MIN_LOCATION_PX {
             slots.location = Rect::new(x0, y0, x1, y0 + CONTROL_PX);
@@ -249,8 +388,18 @@ impl Slots {
         self.actions
             .iter()
             .chain(self.views.first())
+            .chain((self.views_menu.area() > 0.0).then_some(&self.views_menu))
             .chain((self.overflow.area() > 0.0).then_some(&self.overflow))
             .all(|rect| rect.x0 >= lead)
+    }
+
+    /// The leading actions the row has no room for, in their order.
+    fn folded_leading(&self) -> impl Iterator<Item = usize> + '_ {
+        self.leading
+            .iter()
+            .enumerate()
+            .filter(|(_, rect)| rect.area() <= 0.0)
+            .map(|(index, _)| index)
     }
 
     /// The view switcher's whole strip (`Rect::ZERO`: in the menu).
@@ -277,6 +426,9 @@ impl Slots {
         }
         if let Some(i) = self.views.iter().position(|r| r.contains(p)) {
             return Some(Slot::View(i));
+        }
+        if self.views_menu.contains(p) {
+            return Some(Slot::ViewsMenu);
         }
         if let Some(i) = self.actions.iter().position(|r| r.contains(p)) {
             return Some(Slot::Action(i));
@@ -314,6 +466,8 @@ fn equal_segments(strip: Rect, n: usize) -> Vec<Rect> {
 enum MenuEntry {
     /// Declared action `n`.
     Action(usize),
+    /// Leading action `n`, where the row has no room for it.
+    Leading(usize),
     View(usize),
     /// Item `.1` of menu button `.0`.
     Item(usize, usize),
@@ -361,9 +515,9 @@ pub(crate) struct ToolbarRow {
     /// The button the open menu hangs from: the overflow button, a menu
     /// button, or the location's picker.
     menu_slot: Option<Slot>,
-    /// The view switcher's size as the theme draws it, and the labels and
-    /// text scale it was measured for.
-    views_size: Option<((Vec<String>, u32), (f64, f64))>,
+    /// The views' sizes as the theme draws them, and the labels and text
+    /// scale they were measured for.
+    views_size: Option<((Vec<String>, u32), ViewsMeasure)>,
     /// The suggestions under the edited field, and what each commits.
     suggestions: SuggestionList,
     suggestion_values: Vec<String>,
@@ -578,10 +732,18 @@ impl ToolbarRow {
         }
         let size = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
             let labels: Vec<&str> = key.0.iter().map(String::as_str).collect();
-            (
-                SegmentedFace::intrinsic_width(&labels, VIEWS_SIZE, text, theme),
-                SegmentedFace::height(VIEWS_SIZE, theme).min(CONTROL_PX),
-            )
+            let style = theme.text(TextRole::Body);
+            let widest = labels
+                .iter()
+                .map(|label| f64::from(text.measure_style(label, None, &style).0))
+                .fold(0.0, f64::max);
+            ViewsMeasure {
+                strip: (
+                    SegmentedFace::intrinsic_width(&labels, VIEWS_SIZE, text, theme),
+                    SegmentedFace::height(VIEWS_SIZE, theme).min(CONTROL_PX),
+                ),
+                menu: picker_width(widest, theme),
+            }
         });
         self.views_size = Some((key, size));
         self.lay_out(self.row);
@@ -614,6 +776,7 @@ impl ToolbarRow {
         let anchor = match self.menu_slot {
             Some(Slot::Action(i)) => self.slots.actions.get(i).copied().unwrap_or(Rect::ZERO),
             Some(Slot::Location) => self.choice_anchor(),
+            Some(Slot::ViewsMenu) => self.slots.views_menu,
             _ => self.slots.overflow,
         };
         if anchor.area() <= 0.0 {
@@ -902,21 +1065,23 @@ impl ToolbarRow {
                 .views
                 .as_ref()
                 .is_some_and(|views| *i < views.choices.len()),
+            Slot::ViewsMenu => self.slots.views_menu.area() > 0.0,
             Slot::Action(i) => toolbar.actions.get(*i).is_some_and(|a| a.enabled),
             Slot::Overflow => self.slots.overflow.area() > 0.0,
         }
     }
 
     /// Open the overflow button's menu: the view switcher's choices when
-    /// the row has no room for it, the chosen one checked, then the actions
-    /// the row does not show, by name, each with its icon and state.
+    /// the row has no room for it, the chosen one checked, then the leading
+    /// actions and the actions the row does not show, by name, each with
+    /// its icon and state.
     fn open_overflow(&mut self) -> bool {
         let Some(toolbar) = self.toolbar() else {
             return false;
         };
         let mut items = Vec::new();
         let mut entries = Vec::new();
-        if self.slots.views.is_empty()
+        if self.views_in_overflow()
             && let Some(views) = toolbar.views.as_ref()
         {
             for (i, view) in views.choices.iter().enumerate() {
@@ -924,6 +1089,17 @@ impl ToolbarRow {
                     MenuItem::selection(view.label.clone()).with_checked(view.id == views.chosen),
                 );
                 entries.push(Some(MenuEntry::View(i)));
+            }
+        }
+        let folded: Vec<usize> = self.slots.folded_leading().collect();
+        if !items.is_empty() && !folded.is_empty() {
+            items.push(MenuItem::separator());
+            entries.push(None);
+        }
+        for i in folded {
+            if let Some(action) = toolbar.leading.get(i) {
+                items.push(menu_item(action));
+                entries.push(Some(MenuEntry::Leading(i)));
             }
         }
         let shown = self.slots.actions.len();
@@ -957,6 +1133,36 @@ impl ToolbarRow {
             return false;
         }
         self.open_menu(items, entries, Slot::Overflow, self.slots.overflow);
+        true
+    }
+
+    /// Whether the overflow menu lists the views: the row has room neither
+    /// for the switcher nor for the views menu.
+    fn views_in_overflow(&self) -> bool {
+        self.slots.views.is_empty() && self.slots.views_menu.area() <= 0.0
+    }
+
+    /// Open the views menu under it: every view by its label, the chosen
+    /// one checked.
+    fn open_views_menu(&mut self) -> bool {
+        let Some(views) = self.toolbar().and_then(|toolbar| toolbar.views.as_ref()) else {
+            return false;
+        };
+        let items = views
+            .choices
+            .iter()
+            .map(|view| {
+                MenuItem::selection(view.label.clone()).with_checked(view.id == views.chosen)
+            })
+            .collect();
+        let entries = (0..views.choices.len())
+            .map(|i| Some(MenuEntry::View(i)))
+            .collect();
+        let anchor = self.slots.views_menu;
+        if anchor.area() <= 0.0 {
+            return false;
+        }
+        self.open_menu(items, entries, Slot::ViewsMenu, anchor);
         true
     }
 
@@ -1055,6 +1261,7 @@ impl ToolbarRow {
     fn run_menu_entry(&mut self, row: usize) -> bool {
         match self.menu_entries.get(row).copied().flatten() {
             Some(MenuEntry::Action(index)) => self.run_action(index),
+            Some(MenuEntry::Leading(index)) => self.run_leading(index),
             Some(MenuEntry::View(index)) => self.choose_view(index),
             Some(MenuEntry::Item(index, item)) => self.run_item(index, item),
             Some(MenuEntry::Choice(index)) => self.commit_choice(index),
@@ -1085,6 +1292,7 @@ impl ToolbarRow {
             }
             Slot::Action(i) => return self.run_action(*i),
             Slot::Overflow => return self.open_overflow(),
+            Slot::ViewsMenu => return self.open_views_menu(),
         }
         true
     }
@@ -1122,15 +1330,16 @@ impl ToolbarRow {
             Slot::Forward => Some((self.slots.forward, lookup("window-toolbar-forward"))),
             Slot::Leading(i) => {
                 let action = toolbar.leading.get(i)?;
-                Some((*self.slots.leading.get(i)?, action.name.clone()))
+                let rect = self.slots.leading.get(i).filter(|rect| rect.area() > 0.0)?;
+                Some((*rect, action.name.clone()))
             }
             Slot::Action(i) => {
                 let action = toolbar.actions.get(i)?;
                 Some((*self.slots.actions.get(i)?, action.name.clone()))
             }
             Slot::Overflow => Some((self.slots.overflow, lookup("window-toolbar-more"))),
-            // A segment and the location say what they are.
-            Slot::View(_) | Slot::Location => None,
+            // A segment, the views menu and the location say what they are.
+            Slot::View(_) | Slot::ViewsMenu | Slot::Location => None,
         }
     }
 
@@ -1580,7 +1789,12 @@ impl ToolbarRow {
                 nav.forward,
             ));
         }
-        for (action, rect) in toolbar.leading.iter().zip(&self.slots.leading) {
+        for (action, rect) in toolbar
+            .leading
+            .iter()
+            .zip(&self.slots.leading)
+            .filter(|(_, rect)| rect.area() > 0.0)
+        {
             nodes.push(button(
                 action.name.clone(),
                 format!("{LEADING_TARGET_PREFIX}{}", action.id),
@@ -1675,6 +1889,31 @@ impl ToolbarRow {
                 }
                 nodes.push(node);
             }
+            // Folded, the views are a menu that names the chosen one; its
+            // items run while it is closed, as the overflow menu's do.
+            if self.slots.views_menu.area() > 0.0 {
+                let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
+                let name = if views.name.is_empty() {
+                    crate::i18n::I18nManager::lookup_plain("window-toolbar-views")
+                } else {
+                    views.name.clone()
+                };
+                let mut menu = button(
+                    name.clone(),
+                    VIEWS_MENU_TARGET.into(),
+                    self.slots.views_menu,
+                    true,
+                )
+                .with_optional_value(chosen.map(|view| view.label.clone()));
+                menu.state.expanded = Some(self.menu_open_for(&Slot::ViewsMenu));
+                menu = menu.with_children(vec![self.menu_node(
+                    name,
+                    &Slot::ViewsMenu,
+                    self.slots.views_menu,
+                    (0..views.choices.len()).map(MenuEntry::View),
+                )]);
+                nodes.push(menu);
+            }
         }
         // The actions the row shows; a menu button's items are its menu's.
         for ((i, action), rect) in toolbar.actions.iter().enumerate().zip(&self.slots.actions) {
@@ -1743,18 +1982,19 @@ impl ToolbarRow {
     }
 
     /// What the overflow menu lists, in its order: the views the row has
-    /// no room for, then the actions it does not show, a menu button's
-    /// items in its place.
+    /// no room for, then the leading actions and the actions it does not
+    /// show, a menu button's items in its place.
     fn overflow_entries(&self) -> Vec<MenuEntry> {
         let Some(toolbar) = self.toolbar() else {
             return Vec::new();
         };
         let mut entries = Vec::new();
-        if self.slots.views.is_empty()
+        if self.views_in_overflow()
             && let Some(views) = toolbar.views.as_ref()
         {
             entries.extend((0..views.choices.len()).map(MenuEntry::View));
         }
+        entries.extend(self.slots.folded_leading().map(MenuEntry::Leading));
         for (i, action) in toolbar
             .actions
             .iter()
@@ -1838,6 +2078,14 @@ impl ToolbarRow {
         };
         match entry {
             MenuEntry::Action(i) => toolbar.actions.get(i).map(action),
+            MenuEntry::Leading(i) => toolbar.leading.get(i).map(|leading| {
+                (
+                    leading.name.clone(),
+                    format!("{LEADING_TARGET_PREFIX}{}", leading.id),
+                    leading.enabled,
+                    leading.on.then_some(true),
+                )
+            }),
             MenuEntry::Item(i, j) => toolbar
                 .actions
                 .get(i)
@@ -1918,6 +2166,7 @@ impl ToolbarRow {
             FORWARD_TARGET => Slot::Forward,
             LOCATION_TARGET => Slot::Location,
             OVERFLOW_TARGET => Slot::Overflow,
+            VIEWS_MENU_TARGET => Slot::ViewsMenu,
             _ => {
                 if let Some(level) = target
                     .strip_prefix(SEGMENT_TARGET_PREFIX)
@@ -2079,7 +2328,7 @@ fn paint_slots(
         );
     }
     for (i, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
-        let Some(icon) = Icon::from_name(&action.icon) else {
+        let Some(icon) = Icon::from_name(&action.icon).filter(|_| rect.area() > 0.0) else {
             continue;
         };
         paint_icon_button(
@@ -2109,6 +2358,24 @@ fn paint_slots(
         .control_size(VIEWS_SIZE)
         .hovered(hovered);
         ToggleGroup::paint(scene, transform, tr, theme, &face);
+    }
+    if let Some(views) = toolbar.views.as_ref()
+        && slots.views_menu.area() > 0.0
+    {
+        let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
+        let label = chosen.map_or(views.name.as_str(), |view| view.label.as_str());
+        let open = interaction.is_some_and(|i| i.menu_open == Some(Slot::ViewsMenu));
+        paint_picker(
+            scene,
+            transform,
+            (tr, theme),
+            (label, theme.tokens.colors.text_primary),
+            slots.views_menu,
+            LocationLift {
+                hovered: interaction.is_some_and(|i| i.hover == Some(Slot::ViewsMenu)),
+                pressed: open || interaction.is_some_and(|i| i.pressed == Some(Slot::ViewsMenu)),
+            },
+        );
     }
     for (i, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
         let Some(icon) = Icon::from_name(&action.icon) else {
@@ -2154,12 +2421,12 @@ fn paint_slots(
     )
 }
 
-/// How the pointer stands on the location.
+/// How the pointer stands on a picker: the location, or the views menu.
 #[derive(Clone, Copy, Debug, Default)]
-struct LocationLift {
-    hovered: bool,
-    /// Pressed, or its picker is open.
-    pressed: bool,
+pub(crate) struct LocationLift {
+    pub(crate) hovered: bool,
+    /// Pressed, or its menu is open.
+    pub(crate) pressed: bool,
 }
 
 /// The location at rest: its icon, then its label, elided at the end. An
@@ -2178,11 +2445,12 @@ fn paint_location(
     lift: LocationLift,
 ) -> Option<Rect> {
     if !location.editable && !location.choices.is_empty() {
-        return Some(paint_location_picker(
+        let shown = location_shown(location, theme);
+        return Some(paint_picker(
             scene,
             transform,
             (tr, theme),
-            location,
+            shown,
             rect,
             lift,
         ));
@@ -2215,14 +2483,7 @@ fn paint_location(
         }
         return None;
     }
-    let (shown, ink) = if location.label.is_empty() {
-        (
-            location.placeholder.as_str(),
-            theme.tokens.colors.text_tertiary,
-        )
-    } else {
-        (location.label.as_str(), theme.tokens.colors.text_primary)
-    };
+    let (shown, ink) = location_shown(location, theme);
     if shown.is_empty() || text_rect.width() <= 0.0 {
         return None;
     }
@@ -2244,28 +2505,45 @@ fn paint_location(
     None
 }
 
-/// A location with choices: its label (elided at the end) and a trailing
-/// chevron, on the plain button face the bar's buttons lift with, as wide as
-/// they need and never wider than the slot. Returns the face's rect.
-fn paint_location_picker(
-    scene: &mut Scene,
-    transform: Affine,
-    (tr, theme): (&mut TextRenderer, &Theme),
-    location: &crate::window_toolbar::ToolbarLocation,
-    rect: Rect,
-    lift: LocationLift,
-) -> Rect {
-    let pad = f64::from(theme.tokens.spacing.s2);
-    let gap = f64::from(theme.tokens.spacing.s1);
-    let style = theme.text(TextRole::Body);
-    let (shown, ink) = if location.label.is_empty() {
+/// What the location says, in its ink: its label, else its placeholder.
+fn location_shown<'a>(
+    location: &'a crate::window_toolbar::ToolbarLocation,
+    theme: &Theme,
+) -> (&'a str, vello::peniko::Color) {
+    if location.label.is_empty() {
         (
             location.placeholder.as_str(),
             theme.tokens.colors.text_tertiary,
         )
     } else {
         (location.label.as_str(), theme.tokens.colors.text_primary)
-    };
+    }
+}
+
+/// How wide a picker ([`paint_picker`]) whose label is `label_w` wide
+/// stands.
+pub(crate) fn picker_width(label_w: f64, theme: &Theme) -> f64 {
+    let pad = f64::from(theme.tokens.spacing.s2);
+    let gap = f64::from(theme.tokens.spacing.s1);
+    pad * 2.0 + label_w.ceil() + gap + LOCATION_ICON_PX
+}
+
+/// A label that opens a menu of choices (a location with choices, the
+/// folded views): the label (`shown`, in its ink, elided at the end) and a
+/// trailing chevron, on the plain button face the bar's buttons lift with,
+/// as wide as they need and never wider than `rect`. Returns the face's
+/// rect, which the menu hangs from.
+pub(crate) fn paint_picker(
+    scene: &mut Scene,
+    transform: Affine,
+    (tr, theme): (&mut TextRenderer, &Theme),
+    (shown, ink): (&str, vello::peniko::Color),
+    rect: Rect,
+    lift: LocationLift,
+) -> Rect {
+    let pad = f64::from(theme.tokens.spacing.s2);
+    let gap = f64::from(theme.tokens.spacing.s1);
+    let style = theme.text(TextRole::Body);
     let room = (rect.width() - pad * 2.0 - gap - LOCATION_ICON_PX).max(0.0);
     #[allow(
         clippy::cast_possible_truncation,
@@ -2313,586 +2591,4 @@ fn paint_location_picker(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::a11y::{AccessNode, Role};
-    use crate::window_toolbar::{ToolbarAction, ToolbarLocation, ToolbarNavigation};
-
-    fn browser() -> WindowToolbar {
-        WindowToolbar {
-            sidebar: None,
-            navigation: Some(ToolbarNavigation {
-                back: true,
-                forward: false,
-            }),
-            location: Some(ToolbarLocation {
-                label: "duckduckgo.com".into(),
-                value: "https://duckduckgo.com/".into(),
-                editable: true,
-                name: "Address and search".into(),
-                ..ToolbarLocation::default()
-            }),
-            actions: vec![ToolbarAction {
-                id: "reload".into(),
-                icon: "refresh".into(),
-                name: "Reload".into(),
-                enabled: true,
-                on: false,
-                menu: false,
-                items: Vec::new(),
-            }],
-            ..WindowToolbar::default()
-        }
-    }
-
-    fn row() -> ToolbarRow {
-        let mut row = ToolbarRow::new();
-        row.show(
-            7,
-            Some(&browser()),
-            Theme::dark().motion(),
-            crate::motion::frame_now(),
-        );
-        row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
-        row
-    }
-
-    #[test]
-    fn navigation_leads_actions_trail_and_the_location_fills_between() {
-        let row = row();
-        let slots = row.slots();
-        assert!(slots.back.x1 < slots.forward.x0);
-        assert!(slots.forward.x1 < slots.location.x0);
-        assert!(slots.location.x1 < slots.actions[0].x0);
-        assert!((slots.actions[0].x1 - 640.0).abs() < f64::EPSILON);
-        assert!(slots.location.width() > 400.0);
-    }
-
-    #[test]
-    fn back_runs_only_where_it_can_and_forward_not_at_the_end() {
-        let mut row = row();
-        let back = row.slots().back.center();
-        assert!(row.press(back));
-        assert!(row.release(back));
-        let forward = row.slots().forward.center();
-        assert!(row.press(forward));
-        assert!(row.release(forward));
-        let reload = row.slots().actions[0].center();
-        assert!(row.press(reload));
-        assert!(row.release(reload));
-        assert_eq!(
-            row.take_events(),
-            vec![
-                (7, ToolbarEvent::Back),
-                (
-                    7,
-                    ToolbarEvent::Action {
-                        id: "reload".into()
-                    }
-                )
-            ],
-            "forward cannot go"
-        );
-    }
-
-    #[test]
-    fn a_click_on_the_location_edits_the_whole_address_and_esc_puts_it_back() {
-        let mut row = row();
-        let location = row.slots().location.center();
-        assert!(row.press(location));
-        assert!(row.is_editing());
-        assert_eq!(row.field_text(), Some("https://duckduckgo.com/"));
-        assert!(row.cancel_edit());
-        assert!(!row.is_editing());
-        assert!(row.take_events().is_empty(), "nothing was committed");
-        assert_eq!(
-            row.take_drafts(),
-            vec![(
-                7,
-                ToolbarEvent::Edit {
-                    text: "https://duckduckgo.com/".into()
-                }
-            )],
-            "the app hears its location put back"
-        );
-    }
-
-    /// A terminal's slots: where its shell runs, one of a few places.
-    fn terminal() -> WindowToolbar {
-        use crate::window_toolbar::LocationChoice;
-        let choice = |label: &str, value: &str, current: bool, separated: bool| LocationChoice {
-            label: label.into(),
-            value: value.into(),
-            current,
-            separated,
-        };
-        WindowToolbar {
-            location: Some(ToolbarLocation {
-                label: "Your shell on this device".into(),
-                choices: vec![
-                    choice("Your shell on this device", "target:host", true, false),
-                    choice("work", "target:environment:work", false, false),
-                    choice("Manage environments…", "manage", false, true),
-                ],
-                ..ToolbarLocation::default()
-            }),
-            ..WindowToolbar::default()
-        }
-    }
-
-    #[test]
-    fn a_location_with_choices_opens_its_picker_and_commits_the_one_chosen() {
-        let mut row = ToolbarRow::new();
-        row.show(
-            9,
-            Some(&terminal()),
-            Theme::dark().motion(),
-            crate::motion::frame_now(),
-        );
-        row.set_popup_area(Rect::new(0.0, 0.0, 800.0, 600.0));
-        row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
-        let location = row.slots().location.center();
-        assert!(row.press(location));
-        assert!(!row.is_editing(), "a picker never turns into a field");
-        assert!(!row.choices_open(), "it opens as the press ends");
-        assert!(row.release(location));
-        assert!(row.choices_open());
-        assert_eq!(
-            row.menu_labels(),
-            vec![
-                "Your shell on this device".to_owned(),
-                "work".to_owned(),
-                "Manage environments…".to_owned()
-            ]
-        );
-        let picker = row
-            .accessibility()
-            .into_iter()
-            .find(|node| node.action_target.as_deref() == Some(LOCATION_TARGET))
-            .expect("the picker reaches assistive technology");
-        assert_eq!(picker.state.expanded, Some(true));
-        assert_eq!(picker.children.len(), 3);
-        assert_eq!(picker.children[0].state.checked, Some(true));
-        assert!(row.perform(&format!("{CHOICE_TARGET_PREFIX}1")));
-        assert!(!row.choices_open(), "choosing closes the picker");
-        assert_eq!(
-            row.take_events(),
-            vec![(
-                9,
-                ToolbarEvent::Commit {
-                    text: "target:environment:work".into()
-                }
-            )]
-        );
-    }
-
-    fn text(key: &str) -> String {
-        crate::i18n::I18nManager::lookup_plain(key)
-    }
-
-    /// The node with `role` and `name` among `nodes` and their children.
-    fn find_node<'a>(nodes: &'a [AccessNode], role: Role, name: &str) -> Option<&'a AccessNode> {
-        nodes.iter().find_map(|node| {
-            if node.role == role && node.name.as_deref() == Some(name) {
-                Some(node)
-            } else {
-                find_node(&node.children, role, name)
-            }
-        })
-    }
-
-    /// An address book's slots: the sidebar, Back, its place as the
-    /// location, and New contact, Import and Export, or Save and Cancel
-    /// while a person is edited.
-    fn address_book(editing: bool) -> WindowToolbar {
-        let actions = if editing {
-            vec![
-                ToolbarAction::new("save", "check", "Save"),
-                ToolbarAction::new("cancel", "x", "Cancel"),
-            ]
-        } else {
-            vec![
-                ToolbarAction::new("new-contact", "plus", "New contact"),
-                ToolbarAction::new("import", "download", "Import contacts").in_menu(),
-                ToolbarAction::new("export", "upload", "Export contacts").in_menu(),
-            ]
-        };
-        WindowToolbar {
-            sidebar: Some(false),
-            navigation: Some(ToolbarNavigation {
-                back: true,
-                forward: false,
-            }),
-            location: Some(ToolbarLocation {
-                label: "All contacts".into(),
-                editable: true,
-                name: "Search contacts".into(),
-                ..ToolbarLocation::default()
-            }),
-            actions,
-            ..WindowToolbar::default()
-        }
-        .bounded()
-    }
-
-    fn address_book_row(editing: bool, width: f64) -> ToolbarRow {
-        let mut row = ToolbarRow::new();
-        row.show(
-            4,
-            Some(&address_book(editing)),
-            Theme::dark().motion(),
-            crate::motion::frame_now(),
-        );
-        row.set_popup_area(Rect::new(0.0, 0.0, 1200.0, 800.0));
-        row.lay_out(Rect::new(0.0, 0.0, width, 40.0));
-        row
-    }
-
-    #[test]
-    fn every_slot_and_overflow_item_is_found_by_role_and_name_and_runs() {
-        let wide = address_book_row(false, 900.0).accessibility();
-        assert!(
-            find_node(
-                &wide,
-                Role::ToggleButton,
-                &text("window-toolbar-show-sidebar")
-            )
-            .is_some()
-        );
-        assert!(find_node(&wide, Role::Button, &text("window-toolbar-back")).is_some());
-        assert!(
-            find_node(&wide, Role::Button, "Search contacts").is_some(),
-            "the editable location is a control"
-        );
-        let new = find_node(&wide, Role::Button, "New contact").expect("in the row, a button");
-        let more = find_node(&wide, Role::Button, &text("window-toolbar-more"))
-            .expect("the overflow control");
-        assert_eq!(more.state.expanded, Some(false));
-        let import = find_node(&more.children, Role::MenuItem, "Import contacts")
-            .expect("what the row has no room for is the overflow menu's");
-        assert!(
-            import.state.hidden,
-            "a closed menu's item is hidden from a reader"
-        );
-        assert!(
-            find_node(&wide, Role::Button, "Import contacts").is_none(),
-            "an item in the menu is not also a button in the row"
-        );
-        assert_ne!(new.bounds, more.bounds);
-
-        // Narrow, New contact goes in the menu too; open, each item stands
-        // where its row is drawn.
-        let mut narrow = address_book_row(false, 240.0);
-        assert!(narrow.slots().actions.is_empty(), "no room for any action");
-        assert!(narrow.perform(OVERFLOW_TARGET), "More opens its menu");
-        assert!(narrow.popup_open());
-        let nodes = narrow.accessibility();
-        let more = find_node(&nodes, Role::Button, &text("window-toolbar-more")).unwrap();
-        assert_eq!(more.state.expanded, Some(true));
-        let new = find_node(&nodes, Role::MenuItem, "New contact").expect("in the open menu");
-        let import = find_node(&nodes, Role::MenuItem, "Import contacts").unwrap();
-        assert!(!new.state.hidden && new.state.focusable);
-        let (new_at, import_at) = (new.bounds.unwrap(), import.bounds.unwrap());
-        assert!(
-            new_at != more.bounds.unwrap() && new_at.y1 <= import_at.y0,
-            "each item is its own row of the menu: {new_at:?}, {import_at:?}"
-        );
-        let target = new.action_target.clone().unwrap();
-        assert!(narrow.perform(&target), "pressing the item runs it");
-        assert!(!narrow.popup_open(), "and closes its menu");
-        assert_eq!(
-            narrow.take_events(),
-            vec![(
-                4,
-                ToolbarEvent::Action {
-                    id: "new-contact".into()
-                }
-            )]
-        );
-
-        // Editing a person: Save and Cancel, closed menu or not.
-        let mut editing = address_book_row(true, 240.0);
-        let nodes = editing.accessibility();
-        let save = find_node(&nodes, Role::MenuItem, "Save").expect("Save is reachable");
-        assert!(find_node(&nodes, Role::MenuItem, "Cancel").is_some());
-        let target = save.action_target.clone().unwrap();
-        assert!(editing.perform(&target), "a closed menu's item still runs");
-        assert_eq!(
-            editing.take_events(),
-            vec![(4, ToolbarEvent::Action { id: "save".into() })]
-        );
-
-        let mut row = address_book_row(false, 900.0);
-        assert!(row.begin_edit());
-        assert!(
-            row.accessibility()
-                .iter()
-                .any(|node| node.role == Role::TextInput),
-            "the edited location is a field"
-        );
-    }
-
-    #[test]
-    fn slots_shown_where_none_stood_are_at_rest_at_once() {
-        let mut row = ToolbarRow::new();
-        let now = crate::time::now();
-        row.show(7, Some(&browser()), Theme::dark().motion(), now);
-        assert!(
-            !row.needs_animation_frame(now),
-            "nothing faded out, so nothing fades in"
-        );
-        row.show(8, Some(&browser()), Theme::dark().motion(), now);
-        assert!(
-            row.needs_animation_frame(now),
-            "another tab's slots cross-fade"
-        );
-    }
-
-    #[test]
-    fn another_tab_cross_fades_and_drops_what_was_typed_in_this_one() {
-        let mut row = row();
-        assert!(row.begin_edit());
-        let now = crate::time::now();
-        row.show(8, None, Theme::dark().motion(), now);
-        assert!(!row.is_editing());
-        assert!(row.toolbar().is_none());
-        assert!(row.needs_animation_frame(now), "the old slots fade out");
-    }
-
-    /// A calendar's slots: the sidebar, previous, next and today, the
-    /// period as the location, the view switcher, New event and an import
-    /// for the menu.
-    fn calendar() -> WindowToolbar {
-        use crate::window_toolbar::{ToolbarView, ToolbarViews};
-        let view = |id: &str, label: &str| ToolbarView {
-            id: id.into(),
-            label: label.into(),
-        };
-        WindowToolbar {
-            sidebar: Some(true),
-            leading: vec![
-                ToolbarAction::new("previous", "chevron-left", "Previous week"),
-                ToolbarAction::new("next", "chevron-right", "Next week"),
-                ToolbarAction::new("today", "calendar", "Today"),
-            ],
-            location: Some(ToolbarLocation {
-                label: "Oct 19 – 25, 2026".into(),
-                ..ToolbarLocation::default()
-            }),
-            views: Some(ToolbarViews {
-                name: "View".into(),
-                choices: vec![
-                    view("month", "Month"),
-                    view("week", "Week"),
-                    view("day", "Day"),
-                ],
-                chosen: "week".into(),
-            }),
-            actions: vec![
-                ToolbarAction::new("import", "download", "Import").in_menu(),
-                ToolbarAction::new("new-event", "plus", "New event"),
-            ],
-            ..WindowToolbar::default()
-        }
-        .bounded()
-    }
-
-    fn calendar_row(width: f64) -> ToolbarRow {
-        let mut row = ToolbarRow::new();
-        row.show(
-            3,
-            Some(&calendar()),
-            Theme::dark().motion(),
-            crate::motion::frame_now(),
-        );
-        row.lay_out(Rect::new(0.0, 0.0, width, 40.0));
-        assert!(
-            row.measure_views(&Theme::dark()),
-            "the switcher is measured"
-        );
-        row
-    }
-
-    fn file_toolbar(actions: usize) -> WindowToolbar {
-        WindowToolbar {
-            sidebar: Some(false),
-            location: Some(ToolbarLocation {
-                label: "explorer.rs".into(),
-                ..ToolbarLocation::default()
-            }),
-            actions: (0..actions)
-                .map(|index| ToolbarAction::new(format!("a{index}"), "panel-bottom", "Act"))
-                .collect(),
-            ..WindowToolbar::default()
-        }
-    }
-
-    #[test]
-    fn a_compact_row_never_folds_one_action_alone_into_the_menu() {
-        // As wide as the row a compact (420 px) window leaves the toolbar.
-        let compact = Rect::new(0.0, 0.0, 220.0, 40.0);
-        let one = Slots::lay_out(&file_toolbar(1), compact, None);
-        assert_eq!(one.actions.len(), 1, "the action stands in the row");
-        assert_eq!(one.overflow, Rect::ZERO, "no menu for one action");
-
-        for declared in [2, 3] {
-            let slots = Slots::lay_out(&file_toolbar(declared), compact, None);
-            let folded = declared - slots.actions.len();
-            assert!(
-                folded == 0 || folded >= 2,
-                "{declared} actions: the menu holds {folded}"
-            );
-            assert_eq!(slots.overflow.area() > 0.0, folded > 0);
-        }
-
-        let wide = Slots::lay_out(&file_toolbar(1), Rect::new(0.0, 0.0, 900.0, 40.0), None);
-        assert_eq!(wide.actions.len(), 1);
-        assert_eq!(wide.overflow, Rect::ZERO);
-    }
-
-    #[test]
-    fn leading_actions_follow_the_navigation_and_views_stand_before_the_actions() {
-        let row = calendar_row(1000.0);
-        let slots = row.slots();
-        assert_eq!(slots.leading.len(), 3);
-        assert!(slots.sidebar.x1 < slots.leading[0].x0);
-        assert!(slots.leading[2].x1 < slots.location.x0);
-        assert_eq!(slots.views.len(), 3, "the switcher has room in the row");
-        assert!(slots.location.x1 < slots.views_strip().x0);
-        assert!(slots.views_strip().x1 < slots.actions[0].x0);
-        assert_eq!(slots.actions.len(), 1, "Import is the menu's only");
-        assert!(slots.overflow.area() > 0.0, "the menu holds Import");
-        let widths: Vec<f64> = slots.views.iter().map(Rect::width).collect();
-        assert!(
-            widths.iter().all(|w| (w - widths[0]).abs() < 0.5),
-            "{widths:?}"
-        );
-    }
-
-    #[test]
-    fn a_view_is_chosen_in_the_row_or_from_the_menu_when_the_row_has_no_room() {
-        let mut row = calendar_row(1000.0);
-        let month = row.slots().views[0].center();
-        assert!(row.press(month));
-        assert!(row.release(month));
-        let today = row.slots().leading[2].center();
-        assert!(row.press(today));
-        assert!(row.release(today));
-        assert_eq!(
-            row.take_events(),
-            vec![
-                (3, ToolbarEvent::Action { id: "month".into() }),
-                (3, ToolbarEvent::Action { id: "today".into() }),
-            ]
-        );
-
-        let mut narrow = calendar_row(420.0);
-        assert!(
-            narrow.slots().views.is_empty(),
-            "no room: the views go in the menu"
-        );
-        assert!(narrow.slots().overflow.area() > 0.0);
-        assert!(narrow.open_overflow());
-        assert_eq!(
-            narrow.menu_entries.first().copied().flatten(),
-            Some(MenuEntry::View(0)),
-            "the menu starts with the views"
-        );
-        assert!(narrow.perform(&format!("{VIEW_TARGET_PREFIX}day")));
-        assert!(narrow.perform(&format!("{LEADING_TARGET_PREFIX}previous")));
-        assert_eq!(
-            narrow.take_events(),
-            vec![
-                (3, ToolbarEvent::Action { id: "day".into() }),
-                (
-                    3,
-                    ToolbarEvent::Action {
-                        id: "previous".into()
-                    }
-                ),
-            ]
-        );
-        let nodes = narrow.accessibility();
-        let week = find_node(&nodes, Role::MenuItem, "Week")
-            .expect("a view in the overflow menu reaches assistive technology");
-        assert_eq!(week.state.checked, Some(true));
-    }
-
-    #[test]
-    fn a_menu_button_lists_its_items_and_the_overflow_menu_carries_them() {
-        let toolbar = WindowToolbar {
-            actions: vec![
-                ToolbarAction::new("format", "type", "Format").with_items(vec![
-                    ToolbarAction::new("bold", "bold", "Bold").on(true),
-                    ToolbarAction::new("italic", "italic", "Italic"),
-                ]),
-                ToolbarAction::new("export", "upload", "Export").in_menu(),
-            ],
-            ..WindowToolbar::default()
-        }
-        .bounded();
-        let mut row = ToolbarRow::new();
-        row.show(
-            5,
-            Some(&toolbar),
-            Theme::dark().motion(),
-            crate::motion::frame_now(),
-        );
-        row.lay_out(Rect::new(0.0, 0.0, 800.0, 40.0));
-        let format = row.slots().actions[0].center();
-        assert!(row.press(format) && row.release(format));
-        assert!(
-            row.take_events().is_empty(),
-            "a menu button sends nothing itself"
-        );
-        assert!(row.popup_open(), "its menu lists the items");
-        assert_eq!(row.menu_entries.len(), 2);
-        assert!(row.run_menu_entry(1));
-        assert_eq!(
-            row.take_events(),
-            vec![(
-                5,
-                ToolbarEvent::Action {
-                    id: "italic".into()
-                }
-            )]
-        );
-        assert!(
-            row.perform(&format!("{ACTION_TARGET_PREFIX}bold")),
-            "AT runs an item"
-        );
-        assert_eq!(
-            row.take_events(),
-            vec![(5, ToolbarEvent::Action { id: "bold".into() })]
-        );
-
-        let mut narrow = ToolbarRow::new();
-        let crowded = WindowToolbar {
-            location: Some(ToolbarLocation {
-                label: "Cover letter".into(),
-                ..ToolbarLocation::default()
-            }),
-            ..toolbar.clone()
-        };
-        narrow.show(
-            5,
-            Some(&crowded),
-            Theme::dark().motion(),
-            crate::motion::frame_now(),
-        );
-        narrow.lay_out(Rect::new(0.0, 0.0, 240.0, 40.0));
-        assert!(
-            narrow.slots().actions.is_empty(),
-            "no room: Format goes in the menu"
-        );
-        assert!(narrow.open_overflow());
-        assert!(
-            narrow
-                .menu_entries
-                .iter()
-                .flatten()
-                .any(|entry| *entry == MenuEntry::Item(0, 1)),
-            "the overflow menu carries Format's items"
-        );
-    }
-}
+mod tests;

@@ -30,8 +30,10 @@
 //!   today), at most [`MAX_LEADING`] of them;
 //! - **views:** a segmented switcher between the app's views of the same
 //!   thing (Month, Week, Day), trailing the location; where the row has no
-//!   room for it, its choices are in the overflow menu, the chosen one
-//!   checked. Choosing one sends its id as an [`ToolbarEvent::Action`];
+//!   room for it, it folds into a views menu that names the chosen view and
+//!   lists them all, the chosen one checked (only a row too narrow even for
+//!   that lists them in the overflow menu). Choosing one sends its id as an
+//!   [`ToolbarEvent::Action`];
 //! - **actions:** icon buttons (reload, bookmark…), at most [`MAX_ACTIONS`]
 //!   of them in the row; the rest, those the row has no room for and those
 //!   declared for the menu ([`ToolbarAction::menu`]) are in the menu of a
@@ -353,6 +355,11 @@ pub struct ToolbarAction {
     /// At most [`MAX_ITEMS`], one level deep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<ToolbarAction>,
+    /// It moves the person through the content (previous, next, back): a
+    /// leading action that stays in a narrow row after the others and the
+    /// views have gone into the overflow menu.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub navigates: bool,
 }
 
 fn enabled() -> bool {
@@ -373,6 +380,7 @@ impl ToolbarAction {
             on: false,
             menu: false,
             items: Vec::new(),
+            navigates: false,
         }
     }
 
@@ -401,6 +409,13 @@ impl ToolbarAction {
     #[must_use]
     pub fn in_menu(mut self) -> Self {
         self.menu = true;
+        self
+    }
+
+    /// It moves through the content ([`Self::navigates`]).
+    #[must_use]
+    pub fn navigating(mut self) -> Self {
+        self.navigates = true;
         self
     }
 }
@@ -998,6 +1013,7 @@ mod tests {
                 on: false,
                 menu: false,
                 items: Vec::new(),
+                navigates: false,
             }],
             ..WindowToolbar::default()
         }
@@ -1076,6 +1092,7 @@ mod tests {
                 on: false,
                 menu: false,
                 items: Vec::new(),
+                navigates: false,
             });
         }
         many.actions.push(ToolbarAction {
@@ -1086,6 +1103,7 @@ mod tests {
             on: false,
             menu: false,
             items: Vec::new(),
+            navigates: false,
         });
         for n in 6..20 {
             many.actions.push(ToolbarAction {
@@ -1096,6 +1114,7 @@ mod tests {
                 on: false,
                 menu: false,
                 items: Vec::new(),
+                navigates: false,
             });
         }
         let bounded = many.clone().bounded();
