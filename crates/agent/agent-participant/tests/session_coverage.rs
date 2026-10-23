@@ -1072,7 +1072,7 @@ async fn a_task_reports_the_content_its_steps_produced() {
 
 /// A video still an agent asks for in a task is drawn by its host's render
 /// service, not the record's worker, and kept as room content its step
-/// names. Needs the render helper (`cargo build -p video-editor --bin
+/// names. Needs the render helper (`cargo build -p tilo-video-render --bin
 /// tilo-video-render`); without it the test says so and returns, unless
 /// `TILO_REQUIRE_MEDIA=1`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

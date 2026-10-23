@@ -880,12 +880,23 @@ pub fn begin_export(project: &Project, settings: &ExportSettings) -> ExportStatu
     start_export(project, settings, output_path(settings, project)).join()
 }
 
+/// A file a render was handed open, which its graph's sink writes: the
+/// agent host's render helper's (`tilo-video-render`), which may open
+/// nothing once confined.
+pub trait HandedOutput {
+    /// How many bytes have been written so far, when that can be told.
+    fn written(&self) -> Option<u64>;
+
+    /// Throw away what was written.
+    fn discard(&self);
+}
+
 /// Where a render's file goes: a path it creates, or a file it was handed
-/// open (the render helper, which may open nothing once confined).
+/// open.
 #[cfg(feature = "gst")]
 pub(crate) enum Output<'a> {
     Path(&'a std::path::Path),
-    File(&'a std::fs::File),
+    Handed(&'a dyn HandedOutput),
 }
 
 #[cfg(feature = "gst")]
@@ -894,7 +905,7 @@ impl Output<'_> {
     fn len(&self) -> Option<u64> {
         match self {
             Self::Path(path) => crate::files::metadata(path).ok().map(|m| m.len),
-            Self::File(file) => file.metadata().ok().map(|m| m.len()),
+            Self::Handed(file) => file.written(),
         }
     }
 
@@ -903,9 +914,7 @@ impl Output<'_> {
     fn discard(&self) {
         match self {
             Self::Path(path) => crate::files::remove(path),
-            Self::File(file) => {
-                let _ = file.set_len(0);
-            }
+            Self::Handed(file) => file.discard(),
         }
     }
 }
@@ -922,7 +931,7 @@ pub(crate) struct Encode<'a> {
 }
 
 /// Run `encode` over `project` on the calling thread, for a caller with a
-/// graph of its own (the render helper's agent encode): `report` is told
+/// graph of its own (an agent's render, [`crate::agent_render::render_video`]): `report` is told
 /// each frame written and how many there are, and `cancel` stops it.
 /// Returns how many frames were written.
 ///

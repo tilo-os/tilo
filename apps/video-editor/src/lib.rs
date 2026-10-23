@@ -69,7 +69,6 @@ pub mod presence;
 pub mod preview;
 pub mod probe;
 pub mod project_file;
-pub mod render_helper;
 pub mod resource;
 pub mod search;
 pub mod seed;

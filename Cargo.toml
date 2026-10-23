@@ -244,6 +244,7 @@ members = [
     "crates/media/ocr",
     "crates/media/segment",
     "crates/media/thumbnail",
+    "crates/media/video-render",
     "crates/media/vision",
     "crates/media/wet-media",
 

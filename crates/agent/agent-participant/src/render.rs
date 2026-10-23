@@ -14,7 +14,7 @@
 //!    and only sources that are content the room holds;
 //! 2. the document and those sources are laid out in a private job
 //!    directory, within [`SOURCE_BUDGET`];
-//! 3. `tilo-video-render` ([`video_editor::render_helper`]) runs on it,
+//! 3. `tilo-video-render` ([`tilo_video_render`]) runs on it,
 //!    confined, and writes into a file it is handed open;
 //! 4. what it wrote, at most [`MAX_OUTPUT`], becomes room content, and the
 //!    agent is answered with its address.
@@ -34,14 +34,14 @@ use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
 use tilo_actions::{ActionOutput, HOST_RENDER_TAG};
 use tilo_content::ContentStore;
 use tilo_lock::MutexRecover as _;
+use tilo_video_render::client::{self, JobDir};
+use tilo_video_render::proto::{Reply, Request};
 use ui::tilo_resource::Resource as _;
 use video_editor::Project;
 use video_editor::agent_render::{
     self, AgentExportSettings, AgentFrameSettings, AgentRendered, done_answer, failed_answer,
     rendering_answer,
 };
-use video_editor::render_helper::client::{self, JobDir};
-use video_editor::render_helper::proto::{Reply, Request};
 
 use crate::worker::ConfinedReplica;
 

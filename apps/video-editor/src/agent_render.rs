@@ -6,12 +6,14 @@
 //! An agent's record lives in a confined app worker with no GPU, no media
 //! stack and no paths, so these are tagged `host_render`
 //! ([`tilo_actions::HOST_RENDER_TAG`]): an agent's host answers them in its
-//! render service, which runs `tilo-video-render` ([`crate::render_helper`])
-//! on a snapshot of the record. This module holds what both sides agree on
-//! — the settings an agent may ask for, the answers it gets back, which
-//! timelines it may render — and what a person's editor answers when one of
-//! them reaches it directly (they are for agents; a person renders with
-//! `render` or Export).
+//! render service, which runs the confined `tilo-video-render` helper (its
+//! own crate: the process, its confinement and its channel to the host are
+//! platform code) on a snapshot of the record. This module holds what both
+//! sides agree on — the settings an agent may ask for, the answers it gets
+//! back, which timelines it may render — what the helper renders with
+//! ([`render_video`], [`render_still`]), and what a person's editor answers
+//! when one of them reaches it directly (they are for agents; a person
+//! renders with `render` or Export).
 //!
 //! An agent's render is deterministic: one software encoder
 //! ([`AGENT_VIDEO_ENCODER`]) with fixed settings, and the container's clock
@@ -19,8 +21,14 @@
 //! same bytes and a repeated export is recognisably the same content.
 
 use serde_json::{Map, Value, json};
+use ui::tilo_resource::Resource as _;
 
 use crate::model::Project;
+
+#[cfg(all(feature = "gst", feature = "decode"))]
+mod run;
+#[cfg(all(feature = "gst", feature = "decode"))]
+pub use run::{render_still, render_video, warm_up};
 
 /// The longest timeline an agent's render encodes, in seconds: a render
 /// holds the host's one render slot for its whole run, and two minutes of
@@ -381,6 +389,18 @@ pub fn pipeline_desc(settings: &AgentExportSettings, sink: &str, with_audio: boo
          enable-frame-skip=false rate-control=bitrate bitrate={bitrate} \
          ! h264parse ! mp4mux name=tilo_mux faststart=false ! {sink}{audio}"
     )
+}
+
+/// The timeline a record's saved document (`AutoCommit::save`) holds, as a
+/// render reads it from the snapshot its host hands over.
+///
+/// # Errors
+///
+/// The bytes are no document, or the document no timeline.
+pub fn read_snapshot(bytes: &[u8]) -> Result<Project, String> {
+    let doc = automerge::AutoCommit::load(bytes)
+        .map_err(|error| format!("the timeline does not load: {error}"))?;
+    Project::read(&doc).map_err(|error| format!("the timeline does not read: {error}"))
 }
 
 /// Zero the creation and modification times an MP4's movie, track and

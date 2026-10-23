@@ -109,6 +109,9 @@ base64.workspace = true
 # A room's content store is kept under the room's id.
 uuid.workspace = true
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# The render service's side of `tilo-video-render`, the confined helper an
+# agent's video renders run in (the helper itself is its binary).
+tilo-video-render = { path = "../../media/video-render", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 # The worker's confinement: detach, resource limits and, on macOS, Seatbelt.
