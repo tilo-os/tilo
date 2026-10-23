@@ -440,7 +440,7 @@ pub enum Filter {
 /// The article reader's own preferences from before every reader on Tilo
 /// shared one set ([`ui::reading::ReadingPreferences`]). Read once, to carry
 /// a person's choices over to the shared set; never written.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EarlierReadSettings {
     /// How much larger than its text role the article was set.
