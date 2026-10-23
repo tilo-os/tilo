@@ -88,7 +88,7 @@ test('an app\'s ban becomes the room\'s membership request and answers with a re
   const target = action => ({provider:'tilo.workspace', address:{resource:'workspace.permissions:r', action}});
   let requests = [
     {Invoke:{invocation, target:target('ban'), argument:{Json:{person:'bb'.repeat(32)}}}},
-    {Invoke:{invocation:'other', target:{provider:'record:so.tilo.chat:', address:{resource:'x', action:'ban'}}}},
+    {Invoke:{invocation:'other', target:{provider:'so.tilo.chat', address:{resource:'x', action:'ban'}}}},
   ];
   const rooms = {ban:async person=>{calls.push(person); return {};}};
   const bridge = createNativeCatalogueBridge({current:()=>true, actions:()=>undefined, membership:()=>rooms,
@@ -97,7 +97,7 @@ test('an app\'s ban becomes the room\'s membership request and answers with a re
   await new Promise(done=>setImmediate(done));
   assert.deepEqual(calls, ['bb'.repeat(32)]);
   assert.deepEqual(replies[0], {Receipt:{invocation:'other', status:{Rejected:{error:{Unavailable:{
-    reason:'Only the room\'s membership actions run from an app here'}}}}}});
+    reason:'Only the room\'s host runs another app\'s actions here'}}}}}});
   assert.deepEqual(replies[1], {Receipt:{invocation, status:{Completed:{output:{}}}}});
   rooms.ban = async () => { throw Error('a Moderator cannot do this to a Moderator'); };
   requests.push({Invoke:{invocation, target:target('ban'), argument:{Json:{person:'cc'.repeat(32)}}}});
@@ -122,8 +122,40 @@ test('an app\'s share-link asks the room\'s host as the person and answers with 
   bridge.pump();
   await until(()=>replies.length, 'the share-link receipt');
   assert.deepEqual(asked, [{wanted:{provider:target.provider, address:target.address}, argument:{Json:{start:1, end:2}},
-    options:{invocation}}]);
+    options:{invocation, confirmation:null}}]);
   assert.deepEqual(replies, [{Receipt:{invocation, status:{Completed:{output:{value:{url}, resources:[]}}}}}]);
+  bridge.dispose();
+});
+
+test('any action the room\'s host runs goes to it with the person\'s answer, and its refusal comes back', async () => {
+  const replies = [], asked = [];
+  const archive = '00000000-0000-4000-8000-000000000003';
+  const open = '00000000-0000-4000-8000-000000000004';
+  const record = {provider:'record:so.tilo.notes:n1', address:{resource:'notes.page:1', action:'archive'}};
+  const room = {provider:'workspace:r', address:{resource:'app.so.tilo.notes', action:'open'}};
+  const requests = [
+    {Invoke:{invocation:archive, target:record, argument:'None', confirmation:'Confirmed'}},
+    {Invoke:{invocation:open, target:room, argument:'None'}},
+  ];
+  const connection = {invoke(wanted, argument, options) {
+    asked.push({wanted, options});
+    if (wanted.provider === record.provider) {
+      return {done:Promise.reject(Object.assign(new Error('a Viewer of this room cannot archive this page'),
+        {code:'refused'}))};
+    }
+    return {done:Promise.resolve({terminal:true, update:{state:'succeeded', output:{value:null, resources:[]}}})};
+  }};
+  const bridge = createNativeCatalogueBridge({current:()=>true, actions:()=>connection,
+    take:()=>requests.splice(0), deliver:reply=>replies.push(reply)});
+  bridge.pump();
+  await until(()=>replies.length === 2, 'both receipts');
+  assert.deepEqual(asked, [
+    {wanted:record, options:{invocation:archive, confirmation:{kind:'confirm'}}},
+    {wanted:room, options:{invocation:open, confirmation:null}},
+  ]);
+  const by = id => replies.find(reply => reply.Receipt.invocation === id).Receipt.status;
+  assert.deepEqual(by(archive), {Rejected:{error:{Unavailable:{reason:'a Viewer of this room cannot archive this page'}}}});
+  assert.deepEqual(by(open), {Completed:{output:{value:null, resources:[]}}});
   bridge.dispose();
 });
 
