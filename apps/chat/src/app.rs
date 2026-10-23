@@ -5414,11 +5414,17 @@ impl ChatApp {
             theme.reduce_motion,
         );
         self.draw_huddle_bg(scene, transform, text_renderer, theme, hits);
-        if self.video.latest_frame().is_some() {
-            self.video
-                .draw(scene, transform, text_renderer, theme, presence);
+        // The large tile shows someone else once anyone is; this person's
+        // own camera only while alone in the call.
+        if self.huddle_features_me() {
+            if self.video.latest_frame().is_some() {
+                self.video
+                    .draw(scene, transform, text_renderer, theme, presence);
+            }
+            self.draw_host_camera_off(scene, transform, text_renderer, theme);
+        } else {
+            self.draw_huddle_featured(scene, transform, text_renderer, theme);
         }
-        self.draw_host_camera_off(scene, transform, text_renderer, theme);
         self.draw_huddle_fg(scene, transform, text_renderer, theme, hits);
     }
 
