@@ -1,10 +1,10 @@
 //! This device's own room host: the same host a relay runs
-//! (`tilo_room_host::RoomHost`), in this process, serving the rooms placed
+//! (`room_host::RoomHost`), in this process, serving the rooms placed
 //! on this device.
 //!
 //! The actor's router is built before any room is hosted, so it carries the
 //! host's protocols from the start as deferred handlers
-//! (`tilo_room_host::deferred_protocols`): they refuse every connection
+//! (`room_host::deferred_protocols`): they refuse every connection
 //! until a host is installed, then hand each to it. Nothing runs for them
 //! before then. The host itself opens only once this device hosts a room
 //! (`crate::shell::network::embedded_host`).
@@ -18,7 +18,9 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use iroh::protocol::DynProtocolHandler;
-use tilo_room_host::{HostSlot, RoomHost};
+use room_host::{HostSlot, RoomHost};
+/// Where the room host lives: the one place its path is named.
+pub(crate) use tilo_relay::host as room_host;
 
 /// The ALPN handlers a host serves, for the actor's router.
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
@@ -46,7 +48,7 @@ impl LocalHost {
     /// is, for the router.
     #[must_use]
     pub fn deferred() -> (Self, Protocols) {
-        let (slot, protocols) = tilo_room_host::deferred_protocols();
+        let (slot, protocols) = room_host::deferred_protocols();
         (
             Self(Arc::new(Inner {
                 slot,

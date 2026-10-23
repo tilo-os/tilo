@@ -544,7 +544,7 @@ struct Member {
 /// `member`: over the host's in-process carrier, through the handshake and
 /// session a remote member's dial takes, answering as a dial does.
 fn join_local(
-    host: std::sync::Arc<tilo_room_host::RoomHost>,
+    host: std::sync::Arc<crate::network::local_host::room_host::RoomHost>,
     ws: u64,
     serial: u64,
     hint: TransportHint,
