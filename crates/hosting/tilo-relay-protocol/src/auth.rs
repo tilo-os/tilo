@@ -553,6 +553,38 @@ pub fn verify_interactive_owner_ack(
     })
 }
 
+/// Verify the exact device of the client's own person that hosts rooms
+/// itself: the ACK certificate chains to `own_user_public_key`, is the
+/// device `expected_device`, is current and unrevoked, and proves the
+/// challenge with its certified key. No host capability is asked of it: a
+/// person's device serves the rooms placed on it, and the session it opens
+/// is the person's own.
+///
+/// # Errors
+///
+/// Returns [`AuthError`] unless every condition above holds.
+pub fn verify_own_device_ack(
+    ack: &HelloAck,
+    own_user_public_key: &[u8; 32],
+    expected_device: &[u8; 32],
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<AuthenticatedPeer, AuthError> {
+    verify_hello_ack_cryptographic(ack, revocations, now_ns, challenge_client_nonce)?;
+    if &ack.cert.user_public_key != own_user_public_key
+        || &ack.cert.device_public_key != expected_device
+    {
+        return Err(AuthError::PolicyReject);
+    }
+    Ok(AuthenticatedPeer {
+        role: PeerRole::from_cert(&ack.cert),
+        cert: ack.cert.clone(),
+        user_public_key: ack.cert.user_public_key,
+        device_public_key: ack.cert.device_public_key,
+    })
+}
+
 fn verify_hello_ack_cryptographic(
     ack: &HelloAck,
     revocations: &RevocationList,
@@ -638,6 +670,87 @@ mod tests {
         };
         sign_device_cert(&mut cert, root_sk).unwrap();
         Party { cert, sk: dev_sk }
+    }
+
+    #[test]
+    fn an_own_device_proves_itself_without_host_capability_and_only_as_the_pinned_device() {
+        let (root_sk, user) = UserIdentity::generate("Alice", 1);
+        let laptop = enrol(
+            &root_sk,
+            user.public_key,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let phone = enrol(
+            &root_sk,
+            user.public_key,
+            "phone",
+            DeviceCapabilities::primary(),
+        );
+        let (other_root, other) = UserIdentity::generate("Bob", 1);
+        let stranger = enrol(
+            &other_root,
+            other.public_key,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let revs = RevocationList::new();
+        let nonce = [5u8; 32];
+        let ack = build_hello_ack(laptop.cert.clone(), &laptop.sk, [6u8; 32], &nonce);
+        let peer = verify_own_device_ack(
+            &ack,
+            &user.public_key,
+            &laptop.cert.device_public_key,
+            &revs,
+            1000,
+            &nonce,
+        )
+        .unwrap();
+        assert_eq!(peer.device_public_key, laptop.cert.device_public_key);
+        assert!(
+            matches!(
+                verify_hello_ack(&ack, &user.public_key, &revs, 1000, &nonce),
+                Err(AuthError::PolicyReject)
+            ),
+            "the host path still asks for host capability"
+        );
+        // Another of the person's devices is not the one pinned.
+        assert!(matches!(
+            verify_own_device_ack(
+                &ack,
+                &user.public_key,
+                &phone.cert.device_public_key,
+                &revs,
+                1000,
+                &nonce,
+            ),
+            Err(AuthError::PolicyReject)
+        ));
+        // Another person's device is never the person's own.
+        let foreign = build_hello_ack(stranger.cert.clone(), &stranger.sk, [6u8; 32], &nonce);
+        assert!(matches!(
+            verify_own_device_ack(
+                &foreign,
+                &user.public_key,
+                &stranger.cert.device_public_key,
+                &revs,
+                1000,
+                &nonce,
+            ),
+            Err(AuthError::PolicyReject)
+        ));
+        // A proof over another challenge is no proof.
+        assert!(matches!(
+            verify_own_device_ack(
+                &ack,
+                &user.public_key,
+                &laptop.cert.device_public_key,
+                &revs,
+                1000,
+                &[7u8; 32],
+            ),
+            Err(AuthError::BadChallengeSig)
+        ));
     }
 
     #[test]

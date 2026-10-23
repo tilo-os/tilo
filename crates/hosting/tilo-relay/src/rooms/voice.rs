@@ -190,6 +190,9 @@ impl State {
 pub(super) struct Calls {
     carrier: OnceLock<Carrier>,
     state: Mutex<State>,
+    /// A watch observes the participations ([`Rooms::watch_calls`]): only
+    /// while there are any.
+    watching: std::sync::atomic::AtomicBool,
 }
 
 impl Calls {
@@ -1118,6 +1121,7 @@ impl Rooms {
             }
         }
         drop(state);
+        self.watch_calls();
         self.tell_call_lists();
         Ok(grant)
     }
@@ -1259,16 +1263,46 @@ impl Rooms {
     }
 
     /// Every [`OBSERVATION`]: end silent participations and re-derive the
-    /// rest, for as long as the rooms exist.
+    /// rest, while there are participations and the rooms exist. Started by
+    /// a join; with nobody in a call nothing runs.
     pub(super) fn watch_calls(&self) {
+        let calls = &self.inner.calls;
+        if calls
+            .watching
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
         let rooms = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(OBSERVATION);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // The first tick is at once; a participation just joined.
+            tick.tick().await;
             loop {
                 tick.tick().await;
                 let Some(inner) = rooms.upgrade() else { break };
-                Self { inner }.observe_expired_calls().await;
+                let this = Self { inner };
+                this.observe_expired_calls().await;
+                if !this.inner.calls.state().participations.is_empty() {
+                    continue;
+                }
+                this.inner
+                    .calls
+                    .watching
+                    .store(false, std::sync::atomic::Ordering::Release);
+                // A join between the check and the store found the watch
+                // still running and started none: take it up again.
+                let joined = !this.inner.calls.state().participations.is_empty();
+                if !joined
+                    || this
+                        .inner
+                        .calls
+                        .watching
+                        .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    break;
+                }
             }
         });
     }

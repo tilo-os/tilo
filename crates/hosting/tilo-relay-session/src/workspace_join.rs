@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES, MAX_WORKSPACE_JOIN_RESPONSE_BYTES,
-    WORKSPACE_JOIN_ALPN, WorkspaceJoinAdmission, WorkspaceJoinError,
+    WORKSPACE_JOIN_ALPN, WorkspaceJoinAdmission, WorkspaceJoinError, WorkspaceJoinService,
 };
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_join::{
@@ -33,10 +33,39 @@ pub struct WorkspaceJoinClient {
     carrier: Carrier,
 }
 
+/// A governor's join service, callable in-process: what a host in the same
+/// process answers, as [`WorkspaceJoinService`] is on its iroh endpoint,
+/// behind a handle the client can hold.
+pub trait LocalJoinService: Send + Sync + std::fmt::Debug + 'static {
+    /// Answer `request` as from the endpoint `remote_endpoint`.
+    fn handle_local(
+        &self,
+        remote_endpoint: [u8; 32],
+        request: JoinTransportRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = JoinTransportResponse> + Send + '_>>;
+}
+
+impl<T: WorkspaceJoinService> LocalJoinService for T {
+    fn handle_local(
+        &self,
+        remote_endpoint: [u8; 32],
+        request: JoinTransportRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = JoinTransportResponse> + Send + '_>>
+    {
+        Box::pin(self.handle(remote_endpoint, request))
+    }
+}
+
 #[derive(Clone)]
 enum Carrier {
     /// The host's iroh endpoint, dialled from an identity-bound endpoint.
     Iroh(iroh::Endpoint),
+    /// A host in the same process, called directly as from `caller`'s
+    /// endpoint key, with the wire's size limits and encoding.
+    Local {
+        service: Arc<dyn LocalJoinService>,
+        caller: [u8; 32],
+    },
     /// The host's HTTPS route, with the door's admission when it gave one.
     Https {
         http: Arc<dyn tilo_relay_client::HttpClient>,
@@ -48,6 +77,10 @@ impl std::fmt::Debug for Carrier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Iroh(endpoint) => f.debug_tuple("Iroh").field(&endpoint.id()).finish(),
+            Self::Local { caller, .. } => f
+                .debug_struct("Local")
+                .field("caller", &&caller[..4])
+                .finish(),
             Self::Https { door, .. } => f
                 .debug_struct("Https")
                 .field("door", &door.is_some())
@@ -72,6 +105,20 @@ impl WorkspaceJoinClient {
     pub fn new(endpoint: iroh::Endpoint) -> Self {
         Self {
             carrier: Carrier::Iroh(endpoint),
+        }
+    }
+
+    /// Call `service`, a host in the same process, as the device whose
+    /// endpoint key is `caller_endpoint`: the same exchange as over iroh,
+    /// each request and answer encoded and held to the wire's limits, with
+    /// no connection.
+    #[must_use]
+    pub fn local(service: Arc<dyn LocalJoinService>, caller_endpoint: [u8; 32]) -> Self {
+        Self {
+            carrier: Carrier::Local {
+                service,
+                caller: caller_endpoint,
+            },
         }
     }
 
@@ -121,6 +168,22 @@ impl WorkspaceJoinClient {
         }
         let endpoint = match &self.carrier {
             Carrier::Iroh(endpoint) => endpoint,
+            Carrier::Local { service, caller } => {
+                // The host decodes what a remote device would send it, and
+                // its answer goes back through the same encoding.
+                let request: JoinTransportRequest = postcard::from_bytes(&bytes)
+                    .map_err(|error| WorkspaceJoinError::Encode(error.to_string()))?;
+                let response = service.handle_local(*caller, request).await;
+                let response = postcard::to_stdvec(&response)
+                    .map_err(|error| WorkspaceJoinError::Decode(error.to_string()))?;
+                if response.len() > MAX_WORKSPACE_JOIN_RESPONSE_BYTES {
+                    return Err(WorkspaceJoinError::Protocol(
+                        "workspace join response exceeds the wire limit".into(),
+                    ));
+                }
+                return postcard::from_bytes(&response)
+                    .map_err(|error| WorkspaceJoinError::Decode(error.to_string()));
+            }
             Carrier::Https { http, door } => {
                 if let (JoinTransportRequest::Complete(complete), Some(door)) = (&request, door) {
                     spend_door_admission(http.as_ref(), complete, door).await?;
@@ -194,6 +257,7 @@ impl WorkspaceJoinClient {
         // HTTPS to the device the request names.
         let endpoint_disagrees = match &self.carrier {
             Carrier::Iroh(endpoint) => *endpoint.id().as_bytes() != device_cert.device_public_key,
+            Carrier::Local { caller, .. } => *caller != device_cert.device_public_key,
             Carrier::Https { .. } => false,
         };
         if endpoint_disagrees
