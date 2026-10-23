@@ -887,6 +887,9 @@ pub struct ChatApp {
         automerge::ObjId,
         std::rc::Rc<ui::tilo_resource::Collection<crate::record::Message>>,
     )>,
+    /// What the chat record kept as the names of the people in it
+    /// ([`crate::record::kept_names`]), read with the kept messages.
+    pub(crate) kept_names: std::collections::BTreeMap<String, String>,
     /// The first part a screenshot scenario starts with, until written:
     /// messages by several people under the ids the scenario names.
     pub(crate) staged_start: Option<crate::parts::ChatPart>,
@@ -1206,6 +1209,7 @@ impl ChatApp {
             chain: None,
             chain_seen: None,
             kept_messages: None,
+            kept_names: std::collections::BTreeMap::new(),
             staged_start: None,
             staged_parts: std::collections::VecDeque::new(),
             staged_scenario: None,
@@ -1475,6 +1479,11 @@ impl ChatApp {
         if self.kept_messages.as_ref().map(|(id, _)| id) == holding.as_ref() {
             return;
         }
+        self.kept_names = if holding.is_some() {
+            crate::record::kept_names(doc)
+        } else {
+            std::collections::BTreeMap::new()
+        };
         self.kept_messages =
             holding.map(|id| (id, std::rc::Rc::new(crate::record::kept_messages(doc))));
     }
@@ -3323,6 +3332,18 @@ impl ChatApp {
             .into_iter()
             .filter(|user| ids.contains(&user.id))
             .collect();
+        for (id, name) in &self.kept_names {
+            if ids.contains(id) && !people.iter().any(|user| user.id == *id) {
+                people.push(User {
+                    id: id.clone(),
+                    name: name.clone(),
+                    initials: ui::widget::initials_for_name(name),
+                    color_idx: 0,
+                    status: model::Presence::Offline,
+                    is_agent: false,
+                });
+            }
+        }
         if !people.iter().any(|user| self.is_me(&user.id)) {
             people.push(User {
                 id: self.me.id.clone(),

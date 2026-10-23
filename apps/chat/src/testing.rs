@@ -367,10 +367,14 @@ pub(crate) fn chat_kept_flat(version: u64) -> AutoCommit {
     doc
 }
 
+/// The participant id of bo, whom no record names.
+pub(crate) const BO: &str = "5f0c2a9e7d41b36c8e9fa1d2047b5c3e6a8d9f10b2c4e6a7d8f9012b3c4d5e6f";
+
 /// A chat record of `version` that kept its messages in itself: `#general`
-/// with `first` by ada and `second` by bo, `#random` with `elsewhere` by
-/// ada between them. Versions 1 and 2 kept them as a collection; one from
-/// before the record was a model (`flat`) as a list per channel.
+/// with `first` by ada and `second` by [`BO`], `#random` with `elsewhere`
+/// by ada between them. Versions 1 and 2 kept them as a collection; one
+/// from before the record was a model (`flat`) as a list per channel, and
+/// ada's name, Ada Lovelace, under `users`.
 pub(crate) fn chat_with_kept_messages(version: u64, flat: bool) -> AutoCommit {
     use serde_json::json;
     use ui::tilo_resource::{Slot, evolution};
@@ -378,14 +382,14 @@ pub(crate) fn chat_with_kept_messages(version: u64, flat: bool) -> AutoCommit {
     let messages = if flat {
         let row = |id: &str, author: &str, ts: i64, text: &str| json!({ "id": id, "author": author, "ts": ts, "text": { "$text": text } });
         json!({
-            "c_general": [row("m1", "ada", 10, "first"), row("m2", "bo", 20, "second")],
+            "c_general": [row("m1", "ada", 10, "first"), row("m2", BO, 20, "second")],
             "c_random": [row("m3", "ada", 15, "elsewhere")],
         })
     } else {
         let item = |key: &str, channel: &str, author: &str, ts: i64, text: &str| json!({ "k": key, "v": { "channel": channel, "author": author, "ts": ts, "text": text } });
         json!({
             "m1": item("a", "c_general", "ada", 10, "first"),
-            "m2": item("b", "c_general", "bo", 20, "second"),
+            "m2": item("b", "c_general", BO, 20, "second"),
             "m3": item("c", "c_random", "ada", 15, "elsewhere"),
         })
     };
@@ -396,6 +400,7 @@ pub(crate) fn chat_with_kept_messages(version: u64, flat: bool) -> AutoCommit {
         &json!({
             "channels": { "c_general": channel("a", "general"), "c_random": channel("b", "random") },
             "messages": messages,
+            "users": if flat { json!({ "ada": { "name": "Ada Lovelace" } }) } else { json!({}) },
         }),
     )
     .unwrap();

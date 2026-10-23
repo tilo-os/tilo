@@ -1398,11 +1398,35 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
                 && !chat.channels.contains(&id(VOICE_CHANNEL)),
             "a room that has channels gets no #chat or #voice"
         );
+        let (_, workspaces) = automerge::ReadDoc::get(&doc, automerge::ROOT, "workspaces")
+            .unwrap()
+            .expect("the workspace structure stays in the record");
+        let (_, home) = automerge::ReadDoc::get(&doc, &workspaces, "ws_home")
+            .unwrap()
+            .expect("each workspace stays");
+        let (_, home) = automerge::ReadDoc::get(&doc, &home, "v").unwrap().unwrap();
+        assert_eq!(
+            ui::tilo_resource::read_key::<String>(&doc, &home, "name").unwrap(),
+            "My Workspace"
+        );
+        let mut app = crate::ChatApp::new_ephemeral();
+        app.reload(&doc);
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
+        ui::Widget::draw(
+            &mut app,
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &ui::theme::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        );
+        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
         assert!(
-            automerge::ReadDoc::get(&doc, automerge::ROOT, "workspaces")
-                .unwrap()
-                .is_none(),
-            "only the workspace structure goes"
+            root.children.iter().all(|node| node
+                .name
+                .as_deref()
+                .is_none_or(|name| !name.contains("Workspace"))),
+            "Chat shows no workspace of its own"
         );
     }
 }
