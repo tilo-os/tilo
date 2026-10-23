@@ -829,6 +829,27 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
         .block_on(governing.publish_history(device.device_public_key))
         .unwrap();
     let steward = Steward::open(&governor_root, &governing.governor_key, governing.room);
+    // A member writes only into a record it holds, and joining brings the
+    // room's governance alone: the chat record arrives through the room's
+    // sync, once the host has kept the governor's history. The app opens
+    // in the room as it stands then.
+    tilo_rt::app()
+        .block_on(tilo_test_env::within("the governor's history", async {
+            while session
+                .joined
+                .owner
+                .with_current(governing.room, |view| {
+                    view.peer()
+                        .document(SDK_APP, "")
+                        .map(drop)
+                        .ok_or_else(|| "not yet".to_owned())
+                })
+                .is_err()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }))
+        .unwrap();
 
     let log = std::fs::File::create(profile.join("sdk-app.log")).unwrap();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
