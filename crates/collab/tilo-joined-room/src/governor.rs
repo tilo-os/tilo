@@ -1,24 +1,20 @@
-//! The governor's side of joining, for rooms this device governs: issuing
-//! invitations and answering the workspace-join exchange of a device that
-//! redeems one. The ledger it keeps between the steps is the one every
-//! governor keeps ([`JoinLedger`]), held in the room's record, so a room is
-//! joined the same way whether a relay, a cloud host or this device
-//! governs it.
-//!
-//! Every answer that changes the ledger or the room is given only after
-//! the owner published it ([`NativeWorkspaceOwner::publish_room`]).
+//! The rooms this device governs, as a [`GovernorStore`]: a room lives in
+//! the native owner's record, and a change to it is durable and reaches
+//! its members once the owner published it
+//! ([`NativeWorkspaceOwner::publish_room`]). The exchange itself is the
+//! one every governor answers ([`Governor`]); issuing and cancelling
+//! invitations is this device's own.
 
 use crate::{NativeCommittedView, NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
+use tilo_governor::{Governor, GovernorStore, RoomTxn};
+use tilo_peer_state::StatePeer;
 use tilo_peer_state::join::invitations::{
     CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
 };
-use tilo_peer_state::join::{
-    JoinChallengeResponse, JoinInspection, JoinTransportRequest, JoinTransportResponse,
-    MembershipChallengeResponse, TransportHint,
-};
-use tilo_peer_state::join_ledger::{Governed, JoinError, JoinLedger, Redeeming, Signer};
+use tilo_peer_state::join::{JoinTransportRequest, JoinTransportResponse, TransportHint};
+use tilo_peer_state::join_ledger::{Governed, JoinError, JoinLedger, Signer};
 
 /// The randomness one governor answer draws: an invitation's nonce, or a
 /// challenge's.
@@ -52,42 +48,23 @@ fn now_ns(now: SystemTime) -> Result<u64, JoinError> {
 /// The signed governance a member admits to join: the room's governance
 /// alone, as one message ([`crate::enrollment`] admits nothing else from a
 /// bootstrap). Its records follow through the room's sync.
-struct RoomGovernance<'a>(&'a tilo_peer_state::StatePeer);
-
-impl tilo_peer_state::join_ledger::GovernanceMessages for RoomGovernance<'_> {
+impl tilo_peer_state::join_ledger::GovernanceMessages for NativeCommittedView {
     fn governance_messages(&self) -> Vec<Vec<u8>> {
-        postcard::to_stdvec(&self.0.room_message())
+        postcard::to_stdvec(&self.peer.room_message())
             .map(|bytes| vec![bytes])
             .unwrap_or_default()
     }
 }
 
 /// `view`, a room governed here, as its join ledger reads it.
-fn governed<'a>(view: &'a NativeCommittedView, messages: &'a RoomGovernance<'a>) -> Governed<'a> {
+fn governed(view: &NativeCommittedView) -> Governed<'_> {
     Governed {
         peer: &view.peer,
         workspace_id: tilo_peer_state::join::room_workspace_id(&view.record.room.to_string())
             .unwrap_or_default(),
         generation: view.record.generation,
-        governance_messages: messages,
+        governance_messages: view,
     }
-}
-
-/// The room a join request is about, read without trusting it: the
-/// ledger then verifies it against what that room issued.
-fn requested_room(request: &JoinTransportRequest, now: u64) -> Result<RoomId, JoinError> {
-    let room = match request {
-        JoinTransportRequest::Inspect { signed_invitation } => {
-            tilo_peer_state::join_ledger::invitation_room(signed_invitation, now)?
-        }
-        JoinTransportRequest::Challenge(request) => {
-            tilo_peer_state::join_ledger::invitation_room(&request.signed_invitation, now)?
-        }
-        JoinTransportRequest::Complete(request) => request.proof.challenge.room.clone(),
-        JoinTransportRequest::MembershipChallenge(request) => request.room.clone(),
-        JoinTransportRequest::MembershipComplete(request) => request.proof.challenge.room.clone(),
-    };
-    RoomId::parse(&room).ok_or_else(|| JoinError::new("the request names no room"))
 }
 
 impl NativeWorkspaceOwner {
@@ -143,11 +120,10 @@ impl NativeWorkspaceOwner {
         let now = now_ns(now)?;
         let _turn = self.0.mutation.lock();
         let candidate = self.governed_candidate(room, key)?;
-        let messages = RoomGovernance(&candidate.peer);
         let mut ledger = candidate.record.join_ledger.clone();
         let administrator = candidate.peer.authority().clone();
         let issued = ledger.issue(
-            &governed(&candidate, &messages),
+            &governed(&candidate),
             &administrator,
             request,
             vec![transport],
@@ -198,8 +174,7 @@ impl NativeWorkspaceOwner {
 
     /// Answer one workspace-join request from the device at
     /// `remote_endpoint`, its authenticated transport key, for a room this
-    /// device governs with `key`: the same exchange a relay answers for
-    /// the rooms it governs.
+    /// device governs with `key`: the exchange every governor answers.
     pub fn serve_join(
         &self,
         remote_endpoint: [u8; 32],
@@ -208,161 +183,137 @@ impl NativeWorkspaceOwner {
         nonces: Nonces,
         now: SystemTime,
     ) -> JoinTransportResponse {
-        self.answer_join(remote_endpoint, request, key, nonces, now)
-            .unwrap_or_else(|error| JoinTransportResponse::Error {
-                code: error.code(),
-                message: error.to_string(),
-            })
-    }
-
-    fn answer_join(
-        &self,
-        remote_endpoint: [u8; 32],
-        request: JoinTransportRequest,
-        key: &SigningKey,
-        nonces: Nonces,
-        now: SystemTime,
-    ) -> Result<JoinTransportResponse, JoinError> {
-        let at = now;
-        let now = now_ns(now)?;
-        let room = requested_room(&request, now)?;
-        let _turn = self.0.mutation.lock();
-        let candidate = self.governed_candidate(room, key)?;
-        let messages = RoomGovernance(&candidate.peer);
-        let mut ledger = candidate.record.join_ledger.clone();
-        Ok(match request {
-            JoinTransportRequest::Inspect { signed_invitation } => {
-                let join =
-                    ledger.inspect(&governed(&candidate, &messages), &signed_invitation, now)?;
-                JoinTransportResponse::Inspection(JoinInspection {
-                    invite_id: join.invite_id(),
-                    grant: join.grant().clone(),
-                })
-            }
-            JoinTransportRequest::Challenge(request) => {
-                let challenge = ledger.challenge(
-                    &governed(&candidate, &messages),
-                    remote_endpoint,
-                    request,
-                    nonces.challenge,
-                    now,
-                )?;
-                self.publish_ledger(room, candidate, ledger)?;
-                JoinTransportResponse::Challenge(JoinChallengeResponse { challenge })
-            }
-            JoinTransportRequest::Complete(request) => {
-                let request_id = request.proof.challenge.request_id;
-                let proof_digest = tilo_peer_state::join_ledger::request_digest(&request.proof)?;
-                let view = governed(&candidate, &messages);
-                if let Some(prior) =
-                    ledger.completed(&view, remote_endpoint, request_id, proof_digest, now)?
-                {
-                    return Ok(JoinTransportResponse::Complete(prior));
-                }
-                let redemption = ledger.redeem(&view, remote_endpoint, &request.proof, now)?;
-                let joins = [Redeeming {
-                    remote_endpoint,
-                    request_id,
-                    proof_digest,
-                    redemption: &redemption,
-                }];
-                let bootstrap = self.admit_join(room, candidate, ledger, &joins, key, at)?;
-                JoinTransportResponse::Complete(bootstrap)
-            }
-            JoinTransportRequest::MembershipChallenge(request) => {
-                let challenge = ledger.membership_challenge(
-                    &governed(&candidate, &messages),
-                    remote_endpoint,
-                    request,
-                    nonces.challenge,
-                    now,
-                )?;
-                self.publish_ledger(room, candidate, ledger)?;
-                JoinTransportResponse::MembershipChallenge(MembershipChallengeResponse {
-                    challenge,
-                })
-            }
-            JoinTransportRequest::MembershipComplete(request) => {
-                let renewal = ledger.membership_renewal(
-                    &governed(&candidate, &messages),
-                    remote_endpoint,
-                    &request,
-                    now,
-                )?;
-                let candidate = match renewal {
-                    Some(renewed) => self.renew_member(room, candidate, &renewed, key, at)?,
-                    None => candidate,
+        let now = match now_ns(now) {
+            Ok(now) => now,
+            Err(error) => {
+                return JoinTransportResponse::Error {
+                    code: error.code(),
+                    message: error.to_string(),
                 };
-                let messages = RoomGovernance(&candidate.peer);
-                JoinTransportResponse::MembershipComplete(ledger.membership_complete(
-                    &governed(&candidate, &messages),
-                    remote_endpoint,
-                    &request,
-                    now,
-                )?)
             }
-        })
-    }
-
-    /// Hold `renewed` in place of the certificate the room governed here
-    /// holds for its device, published before the member hears its answer.
-    fn renew_member(
-        &self,
-        room: RoomId,
-        mut candidate: NativeCommittedView,
-        renewed: &tilo_user_identity::DeviceCert,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<NativeCommittedView, JoinError> {
-        candidate
-            .peer
-            .governance_mut()
-            .renew_member_certificate(renewed, key, now)?;
-        candidate.record.peer = candidate.peer.durable().map_err(JoinError::new)?;
-        candidate.record.generation = candidate
-            .record
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| JoinError::new("native owner generation exhausted"))?;
-        let published = candidate.clone();
-        self.publish_room(room, candidate, None)
-            .map_err(JoinError::new)?;
-        Ok(published)
-    }
-
-    /// Admit the verified `joins` into `candidate`, the room governed here,
-    /// record their receipts in `ledger` and publish both, in that order,
-    /// before the joining device hears its bootstrap.
-    fn admit_join(
-        &self,
-        room: RoomId,
-        mut candidate: NativeCommittedView,
-        mut ledger: JoinLedger,
-        joins: &[Redeeming<'_>],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<tilo_peer_state::join::JoinBootstrap, JoinError> {
-        let at = now_ns(now)?;
-        let refusals = ledger.admit(&mut candidate.peer, joins, key, at);
-        if let Some(Some(refused)) = refusals.first() {
-            return Err(refused.clone());
+        };
+        let governor = Governor(OwnedRooms {
+            owner: self,
+            key,
+            nonce: nonces.challenge,
+        });
+        // Every step here is decided and published before its future is
+        // first polled: the owner's rooms never wait.
+        let answer = std::pin::pin!(governor.answer(remote_endpoint, request, now));
+        match answer.poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
+            std::task::Poll::Ready(answer) => answer,
+            std::task::Poll::Pending => JoinTransportResponse::Error {
+                code: 503,
+                message: "the join answer was not ready".into(),
+            },
         }
-        candidate.record.peer = candidate.peer.durable().map_err(JoinError::new)?;
-        candidate.record.generation = candidate
+    }
+}
+
+/// The rooms `owner` governs with `key`, answering one request drawn
+/// with `nonce`.
+struct OwnedRooms<'a> {
+    owner: &'a NativeWorkspaceOwner,
+    key: &'a SigningKey,
+    nonce: [u8; 32],
+}
+
+/// A room governed here while a governor decides, under the owner's
+/// mutation turn: its committed copy, and whether its ledger changed since
+/// it was last published.
+struct OwnedRoom<'a> {
+    owner: &'a NativeWorkspaceOwner,
+    room: RoomId,
+    name: String,
+    candidate: NativeCommittedView,
+    staged: bool,
+}
+
+impl GovernorStore for OwnedRooms<'_> {
+    fn key(&self) -> &SigningKey {
+        self.key
+    }
+
+    fn nonce(&self) -> Result<[u8; 32], JoinError> {
+        Ok(self.nonce)
+    }
+
+    fn with_room<T: Send>(
+        &self,
+        room: &str,
+        decide: impl FnOnce(&mut dyn RoomTxn) -> Result<T, JoinError> + Send,
+    ) -> impl std::future::Future<Output = Result<T, JoinError>> + Send {
+        std::future::ready(self.decide_in(room, decide))
+    }
+}
+
+impl OwnedRooms<'_> {
+    fn decide_in<T>(
+        &self,
+        name: &str,
+        decide: impl FnOnce(&mut dyn RoomTxn) -> Result<T, JoinError>,
+    ) -> Result<T, JoinError> {
+        let room =
+            RoomId::parse(name).ok_or_else(|| JoinError::new("the request names no room"))?;
+        let _turn = self.owner.0.mutation.lock();
+        let mut held = OwnedRoom {
+            owner: self.owner,
+            room,
+            name: name.to_owned(),
+            candidate: self.owner.governed_candidate(room, self.key)?,
+            staged: false,
+        };
+        let answer = decide(&mut held);
+        if held.staged {
+            self.owner
+                .publish_room(room, held.candidate, None)
+                .map_err(JoinError::new)?;
+        }
+        answer
+    }
+}
+
+impl RoomTxn for OwnedRoom<'_> {
+    fn room(&self) -> &str {
+        &self.name
+    }
+
+    fn governed(&self) -> Governed<'_> {
+        governed(&self.candidate)
+    }
+
+    fn ledger(&self) -> &JoinLedger {
+        &self.candidate.record.join_ledger
+    }
+
+    fn stage_ledger(&mut self, ledger: JoinLedger) {
+        if self.candidate.record.join_ledger != ledger {
+            self.candidate.record.join_ledger = ledger;
+            self.staged = true;
+        }
+    }
+
+    fn commit_governance(
+        &mut self,
+        peer: StatePeer,
+        _now: u64,
+        ledger: &mut dyn FnMut(&Governed<'_>) -> Result<JoinLedger, JoinError>,
+    ) -> Result<(), JoinError> {
+        let mut next = self.candidate.clone();
+        next.record.peer = peer.durable().map_err(JoinError::new)?;
+        next.peer = peer;
+        next.record.generation = next
             .record
             .generation
             .checked_add(1)
             .ok_or_else(|| JoinError::new("native owner generation exhausted"))?;
-        let messages = RoomGovernance(&candidate.peer);
-        let delivered = ledger.complete(&governed(&candidate, &messages), joins, &refusals)?;
-        let bootstrap = delivered
-            .into_iter()
-            .next()
-            .ok_or_else(|| JoinError::new("join bootstrap was not built"))??;
-        candidate.record.join_ledger = ledger;
-        self.publish_room(room, candidate, None)
+        next.record.join_ledger = ledger(&governed(&next))?;
+        self.owner
+            .publish_room(self.room, next.clone(), None)
             .map_err(JoinError::new)?;
-        Ok(bootstrap)
+        self.candidate = next;
+        self.staged = false;
+        Ok(())
     }
 }
 
