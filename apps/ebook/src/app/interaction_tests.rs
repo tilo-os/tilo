@@ -5176,3 +5176,46 @@ fn a_dropped_file_opens_without_a_hover_and_a_non_book_names_itself() {
         Some("Couldn't open notes.txt: only EPUB books can be added")
     );
 }
+
+/// "Couldn't open x.epub" offers nothing to do but close it, so it leaves
+/// on its own after a notice's lifetime: the app wakes for it, and once it
+/// is due the card is gone and leaves no close button behind.
+#[test]
+fn a_failed_open_leaves_on_its_own() {
+    use ui::time::testing::with_monotonic_time;
+    use ui::widget::toast::NOTICE_LIFETIME;
+    let mut app = BooksApp::new(crate::resource::library_dispatcher_for_test(), false);
+    app.toast_area = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let start = ui::time::now();
+    let due = start + NOTICE_LIFETIME;
+    with_monotonic_time(start, || {
+        app.settle_import_failure(
+            "Couldn’t open x.epub: not a book".into(),
+            "ebook.open_failed",
+        );
+    });
+    assert_eq!(app.next_wake_deadline(), Some(due), "it wakes the app");
+    let draw = |app: &mut BooksApp| {
+        app.hits.clear();
+        let theme = ui::theme::Theme::default();
+        let (mut scene, mut text) = (vello::Scene::new(), TextRenderer::new());
+        app.draw_load_toast(&mut PaintCtx::new(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &theme,
+        ));
+        app.hits
+            .iter()
+            .any(|hit| matches!(hit.action, Action::DismissLoadError))
+    };
+    with_monotonic_time(start, || assert!(draw(&mut app), "the failure shows"));
+    with_monotonic_time(due + Duration::from_millis(1), || {
+        assert!(!draw(&mut app), "a failure past its time is not painted");
+        app.dirty = false;
+        app.expire_load_toast();
+    });
+    assert!(app.dirty, "the window repaints without it");
+    assert_eq!(app.load_error.as_deref(), None);
+    assert_eq!(app.next_wake_deadline(), None, "nothing left to wake for");
+}

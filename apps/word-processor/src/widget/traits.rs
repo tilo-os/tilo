@@ -102,6 +102,9 @@ impl Widget for WordProcessorWidget {
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document_ref(state, root);
+        if self.toast.expire() {
+            self.lifecycle.dirty = true;
+        }
         #[cfg(test)]
         if self.source.is_none() && self.dispatch.is_some() {
             self.source = ui::framework::testing::detached_live(state).ok();
@@ -587,6 +590,10 @@ impl Widget for WordProcessorWidget {
     }
     fn needs_redraw(&self) -> bool {
         self.lifecycle.dirty
+    }
+    /// A toast wakes the document to leave.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.toast.deadline()
     }
     fn mark_drawn(&mut self) {
         self.lifecycle.dirty = false;
