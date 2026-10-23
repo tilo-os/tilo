@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
 use desktop_entry::icon_theme::{self, IconFile, IconFormat, IconLookup};
@@ -175,6 +175,8 @@ struct Resolver {
     known: Mutex<Known>,
     jobs: Mutex<Option<mpsc::Sender<Job>>>,
     arrived: AtomicBool,
+    /// Counts the answers that gave the loop new artwork.
+    artwork: AtomicU64,
     wake: Mutex<Option<crate::session_runtime::Wake>>,
 }
 
@@ -189,6 +191,7 @@ impl Resolver {
             known: Mutex::new(Known::default()),
             jobs: Mutex::new(None),
             arrived: AtomicBool::new(false),
+            artwork: AtomicU64::new(0),
             wake: Mutex::new(None),
         })
     }
@@ -247,6 +250,7 @@ impl Resolver {
         record(&mut known);
         drop(known);
         if artwork {
+            self.artwork.fetch_add(1, Ordering::AcqRel);
             self.arrived.store(true, Ordering::Release);
             let wake = self.wake.lock_recover().clone();
             if let Some(wake) = wake {
@@ -356,6 +360,23 @@ impl Resolver {
         None
     }
 
+    /// Whether anything asked for is still being found or decoded.
+    fn resolving(&self) -> bool {
+        let known = self.known();
+        known
+            .names
+            .values()
+            .any(|slot| matches!(slot, Slot::Pending))
+            || known
+                .probes
+                .values()
+                .any(|slot| matches!(slot, Slot::Pending))
+            || known
+                .pixels
+                .values()
+                .any(|slot| matches!(slot, Slot::Pending))
+    }
+
     /// Wait until everything queued so far has been answered.
     #[cfg(test)]
     fn settle(self: &Arc<Self>) {
@@ -380,6 +401,17 @@ pub fn set_wake(wake: crate::session_runtime::Wake) {
 
 /// Whether artwork the chrome asked for has arrived since the last call:
 /// the chrome built without it should be built again.
+/// Moves each time artwork arrives: rows built before it hold no picture
+/// for it, and are built again when this changes.
+pub fn artwork_generation() -> u64 {
+    resolver().artwork.load(Ordering::Acquire)
+}
+
+/// Whether artwork asked for is still on its way: a still capture waits.
+pub fn resolving() -> bool {
+    resolver().resolving()
+}
+
 pub fn take_arrived() -> bool {
     resolver().arrived.swap(false, Ordering::AcqRel)
 }
@@ -588,6 +620,29 @@ mod tests {
         let large = image.pixels(28).unwrap();
         assert_eq!(large.width, 28);
         assert!(resolver.themed("org.example.Missing").is_none());
+    }
+
+    #[test]
+    fn artwork_on_its_way_is_counted_and_its_arrival_moves_the_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let exports = dir.path().join("icons");
+        png(&exports.join("hicolor/16x16/apps/org.example.App.png"), 16);
+        let resolver = resolver_over(vec![exports]);
+        let before = resolver.artwork.load(Ordering::Acquire);
+        assert!(resolver.themed("org.example.App").is_none());
+        assert!(resolver.resolving());
+        resolver.settle();
+        assert!(!resolver.resolving());
+        assert!(resolver.artwork.load(Ordering::Acquire) > before);
+
+        let found = resolver.artwork.load(Ordering::Acquire);
+        assert!(resolver.themed("org.example.Missing").is_none());
+        resolver.settle();
+        assert_eq!(
+            resolver.artwork.load(Ordering::Acquire),
+            found,
+            "an icon no theme has brings nothing new to paint"
+        );
     }
 
     /// The compositor's loop asks for icons while it builds its chrome. A

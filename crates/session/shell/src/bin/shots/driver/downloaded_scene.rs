@@ -68,7 +68,6 @@ impl ShellDriver {
     pub(super) fn scene_downloaded_query(&mut self, query: &str) {
         self.seed_downloaded_apps();
         self.scene_palette_query(query);
-        self.let_icons_arrive(query);
     }
 
     /// The launcher (Super+N) with the "Host apps" chip chosen and nothing
@@ -78,30 +77,16 @@ impl ShellDriver {
         self.seed_downloaded_apps();
         self.fb.host_mut().filter_palette_to_host_apps_for_shots();
         self.scene_palette_query("");
-        self.let_icons_arrive("");
-    }
-
-    /// App icons are read and rasterised on their resolver's thread; the
-    /// capture waits for them as a person's eye would.
-    /// The rows take their artwork when they are built, so they are built
-    /// again once it has been found.
-    fn let_icons_arrive(&mut self, query: &str) {
-        let _ = self.paint_settled();
-        std::thread::sleep(Duration::from_millis(700));
-        let _ = self.paint_settled();
-        self.scene_palette_query(&format!("{query} "));
-        self.scene_palette_query(query);
-        // Painting asks for the pixels at the row's size, decoded on the
-        // same thread.
-        let _ = self.paint_settled();
-        std::thread::sleep(Duration::from_millis(700));
-        let _ = self.paint_settled();
     }
 }
 
-/// A 128-pixel rounded square in `rgb` with a lighter disc: an app icon's
-/// shape, so the row shows the entry's own artwork.
 fn icon(rgb: [u8; 3]) -> Option<Icon> {
+    Icon::sniff(app_icon_png(rgb)?)
+}
+
+/// A 128-pixel rounded square in `rgb` with a lighter disc, as PNG: an app
+/// icon's shape, so a row shows the app's own artwork.
+pub(super) fn app_icon_png(rgb: [u8; 3]) -> Option<Vec<u8>> {
     const EDGE: u32 = 128;
     let mut image = image::RgbaImage::new(EDGE, EDGE);
     for (x, y, pixel) in image.enumerate_pixels_mut() {
@@ -119,5 +104,5 @@ fn icon(rgb: [u8; 3]) -> Option<Icon> {
     }
     let mut bytes = std::io::Cursor::new(Vec::new());
     image.write_to(&mut bytes, image::ImageFormat::Png).ok()?;
-    Icon::sniff(bytes.into_inner())
+    Some(bytes.into_inner())
 }

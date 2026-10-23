@@ -553,6 +553,8 @@ pub struct ShellOverlayHost {
     /// An index the open palette's query reaches was still being built at
     /// the last tick: its rows are owed, and a still capture waits for them.
     search_indexes_settling: bool,
+    /// The artwork generation the open palette's rows were built against.
+    search_artwork: u64,
     /// Atomic remote-directory admissions are not assumed accepted when the
     /// user presses Enter. Their tickets are polled at frame refresh without
     /// ever blocking the compositor on a broker RPC.
