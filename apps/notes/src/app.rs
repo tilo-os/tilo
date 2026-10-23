@@ -333,7 +333,6 @@ pub struct NotesApp {
     save_notices: crate::save_notice::SaveNotices,
     /// "Try again" was chosen on a failed save; the host drains it.
     save_retry: bool,
-    transfer_toasts: ui::widget::toast::ToastStack,
     /// The last copied link, whose outcome can arrive after its toast.
     pub(crate) link_copy: ui::CopyWatch,
     /// A deleted note's "Undo" toast is up: the notebook's state it acts
@@ -721,7 +720,6 @@ impl NotesApp {
             save_surface: ui::SaveStatusSurface::new(),
             save_notices: crate::save_notice::SaveNotices::new(),
             save_retry: false,
-            transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
             link_copy: ui::CopyWatch::default(),
             delete_undo: DeleteUndo::None,
             undo_requested: false,
@@ -915,22 +913,22 @@ impl NotesApp {
     }
 
     /// What `draw` painted, as the parts its damage is proven by: the note
-    /// panel, the shell, the page tree, the save status and the toasts
-    /// (`scenes`, in that order), each with where it can change. `None`
+    /// panel, the shell, the page tree and the save status (`scenes`, in
+    /// that order), each with where it can change. `None`
     /// while something reaches past those parts' own damage: an editor
     /// popup, the page tree's menu or a dragged row.
     fn paint_frame(
         &self,
         transform: Affine,
         theme: &Theme,
-        scenes: [&Scene; 5],
+        scenes: [&Scene; 4],
     ) -> Option<ui::widget::paint_damage::PaintFrame> {
         use ui::widget::paint_damage::{PaintFrame, PaintPart};
         let sidebar = self.sidebar.tree();
         if self.main.has_editor_popup() || self.sidebar.menu_is_open() || sidebar.is_dragging() {
             return None;
         }
-        let [main, shell, page_tree, status, toasts] = scenes;
+        let [main, shell, page_tree, status] = scenes;
         // A scroll of the note the host may copy damages only what the copy
         // leaves; the copy is offered when the host collects damage.
         let mut main_damage = Vec::new();
@@ -971,9 +969,6 @@ impl NotesApp {
                 part("notes-shell", self.rect, shell, shell_damage),
                 part("notes-sidebar", self.rect, page_tree, sidebar_damage),
                 part("notes-status", self.rect, status, status_damage),
-                // Toasts report no damage of their own: a change repaints
-                // the app.
-                part("notes-toasts", self.rect, toasts, Vec::new()),
             ],
         ))
     }
@@ -1184,7 +1179,7 @@ impl NotesApp {
                     self.bound_page = None;
                     self.self_dirty = true;
                 }
-                Err(error) => self.transfer_toasts.push(
+                Err(error) => self.notify(
                     ui::i18n::I18nManager::format(
                         "notes-image-paste-failed",
                         &[("error", ui::i18n::ArgValue::from(error))],
@@ -1209,7 +1204,7 @@ impl NotesApp {
             }
             Err(error) => {
                 tracing::warn!(%error, "notes: image not inserted");
-                self.transfer_toasts.push(
+                self.notify(
                     ui::i18n::I18nManager::format(
                         "notes-image-import-failed",
                         &[("error", ui::i18n::ArgValue::from(error))],
@@ -1303,15 +1298,24 @@ impl NotesApp {
         match &self.delete_undo {
             DeleteUndo::Offered => self.delete_undo = DeleteUndo::Seen(key),
             DeleteUndo::Seen(seen) if *seen != key => {
-                self.transfer_toasts.dismiss_actionable();
+                self.shell.dismiss_toast();
                 self.delete_undo = DeleteUndo::None;
             }
             _ => {}
         }
     }
 
+    /// Say `text` in the window's bar. It replaces a deletion's Undo, so
+    /// that Undo is no longer offered.
+    fn notify(&mut self, text: impl Into<String>, kind: ui::widget::toast::ToastKind) {
+        self.shell.toast(text, kind);
+        self.delete_undo = DeleteUndo::None;
+    }
+
+    /// The deletion's Undo was chosen in the window's bar: undo it as
+    /// Ctrl+Z does.
     fn take_toast_undo(&mut self) {
-        if self.transfer_toasts.take_activated().is_some()
+        if self.shell.take_toast_action().is_some()
             && std::mem::take(&mut self.delete_undo) != DeleteUndo::None
         {
             self.undo_requested = true;
@@ -1343,7 +1347,7 @@ impl NotesApp {
                     .replace([']', '[', '(', ')'], " ");
                 self.insert_image_bytes(&mut ctx.edits(), alt.trim(), bytes);
             }
-            Err(error) => self.transfer_toasts.push(
+            Err(error) => self.notify(
                 ui::i18n::I18nManager::format(
                     "notes-image-import-failed",
                     &[("error", ui::i18n::ArgValue::from(error))],
@@ -1605,7 +1609,7 @@ impl NotesApp {
             Some("save_error") => {
                 self.set_save_status_for_shots(SaveStatus::Failed, ui::time::Duration::ZERO);
             }
-            Some("import_success") => self.transfer_toasts.push(
+            Some("import_success") => self.notify(
                 "Imported Project brief",
                 ui::widget::toast::ToastKind::Success,
             ),
@@ -1903,11 +1907,11 @@ impl NotesApp {
                 let notice = self.deletion_notice(id);
                 self.dispatch(edits, &actions::delete_page_action(id))?;
                 // A note goes with everything inside it, so the deletion
-                // says so and can be taken back at once.
-                self.transfer_toasts.dismiss_actionable();
-                self.transfer_toasts.push_with_action(
+                // says so and can be taken back at once, in the window's bar.
+                self.shell.toast_with_action(
                     notice,
                     ui::widget::toast::ToastKind::Info,
+                    "undo-2",
                     ui::i18n!("notes-undo"),
                 );
                 self.delete_undo = DeleteUndo::Offered;
@@ -2682,13 +2686,14 @@ impl Widget for NotesApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.link_copy.failed() {
-            self.transfer_toasts.push(
+            self.notify(
                 ui::i18n!("notes-copy-link-failed"),
                 ui::widget::toast::ToastKind::Error,
             );
         }
         let _profile = ui::tilo_resource::profiling::Phase::start("surface_sync");
         self.shell.sync(state, path);
+        self.take_toast_undo();
         // The window's bar shows the note's slots and runs what the person
         // did with them through the same header requests.
         if self.sync_window_toolbar() {
@@ -2915,19 +2920,6 @@ impl Widget for NotesApp {
         // Transient floating status bubble (bottom-right).
         self.status_painted = self.draw_status_bubble(scene, transform, text_renderer, theme);
         let status_scene = std::mem::take(scene);
-        // Toasts stand above the status bubble's corner.
-        let gutter = f64::from(theme.tokens.spacing.s4);
-        let lift = ui::status_bubble::pill_height(theme) + gutter;
-        let toast_area = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            (self.rect.y1 - lift).max(self.rect.y0),
-        );
-        self.transfer_toasts.place_bottom_right(toast_area, gutter);
-        self.transfer_toasts
-            .draw(scene, transform, text_renderer, theme, presence);
-        let toasts_scene = std::mem::take(scene);
         self.main_scroll_copy = self.main.scroll_copy();
         self.status_over_main = [self.status_drawn, self.status_painted]
             .into_iter()
@@ -2941,23 +2933,11 @@ impl Widget for NotesApp {
         let frame = self.paint_frame(
             transform,
             theme,
-            [
-                &main_scene,
-                &shell_scene,
-                &sidebar_scene,
-                &status_scene,
-                &toasts_scene,
-            ],
+            [&main_scene, &shell_scene, &sidebar_scene, &status_scene],
         );
         self.paint_damage.record(self.rect, frame);
         *scene = incoming;
-        for part in [
-            &main_scene,
-            &shell_scene,
-            &sidebar_scene,
-            &status_scene,
-            &toasts_scene,
-        ] {
+        for part in [&main_scene, &shell_scene, &sidebar_scene, &status_scene] {
             scene.append(part, None);
         }
     }
@@ -3017,8 +2997,8 @@ impl Widget for NotesApp {
             return;
         }
         // An open popup (a dropdown's list, a menu, the editor's block
-        // menu) takes the pointer before the save bubble and the toasts in
-        // the corner it may reach over.
+        // menu) takes the pointer before the save bubble in the corner it
+        // may reach over.
         let popup_holds_pointer = self.popup_open()
             && matches!(
                 event,
@@ -3030,8 +3010,6 @@ impl Widget for NotesApp {
             if self.handle_save_status_press(event, ctx.handled) {
                 return;
             }
-            self.transfer_toasts.handle_event(event, ctx);
-            self.take_toast_undo();
             if *ctx.handled {
                 return;
             }
@@ -3127,7 +3105,6 @@ impl Widget for NotesApp {
         }
         children.push(&self.main);
         children.push(&self.shortcuts);
-        children.push(&self.transfer_toasts);
         children
     }
 
@@ -3145,7 +3122,6 @@ impl Widget for NotesApp {
         }
         children.push(&mut self.main);
         children.push(&mut self.shortcuts);
-        children.push(&mut self.transfer_toasts);
         children
     }
 
@@ -3786,34 +3762,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_draw_preserves_import_notification_at_expiry_boundary() {
-        ui::clock::freeze_for_capture();
-        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
-        // A zero remaining lifetime deterministically exercises the expiry
-        // boundary without making CI speed or a real-time sleep the oracle.
-        app.transfer_toasts =
-            ui::widget::toast::ToastStack::new().with_default_ttl(ui::time::Duration::ZERO);
-        app.transfer_toasts.push(
-            "Imported Project brief",
-            ui::widget::toast::ToastKind::Success,
-        );
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        app.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::default(),
-            &PresenceCtx::empty(),
-        );
-        let node = app
-            .transfer_toasts
-            .accessibility()
-            .expect("the captured import notification remains announced");
-        assert_eq!(node.name.as_deref(), Some("Notifications"));
-        assert_eq!(node.value.as_deref(), Some("Imported Project brief"));
-    }
-
-    #[test]
     fn transclusion_previews_follow_selected_marks_remote_edits_and_deleted_targets() {
         use tilo_automerge::ApplyIncoming as _;
         let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
@@ -3879,34 +3827,21 @@ mod tests {
         assert!(app.transclusion_previews().is_empty());
     }
 
+    /// An import's result is the window bar's notice, and a capture keeps
+    /// it up however long the frame takes.
     #[test]
-    fn capture_draw_preserves_the_import_notification_lifetime() {
+    fn a_capture_keeps_the_import_notice_in_the_window_bar() {
         ui::clock::freeze_for_capture();
-        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
-        app.transfer_toasts.push(
+        let (mut app, mut state, _tmp, _) = app_seeded_into_doc();
+        app.notify(
             "Imported Project brief",
             ui::widget::toast::ToastKind::Success,
         );
-        let lifetime = app.transfer_toasts.iter().next().unwrap().ttl_remaining();
-        app.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::default(),
-            &PresenceCtx::default(),
-        );
+        app.frame(&mut state.doc, &state.root);
+        app.frame(&mut state.doc, &state.root);
         assert_eq!(
-            app.transfer_toasts.iter().next().unwrap().ttl_remaining(),
-            lifetime,
-            "the real Notes draw must preserve a capture's transient notification"
-        );
-        assert_eq!(
-            app.transfer_toasts
-                .accessibility()
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("Imported Project brief")
+            ui::window_toolbar::notice().map(|notice| notice.text),
+            Some("Imported Project brief".to_owned())
         );
     }
 

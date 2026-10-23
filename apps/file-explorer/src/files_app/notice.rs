@@ -1,23 +1,26 @@
-//! The one card Files shows over its content when something needs the
-//! person: a change they may want to take back, or a failure with a way on.
+//! The one notice Files shows when something needs the person: a change
+//! they may want to take back, or a failure with a way on.
 //!
 //! Everything else stays quiet. A change the listing already shows (a new
 //! folder, a rename, a copy put on the clipboard) says nothing; neutral
-//! news is the transient status bubble's. A notice is the shared toast card
-//! ([`ui::widget::toast::paint_transient`]) with at most one action and a
-//! close button, at the bottom of the file view; it goes away by itself,
-//! but not while the pointer rests on it. A card with an action stays for
+//! news is the transient status bubble's. A notice is the window bar's
+//! ([`ui::window_toolbar::notify`]), with at most one action beside it
+//! there; it goes away by itself. A notice with an action stays for
 //! [`LIFETIME`]; one without leaves after the shared notice lifetime
-//! ([`ui::widget::toast::NOTICE_LIFETIME`]), as every such toast does.
+//! ([`ui::widget::toast::NOTICE_LIFETIME`]), as every such notice does. A
+//! transfer's progress stays until the transfer ends.
 
 use std::path::PathBuf;
 
 use ui::time::{Duration, Instant};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastCardHit, ToastKind};
-use vello::kurbo::{Point, Rect};
+use ui::widget::toast::ToastKind;
+use ui::window_toolbar::{ToolbarAction, ToolbarNotice};
 
-/// How long a notice with an action stays up once the pointer is not on it.
+/// How long a notice with an action stays up.
 const LIFETIME: Duration = Duration::from_secs(8);
+
+/// The bar action id of a notice's button.
+pub(crate) const NOTICE_ACTION: &str = "files-notice-action";
 
 /// What a notice's button does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,23 +41,14 @@ impl NoticeAction {
             Self::CancelTransfer => crate::i18n::t("files-notice-cancel"),
         }
     }
-}
 
-/// Which part of the card the pointer is over.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Part {
-    Card,
-    Action,
-    Close,
-}
-
-/// What a click on the card asked for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum NoticeClick {
-    /// The click landed on the card but asked for nothing.
-    Absorbed,
-    Dismissed,
-    Action(NoticeAction),
+    fn icon(&self) -> &'static str {
+        match self {
+            Self::Undo => "undo-2",
+            Self::OpenWith(_) => "app-window",
+            Self::CancelTransfer => "x",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -63,20 +57,35 @@ struct Shown {
     body: String,
     kind: ToastKind,
     action: Option<NoticeAction>,
-    /// How far the transfer the card follows is, `0..=1`.
-    progress: Option<f32>,
-    /// When the lifetime started: the notice was shown or the pointer left.
+    /// When the notice went up.
     since: Instant,
 }
 
-/// The notice currently up, if any, with the geometry it was painted at.
-#[derive(Clone, Debug, Default)]
+/// The notice currently up, if any, and what the window's bar says of it.
+#[derive(Debug, Default)]
 pub(crate) struct Notice {
     shown: Option<Shown>,
-    hit: ToastCardHit,
-    hovered: Option<Part>,
-    /// The part a press on the card landed on; its release acts only there.
-    pressed: Option<Part>,
+    published: Option<ToolbarNotice>,
+}
+
+/// A copy keeps the message but not the bar's notice: the original took it
+/// up and takes it down.
+impl Clone for Notice {
+    fn clone(&self) -> Self {
+        Self {
+            shown: self.shown.clone(),
+            published: None,
+        }
+    }
+}
+
+/// A notice gone with its window leaves the window's bar with it.
+impl Drop for Notice {
+    fn drop(&mut self) {
+        if let Some(notice) = self.published.take() {
+            ui::window_toolbar::withdraw(&notice);
+        }
+    }
 }
 
 impl Notice {
@@ -94,21 +103,18 @@ impl Notice {
             body: body.into(),
             kind,
             action,
-            progress: None,
             since: ui::time::now(),
         });
-        self.hit = ToastCardHit::default();
     }
 
-    /// Show how far a copy or move is: the same card updated in place, up
+    /// Show how far a copy or move is: the same notice updated in place, up
     /// until the transfer ends.
-    pub(crate) fn show_progress(&mut self, title: String, body: String, progress: Option<f32>) {
+    pub(crate) fn show_progress(&mut self, title: String, body: String) {
         if let Some(shown) = &mut self.shown
             && shown.action == Some(NoticeAction::CancelTransfer)
         {
             shown.title = title;
             shown.body = body;
-            shown.progress = progress;
             return;
         }
         self.show(
@@ -117,13 +123,10 @@ impl Notice {
             ToastKind::Info,
             Some(NoticeAction::CancelTransfer),
         );
-        if let Some(shown) = &mut self.shown {
-            shown.progress = progress;
-        }
     }
 
-    /// How long the card stays up once the pointer is not on it: one that
-    /// offers nothing to do leaves as every such toast does.
+    /// How long the notice stays up: one that offers nothing to do leaves
+    /// as every such notice does.
     fn lifetime(&self) -> Duration {
         if self.action().is_some() {
             LIFETIME
@@ -132,15 +135,12 @@ impl Notice {
         }
     }
 
-    /// Whether the card is a transfer's progress.
+    /// Whether the notice is a transfer's progress.
     pub(crate) fn shows_progress(&self) -> bool {
         self.action() == Some(&NoticeAction::CancelTransfer)
     }
 
     pub(crate) fn dismiss(&mut self) -> bool {
-        self.hovered = None;
-        self.pressed = None;
-        self.hit = ToastCardHit::default();
         self.shown.take().is_some()
     }
 
@@ -172,7 +172,6 @@ impl Notice {
     pub(crate) fn expire(&mut self, now: Instant) -> bool {
         let over = self.shown.as_ref().is_some_and(|shown| {
             shown.action != Some(NoticeAction::CancelTransfer)
-                && self.hovered.is_none()
                 && !ui::time::wall_frozen()
                 && now.saturating_duration_since(shown.since) > self.lifetime()
         });
@@ -181,7 +180,7 @@ impl Notice {
 
     /// When the notice expires, for the widget's wake deadline.
     pub(crate) fn deadline(&self) -> Option<Instant> {
-        if ui::time::wall_frozen() || self.hovered.is_some() || self.shows_progress() {
+        if ui::time::wall_frozen() || self.shows_progress() {
             return None;
         }
         self.shown
@@ -189,134 +188,43 @@ impl Notice {
             .map(|shown| shown.since + self.lifetime())
     }
 
-    /// Where the action button was painted (`Rect::ZERO` when it wasn't).
-    #[cfg(test)]
-    pub(crate) fn action_rect(&self) -> Rect {
-        self.hit.primary_action_rect
-    }
-
-    /// Whether `point` is on the painted card.
-    pub(crate) fn contains(&self, point: Point) -> bool {
-        self.shown.is_some() && self.hit.card_rect.contains(point)
-    }
-
-    /// Follow the pointer; whether what is hovered changed.
-    pub(crate) fn pointer_moved(&mut self, point: Point) -> bool {
-        let part = self.part_at(point);
-        if part == self.hovered {
-            return false;
-        }
-        if part.is_none()
-            && let Some(shown) = &mut self.shown
-        {
-            // The pointer kept it up; give the person the full time again.
-            shown.since = ui::time::now();
-        }
-        self.hovered = part;
-        true
-    }
-
-    /// A press at `point`; whether it landed on the card (and so is the
-    /// card's, not the file view's under it).
-    pub(crate) fn press(&mut self, point: Point) -> bool {
-        self.pressed = self.part_at(point);
-        self.pressed.is_some()
-    }
-
-    /// The release of a press: what it asked for, or `None` when the press
-    /// wasn't on the card.
-    pub(crate) fn release(&mut self, point: Point) -> Option<NoticeClick> {
-        let pressed = self.pressed.take()?;
-        let click = match self.part_at(point) {
-            Some(Part::Close) if pressed == Part::Close => NoticeClick::Dismissed,
-            Some(Part::Action) if pressed == Part::Action => self
-                .action()
-                .cloned()
-                .map_or(NoticeClick::Absorbed, NoticeClick::Action),
-            _ => NoticeClick::Absorbed,
-        };
-        Some(self.activate(click))
-    }
-
-    /// Activate the action (or the close button) without a pointer, as
-    /// assistive technology does.
-    pub(crate) fn activate(&mut self, click: NoticeClick) -> NoticeClick {
-        if click != NoticeClick::Absorbed {
-            self.dismiss();
-        }
-        click
-    }
-
-    fn part_at(&self, point: Point) -> Option<Part> {
-        self.shown.as_ref()?;
-        let hit = &self.hit;
-        if hit.primary_action_rect.contains(point) {
-            Some(Part::Action)
-        } else if hit.close_rect.contains(point) {
-            Some(Part::Close)
-        } else if hit.card_rect.contains(point) {
-            Some(Part::Card)
-        } else {
-            None
-        }
-    }
-
-    /// Paint the notice at the bottom of `area`.
-    pub(crate) fn paint(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        area: Rect,
-    ) {
-        let Some(shown) = &self.shown else {
-            self.hit = ToastCardHit::default();
-            return;
-        };
-        let label = shown.action.as_ref().map(NoticeAction::label);
-        let mut card = ToastCard::new(&shown.title, shown.kind)
-            .body(&shown.body)
-            .closable(true)
-            .close_hovered(self.hovered == Some(Part::Close));
-        if let Some(label) = &label {
-            card = card.action(label, self.hovered == Some(Part::Action));
-        }
-        if let Some(progress) = shown.progress {
-            card = card.progress(progress);
-        }
-        self.hit = ui::widget::toast::paint_transient(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            area,
-            ToastAnchor::BottomCenter,
-            &card,
-            // Under the pointer it is held: its time starts when it leaves.
-            if self.hovered.is_some() {
-                ui::time::now()
-            } else {
-                shown.since
-            },
-        );
-    }
-
-    /// The notice as a live region: a failure interrupts, anything else
-    /// waits its turn.
-    pub(crate) fn access_node(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, Politeness, Role};
+    /// The notice as the window's bar says it: its line, and its button.
+    fn as_toolbar_notice(&self) -> Option<ToolbarNotice> {
         let shown = self.shown.as_ref()?;
-        Some(
-            AccessNode::new(Role::StaticText)
-                .with_name(self.line()?)
-                .with_bounds(self.hit.card_rect)
-                .with_live(if shown.kind == ToastKind::Error {
-                    Politeness::Assertive
-                } else {
-                    Politeness::Polite
-                }),
-        )
+        let notice = ToolbarNotice::new(self.line()?, shown.kind);
+        Some(match &shown.action {
+            Some(action) => notice.action(ToolbarAction::new(
+                NOTICE_ACTION,
+                action.icon(),
+                action.label(),
+            )),
+            None => notice,
+        })
+    }
+
+    /// Keep the window's bar saying the notice while it is up, and take it
+    /// down once it has gone; call on every sync. A notice shown since from
+    /// elsewhere in the window stays.
+    pub(crate) fn publish(&mut self) {
+        let want = self.as_toolbar_notice();
+        if self.published == want {
+            return;
+        }
+        if let Some(gone) = self.published.take() {
+            ui::window_toolbar::withdraw(&gone);
+        }
+        if let Some(notice) = want {
+            ui::window_toolbar::notify(Some(notice.clone()));
+            self.published = Some(notice);
+        }
+    }
+
+    /// The notice's button was pressed in the bar: what it asked for, and
+    /// the notice is down.
+    pub(crate) fn press(&mut self) -> Option<NoticeAction> {
+        let action = self.action().cloned()?;
+        self.dismiss();
+        Some(action)
     }
 }
 
@@ -325,7 +233,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_notice_answers_clicks_on_its_parts_and_stays_while_hovered() {
+    fn a_notice_is_the_window_bars_with_its_button_and_a_press_takes_it_down() {
         let mut notice = Notice::default();
         notice.show(
             "Moved 2 items to Trash",
@@ -333,40 +241,21 @@ mod tests {
             ToastKind::Success,
             Some(NoticeAction::Undo),
         );
-        notice.hit = ToastCardHit {
-            card_rect: Rect::new(0.0, 0.0, 300.0, 48.0),
-            close_rect: Rect::new(270.0, 10.0, 290.0, 30.0),
-            secondary_action_rect: Rect::ZERO,
-            primary_action_rect: Rect::new(200.0, 10.0, 260.0, 38.0),
-        };
+        notice.publish();
+        let shown = ui::window_toolbar::notice().expect("the bar says it");
+        assert_eq!(shown.text, "Moved 2 items to Trash");
+        assert_eq!(shown.kind, ToastKind::Success);
+        assert_eq!(
+            shown.action.map(|action| action.id),
+            Some(NOTICE_ACTION.to_owned()),
+            "Undo is the bar's action while the notice shows"
+        );
         assert!(notice.offers_undo());
-        assert!(notice.press(Point::new(10.0, 10.0)));
-        assert_eq!(
-            notice.release(Point::new(10.0, 10.0)),
-            Some(NoticeClick::Absorbed)
-        );
-        assert!(notice.is_shown());
-        assert!(!notice.press(Point::new(400.0, 10.0)));
-        assert_eq!(notice.release(Point::new(400.0, 10.0)), None);
-        assert!(notice.press(Point::new(220.0, 20.0)));
-        assert_eq!(
-            notice.release(Point::new(10.0, 10.0)),
-            Some(NoticeClick::Absorbed)
-        );
-        assert!(notice.is_shown());
-
-        // While the pointer rests on it, it never expires.
-        assert!(notice.pointer_moved(Point::new(20.0, 20.0)));
-        let later = ui::time::now() + LIFETIME + LIFETIME;
-        assert!(!notice.expire(later));
-        assert_eq!(notice.deadline(), None);
-
-        assert!(notice.press(Point::new(220.0, 20.0)));
-        assert_eq!(
-            notice.release(Point::new(220.0, 20.0)),
-            Some(NoticeClick::Action(NoticeAction::Undo))
-        );
+        assert_eq!(notice.press(), Some(NoticeAction::Undo));
         assert!(!notice.is_shown(), "acting on a notice takes it down");
+        assert_eq!(notice.press(), None, "a second press asks for nothing");
+        notice.publish();
+        assert_eq!(ui::window_toolbar::notice(), None);
     }
 
     #[test]

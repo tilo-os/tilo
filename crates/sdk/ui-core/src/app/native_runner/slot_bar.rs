@@ -118,7 +118,7 @@ impl SlotBar {
         }
         let toolbar = shown.then(|| {
             with_history(
-                crate::window_toolbar::declared().unwrap_or_default(),
+                crate::window_toolbar::shown().unwrap_or_default(),
                 app.window_history_control(),
             )
         });

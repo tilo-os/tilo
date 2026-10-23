@@ -1602,9 +1602,8 @@ impl Widget for TooltipProbe {
     }
 }
 
-/// A transient toast painted in the main pass, inside the page's cached
-/// columns, as a painted app paints one: its material blurs the photograph
-/// through the subtree caches.
+/// A notification card painted in the main pass, inside the page's cached
+/// columns: its material blurs the photograph through the subtree caches.
 struct ToastProbe {
     area: Rect,
 }
@@ -1628,19 +1627,20 @@ impl Widget for ToastProbe {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        tilo_ui::widget::toast::paint_transient(
+        // A notification card in the area's trailing corner.
+        let a = self.area;
+        let card = Rect::new(a.x1 - 376.0, a.y1 - 88.0, a.x1 - 16.0, a.y1 - 16.0);
+        tilo_ui::widget::toast::paint_card(
             scene,
             transform,
             tr,
             theme,
-            self.area,
-            tilo_ui::widget::toast::ToastAnchor::BottomRight,
+            card,
             &tilo_ui::widget::toast::ToastCard::new(
                 "Copied link to Quarterly report",
                 ToastKind::Success,
             )
             .closable(true),
-            tilo_ui::time::now(),
         );
     }
     fn name(&self) -> &'static str {

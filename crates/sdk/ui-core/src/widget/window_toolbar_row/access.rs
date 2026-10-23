@@ -92,8 +92,13 @@ impl ToolbarRow {
                 .with_name(name)
                 .with_optional_value(Some(location.edit_value().to_owned()))
                 .with_bounds(self.slots.location);
-                if location.edited {
+                if location.edited && toolbar.notice.is_none() {
                     node = node.with_description(edited_word());
+                }
+                if toolbar.notice.is_some() {
+                    // A notice is read out as it arrives, without moving
+                    // the keyboard.
+                    node = node.with_live(crate::a11y::Politeness::Polite);
                 }
                 if location.editable || picker {
                     node = node

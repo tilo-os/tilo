@@ -373,7 +373,7 @@ impl FrameHarness {
         let mut bar = TabBar::new("headless-window", vec![tab], TAB);
         bar.set_window_controls(true);
         bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
-        bar.set_toolbar(TAB, crate::window_toolbar::declared());
+        bar.set_toolbar(TAB, crate::window_toolbar::shown());
         bar.set_history_control(TAB, self.window_history_control());
         bar.set_group_focused(true);
         lay_out_bar(&mut bar, width, &self.theme);

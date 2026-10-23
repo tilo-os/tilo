@@ -37,8 +37,9 @@ use std::rc::Rc;
 use std::sync::mpsc::TryRecvError;
 use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
-use ui::widget::toast::Transient;
+use ui::widget::toast::{ToastKind, Transient};
 use ui::widget::{AppModel, ModelPath};
+use ui::window_toolbar::ToolbarNotice;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -203,8 +204,8 @@ pub struct HexView {
     /// A chooser in flight, drained once per frame in `sync`, and the open
     /// or save effect it answers.
     io: Option<(FileIo, EffectReply)>,
-    /// A failed open or save: its title and the reason, shown as a toast
-    /// for a notice's lifetime.
+    /// A failed open or save: its title and the reason, shown as the bar's
+    /// notice for a notice's lifetime.
     problem: Transient<(String, String)>,
 
     /// "Opened": a change worth noticing once, floating at the
@@ -373,7 +374,7 @@ impl HexView {
         self.dirty = true;
     }
 
-    /// A failed open or save: a toast with the reason.
+    /// A failed open or save: the bar's notice, with the reason.
     fn problem(&mut self, title: &str, reason: impl Into<String>) {
         self.problem.show((title.to_owned(), reason.into()));
         self.dirty = true;
@@ -807,10 +808,11 @@ impl Widget for HexView {
         // submitted before this frame lays out.
         self.drain_chooser();
 
-        // Expire a failure toast so an idle window settles back to no message.
-        if self.problem.expire() {
-            self.dirty = true;
-        }
+        // A failure says so in the window's bar while it lasts.
+        self.problem.expire();
+        self.problem.publish(|(title, reason)| {
+            ToolbarNotice::new(format!("{title}: {reason}"), ToastKind::Error)
+        });
     }
 
     fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {

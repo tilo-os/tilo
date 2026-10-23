@@ -165,8 +165,6 @@ enum Action {
     DiscardDraft(Id),
     /// Delete a task (and its subtasks) from the model + CRDT.
     DeleteTask(Id),
-    /// Close the status toast.
-    DismissStatus,
     /// Absorb a click without acting on it — the modal card's own backing, so a
     /// press on the card padding doesn't fall through to the dismiss scrim.
     Noop,
@@ -350,11 +348,9 @@ pub struct CalendarApp {
 
     hits: Vec<(Rect, Action)>,
     last_mouse: Point,
-    /// The result of the last sync, import or edit, shown as a toast for a
-    /// notice's lifetime.
+    /// The result of the last sync, import or edit, shown as the window
+    /// bar's notice for a notice's lifetime.
     status: Transient<String>,
-    /// The status toast's close button as last painted.
-    status_close: Rect,
     /// A just-created blank event is a provisional draft until the user edits
     /// any event field or adds notes. Back/Escape may discard *only* this exact
     /// pristine object; every other event follows normal autosave semantics.
@@ -530,7 +526,6 @@ impl CalendarApp {
             hits: Vec::new(),
             last_mouse: Point::ZERO,
             status: Transient::new(),
-            status_close: Rect::ZERO,
             fresh_draft: None,
             dirty: true,
             faces: ui::widget::FaceMotions::default(),
@@ -2963,9 +2958,6 @@ impl CalendarApp {
                 self.status.dismiss();
             }
             Action::DeleteTask(id) => self.delete_task(id, doc),
-            Action::DismissStatus => {
-                self.status.dismiss();
-            }
             Action::Noop => {}
         }
         // Discrete actions are worth an immediate save; if the action didn't
@@ -3931,8 +3923,7 @@ impl Widget for CalendarApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
-        self.status.keep_while(self.syncing);
-        self.status.expire();
+        self.publish_status();
         self.adopt_person_accounts();
         if !self.seeded {
             // Whatever the document holds is now authoritative for the UI.
@@ -4184,7 +4175,6 @@ impl Widget for CalendarApp {
                 presence,
             );
         }
-        self.draw_status(scene, transform, text_renderer, theme);
     }
 
     // This is the widget system's event-dispatch contract, implemented by

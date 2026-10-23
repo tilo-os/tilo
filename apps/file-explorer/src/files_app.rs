@@ -64,7 +64,7 @@ use preview::Preview;
 mod read_text;
 use clash::{ClashChoice, PendingClash};
 mod selection_actions;
-use notice::{Notice, NoticeAction, NoticeClick};
+use notice::{Notice, NoticeAction};
 mod folder_read;
 use folder_read::{Purpose, Then};
 mod shown_selection;
@@ -76,8 +76,6 @@ const SPRING_OPEN: Duration = Duration::from_millis(700);
 /// The accessibility target prefix of the clash sheet's choices.
 const CLASH_TARGET: &str = "files-clash-choice:";
 /// The accessibility targets of the notice's action and close buttons.
-const NOTICE_ACTION_TARGET: &str = "files-notice-action";
-const NOTICE_DISMISS_TARGET: &str = "files-notice-dismiss";
 /// The most lines a detail sheet lists.
 const COLLAB_PANEL_MAX_LINES: usize = 20;
 /// A paste's policy for names the folder already has, as callers name it.
@@ -1252,38 +1250,6 @@ impl FileExplorerWidget {
         {
             self.selection.select_only(index);
             self.retain_shown_selection();
-        }
-    }
-
-    /// Give the notice the pointer events that are its: hover, and a press
-    /// and release on the card. Whether the event was the notice's.
-    fn route_notice_event(&mut self, event: &winit::event::WindowEvent) -> bool {
-        use winit::event::{ElementState, MouseButton, WindowEvent};
-        match event {
-            WindowEvent::CursorMoved { .. } => {
-                self.structure_dirty |= self.notice.pointer_moved(self.last_cursor);
-                self.notice.contains(self.last_cursor)
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => self.notice.press(self.last_cursor),
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => match self.notice.release(self.last_cursor) {
-                Some(click) => {
-                    if let NoticeClick::Action(action) = click {
-                        self.act_on_notice(action);
-                    }
-                    self.structure_dirty = true;
-                    true
-                }
-                None => false,
-            },
-            _ => false,
         }
     }
 
@@ -6184,7 +6150,7 @@ impl FileExplorerWidget {
         true
     }
 
-    /// The card for a transfer under way: what it does, and how far it is.
+    /// The notice for a transfer under way: what it does, and how far it is.
     fn show_transfer(&mut self, transfer: &crate::file_ops::LocalTransfer) {
         use std::sync::atomic::Ordering;
         let folder = Path::new(&transfer.folder).file_name().map_or_else(
@@ -6217,14 +6183,7 @@ impl FileExplorerWidget {
                 ),
             ],
         );
-        // A total not yet known (none counted) draws no bar rather than an
-        // empty one that never fills.
-        let done = transfer.done.load(Ordering::Relaxed);
-        let total = transfer.total.load(Ordering::Relaxed);
-        let progress = (total > 0).then(|| {
-            ui::num::f32_of_f64((ui::num::f64_of_u64(done) / ui::num::f64_of_u64(total)).min(1.0))
-        });
-        self.notice.show_progress(title, body, progress);
+        self.notice.show_progress(title, body);
         self.structure_dirty = true;
     }
 
@@ -10091,6 +10050,8 @@ impl Widget for FileExplorerWidget {
         {
             self.rename_buffer = value;
         }
+        // The notice says so in the window's bar while it is up.
+        self.notice.publish();
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -10193,16 +10154,9 @@ impl Widget for FileExplorerWidget {
         // Floating status bubble (item count / status + selection), above the
         // content but below any open menus / drag ghost, and only while the
         // file view is on screen (not while a narrow window shows the places
-        // screen). A notice takes the bubble's place while it is up: one
-        // message at a time at the bottom of the file view.
+        // screen). A notice is the window bar's.
         if self.nav.geometry().content_column.width() > 0.0 {
-            if self.notice.is_shown() {
-                let area = self.content_body_rect();
-                self.notice
-                    .paint(scene, transform, text_renderer, theme, area);
-            } else {
-                self.draw_status_bubble(scene, transform, text_renderer, theme);
-            }
+            self.draw_status_bubble(scene, transform, text_renderer, theme);
         }
         self.draw_collab_panel(scene, transform, text_renderer, theme);
         let window = self.rect;
@@ -10284,10 +10238,6 @@ impl Widget for FileExplorerWidget {
             return;
         }
         if self.route_incoming_drop(event) {
-            *ctx.handled = true;
-            return;
-        }
-        if self.notice.is_shown() && self.route_notice_event(event) {
             *ctx.handled = true;
             return;
         }
@@ -10565,28 +10515,6 @@ impl Widget for FileExplorerWidget {
             }
             root = root.with_children(vec![state]);
         }
-        if let Some(mut notice) = self.notice.access_node() {
-            let mut buttons = Vec::new();
-            if let Some(action) = self.notice.action() {
-                let label = match action {
-                    NoticeAction::Undo => t("files-notice-undo"),
-                    NoticeAction::OpenWith(_) => t("files-notice-open-with"),
-                    NoticeAction::CancelTransfer => t("files-notice-cancel"),
-                };
-                buttons.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(label)
-                        .with_action_target(NOTICE_ACTION_TARGET),
-                );
-            }
-            buttons.push(
-                AccessNode::new(Role::Button)
-                    .with_name(t("files-notice-dismiss"))
-                    .with_action_target(NOTICE_DISMISS_TARGET),
-            );
-            notice = notice.with_children(buttons);
-            root.children.push(notice);
-        }
         Some(root)
     }
 
@@ -10606,23 +10534,6 @@ impl Widget for FileExplorerWidget {
                 self.settle_clash(choice);
             }
             return choice.is_some();
-        }
-        if matches!(action, Action::Activate)
-            && (target == NOTICE_ACTION_TARGET || target == NOTICE_DISMISS_TARGET)
-        {
-            let click = if target == NOTICE_DISMISS_TARGET {
-                NoticeClick::Dismissed
-            } else {
-                match self.notice.action().cloned() {
-                    Some(action) => NoticeClick::Action(action),
-                    None => return false,
-                }
-            };
-            if let NoticeClick::Action(action) = self.notice.activate(click) {
-                self.act_on_notice(action);
-            }
-            self.structure_dirty = true;
-            return true;
         }
         if target == "files-retry-folder" && matches!(action, Action::Activate) {
             let changed = self.apply_command(self.folder_recovery_command());

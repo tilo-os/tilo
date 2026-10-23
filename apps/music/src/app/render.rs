@@ -32,7 +32,6 @@ use ui::paint::PaintCtx;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
 use ui::widget::data_table::DataTableFace;
-use ui::widget::toast::ToastAnchor;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, MediaArt,
     MediaCardFace, MediaSize, SkeletonFace, SkeletonShape,
@@ -1162,12 +1161,7 @@ impl Widget for MusicApp {
             .with_name(page_name)
             .with_children(page_content);
 
-        let mut children = vec![search, page, player];
-        children.extend(
-            self.toast
-                .access_node()
-                .map(|toast| toast.with_hashed_key("toast")),
-        );
+        let children = vec![search, page, player];
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Music")
@@ -2259,7 +2253,9 @@ impl MusicApp {
         // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
         self.tick();
-        self.dirty |= self.toast.expire();
+        // A result says so in the window's bar while it lasts.
+        self.toast.expire();
+        self.toast.publish();
 
         // The shell holds the sidebar and the transport; this is the
         // content column.
@@ -2314,7 +2310,6 @@ impl MusicApp {
         self.open_staged_track_menu();
         self.open_staged_facet();
 
-        self.draw_toast(ctx);
         self.paint_highlight(ctx);
 
         if self.name_prompt.is_none() {
@@ -4543,20 +4538,6 @@ impl MusicApp {
     }
 
     // ---- now playing bar --------------------------------------------------
-
-    // ---- toast ------------------------------------------------------------
-
-    fn draw_toast(&self, ctx: &mut PaintCtx<'_>) {
-        let area = Rect::new(self.body_rect.x0, self.rect.y0, self.rect.x1, self.rect.y1);
-        self.toast.paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            area,
-            ToastAnchor::BottomCenter,
-        );
-    }
 
     // ---- gather helpers (own data so draw can borrow &mut self) -----------
 

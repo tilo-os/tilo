@@ -49,34 +49,14 @@ fn single_line_text(text: &str) -> String {
 
 /// Severity / category of a toast. Maps to the semantic color ramp in
 /// [`crate::tokens::Colors`] for the left accent bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ToastKind {
+    #[default]
     Info,
     Success,
     Warning,
     Error,
-}
-
-/// Placement for a transient card painted inside an app's area.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ToastAnchor {
-    BottomCenter,
-    /// At the area's bottom trailing corner.
-    BottomRight,
-    /// Centred, at the top of the area (under a toolbar or a capture HUD).
-    TopCenter,
-    /// At the area's top trailing corner.
-    TopRight,
-}
-
-impl ToastAnchor {
-    fn is_top(self) -> bool {
-        matches!(self, Self::TopCenter | Self::TopRight)
-    }
-
-    fn is_centered(self) -> bool {
-        matches!(self, Self::TopCenter | Self::BottomCenter)
-    }
 }
 
 /// Whether a transient shown at `shown` for `ttl` has expired. Under the
@@ -87,8 +67,8 @@ pub fn transient_expired(shown: crate::time::Instant, ttl: Duration) -> bool {
     !crate::time::wall_frozen() && crate::time::now().saturating_duration_since(shown) > ttl
 }
 
-/// How long a transient card that offers no action stays up: a [`Notice`],
-/// a [`Transient`] and anything painted with [`paint_transient`].
+/// How long a notice stays up: a [`Notice`] or a [`Transient`] shown in the
+/// window's bar ([`crate::window_toolbar::notify`]).
 pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
 
 /// A message an app shows over its content for a while. It is one of two
@@ -103,13 +83,18 @@ pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
 ///   running ([`Self::keep_while`]) and leaves once it no longer does, or a
 ///   [`NOTICE_LIFETIME`] after it last did, so no stale progress stays.
 ///
-/// The app asks to be woken at [`Self::deadline`] and, there, renews
-/// progress and calls [`Self::expire`] so the window repaints without what
-/// left. A message that needs the person to act belongs on a card with an
-/// action instead.
-#[derive(Clone, Debug)]
+/// The message shows in the window's bar ([`Self::publish`], on every sync):
+/// the app asks to be woken at [`Self::deadline`] and, there, renews
+/// progress and calls [`Self::expire`]. A message that needs the person to
+/// act before it goes is not a transient one.
+#[derive(Debug)]
 pub struct Transient<T> {
     current: Option<Shown<T>>,
+    /// Counts the messages shown, so the bar hears each one once.
+    shown: u64,
+    /// What [`Self::publish`] put in the window's bar, and which message it
+    /// said: taken down once the message goes.
+    published: std::cell::RefCell<Option<(u64, crate::window_toolbar::ToolbarNotice)>>,
 }
 
 /// A [`Transient`]'s message and the time its lifetime counts from: when it
@@ -119,6 +104,8 @@ struct Shown<T> {
     value: T,
     since: crate::time::Instant,
     progress: bool,
+    /// Which message this is ([`Transient::shown`]).
+    number: u64,
 }
 
 impl<T> Default for Transient<T> {
@@ -127,10 +114,60 @@ impl<T> Default for Transient<T> {
     }
 }
 
+/// A copy keeps the message but not the bar's notice: the original took it
+/// up and takes it down.
+impl<T: Clone> Clone for Transient<T> {
+    fn clone(&self) -> Self {
+        Self {
+            current: self.current.clone(),
+            shown: self.shown,
+            published: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+/// A message gone with its owner leaves the window's bar with it.
+impl<T> Drop for Transient<T> {
+    fn drop(&mut self) {
+        if let Some((_, notice)) = self.published.get_mut().take() {
+            crate::window_toolbar::withdraw(&notice);
+        }
+    }
+}
+
 impl<T> Transient<T> {
     #[must_use]
     pub const fn new() -> Self {
-        Self { current: None }
+        Self {
+            current: None,
+            shown: 0,
+            published: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// Show the message in the window's bar while it lasts, as `notice`
+    /// says it, and take it down once it has gone; call on every sync. A
+    /// notice shown since from elsewhere in the window stays: the newest
+    /// replaces the older.
+    pub fn publish(&self, notice: impl FnOnce(&T) -> crate::window_toolbar::ToolbarNotice) {
+        let want = self
+            .current
+            .as_ref()
+            .filter(|_| self.get().is_some())
+            .map(|shown| (shown.number, notice(&shown.value)));
+        let mut published = self.published.borrow_mut();
+        if *published == want {
+            return;
+        }
+        // The same message said differently replaces itself; another
+        // message is news, and replaces whatever is up.
+        if let Some((_, gone)) = published.take() {
+            crate::window_toolbar::withdraw(&gone);
+        }
+        if let Some((number, notice)) = want {
+            crate::window_toolbar::notify(Some(notice.clone()));
+            *published = Some((number, notice));
+        }
     }
 
     /// `value`, shown from now as plain information.
@@ -163,10 +200,12 @@ impl<T> Transient<T> {
     }
 
     fn put(&mut self, value: T, progress: bool) {
+        self.shown = self.shown.wrapping_add(1);
         self.current = Some(Shown {
             value,
             since: crate::time::now(),
             progress,
+            number: self.shown,
         });
     }
 
@@ -243,39 +282,12 @@ impl<T> Transient<T> {
         }
         self.since().map(|shown| shown + NOTICE_LIFETIME)
     }
-
-    /// Paint `card`, which says this message, in `area` at `anchor` with
-    /// [`paint_transient`]; nothing once the message's lifetime is over.
-    pub fn paint(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        anchor: ToastAnchor,
-        card: &ToastCard<'_>,
-    ) -> ToastCardHit {
-        let Some(since) = self.since() else {
-            return ToastCardHit::default();
-        };
-        paint_transient(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            area,
-            anchor,
-            card,
-            since,
-        )
-    }
 }
 
-/// The one transient message an app shows over its content: a confirmation,
-/// something under way, or a failure. The app shows it and paints it where
-/// it belongs; the notice keeps its own lifetime ([`Transient`]) and its
-/// announcement.
+/// The one transient message an app shows in its window's bar: a
+/// confirmation, something under way, or a failure. The app shows it and
+/// [publishes](Self::publish) it on every sync; the notice keeps its own
+/// lifetime ([`Transient`]), and the bar announces it.
 #[derive(Clone, Debug, Default)]
 pub struct Notice {
     current: Transient<(String, ToastKind)>,
@@ -326,42 +338,11 @@ impl Notice {
         self.current.deadline()
     }
 
-    /// Paint the notice in `area`, at `anchor`, with [`paint_transient`].
-    pub fn paint(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        anchor: ToastAnchor,
-    ) -> ToastCardHit {
-        let Some((text, kind)) = self.get() else {
-            return ToastCardHit::default();
-        };
-        self.current.paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            area,
-            anchor,
-            &ToastCard::new(text, kind),
-        )
-    }
-
-    /// The notice as a live region: a failure interrupts, anything else
-    /// waits its turn.
-    pub fn access_node(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Politeness, Role};
-        let (text, kind) = self.get()?;
-        Some(AccessNode::new(Role::StaticText).with_name(text).with_live(
-            if kind == ToastKind::Error {
-                Politeness::Assertive
-            } else {
-                Politeness::Polite
-            },
-        ))
+    /// Show the notice in the window's bar while it is up; call on every
+    /// sync. See [`Transient::publish`].
+    pub fn publish(&self) {
+        self.current
+            .publish(|(text, kind)| crate::window_toolbar::ToolbarNotice::new(text.clone(), *kind));
     }
 }
 
@@ -609,33 +590,6 @@ impl ToastStack {
         self.activated.take()
     }
 
-    /// Each notice with a button: its text, the button's label, and where
-    /// the button was last painted.
-    pub(crate) fn action_buttons(&self) -> impl Iterator<Item = (&str, &str, Option<Rect>)> {
-        self.toasts.iter().enumerate().filter_map(|(index, toast)| {
-            let action = toast.action.as_deref()?;
-            let painted = self.action_rects.get(index).copied().flatten();
-            Some((toast.text.as_str(), action, painted))
-        })
-    }
-
-    /// Press the button of the notice reading `text`, as a click on it
-    /// does: [`Self::take_activated`] then names it, and it goes. Whether
-    /// such a notice was showing.
-    pub(crate) fn press_action(&mut self, text: &str) -> bool {
-        let Some(index) = self
-            .toasts
-            .iter()
-            .position(|toast| toast.action.is_some() && toast.text == text)
-        else {
-            return false;
-        };
-        self.activated = Some(text.to_owned());
-        self.dismiss(index);
-        self.hovered = false;
-        true
-    }
-
     /// Take down every notice that offers a button: what it would act on
     /// has moved on, so its "Undo" would undo something else.
     pub fn dismiss_actionable(&mut self) {
@@ -841,7 +795,7 @@ fn card_pad(theme: &Theme) -> (f64, f64) {
 }
 
 /// The severity icon, the same one a banner of that kind shows.
-fn kind_icon(kind: ToastKind) -> crate::icons::Icon {
+pub(crate) fn kind_icon(kind: ToastKind) -> crate::icons::Icon {
     match kind {
         ToastKind::Info => crate::widget::BannerKind::Info,
         ToastKind::Success => crate::widget::BannerKind::Success,
@@ -871,7 +825,7 @@ fn leading_column(theme: &Theme, card: &ToastCard<'_>) -> f64 {
     })
 }
 
-fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
+pub(crate) fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
     match kind {
         ToastKind::Info => theme.tokens.colors.semantic.info,
         ToastKind::Success => theme.tokens.colors.semantic.success,
@@ -1683,120 +1637,6 @@ fn paint_single_action(
     rect
 }
 
-/// Paint a transient toast in `area`, at `anchor`.
-///
-/// This is the immediate-mode counterpart to [`ToastStack`]; a message kept
-/// in a [`Transient`] or a [`Notice`] paints through it. `since` is when the
-/// card's lifetime started: when it went up, or when the pointer last left
-/// it. A card that offers nothing to do (no action, no work under way) is
-/// gone once it has been up for [`NOTICE_LIFETIME`], whatever its caller
-/// keeps: a status nobody takes down never stays forever. The card is as
-/// wide as its title and body need, up to a readable width, and wraps them
-/// there; it holds one action ([`ToastCard::action`]) beside the text. The
-/// returned geometry lets callers hit-test the action and the dismiss
-/// control.
-pub fn paint_transient(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    anchor: ToastAnchor,
-    card: &ToastCard<'_>,
-    since: crate::time::Instant,
-) -> ToastCardHit {
-    if !card.stays_up() && transient_expired(since, NOTICE_LIFETIME) {
-        return ToastCardHit::default();
-    }
-    let edge_gap = f64::from(theme.tokens.spacing.s6);
-    let available_width = (area.width() - 2.0 * edge_gap).max(0.0);
-    let Some(size) = transient_size(text_renderer, theme, available_width, card) else {
-        return ToastCardHit::default();
-    };
-    if area.height() < size.height + edge_gap {
-        return ToastCardHit::default();
-    }
-    let x0 = if anchor.is_centered() {
-        area.center().x - size.width / 2.0
-    } else {
-        area.x1 - edge_gap - size.width
-    };
-    let y0 = if anchor.is_top() {
-        area.y0 + edge_gap
-    } else {
-        area.y1 - edge_gap - size.height
-    };
-    paint_card(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        Rect::new(x0, y0, x0 + size.width, y0 + size.height),
-        card,
-    )
-}
-
-/// The size a transient card takes inside `available_width`, or `None`
-/// when there is no room at all.
-fn transient_size(
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    available_width: f64,
-    card: &ToastCard<'_>,
-) -> Option<vello::kurbo::Size> {
-    if available_width <= 0.0 {
-        return None;
-    }
-    let (pad_x, pad_y) = card_pad(theme);
-    let line = f64::from(theme.text(TextRole::Body).line_height_px());
-    let max_width = (line * 22.0).min(available_width);
-    let min_width = (line * 8.0).min(available_width);
-    let close_column = if card.closable {
-        ButtonFace::height(crate::widget::ControlSize::Small, theme)
-            + f64::from(theme.tokens.spacing.s1)
-    } else {
-        0.0
-    };
-    let action_column = if card.single_action() {
-        single_action_width(text_renderer, theme, card.primary_action)
-            + f64::from(theme.tokens.spacing.s3)
-    } else {
-        0.0
-    };
-    let chrome = 2.0 * pad_x + leading_column(theme, card) + close_column + action_column;
-    let title_style = theme.text(TextRole::Label).strong();
-    let body_style = theme.text(TextRole::Caption);
-    let title = single_line_text(card.title);
-    let body = single_line_text(card.body);
-    let natural = f64::from(text_renderer.measure_style(&title, None, &title_style).0).max(
-        if body.is_empty() {
-            0.0
-        } else {
-            f64::from(text_renderer.measure_style(&body, None, &body_style).0)
-        },
-    );
-    let width = (natural + chrome).clamp(min_width, max_width);
-    let text_width = f32_of_f64((width - chrome).max(1.0));
-    let mut text_h = f64::from(
-        text_renderer
-            .measure_style(&title, Some(text_width), &title_style)
-            .1,
-    );
-    if !body.is_empty() {
-        text_h += f64::from(
-            text_renderer
-                .measure_style(&body, Some(text_width), &body_style)
-                .1,
-        );
-    }
-    text_h += progress_reserve(theme, card);
-    let control = ButtonFace::height(crate::widget::ControlSize::Small, theme);
-    let height = (text_h.max(control) + 2.0 * pad_y)
-        .max(f64::from(theme.tokens.metrics.panel_row_height) + 2.0 * pad_y)
-        .ceil();
-    Some(vello::kurbo::Size::new(width, height))
-}
-
 /// The height a card's progress bar and the gap above it take.
 fn progress_reserve(theme: &Theme, card: &ToastCard<'_>) -> f64 {
     if card.progress.is_some() {
@@ -1895,7 +1735,7 @@ fn paint_card_text(
     let (pad_x, pad_y) = card_pad(theme);
     let text_x = column.x0 + pad_x;
     let width_avail = f32_of_f64((column.x1 - text_x).max(0.0));
-    // A card sized for its text (`paint_transient`) wraps it; one that is
+    // A card sized for its text wraps it; one that is
     // shorter than its wrapped text keeps each field to one elided line.
     if let Some(block) = paint_wrapped_card_text(ctx, column, card, alpha, text_x, width_avail) {
         return block;

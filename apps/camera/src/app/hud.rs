@@ -1,6 +1,6 @@
 //! Chrome over the viewfinder, and the pieces every screen shares: control
-//! clusters on the floating material, the mode switcher, the shutter, the
-//! tooltip and the toast.
+//! clusters on the floating material, the mode switcher, the shutter and the
+//! tooltip. A notice is the window bar's.
 //!
 //! The viewfinder is media: what is drawn straight onto it (the guides)
 //! takes the theme's media colours, and every control
@@ -11,7 +11,6 @@ use ui::TextRole;
 use ui::chrome::panel_ground;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
 use ui::widget::tooltip::draw_hover_tooltip;
 use ui::widget::{
     BadgeFace, Button, ButtonFace, ButtonRole, ChipStyle, ControlSize, EmptyState,
@@ -130,17 +129,6 @@ pub(super) fn corner_actions() -> [HudItem<'static>; 2] {
             action: Action::Nav(Screen::Settings),
         },
     ]
-}
-
-/// Where a toast goes on a screen whose top band holds only the
-/// top-trailing cluster: centred at the top ([`ToastAnchor::TopCenter`]),
-/// clear of the cluster on both sides.
-pub(super) fn top_band_toast_area(full: Rect, cluster: Rect, theme: &Theme) -> Rect {
-    let m = HudMetrics::of(theme);
-    let gutter = f64::from(theme.tokens.spacing.s6);
-    // `paint_transient` keeps a gutter on each side of its area already.
-    let inset = (full.x1 - cluster.x0 + m.gap - gutter).max(0.0);
-    Rect::new(full.x0 + inset, full.y0, full.x1 - inset, full.y1)
 }
 
 impl CameraApp {
@@ -797,46 +785,6 @@ impl CameraApp {
             Point::new(full.x1 - m.edge - width, full.y0 + m.edge),
             &items,
         )
-    }
-
-    /// The transient result of the last action, at the bottom of `area`.
-    pub(super) fn draw_toast(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        anchor: ToastAnchor,
-    ) {
-        let Some(msg) = self.toast.as_deref() else {
-            return;
-        };
-        // Device and file failures never read as successes.
-        let kind = if msg.starts_with("Save failed")
-            || msg.starts_with("Couldn't")
-            || msg.starts_with("Could not")
-            || msg.starts_with("Text recognition")
-            || msg.starts_with("Text could not")
-        {
-            ToastKind::Error
-        } else if msg.starts_with("Connect a camera")
-            || msg.starts_with("Nothing recorded")
-            || msg.starts_with("No code found")
-        {
-            ToastKind::Warning
-        } else {
-            ToastKind::Success
-        };
-        self.toast.paint(
-            scene,
-            t,
-            tr,
-            theme,
-            area,
-            anchor,
-            &ToastCard::new(msg, kind),
-        );
     }
 
     /// The recent-capture preview, decoded once per capture.

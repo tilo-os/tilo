@@ -296,8 +296,6 @@ impl PdfApp {
         // The context menu paints in the top layer (`draw_overlay`). File
         // open/save is the host desktop's portal picker (HIG §5), so there is
         // no in-app dialog to draw here.
-        // A transient toast (save confirmation, copy confirmation) on top.
-        self.draw_toast(scene, base, tr, theme);
 
         self.sidebar_hits = hits;
         self.shown.note(self.canvas_shown(base, theme));
@@ -327,11 +325,7 @@ impl PdfApp {
             hud: self.sel_hud.as_ref().map_or(Rect::ZERO, |hud| {
                 ui::widget::floating_surface::painted_bounds(hud.rect(), theme)
             }),
-            floating: self
-                .status_note
-                .as_deref()
-                .is_some_and(|note| !note.is_empty())
-                || self.editing.is_some()
+            floating: self.editing.is_some()
                 || self.context_menu.is_some()
                 || (self.overlay_mode && (self.show_rail || self.show_sidebar)),
         }
@@ -1299,28 +1293,6 @@ impl PdfApp {
 
         self.canvas_hover_zones.push(hud.rect());
         self.sel_hud = Some(hud);
-    }
-
-    /// A transient toast (e.g. "Saved to …" or "Copied 42 characters")
-    /// centred near the bottom of the canvas. Set on an action, gone after a
-    /// notice's lifetime or the next document interaction (Esc, a new
-    /// open/load).
-    fn draw_toast(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let Some(note) = self.status_note.as_deref() else {
-            return;
-        };
-        if note.is_empty() {
-            return;
-        }
-        self.status_note.paint(
-            scene,
-            base,
-            tr,
-            theme,
-            self.canvas_rect,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(note, ToastKind::Info),
-        );
     }
 
     // ---- thumbnail rail --------------------------------------------

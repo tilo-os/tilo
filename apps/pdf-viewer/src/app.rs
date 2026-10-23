@@ -44,7 +44,7 @@ use ui::surface::Region;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, Transient};
+use ui::widget::toast::{ToastKind, Transient};
 use ui::widget::{
     AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace,
     ContextMenu as SharedContextMenu, ControlSize, DEFAULT_PADDING,
@@ -52,6 +52,7 @@ use ui::widget::{
     PAN_SLOP, RowAction, RowLeading, Segment, SegmentedFace, SegmentedStyle, SmallContentAlign,
     TextInput, ToggleGroup, ViewportState,
 };
+use ui::window_toolbar::ToolbarNotice;
 
 use crate::markup::{PagePlanEntry, PdfMarkup};
 use crate::model::{
@@ -4680,6 +4681,9 @@ impl Widget for PdfApp {
             self.status_note.show(crate::t("pdf-note-area-not-copied"));
             self.dirty = true;
         }
+        // The note says so in the window's bar while it lasts.
+        self.status_note
+            .publish(|note| ToolbarNotice::new(note.clone(), ToastKind::Info));
         let (state, _) = ui::doc::document_ref(state, path);
         if !self.raster_wake_bound
             && let Some(handle) = self.raster_handle.as_ref()
@@ -5883,6 +5887,26 @@ mod tests {
 
     use tilo_automerge::ApplyIncoming;
     use tilo_test_env::hang_bound;
+
+    /// A note says so in the window's bar, not over the page, and leaves it
+    /// when it goes.
+    #[test]
+    fn a_note_is_the_window_bars_notice() {
+        let mut app = ui::framework::testing::TestApp::<crate::PdfViewerShell>::new()
+            .expect("the reader opens");
+        app.with_surface::<PdfApp, _>(|pdf| {
+            pdf.status_note
+                .show("Saved annotated PDF to report.pdf".to_owned());
+        });
+        app.settle();
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| notice.text),
+            Some("Saved annotated PDF to report.pdf".to_owned())
+        );
+        app.with_surface::<PdfApp, _>(|pdf| pdf.status_note.dismiss());
+        app.settle();
+        assert_eq!(ui::window_toolbar::notice(), None);
+    }
 
     /// Two real PDFs on disk, from the bundled fixture. "Open a second
     /// document" has to be a second *file* — the bug is about one document's

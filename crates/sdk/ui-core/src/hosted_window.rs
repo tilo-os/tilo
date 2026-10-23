@@ -43,6 +43,8 @@ pub struct HostedWindow {
 #[derive(Default)]
 struct State {
     toolbar: Option<WindowToolbar>,
+    /// The notice up ([`crate::window_toolbar::notify`]).
+    notice: Option<crate::window_toolbar::ToolbarNotice>,
     /// Bumped by every declaration that changed the slots.
     revision: u64,
     events: VecDeque<ToolbarEvent>,
@@ -104,7 +106,7 @@ impl HostedWindow {
     /// changed.
     pub fn declare(&self, toolbar: Option<WindowToolbar>) {
         let toolbar = toolbar
-            .map(WindowToolbar::bounded)
+            .map(crate::window_toolbar::declaration)
             .filter(|toolbar| !toolbar.is_empty());
         let wake = {
             let mut state = self.state();
@@ -116,6 +118,28 @@ impl HostedWindow {
             state.wake.clone()
         };
         Self::wake(wake);
+    }
+
+    /// Show `notice` in the bar (`None`: take it down), bounded as
+    /// [`crate::window_toolbar::notify`] bounds it. Cheap when nothing
+    /// changed.
+    pub fn notify(&self, notice: Option<crate::window_toolbar::ToolbarNotice>) {
+        let wake = {
+            let mut state = self.state();
+            if state.notice == notice {
+                return;
+            }
+            state.notice = notice;
+            state.revision = state.revision.wrapping_add(1);
+            state.wake.clone()
+        };
+        Self::wake(wake);
+    }
+
+    /// The notice up.
+    #[must_use]
+    pub fn notice(&self) -> Option<crate::window_toolbar::ToolbarNotice> {
+        self.state().notice.clone()
     }
 
     /// What the person did with the slots since the last call, oldest
@@ -215,7 +239,12 @@ impl HostedWindow {
     #[must_use]
     pub fn toolbar_since(&self, seen: Option<u64>) -> Option<(u64, Option<WindowToolbar>)> {
         let state = self.state();
-        (seen != Some(state.revision)).then(|| (state.revision, state.toolbar.clone()))
+        (seen != Some(state.revision)).then(|| {
+            (
+                state.revision,
+                crate::window_toolbar::with_notice(state.toolbar.clone(), state.notice.clone()),
+            )
+        })
     }
 
     /// Hand the app what the person did with its slots.

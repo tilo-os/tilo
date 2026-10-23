@@ -56,7 +56,7 @@ use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::metrics::Metrics;
 use ui::widget::modal_dialog;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, Transient};
+use ui::widget::toast::{ToastKind, Transient};
 use ui::widget::{
     Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead, ColorSwatchFace, Continuable,
     ControlSize, DropZoneFace, EditOutcome, EditableLabel, EmptyState, EmptyStateContent,
@@ -64,6 +64,7 @@ use ui::widget::{
     ScrollMetrics, Scrollbar, SegmentedFace, SegmentedStyle, SidebarDrawer, Slider, SliderFace,
     Toggle, ToggleFace, ToggleGroup, Widget, card_column_width, card_columns,
 };
+use ui::window_toolbar::ToolbarNotice;
 
 use crate::comment_overlay::{CommentAction, CommentOverlay};
 use crate::content::{self, is_shared};
@@ -254,7 +255,7 @@ struct LoadingImport {
     path: PathBuf,
     kind: ImportKind,
     expected_book_id: Option<String>,
-    /// The "Opening …" card: progress, up while the import runs.
+    /// The "Opening …" notice: progress, up while the import runs.
     card: Transient<()>,
 }
 
@@ -661,8 +662,6 @@ enum Action {
     CloseFontPicker,
     AddSystemFont(String),
     BeginRenameFont(String),
-    /// Dismiss the last import failure.
-    DismissLoadError,
 
     // --- search ------------------------------------------------------------
     /// Open the book, chapter, annotation or passage a result is anchored at.
@@ -902,9 +901,6 @@ pub struct BooksApp {
     /// The reading-appearance button as last painted: where its popover
     /// opens from.
     type_button: Rect,
-    /// Where a transient card may appear this frame: the window, or in the
-    /// reader the reading column above the progress slider.
-    toast_area: Rect,
     /// Independent rail offsets.  A book can have hundreds of chapters and a
     /// reader can have years of annotations, so neither rail may silently
     /// truncate at the bottom of the viewport.
@@ -1262,7 +1258,6 @@ impl BooksApp {
             selection_hud_h: ui::SelectionHud::height(&Theme::dark()),
             bubble_h: ui::status_bubble::pill_height(&Theme::dark()),
             type_button: Rect::ZERO,
-            toast_area: Rect::ZERO,
             toc_scroll: 0.0,
             toc_max_scroll: 0.0,
             toc_scroll_to_active: true,
@@ -2262,9 +2257,6 @@ impl BooksApp {
             Action::ToggleNotes => self.on_toggle_notes(),
             Action::ToggleTypePopover => self.reading_settings.toggle(),
             Action::DismissOverlay => self.on_dismiss_overlay(),
-            Action::DismissLoadError => {
-                self.load_error.dismiss();
-            }
             Action::Swallow => {}
             Action::ToggleBookmark => self.toggle_bookmark(doc),
             Action::FontInc => self.bump_setting(doc, |s| {
@@ -4095,7 +4087,6 @@ impl BooksApp {
             Action::EditComment(id) => format!("highlight.comment.edit:{id}"),
             Action::DeleteComment(id) => format!("highlight.comment.delete:{id}"),
             Action::OpenViaPortal => "library.open".into(),
-            Action::DismissLoadError => "library.dismiss-error".into(),
             Action::ToggleWatchFolder(path) => {
                 format!("library.watch:{}", ui::a11y::hash_key(path))
             }
@@ -4201,7 +4192,6 @@ impl BooksApp {
             Action::EditComment(id) => self.annotation_label(*id, "Edit comment"),
             Action::DeleteComment(id) => self.annotation_label(*id, "Delete comment"),
             Action::OpenViaPortal => "Open book".into(),
-            Action::DismissLoadError => "Dismiss".into(),
             Action::ToggleWatchFolder(path) => format!("Watch {}", path.display()),
             Action::ToggleKeepCatalogues => crate::catalogue::KEEP_CATALOGUES.into(),
             Action::OpenSettings => "Book settings".into(),
@@ -4461,18 +4451,27 @@ impl BooksApp {
         self.load_error.dismiss();
     }
 
-    /// Keep the "Opening …" card up while its import runs, and take a
-    /// failure's card down once it has been up for a notice's lifetime, so
-    /// the window repaints without it.
+    /// Say an import in flight in the window's bar, for as long as it runs
+    /// (parsing happens off-thread, so the previous book stays interactive),
+    /// or the last import's failure, for a notice's lifetime.
     fn expire_load_toast(&mut self) {
-        // An import in flight is the work its card follows.
-        let opening = self.import_loading.as_mut().is_some_and(|loading| {
+        if let Some(loading) = self.import_loading.as_mut() {
+            // An import in flight is the work its notice follows.
             loading.card.keep_while(true);
-            loading.card.expire()
-        });
-        if self.load_error.expire() || opening {
-            self.dirty = true;
+            loading.card.expire();
+            let name = loading
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("book");
+            let text = format!("Opening {name}");
+            loading
+                .card
+                .publish(|()| ToolbarNotice::new(text, ToastKind::Info));
         }
+        self.load_error.expire();
+        self.load_error
+            .publish(|error| ToolbarNotice::new(error.clone(), ToastKind::Error));
     }
 
     /// When the import's card leaves, for the app's wake deadline.
@@ -4483,47 +4482,6 @@ impl BooksApp {
             .into_iter()
             .chain(self.load_error.deadline())
             .min()
-    }
-
-    /// An import in flight, for as long as it runs, or the last import's
-    /// failure, for a notice's lifetime or until it is dismissed, as a
-    /// transient card at the bottom of the window.
-    fn draw_load_toast(&mut self, ctx: &mut PaintCtx<'_>) {
-        let opening;
-        let (title, body, kind, since) = if let Some(loading) = &self.import_loading {
-            let name = loading
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("book");
-            opening = format!("Opening {name}");
-            (opening.as_str(), "", ToastKind::Info, loading.card.since())
-        } else if let Some(error) = self.load_error.as_deref() {
-            // "Couldn't open x.epub: the reason" reads as a title and a body.
-            let (title, body) = error.split_once(": ").unwrap_or((error, ""));
-            (title, body, ToastKind::Error, self.load_error.since())
-        } else {
-            return;
-        };
-        let Some(since) = since else {
-            return;
-        };
-        let closable = self.import_loading.is_none();
-        let card = ToastCard::new(title, kind).body(body).closable(closable);
-        let hit = ui::widget::toast::paint_transient(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            self.toast_area,
-            ToastAnchor::BottomCenter,
-            &card,
-            since,
-        );
-        if closable && hit.close_rect.width() > 0.0 {
-            self.push_hit(hit.card_rect, Action::Swallow);
-            self.push_hit(hit.close_rect, Action::DismissLoadError);
-        }
     }
 }
 
@@ -4758,7 +4716,6 @@ impl Widget for BooksApp {
         self.reader_compact_breakpoint = f64::from(theme.tokens.metrics.compact_breakpoint);
         self.selection_hud_h = ui::SelectionHud::height(theme);
         self.bubble_h = ui::status_bubble::pill_height(theme);
-        self.toast_area = self.rect;
         // Resolve the drawers against this frame's width (a breakpoint
         // crossing settles them without a slide), then advance any toggle.
         self.toc_drawer.scale_for(theme);
@@ -4780,12 +4737,6 @@ impl Widget for BooksApp {
             View::Reader => self.draw_reader(&mut ctx),
             View::Settings => self.draw_settings(&mut ctx),
             View::Search => self.draw_query_view(&mut ctx),
-        }
-        // The empty shelf says what failed in its own empty state. Every
-        // other view needs an honest loading/result surface: parsing happens
-        // off-thread, so the previous book stays interactive.
-        if self.view != View::Library || !self.library.is_empty() || !self.elsewhere.is_empty() {
-            self.draw_load_toast(&mut ctx);
         }
         // The open list of a dropdown lies over everything.
         let window = self.rect;
@@ -7452,7 +7403,6 @@ impl BooksApp {
             ctx.scene.pop_layer();
         }
         self.push_hit(slider_rect, Action::SeekProgress);
-        self.toast_area = Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, band.y0);
         self.reader_bubble.draw(ctx, band, self.cursor, position);
 
         // ---- chrome: header row, selection HUD, drawers

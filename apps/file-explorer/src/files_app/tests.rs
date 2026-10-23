@@ -5196,6 +5196,8 @@ mod responsive_body_tests {
         for name in ["a.txt", "b.txt", "c.txt"] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
         }
+        // A desktop bar hosts the window: the notice and its Undo are there.
+        ui::window_toolbar::set_hosted(true);
         let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
         h.draw_overlay();
         h.w.status = None;
@@ -5231,12 +5233,14 @@ mod responsive_body_tests {
             "one plain line, no meta text"
         );
         h.lay_out(1000.0, 720.0);
-        h.draw_overlay();
-        let undo = h.w.notice.action_rect();
-        assert!(undo.width() > 0.0, "the notice paints its Undo");
-        h.cursor(undo.center().x, undo.center().y);
-        h.left_press();
-        h.left_release();
+        let shown = ui::window_toolbar::notice().expect("the window's bar says it");
+        assert_eq!(shown.text, told);
+        let undo = shown
+            .action
+            .expect("Undo is the bar's action while it shows");
+        assert_eq!(undo.name, t("files-notice-undo"));
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: undo.id });
+        h.lay_out(1000.0, 720.0);
         assert_eq!(
             ui::undo::UndoControl::take_undo_request(&mut h.w),
             Some(ui::UndoRequest::Undo),

@@ -866,31 +866,18 @@ fn share_copies_a_link_through_a_real_click() {
             .settle_for_capture(tilo_test_env::hang_bound()),
         "the watch page must finish its entrance before clicking Share"
     );
-    // Observe the real effect through the published accessibility notice.
+    // Observe the real effect through the window bar's notice.
     // Under a busy shard, the click can enqueue work beyond the next host
     // tick, so inspect the model only after that effect has appeared.
     tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click begins");
     app.harness().click_named("watch_copy_link").unwrap();
     tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click returned");
-    let observed = app.harness().wait_until(tilo_test_env::hang_bound(), |h| {
-        h.a11y_nodes().iter().any(|(_, node)| {
-            node.label() == Some("Notifications")
-                && node
-                    .value()
-                    .is_some_and(|value| value.contains("Link copied") && value.contains(WATCH_ID))
-        })
-    });
+    let observed = link_copied(&mut app);
     if !observed {
-        let notices: Vec<_> = app
-            .harness()
-            .a11y_nodes()
-            .into_iter()
-            .filter(|(_, node)| node.label() == Some("Notifications"))
-            .map(|(_, node)| node.value().map(str::to_owned))
-            .collect();
         eprintln!(
-            "share timeout at {:?}; a11y notices: {notices:?}",
-            ui::time::now()
+            "share timeout at {:?}; bar notice: {:?}",
+            ui::time::now(),
+            ui::window_toolbar::notice()
         );
         app.with_surface::<TubeApp, _>(|viewer| {
             eprintln!(
@@ -933,14 +920,10 @@ fn share_copies_a_link_through_a_real_click() {
     })
     .unwrap();
     assert!(
-        app.harness().a11y_nodes().iter().any(|(_, node)| {
-            node.label() == Some("Notifications")
-                && node.live() == Some(ui::accesskit::Live::Assertive)
-                && node
-                    .value()
-                    .is_some_and(|value| value.contains("Link copied") && value.contains(WATCH_ID))
-        }),
-        "the share confirmation is actually published by the toast strip"
+        ui::window_toolbar::notice().is_some_and(
+            |notice| notice.text.contains("Link copied") && notice.text.contains(WATCH_ID)
+        ),
+        "the share confirmation is the window bar's notice"
     );
 }
 
@@ -1017,12 +1000,9 @@ fn press(
 }
 
 fn link_copied(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> bool {
-    app.harness().wait_until(tilo_test_env::hang_bound(), |h| {
-        h.a11y_nodes().iter().any(|(_, node)| {
-            node.label() == Some("Notifications")
-                && node
-                    .value()
-                    .is_some_and(|value| value.contains("Link copied") && value.contains(WATCH_ID))
+    app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
+        ui::window_toolbar::notice().is_some_and(|notice| {
+            notice.text.contains("Link copied") && notice.text.contains(WATCH_ID)
         })
     })
 }

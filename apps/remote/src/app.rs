@@ -582,8 +582,8 @@ pub struct RemoteApp {
     /// never replicated with the connection profile.
     pending_confirmation: Option<PendingConfirmation>,
     dialog: Option<ModalDialog<Column>>,
-    /// Outcomes worth a moment's notice (a revalidation that cancelled an
-    /// action). They contain no credential material.
+    /// The way out of full screen, said over the session while the window's
+    /// bar is hidden.
     toasts: ToastStack,
     toast_clock: Option<ui::time::Instant>,
 
@@ -907,7 +907,12 @@ impl RemoteApp {
         self.fullscreen = fullscreen;
         self.immersive = fullscreen.then(|| SessionPane::new(Rc::clone(&self.session)));
         if fullscreen {
-            self.notify("Press Esc to leave full screen.");
+            // Full screen hides the window's bar: the way out is said over
+            // the session itself.
+            self.toasts.push(
+                "Press Esc to leave full screen.".to_owned(),
+                ToastKind::Info,
+            );
         }
         self.layout_dirty = true;
         self.dirty = true;
@@ -1031,9 +1036,10 @@ impl RemoteApp {
         )
     }
 
+    /// An outcome worth a moment's notice (a revalidation that cancelled an
+    /// action), in the window's bar. It holds no credential material.
     fn notify(&mut self, message: impl Into<String>) {
-        self.toasts.push(message.into(), ToastKind::Info);
-        self.dirty = true;
+        self.shell.toast(message, ToastKind::Info);
     }
 
     fn request_connect(&mut self, id: ConnectionId) {
