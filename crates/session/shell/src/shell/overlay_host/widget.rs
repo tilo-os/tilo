@@ -8,6 +8,12 @@
 use super::*;
 
 impl Widget for ShellOverlayHost {
+    fn has_pending_visual_work(&self) -> bool {
+        let mut pending = self.palette_visible && self.search_indexes_settling;
+        self.for_each_child(&mut |child| pending |= child.has_pending_visual_work());
+        pending
+    }
+
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -210,17 +216,19 @@ impl Widget for ShellOverlayHost {
                 )
             };
             let state = chrome.borrow();
-            search_index_ready =
-                self.search_registry
-                    .refresh_indexes(&crate::shell::search::QueryArgs {
-                        needle: &current_query,
-                        scope,
-                        active_provider_id: active_provider.as_deref(),
-                        wanted_kinds: &self.active_kind_filter,
-                        chrome: &state,
-                        doc,
-                        doc_root: path,
-                    });
+            let args = crate::shell::search::QueryArgs {
+                needle: &current_query,
+                scope,
+                active_provider_id: active_provider.as_deref(),
+                wanted_kinds: &self.active_kind_filter,
+                chrome: &state,
+                doc,
+                doc_root: path,
+            };
+            search_index_ready = self.search_registry.refresh_indexes(&args);
+            self.search_indexes_settling = self.search_registry.indexes_settling(&args);
+        } else {
+            self.search_indexes_settling = false;
         }
         steps.mark("search-index");
         self.poll_pending_launchpad_actions();

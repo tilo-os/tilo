@@ -550,6 +550,9 @@ pub struct ShellOverlayHost {
     /// state the rows show (a switch's ON/OFF) changing moves it, and the
     /// rows are rebuilt.
     search_chrome_revision: u64,
+    /// An index the open palette's query reaches was still being built at
+    /// the last tick: its rows are owed, and a still capture waits for them.
+    search_indexes_settling: bool,
     /// Atomic remote-directory admissions are not assumed accepted when the
     /// user presses Enter. Their tickets are polled at frame refresh without
     /// ever blocking the compositor on a broker RPC.
@@ -1770,6 +1773,9 @@ mod wifi_password_tests;
 #[cfg(test)]
 #[path = "open_window_rows_tests.rs"]
 mod open_window_rows_tests;
+#[cfg(test)]
+#[path = "store_index_arrival_tests.rs"]
+mod store_index_arrival_tests;
 
 #[cfg(test)]
 #[allow(
