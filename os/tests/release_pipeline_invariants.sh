@@ -101,11 +101,14 @@ t_has() {
 # A registry hiccup after a completed compile must not discard the build: the kernel is built
 # into an archive whose digest the build records, and publication pushes that archive, retrying
 # a failed copy a bounded number of times, and refuses a registry that holds any other digest.
-t_has publish-kernel run "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64 'sha-{commit}-x86_64'" \
-  && t_has publish-kernel run "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64 'sha-{commit}-aarch64'" \
+# A commit's tag is pushed once, so a rebuild on the same commit never moves it off a digest
+# already pinned, and the pins name the digest each receipt says the tag holds.
+t_has publish-kernel run "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64 'once:sha-{commit}-x86_64'" \
+  && t_has publish-kernel run "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64 'once:sha-{commit}-aarch64'" \
   && grep -Fq 'archive_digest "$out/image.oci.tar" > "$out/digest"' "$kernel_script" \
   && grep -Fq 'for attempt in 1 2 3 4 5; do' "$publish/oci-publish.sh" \
   && grep -Fq '[[ sha256:$pushed == "$digest" ]] || die' "$publish/oci-publish.sh" \
+  && grep -Fq '"$dir/$arch/receipt.json")' <<<"$(sed -n '/^  pins)$/,/^    ;;$/p' "$kernel_script")" \
   && ok 'kernel publication retries a failed push of the completed build and keeps its digest' \
   || bad 'a registry push hiccup can fail kernel publication or publish another digest'
 
