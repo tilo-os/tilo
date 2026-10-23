@@ -377,6 +377,28 @@ pub struct Workbench {
     pub drafts: Collection<Draft>,
 }
 
+/// `name`, numbered past the drafts that already go by it: "New shortcut",
+/// then "New shortcut 2", "New shortcut 3".
+fn unused_name(workbench: &Workbench, name: &str) -> String {
+    let base = name.trim();
+    let number = |taken: &str| -> Option<u32> {
+        let rest = taken.trim().strip_prefix(base)?;
+        if rest.is_empty() {
+            return Some(1);
+        }
+        rest.strip_prefix(' ')?.parse().ok()
+    };
+    let highest = workbench
+        .drafts
+        .iter()
+        .filter_map(|(_, draft)| number(&draft.name))
+        .max();
+    match highest {
+        Some(highest) if !base.is_empty() => format!("{base} {}", highest.saturating_add(1)),
+        _ => name.to_owned(),
+    }
+}
+
 fn draft_mut<'a>(workbench: &'a mut Workbench, draft: &Id) -> Result<&'a mut Draft, Refusal> {
     workbench
         .drafts
@@ -442,8 +464,12 @@ pub fn upgrade(
 )]
 impl Workbench {
     /// Start a new shortcut.
+    ///
+    /// A name another draft already has is numbered ("New shortcut 2"), so
+    /// the drafts can be told apart in the list.
     #[action]
     pub fn new_draft(&mut self, cx: &mut ActionCx, #[param("Name of the shortcut")] name: String) {
+        let name = unused_name(self, &name);
         let id = cx.id();
         let shortcut_id = format!("s{}", id.as_str().get(..16).unwrap_or(id.as_str()));
         let draft = Draft::new(name, shortcut_id, &Program::default(), false, &mut || {

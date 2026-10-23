@@ -548,3 +548,28 @@ fn a_workbench_of_version_one_opens_with_every_draft_program() {
     assert_eq!(draft.name, "File receipts");
     assert!(draft.replaces_saved);
 }
+
+/// New drafts that would share a name are numbered, as new layers and
+/// sheets are, so the list tells them apart.
+#[test]
+fn new_drafts_with_one_name_are_numbered() {
+    let mut replica = Replica::<Workbench>::new();
+    for _ in 0..3 {
+        replica
+            .apply(Workbench::NEW_DRAFT.with("New shortcut"))
+            .unwrap();
+    }
+    replica.apply(Workbench::NEW_DRAFT.with("Tidy")).unwrap();
+    let mut names: Vec<String> = replica
+        .state()
+        .unwrap()
+        .drafts
+        .values()
+        .map(|draft| draft.name.clone())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        ["New shortcut", "New shortcut 2", "New shortcut 3", "Tidy"]
+    );
+}
