@@ -187,7 +187,7 @@ async fn every_web_app_over_the_session() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let host = start_host(
         &root,
         &host_device,

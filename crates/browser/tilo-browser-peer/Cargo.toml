@@ -79,6 +79,7 @@ sha2.workspace = true
 bytes.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tempfile.workspace = true
+tilo-paths.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 serde_json.workspace = true

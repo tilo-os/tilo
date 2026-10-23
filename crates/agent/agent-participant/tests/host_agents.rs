@@ -550,7 +550,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
 
     let hosted = start(&root, &host, state.path()).await;
 
@@ -969,7 +969,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
@@ -1100,7 +1100,7 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let first_device = enrol(&root, "browser", DeviceCapabilities::member());
     let second_device = enrol(&root, "second browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
@@ -1228,7 +1228,7 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start_with(&root, &host, state.path(), model).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
@@ -1404,7 +1404,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);

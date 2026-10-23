@@ -120,7 +120,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     let page_device = enrol(&owner, "page", DeviceCapabilities::member());
     let member_device = enrol(&other, "member", DeviceCapabilities::member());
     let host_key = host.cert.device_public_key;
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let room = hosted
         .relay
