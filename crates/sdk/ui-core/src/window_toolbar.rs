@@ -657,11 +657,13 @@ impl WindowToolbar {
     /// [`MAX_LEADING`] leading actions, [`MAX_VIEWS`] views,
     /// [`MAX_SEGMENTS`] levels and [`MAX_SUGGESTIONS`] suggestions, every
     /// text at most [`MAX_TEXT_BYTES`], a picture at most
-    /// [`MAX_IMAGE_BYTES`], no icon the set does not have.
+    /// [`MAX_IMAGE_BYTES`], no icon the set does not have. A button in the
+    /// row needs an icon; a menu entry is named by its text, so one with no
+    /// icon stays ([`ToolbarAction::menu`], a menu button's items).
     #[must_use]
     pub fn bounded(mut self) -> Self {
         self.actions
-            .retain(|action| crate::icons::Icon::from_name(&action.icon).is_some());
+            .retain(|action| shown_icon(&action.icon, action.menu));
         // The row's actions first, in their order, then the menu's: the
         // row shows a prefix of the declared actions.
         self.actions.sort_by_key(|action| action.menu);
@@ -672,9 +674,7 @@ impl WindowToolbar {
         for action in self.actions.iter_mut().chain(self.leading.iter_mut()) {
             cut(&mut action.id);
             cut(&mut action.name);
-            action
-                .items
-                .retain(|item| crate::icons::Icon::from_name(&item.icon).is_some());
+            action.items.retain(|item| shown_icon(&item.icon, true));
             action.items.truncate(MAX_ITEMS);
             for item in &mut action.items {
                 cut(&mut item.id);
@@ -752,6 +752,12 @@ impl WindowToolbar {
         }
         self
     }
+}
+
+/// Whether an action with `icon` can be shown: an icon the set has, or
+/// none at all for an entry of a menu (`in_menu`), which its text names.
+fn shown_icon(icon: &str, in_menu: bool) -> bool {
+    crate::icons::Icon::from_name(icon).is_some() || (in_menu && icon.is_empty())
 }
 
 impl ToolbarEvent {
@@ -1130,6 +1136,25 @@ mod tests {
         let bounded = many.clone().bounded();
         assert_eq!(bounded.actions.len(), MAX_DECLARED_ACTIONS);
         assert!(bounded.actions.iter().all(|a| a.icon != "not-an-icon"));
+
+        // A menu entry is named by its text: one with no icon stays, and a
+        // button in the row with none does not.
+        let texts = WindowToolbar {
+            actions: vec![
+                ToolbarAction::new("import", "", "Import report").in_menu(),
+                ToolbarAction::new("bare", "", "No icon in the row"),
+                ToolbarAction::new("more", "more-horizontal", "More")
+                    .with_items(vec![ToolbarAction::new("export", "", "Export report")]),
+            ],
+            ..WindowToolbar::default()
+        }
+        .bounded();
+        let ids: Vec<&str> = texts.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["more", "import"]);
+        assert_eq!(
+            texts.actions[0].items.first().map(|item| item.id.as_str()),
+            Some("export")
+        );
 
         let before = revision();
         declare(Some(browser()));
