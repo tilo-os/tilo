@@ -22,6 +22,7 @@ mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
 mod observed_launch;
+pub use observed_launch::AppOpen;
 mod offload_door;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};

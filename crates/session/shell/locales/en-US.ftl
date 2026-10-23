@@ -1115,6 +1115,8 @@ launch-failed-window-lost = Its window stopped without being closed. Open it aga
 launch-window-lost-title = { $app } closed unexpectedly
 launch-failed-crashed = The app crashed before opening. Open Applications and try again.
 launch-unnamed-app = application
+app-open-unavailable-title = No app to open
+app-open-unavailable-body = { $app } asked to open an app that isn't on this computer or offered in the Store.
 launch-failure-title = Couldn't open { $app }
 
 # An app, or a process it started, that the system ended because memory ran out

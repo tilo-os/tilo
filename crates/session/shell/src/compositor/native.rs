@@ -11106,6 +11106,10 @@ pub fn run() {
             service.pump_identity_backup(&chrome, || {
                 frame_builder.host_mut().open_portable_identity_backup()
             });
+            let broker = collab_broker
+                .as_ref()
+                .and_then(crate::shell::collab_broker::BrokerHandle::app_action_broker);
+            service.pump_app_opens(&chrome, broker.as_ref());
         }
         input_steps.step("services");
         // A pen goes to a tablet-aware client directly and stands in for the
