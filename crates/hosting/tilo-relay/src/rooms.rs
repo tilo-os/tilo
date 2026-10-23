@@ -1411,14 +1411,24 @@ impl Rooms {
     )]
     async fn absorb(&self, room: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
         let host = &self.inner.host;
-        if author == host.cert.device_public_key {
-            return Ok(());
-        }
         let Ok(message) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) else {
             return Ok(());
         };
-        let Some(message) = self.absorb_notice(room, author, message).await? else {
-            return Ok(());
+        // The relay's own device writes records through the room too: the
+        // actions it runs for members (a visitor linking their Discord
+        // account) are committed as that device, and the governor's copy,
+        // which the room's bots read, must take them in like any member's.
+        // Its notices it made itself, so it has them already.
+        let message = if author == host.cert.device_public_key {
+            if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+                return Ok(());
+            }
+            message
+        } else {
+            let Some(message) = self.absorb_notice(room, author, message).await? else {
+                return Ok(());
+            };
+            message
         };
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
