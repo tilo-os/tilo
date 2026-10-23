@@ -3198,6 +3198,11 @@ impl GroupRow {
         self.groups.iter().any(WindowGroup::drag_in_flight)
     }
 
+    /// The tab one of this row's tab bars is dragging, while one is.
+    pub fn dragged_tab(&self) -> Option<u64> {
+        self.groups.iter().find_map(WindowGroup::dragged_tab)
+    }
+
     /// The exact destination currently painted for a tab from another strip.
     pub fn cross_strip_drop_target(&self) -> Option<TabDropTarget> {
         self.cross_strip_drop_target

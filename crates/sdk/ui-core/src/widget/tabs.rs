@@ -2897,6 +2897,14 @@ impl TabBar {
     pub fn drag_in_flight(&self) -> bool {
         self.pending_drag.is_some()
     }
+
+    /// The tab this bar is dragging, while it drags one.
+    pub fn dragged_tab(&self) -> Option<u64> {
+        match self.pending_drag {
+            Some(DragPayload::Tab { tab, .. }) => Some(tab),
+            _ => None,
+        }
+    }
     pub fn take_reorder(&mut self) -> Option<(usize, usize)> {
         self.pending_reorder.take()
     }

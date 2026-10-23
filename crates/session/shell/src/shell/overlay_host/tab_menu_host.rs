@@ -209,6 +209,14 @@ impl ShellOverlayHost {
         true
     }
 
+    /// The tab a strip's tab bar is dragging, while one is.
+    pub fn dragged_tab(&self) -> Option<u64> {
+        self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: read-only use under the field's stable-row contract.
+            unsafe { &*ptr }.dragged_tab()
+        })
+    }
+
     /// Abandon tab gestures and cross-strip feedback, preserving durable state.
     pub fn cancel_tab_drags(&mut self) -> bool {
         let mut cancelled = false;

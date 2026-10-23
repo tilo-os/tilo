@@ -2359,6 +2359,11 @@ impl WindowGroup {
         self.bar.drag_in_flight()
     }
 
+    /// The tab this group's bar is dragging, while it drags one.
+    pub fn dragged_tab(&self) -> Option<u64> {
+        self.bar.dragged_tab()
+    }
+
     /// Whether one of this group's edges is being dragged to resize it.
     pub fn edge_resize_in_flight(&self) -> bool {
         self.edge_drag.is_some()
