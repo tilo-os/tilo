@@ -45,7 +45,7 @@ const POSITION_TOLERANCE: f64 = 1e-4;
 const EDGE_REACH_DWELL: crate::time::Duration = super::group_row::DRAG_SPRING_LOAD;
 /// How close to the deck's top or bottom edge (or past it, over the top
 /// bar) a drag has to rest to reach the next strip.
-const EDGE_REACH_BAND_PX: f64 = super::group_row::DRAG_EDGE_BAND_PX;
+const EDGE_REACH_BAND_PX: f64 = crate::tokens::motion::EDGE_AUTOSCROLL_BAND;
 
 /// Fingers moving the deck.
 #[derive(Clone, Copy, Debug)]
