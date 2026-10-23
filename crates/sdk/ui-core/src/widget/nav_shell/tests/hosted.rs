@@ -95,3 +95,88 @@ fn a_narrow_window_with_its_toolbar_in_the_bar_opens_on_its_list() {
     let list = child_rect(&h, "overview").expect("the list is a column");
     assert!(list.width() >= 500.0, "back on the list: {list:?}");
 }
+
+/// Whether the shell shows a Back part of its own.
+fn shows_back_part(h: &FrameHarness) -> bool {
+    h.root::<NavShell>()
+        .part(Part::Back)
+        .is_some_and(|back| back.get_rect().width() > 0.0)
+}
+
+/// Whether the shell's slots for the window's bar hold Back.
+fn bar_back(h: &FrameHarness) -> bool {
+    h.root::<NavShell>()
+        .window_toolbar()
+        .leading
+        .iter()
+        .any(|action| action.id == crate::widget::nav_shell::window_toolbar::WINDOW_BACK)
+}
+
+/// A phone-wide (420 px) window whose bar holds the sidebar's toggle opens
+/// on its top-level page with nowhere to go back to: the toggle reaches the
+/// sidebar, and no Back stands beside it, in the bar or in the shell.
+#[test]
+fn a_top_level_page_has_no_back_beside_the_bars_toggle() {
+    const NARROW: u32 = 420;
+    // Containers, Clocks: a sidebar of sections and the section's page.
+    let shell = NavShell::new()
+        .content_kind(ContentKind::List)
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .with_window_toolbar();
+    let mut h = harness(shell, NARROW, H, Theme::dark());
+    settle(&mut h, NARROW, H);
+    let g = geometry(&h);
+    assert_eq!(g.sidebar, SidebarPlacement::Screen);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    assert_eq!(g.back_column, None, "Back goes nowhere");
+    assert_eq!(g.back, Rect::ZERO);
+    assert!(!shows_back_part(&h), "no Back part");
+    assert!(!h.root::<NavShell>().can_go_back());
+    assert!(!bar_back(&h), "no Back in the bar");
+    let toolbar = h.root::<NavShell>().window_toolbar();
+    assert_eq!(toolbar.sidebar, Some(false), "the toggle is the bar's");
+    assert!(
+        h.root_mut::<NavShell>()
+            .window_toolbar_event(&ToolbarEvent::ToggleSidebar)
+    );
+    settle(&mut h, NARROW, H);
+    assert_eq!(
+        h.root::<NavShell>().front_pane(),
+        NavPane::Sidebar,
+        "the toggle reaches the sidebar"
+    );
+    assert!(!bar_back(&h), "the sidebar is a first screen too");
+}
+
+/// With a list beside its content, the list is the top-level page: no Back
+/// on it, and Back in the bar once an item is open, which comes back to the
+/// list.
+#[test]
+fn back_shows_once_there_is_somewhere_to_go_back_to() {
+    const NARROW: u32 = 420;
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .overview(Probe::boxed("overview").0)
+        .content(Probe::boxed("content").0)
+        .with_window_toolbar();
+    let mut h = harness(shell, NARROW, H, Theme::dark());
+    settle(&mut h, NARROW, H);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    assert!(!bar_back(&h), "the list is the top-level page");
+    assert!(!shows_back_part(&h));
+
+    h.root_mut::<NavShell>().show(NavPane::Content);
+    settle(&mut h, NARROW, H);
+    assert!(bar_back(&h), "an open item goes back to the list");
+    assert!(!shows_back_part(&h), "Back is the bar's alone");
+    assert!(
+        h.root_mut::<NavShell>()
+            .window_toolbar_event(&ToolbarEvent::Action {
+                id: crate::widget::nav_shell::window_toolbar::WINDOW_BACK.into()
+            })
+    );
+    settle(&mut h, NARROW, H);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    assert!(!bar_back(&h));
+}
