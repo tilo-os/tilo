@@ -2392,8 +2392,15 @@ pub(crate) fn group_need(needs: impl IntoIterator<Item = ActionNeed>) -> ActionN
 }
 
 /// The encoded group of the built `members`, of the resource `vocabulary`:
-/// what [`ActionGroup`](crate::ActionGroup) of them encodes as.
+/// what [`ActionGroup`](crate::ActionGroup) of them encodes as. A group of
+/// one action is that action, as `Dispatcher::group` submits it: a control
+/// whose gesture is sometimes several actions (create a draft, then edit
+/// it) and usually one edit records that edit, which continues the undo
+/// step of the edit before it as the edit alone would.
 pub(crate) fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
+    if let [only] = members {
+        return encoded(only);
+    }
     let mut payload = Vec::with_capacity(128);
     payload.push(b'[');
     for (index, member) in members.iter().enumerate() {

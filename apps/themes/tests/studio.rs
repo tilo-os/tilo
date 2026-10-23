@@ -324,3 +324,66 @@ fn history_reads_each_role_that_changed() {
         )
     );
 }
+
+/// Open the navigation list's Presets destination.
+#[allow(
+    clippy::expect_used,
+    reason = "a test fixture: a sidebar without its Presets row fails the test"
+)]
+fn leave_for_presets(app: &mut TestApp<App>) {
+    let row = app
+        .with_widget(|nav: &mut ui::prelude::NavList| nav.row_rect("presets"))
+        .flatten()
+        .expect("the Presets row is drawn");
+    let center = row.center();
+    app.harness().click_at(center.x, center.y);
+    app.harness().relayout();
+    app.harness()
+        .expect(&SemanticExpectation::named(format!(
+            "preview-{}",
+            Preset::Dark.id()
+        )))
+        .expect("the presets are shown");
+}
+
+/// Customizing a preset opens an editor showing its copy, but only an edit
+/// writes the theme: one opened and left untouched leaves nothing under
+/// "Your themes", and the first edit writes exactly one, carrying that edit.
+#[test]
+fn customizing_writes_the_theme_on_its_first_edit() {
+    let mut app = gallery_at(1680);
+    let customize = format!("customize-{}", Preset::DarkGraphite.id());
+    app.harness()
+        .click_named(&customize)
+        .expect("the preset offers Customize");
+    app.harness().relayout();
+    app.harness()
+        .expect(&SemanticExpectation::named("contrast-findings").name_contains("Every pairing"))
+        .expect("the editor shows the preset's copy");
+    assert!(app.state().themes.is_empty(), "opening writes nothing");
+    leave_for_presets(&mut app);
+    assert!(
+        app.state().themes.is_empty(),
+        "a copy left untouched leaves nothing behind"
+    );
+
+    app.harness()
+        .click_named(&customize)
+        .expect("the preset offers Customize");
+    app.harness().relayout();
+    app.harness()
+        .click_named("theme-name")
+        .expect("the name field is drawn");
+    app.harness().type_text("X");
+    app.harness().relayout();
+    let state = app.state();
+    assert_eq!(state.themes.len(), 1, "the first edit writes one theme");
+    let (_, theme) = state.themes.iter().next().expect("one theme");
+    assert!(
+        theme.name.contains('X') && theme.name.contains(Preset::DarkGraphite.name()),
+        "the theme is the preset's copy carrying the edit: {:?}",
+        theme.name
+    );
+    leave_for_presets(&mut app);
+    assert_eq!(app.state().themes.len(), 1, "a written theme stays");
+}
