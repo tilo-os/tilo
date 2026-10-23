@@ -350,41 +350,37 @@ fn every_launcher_row_says_why_it_is_there() {
 
 #[test]
 #[serial_test::serial(process_env)]
-fn apps_lists_every_app_the_most_used_first_then_by_purpose() {
+fn apps_lists_the_most_used_then_tilos_starting_points_never_by_category() {
     let desk = desk();
-    let apps = desk.groups(SearchScope::Workspace);
-    let labels: Vec<&str> = apps.iter().map(|group| group.label.as_str()).collect();
+    let titles = |desk: &Desk| -> Vec<String> {
+        desk.rows(SearchScope::Workspace, LauncherSection::Apps)
+            .into_iter()
+            .map(|row| row.title)
+            .collect()
+    };
     assert_eq!(
-        labels,
-        ["Office", "Utilities"],
-        "nothing used yet: every app, grouped by what it is for"
-    );
-    let calculator = apps
-        .iter()
-        .flat_map(|group| &group.rows)
-        .find(|row| row.title == "Calculator")
-        .expect("Calculator")
-        .clone();
-    usage::record(&calculator.provider_id, &calculator.id);
-    let apps = desk.groups(SearchScope::Workspace);
-    assert_eq!(
-        apps[0].label, "Apps",
-        "the most used lead, under the section's name"
-    );
-    assert_eq!(
-        apps[0]
-            .rows
+        desk.groups(SearchScope::Workspace)
             .iter()
-            .map(|row| row.title.as_str())
-            .collect::<Vec<_>>(),
-        ["Calculator"]
+            .filter(|group| group.section == LauncherSection::Apps)
+            .count(),
+        1,
+        "one Apps section, no group per category"
     );
-    assert!(
-        apps.iter()
-            .skip(1)
-            .flat_map(|group| &group.rows)
-            .all(|row| row.title != "Calculator"),
-        "one row per app"
+    assert_eq!(
+        titles(&desk),
+        ["Notes", "Calculator"],
+        "nothing used yet: Tilo's starting points, in their order"
+    );
+    let calculator = desk
+        .rows(SearchScope::Workspace, LauncherSection::Apps)
+        .into_iter()
+        .find(|row| row.title == "Calculator")
+        .expect("Calculator");
+    usage::record(&calculator.provider_id, &calculator.id);
+    assert_eq!(
+        titles(&desk),
+        ["Calculator", "Notes"],
+        "the most used lead, one row per app"
     );
 }
 
@@ -410,40 +406,5 @@ fn a_typed_query_is_not_the_launcher() {
         cleared.first().map(|group| &group.kind),
         Some(&ResourceKind::Custom(LauncherSection::HappeningNow.label())),
         "clearing the query brings the launcher back"
-    );
-}
-
-#[test]
-#[serial_test::serial(process_env)]
-fn a_short_card_keeps_what_is_going_on_and_the_apps_share_the_rest() {
-    let desk = desk();
-    desk.arrive(desk.home, "morgan", "Morgan");
-    desk.message(desk.home, "Alex", "Can you look at the pitch?");
-    desk.open_note(desk.home, "pitch", "Pitch");
-    desk.open_note(desk.home, "plan", "Plan");
-
-    let groups = desk.with_args("", SearchScope::Workspace, |args| {
-        kind_groups(&desk.registry, args)
-    });
-    let trimmed = trim(groups, 3, &[]);
-    for group in &trimmed {
-        let label = group.kind.localized_label();
-        if section_of(&label) == Some(LauncherSection::Apps) {
-            assert!(!group.results.is_empty(), "{label} keeps a row");
-        } else {
-            assert_eq!(
-                group.results.len(),
-                group.total,
-                "{label} keeps every row however short the card"
-            );
-        }
-    }
-    assert!(
-        trimmed
-            .iter()
-            .any(|group| section_of(&group.kind.localized_label())
-                == Some(LauncherSection::Continue)
-                && group.results.len() == 2),
-        "both notes to continue"
     );
 }

@@ -505,11 +505,6 @@ pub trait SearchProvider {
     fn launcher_rows(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         launcher::every_page(self, ctx)
     }
-    /// The categories an app row of this provider declares (freedesktop
-    /// main categories, `;`-separated), which the launcher groups apps by.
-    fn app_category(&self, _result: &SearchResult) -> Option<String> {
-        None
-    }
     /// Run the search. `wanted` is the set of kinds currently asked for
     /// (filter chips + scope); a remote-backed provider should dispatch
     /// ONE query and split the response into the wanted kinds.

@@ -316,3 +316,46 @@ fn continue_is_where_the_windows_were_as_their_bars_said() {
         "only the window that named where it is"
     );
 }
+
+#[test]
+fn all_apps_follows_the_listed_apps_and_lists_every_app() {
+    use crate::shell::search::launcher::LauncherSection;
+    use ui::widget::command_palette::CommandEntry;
+    let in_section = |id: &str, label: &str, section: LauncherSection| {
+        let mut entry = CommandEntry::new(id, label).group(section.label());
+        entry.section = Some(section.label());
+        entry
+    };
+    let all = palette_search::all_apps_entry(&[
+        in_section("result:0", "Pitch", LauncherSection::Continue),
+        in_section("result:1", "Notes", LauncherSection::Apps),
+    ])
+    .expect("All apps under the apps the launcher lists");
+    assert_eq!(all.label, "All apps");
+    assert_eq!(
+        all.section.as_deref(),
+        Some(LauncherSection::Apps.label().as_str())
+    );
+    assert!(
+        palette_search::all_apps_entry(&[in_section(
+            "result:0",
+            "Pitch",
+            LauncherSection::Continue
+        )])
+        .is_none(),
+        "no apps listed, no way to every app"
+    );
+
+    let (mut host, _chrome) = host();
+    let mut doc = AutoCommit::new();
+    host.open_global_search(&doc, &automerge::ROOT);
+    host.palette.set_entries(vec![all]);
+    host.palette.set_cursor(0);
+    host.activate_selected_result(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+    assert_eq!(
+        host.active_kind_filter,
+        [crate::shell::search::ResourceKind::Application],
+        "every app, as the Apps chip lists them"
+    );
+    assert!(host.palette_visible, "still in search, now listing apps");
+}
