@@ -468,6 +468,9 @@ struct Mount {
     hidden: bool,
     generation: u64,
     frames: u64,
+    /// How many of the harness's refused or failed invocations the page's
+    /// log has been told about.
+    failures_logged: usize,
     /// Protection sampled only after the corresponding GPU output presents.
     presented_capture_protected: bool,
     presentation: std::cell::Cell<bool>,
@@ -1620,9 +1623,19 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .and_then(crate::replication::page_store)
         .unwrap_or(profile);
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
+    // In a room, the page's apps may only read until the room says what
+    // its person may do there (`Room::follow_standing`): a change they make
+    // before that the room may refuse, and a write queued under a role the
+    // page only assumed would be refused at the door once the room's answer
+    // arrives, over the window, though the person never asked for it.
+    let assumed = if config.peer.is_some() {
+        collab_types::role::Role::Viewer
+    } else {
+        collab_types::role::Role::Owner
+    };
     let permissions = Rc::new(RefCell::new(PermissionContext::member(
         config.author(),
-        collab_types::role::Role::Owner,
+        assumed,
     )));
     let Presentation {
         root,
@@ -1776,6 +1789,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hidden: false,
         generation: 1,
         frames: 0,
+        failures_logged: 0,
         presented_capture_protected: true,
         presentation: std::cell::Cell::new(false),
         semantic_targets: Vec::new(),
@@ -2765,6 +2779,15 @@ impl Mount {
     /// deadline delivers it as it then is. Neither changes the focus
     /// presence or the place in the room either.
     fn publish_frame(&mut self, id: u64, change: FrameChange) {
+        // What did not run is said over the window; the log says which
+        // invocation it was, which the window's words leave out.
+        let failures = self.frame.control_failures();
+        for failure in failures.iter().skip(self.failures_logged) {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "Browser runtime: an invocation did not run: {failure}"
+            )));
+        }
+        self.failures_logged = failures.len();
         // The windows and strip this frame laid out move the pointers over
         // them.
         self.place_remote_pointers();
