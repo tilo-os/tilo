@@ -57,6 +57,10 @@ use crate::time::Instant;
 use crate::tokens::{MotionSource, TextRole};
 use crate::window_toolbar::{ToolbarEvent, WindowToolbar};
 
+#[path = "window_toolbar_location_label.rs"]
+mod location_label;
+use location_label::{LocationLabel, edited_word};
+
 /// Action targets of the slots, as assistive technology and automation
 /// address them.
 pub const SIDEBAR_TARGET: &str = "window-toolbar-sidebar";
@@ -1842,6 +1846,9 @@ impl ToolbarRow {
                 .with_name(name)
                 .with_optional_value(Some(location.edit_value().to_owned()))
                 .with_bounds(self.slots.location);
+                if location.edited {
+                    node = node.with_description(edited_word());
+                }
                 if location.editable || picker {
                     node = node
                         .with_action_target(LOCATION_TARGET)
@@ -2408,7 +2415,7 @@ fn paint_slots(
             scene,
             transform,
             (tr, theme),
-            (label, theme.tokens.colors.text_primary),
+            PickerText::new(label, theme.tokens.colors.text_primary),
             slots.views_menu,
             LocationLift {
                 hovered: interaction.is_some_and(|i| i.hover == Some(Slot::ViewsMenu)),
@@ -2488,12 +2495,12 @@ fn paint_location(
     lift: LocationLift,
 ) -> Option<Rect> {
     if !location.editable && !location.choices.is_empty() {
-        let shown = location_shown(location, theme);
+        let (shown, ink) = location_shown(location, theme);
         return Some(paint_picker(
             scene,
             transform,
             (tr, theme),
-            shown,
+            PickerText::new(shown, ink).edited(location.edited),
             rect,
             lift,
         ));
@@ -2530,21 +2537,9 @@ fn paint_location(
     if shown.is_empty() || text_rect.width() <= 0.0 {
         return None;
     }
-    let style = theme.text(TextRole::Body);
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a location's width is a bounded on-screen size, far inside f32"
-    )]
-    let width = text_rect.width() as f32;
-    let line = tr.elide_to_width_style(shown, width, &style);
-    let (_, h) = tr.measure_style(&line, None, &style);
-    let y = rect.center().y - f64::from(h) / 2.0;
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "Affine transform composition over f64 screen coordinates"
-    )]
-    let origin = transform * Affine::translate((text_rect.x0, y));
-    tr.draw_style(scene, &line, ink, origin, None, &style);
+    let label = LocationLabel::measure(tr, theme, shown, location.edited, text_rect.width());
+    let y = rect.center().y - label.height / 2.0;
+    label.paint(scene, transform, (tr, theme), (text_rect.x0, y), ink);
     None
 }
 
@@ -2571,30 +2566,49 @@ pub(crate) fn picker_width(label_w: f64, theme: &Theme) -> f64 {
     pad * 2.0 + label_w.ceil() + gap + LOCATION_ICON_PX
 }
 
+/// What a picker ([`paint_picker`]) says: its label in its ink, and
+/// whether the document it names has unsaved edits.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PickerText<'a> {
+    shown: &'a str,
+    ink: vello::peniko::Color,
+    edited: bool,
+}
+
+impl<'a> PickerText<'a> {
+    pub(crate) fn new(shown: &'a str, ink: vello::peniko::Color) -> Self {
+        Self {
+            shown,
+            ink,
+            edited: false,
+        }
+    }
+
+    /// The document it names has unsaved edits: the edited word follows.
+    pub(crate) fn edited(mut self, edited: bool) -> Self {
+        self.edited = edited;
+        self
+    }
+}
+
 /// A label that opens a menu of choices (a location with choices, the
-/// folded views): the label (`shown`, in its ink, elided at the end) and a
-/// trailing chevron, on the plain button face the bar's buttons lift with,
-/// as wide as they need and never wider than `rect`. Returns the face's
-/// rect, which the menu hangs from.
+/// folded views): the label (elided at the end) and a trailing chevron, on
+/// the plain button face the bar's buttons lift with, as wide as they need
+/// and never wider than `rect`. Returns the face's rect, which the menu
+/// hangs from.
 pub(crate) fn paint_picker(
     scene: &mut Scene,
     transform: Affine,
     (tr, theme): (&mut TextRenderer, &Theme),
-    (shown, ink): (&str, vello::peniko::Color),
+    text: PickerText<'_>,
     rect: Rect,
     lift: LocationLift,
 ) -> Rect {
     let pad = f64::from(theme.tokens.spacing.s2);
     let gap = f64::from(theme.tokens.spacing.s1);
-    let style = theme.text(TextRole::Body);
     let room = (rect.width() - pad * 2.0 - gap - LOCATION_ICON_PX).max(0.0);
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a location's width is a bounded on-screen size, far inside f32"
-    )]
-    let line = tr.elide_to_width_style(shown, room as f32, &style);
-    let (w, h) = tr.measure_style(&line, None, &style);
-    let label_w = f64::from(w).min(room);
+    let label = LocationLabel::measure(tr, theme, text.shown, text.edited, room);
+    let label_w = label.width.min(room);
     let face_rect = Rect::new(
         rect.x0,
         rect.y0,
@@ -2607,15 +2621,14 @@ pub(crate) fn paint_picker(
         .hovered(lift.hovered)
         .pressed(lift.pressed);
     crate::widget::Button::paint(scene, transform, tr, theme, &face);
-    if !line.is_empty() {
-        let y = rect.center().y - f64::from(h) / 2.0;
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine transform composition over f64 screen coordinates"
-        )]
-        let origin = transform * Affine::translate((face_rect.x0 + pad, y));
-        tr.draw_style(scene, &line, ink, origin, None, &style);
-    }
+    let y = rect.center().y - label.height / 2.0;
+    label.paint(
+        scene,
+        transform,
+        (tr, theme),
+        (face_rect.x0 + pad, y),
+        text.ink,
+    );
     let chevron_x = face_rect.x0 + pad + label_w + gap;
     crate::icons::draw_icon(
         scene,

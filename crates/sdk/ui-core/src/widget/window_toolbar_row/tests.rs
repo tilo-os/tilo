@@ -172,6 +172,49 @@ fn a_location_with_choices_opens_its_picker_and_commits_the_one_chosen() {
     );
 }
 
+#[test]
+fn an_edited_document_says_so_after_its_label_and_to_assistive_technology() {
+    let document = |edited: bool| ToolbarLocation {
+        label: "Harbour cut".into(),
+        edited,
+        ..Default::default()
+    };
+    let mut tr = TextRenderer::new();
+    let theme = Theme::dark();
+    let saved = LocationLabel::measure(&mut tr, &theme, "Harbour cut", false, 400.0);
+    let edited = LocationLabel::measure(&mut tr, &theme, "Harbour cut", true, 400.0);
+    assert!(saved.edited.is_none());
+    let (word, after) = edited.edited.clone().expect("an edited document says so");
+    assert_eq!(word, text("window-toolbar-edited"));
+    assert!(after > saved.width, "the word follows the whole label");
+    assert!(edited.width > saved.width);
+    assert_eq!(edited.line, saved.line, "the label itself is unchanged");
+    // Too narrow for both: the label keeps the room.
+    let narrow = LocationLabel::measure(&mut tr, &theme, "Harbour cut", true, 30.0);
+    assert!(narrow.edited.is_none());
+
+    let node = |edited: bool| {
+        let mut row = ToolbarRow::new();
+        let toolbar = WindowToolbar {
+            location: Some(document(edited)),
+            ..Default::default()
+        };
+        row.show(
+            1,
+            Some(&toolbar),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        row.lay_out(Rect::new(0.0, 0.0, 640.0, 40.0));
+        row.accessibility()
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Harbour cut"))
+            .expect("the location reaches assistive technology")
+    };
+    assert_eq!(node(true).description, Some(text("window-toolbar-edited")));
+    assert_eq!(node(false).description, None);
+}
+
 fn text(key: &str) -> String {
     crate::i18n::I18nManager::lookup_plain(key)
 }

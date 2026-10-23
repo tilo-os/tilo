@@ -149,6 +149,7 @@ impl FileExplorerWidget {
                 suggestions: self.bar_suggestions(),
                 choices: Vec::new(),
                 anchor: None,
+                edited: false,
             }),
             actions,
             ..WindowToolbar::default()

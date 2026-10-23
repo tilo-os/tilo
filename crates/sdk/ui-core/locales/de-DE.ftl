@@ -60,6 +60,7 @@ window-toolbar-go = Öffnen
 window-toolbar-more = Weitere Aktionen
 window-toolbar-views = Ansicht
 window-toolbar-suggestions = Vorschläge
+window-toolbar-edited = Bearbeitet
 window-toolbar-show-sidebar = Seitenleiste einblenden
 window-toolbar-hide-sidebar = Seitenleiste ausblenden
 window-toolbar-show-inspector = Inspektor einblenden
