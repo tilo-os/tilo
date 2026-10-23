@@ -5884,6 +5884,82 @@ mod selection;
 use scroll_damage::CanvasShown;
 use selection::{PendingPress, PendingSelectionEffect, SelectionStart, TextPos, TextSelection};
 
+impl ui::widget::WindowHeader for PdfApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.history.set_control(control);
+        self.dirty = true;
+    }
+}
+
+impl ui::widget::controls::ActionControls for PdfApp {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        ui::widget::semantic_action_bindings(self.accessibility())
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.history.take()
+    }
+}
+
+/// What Find says about a document whose pages are only pictures.
+const NO_TEXT_NOTE: &str =
+    "This PDF is images of pages, so its text can't be found, selected or copied";
+
+/// Whether `id` is an opaque participant id (a long hex key) rather than a
+/// name someone could read.
+fn opaque_participant_id(id: &str) -> bool {
+    id.len() >= 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+impl ui::widget::Findable for PdfApp {
+    fn find(
+        &mut self,
+        query: &str,
+        options: ui::widget::FindOptions,
+    ) -> Vec<ui::widget::FindMatch> {
+        self.search_case_sensitive = options.match_case;
+        self.search_whole_word = options.whole_word;
+        // Finding again over grown text keeps the emphasised match; a new
+        // query reveals its first one.
+        let current = self.active_match;
+        self.recompute_matches_for(query);
+        if current < self.match_count() {
+            self.active_match = current;
+        }
+        (0..self.match_count())
+            .map(|i| ui::widget::FindMatch::new(i, i + 1))
+            .collect()
+    }
+
+    fn reveal(&mut self, index: usize) {
+        self.active_match = index;
+        let page = if self.raster_active() {
+            self.raster_matches.get(index).map(|m| m.page)
+        } else {
+            self.matches.get(index).map(|m| m.page)
+        };
+        if let Some(page) = page {
+            self.go_to_page(page);
+        }
+        self.dirty = true;
+    }
+
+    fn clear_find(&mut self) {
+        self.matches.clear();
+        self.raster_matches.clear();
+        self.active_match = 0;
+        self.dirty = true;
+    }
+
+    /// The searchable text grows as page text layers arrive from the worker;
+    /// the bar finds again, so its counter follows.
+    fn content_revision(&self) -> u64 {
+        let document = self.raster_document.as_ref().map_or(0, |doc| doc.id);
+        let pages = u64::try_from(self.raster_text.len()).unwrap_or(u64::MAX);
+        document.rotate_left(32) ^ pages
+    }
+}
+
 #[cfg(test)]
 mod records_tests;
 
@@ -9726,81 +9802,5 @@ mod tests {
                 body.y1
             );
         }
-    }
-}
-
-impl ui::widget::WindowHeader for PdfApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        self.history.set_control(control);
-        self.dirty = true;
-    }
-}
-
-impl ui::widget::controls::ActionControls for PdfApp {
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        ui::widget::semantic_action_bindings(self.accessibility())
-    }
-
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.history.take()
-    }
-}
-
-/// What Find says about a document whose pages are only pictures.
-const NO_TEXT_NOTE: &str =
-    "This PDF is images of pages, so its text can't be found, selected or copied";
-
-/// Whether `id` is an opaque participant id (a long hex key) rather than a
-/// name someone could read.
-fn opaque_participant_id(id: &str) -> bool {
-    id.len() >= 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-impl ui::widget::Findable for PdfApp {
-    fn find(
-        &mut self,
-        query: &str,
-        options: ui::widget::FindOptions,
-    ) -> Vec<ui::widget::FindMatch> {
-        self.search_case_sensitive = options.match_case;
-        self.search_whole_word = options.whole_word;
-        // Finding again over grown text keeps the emphasised match; a new
-        // query reveals its first one.
-        let current = self.active_match;
-        self.recompute_matches_for(query);
-        if current < self.match_count() {
-            self.active_match = current;
-        }
-        (0..self.match_count())
-            .map(|i| ui::widget::FindMatch::new(i, i + 1))
-            .collect()
-    }
-
-    fn reveal(&mut self, index: usize) {
-        self.active_match = index;
-        let page = if self.raster_active() {
-            self.raster_matches.get(index).map(|m| m.page)
-        } else {
-            self.matches.get(index).map(|m| m.page)
-        };
-        if let Some(page) = page {
-            self.go_to_page(page);
-        }
-        self.dirty = true;
-    }
-
-    fn clear_find(&mut self) {
-        self.matches.clear();
-        self.raster_matches.clear();
-        self.active_match = 0;
-        self.dirty = true;
-    }
-
-    /// The searchable text grows as page text layers arrive from the worker;
-    /// the bar finds again, so its counter follows.
-    fn content_revision(&self) -> u64 {
-        let document = self.raster_document.as_ref().map_or(0, |doc| doc.id);
-        let pages = u64::try_from(self.raster_text.len()).unwrap_or(u64::MAX);
-        document.rotate_left(32) ^ pages
     }
 }
