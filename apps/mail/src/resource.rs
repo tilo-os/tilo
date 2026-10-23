@@ -63,6 +63,10 @@ pub struct Mail {
     /// What servers still have to be told: flags, moves and deletes the
     /// reader made that a message's server does not hold yet.
     pub server: Outbox<ServerUpdate>,
+    /// Messages the room holds whole, under the ids their state is kept
+    /// under in `messages`: mail delivered without a server
+    /// ([`crate::held`]).
+    pub held: Collection<crate::held::HeldMessage>,
 }
 
 /// What the reader did with one message, and what its server holds.
@@ -248,6 +252,8 @@ impl DraftState {
     search = Mail::search,
     scopes = Mail::scopes,
     queue = Mail::queue,
+    read_content = Mail::read_held,
+    answer = crate::held::answer,
 )]
 impl Mail {
     /// Mark messages read
@@ -476,6 +482,52 @@ impl Mail {
         }
         outbox.push(id, outgoing);
         Ok(())
+    }
+
+    /// Deliver message
+    ///
+    /// Puts an incoming message in the mailbox itself, in a folder, as mail
+    /// fetched from a server would arrive: for a scenario, an event a room
+    /// hands on, or a worker with no account. A reply joins the
+    /// conversation it answers. Nothing is sent. Answers its id.
+    #[action(answers, audience = "agents")]
+    pub fn deliver_message(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param(flatten)] message: crate::held::Delivery,
+    ) -> Result<(), Refusal> {
+        self.deliver(cx, &message).map(drop)
+    }
+
+    /// Draft message
+    ///
+    /// Writes the draft a person reviews and sends: who it goes to, its
+    /// subject and text. Nothing is sent; a draft already being written is
+    /// left alone.
+    #[action(audience = "agents")]
+    pub fn draft_message(
+        &mut self,
+        #[param("Recipients, comma-separated")] to: String,
+        #[param("The subject")] subject: String,
+        #[param("The message, as plain text")] body: String,
+        #[param("Copy recipients, comma-separated")] cc: Option<String>,
+    ) -> Result<(), Refusal> {
+        self.draft_held(&to, cc.as_deref().unwrap_or(""), &subject, &body)
+    }
+
+    /// Draft reply
+    ///
+    /// Writes a reply to a message held in the mailbox as the draft, the
+    /// original quoted below it, for a person to review and send. Nothing
+    /// is sent.
+    #[action(audience = "agents")]
+    pub fn draft_reply(
+        &mut self,
+        #[param("The id of the held message it answers")] message: String,
+        #[param("The reply, as plain text")] body: String,
+        #[param("Copy everyone else the message went to")] all: Option<bool>,
+    ) -> Result<(), Refusal> {
+        self.draft_reply_held(&message, &body, all.unwrap_or(false))
     }
 
     /// Cancel sending
@@ -1354,6 +1406,10 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
     }
 
     fn effect(&mut self, effect: MailEffect, cx: &mut EffectCx<Mail, Self>) -> EffectAnswer {
+        // Held mail is read from the record alone, in a window or a worker.
+        if let Some(answer) = crate::held::effect(&effect, &cx.live().get()) {
+            return answer;
+        }
         if let MailEffect::Save { message, index } = &effect {
             let (name, bytes) = self.attachment_to_save(message, *index)?;
             let resource = format!("mail.attachment:{message}:{index}");
