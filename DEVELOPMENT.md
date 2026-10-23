@@ -78,7 +78,7 @@ A board dev image is the board layer (`os/Containerfile.board`: firmware, device
 tree, initramfs) on the same commit's aarch64 dev image. It is sealed: bootc hands
 the kernel a device tree only from a UKI's `.dtb` section, so the image carries a
 UKI, which keeps the device tree across updates. t builds and publishes one for main's
-head every night and when asked (`publish-os-board-<board>` in `t.toml`; it builds
+head when asked (`publish-os-board-<board>` in `t.toml`; it builds
 `os-image-aarch64`, `os-dev-image-aarch64` and `os-board-<board>` first, a few hours from
 cold):
 

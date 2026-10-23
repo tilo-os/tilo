@@ -314,7 +314,7 @@ def goldens(image: str) -> str:
 
 
 def arm64_goldens(image: str) -> str:
-    """The nightly goldens on aarch64, in the same image, to see where its pixels differ from x86_64's."""
+    """The goldens on aarch64, in the same image, to see where its pixels differ from x86_64's."""
     sys.path.insert(0, str(ROOT / "tools/ci"))
     import nextest_filters
     golden = nextest_filters.filters()["GOLDEN_FILTER"]
@@ -328,7 +328,7 @@ def arm64_goldens(image: str) -> str:
                               f"--no-tests=pass {packages} -E '{golden}'"),
         'env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
         "writable_sources = true",
-        'on = ["schedule:0 3 * * *", "dispatch"]',
+        'on = ["stable", "dispatch"]',
         'cost = "heavy"',
         "default = false",
     ]) + "\n"
