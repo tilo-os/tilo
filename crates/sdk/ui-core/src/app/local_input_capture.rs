@@ -32,6 +32,10 @@ pub(super) struct LocalInputCapture {
     /// What the person is told, once a change definitively could not be
     /// saved to their history. Nothing is said while it is still on its way.
     pub(super) failure: Option<String>,
+    /// Routes whose connection the broker admits no local reports on (it
+    /// is not a host worker there). Edits on them are kept unreported, as
+    /// edits no publication observed are, until the connection is replaced.
+    reports_nothing: std::collections::HashSet<crate::collaboration::RouteSpec>,
     /// Changes the broker refused, kept for the person's Retry.
     refused: Vec<(
         crate::collaboration::RouteSpec,
@@ -188,6 +192,7 @@ impl App {
             );
         }
         let mut routes: Vec<InputRoute> = Vec::new();
+        let mut reports_nothing = false;
         let revision = self
             .actions
             .action_directory_stamp
@@ -251,6 +256,10 @@ impl App {
                 }
             }
             for (owner, (route, aliases)) in aliases {
+                if self.local_input_capture.reports_nothing.contains(&route) {
+                    reports_nothing = true;
+                    continue;
+                }
                 let queue = self
                     .local_input_capture
                     .queues
@@ -271,6 +280,14 @@ impl App {
                     pin: pin.clone().map(|pin| pin as Rc<dyn std::any::Any>),
                 });
             }
+        }
+        if routes.is_empty() && reports_nothing {
+            // The connection can carry no report: the edit is the person's,
+            // saved here, like one no publication observed.
+            drop(background);
+            return crate::local_document_action::enter_unsigned_input(
+                self.local_input_capture.unsigned_edits.clone(),
+            );
         }
         if routes.is_empty() {
             // Nothing can carry this input's actions; whether that matters
@@ -380,9 +397,12 @@ impl App {
             for pending in self.local_input_capture.pending.values_mut() {
                 pending.retry_at = now;
             }
+            // A new connection may be one the broker admits reports on.
+            self.local_input_capture.reports_nothing.clear();
         }
         self.local_input_capture.transport_connected = connected;
         let mut rejected = Vec::new();
+        let mut reports_nothing = Vec::new();
         let mut still_going: Vec<String> = Vec::new();
         if connected {
             self.fill_pending_revisions(now);
@@ -437,7 +457,10 @@ impl App {
                 pending.retry_delay =
                     (pending.retry_delay * 2).min(crate::time::Duration::from_secs(30));
                 if let Err(error) = result {
-                    if matches!(error, runtime_collab::LocalDocumentActionError::Rejected(_)) {
+                    if is_connection_without_reports(&error) {
+                        reports_nothing.push(*request_id);
+                    } else if matches!(error, runtime_collab::LocalDocumentActionError::Rejected(_))
+                    {
                         rejected.push(*request_id);
                         failures.push(error.to_string());
                     } else {
@@ -449,6 +472,9 @@ impl App {
         }
         for request_id in rejected {
             self.retire_rejected_local_capture(request_id);
+        }
+        for request_id in reports_nothing {
+            self.retire_capture_on_connection_without_reports(request_id);
         }
         // Never retire a route's capacity accounting while replies are in
         // flight, including unknown outcomes that still own snapshot leases.
@@ -673,6 +699,26 @@ impl App {
             .flatten()
     }
 
+    /// The broker admits no report on this capture's connection, and never
+    /// will: its edit is kept, unreported, as one no publication observed,
+    /// and later edits on the route are not reported either. The person has
+    /// nothing to retry, so nothing is said.
+    fn retire_capture_on_connection_without_reports(&mut self, request_id: u64) {
+        let Some(pending) = self.local_input_capture.pending.remove(&request_id) else {
+            return;
+        };
+        // Recorded as settled, so a restart does not report it again.
+        if let Err(error) =
+            self.stage_local_action_checkpoint(&pending.route, &pending.capture, None, true)
+        {
+            tracing::debug!(%error, "an unreportable change stays unrecorded");
+        }
+        self.local_input_capture
+            .reports_nothing
+            .insert(pending.route);
+        self.note_local_input_unsigned();
+    }
+
     fn retire_rejected_local_capture(&mut self, request_id: u64) {
         if let Some(pending) = self.local_input_capture.pending.remove(&request_id) {
             if let Err(error) =
@@ -866,6 +912,9 @@ impl App {
                     );
                 }
             }
+            Err(error @ Rejected(_)) if is_connection_without_reports(&error) => {
+                self.retire_capture_on_connection_without_reports(request_id);
+            }
             Err(Rejected(error)) => {
                 self.retire_rejected_local_capture(request_id);
                 self.local_input_capture_failed(&error);
@@ -877,6 +926,15 @@ impl App {
             }
         }
     }
+}
+
+/// Whether the broker refused a report because its connection admits none.
+fn is_connection_without_reports(error: &runtime_collab::LocalDocumentActionError) -> bool {
+    matches!(
+        error,
+        runtime_collab::LocalDocumentActionError::Rejected(reason)
+            if reason == runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING
+    )
 }
 
 #[cfg(test)]

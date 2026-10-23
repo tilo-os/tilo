@@ -139,13 +139,17 @@ fn cached_receipt(
     }
     let current = state.revalidate_admission(route, &channel.verified_identity)?;
     validate_report_custody(request, route, &current)?;
+    // Host workers are registered for the whole of their connection, so a
+    // connection that is not one never was: nothing reported on it can have
+    // been admitted, and nothing will be. Say so definitively, or the caller
+    // keeps every report (and the surface it was made under) forever.
     let target = state
         .host_workers
         .lock()
         .map_err(|_| capnp::Error::failed("worker registry unavailable".into()))?
         .get(&channel.peer_id)
         .cloned()
-        .ok_or_else(|| capnp::Error::failed("original worker retired".into()))?;
+        .ok_or_else(|| not_a_host_worker(state))?;
     state.revalidate_admission(route, &target)?;
     let certificate = current
         .certificate
@@ -247,6 +251,17 @@ fn validate_report_offer(request: &Request, action: &PublishedAction) -> Result<
     Ok(())
 }
 
+/// The answer to a report on a connection with no host-worker registration.
+/// Retirement clears every registration, and says nothing about what was
+/// admitted before it: that stays uncertain.
+fn not_a_host_worker(state: &CapnpBrokerState) -> capnp::Error {
+    if state.is_accepting() {
+        rejected(runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING.into())
+    } else {
+        capnp::Error::failed("invocation broker retired".into())
+    }
+}
+
 fn rejected(mut reason: String) -> capnp::Error {
     reason.insert_str(0, runtime_collab::LOCAL_DOCUMENT_REJECTED);
     capnp::Error::failed(reason)
@@ -345,7 +360,7 @@ pub(super) fn admit(
             .map_err(|_| rejected("worker registry unavailable".into()))?
             .get(&peer)
             .cloned()
-            .ok_or_else(|| rejected("original worker retired".into()))?;
+            .ok_or_else(|| not_a_host_worker(state))?;
         state
             .revalidate_admission(&route, &target)
             .map_err(|error| rejected(error.to_string()))?;
