@@ -15,8 +15,7 @@ are granted.
 ```rust
 pub struct Grant {
     pub subject: Subject,     // a person, a role preset, an agent, a task, a Shortcut, an app, a bot,
-                              // a person on a device that is not theirs (ForeignDevice),
-                              // or everyone but some of these (AllBut)
+                              // or a person on a device that is not theirs (ForeignDevice)
     pub node: TreePath,       // room › app › resource kind › resource › item › action
     pub kinds: KindSet,       // any of Read, Undoable, Outside
     pub answer: Answer,       // Allow, Ask, Deny
@@ -57,9 +56,7 @@ do:
 `decide(subject, node, kind) -> Answer`:
 
 1. Collect the live grants whose subject matches and whose node is the action's
-   node or an ancestor of it, and whose kinds include the action's kind. An
-   `AllBut` subject matches anyone who acts (a person, an agent, a bot) that
-   it does not name.
+   node or an ancestor of it, and whose kinds include the action's kind.
 2. The most specific node wins.
 3. At the same node, Deny beats Ask beats Allow.
 4. No grant: Deny.
@@ -240,14 +237,6 @@ new record admits its author and every other reader the decision allows from
 its first key. Nothing a steward keeps can let a denied device back in: a lost
 or unreadable route makes the channel one whose record is unknown, which
 withholds more, never less.
-
-A record kept to some readers is one grant: everything on it denied to
-everyone but them (`roles::readers_grant`, an `AllBut` Deny on the record).
-Each reader keeps what their own grants give them there, so a Viewer among
-them still only reads; everyone else, a member who joins later included, is
-denied, and so is an agent unless it is named itself, whoever it acts for.
-The room's owner owns it structurally. The record's channel is decided like
-any other: its key reaches only its readers' devices.
 
 A Deny below a record, on an item or a field, binds every honest device and
 door, but not a member's own modified client: a record has one channel and one
