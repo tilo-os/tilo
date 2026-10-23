@@ -75,7 +75,6 @@
 "crates/doc/tilo-doc-codecs/src/odt/export.rs" = 3500
 "crates/doc/tilo-doc/src/model.rs" = 5000
 "crates/doc/tilo-document/src/action.rs" = 3500
-"crates/hosting/tilo-relay/src/daemon.rs" = 4500
 "crates/hosting/tilo-relay/src/enroll.rs" = 3500
 "crates/hosting/tilo-relay/src/peer/private_transport_tests.rs" = 4500
 "crates/hosting/tilo-relay/src/peer/state_tests.rs" = 4000
