@@ -557,19 +557,22 @@ impl WorkspaceStore {
         Ok(bytes)
     }
 
-    /// Claim a compute job identifier durably before routing it. Returns the
-    /// existing record when the identifier was already claimed so callers can
-    /// distinguish an idempotent replay from a conflicting request.
+    /// Claim a compute job identifier durably before routing it, keeping
+    /// `record` as the job's record. Returns the existing record when the
+    /// identifier was already claimed so callers can distinguish an
+    /// idempotent replay from a conflicting request. The store keeps the
+    /// record and knows nothing of what it says.
     ///
     /// # Errors
     ///
     /// Returns an error if the record cannot be encoded, created, synced, or
     /// an existing record cannot be decoded.
-    pub fn claim_compute_job(
+    pub fn claim_compute_record<T: Serialize + serde::de::DeserializeOwned>(
         &self,
-        record: &crate::compute_transport::DurableComputeJob,
-    ) -> Result<Option<crate::compute_transport::DurableComputeJob>, StoreError> {
-        let path = self.compute_job_path(&record.spec.job_id);
+        job_id: &[u8; 16],
+        record: &T,
+    ) -> Result<Option<T>, StoreError> {
+        let path = self.compute_job_path(job_id);
         let bytes =
             serde_json::to_vec(record).map_err(|error| StoreError::Json(error.to_string()))?;
         match fs::OpenOptions::new()
@@ -583,21 +586,21 @@ impl WorkspaceStore {
                 Ok(None)
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                self.load_compute_job(&record.spec.job_id)
+                self.load_compute_record(job_id)
             }
             Err(error) => Err(error.into()),
         }
     }
 
-    /// Load one durable compute route and lifecycle record.
+    /// Load one durable compute job record.
     ///
     /// # Errors
     ///
     /// Returns an error if the record cannot be read or decoded.
-    pub fn load_compute_job(
+    pub fn load_compute_record<T: serde::de::DeserializeOwned>(
         &self,
         job_id: &[u8; 16],
-    ) -> Result<Option<crate::compute_transport::DurableComputeJob>, StoreError> {
+    ) -> Result<Option<T>, StoreError> {
         let path = self.compute_job_path(job_id);
         if !path.exists() {
             return Ok(None);
@@ -607,17 +610,18 @@ impl WorkspaceStore {
             .map_err(|error| StoreError::Json(error.to_string()))
     }
 
-    /// Atomically replace one previously claimed compute record.
+    /// Atomically replace one previously claimed compute job record.
     ///
     /// # Errors
     ///
     /// Returns an error if the record is unknown, cannot be encoded, or the
     /// crash-safe replacement fails.
-    pub fn save_compute_job(
+    pub fn save_compute_record<T: Serialize>(
         &self,
-        record: &crate::compute_transport::DurableComputeJob,
+        job_id: &[u8; 16],
+        record: &T,
     ) -> Result<(), StoreError> {
-        let path = self.compute_job_path(&record.spec.job_id);
+        let path = self.compute_job_path(job_id);
         if !path.exists() {
             return Err(StoreError::Io(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -630,16 +634,16 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    /// Every durable compute record of this workspace. A record that no
+    /// Every durable compute job record of this workspace. A record that no
     /// longer decodes is skipped with a warning rather than hiding the rest.
     ///
     /// # Errors
     ///
     /// Returns an error if the job directory cannot be enumerated or a
     /// record cannot be read.
-    pub(crate) fn load_compute_jobs(
+    pub fn load_compute_records<T: serde::de::DeserializeOwned>(
         &self,
-    ) -> Result<Vec<crate::compute_transport::DurableComputeJob>, StoreError> {
+    ) -> Result<Vec<T>, StoreError> {
         let directory = self.root.join(COMPUTE_DIR);
         if !directory.exists() {
             return Ok(Vec::new());
