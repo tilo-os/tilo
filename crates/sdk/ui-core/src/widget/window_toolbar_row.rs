@@ -1336,6 +1336,22 @@ impl ToolbarRow {
         }
     }
 
+    /// Whether the press under way is on one of the app's own slots that
+    /// runs as the press ends (its sidebar toggle, a leading action, a mode,
+    /// an action without a menu): a press on the app, after which the
+    /// keyboard stays with the control in the app that had it. The
+    /// location field and the bar's menus take the keyboard themselves.
+    pub(crate) fn pressing_app_slot(&self) -> bool {
+        match &self.pressed {
+            Some(Slot::Sidebar | Slot::Leading(_) | Slot::View(_)) => true,
+            Some(Slot::Action(i)) => self
+                .toolbar()
+                .and_then(|toolbar| toolbar.actions.get(*i))
+                .is_some_and(|action| action.items.is_empty()),
+            _ => false,
+        }
+    }
+
     /// The left button came up at `p`: a press released on the slot it
     /// started on runs it.
     pub(crate) fn release(&mut self, p: Point) -> bool {
