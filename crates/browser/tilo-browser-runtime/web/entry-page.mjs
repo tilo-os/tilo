@@ -930,6 +930,10 @@ export async function startEntryPage({mode}) {
     document.documentElement.dataset.entry = 'open';
     globalThis.tiloMount = page.mount;
     globalThis.tiloRouter = page.router;
+    // The page's channel state as text (whom each room follows, what waits
+    // for keys, what was refused), for tests and tools reading why a
+    // record did not arrive. Read only: it hands out no handle on the peer.
+    globalThis.tiloChannels = () => page.peer?.channelDiagnostics?.() ?? '';
     // A window that opens after a newer version was deployed finds this
     // version's files gone: offer the reload rather than fail it quietly.
     watchForUpdate({offer: () => offerUpdate({page, status}),

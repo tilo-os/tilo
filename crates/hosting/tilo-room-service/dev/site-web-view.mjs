@@ -11,7 +11,8 @@
 //
 // The report: {"entry", "room", "shows"} ("shows" only with --expect; when it
 // is false, also "why": the step at which the page's Chat found no channel,
-// or the channel it read, and "reads": what its Chat holds there). Exits
+// or the channel it read, "reads": what its Chat holds there, and
+// "channels": the page's channel state). Exits
 // 1 when the page did not open, 2 when Chrome cannot draw here.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -91,6 +92,7 @@ async function main() {
       if (!report.shows) {
         report.why = channel ?? await tab.evaluate(CHAT_WHY).catch(error => String(error?.message ?? error));
         if (channel) report.reads = await tab.evaluate(CHANNEL_READS(channel)).catch(error => String(error?.message ?? error));
+        report.channels = await tab.evaluate('globalThis.tiloChannels?.() ?? ""').catch(error => String(error?.message ?? error));
       }
     }
     if (options.out) {

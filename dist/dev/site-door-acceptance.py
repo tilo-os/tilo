@@ -324,7 +324,12 @@ def main() -> int:
             check("post", False, str(missing))
 
         web = web_view(site, args, out, text)
+        channels = web.pop("channels", None)
         check("web-post", bool(web.get("shows")), f"the web view {web}")
+        if channels:
+            print("    the web view's channels:")
+            for line in str(channels).splitlines():
+                print(f"      {line}")
 
         a.stop()
         a.start(fresh=False, build=False)
