@@ -24,13 +24,6 @@ impl NativeAuthorityStorage {
     pub fn rooms(&self) -> impl Iterator<Item = RoomId> + '_ {
         self.rooms.keys().chain(self.pending.keys()).copied()
     }
-    /// Whether this device governs `room` itself, having created it.
-    #[must_use]
-    pub fn governed_here(&self, room: RoomId) -> bool {
-        self.rooms
-            .get(&room)
-            .is_some_and(|stored| stored.enrollment.is_none())
-    }
     /// Whether this device holds `room`: its replica is installed, not
     /// merely an enrollment into it in flight.
     #[must_use]
@@ -67,8 +60,9 @@ pub(crate) struct StoredRoom {
     pub workspace: u64,
     pub governor: DeviceCert,
     pub device: DeviceCert,
-    /// How this device joined the room a host governs; `None` for a room
-    /// this device governs itself, which it joined by creating it.
+    /// How this device joined the room its host governs. A record without
+    /// one (a room an earlier build governed on the device itself) is
+    /// refused when restored.
     #[serde(flatten)]
     pub enrollment: Option<StoredEnrollment>,
     /// `StatePeer::durable()`: the largest field by far.
@@ -97,15 +91,6 @@ pub(crate) struct StoredRoom {
     /// these say who governs the room now.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub successions: Vec<tilo_user_identity::GovernorSuccession>,
-    /// What this device, governing the room, keeps between the steps of
-    /// its joins: the same ledger a relay keeps for the rooms it governs.
-    /// Empty for a room joined through a host.
-    #[serde(
-        default,
-        rename = "joinLedger",
-        skip_serializing_if = "tilo_peer_state::join_ledger::JoinLedger::is_empty"
-    )]
-    pub join_ledger: tilo_peer_state::join_ledger::JoinLedger,
 }
 
 impl StoredRoom {
