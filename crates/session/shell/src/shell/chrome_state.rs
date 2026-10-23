@@ -1129,7 +1129,7 @@ pub struct ChromeState {
     memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
     /// Notifications of new devices asking to be the person, with the
     /// request each answers and the code it shows.
-    device_asking_toasts: BTreeMap<u64, ([u8; 32], String)>,
+    device_asking_toasts: BTreeMap<u64, ([u8; 32], String, bool)>,
     /// Requests a notification was raised for, so it is raised once.
     device_asking_seen: std::collections::BTreeSet<[u8; 32]>,
     /// The person's answers to devices asking, for the network.
@@ -2731,15 +2731,17 @@ impl ChromeState {
             .with_icon_kind(NotificationIconKind::Permission)
             .with_addressed(tilo_desktop::notifications::Addressed::Ask);
         toast.dismiss_after = tilo_desktop::notifications::PERSISTENT_DISMISS;
-        self.device_asking_toasts
-            .insert(toast.id, (device.digest, device.code.clone()));
+        self.device_asking_toasts.insert(
+            toast.id,
+            (device.digest, device.code.clone(), device.via.is_some()),
+        );
         Some(self.push_notification_full(toast))
     }
 
     /// The buttons of notification `id` when it asks about a new device:
     /// Approve (naming the code) and Decline.
     pub fn device_asking_actions(&self, id: u64) -> Option<Vec<(String, String)>> {
-        let (_, code) = self.device_asking_toasts.get(&id)?;
+        let (_, code, _) = self.device_asking_toasts.get(&id)?;
         Some(vec![
             (
                 "approve".into(),
@@ -2752,13 +2754,29 @@ impl ChromeState {
     /// The person answered notification `id` about a new device. Returns
     /// whether it was one.
     pub fn answer_device_asking(&mut self, id: u64, approve: bool) -> bool {
-        let Some((digest, _)) = self.device_asking_toasts.remove(&id) else {
+        let Some((digest, _, _)) = self.device_asking_toasts.remove(&id) else {
             return false;
         };
         self.device_answers.push((digest, approve));
         self.dismiss_notification(id);
         self.bump();
         true
+    }
+
+    /// Take back the notifications about devices another of the person's
+    /// devices found that no longer ask here, as `asking` lists who does:
+    /// answered elsewhere, through the same action, or expired.
+    pub fn retire_device_asking(&mut self, asking: &[[u8; 32]]) {
+        let retired: Vec<u64> = self
+            .device_asking_toasts
+            .iter()
+            .filter(|(_, (digest, _, found))| *found && !asking.contains(digest))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in retired {
+            self.device_asking_toasts.remove(&id);
+            self.dismiss_notification(id);
+        }
     }
 
     /// The person's answers to devices asking, since the last call.
@@ -4722,6 +4740,44 @@ mod visual_alert_tests {
             !chrome
                 .borrow()
                 .visual_alert_active(now + std::time::Duration::from_millis(451))
+        );
+    }
+}
+
+#[cfg(test)]
+mod device_asking_tests {
+    use super::*;
+
+    /// A device another of the person's devices found, answered elsewhere
+    /// (`tilo-identity approve` runs the same action), takes its notification
+    /// back; one asking under a pairing link stays until answered.
+    #[test]
+    fn an_ask_answered_elsewhere_takes_its_notification_back() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        let mut state = chrome.borrow_mut();
+        let asking =
+            |digest: u8, via: Option<&str>| crate::shell::peer_sync_overlay::DeviceAskingSummary {
+                digest: [digest; 32],
+                label: "Laptop".into(),
+                code: "042-917".into(),
+                requested_at_ms: tilo_clock::unix_now_ms(),
+                country: None,
+                via: via.map(Into::into),
+            };
+        let found = state
+            .push_device_asking(&asking(1, Some("Orange Pi")))
+            .unwrap();
+        let linked = state.push_device_asking(&asking(2, None)).unwrap();
+        state.retire_device_asking(&[[1; 32]]);
+        assert!(state.device_asking_actions(found).is_some(), "still asking");
+        state.retire_device_asking(&[]);
+        assert!(state.device_asking_actions(found).is_none());
+        assert!(state.device_asking_actions(linked).is_some());
+        assert!(
+            state
+                .push_device_asking(&asking(1, Some("Orange Pi")))
+                .is_none(),
+            "an answered ask does not ask again"
         );
     }
 }

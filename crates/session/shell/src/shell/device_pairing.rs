@@ -40,6 +40,8 @@ pub(crate) use tilo_identity_host::device_admin::{
 use tilo_identity_host::device_admin::{Candidate, ENROLL, KeyHolding, approval_args};
 use tilo_lock::MutexRecover as _;
 
+use crate::shell::network::ShellNetwork;
+
 const PKEXEC: &str = "/usr/bin/pkexec";
 const RELAY_CONFIG: &str = "/etc/tilo/relay.toml";
 /// How long `tilo-enroll` listens for an announcing device.
@@ -55,9 +57,11 @@ const STOP_POLL: Duration = Duration::from_millis(100);
 /// What a step answers: its result, or why it did not happen.
 pub(crate) type Answer = Result<serde_json::Value, String>;
 
-/// The resource every door offers the steps on, and its three actions.
-pub(crate) use tilo_actions::remote::device_pairing::{APPROVE, DISCOVER, REJECT, RESOURCE};
-pub(crate) const STEPS: [&str; 3] = [DISCOVER, APPROVE, REJECT];
+/// The resource every door offers the steps on, and its actions.
+pub(crate) use tilo_actions::remote::device_pairing::{
+    ANSWER, APPROVE, ASKING, DISCOVER, REJECT, RESOURCE,
+};
+pub(crate) const STEPS: [&str; 5] = [DISCOVER, APPROVE, REJECT, ASKING, ANSWER];
 
 const ROLE: ActionParam = ActionParam::required(
     "role",
@@ -91,12 +95,32 @@ pub(crate) const APPROVE_PARAMS: &[ActionParam] = &[
     ),
 ];
 pub(crate) const REJECT_PARAMS: &[ActionParam] = &[DEVICE];
+pub(crate) const ASKING_PARAMS: &[ActionParam] = &[];
+pub(crate) const ANSWER_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "ask",
+        ParamType::Text,
+        "The `ask` the asking step listed the device under, 64 hex characters.",
+    ),
+    ActionParam::required(
+        "approve",
+        ParamType::Boolean,
+        "true to let the device be you, false to decline it.",
+    ),
+    ActionParam::optional(
+        "confirm",
+        ParamType::Boolean,
+        "Explicit confirmation, needed to approve, that the new device shows the code listed with it.",
+    ),
+];
 
 /// What `step` takes.
 pub(crate) fn params(step: &str) -> &'static [ActionParam] {
     match step {
         DISCOVER => DISCOVER_PARAMS,
         APPROVE => APPROVE_PARAMS,
+        ASKING => ASKING_PARAMS,
+        ANSWER => ANSWER_PARAMS,
         _ => REJECT_PARAMS,
     }
 }
@@ -145,6 +169,50 @@ pub(crate) fn contract(step: &str) -> tilo_actions::ActionContract {
                         "role": { "type": "string", "enum": ["personal-device", "home-peer"] },
                         "device": { "type": "string" },
                         "label": { "type": "string" }
+                    }
+                }),
+            },
+            ..base
+        },
+        ASKING => ActionContract {
+            kind: ActionKind::Read,
+            result: ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["asking"],
+                    "properties": {
+                        "asking": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["ask", "device", "label", "code", "via", "asked_at_ms"],
+                                "properties": {
+                                    "ask": { "type": "string" },
+                                    "device": { "type": "string" },
+                                    "label": { "type": "string" },
+                                    "code": { "type": "string" },
+                                    "via": { "type": "string" },
+                                    "asked_at_ms": { "type": "integer" }
+                                }
+                            }
+                        }
+                    }
+                }),
+            },
+            ..base
+        },
+        ANSWER => ActionContract {
+            risk: RiskLevel::Privileged,
+            confirmation: ConfirmationPolicy::Confirm,
+            execution: ExecutionMode::Background { cancellable: false },
+            result: ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["ask", "label", "approved"],
+                    "properties": {
+                        "ask": { "type": "string" },
+                        "label": { "type": "string" },
+                        "approved": { "type": "boolean" }
                     }
                 }),
             },
@@ -390,6 +458,21 @@ impl Pairing {
             REJECT => self
                 .reject(args.text("device").unwrap_or_default())
                 .map(Started::Answered),
+            ASKING => {
+                let network = session_network()?;
+                Ok(Started::Answered(asking(&network)))
+            }
+            ANSWER => {
+                let approve = args.boolean("approve").unwrap_or(false);
+                if approve && args.boolean("confirm") != Some(true) {
+                    return Err("explicit confirmation is required to approve this device".into());
+                }
+                let ask = args.text("ask").unwrap_or_default().to_owned();
+                let network = session_network()?;
+                let (completer, answered) = pending();
+                spawn_step(move || completer.complete(answer(&network, &ask, approve)))?;
+                Ok(Started::Later(answered))
+            }
             _ => Err(format!("`{step}` is not a pairing step")),
         }
     }
@@ -471,6 +554,43 @@ impl Admission {
             stop,
         )
     }
+}
+
+/// The devices another of the person's devices found, asking at
+/// `network`'s device to be the person, as the `asking` step lists them.
+pub(crate) fn asking(network: &ShellNetwork) -> serde_json::Value {
+    let asking: Vec<serde_json::Value> = crate::shell::device_certification::asking(network)
+        .into_iter()
+        .map(|asking| {
+            serde_json::json!({
+                "ask": hex::encode(asking.digest),
+                "device": hex::encode(asking.device()),
+                "label": asking.label,
+                "code": asking.code,
+                "via": asking.via,
+                "asked_at_ms": asking.asked_at_ms,
+            })
+        })
+        .collect();
+    serde_json::json!({ "asking": asking })
+}
+
+/// Approve or decline the device `ask` names at `network`'s device, as its
+/// notification does ([`crate::shell::device_certification::answer`]), and
+/// answer as the `answer` step does. Blocks on the identity store.
+pub(crate) fn answer(network: &ShellNetwork, ask: &str, approve: bool) -> Answer {
+    let digest: [u8; 32] = hex::decode(ask.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or("ask must be 64 hex characters")?;
+    let label = crate::shell::device_certification::answer(network, digest, approve)?
+        .ok_or("no device asks under that any more")?;
+    Ok(serde_json::json!({ "ask": hex::encode(digest), "label": label, "approved": approve }))
+}
+
+fn session_network() -> Result<Arc<ShellNetwork>, String> {
+    crate::shell::device_certification::session_network()
+        .ok_or_else(|| "the network is not running".into())
 }
 
 pub(crate) fn approval(args: &ActionArgs) -> Result<Approval, String> {
@@ -596,6 +716,14 @@ fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
         APPROVE => (
             "search-action-identity-device-pair-approve",
             "search-action-identity-device-pair-approve-subtitle",
+        ),
+        ASKING => (
+            "search-action-identity-device-pair-asking",
+            "search-action-identity-device-pair-asking-subtitle",
+        ),
+        ANSWER => (
+            "search-action-identity-device-pair-answer",
+            "search-action-identity-device-pair-answer-subtitle",
         ),
         _ => (
             "search-action-identity-device-pair-reject",

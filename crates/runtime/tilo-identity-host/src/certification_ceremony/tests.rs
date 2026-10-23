@@ -71,7 +71,7 @@ fn two_of_three() -> Vec<SigningIdentity> {
         })
         .collect();
     for (me, session) in sessions.iter_mut().enumerate() {
-        let index = u16::try_from(me + 1).unwrap();
+        let index = u16::try_from(me).unwrap().checked_add(1).unwrap();
         let mine: Vec<EnrolmentRound2> = round2
             .iter()
             .enumerate()
@@ -291,7 +291,7 @@ fn proposals_are_checked_before_anyone_is_asked() {
     stale.issued_at_ns = NOW - 2 * SESSION_LIFETIME_NS;
     assert!(check_proposal(&ask(stale), person, &|_| false, NOW).is_err());
 
-    let mut expiring = good.clone();
+    let mut expiring = good;
     expiring.expires_at_ns = Some(NOW + 1);
     assert!(check_proposal(&ask(expiring), person, &|_| false, NOW).is_err());
 

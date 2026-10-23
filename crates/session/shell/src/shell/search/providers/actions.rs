@@ -1904,6 +1904,20 @@ impl Action {
             apply: |_, _| Err(pairing_needs_lifecycle()),
         },
         Action {
+            id: device_pairing::ASKING_ID,
+            label: "search-action-identity-device-pair-asking",
+            subtitle: "search-action-identity-device-pair-asking-subtitle",
+            params: device_pairing::ASKING_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
+            id: device_pairing::ANSWER_ID,
+            label: "search-action-identity-device-pair-answer",
+            subtitle: "search-action-identity-device-pair-answer-subtitle",
+            params: device_pairing::ANSWER_PARAMS,
+            apply: |_, _| Err(pairing_needs_lifecycle()),
+        },
+        Action {
             id: identity_admin::LIST_ID,
             label: "search-action-identity-list",
             subtitle: "search-action-identity-list-subtitle",

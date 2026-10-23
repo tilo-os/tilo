@@ -7,6 +7,7 @@ use super::tests::{authenticated_personal_peer, personal_workspaces_network_for_
 use super::{NetCmd, PersonalFabricPayload, ShellNetwork};
 use crate::shell::device_certification::{self as certification, Keys};
 use crate::shell::device_fabric::PersonalFabricActionEnvelope;
+use crate::shell::device_pairing;
 use crate::shell::personal_continuity::DeviceId;
 use std::sync::{Arc, mpsc as std_mpsc};
 use tilo_identity_host::certification_ceremony::{IdentityKey, pairing_code};
@@ -175,17 +176,29 @@ fn the_key_holder_asks_its_person_and_certifies_what_they_approved() {
             .woken
             .recv_timeout(tilo_test_env::hang_bound())
             .expect("the key holder takes the ask");
-        let asking = certification::asking(&holder.network);
+        // What its notification shows, and `tilo-identity asking` lists
+        // through the same action.
+        let listed = device_pairing::asking(&holder.network);
+        let asking = listed["asking"].as_array().unwrap();
         assert_eq!(asking.len(), 1, "the person is asked on the key holder");
-        assert_eq!(asking[0].label, "New laptop");
+        assert_eq!(asking[0]["label"], "New laptop");
+        assert_eq!(asking[0]["device"], hex::encode(wanted.device_public_key));
         assert_eq!(
-            asking[0].code,
+            asking[0]["code"],
             pairing_code(wanted.device_public_key, SERVICE)
         );
-        assert!(certification::asking(&courier.network).is_empty());
+        assert_eq!(
+            device_pairing::asking(&courier.network)["asking"],
+            serde_json::json!([])
+        );
 
-        let answered = certification::answer(&holder.network, asking[0].digest, true).unwrap();
-        assert_eq!(answered.as_deref(), Some("New laptop"));
+        let ask = asking[0]["ask"].as_str().unwrap();
+        let answered = device_pairing::answer(&holder.network, ask, true).unwrap();
+        assert_eq!(answered["label"], "New laptop");
+        assert!(
+            device_pairing::answer(&holder.network, ask, true).is_err(),
+            "an ask is answered once"
+        );
         carry(&mut holder.commands, &holder_id, &courier);
         let cert = gathering.join().unwrap().expect("certified");
         verify_device_cert(&cert).unwrap();
