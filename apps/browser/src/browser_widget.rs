@@ -8482,13 +8482,24 @@ mod tests {
             !record.with(|history| history.visits.is_empty()),
             "closing one page keeps the history"
         );
-        let mut last = BrowserWidget::with_engine(TestEngine::new(), true);
-        last.attach_history(record.clone());
-        last.settings.clear_on_exit = true;
-        drop(crate::BrowserWindow::new(last, false));
+        // Two Browser windows of one profile: tabs, each its own window.
+        let profile = tempfile::tempdir().unwrap();
+        let window = || {
+            let mut page = BrowserWidget::with_engine(TestEngine::new(), true);
+            page.attach_history(record.clone());
+            page.settings.clear_on_exit = true;
+            crate::BrowserWindow::new(page, false).counted_in(profile.path())
+        };
+        let (first, last) = (window(), window());
+        drop(first);
+        assert!(
+            !record.with(|history| history.visits.is_empty()),
+            "closing a tab while another is open keeps the history"
+        );
+        drop(last);
         assert!(
             record.with(|history| history.visits.is_empty()),
-            "leaving the workspace clears the history"
+            "closing the browser's last window clears the history"
         );
     }
 
