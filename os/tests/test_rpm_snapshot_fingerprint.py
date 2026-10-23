@@ -27,16 +27,31 @@ RESOLVE = ROOT / "os/dev/resolve-rpm-snapshot.sh"
 
 class Fingerprint(unittest.TestCase):
     def _clone(self, temporary: str) -> Path:
+        # The fingerprint and its resolver read only os/; copying the whole
+        # checkout made each test scale with whatever else it holds.
         repo = Path(temporary) / "repo"
         shutil.copytree(
-            ROOT,
-            repo,
-            ignore=shutil.ignore_patterns(
-                ".git", "target", "os/output", "node_modules", "__pycache__"
-            ),
+            ROOT / "os",
+            repo / "os",
+            ignore=shutil.ignore_patterns("output", "__pycache__"),
             symlinks=True,
         )
         return repo
+
+    @staticmethod
+    def _source_files():
+        """Regular files of the checkout, never descending into build output."""
+        skipped = {ROOT / ".git", ROOT / "target", ROOT / "os/output"}
+        for directory, subdirectories, files in os.walk(ROOT):
+            base = Path(directory)
+            subdirectories[:] = [
+                name for name in subdirectories
+                if base / name not in skipped and name != "node_modules"
+            ]
+            for name in files:
+                path = base / name
+                if path.is_file() and not path.is_symlink():
+                    yield path
 
     def test_package_set_change_changes_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -66,12 +81,8 @@ class Fingerprint(unittest.TestCase):
 
     def test_no_committed_file_names_an_rpms_digest(self) -> None:
         pinned = []
-        for path in ROOT.rglob("*"):
-            if not path.is_file() or path.is_symlink():
-                continue
+        for path in self._source_files():
             relative = path.relative_to(ROOT).as_posix()
-            if relative.startswith(("target/", ".git/", "os/output/")):
-                continue
             if relative.endswith((
                 ".png", ".jpg", ".webp", ".ico", ".woff2", ".ttf",
                 ".bin", ".tar", ".gz", ".xz", ".rpm", ".so",
