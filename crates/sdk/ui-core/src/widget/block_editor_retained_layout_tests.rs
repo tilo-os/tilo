@@ -575,33 +575,23 @@ fn retained_theme_and_viewport_changes_keep_full_paint_bounds() {
 }
 
 #[test]
-fn retained_document_selection_and_find_overlay_keep_full_paint_bounds() {
-    for find in [false, true] {
-        let blocks = (0..8)
-            .map(|index| {
-                Block::paragraph(&format!("Paragraph {index}: an ordinary document line."))
-            })
-            .collect();
-        let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
-        let before = fixture.scene.clone();
-        let old_bounds = fixture.editor.get_rect();
-        if find {
-            fixture.editor.open_find();
-            fixture.frame();
-            assert!(fixture.editor.find_visible);
-        } else {
-            fixture.key(Key::Character("a".into()), ModifiersState::CONTROL.into());
-            assert!(fixture.editor.document_selection.is_some());
-        }
-        assert!(
-            fixture
-                .damage
-                .iter()
-                .any(|rect| rect.contains_rect(old_bounds)),
-            "document selection and global overlays retain full paint bounds"
-        );
-        assert_damage_pixels(&before, &fixture, false);
-    }
+fn retained_document_selection_keeps_full_paint_bounds() {
+    let blocks = (0..8)
+        .map(|index| Block::paragraph(&format!("Paragraph {index}: an ordinary document line.")))
+        .collect();
+    let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
+    let before = fixture.scene.clone();
+    let old_bounds = fixture.editor.get_rect();
+    fixture.key(Key::Character("a".into()), ModifiersState::CONTROL.into());
+    assert!(fixture.editor.document_selection.is_some());
+    assert!(
+        fixture
+            .damage
+            .iter()
+            .any(|rect| rect.contains_rect(old_bounds)),
+        "a document selection retains full paint bounds"
+    );
+    assert_damage_pixels(&before, &fixture, false);
 }
 
 #[test]

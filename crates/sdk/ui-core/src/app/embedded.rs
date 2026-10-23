@@ -306,9 +306,12 @@ impl crate::widget::SearchableWindow for EmbeddedApp {
         let changed = visit(self.app.root_widget.as_mut());
         if changed {
             // What the search found shows on the app's next frame: matches
-            // painted, a match scrolled into view, a list narrowed.
+            // painted, a match scrolled into view, a list narrowed. A
+            // replacement is an edit the app's widgets write when they
+            // settle, so that frame syncs.
             self.app.mark_semantic_tree_stale();
             self.app.layout.layout_dirty = true;
+            self.app.needs_sync = true;
             self.wants_frame.set(true);
         }
         changed
@@ -1375,3 +1378,7 @@ mod copy_tests;
 #[cfg(test)]
 #[path = "embedded_wake_tests.rs"]
 mod wake_tests;
+
+#[cfg(test)]
+#[path = "embedded_search_tests.rs"]
+mod search_tests;

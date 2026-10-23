@@ -88,6 +88,7 @@ impl FrameHarness {
             &self.scene,
             Some(Affine::translate((0.0, f64::from(device_bar)))),
         );
+        self.paint_window_bar_top_layer(&mut scene, transform);
         self.write_scene_png(
             &scene,
             device_bar,

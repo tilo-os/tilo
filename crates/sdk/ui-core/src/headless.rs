@@ -349,6 +349,9 @@ pub struct FrameHarness {
     /// search and History are hosted there and every capture paints it over
     /// the app's frame ([`Self::present_in_window_bar`]).
     window_bar: bool,
+    /// The window bar's search over the app's widgets, painted in the bar
+    /// ([`Self::search_in_window`]).
+    window_search: crate::widget::WindowSearch,
     /// The app a concrete root stands for ([`Self::for_app`]): its kind and
     /// title, which its window's bar wears as a desktop window's tab does.
     window_app: Option<(crate::widget::AppKind, String)>,
@@ -1596,6 +1599,7 @@ impl FrameHarness {
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
             window_bar: false,
+            window_search: crate::widget::WindowSearch::new(),
             window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
             bound_resource_frames: 0,

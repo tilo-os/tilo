@@ -454,8 +454,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             }
         }
         Some("find") => {
-            chord(driver, &["ctrl"], "f");
-            driver.type_text("migration");
+            driver.search_in_window(ui::window_toolbar::SearchOpening::Find, "migration");
         }
         Some("multiline_typing" | "paragraph_click") => {
             let commit = scenario == Some("paragraph_click");

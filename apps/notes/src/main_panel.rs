@@ -762,24 +762,6 @@ impl MainPanel {
         self.dirty = true;
     }
 
-    /// Route the window-level Find command into the shared structured editor,
-    /// even when the note title or another sibling currently owns focus.
-    pub fn open_find(&mut self, focus_target: &mut Option<NodeId>) -> bool {
-        if self.page_id.is_none() {
-            return false;
-        }
-        if self.title_label.is_editing() {
-            self.title_label.commit();
-            if let EditOutcome::Committed(title) = self.title_label.take_outcome() {
-                self.pending_rename = Some(title);
-            }
-        }
-        self.editor.editor_mut().open_find();
-        *focus_target = self.editor_node;
-        self.dirty = true;
-        true
-    }
-
     /// Clear the panel back to the empty state.
     pub fn clear(&mut self) {
         self.page_id = None;
