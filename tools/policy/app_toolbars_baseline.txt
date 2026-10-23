@@ -18,7 +18,6 @@ nav-header-actions 1 apps/passwords/src/window.rs
 # A column header holding what the bar has no slot for keeps the shell's
 # own header row, until the bar can show it.
 nav-header-leading 1 apps/canvas/src/lib.rs
-nav-header-leading 1 apps/messages/src/view.rs
 # Search and find entries of an app's own, and a subpage Back of its own; the
 # window bar's search and navigation take them over batch by batch.
 own-back 1 apps/print-centre/src/surface/views.rs

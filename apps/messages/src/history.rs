@@ -6,8 +6,8 @@ use std::rc::Rc;
 use tilo_contact_directory::routing;
 use tilo_messaging::{Delivery, Direction, HistoryClient, HistoryPage};
 use ui::LocalState;
-use ui::framework::{Actions, EffectAnswer, EffectCx, EffectStatus, Effected};
-use ui::widget::{Button, Card, Column, Element, ModelView, Text};
+use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected};
+use ui::widget::{Card, Column, Element, ModelView, Text};
 
 use crate::view::{Choice, Selection, Sources, choices};
 use crate::{CATALOG, Messages, MessagesEffect};
@@ -158,10 +158,24 @@ impl HistoryView {
         ))
     }
 
+    /// The window bar's Refresh messages: reading the selected route's
+    /// history again, while it can be read.
+    pub(crate) fn refresh(
+        &self,
+        sources: &Sources,
+        selection: &Selection,
+    ) -> Option<MessagesEffect> {
+        let choice: Choice = serde_json::from_str(&selection.choice).ok()?;
+        (self.available() && current_route(sources, selection, &choice).is_ok()).then(|| {
+            MessagesEffect::ReadHistory {
+                choice: selection.choice.clone(),
+            }
+        })
+    }
+
     pub(crate) fn widget(
         &self,
         sources: &Sources,
-        actions: &Actions<Messages>,
         selection: &Selection,
         choice: Option<&Choice>,
         hint: &str,
@@ -170,8 +184,6 @@ impl HistoryView {
         let selected = selection.clone();
         let choice = choice.cloned();
         let hint = hint.to_owned();
-        let controls = actions.clone();
-        let available = self.available();
         Box::new(ModelView::from_state_by(
             &self.state,
             |state| (state.generation, state.loading, state.page.is_some()),
@@ -190,14 +202,6 @@ impl HistoryView {
                     body = history_rows(body, page);
                 } else {
                     body = body.push(super::view::empty(&hint, "messages-transport-unavailable"));
-                }
-                if available && route.is_some() {
-                    body = body.push(Box::new(controls.bind_effect_invocation(
-                        Button::new("messages.refresh-history", "messages-refresh-history"),
-                        &MessagesEffect::ReadHistory {
-                            choice: selected.choice.clone(),
-                        },
-                    )));
                 }
                 Box::new(body)
             },

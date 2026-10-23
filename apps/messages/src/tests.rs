@@ -333,34 +333,15 @@ fn narrow_and_wide_surfaces_publish_accessible_routes_and_shared_navigation() {
         app.with_widget::<ui::widget::NavShell, _>(ui::widget::NavShell::snap)
             .expect("the messages shell is hosted");
         app.harness().relayout();
-        let nodes = app.harness().a11y_nodes();
-        assert!(
-            nodes
-                .iter()
-                .any(|(_, node)| node.label() == Some("Message using"))
-        );
-        // NavShell owns Back only in the narrow push layout; a wide window
-        // keeps the overview visible and needs no application-drawn Back.
-        assert_eq!(
-            nodes.iter().any(|(_, node)| node.label() == Some("Back")),
-            width == 420,
-        );
-        let labels = if width == 420 {
-            vec!["Message using", "Back"]
-        } else {
-            vec!["Message using"]
-        };
-        for label in labels {
-            let node = nodes
-                .iter()
-                .find(|(_, node)| node.label() == Some(label))
-                .expect("visible navigation control");
-            let bounds = node.1.bounds().expect("control geometry");
-            assert!(
-                bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width),
-                "{label} must be visible after restoring selection: {bounds:?}"
-            );
-        }
+        app.settle();
+        // The window bar names the person and offers the routes to them;
+        // NavShell's Back is the bar's only in the narrow push layout: a
+        // wide window keeps the overview visible beside the conversation.
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let location = bar.location.expect("the bar names the conversation");
+        assert_eq!(location.label, "Alex");
+        assert_eq!(location.name, "Message using");
+        assert_eq!(!bar.leading.is_empty(), width == 420);
         assert!(app.effect(&MessagesEffect::Back).is_ok());
     }
 }
@@ -378,18 +359,14 @@ fn scoped_live_selection_rejects_substituted_sender_scope_recipient_and_revision
     })
     .expect("identity comparison ignores JSON whitespace");
     app.settle();
-    let nodes = app.harness().a11y_nodes();
-    let route_control = nodes
-        .iter()
-        .find(|(_, node)| {
-            node.label()
-                .is_some_and(|label| label.starts_with("Message using"))
-        })
-        .expect("shared header route control");
-    let displayed = route_control
-        .1
-        .label()
-        .expect("selected route is named for menu accessibility");
+    let displayed = ui::window_toolbar::declared()
+        .and_then(|bar| bar.location)
+        .expect("the window bar names the conversation")
+        .name;
+    assert!(
+        displayed.starts_with("Message using"),
+        "the bar's route picker names the selected route: {displayed}"
+    );
     assert!(displayed.contains("fixture-signal"));
     assert!(displayed.contains("+12025550123"));
     for (field, forged) in [
@@ -785,9 +762,12 @@ fn with_nobody_yet_the_people_pane_says_how_to_start() {
         bounds.height() > 1.0 && bounds.width() > 1.0,
         "the empty state fills the pane instead of collapsing: {bounds:?}"
     );
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    let location = bar.location.expect("the bar names where the window is");
+    assert_eq!(location.label, "People");
     assert!(
-        !harness.targets().contains_key("messages.route"),
-        "no route menu while no conversation is open"
+        location.choices.is_empty(),
+        "no route to choose while no conversation is open"
     );
 }
 
@@ -804,9 +784,16 @@ fn without_the_messaging_service_setup_says_why_and_offers_nothing_dead() {
         !targets.contains_key("messages.first-whatsapp"),
         "a link row that cannot start is not offered"
     );
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert_eq!(
+        bar.location.map(|location| location.label).as_deref(),
+        Some("Accounts")
+    );
     assert!(
-        !targets.contains_key("messages.accounts"),
-        "the open setup is not offered again beside its own title"
+        bar.actions
+            .iter()
+            .all(|action| action.id != crate::window_bar::ACCOUNTS),
+        "the open setup is not offered again beside its own name"
     );
     let tree = app.harness().inspection_json().unwrap();
     assert!(tree.contains("isn't running here"), "{tree}");

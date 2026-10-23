@@ -12,6 +12,7 @@ mod setup;
 #[cfg(test)]
 mod tests;
 mod view;
+mod window_bar;
 
 use ui::framework::{Fixture, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
