@@ -7,6 +7,7 @@ pub mod hub;
 pub mod identity;
 pub mod input_firewall;
 pub mod invite;
+pub mod local_host;
 pub mod media_caps;
 pub(crate) mod native_media;
 pub mod private_messages;

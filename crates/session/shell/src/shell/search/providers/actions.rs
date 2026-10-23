@@ -7031,40 +7031,63 @@ mod tests {
     }
 
     /// The palette offers the invite rows exactly where the one invitation
-    /// policy lets this device issue, as the invite composer is: not in a
-    /// room another person governs, where the issuer would refuse.
+    /// policy lets this device issue, as the invite composer is: in a room
+    /// whose host this person governs, never in one another person's host
+    /// governs, where the issuer would refuse.
     #[test]
     fn invite_rows_follow_the_invitation_policy() {
-        use crate::shell::state::{PeerOrigin, RoomAuthority};
+        use crate::shell::invite_policy::{InviteRoute, native_governor, tests::grant_invite};
+        use crate::shell::state::person_id_of;
 
+        let (_directory, owner, room, _now, _key) =
+            crate::shell::native_workspace_owner::test_enrolled_owner();
+        let governor = person_id_of(
+            native_governor(Some(owner.clone()), room).expect("the room's admitted governor"),
+        )
+        .expect("person id");
+        let other = person_id_of(
+            ed25519_dalek::SigningKey::from_bytes(&[64; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .expect("person id");
+        let handle = crate::shell::native_workspace_owner::test_tree_of(&owner);
+        {
+            let mut tree = handle.write();
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room() == room)
+                .expect("the enrolled room's workspace");
+            for person in [&governor, &other] {
+                grant_invite(workspace, person);
+            }
+            let local = workspace.id;
+            tree.desktop.active = local;
+        }
         let provider = ActionsProvider::new();
-        let chrome = chrome_with_room();
+        let chrome = ChromeState::new_with_fixture_handle(
+            handle,
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
         chrome.borrow_mut().peer_sync_enabled = true;
         let offers = |id: &str| row(&rows_for(&provider, &chrome, ""), id).is_some();
         let route = || crate::shell::invite_policy::active_invite_route(&chrome.borrow());
+
+        chrome.borrow_mut().act_as(governor);
         assert_eq!(
             route(),
-            Some(crate::shell::invite_policy::InviteRoute::ShareOnRelay),
-            "the owner of a room this device governs may invite"
+            Some(InviteRoute::Host),
+            "the person governing the room's host may invite"
         );
         assert!(offers("peer.invite"), "so the palette offers the composer");
 
-        let room = chrome
-            .borrow()
-            .tree()
-            .desktop
-            .active_workspace()
-            .expect("workspace")
-            .room();
-        let handle = chrome.borrow().tree_handle();
-        handle.write().room_authority.insert(
-            room,
-            RoomAuthority::Peer(PeerOrigin::peer(&iroh::SecretKey::generate().public())),
-        );
+        chrome.borrow_mut().act_as(other);
         assert_eq!(
             route(),
-            Some(crate::shell::invite_policy::InviteRoute::ViaGovernor),
-            "another device governs the room now"
+            Some(InviteRoute::ViaGovernor),
+            "another person's host governs the room for this one"
         );
         assert!(!offers("peer.invite"), "so no invite row is offered");
         assert!(!offers("peer.invite.named"), "named or not");

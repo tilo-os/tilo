@@ -5,6 +5,7 @@
 
 pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
+pub(crate) mod own_device_host;
 
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
@@ -340,6 +341,9 @@ pub enum NetCmd {
     /// Hold an enrolled room's relay session, over its host's HTTPS routes
     /// when given, else over the iroh endpoint its hint names.
     NativeConnect(native_ingress::Connect, Option<HttpsRoute>),
+    /// This device's own room host opened: join the rooms it hosts that
+    /// wait for it.
+    LocalHostReady,
     /// Ask a governed room's governor, on its room's native relay session.
     GovernorAction {
         ws: u64,
@@ -375,6 +379,9 @@ pub enum NetCmd {
     /// own business in it, or the host's own operations) on a relay session,
     /// and answer the relay's receipt.
     RoomGovernance(Box<room_governance::Request>),
+    /// Ask another of the person's devices for one of its host's own
+    /// operations, on a session opened for it.
+    OwnDeviceHost(Box<own_device_host::Request>),
     JoinWorkspace {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
@@ -844,6 +851,9 @@ impl TopicRuntime {
 
 struct HostRuntime {
     native_scope: Option<Arc<native_ingress::Scope>>,
+    /// The session goes to this device's own host, in this process: no
+    /// remote party, nothing to keep up.
+    local: bool,
     /// The private lane to a governed room's governor, opened on first use.
     governor: Option<governor_lane::Lane>,
     actions: Option<tokio::task::JoinHandle<()>>,
@@ -1081,6 +1091,7 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(..) => "dialling a host",
         NetCmd::GovernorAction { .. } | NetCmd::RoomGovernance(_) => "talking to a room's host",
+        NetCmd::OwnDeviceHost(_) => "asking one of the person's devices",
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
@@ -1153,17 +1164,17 @@ impl Actor {
         )
     }
 
-    /// [`Self::spawn_deferring_relays`] for a device that may govern rooms:
-    /// with `governing`, its endpoint also answers the workspace-join
-    /// exchange for them ([`super::governor_join::GoverningRooms`]), as a
-    /// relay's does.
-    pub fn spawn_governing(
+    /// [`Self::spawn_deferring_relays`] for a device that hosts the rooms
+    /// placed on it: with `hosting`, its endpoint also serves this device's
+    /// room host's protocols (refusing them until the host opens), and the
+    /// native owner joins the rooms hosted here through that host.
+    pub fn spawn_hosting(
         endpoint: Endpoint,
         lookup: MemoryLookup,
         host_identity: Option<HostIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         reachability: Reachability,
-        governing: Option<super::governor_join::GoverningRooms>,
+        hosting: Option<Hosting>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         Self::spawn_with_heartbeat(
             endpoint,
@@ -1172,7 +1183,7 @@ impl Actor {
             listen_addrs,
             HEARTBEAT_INTERVAL,
             reachability,
-            governing,
+            hosting,
         )
     }
 
@@ -1186,7 +1197,7 @@ impl Actor {
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         heartbeat: Duration,
         reachability: Reachability,
-        governing: Option<super::governor_join::GoverningRooms>,
+        hosting: Option<Hosting>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
@@ -1200,10 +1211,18 @@ impl Actor {
             cmd_rx,
             heartbeat,
             reachability,
-            governing,
+            hosting,
         ));
         (cmd_tx, task)
     }
+}
+
+/// This device's room host, for the actor: the handle the native owner
+/// joins the rooms hosted here through, and the handlers serving the host
+/// on the router ([`super::local_host`]).
+pub struct Hosting {
+    pub host: super::local_host::LocalHost,
+    pub protocols: super::local_host::Protocols,
 }
 
 /// The channel governance a device published to one room: each message's
@@ -1221,6 +1240,9 @@ struct ActorState {
     native_media: super::native_media::Registry,
     native_enrollment: super::invite::enrollment_driver::Registry,
     native_routes: native_ingress::Routes,
+    /// This device's room host, through which the native owner joins the
+    /// rooms hosted here.
+    local_host: Option<super::local_host::LocalHost>,
     /// Governance invocations waiting for their room's relay to answer.
     room_governance: room_governance::Waiting,
     /// The endpoint's relays, held back until a remote party appears.
@@ -1593,7 +1615,11 @@ impl ActorState {
         reason = "the actor command match is the single auditable transport mutation boundary"
     )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
-        if let Some(why) = command.as_ref().and_then(remote_party_command) {
+        if let Some(why) = command.as_ref().and_then(remote_party_command)
+            && !command
+                .as_ref()
+                .is_some_and(|command| self.stays_local(command))
+        {
             self.reachability.wake(why);
         }
         match command {
@@ -1611,6 +1637,8 @@ impl ActorState {
                     });
             }
             Some(NetCmd::NativeConnect(connect, https)) => self.native_connect(connect, https),
+            Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
+            Some(NetCmd::OwnDeviceHost(request)) => self.ask_own_device_host(*request),
             Some(NetCmd::GovernorAction { ws, room, request }) => {
                 self.governor_action(ws, room, request);
             }
@@ -3379,6 +3407,7 @@ impl ActorState {
                     HostRuntime {
                         replaying,
                         native_scope: None,
+                        local: false,
                         governor: None,
                         actions: self
                             .action_broker
@@ -3677,13 +3706,42 @@ impl ActorState {
         !self.peers.is_empty()
             || !self.peers_seen.is_empty()
             || !self.hosts.is_empty()
-            || !self.host_sessions.is_empty()
-            || !self.native_routes.is_empty()
+            || self.remote_host_sessions()
+            || self.native_routes.any_remote()
             || !self.pending_remote_actions.is_empty()
             || self
                 .subscribers
                 .keys()
                 .any(|ws| !self.topics.contains_key(ws))
+    }
+
+    /// Whether a host session goes to another machine: sessions with this
+    /// device's own host keep nothing up.
+    fn remote_host_sessions(&self) -> bool {
+        self.host_sessions.values().any(|runtime| !runtime.local)
+    }
+
+    /// Whether `command` stays in this process: it goes to this device's
+    /// own host, so it needs no relay up.
+    fn stays_local(&self, command: &NetCmd) -> bool {
+        let own = self.endpoint.id();
+        match command {
+            NetCmd::NativeConnect(connect, None) => {
+                self.host_identity.as_ref().is_some_and(|identity| {
+                    connect.material(identity).is_ok_and(|(hint, cert, _, _)| {
+                        tilo_joined_room::session::hosted_by(&hint, &cert.device_public_key)
+                    })
+                })
+            }
+            NetCmd::RoomGovernance(request) => matches!(
+                request.to,
+                room_governance::Addressee::Device(host) | room_governance::Addressee::Host(host)
+                    if host == own
+            ),
+            NetCmd::GovernorAction { ws, .. } => self.native_routes.is_local(*ws),
+            NetCmd::NativeEnrollment(command) => command.is_local(),
+            _ => false,
+        }
     }
 
     /// The remote party this actor is connected to or keeps dialling, if
@@ -3700,11 +3758,11 @@ impl ActorState {
             "a peer on one of its topics"
         } else if !self.hosts.is_empty()
             || !self.connecting_hosts.is_empty()
-            || !self.host_sessions.is_empty()
+            || self.remote_host_sessions()
         {
             "a workspace host"
-        } else if !self.native_routes.is_empty() {
-            "a relay-governed room"
+        } else if self.native_routes.any_remote() {
+            "a room hosted elsewhere"
         } else if !self.personal_fabric_connections.is_empty()
             || !self.active_personal_transfers.is_empty()
         {
@@ -3735,7 +3793,14 @@ impl ActorState {
         self.resubscribe_missing_topics().await;
         self.retry_direct_peers().await;
         self.retry_native_routes();
-        let rooms: Vec<_> = self.host_sessions.keys().map(|(ws, _)| *ws).collect();
+        // A session with this device's own host loses nothing between
+        // heartbeats: it publishes as the owner commits.
+        let rooms: Vec<_> = self
+            .host_sessions
+            .iter()
+            .filter(|(_, runtime)| !runtime.local)
+            .map(|((ws, _), _)| *ws)
+            .collect();
         for ws in rooms {
             self.request_native_refresh(ws);
             self.drive_native_publication(ws);
@@ -3983,7 +4048,11 @@ impl ActorState {
     /// Re-announce every live workspace-host session so a late-joining
     /// subscriber still sees `HostReady`.
     async fn run_host_checkpoint_tick(&self) {
-        for &(ws, peer) in self.host_sessions.keys() {
+        for (&(ws, peer), _) in self
+            .host_sessions
+            .iter()
+            .filter(|(_, runtime)| !runtime.local)
+        {
             if let Some(tx) = self.subscribers.get(&ws) {
                 let _ = tx.send(NetEvent::HostReady { ws, peer }).await;
             }
@@ -4211,7 +4280,7 @@ async fn run(
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
     reachability: Reachability,
-    governing: Option<super::governor_join::GoverningRooms>,
+    hosting: Option<Hosting>,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let personal_fabric_incarnations = Arc::new(AtomicU64::new(1));
@@ -4239,16 +4308,18 @@ async fn run(
             },
         )
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol);
-    // Answered only where this device may govern rooms; a dial elsewhere
-    // finds no such protocol, as at any device that governs none.
-    let router = match governing {
-        Some(governing) => router.accept(
-            tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
-            tilo_relay_session::workspace_join::WorkspaceJoinProtocol::new(governing),
-        ),
-        None => router,
-    }
-    .spawn();
+    // This device's room host answers here once it opens: until then its
+    // handlers refuse, as a device hosting nothing does.
+    let (local_host, protocols) = match hosting {
+        Some(Hosting { host, protocols }) => (Some(host), protocols),
+        None => (None, Vec::new()),
+    };
+    let router = protocols
+        .into_iter()
+        .fold(router, |router, (alpn, handler)| {
+            router.accept(alpn, handler)
+        })
+        .spawn();
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
     let mut state = ActorState {
         private_messages: super::private_messages::Transport::new(
@@ -4263,6 +4334,7 @@ async fn run(
         native_media: super::native_media::Registry::default(),
         native_enrollment: super::invite::enrollment_driver::Registry::default(),
         native_routes: native_ingress::Routes::default(),
+        local_host,
         room_governance: room_governance::Waiting::default(),
         gossip,
         internal_tx,
@@ -4319,7 +4391,7 @@ async fn run(
         upkeep = next_upkeep(upkeep, state.needs_upkeep(), heartbeat_interval);
         host_checkpoint = next_upkeep(
             host_checkpoint,
-            !state.host_sessions.is_empty(),
+            state.remote_host_sessions(),
             HOST_CHECKPOINT_INTERVAL,
         );
         // A held pointer move falls due; nothing is armed while none is held.
