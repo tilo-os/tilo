@@ -1404,7 +1404,11 @@ impl NotesApp {
         if self.workspace.selected().is_none()
             && let Some(first) = self.workspace.children_of(None).first().map(|p| p.id)
         {
+            // The window opens on its first note: the page tree marks it, as
+            // it marks every note the window moves to. A presented window
+            // takes no projection for this, so nothing else would.
             self.workspace.set_selected(Some(first));
+            self.sidebar.sync_from_workspace(&self.workspace);
         }
         let Some(sel) = self.workspace.selected() else {
             if self.main.page_id().is_some() {
