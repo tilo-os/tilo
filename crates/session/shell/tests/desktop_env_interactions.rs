@@ -494,10 +494,12 @@ fn resize_handles_persist_clamped_redistributed_group_widths() {
             "and by exactly the dragged distance",
         );
 
+        // Alone on its strip the default width takes the strip, so what is
+        // saved is the width on screen, not two thirds of the strip.
         host.tick_pending_width_harvest_for_tests();
         assert_approx_eq!(
             width_in_tree(&chrome),
-            boot_px + 120.0,
+            on_screen_before + 120.0,
             "the new width must persist into the tree so it survives a restart",
         );
         let _ = &layout;
