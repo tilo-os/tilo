@@ -2708,39 +2708,20 @@ device-fabric-error-input-sequence-exhausted = Die Eingabesequenz ist ausgeschö
 
 device-fabric-error-input-cleanup-pending = Vorherige Eingaben werden noch freigegeben. Versuche es erneut.
 
-search-provider-system-settings = Systemeinstellungen
 setting-never = Nie
 setting-minutes = { $minutes ->
         [one] 1 Minute
        *[other] { $minutes } Minuten
     }
-setting-on = An
-setting-off = Aus
 setting-mode-dark = Dunkel
 setting-mode-light = Hell
 setting-mode-automatic = Automatisch
 setting-mode-unset = Folgt dem Design
 setting-get = { $name }: { $value }
 setting-get-detail = Aktuellen Wert und erlaubte Werte lesen
-setting-power-blank-after = Bildschirm ausschalten nach
-setting-power-blank-after-words = abschalten dunkel inaktivität display blank
-setting-power-lock-after = Bildschirm sperren nach
-setting-power-lock-after-words = automatisch sperren sperrzeit inaktivität lock screen
 setting-confirm-weaker = Weniger sicher machen
 setting-suspend-plugged-in = Am Netzteil
 setting-suspend-on-battery = Im Akkubetrieb
-setting-power-suspend-after = In Bereitschaft nach
-setting-power-suspend-after-words = standby ruhezustand energiesparen schlafen inaktivität suspend
-setting-power-auto-suspend = Bei Inaktivität in Bereitschaft gehen
-setting-power-auto-suspend-words = automatisch standby ruhezustand schlafen suspend
-setting-display-scale = Bildschirmskalierung
-setting-display-scale-words = skalierung zoom größe anzeige scale
-setting-display-refresh-rate = Bildwiederholrate
-setting-display-refresh-rate-words = hertz frequenz bildfrequenz anzeige refresh
-setting-keyboard-layout = Tastaturlayout
-setting-keyboard-layout-words = sprache belegung eingabequelle tastatur keyboard layout
-setting-appearance-mode = Erscheinungsbild
-setting-appearance-mode-words = dunkel hell nacht design theme modus
 display-remote-heading = Deine anderen Bildschirme
 display-remote-title = Bildschirm { $number }: { $name } auf { $device }
 display-remote-row = { $title }, { $status }

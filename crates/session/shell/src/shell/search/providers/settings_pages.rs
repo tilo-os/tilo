@@ -13,7 +13,12 @@
 //! A yes-or-no setting the session keeps ([`index::Switch`]) is the switch
 //! itself: its row says whether it is on, and Enter flips it through its
 //! section's field edit, the edit its switch in Settings and in Settings'
-//! own search makes.
+//! own search makes. A setting the palette changes to a typed value (a
+//! timer, the display scale, the keyboard layout) says its value and takes
+//! the new one ([`values`]). This is the one settings search: every row
+//! comes from the index.
+
+mod values;
 
 use settings_store::index;
 use ui::search::FieldWeight;
@@ -64,6 +69,8 @@ pub struct SettingsPagesProvider {
     /// The rows and their searchable text, built once per language: a
     /// keystroke must only search them, not rebuild every page's copy.
     built: std::cell::RefCell<Option<Built>>,
+    /// The typed settings as they stand, read again when they move.
+    readings: values::Readings,
     /// How many times the rows were built.
     #[cfg(test)]
     builds: std::cell::Cell<usize>,
@@ -82,6 +89,36 @@ struct Built {
     /// The switch each row flips, in row order: `None` for a row that
     /// opens Settings.
     switches: Vec<Option<index::Switch>>,
+    /// The typed setting each row changes or reads, in row order.
+    typed: Vec<Option<Typed>>,
+}
+
+impl Built {
+    /// Adds a setting's row, found by `field`, on the page at `page`.
+    fn push_setting(
+        &mut self,
+        field: Vec<(String, FieldWeight)>,
+        page: usize,
+        switch: Option<index::Switch>,
+        typed: Option<Typed>,
+        row: SearchResult,
+    ) {
+        self.fields.push(field);
+        self.setting_pages.push(page);
+        self.switches.push(switch);
+        self.typed.push(typed);
+        self.rows.push(row);
+    }
+}
+
+/// A row of a setting the palette changes to a typed value.
+#[derive(Clone)]
+struct Typed {
+    kind: values::Kind,
+    /// Whether the row reads the value rather than changing it.
+    reads: bool,
+    /// The setting's name, which the reading row says beside its value.
+    name: String,
 }
 
 /// Settings the palette already offers as quick actions under the same
@@ -103,6 +140,7 @@ impl SettingsPagesProvider {
             kinds: vec![ResourceKind::Custom(t("search-kind-settings-pages"))],
             ranker: ui::search::ListIndex::default(),
             built: std::cell::RefCell::default(),
+            readings: values::Readings::default(),
             #[cfg(test)]
             builds: std::cell::Cell::new(0),
         }
@@ -213,9 +251,15 @@ impl SettingsPagesProvider {
         let kept = crate::shell::settings_records::switches_on(
             index::SETTINGS.iter().map(|setting| setting.switch),
         );
-        let mut rows = Vec::new();
-        let mut fields = Vec::new();
-        let mut switches = Vec::new();
+        let mut built = Built {
+            locale,
+            rows: Vec::new(),
+            fields: Vec::new(),
+            pages: index::PAGES.len(),
+            setting_pages: Vec::new(),
+            switches: Vec::new(),
+            typed: Vec::new(),
+        };
         for page in index::PAGES {
             let title = t(&page.title_key());
             let subtitle = t(&page.subtitle_key());
@@ -229,9 +273,10 @@ impl SettingsPagesProvider {
                     .chain(index::words_in_every_locale(&page.words_key()))
                     .map(|word| (word, FieldWeight::KEYWORD)),
             );
-            fields.push(row);
-            switches.push(None);
-            rows.push(opening(
+            built.fields.push(row);
+            built.switches.push(None);
+            built.typed.push(None);
+            built.rows.push(opening(
                 kind,
                 format!("page:{}", page.slug),
                 title,
@@ -239,8 +284,6 @@ impl SettingsPagesProvider {
                 page.link(),
             ));
         }
-        let pages = rows.len();
-        let mut setting_pages = Vec::new();
         for (setting, kept) in index::SETTINGS.iter().zip(&kept) {
             if QUICK_ACTION_SETTINGS.contains(&setting.id) {
                 continue;
@@ -269,27 +312,38 @@ impl SettingsPagesProvider {
                     .chain(index::words_in_every_locale(&setting.words_key()))
                     .map(|word| (word, FieldWeight::KEYWORD)),
             );
-            fields.push(row);
-            setting_pages.push(page_row);
             let id = format!("setting:{}", setting.id);
             // The page is what tells two settings apart; the app is
             // already the section the row stands in.
             let facts = vec![page_title.clone()];
+            if let Some(value) = values::Kind::of(setting.id) {
+                // The row changing it, and the one reading it.
+                let typed = |reads| Typed {
+                    kind: value,
+                    reads,
+                    name: name.clone(),
+                };
+                let changing =
+                    values::changing(kind, value, setting.id, id.clone(), name.clone(), facts);
+                let reading = values::reading(
+                    kind,
+                    value,
+                    setting.id,
+                    format!("{id}{READS}"),
+                    name.clone(),
+                );
+                built.push_setting(row.clone(), page_row, None, Some(typed(false)), changing);
+                built.push_setting(row, page_row, None, Some(typed(true)), reading);
+                continue;
+            }
             let switch = setting.switch.filter(|_| kept.is_some());
-            switches.push(switch);
-            rows.push(match switch {
+            let shown = match switch {
                 Some(switch) => switching(kind, id, name, facts, switch),
                 None => opening(kind, id, name, facts, setting.link()),
-            });
+            };
+            built.push_setting(row, page_row, switch, None, shown);
         }
-        Built {
-            locale,
-            rows,
-            fields,
-            pages,
-            setting_pages,
-            switches,
-        }
+        built
     }
 
     /// The pages and settings `needle` finds, best first. A setting is
@@ -331,17 +385,58 @@ impl SettingsPagesProvider {
                     } else {
                         score
                     },
-                    ..live(built, at, row, &kept)
+                    ..self.live(built, at, row, &kept)?
                 })
             })
             .collect()
     }
 }
 
-/// Row `at` of `built` as it reads now: a switch says whether it is on, as
-/// stored at this moment wherever it last changed. Every switch is read
-/// once into `kept`, and only when a switch is listed.
-fn live(
+impl SettingsPagesProvider {
+    /// Row `at` of `built` as it reads now: a switch says whether it is on,
+    /// as stored at this moment wherever it last changed, and a typed
+    /// setting its value. Every switch is read once into `kept`, and only
+    /// when a switch is listed. `None` for a typed setting this session has
+    /// nothing to read of (no display has been published).
+    fn live(
+        &self,
+        built: &Built,
+        at: usize,
+        row: &SearchResult,
+        kept: &std::cell::OnceCell<Vec<Option<bool>>>,
+    ) -> Option<SearchResult> {
+        if let Some(typed) = built.typed.get(at).cloned().flatten() {
+            let reading = self.readings.of(typed.kind)?;
+            return Some(values::live(
+                row,
+                typed.kind,
+                &reading,
+                typed.reads,
+                &typed.name,
+            ));
+        }
+        Some(switch_live(built, at, row, kept))
+    }
+
+    /// The typed setting `result` changes, where it is stepped: not a
+    /// display's, which is chosen and kept.
+    fn stepped(&self, result: &SearchResult) -> Option<(values::Kind, &'static str)> {
+        let built = self.built.borrow();
+        let built = built.as_ref()?;
+        let at = built.rows.iter().position(|row| row.id == result.id)?;
+        let typed = built.typed.get(at)?.as_ref()?;
+        let setting = result.id.strip_prefix("setting:")?;
+        let setting = index::setting(setting)?.id;
+        (!typed.reads && !typed.kind.is_display()).then_some((typed.kind, setting))
+    }
+}
+
+/// The suffix of the address of a typed setting's reading row.
+const READS: &str = ".get";
+
+/// Row `at` of `built`, a page or a setting that is no typed one, as it
+/// reads now.
+fn switch_live(
     built: &Built,
     at: usize,
     row: &SearchResult,
@@ -388,6 +483,7 @@ impl SearchProvider for SettingsPagesProvider {
         // A setting wears the picture of the page it is on.
         let slug = result.id.strip_prefix("page:").or_else(|| {
             let id = result.id.strip_prefix("setting:")?;
+            let id = id.strip_suffix(READS).unwrap_or(id);
             index::SETTINGS
                 .iter()
                 .find(|setting| setting.id == id)
@@ -416,20 +512,38 @@ impl SearchProvider for SettingsPagesProvider {
         crate::shell::search::match_reason_in(needle, result, built.fields.get(at)?)
     }
 
-    /// A setting the system settings offer in place (its value on the row,
-    /// changed without opening Settings) is one row for people, that one;
-    /// its "open the page at it" row stays for agents and the page itself
-    /// still lists it.
+    /// A person sees one row per typed setting, its value on the row:
+    /// reading the value is what the row already does. Agents and the
+    /// control socket still reach the reading row.
     fn hidden_from_people(
         &self,
         result: &SearchResult,
         _needle: &str,
         _chrome: &crate::shell::chrome_state::ChromeState,
     ) -> bool {
-        result
-            .id
-            .strip_prefix("setting:")
-            .is_some_and(super::system_settings::offers_in_place)
+        result.id.starts_with("setting:") && result.id.ends_with(READS)
+    }
+
+    /// A typed setting's row steps through the values Settings offers for
+    /// it; a display change goes through its own confirmation and is
+    /// chosen, not stepped.
+    fn adjustable(&self, result: &SearchResult) -> bool {
+        self.stepped(result).is_some()
+    }
+
+    fn adjust(
+        &self,
+        result: &SearchResult,
+        delta: i8,
+        _doc: &mut ui::widget::Edits<'_>,
+        _root: &automerge::ObjId,
+        chrome: &crate::shell::chrome_state::Chrome,
+    ) -> Result<(), ActionError> {
+        let (kind, setting) = self
+            .stepped(result)
+            .ok_or_else(|| ActionError::Refused("this setting is not stepped".into()))?;
+        let args = values::stepped_args(kind, delta)?;
+        values::apply(chrome, kind, setting, &args).map(drop)
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
@@ -445,12 +559,7 @@ impl SearchProvider for SettingsPagesProvider {
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         self.with_built(&ctx, |built| {
             let at = built.rows.iter().position(|row| row.id == id)?;
-            Some(live(
-                built,
-                at,
-                built.rows.get(at)?,
-                &std::cell::OnceCell::new(),
-            ))
+            self.live(built, at, built.rows.get(at)?, &std::cell::OnceCell::new())
         })
         .flatten()
     }

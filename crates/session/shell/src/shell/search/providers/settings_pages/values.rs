@@ -1,20 +1,18 @@
-//! The machine's own settings as rows of the palette: when the screen locks
-//! and blanks, when the machine suspends, the scale and refresh rate of a
-//! display, the keyboard layout and the appearance mode.
+//! The settings the palette changes to a typed value without opening
+//! Settings: when the screen locks and blanks, when the machine suspends,
+//! the scale and refresh rate of a display, the keyboard layout and whether
+//! the desktop is dark or light.
 //!
-//! Each setting is addressed `system-settings:<setting>.<verb>`:
-//!
-//! - `.get` answers the current value and the values that are allowed;
-//! - `.set` takes the typed value, offered as the Settings pane offers it,
-//!   and changes it through the section's own field edit or verb, which the
-//!   session keeps whether or not Settings is open
-//!   ([`crate::shell::settings_records`]): a change that weakens the
-//!   person's security asks them first (`confirm`);
-//! - `.toggle` flips a boolean setting.
+//! Each is its row in the index ([`super`]): the row takes the value,
+//! offered as the Settings pane offers it, and changes it through the
+//! section's own field edit or verb, which the session keeps whether or not
+//! Settings is open ([`crate::shell::settings_records`]); a change that
+//! weakens the person's security asks them first (`confirm`). A row of its
+//! own, hidden from people, reads the value and the values allowed.
 //!
 //! Display changes are staged through the keep-or-restore handshake every
-//! display change goes through, and answer when staged; `display.change.keep`
-//! and `display.change.revert` settle them.
+//! display change goes through, and answer when staged;
+//! `display.change.keep` and `display.change.revert` settle them.
 
 use std::rc::Rc;
 
@@ -25,159 +23,84 @@ use settings_store::{keyboard_sources, power};
 use tilo_actions::{
     ActionAddress, ActionContract, ConfirmationPolicy, OperationKind, RetryPolicy, RiskLevel,
 };
-use ui::search::FieldWeight;
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
-use crate::shell::search::{
-    ActionReceipt, InvocationDisposition, ResourceKind, SearchContext, SearchProvider, SearchResult,
-};
+use crate::shell::search::{ActionReceipt, InvocationDisposition, ResourceKind, SearchResult};
 
-pub const PROVIDER_ID: &str = "system-settings";
+use super::PROVIDER_ID;
 
 /// What a setting is, which decides how it is read, validated and stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
+pub(super) enum Kind {
     LockAfter,
     BlankAfter,
     SuspendAfter,
-    AutoSuspend,
     DisplayScale,
     DisplayRefreshRate,
     KeyboardLayout,
     AppearanceMode,
 }
 
-/// One setting: its address, the catalogue key of its name and the words
-/// people also use for it.
-struct Spec {
-    id: &'static str,
-    kind: Kind,
-    /// Catalogue key of the name; `<name>-words` holds the translated
-    /// alternative words.
-    name: &'static str,
-    /// The stable English alternatives scripts and English speakers type.
-    words: &'static str,
-}
-
-const SPECS: &[Spec] = &[
-    Spec {
-        id: "power.lock-after",
-        kind: Kind::LockAfter,
-        name: "setting-power-lock-after",
-        words: "lock screen after auto lock timeout idle never",
-    },
-    Spec {
-        id: "power.blank-after",
-        kind: Kind::BlankAfter,
-        name: "setting-power-blank-after",
-        words: "screen off blank turn off display after timeout idle dim sleep",
-    },
-    Spec {
-        id: "power.suspend-after",
-        kind: Kind::SuspendAfter,
-        name: "setting-power-suspend-after",
-        words: "suspend sleep standby after timeout idle never",
-    },
-    Spec {
-        id: "power.auto-suspend",
-        kind: Kind::AutoSuspend,
-        name: "setting-power-auto-suspend",
-        words: "automatic suspend sleep when idle on off",
-    },
-    Spec {
-        id: "display.scale",
-        kind: Kind::DisplayScale,
-        name: "setting-display-scale",
-        words: "display screen scale scaling zoom size hidpi percent",
-    },
-    Spec {
-        id: "display.refresh-rate",
-        kind: Kind::DisplayRefreshRate,
-        name: "setting-display-refresh-rate",
-        words: "display screen refresh rate hz hertz frequency framerate",
-    },
-    Spec {
-        id: "keyboard.layout",
-        kind: Kind::KeyboardLayout,
-        name: "setting-keyboard-layout",
-        words: "keyboard layout language input source keymap",
-    },
-    Spec {
-        id: "appearance.mode",
-        kind: Kind::AppearanceMode,
-        name: "setting-appearance-mode",
-        words: "appearance theme dark light mode automatic night",
-    },
-];
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Verb {
-    Get,
-    Set,
-    Toggle,
-}
-
-impl Verb {
-    const fn suffix(self) -> &'static str {
-        match self {
-            Self::Get => "get",
-            Self::Set => "set",
-            Self::Toggle => "toggle",
-        }
+impl Kind {
+    /// The kind of the setting the index calls `setting`, where the palette
+    /// changes it to a typed value.
+    pub(super) fn of(setting: &str) -> Option<Self> {
+        Some(match setting {
+            "power.lock_after" => Self::LockAfter,
+            "power.blank" => Self::BlankAfter,
+            "power.suspend_after" => Self::SuspendAfter,
+            "display.scale" => Self::DisplayScale,
+            "display.refresh_rate" => Self::DisplayRefreshRate,
+            "keyboard.layout" => Self::KeyboardLayout,
+            "appearance.style" => Self::AppearanceMode,
+            _ => return None,
+        })
     }
+
+    /// Whether it changes a display, which is staged for the person to keep
+    /// rather than stepped.
+    pub(super) fn is_display(self) -> bool {
+        matches!(self, Self::DisplayScale | Self::DisplayRefreshRate)
+    }
+
+    const ALL: [Self; 7] = [
+        Self::LockAfter,
+        Self::BlankAfter,
+        Self::SuspendAfter,
+        Self::DisplayScale,
+        Self::DisplayRefreshRate,
+        Self::KeyboardLayout,
+        Self::AppearanceMode,
+    ];
 }
 
-/// The setting and verb an action id of this provider names.
-/// Whether the setting Settings' index calls `index_id` is one served here
-/// with its live value, so search shows it once, in place.
-pub(crate) fn offers_in_place(index_id: &str) -> bool {
-    SPECS.iter().any(|spec| {
-        spec.id.replace('-', "_") == index_id.replace('-', "_") && read(spec.kind).is_some()
-    })
-}
-
-fn parse(id: &str) -> Option<(&'static Spec, Verb)> {
-    let (setting, suffix) = id.rsplit_once('.')?;
-    let verb = [Verb::Get, Verb::Set, Verb::Toggle]
-        .into_iter()
-        .find(|verb| verb.suffix() == suffix)?;
-    let spec = SPECS.iter().find(|spec| spec.id == setting)?;
-    (verb != Verb::Toggle || spec.kind == Kind::AutoSuspend).then_some((spec, verb))
-}
-
-/// The contract of one of this provider's action ids, for the shell's
-/// capability gate: reading is a view, changing a setting is a write.
-pub(crate) fn contract_for(id: &str) -> Option<ActionContract> {
-    let (spec, verb) = parse(id)?;
-    let tags = vec!["desktop".into(), "settings".into(), spec.id.into()];
-    Some(match verb {
-        Verb::Get => ActionContract {
+/// The contract of a typed setting's row: reading is a view, changing it a
+/// write that is undone by setting it back (a display change restores
+/// itself unless kept).
+pub(super) fn contract(reads: bool, setting: &str) -> ActionContract {
+    let tags = vec!["desktop".into(), "settings".into(), setting.into()];
+    if reads {
+        return ActionContract {
             tags,
             ..ActionContract::view()
-        },
-        Verb::Set | Verb::Toggle => ActionContract {
-            kind: tilo_actions::contract::ActionKind::Undoable,
-            risk: RiskLevel::Low,
-            confirmation: ConfirmationPolicy::None,
-            retry: if verb == Verb::Toggle {
-                RetryPolicy::AtMostOnce
-            } else {
-                RetryPolicy::Idempotent
-            },
-            // A display change restores itself unless kept; every other
-            // setting is undone by setting it back.
-            reversible: true,
-            tags,
-            ..ActionContract::default()
-        },
-    })
+        };
+    }
+    ActionContract {
+        kind: tilo_actions::contract::ActionKind::Undoable,
+        risk: RiskLevel::Low,
+        confirmation: ConfirmationPolicy::None,
+        retry: RetryPolicy::Idempotent,
+        reversible: true,
+        tags,
+        ..ActionContract::default()
+    }
 }
 
 /// A setting as it stands: the value, how a person reads it, the values that
 /// are allowed and whatever else describes it.
-struct Reading {
+pub(super) struct Reading {
     value: Value,
     label: String,
     choices: Vec<Value>,
@@ -189,10 +112,6 @@ fn minutes_label(minutes: u32) -> String {
         return t("setting-never");
     }
     t_args("setting-minutes", &[("minutes", i64::from(minutes).into())])
-}
-
-fn on_off(on: bool) -> String {
-    t(if on { "setting-on" } else { "setting-off" })
 }
 
 fn mode_label(mode: Option<&str>) -> String {
@@ -284,7 +203,7 @@ fn input_config() -> RichInputConfig {
 
 /// The setting as it stands now; `None` where this session has nothing to
 /// read (no display has been published).
-fn read(kind: Kind) -> Option<Reading> {
+pub(super) fn read(kind: Kind) -> Option<Reading> {
     Some(match kind {
         Kind::LockAfter => minutes_reading(&power::LOCK_MINUTES, power::LOCK_CHOICES),
         Kind::BlankAfter => minutes_reading(&power::BLANK_MINUTES, power::BLANK_CHOICES),
@@ -307,15 +226,6 @@ fn read(kind: Kind) -> Option<Reading> {
                 })),
             });
             reading
-        }
-        Kind::AutoSuspend => {
-            let on = power::AUTO_SUSPEND.get();
-            Reading {
-                value: json!(on),
-                label: on_off(on),
-                choices: vec![json!(true), json!(false)],
-                details: Value::Null,
-            }
         }
         Kind::DisplayScale => {
             let snapshot = displays()?;
@@ -377,8 +287,8 @@ fn read(kind: Kind) -> Option<Reading> {
     })
 }
 
-/// The typed parameters `.set` takes.
-fn set_params(kind: Kind) -> Vec<ActionParam> {
+/// The typed parameters setting it takes.
+pub(super) fn set_params(kind: Kind) -> Vec<ActionParam> {
     let choices = |values: &[u32]| values.iter().map(u32::to_string).collect::<Vec<_>>();
     let minutes = |what: &'static str, values: &[u32]| {
         ActionParam::required_owned("minutes", ParamType::Integer, what)
@@ -423,11 +333,6 @@ fn set_params(kind: Kind) -> Vec<ActionParam> {
                 (ON_BATTERY, t("setting-suspend-on-battery")),
             ]),
         ],
-        Kind::AutoSuspend => vec![ActionParam::required_owned(
-            "enabled",
-            ParamType::Boolean,
-            "Whether the machine suspends when idle.",
-        )],
         Kind::DisplayScale => vec![
             ActionParam::required_owned("percent", ParamType::Integer, "Display scale in percent.")
                 .with_choices(
@@ -471,12 +376,12 @@ fn set_params(kind: Kind) -> Vec<ActionParam> {
     }
 }
 
-/// The arguments that move `spec` one value along its choices (the
-/// values its first parameter allows, else the reading's own list), held at
-/// either end.
-fn stepped_args(spec: &Spec, delta: i8) -> Result<ActionArgs, ActionError> {
-    let reading = read(spec.kind).ok_or_else(|| refuse("this setting is not available here"))?;
-    let params = set_params(spec.kind);
+/// The arguments that move `kind` one value along its choices (the values
+/// its first parameter allows, else the reading's own list), held at either
+/// end.
+pub(super) fn stepped_args(kind: Kind, delta: i8) -> Result<ActionArgs, ActionError> {
+    let reading = read(kind).ok_or_else(|| refuse("this setting is not available here"))?;
+    let params = set_params(kind);
     let param = params
         .first()
         .ok_or_else(|| refuse("this setting takes no value"))?;
@@ -522,15 +427,12 @@ fn minutes_arg(args: &ActionArgs) -> Result<u32, ActionError> {
         .ok_or_else(|| refuse("minutes must be a whole number of minutes"))
 }
 
-/// What runs a setting action once it is invoked.
-type Runner = Rc<dyn Fn(&Chrome, &ActionArgs) -> Result<Value, ActionError>>;
-
 /// What a store write answers: the setting, what it is now and what it was.
-fn changed(spec: &Spec, previous: &Reading, value: &Value) -> Value {
-    json!({"setting": spec.id, "value": value, "previous": previous.value})
+fn changed(setting: &str, previous: &Reading, value: &Value) -> Value {
+    json!({"setting": setting, "value": value, "previous": previous.value})
 }
 
-/// The `power` choices of `power.suspend-after.set`.
+/// The `power` choices of setting the suspend timer.
 const PLUGGED_IN: &str = "plugged-in";
 const ON_BATTERY: &str = "battery";
 
@@ -574,20 +476,19 @@ fn suspend_change(
     Ok((address("settings.power", verb), arguments))
 }
 
-/// Run a non-display `.set` or `.toggle` through the section's field edit
-/// or verb, as the person at this seat.
-fn apply(
+/// Change a setting that is not a display's through the section's field
+/// edit or verb, as the person at this seat.
+pub(super) fn apply(
     chrome: &Chrome,
-    spec: &Spec,
-    verb: Verb,
+    kind: Kind,
+    setting: &str,
     args: &ActionArgs,
 ) -> Result<Value, ActionError> {
     use crate::shell::settings_records::{address, change, set_field};
-    let invoked_by =
-        settings_store::InvokingAction::action(format!("{}.{}", spec.id, verb.suffix()));
-    let previous = read(spec.kind).ok_or_else(|| refuse("this setting is not available here"))?;
+    let invoked_by = settings_store::InvokingAction::action(format!("{PROVIDER_ID}:{setting}"));
+    let previous = read(kind).ok_or_else(|| refuse("this setting is not available here"))?;
     let of_power = |action: &str| address("settings.power", action);
-    let (action, arguments) = match spec.kind {
+    let (action, arguments) = match kind {
         Kind::LockAfter => (
             of_power("field-edit"),
             set_field("lock_minutes", &json!(minutes_arg(args)?)),
@@ -597,18 +498,6 @@ fn apply(
             set_field("blank_minutes", &json!(minutes_arg(args)?)),
         ),
         Kind::SuspendAfter => suspend_change(&chrome.borrow(), minutes_arg(args)?, args)?,
-        Kind::AutoSuspend => {
-            let enabled = match verb {
-                Verb::Toggle => !power::AUTO_SUSPEND.get(),
-                _ => args
-                    .boolean("enabled")
-                    .ok_or_else(|| refuse("enabled must be true or false"))?,
-            };
-            (
-                of_power("field-edit"),
-                set_field("auto_suspend", &json!(enabled)),
-            )
-        }
         Kind::KeyboardLayout => {
             let mut arguments = serde_json::Map::new();
             arguments.insert(
@@ -618,13 +507,13 @@ fn apply(
             (address("settings.input", "choose-layout"), arguments)
         }
         Kind::AppearanceMode => {
-            super::actions::set_mode(
+            super::super::actions::set_mode(
                 &mut chrome.borrow_mut(),
                 args.text("mode").unwrap_or_default(),
                 &invoked_by,
             )?;
-            let value = read(spec.kind).map_or(Value::Null, |reading| reading.value);
-            return Ok(changed(spec, &previous, &value));
+            let value = read(kind).map_or(Value::Null, |reading| reading.value);
+            return Ok(changed(setting, &previous, &value));
         }
         Kind::DisplayScale | Kind::DisplayRefreshRate => {
             return Err(refuse("display changes require lifecycle dispatch"));
@@ -636,20 +525,21 @@ fn apply(
         args.boolean("confirm") == Some(true),
         &invoked_by,
     )?;
-    let value = read(spec.kind).map_or(Value::Null, |reading| reading.value);
-    Ok(changed(spec, &previous, &value))
+    let value = read(kind).map_or(Value::Null, |reading| reading.value);
+    Ok(changed(setting, &previous, &value))
 }
 
 /// Stage a display change; it is in effect, and waiting to be kept or
 /// reverted, once the ticket completes.
 fn stage_display(
     chrome: &Chrome,
-    spec: &'static Spec,
+    kind: Kind,
+    setting: &'static str,
     args: &ActionArgs,
 ) -> Result<InvocationDisposition, ActionError> {
-    let previous = read(spec.kind).ok_or_else(|| refuse("no display has been published"))?;
+    let previous = read(kind).ok_or_else(|| refuse("no display has been published"))?;
     let connector = args.text("display").map(str::to_owned);
-    let (value, pending) = if matches!(spec.kind, Kind::DisplayScale) {
+    let (value, pending) = if kind == Kind::DisplayScale {
         {
             let percent = args
                 .integer("percent")
@@ -679,7 +569,7 @@ fn stage_display(
         }
     };
     let pending = pending.map_err(refuse)?;
-    let mut answer = changed(spec, &previous, &value);
+    let mut answer = changed(setting, &previous, &value);
     if let Some(object) = answer.as_object_mut() {
         object.insert("awaiting_confirmation".into(), json!(true));
         object.insert("keep".into(), json!("actions:display.change.keep"));
@@ -699,9 +589,10 @@ fn stage_display(
     })))
 }
 
-fn answer_of(reading: &Reading, spec: &Spec) -> Value {
+/// What reading a setting answers.
+fn answer_of(reading: &Reading, setting: &str) -> Value {
     json!({
-        "setting": spec.id,
+        "setting": setting,
         "value": reading.value,
         "label": reading.label,
         "allowed": reading.choices,
@@ -709,33 +600,50 @@ fn answer_of(reading: &Reading, spec: &Spec) -> Value {
     })
 }
 
-pub struct SystemSettingsProvider {
-    ranker: ui::search::ListIndex,
-    /// The rows and their searchable text, read once per version of what
-    /// they show: a keystroke checks the documents' stamps instead of reading
-    /// and parsing every setting again.
-    built: std::cell::RefCell<Option<Built>>,
-}
-
-/// What [`SystemSettingsProvider`]'s rows were read from: the settings
-/// document, the published display hardware, and the language they speak.
-type BuiltFrom = (
+/// What the settings' readings were read from: the settings document, the
+/// published display hardware, and the language they speak.
+type ReadFrom = (
     Option<settings_store::SettingsStamp>,
     Option<std::time::SystemTime>,
     u64,
     String,
 );
 
-struct Built {
-    from: BuiltFrom,
-    rows: Vec<SearchResult>,
-    fields: Vec<Vec<(String, FieldWeight)>>,
+/// Every typed setting as it stands, read again only when what it is read
+/// from moved: a keystroke checks the documents' stamps instead of reading
+/// and parsing every setting again.
+/// Every typed setting's reading, in [`Kind::ALL`] order, and what they
+/// were read from.
+type Read = (ReadFrom, Vec<Option<Rc<Reading>>>);
+
+#[derive(Default)]
+pub(super) struct Readings {
+    read: std::cell::RefCell<Option<Read>>,
+}
+
+impl Readings {
+    /// `kind` as it stands now; `None` where this session has nothing to
+    /// read (no display has been published).
+    pub(super) fn of(&self, kind: Kind) -> Option<Rc<Reading>> {
+        let from = read_from();
+        let mut read_now = self.read.borrow_mut();
+        if read_now.as_ref().is_none_or(|(read, _)| *read != from) {
+            let all = Kind::ALL
+                .iter()
+                .map(|&kind| read(kind).map(Rc::new))
+                .collect();
+            *read_now = Some((from, all));
+        }
+        let (_, all) = read_now.as_ref()?;
+        let at = Kind::ALL.iter().position(|&each| each == kind)?;
+        all.get(at)?.clone()
+    }
 }
 
 /// Asked on every keystroke. A process that publishes the display snapshot
 /// itself (the compositor) knows when it moved from the published
 /// generation, so only a reader of another's snapshot stats the file.
-fn built_from() -> BuiltFrom {
+fn read_from() -> ReadFrom {
     let displays = if DisplayHardwareSnapshot::published().is_some() {
         None
     } else {
@@ -750,227 +658,23 @@ fn built_from() -> BuiltFrom {
     )
 }
 
-fn build() -> (Vec<SearchResult>, Vec<Vec<(String, FieldWeight)>>) {
-    let mut rows = Vec::new();
-    let mut fields = Vec::new();
-    for spec in SPECS {
-        let Some(reading) = read(spec.kind) else {
-            continue;
-        };
-        let name = t(spec.name);
-        let words = format!("{} {}", spec.words, t(&format!("{}-words", spec.name)));
-        let verbs: &[Verb] = if spec.kind == Kind::AutoSuspend {
-            &[Verb::Get, Verb::Set, Verb::Toggle]
-        } else {
-            &[Verb::Get, Verb::Set]
-        };
-        // What Settings' own index calls it, in every language, and the
-        // words it is found by there: this row stands in for that one, so a
-        // person never gets both. They weigh less than this row's own name:
-        // they describe the neighbourhood too ("sperren" is Lock before it
-        // is "lock screen after").
-        let indexed: Vec<(String, FieldWeight)> =
-            settings_store::index::setting(&spec.id.replace('-', "_"))
-                .map(|setting| {
-                    settings_store::index::names_in_every_locale(&setting.name_key())
-                        .into_iter()
-                        .map(|name| (name, FieldWeight::SUBTITLE))
-                        .chain(
-                            settings_store::index::words_in_every_locale(&setting.words_key())
-                                .into_iter()
-                                .map(|word| (word, FieldWeight::SUBTITLE)),
-                        )
-                        .collect()
-                })
-                .unwrap_or_default();
-        for &verb in verbs {
-            let row = row_for(spec, verb, &name, &reading);
-            let mut row_fields = vec![
-                (row.title.clone(), FieldWeight::TITLE),
-                (name.clone(), FieldWeight::TITLE),
-                (row.id.clone(), FieldWeight::IDENTITY),
-                (words.clone(), FieldWeight::IDENTITY),
-                (
-                    row.subtitle.clone().unwrap_or_default(),
-                    FieldWeight::SUBTITLE,
-                ),
-            ];
-            row_fields.extend(indexed.iter().cloned());
-            fields.push(row_fields);
-            rows.push(row);
-        }
-    }
-    (rows, fields)
-}
-
-impl Default for SystemSettingsProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SystemSettingsProvider {
-    pub fn new() -> Self {
-        Self {
-            ranker: ui::search::ListIndex::default(),
-            built: std::cell::RefCell::default(),
-        }
-    }
-}
-
-impl SearchProvider for SystemSettingsProvider {
-    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
-        use ui::icons::Icon;
-        let (spec, _) = parse(&result.id)?;
-        Some(match spec.kind {
-            Kind::LockAfter => Icon::Lock,
-            Kind::BlankAfter | Kind::DisplayScale | Kind::DisplayRefreshRate => Icon::Monitor,
-            Kind::SuspendAfter | Kind::AutoSuspend => Icon::Moon,
-            Kind::KeyboardLayout => Icon::Keyboard,
-            Kind::AppearanceMode => Icon::Palette,
-        })
-    }
-    fn id(&self) -> &str {
-        PROVIDER_ID
-    }
-
-    fn name(&self) -> &'static str {
-        "System settings"
-    }
-
-    fn display_name(&self) -> String {
-        t("search-provider-system-settings")
-    }
-
-    fn resource_kinds(&self) -> &[ResourceKind] {
-        &[ResourceKind::Action]
-    }
-
-    /// A boolean setting's row is a switch: activating it flips the value
-    /// and the row's pill shows the new one where the person can see it.
-    fn toggles_in_place(&self, result: &SearchResult) -> bool {
-        parse(&result.id).is_some_and(|(_, verb)| verb == Verb::Toggle)
-    }
-
-    /// A setting's row steps through the values Settings offers for it, or
-    /// flips a switch; a display change goes through its own confirmation
-    /// and is chosen, not stepped.
-    fn adjustable(&self, result: &SearchResult) -> bool {
-        parse(&result.id).is_some_and(|(spec, verb)| {
-            verb != Verb::Get && !matches!(spec.kind, Kind::DisplayScale | Kind::DisplayRefreshRate)
-        })
-    }
-
-    fn adjust(
-        &self,
-        result: &SearchResult,
-        delta: i8,
-        _doc: &mut ui::widget::Edits<'_>,
-        _root: &automerge::ObjId,
-        chrome: &Chrome,
-    ) -> Result<(), ActionError> {
-        let (spec, verb) =
-            parse(&result.id).ok_or_else(|| refuse("this setting is not served here"))?;
-        if verb == Verb::Toggle {
-            return apply(chrome, spec, verb, &ActionArgs::none()).map(drop);
-        }
-        let args = stepped_args(spec, delta)?;
-        apply(chrome, spec, Verb::Set, &args).map(drop)
-    }
-
-    fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
-        let built = self.built.borrow();
-        let built = built.as_ref()?;
-        let at = built.rows.iter().position(|row| row.id == result.id)?;
-        crate::shell::search::match_reason_in(needle, result, built.fields.get(at)?)
-    }
-
-    /// A person sees one row per setting, its value on the row: reading a
-    /// value is what the row already does, and a switch is flipped, not set.
-    /// Agents and the control socket still reach `.get` and `.set`.
-    fn hidden_from_people(
-        &self,
-        result: &SearchResult,
-        _needle: &str,
-        _chrome: &crate::shell::chrome_state::ChromeState,
-    ) -> bool {
-        parse(&result.id).is_some_and(|(spec, verb)| {
-            verb == Verb::Get || (verb == Verb::Set && spec.kind == Kind::AutoSuspend)
-        })
-    }
-
-    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        if !ctx.wanted.contains(&ResourceKind::Action) {
-            return Vec::new();
-        }
-        let from = built_from();
-        let mut built = self.built.borrow_mut();
-        if built.as_ref().is_none_or(|built| built.from != from) {
-            let (rows, fields) = build();
-            *built = Some(Built { from, rows, fields });
-        }
-        let Some(Built { rows, fields, .. }) = built.as_ref() else {
-            return Vec::new();
-        };
-        crate::shell::search::rank_kept_rows(&self.ranker, ctx.needle.trim(), rows, fields)
-    }
-}
-
-fn row_for(spec: &'static Spec, verb: Verb, name: &str, reading: &Reading) -> SearchResult {
-    let id = format!("{}.{}", spec.id, verb.suffix());
-    let (title, subtitle, params) = match verb {
-        Verb::Get => (
-            t_args(
-                "setting-get",
-                &[
-                    ("name", name.to_owned().into()),
-                    ("value", reading.label.clone().into()),
-                ],
-            ),
-            t("setting-get-detail"),
-            Vec::new(),
-        ),
-        // The one row a person sees for a setting: its name, with the live
-        // value as the trailing pill; choosing it asks for the new value.
-        Verb::Set | Verb::Toggle => (
-            name.to_owned(),
-            String::new(),
-            if verb == Verb::Set {
-                set_params(spec.kind)
-            } else {
-                Vec::new()
-            },
-        ),
-    };
-    let display =
-        matches!(spec.kind, Kind::DisplayScale | Kind::DisplayRefreshRate) && verb == Verb::Set;
-    let run: Runner = match verb {
-        Verb::Get => Rc::new(move |_chrome: &Chrome, _args: &ActionArgs| {
-            read(spec.kind)
-                .map(|reading| answer_of(&reading, spec))
-                .ok_or_else(|| refuse("this setting is not available here"))
-        }),
-        _ => Rc::new(move |chrome: &Chrome, args: &ActionArgs| apply(chrome, spec, verb, args)),
-    };
+/// The row changing `setting` (index id) to a typed value: its name, the
+/// value as it stands as its pill ([`live`]); choosing it asks for the new
+/// value. A display's change is staged for the person to keep.
+pub(super) fn changing(
+    kind_of_row: &ResourceKind,
+    kind: Kind,
+    setting: &'static str,
+    id: String,
+    title: String,
+    facts: Vec<String>,
+) -> SearchResult {
+    let run = Rc::new(move |chrome: &Chrome, args: &ActionArgs| apply(chrome, kind, setting, args));
     let open = Rc::clone(&run);
-    let invoke = Rc::clone(&run);
     let mut row = SearchResult {
-        facts: Vec::new(),
-        shortcut: None,
-        kind: ResourceKind::Action,
-        operation_kind: if verb == Verb::Get {
-            OperationKind::View
-        } else {
-            OperationKind::Effect
-        },
-        provider_id: PROVIDER_ID.into(),
-        id: id.clone(),
-        title,
-        subtitle: (!subtitle.is_empty()).then_some(subtitle),
-        badge: (verb != Verb::Get).then(|| reading.label.clone()),
-        score: 0,
-        params,
-        contract: contract_for(&id),
+        operation_kind: OperationKind::Effect,
+        params: set_params(kind),
+        contract: Some(contract(false, setting)),
         on_open: Rc::new(
             move |_doc: &mut ui::widget::Edits<'_>,
                   _root: &automerge::ObjId,
@@ -982,12 +686,21 @@ fn row_for(spec: &'static Spec, verb: Verb, name: &str, reading: &Reading) -> Se
                   _root: &automerge::ObjId,
                   chrome: &Chrome,
                   args: &ActionArgs| {
-                invoke(chrome, args).map(ActionReceipt::completed_with)
+                run(chrome, args).map(ActionReceipt::completed_with)
             },
         )),
-        on_begin_invoke: None,
-    };
-    if display {
+        ..SearchResult::nullary(
+            kind_of_row.clone(),
+            PROVIDER_ID,
+            id,
+            title,
+            None,
+            0,
+            |_, _, _| {},
+        )
+    }
+    .with_facts(facts);
+    if kind.is_display() {
         row.on_open = Rc::new(
             |_doc: &mut ui::widget::Edits<'_>,
              _root: &automerge::ObjId,
@@ -1001,42 +714,137 @@ fn row_for(spec: &'static Spec, verb: Verb, name: &str, reading: &Reading) -> Se
             move |_doc: &mut ui::widget::Edits<'_>,
                   _root: &automerge::ObjId,
                   chrome: &Chrome,
-                  args: &ActionArgs| stage_display(chrome, spec, args),
+                  args: &ActionArgs| stage_display(chrome, kind, setting, args),
         ));
     }
     row
 }
 
+/// The row reading `setting` (index id): its value, how a person reads it,
+/// the values allowed and whatever else describes it. Hidden from people,
+/// whose row already shows the value.
+pub(super) fn reading(
+    kind_of_row: &ResourceKind,
+    kind: Kind,
+    setting: &'static str,
+    id: String,
+    title: String,
+) -> SearchResult {
+    let run = Rc::new(move || {
+        read(kind)
+            .map(|reading| answer_of(&reading, setting))
+            .ok_or_else(|| refuse("this setting is not available here"))
+    });
+    let open = Rc::clone(&run);
+    SearchResult {
+        operation_kind: OperationKind::View,
+        subtitle: Some(t("setting-get-detail")),
+        contract: Some(contract(true, setting)),
+        on_open: Rc::new(
+            move |_doc: &mut ui::widget::Edits<'_>,
+                  _root: &automerge::ObjId,
+                  _chrome: &Chrome,
+                  _args: &ActionArgs| open().map(drop),
+        ),
+        on_invoke: Some(Rc::new(
+            move |_doc: &mut ui::widget::Edits<'_>,
+                  _root: &automerge::ObjId,
+                  _chrome: &Chrome,
+                  _args: &ActionArgs| run().map(ActionReceipt::completed_with),
+        )),
+        ..SearchResult::nullary(
+            kind_of_row.clone(),
+            PROVIDER_ID,
+            id,
+            title,
+            None,
+            0,
+            |_, _, _| {},
+        )
+    }
+}
+
+/// Row `row` of `kind` as it reads now: the changing row's pill says the
+/// value, its parameters offer what is allowed now (a display's refresh
+/// rates); the reading row's title says the value.
+pub(super) fn live(
+    row: &SearchResult,
+    kind: Kind,
+    reading: &Reading,
+    reads: bool,
+    name: &str,
+) -> SearchResult {
+    if reads {
+        return SearchResult {
+            title: t_args(
+                "setting-get",
+                &[
+                    ("name", name.to_owned().into()),
+                    ("value", reading.label.clone().into()),
+                ],
+            ),
+            ..row.clone()
+        };
+    }
+    SearchResult {
+        badge: Some(reading.label.clone()),
+        params: set_params(kind),
+        ..row.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::SettingsPagesProvider;
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::search::action_api::ArgValue;
+    use crate::shell::search::{SearchContext, SearchProvider};
     use automerge::{AutoCommit, ROOT};
     use std::sync::Arc;
 
-    fn rows(chrome: &Chrome, needle: &str) -> Vec<SearchResult> {
+    fn with_context<R>(
+        provider: &SettingsPagesProvider,
+        chrome: &Chrome,
+        needle: &str,
+        read: impl FnOnce(SearchContext<'_>) -> R,
+    ) -> R {
         let state = chrome.borrow();
-        let mut rows = SystemSettingsProvider::new().query(SearchContext {
+        let doc = AutoCommit::new();
+        let wanted = [provider.resource_kinds()[0].clone()];
+        read(SearchContext {
             query_scope: None,
             include_programmatic: false,
             needle,
-            wanted: &[ResourceKind::Action],
+            wanted: &wanted,
             chrome: &state,
-            doc: &AutoCommit::new(),
+            doc: &doc,
             doc_root: &ROOT,
-        });
+        })
+    }
+
+    /// What the palette lists for `needle`, best first.
+    fn rows(provider: &SettingsPagesProvider, chrome: &Chrome, needle: &str) -> Vec<SearchResult> {
+        let mut rows = with_context(provider, chrome, needle, |ctx| provider.query(ctx));
         rows.sort_by_key(|row| std::cmp::Reverse(row.score));
         rows
     }
 
+    /// The row at the address `id`, as it reads now.
+    fn row(provider: &SettingsPagesProvider, chrome: &Chrome, id: &str) -> Option<SearchResult> {
+        with_context(provider, chrome, "", |ctx| provider.resolve(id, ctx))
+    }
+
     /// Invoke `id` with `args`, bound against the row's declared parameters
     /// the way a control-socket caller's are.
-    fn run(chrome: &Chrome, id: &str, args: Vec<(String, ArgValue)>) -> Result<Value, ActionError> {
-        let row = rows(chrome, "")
-            .into_iter()
-            .find(|row| row.id == id)
-            .ok_or_else(|| refuse(format!("{id} is not offered")))?;
+    fn run(
+        provider: &SettingsPagesProvider,
+        chrome: &Chrome,
+        id: &str,
+        args: Vec<(String, ArgValue)>,
+    ) -> Result<Value, ActionError> {
+        let row =
+            row(provider, chrome, id).ok_or_else(|| refuse(format!("{id} is not offered")))?;
         let args = ActionArgs::bind(&row.params, args).map_err(ActionError::Arguments)?;
         let mut doc = AutoCommit::new();
         let mut edits = ui::widget::Edits::lend(&mut doc);
@@ -1058,40 +866,36 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn settings_are_typed_actions_reachable_by_name_and_stored_through_the_store() {
+    fn typed_settings_are_index_rows_reachable_by_name_and_stored_through_the_store() {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::SessionPaths::configured().unwrap();
         let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
         let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
         let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+        let provider = SettingsPagesProvider::new();
+        let provider = &provider;
 
         {
-            let ids: Vec<String> = rows(&chrome, "").into_iter().map(|row| row.id).collect();
-            for expected in [
-                "power.lock-after.get",
-                "power.lock-after.set",
-                "power.blank-after.get",
-                "power.blank-after.set",
-                "power.suspend-after.get",
-                "power.suspend-after.set",
-                "power.auto-suspend.get",
-                "power.auto-suspend.set",
-                "power.auto-suspend.toggle",
-                "keyboard.layout.get",
-                "keyboard.layout.set",
-                "appearance.mode.get",
-                "appearance.mode.set",
+            for id in [
+                "setting:power.lock_after",
+                "setting:power.blank",
+                "setting:power.suspend_after",
+                "setting:keyboard.layout",
+                "setting:appearance.style",
             ] {
-                assert!(ids.iter().any(|id| id == expected), "{expected} in {ids:?}");
+                assert!(row(provider, &chrome, id).is_some(), "{id} is offered");
+                assert!(
+                    row(provider, &chrome, &format!("{id}.get")).is_some(),
+                    "{id} is read"
+                );
             }
-            assert!(
-                !ids.iter().any(|id| id.starts_with("display.")),
-                "no display has been published, so there is none to change"
-            );
-            let blank = rows(&chrome, "")
-                .into_iter()
-                .find(|row| row.id == "power.blank-after.set")
-                .unwrap();
+            for id in ["setting:display.scale", "setting:display.refresh_rate"] {
+                assert!(
+                    row(provider, &chrome, id).is_none(),
+                    "{id}: no display has been published, so there is none to change"
+                );
+            }
+            let blank = row(provider, &chrome, "setting:power.blank").unwrap();
             assert_eq!(blank.params[0].ty, ParamType::Integer);
             assert_eq!(
                 blank.params[0]
@@ -1102,20 +906,16 @@ mod tests {
                 ["0", "1", "5", "10", "15", "30"]
             );
             assert_eq!(
-                blank.title, "Turn screen off after",
-                "the setting's own name"
+                blank.title,
+                t(&index_name("power.blank")),
+                "the setting's name in the index"
             );
             assert_eq!(
                 blank.badge.as_deref(),
                 Some("10 minutes"),
                 "its value is the pill"
             );
-            assert_eq!(blank.subtitle, None);
-            let provider = SystemSettingsProvider::new();
-            let get = rows(&chrome, "")
-                .into_iter()
-                .find(|row| row.id == "power.blank-after.get")
-                .unwrap();
+            let get = row(provider, &chrome, "setting:power.blank.get").unwrap();
             let state = chrome.borrow();
             assert!(
                 provider.hidden_from_people(&get, "", &state),
@@ -1125,12 +925,16 @@ mod tests {
             drop(state);
 
             // ←/→ step through the values Settings offers, held at the ends.
-            assert!(provider.adjustable(&blank));
+            let listed = rows(provider, &chrome, &blank.title)
+                .into_iter()
+                .find(|row| row.id == blank.id)
+                .expect("listed by its name");
+            assert!(provider.adjustable(&listed));
             let mut doc = AutoCommit::new();
             let mut step = |delta: i8| {
                 provider
                     .adjust(
-                        &blank,
+                        &listed,
                         delta,
                         &mut ui::widget::Edits::lend(&mut doc),
                         &ROOT,
@@ -1157,31 +961,25 @@ mod tests {
         }
 
         {
-            for needle in ["blank after", "turn screen off after", "screen off timeout"] {
-                let top = rows(&chrome, needle).into_iter().next().map(|row| row.id);
-                assert!(
-                    top.as_deref()
-                        .is_some_and(|id| id.starts_with("power.blank-after")),
-                    "{needle}: {top:?}"
-                );
+            for needle in ["blank screen", "turn screen off after", "screen timeout"] {
+                let top = rows(provider, &chrome, needle)
+                    .into_iter()
+                    .next()
+                    .map(|row| row.id);
+                assert_eq!(top.as_deref(), Some("setting:power.blank"), "{needle}");
             }
             crate::shell::i18n::ensure();
             ui::i18n::I18nManager::set_locale("de-DE");
-            let german = rows(&chrome, "Bildschirm ausschalten nach")
+            let german = rows(provider, &chrome, "Bildschirm ausschalten nach")
                 .into_iter()
                 .next()
                 .map(|row| row.id);
             ui::i18n::I18nManager::set_locale("en-US");
-            assert!(
-                german
-                    .as_deref()
-                    .is_some_and(|id| id.starts_with("power.blank-after")),
-                "{german:?}"
-            );
+            assert_eq!(german.as_deref(), Some("setting:power.blank"));
         }
 
         {
-            let answer = run(&chrome, "power.blank-after.get", Vec::new()).unwrap();
+            let answer = run(provider, &chrome, "setting:power.blank.get", Vec::new()).unwrap();
             assert_eq!(answer["value"], 10);
             assert_eq!(answer["allowed"], json!([0, 1, 5, 10, 15, 30]));
         }
@@ -1189,8 +987,9 @@ mod tests {
         {
             assert!(matches!(
                 run(
+                    provider,
                     &chrome,
-                    "power.blank-after.set",
+                    "setting:power.blank",
                     arg("minutes", ArgValue::Integer(7))
                 ),
                 Err(ActionError::Arguments(_))
@@ -1201,8 +1000,9 @@ mod tests {
                 "a refused value stores nothing"
             );
             let answer = run(
+                provider,
                 &chrome,
-                "power.blank-after.set",
+                "setting:power.blank",
                 arg("minutes", ArgValue::Integer(0)),
             )
             .unwrap();
@@ -1226,7 +1026,7 @@ mod tests {
                 if let Some(confirm) = confirm {
                     args.push(("confirm".into(), ArgValue::Boolean(confirm)));
                 }
-                run(&chrome, "power.lock-after.set", args)
+                run(provider, &chrome, "setting:power.lock_after", args)
             };
             assert_eq!(
                 lock(1, None).unwrap()["value"],
@@ -1258,7 +1058,7 @@ mod tests {
                 if let Some(source) = source {
                     args.push(("power".into(), ArgValue::Text(source.into())));
                 }
-                run(&chrome, "power.suspend-after.set", args)
+                run(provider, &chrome, "setting:power.suspend_after", args)
             };
             let timers = || {
                 power::SuspendTimers::from_section(&settings_store::load_section(power::SECTION))
@@ -1296,36 +1096,20 @@ mod tests {
         }
 
         {
-            // An untouched machine does not suspend on idle, and the action
-            // says so the way the Settings pane and the compositor read it.
-            let fresh = run(&chrome, "power.auto-suspend.get", Vec::new()).unwrap();
-            assert_eq!(fresh["value"], false);
-            assert!(!power::AUTO_SUSPEND.get());
-            let toggled = run(&chrome, "power.auto-suspend.toggle", Vec::new()).unwrap();
-            assert_eq!(toggled["value"], true);
-            assert!(power::AUTO_SUSPEND.get());
             run(
+                provider,
                 &chrome,
-                "power.auto-suspend.set",
-                arg("enabled", ArgValue::Boolean(false)),
-            )
-            .unwrap();
-            assert!(!power::AUTO_SUSPEND.get());
-        }
-
-        {
-            run(
-                &chrome,
-                "keyboard.layout.set",
+                "setting:keyboard.layout",
                 arg("layout", ArgValue::Text("de".into())),
             )
             .unwrap();
-            let answer = run(&chrome, "keyboard.layout.get", Vec::new()).unwrap();
+            let answer = run(provider, &chrome, "setting:keyboard.layout.get", Vec::new()).unwrap();
             assert_eq!(answer["value"], "de");
             assert!(
                 run(
+                    provider,
                     &chrome,
-                    "keyboard.layout.set",
+                    "setting:keyboard.layout",
                     arg("layout", ArgValue::Text("../x".into()))
                 )
                 .is_err()
@@ -1334,8 +1118,9 @@ mod tests {
 
         {
             run(
+                provider,
                 &chrome,
-                "appearance.mode.set",
+                "setting:appearance.style",
                 arg("mode", ArgValue::Text("automatic".into())),
             )
             .unwrap();
@@ -1345,8 +1130,9 @@ mod tests {
             );
             assert!(matches!(
                 run(
+                    provider,
                     &chrome,
-                    "appearance.mode.set",
+                    "setting:appearance.style",
                     arg("mode", ArgValue::Text("neon".into()))
                 ),
                 Err(ActionError::Arguments(_))
@@ -1354,16 +1140,23 @@ mod tests {
         }
 
         {
-            let read = crate::shell::search::providers::actions::shell_action_contract(
-                "power.blank-after.get",
-            );
+            let contract = |id: &str| {
+                row(provider, &chrome, id)
+                    .and_then(|row| row.contract)
+                    .unwrap_or_else(|| panic!("{id} has a contract"))
+            };
+            let read = contract("setting:power.blank.get");
             assert_eq!(read.kind, tilo_actions::contract::ActionKind::Read);
-            let write = crate::shell::search::providers::actions::shell_action_contract(
-                "power.blank-after.set",
-            );
+            let write = contract("setting:power.blank");
             assert_eq!(write.kind, tilo_actions::contract::ActionKind::Undoable);
             assert_eq!(write.risk, RiskLevel::Low);
         }
         drop(settings);
+    }
+
+    fn index_name(setting: &str) -> String {
+        settings_store::index::setting(setting)
+            .expect("indexed")
+            .name_key()
     }
 }

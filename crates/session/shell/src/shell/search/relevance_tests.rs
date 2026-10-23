@@ -30,7 +30,7 @@ use crate::shell::search::providers::store_catalogue::{
 };
 use crate::shell::search::providers::{
     ActionsProvider, ApplicationsProvider, FilesProvider, SessionActionPolicy,
-    SessionActionsProvider, SettingsPagesProvider, SystemSettingsProvider, WebProvider,
+    SessionActionsProvider, SettingsPagesProvider, WebProvider,
 };
 use crate::shell::search::providers::{HostApplicationsProvider, StoreCatalogueProvider};
 use crate::shell::search::{
@@ -136,7 +136,6 @@ impl Palette {
             QsActionAvailability::all(),
         ));
         registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(qs)));
-        registry.register(Rc::new(SystemSettingsProvider::new()));
         let pages = Rc::new(SettingsPagesProvider::new());
         registry.register(pages.clone());
         let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
@@ -341,9 +340,6 @@ const fn setting(id: &'static str) -> Expect {
 const fn not_app(id: &'static str) -> Expect {
     Expect::Not(APP, id)
 }
-const fn in_place(id: &'static str) -> Expect {
-    Expect::Top("system-settings", id)
-}
 const fn session(id: &'static str) -> Expect {
     Expect::Top(SESSION, id)
 }
@@ -510,9 +506,9 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
         ),
         // The layout in place, its value on the row; one row, not also a
         // link to the same setting on its page.
-        ("keyboard layout", in_place("keyboard.layout.set")),
-        ("tastaturbelegung", in_place("keyboard.layout.set")),
-        ("qwertz", in_place("keyboard.layout.set")),
+        ("keyboard layout", setting("setting:keyboard.layout")),
+        ("tastaturbelegung", setting("setting:keyboard.layout")),
+        ("qwertz", setting("setting:keyboard.layout")),
         ("tastatur", page("page:keyboard")),
         ("touchpad", page("page:pointing")),
         ("night light", setting("setting:display.night_light")),
