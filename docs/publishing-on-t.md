@@ -347,6 +347,8 @@ Deleted:
 | `build-rpms.yml` | `image-rpms-<arch>`, `image-rpms`, `provenance-rpms`, `sign-rpms`, `publish-rpms`, `rpm-snapshot` | both architectures built; checks in t.toml; Forgejo Actions no longer runs |
 | `host-session-e2e.yml` | `host-session-e2e` (needs `desktop-package-amd64`; records each RPM's SHA-256 in `source.json`), which `publish-desktop-payload` needs on stable; the replay of another run's RPMs is the cached lane | `t dispatch host-session-e2e` on main |
 | `release-imager-winget.yml` | `imager-winget-acceptance` (every six hours and dispatch, `cache = false`), with the site token as the secret `TILO_SITE_TOKEN` instead of a broker lease | fails until the server config has `TILO_SITE_TOKEN` |
+| `ci-filesystem.yml` | `real-fuse`, `real-fuse-privileged`, `files-ux`, `native-tier1`; the cloud-source conformance suite's server layers as `cloud-conformance-build`, `cloud-servers` (containers in a micro-VM step) and `cloud-live` (live accounts, nightly) | `cloud-servers` r0e79c3d184 (38 tests against real WebDAV and Nextcloud); `cloud-live` waits for its secrets ([below](#identity-tokens-and-secrets)) |
+| `ci-legacy-apps.yml` | `legacy-apps-build`, `legacy-apps` (nightly and dispatched, micro-VM step) | r0e79c3d184: GNOME Text Editor, Qt 6 and LibreOffice Writer passed |
 
 Still here, with what is missing:
 
@@ -414,10 +416,8 @@ fixed credentials in the server config, limited by reference and node, only wher
 ### Not publishing
 
 These only build or test, and become ordinary or `default = false` checks. Those t's checks
-already run are deleted (the table [above](#moved-to-t)). Still here: `ci-filesystem.yml` (its
-cloud-server tests need service containers, and its live cloud tests credentials for test
-servers: secrets on `main` without `nodes`), `ci-legacy-apps.yml` (the legacy app caret test has
-no check yet), `dev-disk-boot-diagnostic.yml` and `resolve-builder.yml`.
+already run are deleted (the table [above](#moved-to-t)). Still here:
+`dev-disk-boot-diagnostic.yml` and `resolve-builder.yml`.
 
 ## Identity tokens and secrets
 
@@ -450,6 +450,7 @@ t's server config (sops-encrypted in the infra repository), none in this reposit
 | `TILO_MODEL_CATALOG_SIGNING_KEY` | `stable`, `tag:*` | the local model catalog's signing seed: `sign-model-catalog`, `review-model-catalog` |
 | `REGISTRY_TOKEN` | `stable`, `tag:*` | a Forgejo token that may write generic packages, which do not take t's identity tokens: `publish-model-catalog` |
 | `INFRA_PROMOTION_TOKEN` | `stable` | the bot t-infra-promotion's token, which may write the infra repository: `cloud-deploy` reads the deploy target and commits the pins it moves |
+| `TILO_LIVE_WEBDAV_URL`, `TILO_LIVE_WEBDAV_USER`, `TILO_LIVE_WEBDAV_PASSWORD`, `TILO_LIVE_NEXTCLOUD_URL`, `TILO_LIVE_NEXTCLOUD_USER`, `TILO_LIVE_NEXTCLOUD_PASSWORD` | `main` | the cloud-source conformance suite's live WebDAV and Nextcloud test accounts: `cloud-live`, which fails while any is missing. Not in the server config yet |
 | `TILO_PACKAGES_TOKEN` | `main` | the bot t-packages' token, which may only write tilo's generic packages: extension manifests, performance results. Performance runs record their results on every reference listed here (`perf-scheduled`, `vm-acceptance-perf`), so adding `stable` records stable's |
 | `TILO_SITE_TOKEN` | `main` | a token of the website bot that may push the site repository (`tilo/site`), whose forge takes no identity token from t: `imager-winget-acceptance` |
 

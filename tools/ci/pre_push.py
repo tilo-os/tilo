@@ -14,27 +14,32 @@ release"). So a push runs only what is cheap to catch and annoying to break, in 
   * clippy of the packages whose files it changes, not of their dependents.
 
 No tests, VM checks, images, suites or dependents: main's CI runs those on every commit and
-tells the commit that broke one, and `t test <check>` runs any of them on request. A check that
-is red on main at the commit the push is based on is skipped, since the push can't be what broke
-it; the hook says which.
+tells the commit that broke one, and `t test <check>` runs any of them on request.
 
-  pre_push.py select --scope SCOPE.json --main MAIN.json --changed CHANGED.txt
-      SCOPE.json is `t scope --rev <commit> --json`, MAIN.json `t main --json` (or empty when t
-      couldn't say), CHANGED.txt the paths the push changes, one per line. Prints a JSON object:
-      `run` (the checks to name to `t test`), `red` (in scope, but red on main at the base) and
-      `left` (in scope, but not run before a push).
+A check red on main runs all the same: t compares what fails with the same check at the commit
+the push is based on, and only what fails there too passes. A lint (`clippy/*`) and a policy
+step's problem (`policy/*`, tools/policy/findings.py) are compared one finding at a time, so a
+push that adds one is refused however red main is. A check that fails as a whole (a compile
+error, a generated file out of date) can only be compared as a whole: it passes when main fails
+it too, and the hook says which passed that way and why; one that runs tests is refused instead,
+since tests that did not run can't be compared with main's.
+
+  pre_push.py select --scope SCOPE.json --changed CHANGED.txt
+      SCOPE.json is `t scope --rev <commit> --json`, CHANGED.txt the paths the push changes, one
+      per line. Prints a JSON object: `run` (the checks to name to `t test`) and `left` (in
+      scope, but not run before a push).
   pre_push.py opt-in --suggest SUGGEST.json
       The opt-in checks `t suggest --json` says the change touches, space-separated.
   pre_push.py unpassed --run RUN.jsonl CHECK...
       Every check of the gate (CHECK...) that the run (`t test --json`) did not pass, one per
-      line with why, and t's own errors: what a refused push names.
+      line with why, and t's own errors: what a refused push names, and what a push passed
+      although it fails, since main fails it too.
 """
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-import subprocess
 import sys
 
 # Always run: neither is in `t scope` by its inputs alone. fmt-changed is not a default check
@@ -60,38 +65,17 @@ def wanted(check: str, changed: list[str]) -> bool:
     return check.startswith(POLICY) or check.startswith(CLIPPY)
 
 
-def red_at(board: dict, base: str, is_ancestor) -> set[str]:
-    """The checks `t main` has red as a whole (not one test of them) since a commit that `base`
-    contains: they fail at the base already, so the push can't be what breaks them."""
-    red: set[str] = set()
-    for item in board.get("items", []):
-        if item.get("test") or item.get("excluded") or not item.get("first_bad"):
-            continue
-        if is_ancestor(item["first_bad"], base):
-            red.update(item.get("checks") or [item["check"]])
-    return red
-
-
-def select(scope: dict, board: dict, changed: list[str], is_ancestor) -> dict[str, list[str]]:
+def select(scope: dict, changed: list[str]) -> dict[str, list[str]]:
     named = list(dict.fromkeys(scope.get("checks", [])))
-    red = red_at(board, scope.get("base", ""), is_ancestor) if scope.get("base") else set()
-    run, skipped, left = [], [], []
+    run, left = [], []
     for check in [*ALWAYS, *named]:
-        if check in run or check in skipped or check in left:
+        if check in run or check in left:
             continue
         if check in REPLACED or not wanted(check, changed):
             left.append(check)
-        elif check in red:
-            skipped.append(check)
         else:
             run.append(check)
-    return {"run": run, "red": skipped, "left": left}
-
-
-def git_is_ancestor(commit: str, base: str) -> bool:
-    """Whether `commit` is `base` or one of its ancestors, by the local repository."""
-    return subprocess.run(["git", "merge-base", "--is-ancestor", commit, base],
-                          capture_output=True).returncode == 0
+    return {"run": run, "left": left}
 
 
 def opt_in(suggest: dict) -> list[str]:
@@ -121,6 +105,34 @@ def excerpt(result: dict) -> str:
     return ""
 
 
+def blame_note(result: dict) -> str:
+    """Whose a failure is, as t blamed it, and how it was compared with main's."""
+    blame = (result.get("blame") or {}).get("kind")
+    if blame == "flaky":
+        return " (flaky)"
+    if blame == "uncompared":
+        return (" (its tests did not run, so they can't be compared with main's: main failing it as a whole "
+                "doesn't make it main's)")
+    failures = result.get("failures") or []
+    findings = [f for f in failures if f.get("test")]
+    if blame == "inherited":
+        if not findings or len(findings) != len(failures):
+            return " (main fails it too, as a whole: it found nothing it names, so it can't be compared finding by finding)"
+        if any((f.get("blame") or {}).get("kind") != "inherited" for f in findings):
+            return (f" (main fails it too, as a whole: main's result names no findings to compare its "
+                    f"{len(findings)} with one by one)")
+        return f" (main fails it too: each of its {len(findings)} findings, compared one by one)"
+    def named(kind: str) -> str:
+        names = [f["test"] for f in findings if (f.get("blame") or {}).get("kind") == kind]
+        more = f", and {len(names) - 3} more" if len(names) > 3 else ""
+        return "; ".join(names[:3]) + more
+    if named("new"):
+        return f" (not on main: {named('new')})"
+    if named("unknown"):
+        return f" (main has no result at the base naming its findings, so these may be the change's: {named('unknown')})"
+    return ""
+
+
 def unpassed(events: list[dict], asked: list[str]) -> list[str]:
     """Each check of `asked` the run did not pass, with why, and each error t reported. A refusal
     names every one of these: an outcome nobody prints is a refusal nobody can act on."""
@@ -146,9 +158,7 @@ def unpassed(events: list[dict], asked: list[str]) -> list[str]:
         if outcome == "pass":
             continue
         if outcome == "fail":
-            blame = (result.get("blame") or {}).get("kind")
-            note = {"inherited": " (main fails it too)", "flaky": " (flaky)"}.get(blame, "")
-            text = f"{check}: fails{note}"
+            text = f"{check}: fails{blame_note(result)}"
         elif outcome == "error":
             text = f"{check}: could not run, a failure of t's infrastructure, not of the change"
         elif outcome == "cancelled":
@@ -187,7 +197,6 @@ def main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     chosen = sub.add_parser("select")
     chosen.add_argument("--scope", type=Path, required=True)
-    chosen.add_argument("--main", type=Path, required=True)
     chosen.add_argument("--changed", type=Path, required=True)
     suggested = sub.add_parser("opt-in")
     suggested.add_argument("--suggest", type=Path, required=True)
@@ -203,7 +212,7 @@ def main(argv: list[str]) -> int:
         print(opt_in_line(opt_in(load(args.suggest))))
         return 0
     changed = [line for line in args.changed.read_text(encoding="utf-8").splitlines() if line]
-    print(json.dumps(select(load(args.scope), load(args.main), changed, git_is_ancestor)))
+    print(json.dumps(select(load(args.scope), changed)))
     return 0
 
 

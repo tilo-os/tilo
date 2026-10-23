@@ -153,7 +153,7 @@ raw-colour 1 apps/canvas/src/panels/inspector.rs
 raw-colour 8 apps/canvas/src/render.rs
 raw-colour 2 apps/canvas/src/view_ops.rs
 raw-colour 1 apps/chat/src/render_chat.rs
-raw-colour 2 apps/ebook/src/app.rs
+raw-colour 2 apps/ebook/src/app/settings_page.rs
 raw-colour 2 apps/ebook/src/input_controls.rs
 raw-colour 1 apps/ebook/src/model.rs
 raw-colour 15 apps/ebook/src/reader_theme.rs

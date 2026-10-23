@@ -32,7 +32,7 @@ class TTomlTests(unittest.TestCase):
                     self.assertIn(step.run, " ".join(checks[step.covered_by]["run"].split()))
                     continue
                 check = checks[step.check]
-                self.assertEqual(check["run"], step.command)
+                self.assertEqual(check["run"], step.t_command)
                 self.assertTrue(set(step.inputs) <= set(check["inputs"]))
                 self.assertTrue(set(t_toml.policy_steps.own_files(step, ROOT)) <= set(check["inputs"]))
                 self.assertNotIn("default", check)
@@ -326,8 +326,7 @@ class PlanTests(unittest.TestCase):
                       ["tools/ci/t_toml.py"], ["os/Containerfile"], ["Cargo.lock"]):
             with self.subTest(paths=paths):
                 planned = self.planned(paths)
-                run = pre_push.select({"base": "b" * 40, "checks": sorted(planned)}, {}, paths,
-                                      lambda commit, base: False)["run"]
+                run = pre_push.select({"base": "b" * 40, "checks": sorted(planned)}, paths)["run"]
                 self.assertEqual([name for name in run if name.startswith(("test/", "test-x86_64/", "goldens/",
                                                                             "suite-", "policy/tests/"))], [])
                 self.assertEqual([name for name in run if self.vm(name)], [])

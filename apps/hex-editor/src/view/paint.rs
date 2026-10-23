@@ -3,11 +3,10 @@
 //! The byte grid is genuine content drawing — a dense, fixed-pitch canvas
 //! with a cursor synced across two parallel columns — so it paints itself,
 //! reading every colour, size and gap from the theme. Everything around it is
-//! the framework's: the header's edit-mode strip, the inspector drawer and
-//! its toggle, the find band, the status bar, the property list, the empty
-//! state and the toast.
+//! the framework's: the inspector drawer, the status bar, the property list,
+//! the empty state and the toast. The file's name, the edit mode, the
+//! inspector's toggle, search and History are the window bar's.
 
-use ui::num::f32_of_f64;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer, TextStyle};
@@ -95,13 +94,8 @@ impl HexView {
     ) {
         if !self.has_file {
             self.paint_empty_state(scene, transform, tr, theme, presence);
-            self.paint_history(scene, transform, tr, theme);
             self.paint_notices(scene, transform, tr, theme);
             return;
-        }
-        self.paint_header(scene, transform, tr, theme, presence);
-        if self.find_open {
-            self.paint_find(scene, transform, tr, theme, presence);
         }
         self.paint_grid(scene, transform, tr, theme);
         let metrics = self.scroll_metrics();
@@ -117,87 +111,7 @@ impl HexView {
         }
         self.paint_status(scene, transform, tr, theme);
         self.paint_inspector_region(scene, transform, tr, theme, presence);
-        self.paint_history(scene, transform, tr, theme);
         self.paint_notices(scene, transform, tr, theme);
-    }
-
-    /// The window's History control in the header row, on the ground it
-    /// stands on (the docked inspector's region, else the content).
-    fn paint_history(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let g = &self.geo;
-        let ground = if g.docked && g.inspector_visible && g.inspector.contains(g.history.center())
-        {
-            theme.in_region(ui::surface::Region::Inspector)
-        } else {
-            theme.clone()
-        };
-        self.history.paint(scene, transform, tr, &ground, g.history);
-    }
-
-    /// The file name and the edit-mode strip, standing on the content with
-    /// one hairline under them.
-    fn paint_header(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let g = self.geo.clone();
-        let colors = &theme.tokens.colors;
-        let inset = f64::from(theme.tokens.spacing.s4);
-        let style = theme.text(TextRole::Title).with_kind(TextKind::Identifier);
-        let room = (g.mode.x0 - g.header.x0 - inset - f64::from(theme.tokens.spacing.s3)).max(0.0);
-        let name = tr.elide_to_width_style(&self.file_name, f32_of_f64(room), &style);
-        let (_, line) = tr.measure_style(&name, None, &style);
-        tr.draw_style(
-            scene,
-            &name,
-            colors.text_primary,
-            transform
-                * Affine::translate(Vec2::new(
-                    g.header.x0 + inset,
-                    g.header.y0 + (g.header.height() - f64::from(line)) / 2.0,
-                )),
-            None,
-            &style,
-        );
-        ui::surface::separator(
-            scene,
-            transform,
-            g.header.x0,
-            g.header.x1,
-            g.header.y1,
-            0.0,
-            colors.surfaces.content,
-        );
-        self.mode_group
-            .set_selected(super::layout::mode_index(self.model.mode()));
-        Widget::draw(&mut self.mode_group, scene, transform, tr, theme, presence);
-    }
-
-    /// The find band under the header, across the whole content width. Its
-    /// field and controls stand on the content edge (`s4`), the file name's
-    /// and the offset column's.
-    fn paint_find(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let edge = f64::from(theme.tokens.spacing.s4);
-        self.find_bar.set_content_inset(edge, edge);
-        self.find_bar.layout(self.geo.find, theme, tr);
-        self.find_bar.paint(scene, transform, tr, theme, presence);
     }
 
     /// The column labels, the rules between the columns and the rows of
@@ -496,10 +410,8 @@ impl HexView {
         self.offset_readout = rects.first().copied().unwrap_or(Rect::ZERO);
     }
 
-    /// The inspector: the region it stands on, its header, the endianness
-    /// strip and the interpretations of the bytes at the cursor. The toggle
-    /// that shows and hides it is drawn here too, on whichever ground it
-    /// sits.
+    /// The inspector: the region it stands on, its heading, the endianness
+    /// strip and the interpretations of the bytes at the cursor.
     fn paint_inspector_region(
         &mut self,
         scene: &mut Scene,
@@ -509,22 +421,10 @@ impl HexView {
         presence: &PresenceCtx,
     ) {
         let g = self.geo.clone();
-        let mut toggle_theme = theme.clone();
         if g.inspector_visible {
             let local = self.drawer.paint_panel(scene, transform, theme);
             self.paint_inspector(scene, transform, tr, &local, presence, &g);
-            if g.inspector.contains(g.toggle.center()) {
-                toggle_theme = local;
-            }
         }
-        self.drawer.draw_toggle(
-            scene,
-            transform,
-            tr,
-            &toggle_theme,
-            g.toggle,
-            self.toggle_hovered,
-        );
     }
 
     fn paint_inspector(

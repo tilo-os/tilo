@@ -1028,7 +1028,7 @@ fn a_file_opened_without_a_way_to_submit_still_shows_its_text() {
     let file = crate::disk::canonical(&file);
     sample.editor(|app| {
         let dispatch = app.dispatch.take();
-        app.open_disk_file(&file).unwrap();
+        app.open_disk_file(&file).unwrap().unwrap();
         app.dispatch = dispatch;
     });
     sample.app.settle();

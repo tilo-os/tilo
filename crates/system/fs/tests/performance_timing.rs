@@ -34,8 +34,8 @@ const WARM_DIRECTORY_PASSES: usize = 8;
 const WARM_THUMB_LOOKUPS: usize = 1_000;
 
 // Release ceilings, not claims about typical latency. Each is twice the
-// nearest-rank p99 of the `real-fuse` job of ci-filesystem.yml (debug test
-// profile, shared `runner` class), rounded up to 10 ms (1 ms below 10 ms).
+// nearest-rank p99 of CI's `real-fuse` job (debug test profile, shared
+// `runner` class), rounded up to 10 ms (1 ms below 10 ms).
 // Measured 2026-10-09 over 56 runs, main pushes and pull requests between
 // 3bc23c4b40 and b0aee36a66 plus the eight #3956 cites; at that N the p99
 // is the slowest run, so every ceiling is 2x the worst run seen. The trailing

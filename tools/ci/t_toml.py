@@ -185,7 +185,7 @@ def policy_checks(root: Path = ROOT) -> str:
             f"name = {json.dumps(step.check)}",
             'requires = ["arch=any"]',
             f"requirement = {POLICY_TESTS_REQUIREMENT if step.tests else POLICY_REQUIREMENT}",
-            f"run = {json.dumps(step.command)}",
+            f"run = {json.dumps(step.t_command)}",
             # The tests make repositories and scratch files beside the sources, and some read
             # release contracts at HEAD: t's own .git and a private writable view of the tree.
             *(["git = true", "writable_sources = true"] if step.tests else []),

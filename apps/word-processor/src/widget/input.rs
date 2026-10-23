@@ -842,9 +842,15 @@ impl WordProcessorWidget {
                 );
             }
             KeyPressEffect::Motion
-        } else if self.inner.tab_cell(state, !shift) {
-            KeyPressEffect::Motion
         } else {
+            self.sync_source(state.doc());
+            let body = self.kept_body();
+            if self
+                .inner
+                .with_kept_body(body, |inner| inner.tab_cell(state, !shift))
+            {
+                return KeyPressEffect::Motion;
+            }
             let text = if self.inner.caret_tab_stops(state).is_empty() {
                 "    "
             } else {
@@ -859,11 +865,11 @@ impl WordProcessorWidget {
         match key {
             NamedKey::ArrowLeft => {
                 self.extend_or_clear(shift);
-                self.inner.move_left(state);
+                self.with_kept_body(state, |inner| inner.move_left(state));
             }
             NamedKey::ArrowRight => {
                 self.extend_or_clear(shift);
-                self.inner.move_right(state);
+                self.with_kept_body(state, |inner| inner.move_right(state));
             }
             NamedKey::ArrowUp | NamedKey::ArrowDown => {
                 self.extend_or_clear(shift);
@@ -872,9 +878,11 @@ impl WordProcessorWidget {
                 } else {
                     -1
                 };
-                if !self.inner.cell_vertical(state, delta > 0) {
-                    self.inner.move_block_relative(state, delta);
-                }
+                self.with_kept_body(state, |inner| {
+                    if !inner.cell_vertical(state, delta > 0) {
+                        inner.move_block_relative(state, delta);
+                    }
+                });
             }
             NamedKey::Home => {
                 self.extend_or_clear(shift);
@@ -977,11 +985,13 @@ impl WordProcessorWidget {
         };
         self.extend_or_clear(mods.shift_key());
         if !line && destination == offset {
-            if left {
-                self.inner.move_left(state);
-            } else {
-                self.inner.move_right(state);
-            }
+            self.with_kept_body(state, |inner| {
+                if left {
+                    inner.move_left(state);
+                } else {
+                    inner.move_right(state);
+                }
+            });
         } else {
             self.inner.caret.offset = destination;
         }

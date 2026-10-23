@@ -464,7 +464,7 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
 /// put the freshly-built binary at the production path without touching the
 /// runner's mount namespace.
 #[test]
-#[ignore = "requires root plus CAP_SYS_ADMIN; ci-filesystem.yml runs this explicitly"]
+#[ignore = "requires root plus CAP_SYS_ADMIN; t's real-fuse-privileged check runs it"]
 #[allow(
     clippy::too_many_lines,
     reason = "keeps privileged helper setup and ownership assertions in one auditable trace"

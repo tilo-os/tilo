@@ -729,7 +729,9 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
     surface: S,
     search_queries: SearchQueries,
     live: Live<R>,
-    presented: u64,
+    /// The live revision and loads ([`Live::loads`]) of the state last
+    /// presented.
+    presented: (u64, u64),
     /// The number of the next landing to tell the surface of.
     landings: u64,
     dispatch: Dispatcher<R>,
@@ -785,7 +787,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
             });
         }
         Self {
-            presented: live.revision(),
+            presented: (live.revision(), live.loads()),
             landings: live.landings_since(u64::MAX).1,
             live,
             read_only: dispatch.read_only(),
@@ -857,7 +859,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
     }
 
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
-        self.live.revision() == self.presented
+        (self.live.revision(), self.live.loads()) == self.presented
             && self.staging.borrow().is_none()
             && self.search_queries.0.borrow().pending.is_none()
             && self.dispatch.read_only() == self.read_only
@@ -874,8 +876,9 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
             self.read_only = read_only;
             self.surface.read_only_changed(read_only);
         }
-        if self.live.revision() != self.presented {
-            self.presented = self.live.revision();
+        let held = (self.live.revision(), self.live.loads());
+        if held != self.presented {
+            self.presented = held;
             self.surface.present(&self.live.get());
         }
         let (landed, next) = self.live.landings_since(self.landings);

@@ -57,19 +57,19 @@ class QueueReliefTests(unittest.TestCase):
             self.assertNotRegex(section(text, "on"), r"(?m)^  pull_request(?:_target)?:")
             self.assertRegex(section(text, "build", 2),
                              r"if: .*github.event_name != 'pull_request'")
-        with self.subTest(phase='specialized contract checks keep pr and periodic coverage'):
-            for name in ("ci-legacy-apps", "ci-filesystem"):
-                with self.subTest(workflow=name):
-                    events = section(workflow(name), "on")
-                    if name == "ci-legacy-apps":
-                        self.assertNotRegex(events, r"(?m)^  push:")
-                    for event in ("pull_request", "schedule", "workflow_dispatch"):
-                        self.assertRegex(events, rf"(?m)^  {event}:")
-                    self.assertTrue(section(workflow(name), "jobs"))
+        checks = {check["name"]: check for check in t_matrix.checks(ROOT)}
+        with self.subTest(phase='specialized contract checks keep periodic and on-demand coverage'):
+            for name in ("legacy-apps", "cloud-servers"):
+                with self.subTest(check=name):
+                    check = checks[name]
+                    self.assertIs(check.get("default", True), False)
+                    self.assertIn("dispatch", check["on"])
+                    self.assertTrue(any(on.startswith("schedule:") for on in check["on"]), check["on"])
+            # The cloud servers gate release candidates; the legacy apps run nightly and on demand.
+            self.assertIn("stable", checks["cloud-servers"]["on"])
+            self.assertNotIn("main", checks["legacy-apps"]["on"])
         with self.subTest(phase='builder recipe does not run e2e against the old image'):
-            legacy_events = section(workflow("ci-legacy-apps"), "on")
-            self.assertNotIn('os/Containerfile.builder', legacy_events)
-            checks = {check["name"]: check for check in t_matrix.checks(ROOT)}
+            self.assertNotIn('os/Containerfile.builder', checks["legacy-apps"]["inputs"])
             for arch in ("x86_64", "aarch64"):
                 self.assertIn('os/Containerfile.builder', checks[f"image-ci-builder-{arch}"]["inputs"])
         with self.subTest(phase='os candidate can run after skipped signing preflight'):
@@ -134,7 +134,7 @@ class QueueReliefTests(unittest.TestCase):
             self.assertIn("leaving it", result.stdout)
             self.assertFalse(copied.exists(), "An older source moved main-ci backward")
 
-    def test_queue_relief_cancels_only_superseded_heavy_pr_runs(self):
+    def test_component_release_tags_and_manual_runs_remain(self):
         with self.subTest(phase='component release tags and manual runs remain'):
             for name, tags in (("build-image", '["v*"]'),
                                ("release-desktop", '["desktop-v*"]'),
@@ -148,30 +148,6 @@ class QueueReliefTests(unittest.TestCase):
                     else:
                         self.assertNotRegex(push, r"(?m)^    branches(?:-ignore)?:")
                     self.assertRegex(events, r"(?m)^  workflow_dispatch:")
-        with self.subTest(phase='only heavy fuse pr runs replace their own previous run'):
-            concurrency = section(workflow("ci-filesystem"), "concurrency")
-            group = re.search(r"(?m)^  group: (.+)$", concurrency).group(1)
-            cancel = re.search(r"(?m)^  cancel-in-progress: (.+)$", concurrency).group(1)
-            self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
-
-            def render(event, sha, number=""):
-                context = {"github.event_name": event, "github.sha": sha,
-                           "github.event.pull_request.number": number}
-                def expression(match):
-                    values = [context[key.strip()] for key in match.group(1).split("||")]
-                    return next(value for value in values if value)
-                return re.sub(r"\$\{\{\s*(.*?)\s*\}\}", expression, group)
-
-            first = render("pull_request", "a" * 40, "172")
-            # A new head of this PR must supersede the old native run.
-            self.assertEqual(first, render("pull_request", "b" * 40, "172"))
-            # Every other run, pushes to main included, keeps one run per commit.
-            others = [render("pull_request", "a" * 40, "173"),
-                      render("workflow_dispatch", "a" * 40),
-                      render("schedule", "a" * 40),
-                      render("push", "a" * 40),
-                      render("push", "b" * 40)]
-            self.assertEqual(len({first, *others}), 6)
 
 
 if __name__ == "__main__":

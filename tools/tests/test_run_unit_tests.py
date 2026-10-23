@@ -50,6 +50,26 @@ class RunUnitTests(unittest.TestCase):
         self.assertIn("1 failed: ", done.stdout)
         self.assertIn("test_b.py", done.stdout.rsplit("1 failed: ", 1)[1])
 
+    def test_each_failing_test_is_reported_as_t_reads_a_test_and_each_passing_file_as_passed(self):
+        # t compares each failing test with main's: one main fails too passes, one more refuses.
+        crashing = "import os\nimport unittest\n\nclass C(unittest.TestCase):\n    def test_dies(self):\n        os._exit(3)\n"
+        two = FAILING + "\n    def test_holds(self):\n        pass\n\n    def test_breaks(self):\n        raise KeyError('k')\n"
+        done = self.run_on({"helper.py": "VALUE = 1\n", "test_a.py": PASSING, "test_b.py": two, "test_c.py": crashing})
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        lines = done.stdout.splitlines()
+        reported = [line.split("/tests/", 1)[1] for line in lines if line.startswith("test ") and " ... " in line]
+        self.assertEqual(reported, ["test_a.py ... ok", "test_b.py::test_b.Failing.test_breaks ... FAILED",
+                                    "test_b.py::test_b.Failing.test_fails ... FAILED", "test_c.py ... FAILED"])
+        # Each failed test's output is its own traceback, which t shows as its excerpt; a rule of
+        # dashes would end it.
+        start = next(i for i, line in enumerate(lines)
+                     if line.startswith("---- ") and line.endswith("test_b.Failing.test_fails stdout ----"))
+        section = lines[start + 1:lines.index("", start)]
+        self.assertTrue(section[0].startswith("FAIL: test_fails"), section)
+        self.assertTrue(any("the failing file's own message" in line for line in section), section)
+        self.assertFalse(any(line.startswith("---") for line in section), section)
+        self.assertIn("test result: FAILED. 1 passed; 3 failed", done.stdout)
+
     def test_a_directory_without_tests_is_an_error(self):
         done = self.run_on({"helper.py": "VALUE = 1\n"})
         self.assertEqual(done.returncode, 1)
