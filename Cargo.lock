@@ -3509,6 +3509,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tilo-files",
+ "tilo-mime",
  "tilo-paths",
 ]
 
@@ -15552,6 +15553,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-desktop-entry",
  "tilo-files",
+ "tilo-mime",
  "tilo-net",
  "tilo-test-env",
  "tilo-vello",

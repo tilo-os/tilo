@@ -411,6 +411,21 @@ impl StoreEffect {
 /// The Store's bots: the link a workspace's Add a bot opens.
 const BOTS_LINK: &str = "tilo-store:bots";
 
+/// The apps for one category of files: `tilo-store:files/fonts`, which
+/// Settings' Apps & files opens for a category no installed app opens. The
+/// category is one of the shared taxonomy's ([`tilo_mime::TypeCategory`]).
+const FILES_LINK: &str = "tilo-store:files/";
+
+/// The search a `tilo-store:files/<category>` link opens: the word the
+/// taxonomy says finds apps for that category.
+fn files_search(argument: &str) -> Option<StoreEffect> {
+    let slug = argument.strip_prefix(FILES_LINK)?;
+    let word = tilo_mime::TypeCategory::from_slug(slug)?.app_search()?;
+    Some(StoreEffect::SetSearch {
+        query: word.to_owned(),
+    })
+}
+
 /// Decode the one Store link shape, `tilo-store:app/<id>`. The launcher
 /// already checked the scheme; this keeps a malformed or argument-like value
 /// from becoming a catalogue identity inside the app.
@@ -555,6 +570,12 @@ impl ResourceApp for StoreShell {
                 StoreEffect::ShowView {
                     view: "bots".to_owned(),
                 }
+            } else if argument.starts_with(FILES_LINK) {
+                let Some(search) = files_search(argument) else {
+                    tracing::warn!("ignoring a link to an unknown category of files");
+                    return Vec::new();
+                };
+                search
             } else if argument.starts_with("tilo-store:runtime/") {
                 match crate::runtime_recovery::RuntimeTarget::from_uri(argument) {
                     Ok(target) => StoreEffect::ReviewRuntime {
@@ -2463,6 +2484,27 @@ mod tests {
             app.effect_progress().is_empty(),
             "opening the bots admits no package job"
         );
+    }
+
+    /// Apps & files' Find an app opens the Store searching for apps of
+    /// that category of files, and nothing else.
+    #[test]
+    fn a_files_link_searches_for_apps_of_that_category() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::launched(&["tilo-store:files/fonts"]).unwrap();
+        let observed = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(
+            observed.get("query").and_then(serde_json::Value::as_str),
+            Some("font"),
+            "{observed}"
+        );
+        assert!(app.effect_progress().is_empty(), "no package job");
+        assert!(files_search("tilo-store:files/holograms").is_none());
+        assert!(files_search("tilo-store:files/other").is_none());
     }
 
     /// A `tilo-store:app/<id>` link asks for that app's details.

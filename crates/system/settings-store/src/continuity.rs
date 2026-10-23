@@ -148,6 +148,9 @@ policies! {
         "tilo.desktop_controls.vim_mode",
         "tilo.quick_settings.controls",
         "tilo.default_apps.handlers",
+        // The app chosen for a whole category of file types follows the
+        // person, as the per-type choices do.
+        "tilo.default_apps.categories",
         "tilo.text_assistance.check_spelling",
         "tilo.text_assistance.auto_correct",
         "tilo.text_assistance.spelling_language",

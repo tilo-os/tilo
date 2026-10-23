@@ -44,6 +44,13 @@ pub trait PaneArea: Any {
         Vec::new()
     }
 
+    /// Where the area shows what `anchor` names, when it is one of its own
+    /// rows (a file type's, from a search hit): the pane and the control,
+    /// made visible (its group opened) for when the pane is built.
+    fn reveal(&self, _anchor: &str) -> Option<Reveal> {
+        None
+    }
+
     /// What the area asks the host to do with the window, once.
     fn take_host_intent(&self) -> Option<ui::widget::AppHostIntent> {
         None
@@ -81,6 +88,15 @@ pub trait PaneQuery {
 
     /// The search closed: the pane shows what it showed before it opened.
     fn query_closed(&self);
+}
+
+/// Where an area shows a row an anchor names ([`PaneArea::reveal`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reveal {
+    /// The pane that shows it.
+    pub pane: Category,
+    /// The widget id of its control, which takes the keyboard.
+    pub control: String,
 }
 
 /// Implement [`PaneArea`]'s conversions for an area type, with any hooks it

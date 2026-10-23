@@ -546,6 +546,17 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
     })
 }
 
+/// How a search hit or an agent's `open` names the row of one type of file
+/// or link on Apps & files: `settings.default-app:ext:rs`.
+pub const DEFAULT_APP_ANCHOR: &str = "settings.default-app:";
+
+/// The row of the type of file or link `kind` (`ext:rs`, `scheme:https`)
+/// on Apps & files, which a search hit for it opens.
+#[must_use]
+pub fn default_app_row_id(kind: &str) -> String {
+    format!("{DEFAULT_APP_ANCHOR}{kind}")
+}
+
 /// How a search hit or an agent's `open` names a setting:
 /// `settings.setting:<id>`, an id of [`settings_store::index::SETTINGS`].
 pub const SETTING_ANCHOR: &str = "settings.setting:";

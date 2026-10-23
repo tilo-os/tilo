@@ -38,6 +38,18 @@ pub fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     }
 }
 
+/// The name of a category of file and link types, in the person's
+/// language ([`desktop_policy::TypeCategory`]).
+pub fn type_category(category: desktop_policy::TypeCategory) -> String {
+    let key = format!("settings-type-category-{}", category.slug());
+    let name = t(&key);
+    if name == key {
+        category.label().to_owned()
+    } else {
+        name
+    }
+}
+
 /// The languages Settings, and so the desktop, can show: English and every
 /// language with an installed pack.
 pub fn languages() -> Vec<&'static str> {

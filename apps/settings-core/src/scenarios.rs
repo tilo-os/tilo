@@ -72,6 +72,11 @@ const DEVICES_REMOVE: &str = "devices-remove";
 const SPEAKERS_LAYOUT: &str = "speakers-layout";
 const SPEAKERS_LAYOUT_PICKED: &str = "speakers-layout-picked";
 const SPEAKERS_LAYOUT_DRAG: &str = "speakers-layout-drag";
+/// Apps & files with every category closed, drawn tall enough for all of
+/// them; with Code open; and with Code open and a type's own choice.
+const DEFAULT_APPS_ALL: &str = "default-apps-all";
+const DEFAULT_APPS_CODE: &str = "default-apps-code";
+const DEFAULT_APPS_CHANGED: &str = "default-apps-changed";
 
 const NARROW: &str = "narrow";
 const NARROW_LIST: &str = "narrow-list";
@@ -122,6 +127,9 @@ pub fn names() -> &'static [&'static str] {
                 SPEAKERS_LAYOUT,
                 SPEAKERS_LAYOUT_PICKED,
                 SPEAKERS_LAYOUT_DRAG,
+                DEFAULT_APPS_ALL,
+                DEFAULT_APPS_CODE,
+                DEFAULT_APPS_CHANGED,
             ])
             .chain(CODEC_SCENARIOS.iter().copied())
             .collect()
@@ -132,7 +140,7 @@ pub fn names() -> &'static [&'static str] {
 pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
         Some(NARROW | NARROW_LIST | ACCOUNTS_NARROW | SEARCH_NARROW) => NARROW_VIEWPORT,
-        Some(DEVICE_DISPLAYS) => (1200, 1100),
+        Some(DEVICE_DISPLAYS | DEFAULT_APPS_ALL) => (1200, 1100),
         Some(
             DISPLAYS_TWO | DISPLAYS_KEYBOARD | DISPLAYS_CANVAS | DISPLAYS_DRAGGING
             | DISPLAYS_IDENTIFY,
@@ -140,6 +148,7 @@ pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
         Some(STORAGE_DRIVES) => (1200, 1450),
         Some(PERMISSIONS_ALL) => (1200, 2000),
         Some(SPEAKERS_LAYOUT | SPEAKERS_LAYOUT_PICKED | SPEAKERS_LAYOUT_DRAG) => (1200, 980),
+        Some(DEFAULT_APPS_CODE | DEFAULT_APPS_CHANGED) => (1200, 1500),
         _ => WIDE_VIEWPORT,
     }
 }
@@ -179,6 +188,8 @@ pub struct CaptureScene {
     pub network: Option<NetworkSample>,
     /// Where the speaker setup stands, for the room layout captures.
     pub speakers: Option<SpeakersSample>,
+    /// What Apps & files shows open and chosen, for its captures.
+    pub default_apps: DefaultAppsScene,
 }
 
 /// Where the speaker captures' setup stands: on the room layout step of a
@@ -204,6 +215,34 @@ pub enum DisplaysSample {
     Dragging,
     /// Identify showing the numbers.
     Identifying,
+}
+
+/// What an Apps & files capture shows open and which apps it shows chosen.
+#[derive(Clone, Debug, Default)]
+pub struct DefaultAppsScene {
+    /// The category shown open.
+    pub open: Option<desktop_policy::TypeCategory>,
+    /// The app chosen for a whole category.
+    pub categories: Vec<(desktop_policy::TypeCategory, String)>,
+    /// The types chosen an app of their own, `(kind, app)`.
+    pub changed: Vec<(String, String)>,
+}
+
+/// What the Apps & files scenario `scenario` shows.
+fn default_apps_scene(scenario: Option<&str>) -> DefaultAppsScene {
+    use desktop_policy::TypeCategory;
+    match scenario {
+        Some(DEFAULT_APPS_CODE) => DefaultAppsScene {
+            open: Some(TypeCategory::Code),
+            ..DefaultAppsScene::default()
+        },
+        Some(DEFAULT_APPS_CHANGED) => DefaultAppsScene {
+            open: Some(TypeCategory::Code),
+            categories: vec![(TypeCategory::Code, "dev.zed.Zed".into())],
+            changed: vec![("ext:rs".into(), "so.tilo.code-editor".into())],
+        },
+        _ => DefaultAppsScene::default(),
+    }
 }
 
 /// How the network captures' sample stands.
@@ -323,6 +362,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             Some(SPEAKERS_LAYOUT_DRAG) => Some(SpeakersSample::Dragging),
             _ => None,
         },
+        default_apps: default_apps_scene(fixture.scenario()),
     });
 }
 
@@ -596,6 +636,9 @@ pub fn staged(scenario: Option<&str>) -> Staged {
         Some(SPEAKERS_LAYOUT | SPEAKERS_LAYOUT_PICKED | SPEAKERS_LAYOUT_DRAG) => {
             Staged::Pane(Category::Speakers)
         }
+        Some(DEFAULT_APPS_ALL | DEFAULT_APPS_CODE | DEFAULT_APPS_CHANGED) => {
+            Staged::Pane(Category::DefaultApps)
+        }
         Some(NARROW) => Staged::Pane(Category::RegionFormats),
         Some(NARROW_LIST) => Staged::List(Category::RegionFormats),
         Some(SEARCH | SEARCH_NARROW) => Staged::Search(Category::Appearance, SEARCH_QUERY),
@@ -745,7 +788,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 30 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 33 + CODEC_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),
@@ -769,6 +812,13 @@ mod tests {
         ] {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Speakers));
         }
+        for scenario in [DEFAULT_APPS_ALL, DEFAULT_APPS_CODE, DEFAULT_APPS_CHANGED] {
+            assert_eq!(staged(Some(scenario)), Staged::Pane(Category::DefaultApps));
+        }
+        assert_eq!(
+            default_apps_scene(Some(DEFAULT_APPS_CHANGED)).open,
+            Some(desktop_policy::TypeCategory::Code)
+        );
         assert_eq!(
             staged(Some(STORAGE_DRIVES)),
             Staged::Pane(Category::Storage)

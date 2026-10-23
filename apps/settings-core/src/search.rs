@@ -6,7 +6,9 @@
 //! opens that pane, as an agent's `open` of the row and the sidebar do.
 //!
 //! This indexes **panes** (navigation), not individual toggles — those are
-//! already exported to Ctrl+K as the app's effects.
+//! already exported to Ctrl+K as the app's effects. The one exception is
+//! the types of file and link Apps & files lists: "open .rs with" is
+//! found and lands on that type's row ([`type_entries`]).
 
 use ui::tilo_resource::SearchEntry;
 
@@ -29,6 +31,47 @@ pub fn pane_entries() -> Vec<SearchEntry> {
                 .subtitled(category.subtitle())
                 .with_icon(category.icon().name())
         })
+        .chain(type_entries())
+        .collect()
+}
+
+/// Every type of file and link the taxonomy names, as a search entry:
+/// "Open .rs files with", in its category, anchored at the type's row on
+/// Apps & files ([`crate::effects::default_app_row_id`]).
+fn type_entries() -> Vec<SearchEntry> {
+    let words = crate::i18n::t("settings-default-apps-search-words");
+    desktop_policy::TypeCategory::ALL
+        .iter()
+        .flat_map(|&category| {
+            let entry = category.entry();
+            let name = crate::i18n::type_category(category);
+            let files = entry.extensions.iter().map(move |ext| {
+                (
+                    format!("ext:{ext}"),
+                    crate::i18n::t_args(
+                        "settings-default-apps-search-ext",
+                        &[("ext", ui::i18n::ArgValue::Text((*ext).to_owned()))],
+                    ),
+                )
+            });
+            let links = entry.schemes.iter().map(move |scheme| {
+                (
+                    format!("scheme:{scheme}"),
+                    crate::i18n::t_args(
+                        "settings-default-apps-search-scheme",
+                        &[("scheme", ui::i18n::ArgValue::Text((*scheme).to_owned()))],
+                    ),
+                )
+            });
+            let words = words.clone();
+            files.chain(links).map(move |(kind, title)| {
+                SearchEntry::new(title, format!("{words} {name}"))
+                    .anchored(crate::effects::default_app_row_id(&kind))
+                    .grouped(SETTINGS_KIND)
+                    .subtitled(name.clone())
+                    .with_icon(category.icon())
+            })
+        })
         .collect()
 }
 
@@ -36,6 +79,42 @@ pub fn pane_entries() -> Vec<SearchEntry> {
 mod tests {
     use super::*;
     use ui::search::{SearchProvider, SearchRegistry};
+
+    /// Whether a hit opens a pane, rather than a type of file's row.
+    fn is_pane(action: &str) -> bool {
+        crate::effects::pane_of_row(action).is_some()
+    }
+
+    /// "open .rs with" finds the `.rs` row of Apps & files, and every
+    /// type hit is anchored at a type's row.
+    #[test]
+    fn a_type_of_file_is_found_by_what_people_type() {
+        ui::i18n::I18nManager::init("en-US");
+        let provider = source();
+        let hit = provider
+            .search("open .rs with")
+            .into_iter()
+            .find(|hit| hit.action_id == crate::effects::default_app_row_id("ext:rs"))
+            .expect("the .rs type is found");
+        assert_eq!(hit.title, "Open .rs files with");
+        assert_eq!(hit.anchor(), crate::effects::default_app_row_id("ext:rs"));
+        let https = provider
+            .search("https links")
+            .into_iter()
+            .find(|hit| hit.action_id == crate::effects::default_app_row_id("scheme:https"));
+        assert!(https.is_some(), "a link's scheme is found too");
+        for hit in provider.search("") {
+            assert!(
+                is_pane(&hit.action_id)
+                    || hit
+                        .action_id
+                        .strip_prefix(crate::effects::DEFAULT_APP_ANCHOR)
+                        .is_some_and(|kind| kind.starts_with("ext:") || kind.starts_with("scheme:")),
+                "{} names neither a pane nor a type",
+                hit.action_id
+            );
+        }
+    }
 
     /// The app's search source, as the framework builds it.
     fn source() -> impl SearchProvider {
@@ -55,7 +134,15 @@ mod tests {
         );
         assert!(hits.iter().all(|r| r.kind == SETTINGS_KIND));
 
-        assert_eq!(provider.search("").len(), Category::ALL.len());
+        // The empty query browses every pane.
+        assert_eq!(
+            provider
+                .search("")
+                .iter()
+                .filter(|hit| is_pane(&hit.action_id))
+                .count(),
+            Category::ALL.len()
+        );
 
         // Paging reaches the complete corpus with a hard per-page budget.
         let mut cursor = None;
@@ -68,7 +155,12 @@ mod tests {
                 page.results.len() <= 1,
                 "a page must respect its result limit"
             );
-            titles.extend(page.results.into_iter().map(|result| result.title));
+            titles.extend(
+                page.results
+                    .into_iter()
+                    .filter(|result| is_pane(&result.action_id))
+                    .map(|result| result.title),
+            );
             cursor = page.next;
             if cursor.is_none() {
                 break;
@@ -105,7 +197,11 @@ mod tests {
     fn every_search_anchor_names_its_panes_row() {
         let config = crate::prefs::test_env::ScratchConfig::new();
         let app = config.app();
-        let hits = source().search("");
+        let hits: Vec<_> = source()
+            .search("")
+            .into_iter()
+            .filter(|hit| is_pane(&hit.action_id))
+            .collect();
         assert_eq!(hits.len(), Category::ALL.len());
         for (category, hit) in Category::ALL.iter().copied().zip(hits) {
             assert_eq!(hit.action_id, crate::effects::pane_row_id(category));

@@ -71,18 +71,22 @@ pub struct SettingsApp {
     staged_filter: String,
     /// The setting a link or a search hit asked to be shown, taken in with
     /// the pane it is on.
-    setting_request: ui::LocalState<Option<&'static settings_store::index::Setting>>,
+    setting_request: ui::LocalState<Option<RevealTarget>>,
+    /// An anchor a search hit or an agent's `open` named that is neither a
+    /// pane nor an indexed setting: the area that knows it says which pane
+    /// and control it is ([`crate::area::PaneArea::reveal`]).
+    anchor_request: ui::LocalState<Option<String>>,
     /// The setting to show once its pane is built: the keyboard goes to its
     /// control as the pane is built, and once it is laid out the pane
     /// scrolls to it.
-    reveal: Option<&'static settings_store::index::Setting>,
+    reveal: Option<RevealTarget>,
     /// The setting whose control the pane scrolls to after this layout.
-    reveal_scroll: Option<&'static settings_store::index::Setting>,
+    reveal_scroll: Option<RevealTarget>,
     /// A capture's control to put the keyboard on once its pane is built.
     capture_focus: Option<&'static str>,
     /// The setting just shown and when: its row is marked for a moment, so
     /// the eye finds it.
-    highlight: Option<(&'static settings_store::index::Setting, ui::time::Instant)>,
+    highlight: Option<(RevealTarget, ui::time::Instant)>,
     /// Each pane's scroll offset. The content scroller is rebuilt whenever the
     /// pane's structure changes (a control applied, a category opened), so the
     /// offset lives here, per category, rather than in the rebuilt widget.
@@ -179,6 +183,7 @@ impl SettingsApp {
             sidebar_selection: ui::LocalState::new(None),
             staged_filter: String::new(),
             setting_request: ui::LocalState::new(None),
+            anchor_request: ui::LocalState::new(None),
             reveal: None,
             reveal_scroll: None,
             capture_focus: None,
@@ -242,7 +247,8 @@ impl SettingsApp {
     pub fn request_setting(&self, setting: &str) -> Result<(), String> {
         let (category, setting) = setting_and_pane(setting)
             .ok_or_else(|| format!("Settings has no setting `{setting}`"))?;
-        self.setting_request.set(Some(setting));
+        self.setting_request
+            .set(Some(RevealTarget::Setting(setting)));
         self.sidebar_selection.set(Some(category));
         Ok(())
     }
@@ -252,6 +258,7 @@ impl SettingsApp {
     pub fn opener(&self) -> impl FnMut(&str) + 'static {
         let selection = self.sidebar_selection.clone();
         let setting_request = self.setting_request.clone();
+        let anchor_request = self.anchor_request.clone();
         move |anchor| {
             if let Some(category) = crate::effects::pane_of_row(anchor) {
                 selection.set(Some(category));
@@ -259,16 +266,23 @@ impl SettingsApp {
                 .strip_prefix(crate::effects::SETTING_ANCHOR)
                 .and_then(setting_and_pane)
             {
-                setting_request.set(Some(setting));
+                setting_request.set(Some(RevealTarget::Setting(setting)));
                 selection.set(Some(category));
+            } else {
+                // A row an area shows (a file type's): the area says where,
+                // at the next sync.
+                anchor_request.set(Some(anchor.to_owned()));
             }
         }
     }
 
     /// The setting a reveal is waiting to show, for tests.
     #[cfg(test)]
-    pub fn pending_reveal(&self) -> Option<&'static str> {
-        self.reveal.or(self.reveal_scroll).map(|setting| setting.id)
+    pub fn pending_reveal(&self) -> Option<String> {
+        self.reveal
+            .as_ref()
+            .or(self.reveal_scroll.as_ref())
+            .map(|target| target.id().to_owned())
     }
 
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
@@ -931,6 +945,15 @@ impl Widget for SettingsApp {
         // A sidebar row opens its pane through the pane row's open effect;
         // only a bare app outside a host selects here. Search is local
         // presentation state: no CRDT text, collaboration traffic or undo.
+        // An anchor only an area knows names the pane and control it shows.
+        if let Some(anchor) = self.anchor_request.with(Clone::clone) {
+            self.anchor_request.set(None);
+            if let Some(found) = self.areas.iter().find_map(|area| area.reveal(&anchor)) {
+                self.setting_request
+                    .set(Some(RevealTarget::Control(found.control)));
+                self.sidebar_selection.set(Some(found.pane));
+            }
+        }
         if let Some(category) = self.sidebar_selection.with(|request| *request) {
             self.sidebar_selection.set(None);
             // Opening a page, from the sidebar or a setting found, shows the
@@ -943,7 +966,7 @@ impl Widget for SettingsApp {
                 self.refresh_shell_children();
             }
             self.select(category);
-            if let Some(setting) = self.setting_request.with(|request| *request) {
+            if let Some(setting) = self.setting_request.with(Clone::clone) {
                 self.setting_request.set(None);
                 self.reveal = Some(setting);
                 // The pane is built anew even when it is already open, so
@@ -1006,12 +1029,15 @@ impl Widget for SettingsApp {
         // keyboard, which the rebuild keeps on it. A pane still being read
         // shows its control once it is built; a control the pane does not
         // show (no such device) leaves the page open at its top.
-        if let Some(setting) = self.reveal
+        if let Some(setting) = self.reveal.clone()
             && !self.pane_waits.get()
         {
             self.reveal = None;
             clear_control_focus(shell);
-            if focus_control(shell, &|id| setting.is_control(id)) {
+            let matches = |id: &str| setting.is_control(id);
+            // A row with nothing to change (a type no app opens) is still
+            // scrolled to, though no control takes the keyboard.
+            if focus_control(shell, &matches) || has_control(&*shell, &matches) {
                 self.reveal_scroll = Some(setting);
             }
         } else if let Some(id) = self.capture_focus.filter(|_| !self.pane_waits.get()) {
@@ -1152,7 +1178,7 @@ impl Widget for SettingsApp {
         if let Some(shell) = &self.shell {
             shell.collect_damage(regions);
             // The fading wash over a shown setting's row.
-            if let Some((setting, _)) = self.highlight
+            if let Some((setting, _)) = &self.highlight
                 && let Some(row) = row_of(shell, setting)
             {
                 regions.push(row.inflate(2.0, 2.0));
@@ -1231,11 +1257,9 @@ impl AppWidget for SettingsApp {
 impl SettingsApp {
     /// Scroll the pane so `setting`'s control is in sight, a little below
     /// the top so its card's heading shows too.
-    fn scroll_to_control(&mut self, setting: &'static settings_store::index::Setting) {
-        fn control_rect(
-            widget: &dyn Widget,
-            setting: &settings_store::index::Setting,
-        ) -> Option<vello::kurbo::Rect> {
+    fn scroll_to_control(&mut self, setting: RevealTarget) {
+        /// The control's rect, under `widget`.
+        fn control_rect(widget: &dyn Widget, setting: &RevealTarget) -> Option<vello::kurbo::Rect> {
             if widget.test_id().is_some_and(|id| setting.is_control(id)) {
                 return Some(widget.get_rect());
             }
@@ -1246,7 +1270,7 @@ impl SettingsApp {
         }
         /// Scroll the innermost scroller holding the control; whether one
         /// did.
-        fn reveal(widget: &mut dyn Widget, setting: &settings_store::index::Setting) -> bool {
+        fn reveal(widget: &mut dyn Widget, setting: &RevealTarget) -> bool {
             if widget
                 .children_mut()
                 .into_iter()
@@ -1278,16 +1302,16 @@ impl SettingsApp {
             true
         }
         if let Some(shell) = &mut self.shell {
-            reveal(shell, setting);
+            reveal(shell, &setting);
         }
         self.highlight = Some((setting, ui::time::now()));
     }
 
     /// The row of the setting just shown, while it is marked.
     fn highlighted_row(&self) -> Option<vello::kurbo::Rect> {
-        let (setting, since) = self.highlight?;
+        let (setting, since) = self.highlight.as_ref()?;
         let elapsed = ui::time::now()
-            .saturating_duration_since(since)
+            .saturating_duration_since(*since)
             .as_secs_f32();
         if elapsed >= HIGHLIGHT_HOLD {
             return None;
@@ -1302,13 +1326,10 @@ const HIGHLIGHT_HOLD: f32 = 1.5;
 /// The row of `setting`'s control under `root`, within the scroller that
 /// holds it: the narrowest ancestor of the control at least as wide as most
 /// of that scroller, which is the settings row.
-fn row_of(
-    root: &dyn Widget,
-    setting: &settings_store::index::Setting,
-) -> Option<vello::kurbo::Rect> {
+fn row_of(root: &dyn Widget, setting: &RevealTarget) -> Option<vello::kurbo::Rect> {
     fn walk(
         widget: &dyn Widget,
-        setting: &settings_store::index::Setting,
+        setting: &RevealTarget,
         trail: &mut Vec<(vello::kurbo::Rect, bool)>,
     ) -> Option<vello::kurbo::Rect> {
         let rect = widget.get_rect();
@@ -1340,6 +1361,38 @@ fn row_of(
     walk(root, setting, &mut Vec::new())
 }
 
+/// What a link, a search hit or an agent's `open` asks the window to show:
+/// a setting of the index, or a control an area's pane shows (a file
+/// type's app chooser).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RevealTarget {
+    /// A setting of [`settings_store::index::SETTINGS`].
+    Setting(&'static settings_store::index::Setting),
+    /// The control with this widget id.
+    Control(String),
+}
+
+impl RevealTarget {
+    /// Whether the widget `id` is the target's control.
+    #[must_use]
+    pub fn is_control(&self, id: &str) -> bool {
+        match self {
+            Self::Setting(setting) => setting.is_control(id),
+            Self::Control(control) => control == id,
+        }
+    }
+
+    /// The target's name: the setting's id, or the control's.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Setting(setting) => setting.id,
+            Self::Control(control) => control,
+        }
+    }
+}
+
+/// The setting named `id` and the pane it is on.
 fn setting_and_pane(id: &str) -> Option<(Category, &'static settings_store::index::Setting)> {
     let setting = settings_store::index::setting(id)?;
     Some((Category::from_slug(setting.page)?, setting))
@@ -1354,6 +1407,15 @@ fn focused_control_id(widget: &dyn Widget) -> Option<&str> {
         return Some(id);
     }
     widget.children().into_iter().find_map(focused_control_id)
+}
+
+/// Whether a widget under `widget` has an id `matches` takes.
+fn has_control(widget: &dyn Widget, matches: &dyn Fn(&str) -> bool) -> bool {
+    widget.test_id().is_some_and(matches)
+        || widget
+            .children()
+            .into_iter()
+            .any(|child| has_control(child, matches))
 }
 
 /// A reveal transfers the keyboard rather than leaving two focused controls.

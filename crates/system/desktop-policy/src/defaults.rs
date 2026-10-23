@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+pub use tilo_mime::TypeCategory;
 
 /// A resource an application may handle. The prefix is part of the identity,
 /// so a MIME, URI scheme, and extension can never collide.
@@ -105,6 +106,20 @@ impl ResourceKind {
         }
     }
 
+    /// The category of the taxonomy ([`tilo_mime::TypeCategory`]) the
+    /// resource belongs to; [`TypeCategory::Other`] for anything unknown.
+    pub fn category(&self) -> TypeCategory {
+        if let Some(ext) = self.extension_name() {
+            TypeCategory::of_extension(ext)
+        } else if let Some(mime) = self.mime_name() {
+            TypeCategory::of_mime(mime)
+        } else if let Some(scheme) = self.scheme_name() {
+            TypeCategory::of_scheme(scheme)
+        } else {
+            TypeCategory::Other
+        }
+    }
+
     pub fn display_label(&self) -> String {
         if let Some(ext) = self.extension_name() {
             format!(".{ext} files")
@@ -178,8 +193,15 @@ pub const PERSONAL_DEFAULTS_SECTION: &str = "default_apps";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonalDefaults {
+    /// The app one type opens with, overriding its category's.
     #[serde(default)]
     pub handlers: BTreeMap<ResourceKind, String>,
+    /// The app every type of a category opens with unless the type has a
+    /// handler of its own, by the category's slug
+    /// ([`TypeCategory::slug`]). Keyed by string so that a category a
+    /// newer version adds survives this one's writes.
+    #[serde(default)]
+    pub categories: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,12 +224,16 @@ pub enum SelectionSource {
     PersonalOverride,
     WorkspacePolicy,
     PersonalDefault,
+    /// The person's choice for the resource's whole category
+    /// ([`PersonalDefaults::categories`]): weaker than a choice for the
+    /// type itself, whichever of a file's kinds names it.
+    PersonalCategory,
     /// The host's `mimeapps.list` chain named this host application.
     SystemDefault,
     DeterministicFallback,
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DefaultAppError {
     #[error("invalid resource kind")]
     InvalidResource,
@@ -280,6 +306,11 @@ impl<'a> DefaultAppResolver<'a> {
     ) -> Option<DefaultAppSelection> {
         let valid = |id: &str| self.validate_app(resource, id).is_ok();
         let personal_id = || personal.handlers.get(resource).filter(|id| valid(id));
+        let category_id = || {
+            personal
+                .category_app(resource.category())
+                .filter(|id| valid(id))
+        };
 
         if let Some(ws) = workspace {
             let choice = ws
@@ -299,6 +330,12 @@ impl<'a> DefaultAppResolver<'a> {
                         return Some(DefaultAppSelection {
                             package_id: id.clone(),
                             source: SelectionSource::PersonalOverride,
+                        });
+                    }
+                    if let Some(id) = category_id() {
+                        return Some(DefaultAppSelection {
+                            package_id: id.to_owned(),
+                            source: SelectionSource::PersonalCategory,
                         });
                     }
                     // An explicit escape from workspace policy remains an
@@ -326,7 +363,98 @@ impl<'a> DefaultAppResolver<'a> {
                 source: SelectionSource::PersonalDefault,
             });
         }
+        if let Some(id) = category_id() {
+            return Some(DefaultAppSelection {
+                package_id: id.to_owned(),
+                source: SelectionSource::PersonalCategory,
+            });
+        }
         self.fallback(resource)
+    }
+
+    /// The app a file of type `file_type` opens with for this person, as
+    /// the launcher ranks a file's MIME type and extension: a choice for
+    /// the MIME type, then one for the extension, then the extension's
+    /// category's choice, then the MIME type's, then the fallback.
+    pub fn resolve_type(
+        &self,
+        file_type: &FileType,
+        personal: &PersonalDefaults,
+    ) -> Option<DefaultAppSelection> {
+        let own = |kind: &ResourceKind| {
+            personal
+                .handlers
+                .get(kind)
+                .filter(|id| self.validate_app(kind, id).is_ok())
+                .map(|id| DefaultAppSelection {
+                    package_id: id.clone(),
+                    source: SelectionSource::PersonalDefault,
+                })
+        };
+        file_type
+            .launch_mime
+            .as_ref()
+            .and_then(own)
+            .or_else(|| file_type.primary().and_then(own))
+            .or_else(|| self.inherited(file_type, personal))
+    }
+
+    /// The app `file_type` opens with when it has no choice of its own:
+    /// its category's choice, else the fallback. What a reset returns it
+    /// to.
+    pub fn inherited(
+        &self,
+        file_type: &FileType,
+        personal: &PersonalDefaults,
+    ) -> Option<DefaultAppSelection> {
+        let category = |kind: &ResourceKind| {
+            personal
+                .category_app(kind.category())
+                .filter(|id| self.validate_app(kind, id).is_ok())
+                .map(|id| DefaultAppSelection {
+                    package_id: id.to_owned(),
+                    source: SelectionSource::PersonalCategory,
+                })
+        };
+        let primary = file_type.primary();
+        primary
+            .and_then(category)
+            .or_else(|| file_type.launch_mime.as_ref().and_then(category))
+            .or_else(|| primary.and_then(|kind| self.fallback(kind)))
+            .or_else(|| {
+                file_type
+                    .launch_mime
+                    .as_ref()
+                    .and_then(|m| self.fallback(m))
+            })
+    }
+
+    /// Whether `package_id` is installed and claims at least one resource
+    /// of `category`, so it may be the whole category's choice.
+    ///
+    /// # Errors
+    ///
+    /// [`DefaultAppError::InvalidPackage`] or
+    /// [`DefaultAppError::NotInstalled`] as for [`Self::validate_app`], or
+    /// [`DefaultAppError::DoesNotHandle`] if it claims nothing of the
+    /// category.
+    pub fn validate_category_app(
+        &self,
+        category: TypeCategory,
+        package_id: &str,
+    ) -> Result<(), DefaultAppError> {
+        validate_package_id(package_id)?;
+        let Some(app) = self.candidates.iter().find(|a| a.package_id == package_id) else {
+            return Err(DefaultAppError::NotInstalled);
+        };
+        if app.resources.iter().any(|kind| kind.category() == category) {
+            Ok(())
+        } else {
+            Err(DefaultAppError::DoesNotHandle {
+                package_id: package_id.to_string(),
+                resource: category.slug().to_string(),
+            })
+        }
     }
 
     /// Without an explicit choice: a Tilo package first, since it runs sandboxed and
@@ -370,7 +498,203 @@ impl<'a> DefaultAppResolver<'a> {
     }
 }
 
+/// A type of file or link as a person chooses an app for it: an extension
+/// with the MIME type its files carry and the other extensions of that MIME
+/// type (`.jpeg` and `.jpg`), or a link's scheme.
+///
+/// Files are opened by both their MIME type and their extension, so a
+/// choice for the type covers both. The MIME type is the type's own when it
+/// is in the same category and no file of another category carries it
+/// (`application/pdf` for `.pdf`, never `text/plain` for `.py`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileType {
+    /// The extensions (or the one scheme or MIME type) the type is, the
+    /// one it was named by first.
+    pub kinds: Vec<ResourceKind>,
+    /// The MIME type a choice for the type also covers.
+    pub mime: Option<ResourceKind>,
+    /// The MIME type the launcher reads for a file of this type, shared
+    /// or not: a choice for it outranks the extension's.
+    pub launch_mime: Option<ResourceKind>,
+}
+
+impl FileType {
+    /// The type `kind` names: an extension with its MIME type and that
+    /// type's other extensions, or a MIME type or scheme alone.
+    pub fn of(kind: ResourceKind) -> Self {
+        let Some(ext) = kind.extension_name().map(str::to_owned) else {
+            return Self {
+                kinds: vec![kind],
+                mime: None,
+                launch_mime: None,
+            };
+        };
+        let category = TypeCategory::of_extension(&ext);
+        let launch_mime = tilo_mime::from_ext(&ext).and_then(|mime| ResourceKind::mime(mime).ok());
+        let mime = launch_mime.as_ref().and_then(|mime| {
+            let name = mime.mime_name()?;
+            let own = TypeCategory::of_mime(name) == category
+                && tilo_mime::extensions_of(name)
+                    .all(|other| TypeCategory::of_extension(other) == category);
+            own.then(|| mime.clone())
+        });
+        let siblings: Vec<ResourceKind> = mime
+            .as_ref()
+            .and_then(ResourceKind::mime_name)
+            .map(|name| {
+                tilo_mime::extensions_of(name)
+                    .filter(|other| *other != ext.as_str())
+                    .filter_map(|other| ResourceKind::extension(other).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut kinds = vec![kind];
+        kinds.extend(siblings);
+        Self {
+            kinds,
+            mime,
+            launch_mime,
+        }
+    }
+
+    /// The extension, scheme or MIME type the type was named by.
+    pub fn primary(&self) -> Option<&ResourceKind> {
+        self.kinds.first()
+    }
+
+    /// What tells the type apart from every other: its own MIME type,
+    /// else the extension or scheme it is. Two extensions of one type
+    /// (`.jpeg`, `.jpg`) have the same key.
+    pub fn key(&self) -> Option<&ResourceKind> {
+        self.mime.as_ref().or_else(|| self.primary())
+    }
+
+    /// The category the type belongs to.
+    pub fn category(&self) -> TypeCategory {
+        self.primary()
+            .map_or(TypeCategory::Other, ResourceKind::category)
+    }
+
+    /// Every resource a choice for the type covers.
+    fn covered(&self) -> impl Iterator<Item = &ResourceKind> {
+        self.kinds.iter().chain(self.mime.as_ref())
+    }
+
+    /// Whether the person chose an app for this type itself, rather than
+    /// following its category.
+    pub fn is_overridden(&self, personal: &PersonalDefaults) -> bool {
+        self.covered()
+            .any(|kind| personal.handlers.contains_key(kind))
+    }
+
+    /// Whether `app` opens any resource of the type.
+    pub fn claimed_by(&self, app: &AppCandidate) -> bool {
+        self.covered().any(|kind| app.handles(kind))
+    }
+
+    /// The handler of each of the type's resources once `package_id` is
+    /// chosen for it: the app for each it claims, none for the others, so
+    /// an older choice for one of them does not outrank the new one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DefaultAppResolver::validate_app`]'s error for the type
+    /// when the app claims none of its resources.
+    pub fn choose(
+        &self,
+        package_id: &str,
+        resolver: &DefaultAppResolver<'_>,
+    ) -> Result<Vec<(ResourceKind, Option<String>)>, DefaultAppError> {
+        let mut first_error = None;
+        let mut claimed_any = false;
+        let mut out = Vec::new();
+        for kind in self.covered() {
+            match resolver.validate_app(kind, package_id) {
+                Ok(()) => {
+                    claimed_any = true;
+                    out.push((kind.clone(), Some(package_id.to_owned())));
+                }
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    out.push((kind.clone(), None));
+                }
+            }
+        }
+        if claimed_any {
+            Ok(out)
+        } else {
+            Err(first_error.unwrap_or(DefaultAppError::InvalidResource))
+        }
+    }
+
+    /// The handlers a reset leaves: none of the type's own, so it follows
+    /// its category again.
+    pub fn reset(&self) -> Vec<(ResourceKind, Option<String>)> {
+        self.covered().map(|kind| (kind.clone(), None)).collect()
+    }
+}
+
 impl PersonalDefaults {
+    /// The app the person chose for every type of `category`, if any.
+    pub fn category_app(&self, category: TypeCategory) -> Option<&str> {
+        self.categories.get(category.slug()).map(String::as_str)
+    }
+
+    /// Choose `package_id` for every type of `category` that has no choice
+    /// of its own; the types' own choices stay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DefaultAppResolver::validate_category_app`]'s error; the
+    /// existing choice is left untouched.
+    pub fn set_category(
+        &mut self,
+        category: TypeCategory,
+        package_id: String,
+        resolver: &DefaultAppResolver<'_>,
+    ) -> Result<(), DefaultAppError> {
+        resolver.validate_category_app(category, &package_id)?;
+        self.categories
+            .insert(category.slug().to_owned(), package_id);
+        Ok(())
+    }
+
+    /// Choose `package_id` for `file_type` itself, over its category's.
+    ///
+    /// # Errors
+    ///
+    /// As [`FileType::choose`]; nothing changes then.
+    pub fn set_type(
+        &mut self,
+        file_type: &FileType,
+        package_id: &str,
+        resolver: &DefaultAppResolver<'_>,
+    ) -> Result<(), DefaultAppError> {
+        let handlers = file_type.choose(package_id, resolver)?;
+        self.apply(handlers);
+        Ok(())
+    }
+
+    /// Drop `file_type`'s own choice, so it follows its category again.
+    pub fn reset_type(&mut self, file_type: &FileType) {
+        self.apply(file_type.reset());
+    }
+
+    fn apply(&mut self, handlers: Vec<(ResourceKind, Option<String>)>) {
+        for (kind, app) in handlers {
+            match app {
+                Some(app) => {
+                    self.handlers.insert(kind, app);
+                }
+                None => {
+                    self.handlers.remove(&kind);
+                }
+            }
+        }
+    }
+
     /// # Errors
     ///
     /// Returns an error if [`DefaultAppResolver::validate_app`] rejects
@@ -473,6 +797,7 @@ mod tests {
             let resolver = DefaultAppResolver::new(&apps);
             let personal = PersonalDefaults {
                 handlers: [(pdf.clone(), "so.tilo.a".into())].into(),
+                ..PersonalDefaults::default()
             };
             let mut ws = WorkspaceDefaults::default();
 
@@ -534,6 +859,7 @@ mod tests {
             let resolver = DefaultAppResolver::new(&apps);
             let personal = PersonalDefaults {
                 handlers: [(pdf.clone(), "so.tilo.removed".into())].into(),
+                ..PersonalDefaults::default()
             };
             let selected = resolver.resolve(&pdf, "ada", &personal, None).unwrap();
             assert_eq!(selected.package_id, "so.tilo.viewer");
@@ -560,6 +886,169 @@ mod tests {
             assert_eq!(selected.package_id, "so.tilo.a");
             assert_eq!(selected.source, SelectionSource::DeterministicFallback);
         }
+    }
+
+    fn claims(id: &str, name: &str, kinds: &[ResourceKind]) -> AppCandidate {
+        AppCandidate {
+            package_id: id.into(),
+            display_name: name.into(),
+            resources: kinds.iter().cloned().collect(),
+            secondary: false,
+        }
+    }
+
+    /// Two code editors and a notes app: `.rs` and `.toml` are Code, `.md`
+    /// is Documents.
+    fn code_apps() -> [AppCandidate; 3] {
+        [
+            claims(
+                "so.tilo.code-editor",
+                "Code Editor",
+                &[r("rs"), r("toml"), r("py")],
+            ),
+            claims("org.example.zed", "Zed", &[r("rs"), r("toml"), r("py")]),
+            claims("so.tilo.notes", "Notes", &[r("md")]),
+        ]
+    }
+
+    fn opens(resolver: &DefaultAppResolver<'_>, personal: &PersonalDefaults, ext: &str) -> String {
+        resolver
+            .resolve_type(&FileType::of(r(ext)), personal)
+            .map(|selected| selected.package_id)
+            .unwrap_or_default()
+    }
+
+    /// Changing a category's app applies to all its types unless a type has
+    /// its own.
+    #[test]
+    fn a_category_level_change_applies_to_non_overridden_types() {
+        let apps = code_apps();
+        let resolver = DefaultAppResolver::new(&apps);
+        let mut personal = PersonalDefaults::default();
+        assert_eq!(opens(&resolver, &personal, "rs"), "so.tilo.code-editor");
+        personal
+            .set_category(TypeCategory::Code, "org.example.zed".into(), &resolver)
+            .unwrap();
+        for ext in ["rs", "toml", "py"] {
+            assert_eq!(opens(&resolver, &personal, ext), "org.example.zed", "{ext}");
+            assert_eq!(
+                resolver
+                    .resolve(&r(ext), "", &personal, None)
+                    .unwrap()
+                    .source,
+                SelectionSource::PersonalCategory,
+                "the launcher reads the category's choice for .{ext} too"
+            );
+        }
+        assert_eq!(
+            opens(&resolver, &personal, "md"),
+            "so.tilo.notes",
+            "another category is untouched"
+        );
+        assert!(
+            personal
+                .set_category(TypeCategory::Code, "so.tilo.notes".into(), &resolver)
+                .is_err(),
+            "an app that opens nothing of the category cannot be its choice"
+        );
+    }
+
+    /// A type's own app survives a change of its category's app.
+    #[test]
+    fn overrides_survive_a_category_change() {
+        let apps = code_apps();
+        let resolver = DefaultAppResolver::new(&apps);
+        let mut personal = PersonalDefaults::default();
+        let toml = FileType::of(r("toml"));
+        personal
+            .set_type(&toml, "so.tilo.code-editor", &resolver)
+            .unwrap();
+        assert!(toml.is_overridden(&personal));
+        personal
+            .set_category(TypeCategory::Code, "org.example.zed".into(), &resolver)
+            .unwrap();
+        assert_eq!(opens(&resolver, &personal, "rs"), "org.example.zed");
+        assert_eq!(
+            opens(&resolver, &personal, "toml"),
+            "so.tilo.code-editor",
+            "the override survives the category change"
+        );
+        assert!(toml.is_overridden(&personal));
+        personal.reset_type(&toml);
+        assert!(!toml.is_overridden(&personal));
+        assert_eq!(
+            opens(&resolver, &personal, "toml"),
+            "org.example.zed",
+            "a reset type follows its category again"
+        );
+    }
+
+    #[test]
+    fn a_type_covers_its_own_mime_type_but_never_a_shared_one() {
+        let pdf = FileType::of(r("pdf"));
+        assert_eq!(pdf.mime, ResourceKind::mime("application/pdf").ok());
+        assert_eq!(pdf.category(), TypeCategory::Documents);
+        // `.py` files carry `text/plain`, as `.txt` files do: choosing an
+        // app for Python must not choose it for text.
+        let py = FileType::of(r("py"));
+        assert_eq!(py.mime, None);
+        assert_eq!(py.launch_mime, ResourceKind::mime("text/plain").ok());
+        assert_eq!(py.category(), TypeCategory::Code);
+        // Two extensions of one type are one type.
+        let jpeg = FileType::of(r("jpeg"));
+        assert!(jpeg.kinds.contains(&r("jpg")));
+        assert_eq!(jpeg.primary(), Some(&r("jpeg")));
+        assert_eq!(jpeg.key(), FileType::of(r("jpg")).key());
+        assert_ne!(py.key(), FileType::of(r("txt")).key());
+        let https = FileType::of(ResourceKind::scheme("https").unwrap());
+        assert_eq!(https.category(), TypeCategory::Web);
+        assert_eq!(https.mime, None);
+
+        // A choice for the type takes over an older choice for its MIME
+        // type, which the launcher would otherwise rank first.
+        let pdf_mime = ResourceKind::mime("application/pdf").unwrap();
+        let apps = [
+            claims(
+                "so.tilo.pdf-viewer",
+                "PDF Viewer",
+                &[r("pdf"), pdf_mime.clone()],
+            ),
+            claims("org.example.reader", "Reader", &[r("pdf")]),
+        ];
+        let resolver = DefaultAppResolver::new(&apps);
+        let mut personal = PersonalDefaults {
+            handlers: [(pdf_mime.clone(), "so.tilo.pdf-viewer".into())].into(),
+            ..PersonalDefaults::default()
+        };
+        assert!(pdf.is_overridden(&personal), "a choice made by MIME type");
+        personal
+            .set_type(&pdf, "org.example.reader", &resolver)
+            .unwrap();
+        assert_eq!(opens(&resolver, &personal, "pdf"), "org.example.reader");
+        assert!(!personal.handlers.contains_key(&pdf_mime));
+        assert!(
+            personal
+                .set_type(&pdf, "so.tilo.code-editor", &resolver)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_categories_section_round_trips_and_keeps_unknown_categories() {
+        let mut section = serde_json::Map::new();
+        section.insert(
+            "categories".into(),
+            serde_json::json!({ "code": "org.example.zed", "holograms": "org.example.future" }),
+        );
+        let defaults = PersonalDefaults::from_section(&section);
+        assert_eq!(
+            defaults.category_app(TypeCategory::Code),
+            Some("org.example.zed")
+        );
+        assert_eq!(
+            defaults.categories.get("holograms").map(String::as_str),
+            Some("org.example.future")
+        );
     }
 
     fn host(desktop_id: &str, name: &str, resource: &ResourceKind) -> AppCandidate {
@@ -604,6 +1093,7 @@ mod tests {
 
         let personal = PersonalDefaults {
             handlers: [(pdf.clone(), "okular.desktop".into())].into(),
+            ..PersonalDefaults::default()
         };
         let selected = DefaultAppResolver::new(&with_package)
             .with_system_defaults(&chain)
@@ -644,6 +1134,7 @@ mod tests {
         );
         let chosen = PersonalDefaults {
             handlers: [(mp4.clone(), "so.tilo.video-editor".into())].into(),
+            ..PersonalDefaults::default()
         };
         assert_eq!(
             resolver
@@ -678,6 +1169,7 @@ mod tests {
         {
             let defaults = PersonalDefaults {
                 handlers: [(r("pdf"), "so.tilo.viewer".into())].into(),
+                ..PersonalDefaults::default()
             };
             let serde_json::Value::Object(section) = serde_json::to_value(&defaults).unwrap()
             else {

@@ -480,15 +480,16 @@ impl DisclosureRow {
             );
         }
         self.face().paint(ctx, text);
-        // The chevron turns a quarter, from pointing at the row's end to
-        // pointing down, with the reveal.
+        // The disclosure chevron points down while the row is closed and
+        // turns half a circle, to point up, with the reveal. A chevron
+        // pointing at the row's end would read as going to another page.
         let turn = Disclose::reveal(self.progress(), 1.0).turn;
         let centre = chevron.center();
         let rotated = ctx.transform
             * Affine::translate(centre.to_vec2())
-            * Affine::rotate(turn * std::f64::consts::FRAC_PI_2)
+            * Affine::rotate(turn * std::f64::consts::PI)
             * Affine::translate(-centre.to_vec2());
-        Icon::ChevronRight.draw(ctx.scene, rotated, chevron, colors.text_dim);
+        Icon::ChevronDown.draw(ctx.scene, rotated, chevron, colors.text_dim);
         if self.focused {
             crate::widget::paint_focus_ring(ctx.scene, ctx.transform, outer, radius, theme);
         }

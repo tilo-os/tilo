@@ -27,6 +27,9 @@ package-store = { version = "0.1.0", path = "../../packaging/package-store", opt
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 # A person's default apps are a section of their settings.
 settings-store = { version = "0.1.0", path = "../settings-store", optional = true }
+# The one taxonomy of file and link types: a person's choice for a whole
+# category applies to the types in it.
+tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
