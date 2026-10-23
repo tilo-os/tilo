@@ -11213,6 +11213,8 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-cpu-raster",
+ "tilo-desktop-model",
+ "tilo-desktop-surface",
  "tilo-document",
  "tilo-files",
  "tilo-page-raster",

@@ -265,8 +265,15 @@ impl StackStyle {
             text_renderer.measure_style(content.title, Some(inner_width), &self.title);
         let (_, msg_h) = content.message.map_or((0.0, 0.0), |value| {
             if content.error {
-                // An error detail is one bounded line.
-                text_renderer.measure_style("Ag", None, &self.message)
+                // An error detail is bounded to one line per line it has
+                // (a host adds a hint, such as dropping a file, on its own).
+                let (w, line) = text_renderer.measure_style("Ag", None, &self.message);
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "a message has a handful of lines"
+                )]
+                let lines = value.lines().count().max(1) as f32;
+                (w, line * lines)
             } else {
                 text_renderer.measure_style(value, Some(inner_width), &self.message)
             }
@@ -561,9 +568,14 @@ fn paint_empty_state(
 
     if let (Some(msg), Some(y)) = (content.message, message_y) {
         if content.error {
-            let line = ctx
-                .text
-                .elide_to_width_style(msg, metrics.inner_width, &style.message);
+            let line = msg
+                .lines()
+                .map(|line| {
+                    ctx.text
+                        .elide_to_width_style(line, metrics.inner_width, &style.message)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             ctx.text(
                 &line,
                 &style.message,

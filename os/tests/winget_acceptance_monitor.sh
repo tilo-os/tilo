@@ -53,4 +53,36 @@ if run_monitor "$tmp/bad-state.json" >"$tmp/out" 2>"$tmp/err"; then
 fi
 grep -Fq 'invalid WinGet state: unknown' "$tmp/err"
 
+# A submitted release is advanced with the download root and signing key it was
+# published with, never with values from the environment.
+mkdir -p "$tmp/work/apps/imager/packaging"
+cat >"$tmp/work/apps/imager/packaging/publish-site-release.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s|%s|%s|%s\n' "$GITHUB_REF_NAME" "$TILO_RELEASE_SERVER" \
+  "$TILO_RELEASE_REPOSITORY" "$TILO_LINUX_SIGNING_FINGERPRINT"
+SH
+chmod +x "$tmp/work/apps/imager/packaging/publish-site-release.sh"
+fingerprint=0123456789ABCDEF0123456789ABCDEF01234567
+cat >"$tmp/submitted.json" <<JSON
+{"published":true,"tag":"imager-v1.2.3","channels":{"winget":"submitted"},
+ "releaseRoot":"https://github.com/tilo-os/releases/releases","linuxSigningFingerprint":"$fingerprint"}
+JSON
+(cd "$tmp/work" && TILO_RELEASE_REPOSITORY=attacker/repo TILO_LINUX_SIGNING_FINGERPRINT=other \
+  run_monitor "$tmp/submitted.json") >"$tmp/out"
+grep -Fxq "imager-v1.2.3|https://github.com|tilo-os/releases|$fingerprint" "$tmp/out"
+
+for broken in '"releaseRoot":"https://github.com/tilo-os/releases"' \
+              '"releaseRoot":"http://github.com/tilo-os/releases/releases"' \
+              '"linuxSigningFingerprint":""'; do
+  jq -c ". + {$broken}" "$tmp/submitted.json" >"$tmp/broken.json"
+  if (cd "$tmp/work" && run_monitor "$tmp/broken.json") >"$tmp/out" 2>"$tmp/err"; then
+    printf 'monitor advanced a release whose manifest has %s\n' "$broken" >&2
+    exit 1
+  fi
+  if grep -Fq 'imager-v1.2.3|' "$tmp/out"; then
+    printf 'monitor published a release whose manifest has %s\n' "$broken" >&2
+    exit 1
+  fi
+done
+
 printf 'ok    WinGet acceptance monitor is fail-closed and version-bound\n'

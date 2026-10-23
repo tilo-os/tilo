@@ -147,6 +147,36 @@ mod tests {
         assert_eq!(surface.handle_event(&WindowEvent::RedrawRequested), None);
     }
 
+    /// A failed open says what went wrong on its one bounded line, and the
+    /// drop hint takes a line of its own under it: the action moves down
+    /// by that line instead of the hint being drawn over the button.
+    #[test]
+    fn an_error_and_the_drop_hint_each_keep_a_line_above_the_action() {
+        let bounds = Rect::new(0.0, 0.0, 480.0, 640.0);
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let content = EmptyStateContent {
+            message: Some("Check the file and try again."),
+            action_label: Some("Open another file"),
+            error: true,
+            ..EmptyStateContent::new("Couldn't open this document")
+        };
+        let alone = EmptyState::paint_focused(&mut ctx, bounds, &content, Point::ZERO, false)
+            .expect("the action");
+        let hinted = FileOpenSurface::default()
+            .paint(&mut ctx, bounds, &content, Point::ZERO, false)
+            .expect("the action");
+        // The stack is centred, so a line added above the action moves it
+        // down by half a line.
+        let moved = hinted.y0 - alone.y0;
+        assert!(
+            moved > 4.0,
+            "the hint's line moves the action down: {alone:?} -> {hinted:?}"
+        );
+    }
+
     #[test]
     fn the_open_action_stays_reachable_and_returns_after_a_cancelled_drag() {
         let bounds = Rect::new(0.0, 0.0, 320.0, 240.0);
