@@ -141,7 +141,13 @@ impl PlanTurns for GatewayTurns {
             &mut |_| {},
         )
         .map_err(|error| error.model_error());
-        record_usage(&self.model_id, request, started.elapsed(), &answer, false);
+        record_usage(
+            (&self.model_id, None),
+            request,
+            started.elapsed(),
+            &answer,
+            false,
+        );
         answer
     }
 
@@ -963,7 +969,7 @@ pub(crate) fn carried_gap(answer: &Answer, catalogue: &Catalogue) -> Option<Stri
 /// pictures it carried and their encoded bytes (never the pictures), and
 /// whether it was a hedge. Benchmarks price runs from these lines.
 pub(crate) fn record_usage(
-    model: &str,
+    (model, tier): (&str, Option<&str>),
     request: &ModelRequest,
     elapsed: Duration,
     answer: &Result<ModelResponse, ModelError>,
@@ -974,13 +980,16 @@ pub(crate) fn record_usage(
         return;
     };
     let agent = std::thread::current().name().map(str::to_owned);
-    let line = usage_line(
+    let mut line = usage_line(
         model,
         agent.as_deref(),
         (elapsed, crate::vision::pictures_in(request)),
         answer,
         hedge,
     );
+    if let (Some(tier), Some(fields)) = (tier, line.as_object_mut()) {
+        fields.insert("service_tier".into(), tier.into());
+    }
     // One write per line: `writeln!` writes in pieces, and agents in other
     // processes append to the same log at once.
     let written = std::fs::OpenOptions::new()
@@ -991,6 +1000,23 @@ pub(crate) fn record_usage(
     if let Err(error) = written {
         tracing::warn!(%error, "cannot record model usage");
     }
+}
+
+/// A call's token counts as the usage log keeps them, in the Responses
+/// API's shape: every input token, of which `input_tokens_details` read
+/// from and wrote to the provider's cache, and every output token, of which
+/// `output_tokens_details` reasoned.
+fn usage_counts(usage: &tilo_model_gateway::host_backend::protocol::Usage) -> serde_json::Value {
+    serde_json::json!({
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "total_tokens": usage.total_tokens,
+        "input_tokens_details": {
+            "cached_tokens": usage.cached_input_tokens,
+            "cache_write_tokens": usage.cache_write_tokens,
+        },
+        "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens},
+    })
 }
 
 /// The line [`record_usage`] appends for one model call.
@@ -1009,7 +1035,7 @@ pub(crate) fn usage_line(
         "elapsed_ms": elapsed.as_millis(),
         "ok": answer.is_ok(),
         "error": answer.as_ref().err().map(ToString::to_string),
-        "usage": response.map(|response| response.usage),
+        "usage": response.map(|response| usage_counts(&response.usage)),
         // Why the model stopped (a refusal, a cut-off), so an empty answer
         // is told from a refused one.
         "stop_reason": response.map(|response| response.stop_reason),

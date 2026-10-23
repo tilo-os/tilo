@@ -162,6 +162,10 @@ pub struct AgentStep {
     /// Refusal or failure text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Content the action produced and the room keeps, by address
+    /// (`tilo.content:<hash>`): an export, a look.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<String>,
 }
 
 /// One task.

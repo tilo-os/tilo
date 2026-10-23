@@ -10,6 +10,8 @@
 //! checked against its request ([`CHECK_WORK_ENV`]): small models skip or
 //! get wrong a part of a long request most often, so their presets check.
 
+use tilo_model_gateway::host_backend::TokenLimitParam;
+
 /// Select `fastest`, `balanced` or `cheapest` for a host-side planner.
 pub const PRESET_ENV: &str = "TILO_AGENT_PRESET";
 /// Override the model-name heuristic with `small`, `medium`, `large` or `very-large`.
@@ -24,6 +26,9 @@ pub const CHECK_WORK_ENV: &str = "TILO_AGENT_CHECK_WORK";
 /// Send a planning call again when it has not answered within this many
 /// milliseconds, taking whichever answers first; `0` or unset never does.
 pub const HEDGE_ENV: &str = "TILO_AGENT_HEDGE_MS";
+/// Name an OpenAI-compatible endpoint's output limit `max_tokens` or
+/// `max_completion_tokens`, whatever the model's family suggests.
+pub const TOKEN_LIMIT_ENV: &str = "TILO_AGENT_TOKEN_LIMIT_PARAM";
 
 /// A coarse model-family hint, overridable for provider aliases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +107,9 @@ pub struct Profile {
     check_work: bool,
     /// After how long a call is sent again ([`HEDGE_ENV`]); `None` never.
     hedge_after: Option<std::time::Duration>,
+    /// The output limit's field ([`TOKEN_LIMIT_ENV`]); `None` sends the
+    /// request's own (`max_tokens`).
+    token_limit: Option<TokenLimitParam>,
 }
 
 impl Profile {
@@ -119,6 +127,14 @@ impl Profile {
             .and_then(Goal::named)
             .map(|goal| Self::preset(class, goal))
             .unwrap_or_default();
+        profile.token_limit = match explicit(TOKEN_LIMIT_ENV) {
+            Some(named) => match named.trim().to_ascii_lowercase().as_str() {
+                "max_tokens" => Some(TokenLimitParam::MaxTokens),
+                "max_completion_tokens" => Some(TokenLimitParam::MaxCompletionTokens),
+                _ => None,
+            },
+            None => reasoning_family(model).then_some(TokenLimitParam::MaxCompletionTokens),
+        };
         if let Some(tier) = explicit(SERVICE_TIER_ENV) {
             profile.service_tier = recognised(&tier, &["auto", "default", "flex", "priority"]);
         }
@@ -158,6 +174,19 @@ impl Profile {
         self.hedge_after
     }
 
+    /// The field an OpenAI-compatible endpoint takes its output limit in,
+    /// when it is not the request's own `max_tokens`.
+    #[must_use]
+    pub const fn token_limit_param(&self) -> Option<TokenLimitParam> {
+        self.token_limit
+    }
+
+    /// The service tier asked for, if any.
+    #[must_use]
+    pub fn service_tier(&self) -> Option<&str> {
+        self.service_tier.as_deref()
+    }
+
     /// The class/goal policy. Very large models request Flex for every goal;
     /// all presets request low reasoning effort. Provider support varies.
     #[must_use]
@@ -176,6 +205,7 @@ impl Profile {
             // times as long), so larger models skip it unless asked.
             check_work: class == ModelClass::Small,
             hedge_after: None,
+            token_limit: None,
         }
     }
 
@@ -187,6 +217,15 @@ impl Profile {
             body["reasoning_effort"] = effort.clone().into();
         }
     }
+}
+
+/// Whether `model` is of an `OpenAI` reasoning family, whose models take
+/// their output limit as `max_completion_tokens` and refuse `max_tokens`.
+fn reasoning_family(model: &str) -> bool {
+    let name = model.trim().to_ascii_lowercase();
+    ["gpt-5", "gpt-6", "gpt-7", "o1", "o3", "o4"]
+        .iter()
+        .any(|family| name.starts_with(family))
 }
 
 fn recognised(text: &str, accepted: &[&str]) -> Option<String> {
@@ -211,6 +250,25 @@ mod tests {
         assert_eq!(ModelClass::named("unknown"), None);
         assert_eq!(Goal::named(" FAST "), Some(Goal::Fastest));
         assert_eq!(Goal::named("unknown"), None);
+    }
+
+    #[test]
+    fn reasoning_families_name_their_output_limit_unless_told_otherwise() {
+        let none = |_: &str| None;
+        assert_eq!(
+            Profile::resolve("gpt-6-astra", &none).token_limit_param(),
+            Some(TokenLimitParam::MaxCompletionTokens)
+        );
+        assert_eq!(
+            Profile::resolve("claude-opus-5-5", &none).token_limit_param(),
+            None
+        );
+        assert_eq!(Profile::resolve("llama-4", &none).token_limit_param(), None);
+        let told = |name: &str| (name == TOKEN_LIMIT_ENV).then(|| " MAX_TOKENS ".to_owned());
+        assert_eq!(
+            Profile::resolve("gpt-6-astra", &told).token_limit_param(),
+            Some(TokenLimitParam::MaxTokens)
+        );
     }
 
     #[test]

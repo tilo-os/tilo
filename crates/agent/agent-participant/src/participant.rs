@@ -798,6 +798,7 @@ impl AgentParticipant {
                 TaskState::Failed
             },
             error: outcome.as_ref().err().cloned(),
+            content: content.clone(),
         };
         self.control.record_step(id, record);
         match outcome {
@@ -1616,10 +1617,11 @@ impl AgentParticipant {
             }
             None => arguments,
         };
-        // HOOK(render): an operation the host's render service answers
-        // (`tilo_actions::HOST_RENDER_TAG`) is routed here, before the
-        // record's worker, which has no GPU or media stack to render with;
-        // `crate::render` adds the route.
+        // A render (`tilo_actions::HOST_RENDER_TAG`) is answered by the
+        // host's render service from the record the host holds, never by the
+        // record's worker, which has no GPU or media stack: the replica
+        // routes it there (`crate::render::route`) when the host found the
+        // helper, and its survey offers it only then.
         let output = match app.invoke(address, arguments, confirmed) {
             Err(tilo_actions::DoorError::Unknown(_)) => {
                 // Say what the record does offer, so the next plan names it.
@@ -1627,6 +1629,7 @@ impl AgentParticipant {
             }
             outcome => outcome.map_err(Refusal::Door)?,
         };
+        let output = running::content_named_in_value(output);
         if let Some(mutation) = app
             .take_mutation()
             .map_err(|error| Refusal::Agent(error.to_string()))?

@@ -756,6 +756,27 @@ pub(super) fn imports(step: &Step) -> bool {
 }
 
 /// The content addresses among what `output` names.
+/// `output` naming among its resources the content its answer carries as
+/// `content` (`{"content": "tilo.content:<hash>", …}`, as Mail, Notes and
+/// Calendar export), so a step's produced content, `tilo.content:latest` and
+/// a carried step find it as they find an export kept with
+/// `Effected::content`.
+pub(super) fn content_named_in_value(mut output: ActionOutput) -> ActionOutput {
+    let named = output
+        .value
+        .as_ref()
+        .and_then(|value| value.get("content"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|address| tilo_actions::content_hash(address).is_some())
+        .map(str::to_owned);
+    if let Some(address) = named
+        && !output.resources.contains(&address)
+    {
+        output.resources.push(address);
+    }
+    output
+}
+
 pub(super) fn produced(output: &ActionOutput) -> Vec<String> {
     output
         .resources

@@ -667,6 +667,7 @@ async fn every_web_app_over_the_session() {
 
 const CANVAS: &str = "so.tilo.canvas";
 const SHEETS: &str = "so.tilo.sheets";
+const VIDEO: &str = "so.tilo.video-editor";
 
 /// An agent granted `apps`, planning with `planner`, admitted to the room
 /// on `host`, its records lent `store`.
@@ -1023,6 +1024,27 @@ async fn a_task_reports_the_content_its_steps_produced() {
     let hash = tilo_actions::content_hash(produced).expect("a content address");
     let png = store.read(hash).expect("the room keeps the look");
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    // Each step's record names the content it produced: the look's
+    // picture, and nothing for the draw.
+    assert_eq!(looked.steps.len(), 2, "{looked:?}");
+    assert!(looked.steps[0].content.is_empty(), "{looked:?}");
+    assert_eq!(looked.steps[1].content, vec![produced.to_owned()]);
+
+    // An export the room keeps (no `path`) is a read: the agent runs it
+    // without asking its person, and its step names the picture.
+    let exported = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([step("export", serde_json::json!({"format": "png"}))]).to_string(),
+    );
+    assert_eq!(exported.state, TaskState::Completed, "{exported:?}");
+    let [address] = exported.steps[0].content.as_slice() else {
+        panic!("the export's step names one piece of content: {exported:?}");
+    };
+    let picture = store
+        .read(tilo_actions::content_hash(address).unwrap())
+        .expect("the room keeps the export");
+    assert_eq!(&picture[..8], b"\x89PNG\r\n\x1a\n");
 
     let mut carried = step("draw", serde_json::json!({"marks": []}));
     carried["carries"] = true.into();
@@ -1043,6 +1065,107 @@ async fn a_task_reports_the_content_its_steps_produced() {
             && error.contains("no preceding action result"),
         "{error}"
     );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// A video still an agent asks for in a task is drawn by its host's render
+/// service, not the record's worker, and kept as room content its step
+/// names. Needs the render helper (`cargo build -p video-editor --bin
+/// tilo-video-render`); without it the test says so and returns, unless
+/// `TILO_REQUIRE_MEDIA=1`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
+    if !tilo_agent_participant::render::available() {
+        assert!(
+            std::env::var_os("TILO_REQUIRE_MEDIA").is_none(),
+            "the render helper is required"
+        );
+        eprintln!("skipped: no tilo-video-render beside the test or at $TILO_VIDEO_RENDER");
+        return;
+    }
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let store = tilo_content::ContentStore::memory();
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[VIDEO],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        store.clone(),
+    )
+    .await;
+    let video = agent.open(VIDEO, None).unwrap();
+    let operations = agent.survey(&video);
+    let step = |action: &str, arguments: serde_json::Value| {
+        let address = operations
+            .iter()
+            .find(|descriptor| descriptor.address.action == action)
+            .unwrap_or_else(|| panic!("the project publishes {action}"))
+            .address
+            .clone();
+        serde_json::json!({
+            "app": VIDEO,
+            "record": video.record,
+            "resource": address.resource,
+            "action": address.action,
+            "arguments": arguments,
+        })
+    };
+    // A one-second title on one track.
+    let mut project = video_editor::Project::new("Agent cut");
+    project.set_frame_size(320, 180);
+    let track = video_editor::model::Track {
+        name: "V1".into(),
+        kind: video_editor::model::TrackKind::Video,
+        index: 1,
+        ..video_editor::model::Track::default()
+    };
+    let title = video_editor::model::MediaItem {
+        name: "Title".into(),
+        kind: video_editor::model::MediaKind::Text,
+        duration: 1.0,
+        text: Some(video_editor::model::TextSource::new("Agent")),
+        ..video_editor::model::MediaItem::default()
+    };
+    let (track_id, title_id) = (track.id, title.id);
+    project.tracks.push(track);
+    project.media.push(title);
+    let clip = project.add_clip(track_id, title_id, 0.0).unwrap();
+    project.clip_mut(clip).unwrap().out_point = 1.0;
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            step(
+                "field-edit",
+                serde_json::json!({"edit": video_editor::resource::load_project(&project)})
+            ),
+            step(
+                "view-frame-content",
+                serde_json::json!({"at": 0.5, "width": 160})
+            ),
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    let [address] = task.steps[1].content.as_slice() else {
+        panic!("the still's step names one piece of content: {task:?}");
+    };
+    let png = store
+        .read(tilo_actions::content_hash(address).unwrap())
+        .expect("the room keeps the still");
+    assert_eq!(png.get(..4), Some(&b"\x89PNG"[..]));
 
     agent.close();
     host.relay.shutdown().await;
