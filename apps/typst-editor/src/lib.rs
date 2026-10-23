@@ -30,6 +30,7 @@ pub mod compile;
 pub mod diagnostics;
 pub mod editor;
 mod outline;
+pub mod page_text;
 pub mod pages;
 pub mod preview;
 pub mod resource;
