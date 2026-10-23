@@ -116,9 +116,9 @@ publish = { requirement = { cores = 1, memory = "1GiB" } }
 
 [product.build]
 run = """
-assets=$TMPDIR/github-assets
-TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
-bash tools/ci/publish/oci-build.sh . crates/packaging/registry-server/container/Containerfile {out} --platform {platform} --build-context github-assets=$assets"""
+TILO_ASSET_OFFLINE=1 bash os/dev/cache-github-assets.sh sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
+bash tools/ci/publish/oci-build.sh . crates/packaging/registry-server/container/Containerfile {out} --platform {platform} --build-context github-assets=os/external-assets/cache"""
+needs = ["os-assets"]
 test = ["bash crates/packaging/registry-server/container/test-image.sh {out}/image.oci.tar"]
 inputs = ["crates/packaging/registry-server/container/**", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", ".containerignore", ".cargo/**", "rust-toolchain.toml"]
 cargo_packages = ["registry-server"]
@@ -239,6 +239,7 @@ publish = { inputs = ["rust-toolchain.toml"], requirement = { cores = 2, memory 
 
 [product.build]
 run = "bash tools/ci/publish/ci-builder.sh build {arch} {out}"
+needs = ["os-assets"]
 inputs = ["os/Containerfile.builder", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "rust-toolchain.toml", "dist/ci/install-build-deps.sh", "tools/ci/check-build-env.sh", "tools/ci/install-android-ndk.sh", "tools/ci/install-pdfium.sh", "tools/ci/install-xwayland-satellite.sh", "os/external-assets/xwayland-satellite/**", "tools/ci/native-mold-linker.sh", "tools/ci/verify-native-mold.sh", "tools/ci/windows/wine-prefix.sh", "tools/ci/sccache.sh", "tools/ci/measure.sh"]
 cost = "heavy"
 timeout_secs = 14400
@@ -330,6 +331,7 @@ outputs = ["{dir}/index/fingerprint", "{dir}/x86_64/fingerprint", "{dir}/aarch64
 # Each build starts FROM the mirrored Fedora bootc base, which mirror-base puts there.
 [product.build]
 run = "bash tools/ci/publish/rpms-build.sh {arch} {out}"
+needs = ["os-assets"]
 optional_needs = ["mirror-base"]
 inputs = ["os/Containerfile.rpms", "os/base-snapshot.env", "os/dev/verify-rpm-snapshot-signatures.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/dev/layer-rpm-snapshot.py", "os/dev/derive-rpm-package-set.py", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/Containerfile", "os/Containerfile.dev", "os/Containerfile.host", "os/dev/composefs/Containerfile", "os/containers/tilo-relay/Containerfile", "os/Containerfile.env-runtime", "os/dev/uki-tools.packages"]
 requires = ["disk-100g"]
@@ -397,6 +399,7 @@ pointers = { kernel = "{dir}/pins.env" }
 
 [product.build]
 run = "bash tools/ci/publish/kernel.sh build {arch} {out}"
+needs = ["os-assets"]
 inputs = ["os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
 outputs = ["{out}/secureboot/**"]
 requires = ["disk-100g"]
@@ -423,7 +426,7 @@ tlog = true
 
 [product.build]
 run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot {out}"
-needs = ["rpm-snapshot"]
+needs = ["rpm-snapshot", "os-assets"]
 inputs = ["os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/base-snapshot.env", "os/scripts/verify-elf-hardening.sh", "os/usr/lib/systemd/system/tilo-relay.service", ".cargo/**", "Cargo.lock", "Cargo.toml", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/neighbour-wire/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-governor/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/media/thumbnail/**", "crates/packaging/app-registry/**", "crates/packaging/launcher/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-files/**", "crates/platform/tilo-net/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-secrets/**", "crates/platform/tilo-sort/**", "crates/runtime/egress/**", "crates/browser/browser-continuity/**", "crates/browser/browser-continuity-core/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-identity-host/**", "crates/session/control-cli/**", "crates/sdk/font-catalog/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/session/desktop-model/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/endpoint-reachability/**", "crates/system/content/**", "crates/system/content-types/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/system-stats/**", "crates/system/block-devices/**", "crates/system/wire-frame/**", "crates/workspace-hack/**", "crates/packaging/oci-images/**", "crates/runtime/cli/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/system/libvirt-domain/**", "crates/runtime/ush/**", "crates/system/app-state/**", "crates/system/durable-store/**", "crates/system/documents/**", "keys/cosign.pub", "os/containers/tilo-relay/**", "os/dev/install-cached-cosign.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/verify-rpm-snapshot-buildkit.py", "os/dev/derive-rpm-package-set.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/tests/test_rpm_snapshot_buildkit.py", "vendor/automerge/**", "vendor/iroh/**", "vendor/iroh-gossip/**", "vendor/genawaiter-proc-macro/**", "vendor/netwatch/**", "vendor/wayland-backend/**", "vendor/wgpu/**", "vendor/wgpu-hal/**", "crates/platform/tilo-mime/**", "crates/platform/tilo-render-protocol/**", "crates/system/content-device/**", "vendor/pulldown-cmark/**", "vendor/regex-syntax/**", "vendor/vello_encoding/**"]
 cost = "heavy"
 requirement = { cores = 16, memory = "24GiB" }
@@ -897,6 +900,7 @@ each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 [[matrix.check]]
 name = "development-signing-context-{arch}"
 run = "bash os/tests/development_signing_native.sh context /target/development-signing/{arch}"
+needs = ["signing-tools"]
 inputs = ["os/tests/development_signing_native.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/tests/test_tls_registry_fixture.py", "os/dev/verify-development-source.py", "os/dev/development_boot.py", "os/dev/development_prediction.py", "os/tests/test_development_prediction.py", "os/tests/development_prediction_native.py", "os/dev/import-development-rootfs.py", "os/dev/initramfs-trust.py", "os/dev/complete-initramfs-rebind.py", "os/dev/installed_material_audit.py", "os/dev/rebind-development-rootfs.py", "os/usr/lib/dracut/modules.d/91tilo-rollback/**", "os/tests/test_rebind_development_rootfs.py", "os/tests/test_initramfs_trust.py", "os/tests/initramfs_trust_native.py", "os/tests/test_complete_initramfs_rebind.py", "os/dev/rebind-development-trust.py", "os/tests/test_import_development_rootfs.py", "os/tests/test_rebind_development_trust.py", "os/tests/test_development_trust.py", "os/dev/retain-development-rootfs.py", "os/tests/test_retain_development_rootfs.py", "os/tests/development_retention_native.py", "os/tests/tls_registry_fixture.py", "os/dev/audit-rootfs-layers.py", "os/tests/test_rootfs_layer_audit.py", "os/tests/development_layer_audit_native.py", "os/tests/development_rebind_native.py", "os/tests/test_development_boot.py", "os/tests/test_development_source.py", "os/dev/development-trust.py", "os/dev/install-public-trust.py", "os/dev/hardware_profile.py", "os/dev/development-signer.py", "os/dev/setup-development-signer.py", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/tests/development_source_registry.py", "os/tests/development_signer.py", "os/tests/test_development_signer.py", "os/tests/test_development_loader.py", "os/tests/development_stage_reuse.py", "os/dev/sign-development-rootfs.py", "os/dev/private_disk_image.py", "os/tests/test_private_disk_image.py", "os/Containerfile.development-loader", "os/tests/test_sign_development_rootfs.py", "os/tests/development_rootfs.py", "os/tests/Containerfile.development-source", "tools/tests/hang.py"]
 cargo_packages = ["tilo-crypto"]
 outputs = ["/target/development-signing/{arch}/**"]
@@ -1147,6 +1151,7 @@ dispatch = true
 
 [product.build]
 run = "bash tools/ci/publish/windows-compat.sh wine-tools {out}"
+needs = ["os-assets"]
 inputs = ["os/Containerfile.wine-tools", "os/base-snapshot.env", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", ".containerignore"]
 cost = "heavy"
 requirement = { cores = 4, memory = "8GiB" }
@@ -1341,7 +1346,7 @@ name = "os-board-{board}"
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh board {board} /target/publish/os-dev/aarch64 /target/publish/os-board/{board}"
 inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", ".containerignore"]
-needs = ["image-rpms-aarch64", "os-dev-image-aarch64"]
+needs = ["image-rpms-aarch64", "os-dev-image-aarch64", "os-assets"]
 outputs = ["/target/publish/os-board/{board}/image.oci.tar", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board"]
 git = true
 requires = ["arch=arm64", "disk-100g"]

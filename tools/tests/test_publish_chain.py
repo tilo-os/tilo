@@ -54,12 +54,12 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(build["isolation"], "vm")
         sign = c["sign-svc"]
         self.assertEqual(sign["on"], ["stable"])
-        self.assertEqual(sign["needs"], ["image-svc"])
+        self.assertEqual(sign["needs"], ["image-svc", "signing-tools"])
         self.assertEqual(sign["requires"], products.CREDENTIAL_REQUIRES)
         self.assertNotIn("isolation", sign)
         publish = c["publish-svc"]
         self.assertEqual(publish["on"], ["main", "dispatch", "stable"])
-        self.assertEqual(publish["needs"], ["image-svc"])
+        self.assertEqual(publish["needs"], ["image-svc", "signing-tools"])
         self.assertEqual(publish["optional_needs"], ["sign-svc"])
         self.assertIn("oci-publish.sh any r.example/svc /target/publish/svc 'dev:dev-{commit}' "
                       "'release:sha-{commit}'", publish["run"])
@@ -118,8 +118,8 @@ class GeneratorTests(unittest.TestCase):
                     "release_on": ["tag:v*"], "tlog": True, "gates": ["rel-e2e"],
                     "build": {"run": "build {out}"}})
         self.assertEqual(c["publish-rel"]["on"], ["tag:v*"])
-        self.assertEqual(c["publish-rel"]["needs"], ["image-rel", "rel-e2e", "sign-rel"])
-        self.assertEqual(c["sign-rel"]["needs"], ["image-rel", "rel-e2e"])
+        self.assertEqual(c["publish-rel"]["needs"], ["image-rel", "rel-e2e", "sign-rel", "signing-tools"])
+        self.assertEqual(c["sign-rel"]["needs"], ["image-rel", "rel-e2e", "signing-tools"])
         self.assertEqual(c["sign-rel"]["env"]["TILO_SIGN_TLOG"], "1")
         self.assertIn("/target/publish/rel/bundle.json", c["sign-rel"]["outputs"])
 
@@ -133,7 +133,7 @@ class GeneratorTests(unittest.TestCase):
                          "test /target/publish/m/aarch64/image.oci.tar\n")
         self.assertEqual(c["image-m"]["needs"], ["image-m-x86_64", "image-m-aarch64"])
         self.assertEqual(c["image-m"]["requires"], ["arch=any"])
-        self.assertEqual(c["publish-m"]["needs"], ["image-m"])
+        self.assertEqual(c["publish-m"]["needs"], ["image-m", "signing-tools"])
         self.assertIn("/target/publish/m/index 'sha-{commit}'", c["publish-m"]["run"])
 
     def test_the_architectures_builds_are_one_declaration_t_expands(self):
@@ -153,7 +153,7 @@ class GeneratorTests(unittest.TestCase):
         sign = c["sign-b"]["run"].splitlines()
         self.assertEqual([line.rsplit(" ", 1)[1] for line in sign],
                          ["/target/publish/b/x86_64", "/target/publish/b/aarch64", "/target/publish/b/index"])
-        self.assertEqual(c["sign-b"]["needs"], ["image-b", "image-b-x86_64", "image-b-aarch64", "canary"])
+        self.assertEqual(c["sign-b"]["needs"], ["image-b", "image-b-x86_64", "image-b-aarch64", "canary", "signing-tools"])
         publish = c["publish-b"]["run"].splitlines()
         self.assertEqual(publish[0], "bash tools/ci/publish/oci-publish.sh any r/b /target/publish/b/x86_64 "
                                      "'dev:dev-{commit}-x86_64' 'release:{commit}-x86_64'")
@@ -209,21 +209,21 @@ class GeneratorTests(unittest.TestCase):
                          ("vm", False, {"cores": 4, "memory": "8GiB"}, False))
         self.assertNotIn("id_token", carry)
         sign = c["sign-web"]
-        self.assertEqual(sign["needs"], ["carry-web"])
+        self.assertEqual(sign["needs"], ["carry-web", "signing-tools"])
         self.assertEqual(sign["run"], "bash tools/ci/publish/oci-sign.sh r/web /target/publish/web/release")
         # t keys a need of an uncached step by what that step produced this run, so a cached
         # signature is only ever over the same derived image.
         self.assertNotIn("cache", sign)
         publish = c["publish-web"]
         # Main publishes the build it tested; stable waits for the derived image and its signature.
-        self.assertEqual(publish["needs"], ["image-web"])
+        self.assertEqual(publish["needs"], ["image-web", "signing-tools"])
         self.assertEqual(publish["optional_needs"], ["sign-web", "carry-web"])
         self.assertEqual(publish["env"], {"TILO_RELEASE_OUT": "/target/publish/web/release"})
         self.assertIn("oci-publish.sh any r/web /target/publish/web 'dev:dev-{commit}'", publish["run"])
         self.assertEqual(publish["outputs"], ["/target/publish/web/receipt.json"])
         c = checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["{version}"],
                     "build": {"run": "b {out}"}, "release_build": {"name": "derive-rel", "run": "d"}})
-        self.assertEqual(c["publish-rel"]["needs"], ["image-rel", "sign-rel", "derive-rel"])
+        self.assertEqual(c["publish-rel"]["needs"], ["image-rel", "sign-rel", "derive-rel", "signing-tools"])
         for bad, why in (({"dev": ["t"]}, "without release tags"),
                          ({"release": ["t"], "arches": ["x86_64", "aarch64"]}, "one architecture"),
                          ({"release": ["t"], "anonymous": True}, "not a derived release")):
@@ -303,7 +303,7 @@ class GeneratorTests(unittest.TestCase):
         holders = sorted(n for n, x in c.items() if "TAPP_PUBLISHER_IDENTITY" in x.get("secrets", []))
         self.assertEqual(holders, ["seal-env-tools"])
         self.assertEqual(c["sign-env-tools"]["env"]["TILO_SIGN_TLOG"], "1")
-        self.assertEqual(c["sign-env-tools"]["needs"], ["env-tools-plan", "image-env-tools"])
+        self.assertEqual(c["sign-env-tools"]["needs"], ["env-tools-plan", "image-env-tools", "signing-tools"])
         self.assertIn("sign-env-tools", c["publish-env-tools"]["needs"])
         for name in ("seal-env-tools", "sign-env-tools", "publish-env-tools"):
             self.assertEqual(c[name]["on"], ["stable"], name)

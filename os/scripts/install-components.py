@@ -391,10 +391,7 @@ def native_cosign(manifest_dir: Path, copied: Path | None = None) -> Path:
     cache = Path(os.environ.get("TILO_GITHUB_ASSET_CACHE", manifest_dir / "external-assets/cache"))
     candidate = copied if copied is not None else cache / name
     if not candidate.exists():
-        fetch = manifest_dir / "dev/cache-github-assets.sh"
-        if not fetch.is_file():
-            raise ManifestError("reviewed Cosign input is absent from the image build context")
-        subprocess.run(["bash", str(fetch), name], check=True, timeout=300)
+        raise ManifestError("reviewed Cosign input is absent from the image build context")
     if candidate.is_symlink() or not candidate.is_file():
         raise ManifestError("reviewed Cosign input must be a regular cache file")
     digest = hashlib.sha256()

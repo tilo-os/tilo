@@ -121,9 +121,7 @@ case ${1:-} in
       || die "no digest-pinned native kernel buildroot for $arch"
     use_cosign
     cosign verify --key keys/cosign.pub "$buildroot" >/dev/null
-    assets=$scratch/kernel-assets
-    TILO_GITHUB_ASSET_CACHE=$assets TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh \
-      v4l2loopback-0.15.3-a7e4a4d.tar.gz "sccache-v0.17.0-$arch-unknown-linux-musl.tar.gz"
+    assets=$(pinned_assets v4l2loopback-0.15.3-a7e4a4d.tar.gz "sccache-v0.17.0-$arch-unknown-linux-musl.tar.gz")
     # No compiler cache reaches checks yet; the kernel's SOURCE_DATE_EPOCH keeps its default of
     # 0 beside the fixed layer timestamps, so the build is the same from the same inputs.
     args=(--platform "$platform" --build-context "github-assets=$assets"
