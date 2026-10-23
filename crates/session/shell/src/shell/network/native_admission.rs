@@ -26,6 +26,10 @@ pub(super) struct State {
     /// The event that ended the last batch of inputs drained: the next one
     /// to handle, ahead of the queue.
     carried: Mutex<Option<super::NetEvent>>,
+    /// Runs on the worker before each data sync of an admission, for a test
+    /// that holds the worker inside one. Read when the worker starts.
+    #[cfg(test)]
+    pub(super) on_worker_sync: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// Inputs neither admitted nor refused because the app surface they are
@@ -277,6 +281,8 @@ impl ShellNetwork {
         let (signal, signals) = mpsc::channel::<()>();
         let slot = Arc::clone(&self.native_admission.slot);
         let wake = Arc::clone(&self.event_wake);
+        #[cfg(test)]
+        let on_sync = self.native_admission.on_worker_sync.lock_recover().clone();
         let spawned = std::thread::Builder::new()
             .name("native-admission".into())
             .spawn(move || {
@@ -290,6 +296,20 @@ impl ShellNetwork {
                     // A panicking admission must not leave the loop waiting
                     // for it forever.
                     let admitted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        #[cfg(test)]
+                        if let Some(on_sync) = on_sync.clone() {
+                            use tilo_files::native::atomic::test_support::{
+                                Checkpoint, with_observer,
+                            };
+                            return with_observer(
+                                move |event| {
+                                    if event.checkpoint == Checkpoint::BeforeDataFlush {
+                                        on_sync();
+                                    }
+                                },
+                                || admit(inputs, &identity),
+                            );
+                        }
                         admit(inputs, &identity)
                     }))
                     .map_or_else(
