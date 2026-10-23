@@ -1365,11 +1365,7 @@ impl DeviceMeshModel {
         self.config.services.inbound_relay = role.can_serve();
         // Which rooms a server holds is the rooms' own: each workspace adds
         // it as a hosting member. The role only says how much it keeps.
-        if role == DeviceRole::AlwaysOnServer {
-            self.config.services.full_content_replication = true;
-        } else {
-            self.config.services.full_content_replication = false;
-        }
+        self.config.services.full_content_replication = role == DeviceRole::AlwaysOnServer;
         self.next_status_refresh = ui::time::now();
         true
     }
