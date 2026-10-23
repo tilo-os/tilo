@@ -314,6 +314,13 @@ impl SectionDoor {
         self.kind.label
     }
 
+    /// Open the person's record the section is kept in, making it where it
+    /// does not exist yet: a holder that syncs it holds it from the start,
+    /// so what the person's other devices change reaches it.
+    fn hold(&self) {
+        drop(self.person_record(true));
+    }
+
     fn moved(&self) {
         self.revision.set(self.revision.get().wrapping_add(1));
     }
@@ -667,6 +674,21 @@ impl SettingsRecords {
             doors: records.into_sections(),
             person,
         }
+    }
+
+    /// The person's records the sections are kept in, each opened (made
+    /// where it does not exist yet), as their routes sync them to the
+    /// person's other devices; none where the sections are not kept in the
+    /// person's records.
+    #[must_use]
+    pub fn history_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
+        let Some(person) = &self.person else {
+            return Vec::new();
+        };
+        for door in &self.doors {
+            door.hold();
+        }
+        person.owners()
     }
 
     /// Every section, published with its field edits and verbs, and the
