@@ -58,7 +58,7 @@ impl NativeEditor {
         let enrollment = tilo_test_env::within(
             "native Editor invitation enrollment",
             tilo_joined_room::enroll::prepare_and_complete(
-                crate::workspace_join::WorkspaceJoinClient::new(endpoint.clone()),
+                tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint.clone()),
                 identity,
                 workspace,
                 None,
@@ -532,7 +532,7 @@ async fn two_remote_people_share_one_private_pair_and_removed_devices_lose_acces
     let directory = tempfile::tempdir().unwrap();
     let (governor_key, governor_cert) = tests::governor();
     exercise_private_pair(
-        tests::view_read_relay(directory.path(), &governor_key, &governor_cert).await,
+        tests::test_host(directory.path(), &governor_key, &governor_cert).await,
         &governor_key,
         &governor_cert,
     )
@@ -540,12 +540,12 @@ async fn two_remote_people_share_one_private_pair_and_removed_devices_lose_acces
 }
 
 async fn exercise_private_pair(
-    relay: crate::daemon::Relay,
+    relay: crate::rooms::fixtures::TestHost,
     governor_key: &SigningKey,
     governor_cert: &DeviceCert,
 ) {
     {
-        let rooms = relay.rooms().unwrap().clone();
+        let rooms = relay.rooms().clone();
         let created = rooms
             .create("Private conversations over QUIC")
             .await
@@ -621,7 +621,7 @@ async fn an_exact_admitted_but_expired_transport_certificate_cannot_read_or_watc
     let directory = tempfile::tempdir().unwrap();
     let (governor_key, governor_cert) = tests::governor();
     exercise_expired_certificate(
-        tests::view_read_relay(directory.path(), &governor_key, &governor_cert).await,
+        tests::test_host(directory.path(), &governor_key, &governor_cert).await,
         &governor_key,
         &governor_cert,
     )
@@ -629,11 +629,11 @@ async fn an_exact_admitted_but_expired_transport_certificate_cannot_read_or_watc
 }
 
 async fn exercise_expired_certificate(
-    relay: crate::daemon::Relay,
+    relay: crate::rooms::fixtures::TestHost,
     governor_key: &SigningKey,
     governor_cert: &DeviceCert,
 ) {
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let created = rooms.create("Expired private client").await.unwrap();
     let now = SystemTime::now();
     let historical = now.checked_sub(Duration::from_secs(60)).unwrap();

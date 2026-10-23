@@ -309,6 +309,7 @@ pub(crate) async fn admit_member(
 /// soon as this operation obtains the lane; additions grant only after commit.
 /// A failed write keeps removals denied in this process until a successful
 /// explicit replacement, so a later read of the old file cannot resurrect them.
+#[cfg(test)]
 pub(crate) async fn replace_membership(
     workspace: &SharedWorkspace,
     members: Vec<[u8; 32]>,
@@ -541,6 +542,45 @@ pub(crate) async fn get_or_initialize(
             .changed()
             .await
             .map_err(|error| io_error(error.to_string()))?;
+    }
+}
+
+/// Admit `peer` to `workspace` for `operation`, enrolling a same-owner
+/// device first. Membership comes from the same reload as every routing
+/// read, so a pending or failed replacement's ceiling bounds it too; the
+/// enrolment is the serialized async admission, never filesystem work under
+/// the routing lock.
+///
+/// # Errors
+///
+/// The store's error when membership cannot be read or the enrolment cannot
+/// be persisted; `Ok(Err(reason))` when the device is refused.
+pub(crate) async fn admit_for(
+    workspace: &SharedWorkspace,
+    trust: &crate::room_access::RelayTrust<'_>,
+    peer: &crate::auth::AuthenticatedPeer,
+    operation: crate::room_access::RoomOperation,
+) -> Result<Result<(), crate::room_access::DenyReason>, StoreError> {
+    use crate::room_access::{Decision, DenyReason, decide};
+    let (decision, revision) = {
+        let runtime = fresh_membership(workspace).await?;
+        (
+            decide(&runtime, trust, peer, operation),
+            runtime.membership_revision,
+        )
+    };
+    match decision {
+        Decision::Admit => Ok(Ok(())),
+        Decision::Deny(reason) => Ok(Err(reason)),
+        Decision::AdmitAndEnrol => {
+            admit_member(workspace, peer.device_public_key, revision).await?;
+            let runtime = fresh_membership(workspace).await?;
+            Ok(match decide(&runtime, trust, peer, operation) {
+                Decision::Admit => Ok(()),
+                Decision::AdmitAndEnrol => Err(DenyReason::NotAMember),
+                Decision::Deny(reason) => Err(reason),
+            })
+        }
     }
 }
 
@@ -862,10 +902,14 @@ mod tests {
         for mode in [AdmissionMode::Explicit, AdmissionMode::SameOwner] {
             // Not even a same-owner room enrols past the ceiling.
             workspace.lock().await.admission = mode;
-            let admission =
-                crate::compute_session::admit_compute_peer(&workspace, &trust, &removed)
-                    .await
-                    .unwrap();
+            let admission = admit_for(
+                &workspace,
+                &trust,
+                &removed,
+                crate::room_access::RoomOperation::Compute,
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 admission,
                 Err(crate::room_access::DenyReason::NotAMember),
@@ -893,9 +937,14 @@ mod tests {
         };
         let stranger = crate::room_access::tests::unsigned_peer([8; 32], [1; 32]);
         assert_eq!(
-            crate::compute_session::admit_compute_peer(&workspace, &trust, &stranger)
-                .await
-                .unwrap(),
+            admit_for(
+                &workspace,
+                &trust,
+                &stranger,
+                crate::room_access::RoomOperation::Compute
+            )
+            .await
+            .unwrap(),
             Err(crate::room_access::DenyReason::NotAMember)
         );
         assert!(
@@ -909,9 +958,14 @@ mod tests {
         );
         let own = crate::room_access::tests::unsigned_peer(owner, [2; 32]);
         assert_eq!(
-            crate::compute_session::admit_compute_peer(&workspace, &trust, &own)
-                .await
-                .unwrap(),
+            admit_for(
+                &workspace,
+                &trust,
+                &own,
+                crate::room_access::RoomOperation::Compute
+            )
+            .await
+            .unwrap(),
             Ok(())
         );
         assert_eq!(

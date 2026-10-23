@@ -6,7 +6,7 @@ async fn signed_foreign_device_is_denied_over_quic_while_local_editor_keeps_acce
     let directory = tempfile::tempdir().unwrap();
     let (governor_key, governor_cert) = tests::governor();
     exercise_foreign_device(
-        tests::view_read_relay(directory.path(), &governor_key, &governor_cert).await,
+        tests::test_host(directory.path(), &governor_key, &governor_cert).await,
         &governor_key,
         &governor_cert,
     )
@@ -14,11 +14,11 @@ async fn signed_foreign_device_is_denied_over_quic_while_local_editor_keeps_acce
 }
 
 async fn exercise_foreign_device(
-    relay: crate::daemon::Relay,
+    relay: crate::rooms::fixtures::TestHost,
     governor_key: &SigningKey,
     governor_cert: &DeviceCert,
 ) {
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let created = rooms.create("Foreign private caller").await.unwrap();
     let (alice_key, alice_cert) = identity(31, None);
     let (bob_key, bob_cert) = identity(41, None);

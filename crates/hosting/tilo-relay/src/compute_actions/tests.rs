@@ -75,8 +75,7 @@ fn placement(state_root: &std::path::Path) -> ComputeActions {
         ([5; 32], PowerAvailability::Battery(70), 0),
         ([6; 32], PowerAvailability::External, 1),
     ] {
-        runtime
-            .compute
+        crate::compute_transport::compute_state(&mut runtime)
             .advertise(
                 worker,
                 WORKSPACE,
@@ -281,7 +280,7 @@ async fn inputs_heavier_than_the_gain_keep_the_job_with_its_requester() {
         let mut runtime = workspace.lock().await;
         // 10 MB/s from the asking device to either worker.
         for worker in [[5; 32], [6; 32]] {
-            runtime.compute.observe_transfer(
+            crate::compute_transport::compute_state(&mut runtime).observe_transfer(
                 (OWNER_DEVICE, worker),
                 10_000_000,
                 std::time::Duration::from_secs(1),

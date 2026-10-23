@@ -12,7 +12,7 @@ use tilo_relay_protocol::voice::{CallOperation, CallState};
 use tilo_relay_protocol::{AuthenticatedPeer, PeerRole};
 use tilo_user_identity::{DeviceCert, sign_device_cert};
 
-use crate::rooms::tests::{governor, guest_device, signed_pre_admission, view_read_relay};
+use crate::rooms::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::rooms::{
     CancelInvitationRequest, IssueInvitationRequest, PreAdmitRequest, RemoveMemberRequest, Rooms,
     SetMemberRoleRequest,
@@ -116,14 +116,14 @@ fn invitation(request_id: u8, role: MemberRole) -> IssueInvitationRequest {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let room = rooms.create("Team").await.unwrap().room;
     let ada = admit(rooms, &room, &owner, 1).await;
 
@@ -200,14 +200,14 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn roles_and_removals_follow_the_rooms_policy() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let room = rooms.create("Team").await.unwrap().room;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
@@ -293,14 +293,14 @@ async fn roles_and_removals_follow_the_rooms_policy() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn an_administrator_governs_within_their_role_without_further_grants() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let room = rooms.create("Team").await.unwrap().room;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
@@ -412,14 +412,14 @@ async fn an_administrator_governs_within_their_role_without_further_grants() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let room = rooms.create("Team").await.unwrap().room;
     let ada = admit(rooms, &room, &owner, 1).await;
     let who = hex::encode(ada.user_public_key);
@@ -449,14 +449,14 @@ async fn the_next_governance_change_rewrites_an_administrators_old_grant() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn what_no_room_decides_stays_the_relay_persons() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let room = rooms.create("Team").await.unwrap().room;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
@@ -521,14 +521,14 @@ async fn what_no_room_decides_stays_the_relay_persons() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn calls_are_run_by_the_owner_and_by_members_granted_call() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let room = rooms.create("Team").await.unwrap().room;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
@@ -562,14 +562,14 @@ async fn calls_are_run_by_the_owner_and_by_members_granted_call() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn an_expired_certificate_administers_nothing_even_the_owners() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let room = rooms.create("Team").await.unwrap().room;
     let mut expired = owner.clone();
     expired.expires_at_ns = Some(2);

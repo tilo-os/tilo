@@ -20,7 +20,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use super::super::tests::{caller, settled};
 use super::super::{GovernedPlane, HostRoomActions};
 use crate::app_serving::AppServingPlane as _;
-use crate::rooms::tests::{governor, guest_device, view_read_relay};
+use crate::rooms::tests::{governor, guest_device, test_host};
 
 /// Another device of the relay's own person: the one `governor` certifies
 /// the relay for.
@@ -87,14 +87,14 @@ async fn invoke(
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn the_relays_person_creates_and_lists_rooms_as_actions() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let host = HostRoomActions::new();
     host.attach(rooms.clone());
     let laptop = owners_laptop();
@@ -184,14 +184,14 @@ async fn the_relays_person_creates_and_lists_rooms_as_actions() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn the_relays_person_enters_a_room_and_lets_an_app_author_it_as_actions() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let host = HostRoomActions::new();
     host.attach(rooms.clone());
     let laptop = owners_laptop();
@@ -242,14 +242,14 @@ async fn the_relays_person_enters_a_room_and_lets_an_app_author_it_as_actions() 
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let host = HostRoomActions::new();
     host.attach(rooms.clone());
     let room = rooms.create("Mine").await.unwrap();

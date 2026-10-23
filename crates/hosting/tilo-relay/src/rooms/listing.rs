@@ -512,7 +512,7 @@ mod door_tests {
 
     use super::super::actions::{HostRoomActions, PUBLISH, UNPUBLISH};
     use crate::rooms::Rooms;
-    use crate::rooms::tests::{governor, guest_device, view_read_relay};
+    use crate::rooms::tests::{governor, guest_device, test_host};
 
     async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -630,14 +630,14 @@ mod door_tests {
         feature = "agents",
         expect(
             clippy::significant_drop_tightening,
-            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+            reason = "TestHost::shutdown consumes the host, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
         )
     )]
     async fn a_door_grant_with_a_forged_or_zero_signature_admits_nobody() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = view_read_relay(dir.path(), &key, &owner).await;
-        let rooms = relay.rooms().unwrap();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let rooms = relay.rooms();
         let room = rooms.create("Plaza").await.unwrap().room;
         rooms
             .publish(
@@ -720,14 +720,14 @@ mod door_tests {
         feature = "agents",
         expect(
             clippy::significant_drop_tightening,
-            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+            reason = "TestHost::shutdown consumes the host, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
         )
     )]
     async fn whoever_joins_a_public_workspace_gets_the_default_role_its_owner_set() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = view_read_relay(dir.path(), &key, &owner).await;
-        let rooms = relay.rooms().unwrap();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let rooms = relay.rooms();
         let summary = rooms.create("Coffee").await.unwrap();
         let room = summary.room.clone();
 
@@ -819,15 +819,15 @@ mod door_tests {
         feature = "agents",
         expect(
             clippy::significant_drop_tightening,
-            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+            reason = "TestHost::shutdown consumes the host, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
         )
     )]
     async fn a_person_who_joined_a_public_room_can_talk_in_its_chat_unless_the_host_withdraws_it() {
         use std::collections::BTreeSet;
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = view_read_relay(dir.path(), &key, &owner).await;
-        let rooms = relay.rooms().unwrap();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let rooms = relay.rooms();
         let room = rooms.create("Lounge").await.unwrap().room;
         rooms
             .publish(
@@ -916,14 +916,14 @@ mod door_tests {
         feature = "agents",
         expect(
             clippy::significant_drop_tightening,
-            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+            reason = "TestHost::shutdown consumes the host, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
         )
     )]
     async fn a_pruned_guest_comes_back_through_the_door_with_the_same_device() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = view_read_relay(dir.path(), &key, &owner).await;
-        let rooms = relay.rooms().unwrap();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let rooms = relay.rooms();
         let room = rooms.create("Lounge").await.unwrap().room;
         rooms
             .publish(
@@ -980,14 +980,14 @@ mod door_tests {
         feature = "agents",
         expect(
             clippy::significant_drop_tightening,
-            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+            reason = "TestHost::shutdown consumes the host, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
         )
     )]
     async fn a_private_workspace_has_no_door_and_is_not_listed() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = view_read_relay(dir.path(), &key, &owner).await;
-        let rooms = relay.rooms().unwrap();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let rooms = relay.rooms();
         let summary = rooms.create("Team").await.unwrap();
         let room = summary.room.clone();
         let (reply, _) = walk_in(rooms, &room).await;
@@ -1043,14 +1043,14 @@ mod door_tests {
         feature = "agents",
         expect(
             clippy::significant_drop_tightening,
-            reason = "Relay::shutdown consumes the relay, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
+            reason = "TestHost::shutdown consumes the host, and so its rooms, after the assertions; the suggested earlier drop would use a moved value"
         )
     )]
     async fn a_banned_person_is_turned_away_at_the_door_and_others_cannot_publish() {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
-        let relay = view_read_relay(dir.path(), &key, &owner).await;
-        let rooms = relay.rooms().unwrap();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let rooms = relay.rooms();
         let room = rooms.create("Plaza").await.unwrap().room;
         rooms
             .publish(

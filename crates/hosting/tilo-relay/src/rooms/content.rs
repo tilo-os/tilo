@@ -238,8 +238,8 @@ mod tests {
     async fn a_member_asking_for_content_gets_it_in_pieces_or_word_that_it_is_not_kept() {
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = crate::rooms::tests::governor();
-        let relay = crate::rooms::tests::view_read_relay(scratch.path(), &key, &cert).await;
-        let rooms = relay.rooms().unwrap().clone();
+        let relay = crate::rooms::tests::test_host(scratch.path(), &key, &cert).await;
+        let rooms = relay.rooms().clone();
         let avatar = vec![7_u8; PIECE_BYTES + 10];
         let hash = blake3::hash(&avatar).to_hex().to_string();
         assert_eq!(
