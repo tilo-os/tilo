@@ -137,6 +137,16 @@ pub struct SplitModule {
     pub relies_on_chunks: HashSet<usize>,
 }
 
+/// `module` with the copies of a function it carries more than once merged
+/// into one ([`crate::dedupe`]).
+fn merged(mut module: SplitModule) -> Result<SplitModule> {
+    let (bytes, count) = crate::dedupe::merge_duplicates(&module.bytes)
+        .with_context(|| format!("merging the duplicate functions of {}", module.module_name))?;
+    tracing::info!("{}: merged {count} duplicate functions", module.module_name);
+    module.bytes = bytes;
+    Ok(module)
+}
+
 impl<'a> Splitter<'a> {
     /// Create a new "splitter" instance using the original wasm and the wasm from the output of wasm-bindgen.
     ///
@@ -203,6 +213,7 @@ impl<'a> Splitter<'a> {
         let data_claimants = self.data_claimants(&chunk_parts, &module_parts);
 
         let (main, data) = self.emit_main_module(&data_layout, &data_refs, data_claimants)?;
+        let main = merged(main)?;
 
         // Each module being emitted holds a parse of its own; run only as
         // many at once as there is memory for.
@@ -225,12 +236,12 @@ impl<'a> Splitter<'a> {
             let chunks = chunk_parts
                 .into_par_iter()
                 .enumerate()
-                .map(|(idx, parts)| self.emit_split_chunk(idx, parts, &data))
+                .map(|(idx, parts)| self.emit_split_chunk(idx, parts, &data).and_then(merged))
                 .collect::<Result<Vec<SplitModule>>>();
             let modules = module_parts
                 .into_par_iter()
                 .enumerate()
-                .map(|(idx, parts)| self.emit_split_module(idx, parts, &data))
+                .map(|(idx, parts)| self.emit_split_module(idx, parts, &data).and_then(merged))
                 .collect::<Result<Vec<SplitModule>>>();
             (chunks, modules)
         });
