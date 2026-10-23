@@ -501,6 +501,28 @@ mod tests {
     }
 
     #[test]
+    fn an_update_that_asks_for_more_access_waits_for_the_person() {
+        let lines = |list: &[&str]| {
+            list.iter()
+                .map(|line| (*line).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let allowed = lines(&[
+            "Read and change all your data on all websites",
+            "Block content on any page",
+        ]);
+        assert!(!asks_for_more(
+            &allowed,
+            &lines(&["Block content on any page"])
+        ));
+        assert!(!asks_for_more(&allowed, &allowed));
+        assert!(asks_for_more(
+            &allowed,
+            &lines(&["Block content on any page", "Read your browsing history"])
+        ));
+    }
+
+    #[test]
     fn an_offer_says_what_an_extension_may_do_as_chrome_does() {
         // uBlock Origin Lite's manifest, as the Web Store serves it.
         let ublock = r#"{"manifest_version":3,"name":"uBlock Origin Lite","version":"1",
@@ -783,6 +805,101 @@ pub fn set_approved(extension: &ExtensionInfo, approved: bool) -> Result<(), Ext
 }
 pub fn approved_paths() -> Vec<PathBuf> {
     approved_in(&extensions_dir())
+}
+
+/// What updating an extension from the Web Store did.
+#[derive(Debug)]
+pub enum Updated {
+    /// The newer version is in place, on if it was.
+    Installed(ExtensionInfo),
+    /// The newer version asks for more access than the person allowed: it
+    /// is off until they turn it on, as Chrome does.
+    AwaitsApproval(ExtensionInfo),
+}
+
+/// Bring a Web Store extension up to date: fetch a newer version, verify it
+/// is the same extension, and unpack it over the old one, under `root`.
+/// `None` when it is current or not from the store.
+///
+/// # Errors
+/// Returns an error when the store cannot be reached or the package does
+/// not verify or unpack.
+pub fn update_from_store(
+    extension: &ExtensionInfo,
+    chromium_version: &str,
+    root: &Path,
+) -> Result<Option<Updated>, ExtensionError> {
+    if !crate::crx::is_extension_id(&extension.id) {
+        return Ok(None);
+    }
+    let Some(bytes) =
+        crate::web_store::update(&extension.id, &extension.version, chromium_version)?
+    else {
+        return Ok(None);
+    };
+    let staged = stage_package(bytes, &extension.id)?;
+    if staged.info.version == extension.version {
+        return Ok(None);
+    }
+    let was_on = is_approved(extension);
+    let allowed = permission_summary(extension).unwrap_or_default();
+    let info = staged.install(root)?;
+    let asks_more = asks_for_more(&allowed, &staged.permissions);
+    if was_on && asks_more {
+        return Ok(Some(Updated::AwaitsApproval(info)));
+    }
+    if was_on {
+        set_approved(&info, true)?;
+    }
+    Ok(Some(Updated::Installed(info)))
+}
+
+/// Whether an update's access, `now`, goes beyond what was `allowed`: any
+/// line of it the person was not shown when they added it.
+fn asks_for_more(allowed: &[String], now: &[String]) -> bool {
+    now.iter().any(|line| !allowed.contains(line))
+}
+
+/// The Browser's own extension, which turns the others on and off as
+/// Chrome's extensions page does: turning one off keeps what it stored, its
+/// settings and logins, where Chromium's `DevTools` can only uninstall it.
+const MANAGER_FILES: [(&str, &str); 3] = [
+    (
+        "manifest.json",
+        include_str!("../assets/extension-manager/manifest.json"),
+    ),
+    (
+        "manage.html",
+        include_str!("../assets/extension-manager/manage.html"),
+    ),
+    (
+        "manage.js",
+        include_str!("../assets/extension-manager/manage.js"),
+    ),
+];
+
+/// Where the manager extension is, written beside the profile's extensions
+/// and never listed among them; `None` when it cannot be written.
+pub fn manager_dir() -> Option<PathBuf> {
+    let dir = crate::storage::data_dir()?.join("extension-manager");
+    std::fs::create_dir_all(&dir).ok()?;
+    for (name, text) in MANAGER_FILES {
+        let path = dir.join(name);
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(text) {
+            std::fs::write(&path, text).ok()?;
+        }
+    }
+    dir.canonicalize().ok()
+}
+
+/// The identifier Chromium gives the manager unpacked at `dir`.
+pub fn manager_id(dir: &Path) -> Option<String> {
+    Some(crate::crx::extension_id(dir.to_str()?.as_bytes()))
+}
+
+/// What the engine starts with: the manager, then the extensions turned on.
+pub fn startup_paths() -> Vec<PathBuf> {
+    manager_dir().into_iter().chain(approved_paths()).collect()
 }
 
 fn approved_in(root: &Path) -> Vec<PathBuf> {

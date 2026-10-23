@@ -66,6 +66,23 @@ pub fn action_manifest(manifest: &Value) -> Option<ActionManifest> {
     })
 }
 
+/// An extension's settings page (`options_ui.page`, or MV2's
+/// `options_page`), relative to its root; one that could leave it is none.
+pub fn options_page(manifest: &Value) -> Option<String> {
+    manifest
+        .get("options_ui")
+        .and_then(|options| options.get("page"))
+        .or_else(|| manifest.get("options_page"))
+        .and_then(Value::as_str)
+        .filter(|page| {
+            !page.is_empty()
+                && !page.starts_with('/')
+                && !page.contains(['\\', ':', '?', '#'])
+                && page.split('/').all(|part| part != "..")
+        })
+        .map(str::to_owned)
+}
+
 /// The smallest icon at least toolbar size, else the largest there is.
 fn best_icon(sizes: impl Iterator<Item = (u32, String)>) -> Option<String> {
     let mut sizes: Vec<_> = sizes.collect();
@@ -87,6 +104,9 @@ pub struct Installed {
     pub enabled: bool,
     pub pinned: bool,
     pub action: Option<ActionManifest>,
+    /// Its settings page, relative to its root (`options_ui.page` or MV2's
+    /// `options_page`): where an ad blocker keeps its lists and allowed sites.
+    pub options: Option<String>,
 }
 
 impl Installed {
@@ -105,6 +125,7 @@ impl Installed {
                 .unwrap_or_default();
             *title = crate::extensions::localize(title, &messages);
         }
+        let options = options_page(&manifest);
         Some(Self {
             id,
             name: info.name.clone(),
@@ -112,6 +133,7 @@ impl Installed {
             enabled,
             pinned,
             action,
+            options,
         })
     }
 
@@ -119,6 +141,15 @@ impl Installed {
     pub fn popup_url(&self) -> Option<String> {
         let popup = self.action.as_ref()?.popup.as_ref()?;
         Some(format!("chrome-extension://{}/{popup}", self.id))
+    }
+
+    /// `chrome-extension://<id>/<settings page>`, when it has one.
+    pub fn options_url(&self) -> Option<String> {
+        Some(format!(
+            "chrome-extension://{}/{}",
+            self.id,
+            self.options.as_ref()?
+        ))
     }
 
     /// Absolute path of the action icon, when it is inside the extension.
@@ -308,6 +339,33 @@ mod tests {
             enabled,
             pinned,
             action: action_manifest(&serde_json::from_str(manifest).unwrap()),
+            options: options_page(&serde_json::from_str(manifest).unwrap()),
+        }
+    }
+
+    #[test]
+    fn an_extension_offers_its_settings_page() {
+        let extension = installed(
+            "abc",
+            "uBlock Origin Lite",
+            true,
+            false,
+            r#"{"options_ui":{"page":"dashboard.html","open_in_tab":true}}"#,
+        );
+        assert_eq!(
+            extension.options_url().as_deref(),
+            Some("chrome-extension://abc/dashboard.html")
+        );
+        assert_eq!(
+            options_page(&serde_json::json!({"options_page": "options/index.html"})).as_deref(),
+            Some("options/index.html")
+        );
+        for escaping in ["../x.html", "/x.html", "https://example.test/", ""] {
+            assert_eq!(
+                options_page(&serde_json::json!({"options_page": escaping})),
+                None,
+                "{escaping}"
+            );
         }
     }
 
