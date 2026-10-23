@@ -641,7 +641,7 @@ fn protocol_frames_reject_malformed_and_oversized_input() {
 /// Sets `$profile` in a helper script from its `--profile=` argument,
 /// wherever the engine put it: a governed process, as any test process is
 /// once one of its tests governs audio, passes its audio switch first.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 const PROFILE_FROM_ARGUMENTS: &str =
     "for argument; do case $argument in --profile=*) profile=${argument#--profile=};; esac; done\n";
 
@@ -812,7 +812,7 @@ fn an_engine_is_ready_to_use_before_its_host_is() {
         &host,
         format!(
             "#!/bin/sh\n\
-             profile=${{1#--profile=}}\n\
+             {PROFILE_FROM_ARGUMENTS}\
              while [ ! -f \"$profile/start\" ]; do sleep 0.01; done\n\
              printf '{encoded}'\n\
              exec 3>&1\n\
@@ -1102,7 +1102,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             .map(|byte| format!("\\{:03o}", byte))
             .collect();
         let (dir, host) = helper_fixture(&format!(
-            "profile=${{1#--profile=}}\nwhile [ ! -f \"$profile/ack-close\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec 3>&1\nexec cat >/dev/null"
+            "{PROFILE_FROM_ARGUMENTS}while [ ! -f \"$profile/ack-close\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec 3>&1\nexec cat >/dev/null"
         ));
         let profile = dir.path().join("profile");
         let first = ChromiumEngine::with_host(&host, &profile).unwrap();
@@ -1149,7 +1149,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
         // Detach frees the route before Drop. Create the replacement while the
         // owner Arc still lives so a Drop reservation cannot hide a leak.
         let (dir, host) = helper_fixture(&format!(
-            "profile=${{1#--profile=}}\nwhile [ ! -f \"$profile/detach-ready\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec 3>&1; exec cat >/dev/null"
+            "{PROFILE_FROM_ARGUMENTS}while [ ! -f \"$profile/detach-ready\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec 3>&1; exec cat >/dev/null"
         ));
         let first = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         let detached = first.create_tab().unwrap();
@@ -1181,7 +1181,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
     }
     // phase: admitted_close_does_not_reinsert_capacity_when_endpoint_drops
     {
-        let mut script = String::from("profile=${1#--profile=}\n");
+        let mut script = String::from(PROFILE_FROM_ARGUMENTS);
         for tab in 2..42 {
             let mut packet = Vec::new();
             protocol::write_json(&mut packet, &json!({"event":"closed","tab":tab})).unwrap();
@@ -1580,7 +1580,7 @@ fn shared_fixture(packets: &[u8]) -> (tempfile::TempDir, PathBuf) {
         .map(|byte| format!("\\{:03o}", byte))
         .collect();
     helper_fixture(&format!(
-        "profile=${{1#--profile=}}\n\
+        "{PROFILE_FROM_ARGUMENTS}\
          echo spawned >> \"$profile/spawns\"\n\
          exec 3<&0\n\
          cat <&3 > \"$profile/commands\" &\n\
