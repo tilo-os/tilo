@@ -3,9 +3,8 @@
 //! Weather is an **overview + detail** pair of content panels (HIG §1b), not
 //! a sidebar app. The window is the shared [`ui::widget::NavShell`] with no
 //! sidebar: the *contentful city list* is the overview, the forecast is the
-//! content, and each has its header in the shell's one header row (the
-//! list's "Places" with its Add button, the forecast's place name with its
-//! Refresh and History buttons).
+//! content. The window bar names the place shown and offers Add place and
+//! Refresh ([`window_bar`]); the shell draws no header row.
 //!
 //! * **Wide** (both columns fit): the two panels sit **side by side**.
 //! * **Narrow**: the city list is full-screen; tapping a city **pushes** the
@@ -40,7 +39,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, Element, NavPane, NavShell, Widget};
+use ui::widget::{Element, NavPane, NavShell, Widget};
 
 use crate::actions::WeatherEffect;
 use crate::core::{Core, ForecastNotice, NavIntent};
@@ -73,8 +72,6 @@ struct PendingRefresh {
 pub struct WeatherApp {
     core: Rc<RefCell<Core>>,
     nav: NavShell,
-    /// Whether the forecast column's header shows a place's actions.
-    shows_forecast: bool,
     /// The places the overview's rail was last built from.
     rail: RailPlaces,
     pending_scenario: Option<String>,
@@ -264,27 +261,17 @@ impl WeatherApp {
     }
 
     /// The window: the city list as the overview and the forecast as the
-    /// content, both rendering from the one shared [`Core`], each with its
-    /// header in the shell's header row.
-    /// The forecast's header offers Refresh only while it shows a place; the
-    /// shell puts History at the header row's trailing edge.
+    /// content, both rendering from the one shared [`Core`]; their actions
+    /// are the window bar's.
     fn build_nav(core: &Rc<RefCell<Core>>) -> NavShell {
-        let add: Element = Box::new(
-            Button::icon_only("weather.add-place", Icon::Plus, "Add place").on_view({
-                let core = Rc::clone(core);
-                move || core.borrow_mut().begin_search()
-            }),
-        );
-        let title = Self::content_title(&core.borrow());
         let rail = core.borrow().rail_places();
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Reading)
             .with_id("weather-shell")
+            .with_window_toolbar()
             .overview(Box::new(OverviewPane::new(Rc::clone(core))))
             .overview_rail(Self::place_rail(core, &rail))
             .content(Box::new(DetailPane::new(Rc::clone(core))))
-            .overview_header("Places", vec![add])
-            .content_header(title, Self::content_actions(core))
     }
 
     /// What the city list collapses into where it no longer fits beside the
@@ -311,50 +298,18 @@ impl WeatherApp {
         Box::new(rail)
     }
 
-    /// The forecast's header actions: Refresh while it shows a place.
-    fn content_actions(core: &Rc<RefCell<Core>>) -> Vec<Element> {
-        if !Self::shows_forecast(&core.borrow()) {
-            return Vec::new();
-        }
-        vec![Box::new(
-            Button::icon_only("weather.refresh", Icon::Refresh, "Refresh forecast")
-                .on_own_device_effect({
-                    let core = Rc::clone(core);
-                    move || core.borrow_mut().refresh_selected_forecast()
-                }),
-        )]
-    }
-
     /// Whether the forecast column shows a place (and so can refresh it).
     fn shows_forecast(core: &Core) -> bool {
         core.model.selected_location().is_some()
     }
 
-    /// The forecast column's title: the selected place's name.
-    fn content_title(core: &Core) -> String {
-        core.model
-            .selected_location()
-            .map(|location| location.name.clone())
-            .unwrap_or_default()
-    }
-
-    /// Keep the forecast column's header on the selected place: its name as
-    /// the title, and Refresh only while there is a place to refresh.
-    fn sync_title(&mut self) {
+    /// Keep the overview's rail on the saved places.
+    fn sync_rail(&mut self) {
         let rail = self.core.borrow().rail_places();
         if rail != self.rail {
             self.nav
                 .set_overview_rail(Some(Self::place_rail(&self.core, &rail)));
             self.rail = rail;
-        }
-        let shows = Self::shows_forecast(&self.core.borrow());
-        let title = Self::content_title(&self.core.borrow());
-        if shows == self.shows_forecast {
-            self.nav.set_content_title(title);
-        } else {
-            self.shows_forecast = shows;
-            self.nav
-                .set_content_header(title, Self::content_actions(&self.core));
         }
     }
 
@@ -371,12 +326,10 @@ impl WeatherApp {
 
     fn assemble(core: Rc<RefCell<Core>>) -> Self {
         let nav = Self::build_nav(&core);
-        let shows_forecast = Self::shows_forecast(&core.borrow());
         let rail = core.borrow().rail_places();
         Self {
             core,
             nav,
-            shows_forecast,
             rail,
             pending_scenario: None,
             repaint_staged: false,
@@ -493,7 +446,7 @@ impl WeatherApp {
         if navigate == Some(NavIntent::ShowDetail) {
             self.nav.show(NavPane::Content);
         }
-        self.sync_title();
+        self.sync_rail();
         navigate.is_some()
     }
 
@@ -546,7 +499,7 @@ impl WeatherApp {
                 .set_notice(Some(ForecastNotice::UpdateFailed)),
             _ => {}
         }
-        self.sync_title();
+        self.sync_rail();
     }
 
     /// Stage a capture: the sample places with the network off, then the
@@ -598,10 +551,20 @@ impl ui::widget::Decorator for WeatherApp {
         &mut self.nav
     }
 
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.take_window_toolbar_events();
+        self.follow_core();
+        self.declare_window_toolbar();
+        self.nav.sync(state, path);
+    }
+
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Semantic actions reach the owning pane directly, so finish their
         // navigation here as well as on pointer input.
-        self.follow_core()
+        let asked = self.take_window_toolbar_events();
+        let followed = self.follow_core();
+        self.declare_window_toolbar();
+        asked || followed
     }
 
     fn draw(
@@ -683,6 +646,8 @@ impl ui::widget::Decorator for WeatherApp {
             .min()
     }
 }
+
+mod window_bar;
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
@@ -792,33 +757,16 @@ mod interaction_tests {
             self.app.core.borrow().row_rect_for_test(0).center().x
         }
 
-        /// Click the named control the way a person would.
-        fn click_named(&mut self, name: &str) {
+        /// Press one of the app's actions in the window bar.
+        fn press_bar(&mut self, id: &str) {
             Framed::harness_mut(&mut self.app)
-                .click_named(name)
-                .expect("the control is on screen");
+                .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+            self.redraw();
         }
 
         /// How far a row must be swiped to be removed.
         fn swipe_commit() -> f64 {
             crate::interaction::swipe_commit_dx(&Theme::dark().tokens.metrics)
-        }
-    }
-
-    fn headings(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {
-        fn semantic(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
-            if matches!(node.role, ui::a11y::Role::Heading { .. }) {
-                out.push(node.clone());
-            }
-            for child in node.children {
-                semantic(child, out);
-            }
-        }
-        if let Some(node) = widget.accessibility() {
-            semantic(node, out);
-        }
-        for child in widget.children() {
-            headings(child, out);
         }
     }
 
@@ -976,13 +924,13 @@ mod interaction_tests {
             h.key(Key::Named(NamedKey::ArrowDown), None);
             h.layout(1280.0, 720.0);
             let second = h.app.core.borrow().model.locations[1].name.clone();
-            let mut headings_found = Vec::new();
-            headings(&h.app.nav, &mut headings_found);
-            assert!(
-                headings_found
-                    .iter()
-                    .any(|heading| heading.name.as_deref() == Some(second.as_str())),
-                "the forecast's header names the selected place"
+            assert_eq!(
+                h.app
+                    .window_toolbar()
+                    .location
+                    .map(|location| location.label),
+                Some(second),
+                "the window bar names the selected place"
             );
         }
     }
@@ -1016,12 +964,16 @@ mod interaction_tests {
                 "tap pushes the forecast in"
             );
 
-            // Settle the push so the Back button is placed, then press Back.
+            // Settle the push, then press the window bar's Back.
             h.app.nav.snap();
             h.layout(420.0, 720.0);
-            let back = h.app.nav.geometry().back;
-            assert!(back.width() > 0.0, "a pushed forecast has a Back button");
-            h.click_named("nav-shell-back");
+            assert!(
+                !h.app.window_toolbar().leading.is_empty(),
+                "a pushed forecast has Back in the window bar"
+            );
+            Framed::harness_mut(&mut h.app)
+                .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+            h.redraw();
             assert_ne!(
                 h.app.nav.front_pane(),
                 NavPane::Content,
@@ -1086,7 +1038,7 @@ mod interaction_tests {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
             h.app.core.borrow_mut().take_outbox(); // drain startup
-            h.click_named("weather.refresh");
+            h.press_bar(window_bar::REFRESH);
             let queued = h
                 .app
                 .core
@@ -1237,7 +1189,7 @@ mod interaction_tests {
         {
             let mut h = Harness::new(1280.0, 720.0);
             assert!(!h.app.core.borrow().search_is_focused());
-            h.click_named("weather.add-place");
+            h.press_bar(window_bar::ADD_PLACE);
             assert!(
                 h.app.core.borrow().search_is_focused(),
                 "Add place shows and focuses the field"
