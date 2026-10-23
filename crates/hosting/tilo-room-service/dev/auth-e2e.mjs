@@ -598,6 +598,19 @@ async function postInChat(tab, text) {
   })()`).catch(error => ({error: error.message}));
 }
 
+/** What `tab`'s Chat reads in the channel with id `channel`, for a
+ * failure's detail: the last few texts, or why it read none. */
+async function chatReads(tab, channel) {
+  const chat = await tab.evaluate(CHAT_CHANNEL).catch(() => null);
+  if (!chat) return {error: 'no Chat channel'};
+  return tab.evaluate(`(async () => {
+    const result = await tiloMount.invokeAction('chat.workspace', 'read-messages',
+      {channel: ${JSON.stringify(channel)}, page_size: 32}, {window: ${JSON.stringify(chat.window)}});
+    const messages = result?.output?.value?.messages;
+    return messages ? {count: messages.length, last: messages.slice(-3).map(m => m.text)} : {state: result?.state ?? null};
+  })()`).catch(error => ({error: error.message}));
+}
+
 /** Whether `tab`'s Chat shows `text` in the channel with id `channel`. */
 export async function chatShows(tab, channel, text) {
   const chat = await tab.evaluate(CHAT_CHANNEL);
@@ -636,6 +649,27 @@ const WIDGET = id => `(() => {
  * narrow window), so they carry no test id of the app's. True once pressed,
  * null while the desktop shows no such control. */
 const PRESS_NAMED = name => PRESS_WHERE(`name => name === ${JSON.stringify(name)}`);
+
+/** In the page: the roles and names of what its desktop shows whose name
+ * matches `pattern`, for a failure's detail. */
+const NAMES_MATCHING = pattern => `(() => {
+  const found = [];
+  const named = name => new RegExp(${JSON.stringify(pattern)}).test(name ?? '');
+  const walk = access => {
+    for (const child of access?.children ?? []) {
+      if (named(child.name)) found.push(child.role + ' ' + child.name);
+      walk(child);
+    }
+  };
+  const visit = node => {
+    if (!node) return;
+    if (named(node.semantics?.name)) found.push(node.semantics.role + ' ' + node.semantics.name);
+    walk(node.semantics);
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(tiloMount.state()?.semantics?.root);
+  return found.slice(0, 20);
+})()`;
 
 /** In the page: press the first control whose name matches `pattern`. */
 const PRESS_MATCHING = pattern => PRESS_WHERE(`name => new RegExp(${JSON.stringify(pattern)}).test(name ?? '')`);
@@ -829,7 +863,9 @@ async function main() {
     const text = `From the first tab ${Date.now()}`;
     const posted = beside.entry === 'open' ? await postInChat(first, text) : {error: 'second tab not open'};
     const shown = posted.channel ? await until(() => chatShows(second, posted.channel, text), 60_000) : null;
-    check('tabs-sync', Boolean(posted.channel) && Boolean(shown), {posted, shown: Boolean(shown)});
+    const reads = shown || !posted.channel ? undefined
+      : {first: await chatReads(first, posted.channel), second: await chatReads(second, posted.channel)};
+    check('tabs-sync', Boolean(posted.channel) && Boolean(shown), {posted, shown: Boolean(shown), reads});
     if (!shown) await shoot('tabs-sync', second);
 
     // tabs-one-person: someone else in the room sees one person, and each
@@ -1134,12 +1170,13 @@ async function main() {
     }
     keepLog('invite-admits', door);
     const invitedJoins = joinsTo(door.requests.slice(sinceInvite), api);
+    const asking = letIn ? null : await inviter.evaluate(NAMES_MATCHING('asks to join|^Let |Waiting')).catch(error => error.message);
     check('invite-admits', inviting.entry === 'open' && inviting.membership?.userPublicKey === me && Boolean(inviteLink)
       && /[?&]invite=/.test(inviteLink ?? '') && joined && letIn && invited.entry === 'open' && invited.arrival === 'done'
       && /^[0-9a-f]{64}$/.test(invited.membership?.userPublicKey ?? '') && invited.membership.userPublicKey !== me
       && invitedJoins.length === 0,
     {inviter: {entry: inviting.entry, membership: inviting.membership, status: inviting.status}, invitePressed, inviteLink,
-      joined, letIn, entry: invited.entry, arrival: invited.arrival, membership: invited.membership, status: invited.status,
+      joined, letIn, asking, inviterLog: letIn ? undefined : inviter.log.slice(-8), entry: invited.entry, arrival: invited.arrival, membership: invited.membership, status: invited.status,
       doorJoins: invitedJoins.map(j => j.status)});
     if (invited.entry !== 'open') await shoot('invite-admits', door);
     await door.close();
