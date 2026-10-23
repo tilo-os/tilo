@@ -159,7 +159,8 @@ pub struct Delivery {
     /// when omitted
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
-    /// The folder it lands in; the inbox when omitted
+    /// The folder it lands in; the inbox when omitted, and starred in the
+    /// inbox for Starred
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<Folder>,
     /// Whether it was read already; unread when omitted
@@ -311,12 +312,16 @@ impl Mail {
                 conversation,
             },
         );
+        // Starred lists starred messages rather than holding any: one
+        // delivered there arrives starred in the inbox.
+        let folder = delivery.folder.unwrap_or_default();
+        let starred = folder == Folder::Starred;
         self.messages.push(
             key.clone(),
             MessageState {
                 read: delivery.read.unwrap_or(false),
-                starred: false,
-                folder: delivery.folder.unwrap_or_default(),
+                starred,
+                folder: if starred { Folder::Inbox } else { folder },
                 labels: Set::new(),
                 server: None,
                 purged: false,

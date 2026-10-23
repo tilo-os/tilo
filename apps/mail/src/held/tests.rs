@@ -274,3 +274,56 @@ fn held_mail_shows_in_the_window_and_moves_with_the_mailbox_verbs() {
         ))
     );
 }
+
+/// Starred is the view of every starred message, not a place a message
+/// lives. Moving a message there, or delivering it there, stars it where
+/// it is (the inbox for a new one), so it shows under Starred and in its
+/// folder, instead of being filed where no folder lists it.
+#[test]
+fn a_message_moved_or_delivered_to_starred_is_starred_and_stays_listed() {
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let id = sample(&mut app);
+    app.call(
+        "move-messages",
+        json!({ "messages": [&id], "to": "starred" }),
+    )
+    .unwrap();
+    app.settle();
+    let delivered = deliver(
+        &mut app,
+        json!({
+            "from": "Ines Park <ines@example.test>",
+            "subject": "Keep this one",
+            "body": "For later.",
+            "date": "2026-10-12T11:00:00Z",
+            "folder": "starred",
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for id in [&id, &delivered] {
+        let state = app.state();
+        let message = state.message(id).expect("its state");
+        assert_eq!(message.folder, crate::model::Folder::Inbox, "{id}");
+        assert!(message.starred, "{id}");
+        let message_id: crate::model::MessageId = id.parse().unwrap();
+        let listed = app
+            .with_surface(|mail: &mut crate::app::MailApp| {
+                let shared = mail.shared.borrow();
+                [crate::model::Folder::Inbox, crate::model::Folder::Starred].map(|folder| {
+                    shared
+                        .mailbox
+                        .messages_in(folder)
+                        .iter()
+                        .any(|message| message.id == message_id)
+                })
+            })
+            .unwrap();
+        assert_eq!(
+            listed,
+            [true, true],
+            "listed in the inbox and under Starred: {id}"
+        );
+    }
+}

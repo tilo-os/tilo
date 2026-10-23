@@ -298,7 +298,8 @@ impl Mail {
 
     /// Move messages
     ///
-    /// Moves messages to one folder together.
+    /// Moves messages to one folder together; to Starred, stars them where
+    /// they are.
     #[action]
     pub fn move_messages(
         &mut self,
@@ -642,10 +643,18 @@ impl Mail {
         }
     }
 
+    /// Move `messages` to `folder`. Starred lists the starred messages
+    /// wherever they are rather than holding any, so moving there stars
+    /// them in place: filed under Starred, an unstarred message would show
+    /// in no folder at all.
     fn move_to(&mut self, messages: &[String], folder: Folder) -> Result<(), Refusal> {
         for id in self.present(messages)? {
             if let Some(message) = self.messages.get_mut(&id) {
-                message.folder = folder;
+                if folder == Folder::Starred {
+                    message.starred = true;
+                } else {
+                    message.folder = folder;
+                }
             }
         }
         Ok(())
