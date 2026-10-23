@@ -30,11 +30,9 @@ use tilo_desktop::drill_in::{RELATED_GAP, TOGGLE_H, TOGGLE_W};
 pub(crate) enum SectionStop {
     /// "Turn on" while the radio is off.
     TurnOn,
-    /// A network in `wifi_networks`.
     Network(usize),
     PasswordCancel,
     PasswordConnect,
-    /// The section's way into Settings.
     Settings,
     /// An accessory in `bt_devices`: connect or disconnect.
     Device(usize),
@@ -63,7 +61,6 @@ pub(crate) struct SectionMetrics {
     pub two_line: f64,
     /// A button or field.
     pub control: f64,
-    /// One caption line.
     pub caption: f64,
     /// One title line, as the battery's charge is set.
     pub title: f64,
@@ -82,7 +79,6 @@ pub(crate) enum ItemKind {
     Password,
     /// Cancel and Connect under the password.
     PasswordButtons,
-    /// The section's link into Settings.
     Settings(String),
     Device(usize),
     Profile(usize),

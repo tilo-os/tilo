@@ -454,7 +454,6 @@ fn watch_exit(
 pub(super) enum Held {
     /// None is held, or the one held may run now.
     Nothing,
-    /// Still waiting on the person.
     Waiting,
     /// The person refused it: answer with this.
     Refused(Box<test_control::Response>),

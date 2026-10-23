@@ -4,7 +4,6 @@
 
 use std::sync::{Arc, OnceLock};
 
-/// The session's board of live activities.
 pub fn board() -> Arc<runtime_collab::LiveActivities> {
     static BOARD: OnceLock<Arc<runtime_collab::LiveActivities>> = OnceLock::new();
     Arc::clone(BOARD.get_or_init(Arc::default))

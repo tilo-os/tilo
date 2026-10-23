@@ -25,7 +25,6 @@ pub struct LiveWaves {
     heard: Vec<String>,
 }
 
-/// The roster id of the device with key `device`.
 #[must_use]
 pub fn roster_id(device: &[u8; 32]) -> String {
     format!("peer@{}", neighbour_wire::peer_handle(device))
@@ -136,7 +135,6 @@ mod tests {
         let mut desktop = LiveWaves::default();
         desktop.hear(tab, None, &desk);
 
-        // The desktop waves at the tab's person by their roster id.
         let mut outbound = Outbound::default();
         let wave = desktop
             .aim(&roster_id(&tab), &[], 1_000)
@@ -169,7 +167,6 @@ mod tests {
         browser.set_members(Some(own), Some(vec![member(&desk, &restated[0])]));
         assert!(browser.take_waves().is_empty());
 
-        // The tab waves back at the desktop's person, by its publisher.
         assert!(browser.wave_at(&hex::encode(desk), 3_000));
         assert_eq!(
             browser.waved(3_000),

@@ -900,7 +900,6 @@ mod tests {
                 "hint {hint:#x}"
             );
         }
-        // Spellcheck, multiline, e-mail and terminal fields are ordinary.
         assert!(
             !ContentType {
                 hint: 0x2 | 0x200,

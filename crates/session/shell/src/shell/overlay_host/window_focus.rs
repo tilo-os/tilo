@@ -283,8 +283,6 @@ impl ShellOverlayHost {
             Err(_) => return,
         };
         let dictating = self.layers.dictation.session().is_some();
-        // Search reads the same recency Alt+Tab walks, and whether dictation
-        // listens.
         if let Ok(mut state) = chrome.try_borrow_mut()
             && (state.search_context.recent_windows != recent
                 || state.search_context.dictating != dictating)

@@ -17,7 +17,6 @@ use ui::floating_surface::{
     FloatingSurfaceClientMessage, FloatingSurfaceHostMessage, FloatingSurfaceServiceClient,
 };
 
-/// One app in a window of its own.
 pub struct OwnProcessApp {
     /// The app id the launcher vouched for on its connection.
     pub app_id: &'static str,

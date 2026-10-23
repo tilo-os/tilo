@@ -162,7 +162,6 @@ mod tests {
 
     #[test]
     fn host_path_doc_store_publishes_inputs_unchanged_in_order() {
-        // Phase `host_paths_publish_unchanged`.
         {
             let store = DocumentStoreHandle::host_paths();
             let out = store.publish(
@@ -179,7 +178,6 @@ mod tests {
         // The whole point of the flag: a passthrough store is honest that a
         // bwrap'd app can't reach what it returns; reporting true here would make the compositor's startup log lie about sandboxed file-open.
         assert!(!DocumentStoreHandle::host_paths().reaches_confined_apps());
-        // Phase `publish_returns_one_entry_per_input_in_order`.
         {
             let store = DocumentStoreHandle::host_paths();
             let inputs = [

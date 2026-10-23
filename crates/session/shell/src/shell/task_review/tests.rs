@@ -1,4 +1,3 @@
-//! Actual enrolled owner, signed agent admission, async durable task commands.
 use super::*;
 use crate::shell::native_workspace_owner::{self, NativeWorkspaceOwner};
 use std::time::SystemTime;

@@ -982,7 +982,6 @@ mod tests {
             let mut r = QsRefresh::new();
             let (started_tx, started_rx) = std::sync::mpsc::channel();
             let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-            // Opening the panel samples Bluetooth as on...
             r.kick_fast_with(move || {
                 started_tx.send(()).expect("test is waiting for worker");
                 release_rx.recv().expect("test releases the read");

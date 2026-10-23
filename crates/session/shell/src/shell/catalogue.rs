@@ -245,11 +245,6 @@ pub(crate) fn install_service_package(package: &str) -> std::io::Result<()> {
 
 /// Split out from the subprocess so the wire contract is assertable
 /// without spawning anything.
-///
-/// # Errors
-///
-/// Returns the underlying parse error (as a message) if `stdout` is
-/// not valid JSON or doesn't match [`CatalogueListing`]'s shape.
 pub fn parse_listing(stdout: &str) -> Result<CatalogueListing, String> {
     serde_json::from_str(stdout).map_err(|e| e.to_string())
 }
@@ -771,7 +766,6 @@ static FLATHUB_INSTALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Reading Flatpak's configured sources is local and quick.
 const FLATPAK_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Whether `app_id` is being installed from Flathub.
 pub(crate) fn installing_from_flathub(app_id: &str) -> bool {
     FLATHUB_INSTALLS
         .lock_recover()

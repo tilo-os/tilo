@@ -459,7 +459,6 @@ fn snapshot(network: &crate::shell::network::ShellNetwork) -> SpeakerSnapshot {
     }
 }
 
-/// Answer one command from Settings.
 #[must_use]
 pub fn handle(
     network: &std::sync::Arc<crate::shell::network::ShellNetwork>,

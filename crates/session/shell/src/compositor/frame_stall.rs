@@ -62,7 +62,6 @@ pub fn parse(raw: &str) -> Result<(u32, u32), String> {
 }
 
 impl FrameStall {
-    /// A stall over `min_ms..=max_ms`, its jitter seeded by `seed`.
     pub fn new(min_ms: u32, max_ms: u32, seed: u64) -> Self {
         Self {
             min_ms,
@@ -126,7 +125,6 @@ impl FrameStall {
         }
     }
 
-    /// The next frame's delay.
     pub fn next_delay(&mut self) -> Duration {
         let span = u64::from(self.max_ms.saturating_sub(self.min_ms)).saturating_add(1);
         self.rng ^= self.rng.wrapping_shl(13);
@@ -148,7 +146,6 @@ mod tests {
 
     #[test]
     fn frame_stall_parses_reads_only_behind_the_gate_and_jitters_within_its_range() {
-        // Phase `parse`.
         assert_eq!(parse("80"), Ok((80, 80)));
         assert_eq!(parse(" 50-130 "), Ok((50, 130)));
         assert_eq!(parse("50 - 130"), Ok((50, 130)));

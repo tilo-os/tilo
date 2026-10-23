@@ -207,16 +207,12 @@ impl Runtime {
     }
     /// Call after local user consent and rechecking the original editable field
     /// against the Ready reply. A remote action alone is never consent.
-    /// # Errors
-    /// Fails closed when the actor stopped or its control queue is full.
     pub fn capture(&self) -> Result<(), RuntimeError> {
         self.commands
             .try_send(Control::Capture)
             .map_err(|_| RuntimeError::Busy)
     }
     /// Stop capture before requesting the final corrected transcript.
-    /// # Errors
-    /// Fails closed when the actor stopped or its control queue is full.
     pub fn finish(&self) -> Result<(), RuntimeError> {
         self.commands
             .try_send(Control::Finish)

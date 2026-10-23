@@ -578,8 +578,6 @@ impl ShellOverlayHost {
         ))
     }
 
-    // -- drawing ---------------------------------------------------------
-
     /// Every pictured window at the zoom's `progress`: from its place on its
     /// strip (0) to its place in the picture (1), with each strip's name,
     /// its controls and the window being carried, if any.
@@ -932,8 +930,6 @@ impl ShellOverlayHost {
         );
     }
 
-    // -- the keyboard ----------------------------------------------------
-
     /// Left and Right walk the pictured windows in reading order, a ring
     /// like the room list; Up and Down go to the nearest window of the strip
     /// above or below; Enter on a selected window goes there. Returns
@@ -1082,8 +1078,6 @@ impl ShellOverlayHost {
         }
         taken
     }
-
-    // -- naming and moving strips ----------------------------------------
 
     fn begin_overview_naming(&mut self, picture: &OverviewPicture, si: usize) {
         let Some(strip) = picture.strips.get(si).filter(|strip| strip.renamable) else {
@@ -1251,8 +1245,6 @@ impl ShellOverlayHost {
         self.bump_chrome();
         true
     }
-
-    // -- accessibility ---------------------------------------------------
 
     /// The strips of this workspace for assistive technology, top to
     /// bottom: each one's name and whether it has focus. Renaming and moving

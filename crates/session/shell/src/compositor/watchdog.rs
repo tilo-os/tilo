@@ -134,7 +134,6 @@ impl Policy {
     };
 }
 
-/// A hang, as the watchdog found it.
 #[derive(Debug, Clone)]
 pub struct Hang {
     /// The watched thread.
@@ -606,11 +605,9 @@ mod tests {
                 watchdog.parking();
                 std::thread::sleep(FAST.hung_after.saturating_mul(3));
                 watchdog.unparked();
-                // One turn of many waits, each within the bound.
                 for _ in 0..8 {
                     std::thread::sleep(FAST.hung_after / 3);
                 }
-                // One turn of work longer than the bound.
                 let busy = Instant::now();
                 while busy.elapsed() < FAST.hung_after.saturating_mul(2) {
                     std::hint::spin_loop();

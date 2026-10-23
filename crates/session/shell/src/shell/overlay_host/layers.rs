@@ -238,7 +238,6 @@ impl<'a, 'e> LayerCx<'a, 'e> {
     }
 }
 
-/// What a layer paints with.
 pub(crate) struct LayerPaint<'a> {
     pub scene: &'a mut Scene,
     pub transform: Affine,
@@ -337,7 +336,6 @@ impl OverlayStack {
         ]
     }
 
-    /// Whether any stacked layer is on screen.
     pub(crate) fn any_shown(&self) -> bool {
         self.layers().into_iter().any(ShellLayer::is_shown)
     }

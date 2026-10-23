@@ -39,7 +39,6 @@ fn sanitize(light: f32) -> f32 {
     }
 }
 
-/// Whether `light` dims at all.
 pub fn dims(light: f32) -> bool {
     sanitize(light) < 1.0
 }
@@ -186,7 +185,6 @@ mod tests {
         for pair in lut.windows(2) {
             assert!(pair[0] <= pair[1], "monotonic: {pair:?}");
         }
-        // Every entry is the input's linear light, halved.
         for (i, &value) in lut.iter().enumerate() {
             #[allow(clippy::cast_precision_loss, reason = "small index")]
             let input = srgb_eotf(i as f32 / 1023.0);

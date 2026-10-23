@@ -224,10 +224,6 @@ impl WorkspaceControlSession {
 
     /// Ask the target for a keyframe of the live stream: unit `seq` could
     /// not be decoded. Gated like input, on a consented live surface.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no consented live surface is active.
     pub fn keyframe_request(&self, seq: u64) -> Result<NeighbourMsg, &'static str> {
         let Some(surface) = self.active_surface() else {
             return Err("target has not granted control for a live surface");
@@ -322,7 +318,6 @@ mod tests {
 
     #[test]
     fn direct_input_opens_only_after_exact_target_consent() {
-        // Phase `no_input_before_target_consent`.
         {
             let target = endpoint(2);
             let session = WorkspaceControlSession::new(
@@ -337,7 +332,6 @@ mod tests {
                     .is_err()
             );
         }
-        // Phase `exact_target_start_opens_direct_input_path`.
         {
             let target = endpoint(2);
             let attacker = endpoint(9);
@@ -404,7 +398,6 @@ mod tests {
 
     #[test]
     fn lost_revoked_or_denied_sessions_keep_the_input_gate_closed() {
-        // Phase `relay_loss_closes_relay_session`.
         {
             let target = endpoint(2);
             let relay = endpoint(3);
@@ -428,7 +421,6 @@ mod tests {
                     .is_err()
             );
         }
-        // Phase `target_loss_closes_direct_session`.
         {
             let target = endpoint(2);
             let mut session = WorkspaceControlSession::new(
@@ -451,7 +443,6 @@ mod tests {
                     .is_err()
             );
         }
-        // Phase `revocation_disconnect_and_denial_keep_gate_closed`.
         {
             let target = endpoint(2);
             let mut revoked = WorkspaceControlSession::new(

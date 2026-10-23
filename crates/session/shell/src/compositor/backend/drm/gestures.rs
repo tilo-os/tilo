@@ -294,11 +294,9 @@ mod tests {
         // Pinch-to-zoom in a browser must keep working; the shell taking two-finger gestures would break every app that uses them.
         assert!(!claims(1));
         assert!(!claims(2));
-        // Phase `three_and_four_finger_gestures_belong_to_the_shell`.
         assert!(claims(3));
         assert!(claims(4));
         assert!(claims(5));
-        // Phase `a_two_finger_swipe_never_produces_a_shell_action`.
         {
             let mut t = GestureTracker::new(cfg());
             t.swipe_begin(2);
@@ -308,7 +306,6 @@ mod tests {
                 "a two-finger gesture must stay the client's for its whole duration"
             );
         }
-        // Phase `the_shell_owns_the_whole_duration_of_a_three_finger_gesture`.
         {
             // The finger count only arrives on `begin`, so the loop needs the in-flight answer to route the updates that follow.
             let mut t = GestureTracker::new(cfg());
@@ -319,9 +316,7 @@ mod tests {
             t.swipe_end();
             assert!(!t.shell_owns_current());
         }
-        // Phase `a_two_finger_pinch_is_left_to_the_client`.
         {
-            // Browser zoom.
             let mut t = GestureTracker::new(cfg());
             t.pinch_begin(2);
             assert_eq!(t.pinch_update(0.3), None);
@@ -332,8 +327,6 @@ mod tests {
 
     #[test]
     fn swipes_resolve_by_axis_threshold_and_finger_count() {
-        // Phase `threshold_resolver_leaves_three_fingers_to_the_streaming_tracker`.
-        // Three fingers move the strip pan and the strip deck directly.
         assert_eq!(swipe_action(3, (0.0, -150.0), &cfg()), None);
         assert_eq!(swipe_action(3, (0.0, 150.0), &cfg()), None);
         assert_eq!(swipe_action(3, (-150.0, 0.0), &cfg()), None);
@@ -358,7 +351,6 @@ mod tests {
         // Phase `a_diagonal_swipe_does_nothing_until_one_axis_dominates`.
         // Equal on both axes: ambiguous, and picking one would make the same motion do different things on different attempts.
         assert_eq!(swipe_action(4, (150.0, -150.0), &cfg()), None);
-        // Clearly vertical now.
         assert_eq!(
             swipe_action(4, (60.0, -150.0), &cfg()),
             Some(GestureAction::SwitchWorkspace(-1))
@@ -367,7 +359,6 @@ mod tests {
 
     #[test]
     fn three_fingers_up_and_down_stream_the_strip_deck_with_the_hand() {
-        // Phase `vertical_three_finger_motion_streams_total_travel_and_reverses`.
         {
             let mut tracker = GestureTracker::new(cfg());
             tracker.swipe_begin(3);
@@ -417,7 +408,6 @@ mod tests {
                 Some(GestureAction::StripDeckEnd { cancelled: true })
             );
         }
-        // Phase `natural_scroll_reverses_the_deck_too`.
         {
             let mut tracker = GestureTracker::new(natural());
             tracker.swipe_begin(3);
@@ -429,7 +419,6 @@ mod tests {
                 })
             );
         }
-        // Phase `a_horizontal_pan_never_turns_into_a_deck_move`.
         {
             let mut tracker = GestureTracker::new(cfg());
             tracker.swipe_begin(3);
@@ -450,7 +439,6 @@ mod tests {
 
     #[test]
     fn horizontal_streaming_and_natural_scroll_direction() {
-        // Phase `horizontal_three_finger_motion_streams_total_travel_and_reverses`.
         {
             let mut tracker = GestureTracker::new(cfg());
             tracker.swipe_begin(3);
@@ -481,7 +469,6 @@ mod tests {
                 Some(GestureAction::StripPanEnd { cancelled: false })
             );
         }
-        // Phase `natural_scroll_reverses_direct_strip_travel`.
         {
             let mut tracker = GestureTracker::new(natural());
             tracker.swipe_begin(3);
@@ -497,7 +484,6 @@ mod tests {
                 Some(GestureAction::StripPanEnd { cancelled: true })
             );
         }
-        // Phase `natural_scroll_inverts_both_axes`.
         assert_eq!(
             swipe_action(4, (0.0, -150.0), &natural()),
             Some(GestureAction::SwitchWorkspace(1))
@@ -506,7 +492,6 @@ mod tests {
             swipe_action(4, (0.0, 150.0), &natural()),
             Some(GestureAction::SwitchWorkspace(-1))
         );
-        // Phase `changing_the_direction_preference_takes_effect_on_the_next_gesture`.
         {
             let mut t = GestureTracker::new(cfg());
             t.swipe_begin(4);
@@ -528,14 +513,11 @@ mod tests {
 
     #[test]
     fn pinches_toggle_the_overview_once_past_threshold() {
-        // Phase `pinching_in_shows_the_overview_and_out_hides_it`.
         assert_eq!(pinch_action(0.5), Some(GestureAction::ShowOverview));
         assert_eq!(pinch_action(2.0), Some(GestureAction::HideOverview));
-        // Phase `a_small_pinch_does_nothing`.
         assert_eq!(pinch_action(1.0), None);
         assert_eq!(pinch_action(0.95), None);
         assert_eq!(pinch_action(1.1), None);
-        // Phase `a_pinch_fires_once_and_resets`.
         {
             let mut t = GestureTracker::new(cfg());
             t.pinch_begin(3);
@@ -556,7 +538,6 @@ mod tests {
 
     #[test]
     fn swipe_actions_fire_once_mid_gesture_and_rearm() {
-        // Phase `a_single_flick_fires_exactly_once`.
         {
             // The bug this guards: firing per update would switch a workspace for every millimetre of a long swipe.
             let mut t = GestureTracker::new(cfg());
@@ -569,9 +550,7 @@ mod tests {
             }
             assert_eq!(fired, vec![GestureAction::SwitchWorkspace(-1)]);
         }
-        // Phase `the_action_fires_mid_gesture_not_at_the_end`.
         {
-            // Waiting for `end` makes the desktop feel a gesture behind.
             let mut t = GestureTracker::new(cfg());
             t.swipe_begin(4);
             assert_eq!(t.swipe_update(0.0, -40.0), None, "still below threshold");
@@ -581,7 +560,6 @@ mod tests {
                 "the accumulated 110px must fire without waiting for the fingers to lift"
             );
         }
-        // Phase `a_second_gesture_after_the_first_fires_again`.
         {
             let mut t = GestureTracker::new(cfg());
             t.swipe_begin(4);
@@ -594,7 +572,6 @@ mod tests {
                 "the latch must reset when the gesture ends"
             );
         }
-        // Phase `updates_outside_a_gesture_are_ignored`.
         {
             // libinput can deliver an update after a cancelled end if the stream is torn; that must not accumulate into the next gesture.
             let mut t = GestureTracker::new(cfg());

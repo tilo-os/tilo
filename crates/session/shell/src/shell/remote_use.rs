@@ -107,7 +107,6 @@ mod tests {
             vec!["Remote use from Laptop".to_string()]
         );
 
-        // A later action from another device moves the deadline and names it.
         let later = start + Duration::from_secs(9 * 60);
         assert_eq!(lease.renew("Phone", later), Renewal::Extended);
         assert!(registry.is_inhibited_for_at(INHIBIT_SUSPEND, start + REMOTE_USE_LEASE));
@@ -117,7 +116,6 @@ mod tests {
         );
         assert_eq!(registry.count(), 1, "one lease, renewed in place");
 
-        // Without further actions it lapses on its own.
         let lapsed = later + REMOTE_USE_LEASE;
         assert!(!registry.is_inhibited_for_at(INHIBIT_SUSPEND, lapsed));
         assert_eq!(lease.until(), Some(lapsed));

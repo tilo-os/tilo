@@ -14,7 +14,6 @@ use tilo_action_policy::{ActionKind, TreePath};
 use super::room_gate::RoomAction;
 use tilo_lock::MutexRecover as _;
 
-/// Reading the room.
 fn read() -> RoomAction {
     (TreePath::root(), ActionKind::Read)
 }

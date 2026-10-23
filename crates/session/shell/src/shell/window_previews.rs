@@ -546,7 +546,6 @@ mod tests {
             .unwrap_or(0)
             .saturating_mul(MAX_PREVIEWS);
         assert_eq!(previews.memory_bytes(), bound);
-        // Oversized or mis-sized pixels are refused outright.
         previews.clear();
         previews.store(1, pixels(400, 10), 400, 10, None);
         previews.store(2, pixels(2, 2), 3, 3, None);

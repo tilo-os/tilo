@@ -829,7 +829,6 @@ fn place_picture(
     }));
 }
 
-/// The surfaces a wallpaper can show on.
 pub const WALLPAPER_SURFACES: [&str; 2] = ["background", "lockscreen"];
 
 /// Show `picture` on `targets`, on `workspace_id` alone or on every
@@ -1383,7 +1382,6 @@ mod tests {
 
     #[test]
     fn mail_handoff_encodes_fields_and_grants_attachments_once() {
-        // Phase `mailto_encoding_cannot_create_an_extra_field`.
         {
             let uri = mailto_uri(&EmailRequest {
                 addresses: vec!["a@example.test".into()],
@@ -1396,7 +1394,6 @@ mod tests {
                 "mailto:a@example.test?subject=hello%26bcc%3Dother@example.test&body=line%20one%0Aline%20two"
             );
         }
-        // Phase `mail_attachment_is_one_opaque_uri_query_value`.
         {
             let uri = mailto_uri(&EmailRequest {
                 attachments: vec!["file:///run/user/1000/doc/token/a%20%26%20b.pdf".into()],
@@ -1408,7 +1405,6 @@ mod tests {
             );
             assert!(!uri.contains("&b.pdf"));
         }
-        // Phase `mail_attachments_become_one_shot_read_grants_for_the_handler_only`.
         {
             let mut capabilities = Vec::new();
             add_mail_attachment_grants(
@@ -1469,7 +1465,6 @@ mod tests {
 
     #[test]
     fn launcher_and_document_data_is_durable_and_confined() {
-        // Phase `dynamic_library_is_non_executable_and_durable`.
         {
             let dir = tempfile::tempdir().expect("temporary state directory");
             let path = dir.path().join("launchers.json");
@@ -1499,7 +1494,6 @@ mod tests {
                 0
             );
         }
-        // Phase `supplied_launcher_icon_is_durable_data_not_a_path`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("launchers.json");
@@ -1527,7 +1521,6 @@ mod tests {
                     .contains("/home/")
             );
         }
-        // Phase `document_uri_is_confined_to_the_document_portal_mount`.
         {
             let root = tempfile::tempdir().unwrap();
             let exported = root.path().join("grant/a b.png");
@@ -1545,7 +1538,6 @@ mod tests {
 
     #[test]
     fn wallpaper_imports_are_normalised_private_and_scoped() {
-        // Phase `imported_wallpaper_is_normalised_and_private`.
         {
             use image::ImageEncoder as _;
             let mut original = Vec::new();
@@ -1569,7 +1561,6 @@ mod tests {
             write_private_bytes(&file, b"private").unwrap();
             assert_eq!(fs::metadata(file).unwrap().permissions().mode() & 0o077, 0);
         }
-        // Phase `wallpaper_preview_is_scoped_and_cancelled_without_a_persistent_uri`.
         {
             let file = format!("{}.png", "a".repeat(64));
             set_wallpaper_preview("preview-workspace", &file);
@@ -1578,7 +1569,6 @@ mod tests {
             clear_wallpaper_preview("preview-workspace", &file);
             assert!(wallpaper_preview_file_for_workspace("preview-workspace").is_none());
         }
-        // Phase `wallpaper_normaliser_accepts_common_desktop_formats`.
         {
             let source = image::DynamicImage::ImageRgba8(
                 image::RgbaImage::from_raw(1, 1, vec![12, 34, 56, 255]).unwrap(),
@@ -1688,7 +1678,6 @@ mod tests {
             "nothing left to change"
         );
 
-        // The person's own picture follows the same choices.
         let own = format!("{}.png", "e".repeat(64));
         let mut records = read();
         place_wallpaper(

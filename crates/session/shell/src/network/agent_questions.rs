@@ -83,7 +83,6 @@ impl Answering {
         self.sessions.insert(id, session);
     }
 
-    /// Stop answering `host`'s questions.
     pub(crate) fn stop(&mut self, host: EndpointId) {
         if let Some(session) = self.sessions.remove(&host) {
             session.abort();

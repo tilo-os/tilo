@@ -1065,7 +1065,6 @@ mod tests {
         let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
         let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
 
-        // Phase `every_setting_has_get_and_set_and_a_boolean_has_toggle`.
         {
             let ids: Vec<String> = rows(&chrome, "").into_iter().map(|row| row.id).collect();
             for expected in [
@@ -1157,7 +1156,6 @@ mod tests {
             assert_eq!(step(1), 10, "back where it started");
         }
 
-        // Phase `the_palette_finds_a_setting_by_its_name_in_either_language`.
         {
             for needle in ["blank after", "turn screen off after", "screen off timeout"] {
                 let top = rows(&chrome, needle).into_iter().next().map(|row| row.id);
@@ -1182,14 +1180,12 @@ mod tests {
             );
         }
 
-        // Phase `get_answers_the_value_and_what_is_allowed`.
         {
             let answer = run(&chrome, "power.blank-after.get", Vec::new()).unwrap();
             assert_eq!(answer["value"], 10);
             assert_eq!(answer["allowed"], json!([0, 1, 5, 10, 15, 30]));
         }
 
-        // Phase `set_validates_and_stores_through_the_settings_store`.
         {
             assert!(matches!(
                 run(
@@ -1224,7 +1220,6 @@ mod tests {
             );
         }
 
-        // Phase `with_settings_closed_the_lock_changes_through_its_field_edit`.
         {
             let lock = |minutes: i64, confirm: Option<bool>| {
                 let mut args = arg("minutes", ArgValue::Integer(minutes));
@@ -1257,7 +1252,6 @@ mod tests {
             );
         }
 
-        // Phase `suspend_after_sets_the_timer_settings_shows`.
         {
             let suspend = |minutes: i64, source: Option<&str>| {
                 let mut args = arg("minutes", ArgValue::Integer(minutes));
@@ -1301,7 +1295,6 @@ mod tests {
             );
         }
 
-        // Phase `a_boolean_toggles_and_sets`.
         {
             // An untouched machine does not suspend on idle, and the action
             // says so the way the Settings pane and the compositor read it.
@@ -1320,7 +1313,6 @@ mod tests {
             assert!(!power::AUTO_SUSPEND.get());
         }
 
-        // Phase `keyboard_layout_switches_to_a_listed_source_and_adds_a_new_one`.
         {
             run(
                 &chrome,
@@ -1340,7 +1332,6 @@ mod tests {
             );
         }
 
-        // Phase `appearance_mode_is_one_of_the_offered_modes`.
         {
             run(
                 &chrome,
@@ -1362,7 +1353,6 @@ mod tests {
             ));
         }
 
-        // Phase `reading_needs_no_write_permission`.
         {
             let read = crate::shell::search::providers::actions::shell_action_contract(
                 "power.blank-after.get",

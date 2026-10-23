@@ -1,5 +1,3 @@
-//! Shell-owned runtime for consented certified-phone tethering.
-
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Mutex, OnceLock, mpsc};
 
@@ -130,12 +128,6 @@ pub fn tethering_statuses() -> Vec<TetheringStatusView> {
 
 /// Queue a request only for an online certified phone. Local-hotspot control
 /// remains the existing Quick Settings `NetworkManager` action.
-///
-/// # Errors
-///
-/// Returns a message when Wi-Fi Continuity is disabled, `provider` is not an
-/// online certified phone, the coordinator is unavailable, or too many
-/// requests are active or recorded.
 pub fn request_phone_tethering(
     network: &ShellNetwork,
     provider: &DeviceId,
@@ -196,11 +188,6 @@ pub fn request_phone_tethering(
 }
 
 /// Queue the end of an active tethering session.
-///
-/// # Errors
-///
-/// Returns a message when the coordinator is unavailable or the session is
-/// no longer active.
 pub fn disconnect_phone_tethering(request_id: TetheringId) -> Result<(), String> {
     let mut state = shell_state()
         .lock()
@@ -218,11 +205,6 @@ pub fn disconnect_phone_tethering(request_id: TetheringId) -> Result<(), String>
 }
 
 /// Queue the local user's answer to a pending tethering request.
-///
-/// # Errors
-///
-/// Returns a message when the coordinator is unavailable or the request is
-/// no longer pending.
 pub fn authorize_phone_tethering(request_id: TetheringId, approved: bool) -> Result<(), String> {
     let mut state = shell_state()
         .lock()

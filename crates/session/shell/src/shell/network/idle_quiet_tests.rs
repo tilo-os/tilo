@@ -270,7 +270,6 @@ impl AddressRefresher {
         ]); // ifaddrmsg
         message.extend_from_slice(&1_u32.to_ne_bytes()); // lo
         for kind in [2_u16, 1] {
-            // IFA_LOCAL, IFA_ADDRESS
             message.extend_from_slice(&20_u16.to_ne_bytes());
             message.extend_from_slice(&kind.to_ne_bytes());
             message.extend_from_slice(&address);
@@ -379,7 +378,6 @@ impl Desktop {
             tree,
             presence,
             ctx: PresenceCtx::default(),
-            // Both show the room's one shared tab in the same place.
             desk: Desk {
                 tiles: vec![(SHARED_TAB, vello::kurbo::Rect::new(0.0, 0.0, 800.0, 600.0))],
                 pointer: None,

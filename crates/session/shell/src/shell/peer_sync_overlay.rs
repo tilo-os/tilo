@@ -51,7 +51,6 @@ pub enum PeerSyncRequest {
     /// Try again to join a workspace whose join failed, or that needs
     /// joining again: from the workspace itself, which is the room.
     RetryJoin(crate::shell::state::RoomId),
-    /// Make a pairing link for a new device of the person.
     InviteDevice,
     /// The new devices asking under this computer's open pairing links.
     DevicesAsking,
@@ -81,7 +80,6 @@ pub enum PeerSyncRequest {
         room: crate::shell::state::RoomId,
         reason: String,
     },
-    /// Whether the workspace in `room` is public, and with what.
     Publication(crate::shell::state::RoomId),
     /// Make the workspace in `room` public with `listing`, or private again
     /// with `None`.
@@ -210,7 +208,6 @@ pub enum PeerSyncResponse {
         link: String,
         expires_at_ms: u64,
     },
-    /// The new devices asking to be the person.
     DevicesAsking(Vec<DeviceAskingSummary>),
     /// The public workspaces, in the order the directory sheet shows them.
     Directory(Vec<crate::shell::network::DirectoryListing>),
@@ -264,7 +261,6 @@ pub struct PeerSyncSnapshot {
     pub invite_recipient_path: InviteRecipientPath,
     pub invite_context: InviteContext,
     pub status: Option<String>,
-    /// "Pair a new device" is open.
     pub pairing_open: bool,
     /// Its link, once made: what the new device opens.
     pub pairing_link: Option<String>,
@@ -500,7 +496,6 @@ impl PeerSyncOverlay {
         self.state.invite_recipient_path.is_person() || !self.link_invites
     }
 
-    /// Whether the invite composer is open.
     pub fn composer_open(&self) -> bool {
         self.state.invite_name.is_some()
     }
@@ -1160,7 +1155,6 @@ pub struct SheetControl {
     pub id: String,
     /// What a screen reader calls it.
     pub label: String,
-    /// Whether it is a button.
     pub button: bool,
     pub rect: Rect,
 }
@@ -1191,7 +1185,6 @@ fn typed(event: &WindowEvent) -> Option<&str> {
     }
 }
 
-/// Whether `event` presses `key`.
 fn pressed(event: &WindowEvent, key: NamedKey) -> bool {
     matches!(
         event,
@@ -1485,7 +1478,6 @@ mod tests {
         taken
     }
 
-    /// The widget named `id` under `widget`.
     fn find<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
         if widget.test_id() == Some(id) {
             return Some(widget);
@@ -2087,7 +2079,6 @@ mod tests {
             .and_then(|any| any.downcast_ref::<ui::widget::Autocomplete>())
             .expect("the Who field");
         let field = who.input().get_rect();
-        // Empty, the placeholder stands on the caret's line.
         let caret = who.input().caret_rect(&theme, 0);
         assert!(caret.height() > 0.0, "{caret:?}");
         assert!(

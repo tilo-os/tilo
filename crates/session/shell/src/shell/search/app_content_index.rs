@@ -169,17 +169,12 @@ impl AppContentIndex {
     }
 
     /// Apply one change `app` published in `room` from `record`.
-    ///
-    /// # Errors
-    ///
-    /// The delta is malformed.
     pub fn publish(&self, room: &str, app: &str, record: &str, delta: &[u8]) -> Result<(), String> {
         let delta = IndexDelta::decode(delta)?;
         self.apply(&SlotKey::new(app, room, record), delta);
         Ok(())
     }
 
-    /// Apply `delta` to `key`'s slot, and keep the slot.
     pub fn apply(&self, key: &SlotKey, delta: IndexDelta) {
         let writes = {
             let mut inner = self.inner.lock_recover();

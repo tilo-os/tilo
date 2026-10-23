@@ -80,7 +80,6 @@ impl Sources {
     }
 }
 
-/// One reading of the sources.
 struct Read {
     /// The valid endpoint keys in the enrolment file.
     enrolled: Vec<[u8; 32]>,
@@ -204,7 +203,6 @@ impl PersonalDevicePeers {
         })
     }
 
-    /// Whether the fleet already revoked `device`.
     pub(super) fn fleet_revoked(&self, device: &[u8; 32]) -> bool {
         self.fleet()
             .is_some_and(|read| read.fleet().is_some_and(|fleet| fleet.is_revoked(device)))
@@ -290,7 +288,6 @@ mod tests {
 
     fn write(path: &Path, devices: &[[u8; 32]]) {
         let ids = devices.iter().map(hex::encode).collect::<Vec<_>>();
-        // Through a fresh file, as the identity host's atomic write does.
         let staged = path.with_extension("staged");
         std::fs::write(&staged, serde_json::to_vec(&ids).unwrap()).unwrap();
         std::fs::rename(&staged, path).unwrap();

@@ -94,7 +94,6 @@ impl super::ShellOverlayHost {
         self.strip_frame().zone()
     }
 
-    /// The ribbon's opacity at `now`.
     #[cfg(test)]
     pub(super) fn strip_ribbon_alpha(&self, now: Instant, reduce_motion: bool) -> f32 {
         self.strip_navigator
@@ -168,7 +167,6 @@ impl super::ShellOverlayHost {
             .labels_wake_deadline(&self.strip_frame(), now)
     }
 
-    /// Super+S.
     pub(super) fn toggle_strip_switcher_from_keyboard(&mut self) {
         self.strip_switcher_revision = None;
         self.refresh_strip_switcher_model();
@@ -202,7 +200,6 @@ impl super::ShellOverlayHost {
         }
     }
 
-    /// The pointer left the display.
     pub(super) fn strip_switcher_pointer_left(&mut self) {
         if self.strip_navigator.pointer_left(ui::time::now()) {
             self.publish_strip_switcher_open();

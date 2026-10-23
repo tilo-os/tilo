@@ -1,5 +1,3 @@
-//! Strip indicators, the strip ribbon and rail.
-
 #[allow(
     clippy::wildcard_imports,
     reason = "private implementation module shares its enclosing host types"

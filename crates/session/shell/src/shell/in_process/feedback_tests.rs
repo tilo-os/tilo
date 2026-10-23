@@ -124,7 +124,6 @@ impl FeedbackHost for AdmittedHost {
         false
     }
     fn context(&mut self) -> Result<Vec<ReviewText>, Error> {
-        // Like the production adapter, nothing is read from the surface.
         Ok(Vec::new())
     }
     fn capture(&mut self) -> Result<MaskedScreenshot, Error> {

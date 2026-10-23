@@ -434,7 +434,6 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
                 .expect("identity action")
         };
         let before = chrome.borrow().tree().desktop.workspaces[0].sandbox.clone();
-        // The steps collected an unknown identity and a refusal to confirm.
         let mut values = serde_json::Map::new();
         values.insert("id".into(), serde_json::Value::from("does-not-exist"));
         values.insert("confirm".into(), serde_json::Value::Bool(false));
@@ -1991,7 +1990,6 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
             "so.tilo.retirefixture"
         ));
 
-        // Past the delay the window's place names the app.
         store.backdate_first_seen(
             SURFACE,
             crate::compositor::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),

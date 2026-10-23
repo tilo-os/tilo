@@ -88,11 +88,6 @@ pub fn output_fixture(name: &str) -> Option<Vec<Output>> {
 }
 
 /// Resolve a [`HEADLESS_OUTPUTS_ENV`] value: a fixture name, else a spec.
-///
-/// # Errors
-///
-/// Returns a message naming the fixtures and the spec grammar when the
-/// value is neither.
 pub fn resolve_output_arrangement(value: &str) -> Result<Vec<Output>, String> {
     let value = value.trim();
     if let Some(outputs) = output_fixture(value) {
@@ -125,10 +120,6 @@ pub fn resolve_output_arrangement(value: &str) -> Result<Vec<Output>, String> {
 /// The arrangement is translated so its top-left is the origin, as the DRM
 /// backend does, outputs may not overlap, and scene positions are derived
 /// with [`layout::scene_positions`] exactly as the DRM backend derives them.
-///
-/// # Errors
-///
-/// Returns a message naming the offending entry.
 pub fn parse_output_spec(spec: &str) -> Result<Vec<Output>, String> {
     let mut outputs: Vec<Output> = Vec::new();
     for (index, entry) in spec.split(',').enumerate() {
@@ -367,11 +358,6 @@ impl HeadlessBackend {
     /// Build a headless backend driving `outputs` — typically from
     /// [`resolve_output_arrangement`]. The offscreen texture spans their
     /// combined extent, exactly as the DRM presenter's paint buffer does.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `outputs` is empty or spans no area, or if no
-    /// wgpu adapter is available.
     pub fn with_outputs(outputs: Vec<Output>) -> Result<Self, Box<dyn std::error::Error>> {
         let (width, height) = combined_geometry(&outputs);
         if outputs.is_empty() || width == 0 || height == 0 {
@@ -1143,8 +1129,6 @@ mod tests {
         }
     }
 
-    // ---- env-var parser ---------------------------------------------
-
     #[test]
     fn parse_headless_size_accepts_wxh_and_rejects_malformed_values() {
         // Phase `parse_headless_size_accepts_valid_wxh`.
@@ -1162,8 +1146,6 @@ mod tests {
         assert_eq!(parse_headless_size(Some("800x0")), None);
         assert_eq!(parse_headless_size(Some("-1x100")), None);
     }
-
-    // ---- output spec ------------------------------------------------
 
     #[test]
     fn output_spec_reads_mode_scale_position_rotation_and_refresh() {

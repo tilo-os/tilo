@@ -36,7 +36,6 @@ const UNASKED_PASSES: u64 = 8;
 
 /// One record as the worker last read it.
 struct Read {
-    /// The revision it was read at.
     revision: u64,
     /// The document; `None` when it was corrupt, too large or not this
     /// record at that revision.

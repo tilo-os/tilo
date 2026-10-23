@@ -693,7 +693,6 @@ impl ShellOverlayHost {
         chosen
     }
 
-    /// Whether the profile card is open.
     pub fn profile_card_open(&self) -> bool {
         self.bar_popovers.profile.is_open()
     }

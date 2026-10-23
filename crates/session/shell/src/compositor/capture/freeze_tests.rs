@@ -188,8 +188,6 @@ impl Desk {
         }
         self.fb
             .with_chrome(crate::shell::chrome_state::ChromeState::bump);
-        // The laid-out width lives on the window itself, as a person's
-        // resize leaves it.
         self.settle();
         self.fb.host_mut().set_group_widths(700);
     }

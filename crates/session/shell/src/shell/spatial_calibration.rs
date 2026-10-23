@@ -534,7 +534,6 @@ mod tests {
 
     #[test]
     fn calibration_proposals_are_fresh_adjacent_and_applied_only_explicitly() {
-        // Phase `proximity_never_bootstraps_identity_or_bypasses_freshness`.
         {
             let local = id("local");
             let evidence = |observed_unix_ms| SpatialEvidence {
@@ -556,7 +555,6 @@ mod tests {
             );
         }
 
-        // Phase `proposal_is_adjacent_reversible_and_not_applied`.
         {
             let local = id("local");
             let devices = vec![display("local", 0, true), display("tablet", 800, true)];
@@ -579,7 +577,6 @@ mod tests {
             assert_eq!(devices[1].rect.unwrap().x, 800);
         }
 
-        // Phase `calibration_state_requires_a_reversible_explicit_apply`.
         {
             let local = id("local");
             let tablet = id("tablet");
@@ -609,7 +606,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn calibration_health_uses_exact_certified_peers_and_one_shot_probes() {
-        // Phase `health_explains_each_degraded_dimension_and_excludes_uncertified_peers`.
         {
             let views = summarize_health(
                 [
@@ -651,7 +647,6 @@ mod tests {
             );
         }
 
-        // Phase `health_uses_the_newest_local_observation_per_exact_peer`.
         {
             let base = DeviceHealthObservation {
                 peer: id("tablet"),
@@ -678,7 +673,6 @@ mod tests {
             assert!(views[0].degraded.is_empty());
         }
 
-        // Phase `health_probe_is_exact_peer_nonce_bound_and_one_shot`.
         {
             let now = Instant::now();
             let peer = id("tablet");
@@ -720,7 +714,6 @@ mod tests {
             assert!(observation.energy_saver);
         }
 
-        // Phase `reports_slower_than_the_probe_cadence_still_complete`.
         {
             let now = Instant::now();
             let peer = id("speaker");

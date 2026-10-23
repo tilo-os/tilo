@@ -251,7 +251,6 @@ pub enum TriggerEvent<'a> {
     Records(&'a [RecordEvent]),
 }
 
-/// Whether each focus mode is on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FocusState {
     pub do_not_disturb: bool,
@@ -309,7 +308,6 @@ pub struct FolderChange {
 }
 
 impl FolderChange {
-    /// The change to `path` inside `folder`, when it is inside it.
     #[must_use]
     pub fn inside(folder: &WatchedFolder, path: &Path, change: FileChange) -> Option<Self> {
         let file = path.strip_prefix(&folder.path).ok()?;
@@ -945,7 +943,6 @@ pub fn next_fire_time(
     }
 }
 
-/// `date` at `time` on the local wall clock, as an instant.
 fn local_instant(date: NaiveDate, time: NaiveTime, clock: &dyn Clock) -> Option<DateTime<Utc>> {
     let naive = date.and_time(time);
     // Read the offset at a first guess of the instant, so a change of
@@ -1535,7 +1532,6 @@ mod tests {
         }
         assert_eq!(awake.ran.len(), 1, "and runs it once");
 
-        // The elected device wakes and learns the fire time was taken.
         sync(awake, asleep);
         asleep.tick();
         assert!(

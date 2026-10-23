@@ -257,7 +257,6 @@ impl CpuRenderer {
         self.canvas.generation()
     }
 
-    /// The screen as the canvas holds it.
     pub fn canvas(&self) -> &RetainedCanvas {
         &self.canvas
     }

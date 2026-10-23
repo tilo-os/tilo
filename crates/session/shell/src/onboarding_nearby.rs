@@ -787,7 +787,6 @@ mod tests {
         reason = "one phase per way a pairing attempt can end"
     )]
     fn nearby_pairing_always_ends_with_the_join_or_a_reason() {
-        // Phase `the_status_file_completes_the_join_without_reading_output`.
         {
             let fixture = fixture();
             let record = joined_record(&fixture, [7; 32]);
@@ -809,7 +808,6 @@ mod tests {
                 })
             );
         }
-        // Phase `a_completed_record_of_another_identity_is_rejected`.
         {
             let fixture = fixture();
             let record = joined_record(&fixture, [7; 32]);
@@ -825,8 +823,6 @@ mod tests {
                 NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
             );
         }
-        // Phase `a_selected_active_identity_completes_a_lost_status_update`.
-        // The helper ended without recording completion.
         {
             let fixture = fixture();
             let record = joined_record(&fixture, [9; 32]);
@@ -875,7 +871,6 @@ mod tests {
                 "the helper was stopped before it finished"
             );
         }
-        // Phase `the_recorded_helper_error_is_shown_with_a_retry`.
         {
             let fixture = fixture();
             let script = r#"printf '%s' '{"state":"failed","error":"Permission denied (os error 13)","cause":"permission_denied"}' > "$1"; echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
@@ -892,7 +887,6 @@ mod tests {
             );
             assert!(failure.title().contains("Permission denied"), "{failure:?}");
         }
-        // Phase `an_exit_without_a_status_reports_stderr_and_records_it`.
         {
             let fixture = fixture();
             let script = r#"echo "Error: Not authorized" >&2; exit 127"#;
@@ -910,7 +904,6 @@ mod tests {
                 NearbyProgress::Failed(expected)
             );
         }
-        // Phase `a_helper_that_never_finishes_is_stopped_and_reported`.
         {
             let fixture = fixture();
             let script = r#"printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"; trap '' TERM; while :; do sleep 1; done"#;
@@ -925,7 +918,6 @@ mod tests {
                     event => panic!("the pairing ended before its code: {event:?}"),
                 }
             });
-            // The bound runs out.
             let over = pairing.deadline;
             let event = poll_until_over_at(&mut pairing, Some(over));
             let expected = NearbyFailure::new(NearbyCause::TimedOut);
@@ -936,7 +928,6 @@ mod tests {
                 NearbyProgress::Failed(expected)
             );
         }
-        // Phase `a_worker_holding_stderr_open_never_blocks_the_report`.
         {
             let fixture = fixture();
             // The leader reports and exits while a worker it started keeps
@@ -958,7 +949,6 @@ mod tests {
                 })
             );
         }
-        // Phase `a_successful_exit_without_a_joined_identity_is_an_error`.
         {
             let fixture = fixture();
             let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
@@ -1225,7 +1215,6 @@ mod tests {
         ] {
             assert_eq!(NearbyCause::from_text(text), cause, "{text}");
         }
-        // A status without a cause field is read from its error.
         let fixture = fixture();
         std::fs::write(
             &fixture.status,

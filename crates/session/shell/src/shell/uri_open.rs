@@ -349,13 +349,11 @@ mod tests {
 
     #[test]
     fn uri_open_normalizes_schemes_and_rejects_reserved_or_argument_values() {
-        // Phase `accepts_normal_uri_and_normalizes_scheme`.
         {
             let resource = resource_for_uri("HTTPS://example.test/a?b=c").unwrap();
             assert_eq!(resource.as_str(), "scheme:https");
         }
 
-        // Phase `rejects_reserved_or_argument_shaped_values`.
         {
             for uri in [
                 "file:///etc/passwd",

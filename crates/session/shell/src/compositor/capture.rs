@@ -446,10 +446,6 @@ impl CaptureExecutor {
     /// Pick the compositor pixel currently under the trusted seat pointer.
     /// The coordinate is clamped to the rendered output before indexing, so a
     /// stale pointer position can never address outside the readback buffer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when there is no pointer/output or GPU readback fails.
     pub fn pick_portal_color(
         &mut self,
         frame_builder: &mut FrameBuilder,
@@ -492,11 +488,6 @@ impl CaptureExecutor {
 
     /// Render the current composed desktop once for all active `PipeWire` portal
     /// nodes.  The producer retains only this newest immutable frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the output dimensions overflow, renderer setup
-    /// fails, or GPU readback does not contain a complete RGBA frame.
     pub fn render_portal_screencast_frame(
         &mut self,
         frame_builder: &mut FrameBuilder,

@@ -798,7 +798,6 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         );
 
         let large = Theme::dark().with_text_scale(2.0);
-        // The palette's filter rows grow with the text scale it lays out at.
         let row_h = row_h * f64::from(large.text_scale);
         let (_, lh) = tr.measure_style("Ag", None, &SearchFilters::filter_label_style(&large));
         let at_large = SearchFilters::filter_control_height(&large, &mut tr, row_h);
@@ -1125,7 +1124,6 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             idle.fill.components[3], 0.0,
             "an idle chip has no body of its own"
         );
-        // The ink the painter picks for each state clears the fill it sits on.
         let ground = ui::chrome::shell::panel_ground(&theme);
         let chosen_ink = colors.ink_on(
             chosen.fill,
@@ -1141,7 +1139,6 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             contrast_ratio(chosen_ink, chosen.fill) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST
         );
         assert!(contrast_ratio(idle_ink, ground) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-        // And the same holds on the light and high-contrast presets.
         for theme in [Theme::light(), Theme::high_contrast()] {
             let colors = &theme.tokens.colors;
             let chosen =
@@ -2419,7 +2416,6 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
                 );
             }
         }
-        // The notification history, with more records than fit.
         let mut harness = build_harness_sized(vw, vh);
         open_notification_history(&mut harness, 18, vw, vh);
         settle_with_theme(&mut harness, vw, vh, &theme);
@@ -2447,8 +2443,6 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
         let mut harness = build_harness_sized(vw, vh);
         {
             let mut st = harness.chrome.borrow_mut();
-            // Dismissed toasts retire into the history through the
-            // same path a real dismissal takes.
             for index in 0..3 {
                 let id = st.push_notification_full(tilo_desktop::notifications::Notification::new(
                     format!("Backup {index} finished"),
@@ -2490,7 +2484,6 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
             "{theme_name}: a history that fits ends on the panel padding, not a pager band: {:?}",
             layout.panel()
         );
-        // The palette over the desktop.
         let mut harness = directory_palette_fixture(vw, vh);
         settle_with_theme(&mut harness, vw, vh, &theme);
         let scene = paint_scene(&mut harness, &theme);
@@ -3860,7 +3853,6 @@ fn notification_banner_lost_release_does_not_capture_a_fresh_content_click() {
             pump(&mut h, &WindowEvent::Focused(false));
             pump(&mut h, &WindowEvent::Focused(true));
         }
-        // The old release is absent. A fresh click belongs to content.
         pump(&mut h, &cursor_moved_at(Point::new(8.0, 400.0)));
         h.log.borrow_mut().clear();
         pump(&mut h, &left_button_pressed());
@@ -3999,7 +3991,6 @@ fn radio_details_use_native_keyboard_pointer_and_action_routes() {
             h.host.force_quick_settings_settled();
             settle(&mut h, 1000.0, 980.0);
             open_radio_details_in_harness(&mut h, input, name, target, action_id);
-            // The list opens in place on the root page.
             assert_eq!(
                 h.chrome.borrow().quick_settings.section,
                 Some(section),

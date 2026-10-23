@@ -89,7 +89,6 @@ pub enum ProbeStep {
 pub struct Rounds {
     /// Quiet answers still needed.
     left: u8,
-    /// The client's pong count when the ping in flight went out.
     sent_at: u64,
     /// The client drew since the ping in flight went out, so its answer
     /// does not count.

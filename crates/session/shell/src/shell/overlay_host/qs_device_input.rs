@@ -486,7 +486,6 @@ impl ShellOverlayHost {
                         {
                             device.connected = false;
                         }
-                        // The device row now reads as disconnected.
                         state.quick_settings.pop_level();
                         state.bump();
                     }

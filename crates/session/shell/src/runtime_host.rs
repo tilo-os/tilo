@@ -203,8 +203,6 @@ impl Session {
 
     /// Launch a trusted native app through the existing SDK descriptor contract.
     /// This is a development host, not a replacement for Tilo package sandboxing.
-    /// # Errors
-    /// Returns handshake, descriptor or process-spawn errors.
     pub fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
         unix::launch(
             command,

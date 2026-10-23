@@ -1,4 +1,3 @@
-//! A workspace switched away from is kept, and a switch back puts it back.
 use super::parked_workspaces::KEPT_WORKSPACES;
 use super::*;
 use crate::shell::state::{

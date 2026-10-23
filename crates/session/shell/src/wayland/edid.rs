@@ -600,7 +600,6 @@ mod tests {
             assert_eq!(info.best_named_primaries, ColorPrimaries::Bt2020);
         }
 
-        // Phase `parses_peak_and_min_luminance`.
         {
             let edid = hdr_edid_blob();
             let info = parse_hdr_display_info(&edid);
@@ -625,7 +624,6 @@ mod tests {
             );
         }
 
-        // Phase `advertises_pq_and_hlg_transfers`.
         {
             let edid = hdr_edid_blob();
             let info = parse_hdr_display_info(&edid);
@@ -639,7 +637,6 @@ mod tests {
             );
         }
 
-        // Phase `an_hdr_block_without_luminance_bytes_reports_them_unknown`.
         {
             let mut edid = hdr_edid_blob();
             edid[140] = 0;
@@ -655,7 +652,6 @@ mod tests {
             assert_eq!(info.min_luminance_micro_cd_m2, 0);
         }
 
-        // Phase `short_blob_returns_sdr_default`.
         {
             // Empty and half-block inputs must not panic — SDR fallback.
             let info = parse_hdr_display_info(&[]);
@@ -666,7 +662,6 @@ mod tests {
             assert_eq!(info.best_named_primaries, ColorPrimaries::Bt709);
         }
 
-        // Phase `no_extension_block_returns_base_chromaticities_only`.
         {
             let mut edid = hdr_edid_blob();
             // Wipe the extension count so the parser never enters
@@ -738,7 +733,6 @@ mod tests {
         edid[54 + 12] = 0x55;
         edid[54 + 13] = 0x50;
         edid[54 + 14] = 0x21;
-        // Monitor name, then serial string.
         edid[72 + 3] = 0xFC;
         edid[72 + 5..72 + 18].copy_from_slice(b"DELL U2720Q\n ");
         edid[90 + 3] = 0xFF;

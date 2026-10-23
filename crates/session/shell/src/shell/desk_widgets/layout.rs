@@ -49,7 +49,6 @@ pub fn place(area: Rect, items: &[Item], occupied: &[Rect], stack_open: bool) ->
         for item in items.iter().filter(|item| item.edge == edge) {
             let stacked = if stack_open { item.open } else { item.glance };
             let mut rect = stacked_rect(area, edge, stacked, cursor);
-            // Step past whatever already floats there.
             for _ in 0..=taken.len() {
                 let Some(blocker) = taken.iter().find(|r| r.overlaps(rect)).copied() else {
                     break;

@@ -99,7 +99,6 @@ fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
     settled_builder_in(Theme::dark())
 }
 
-/// [`settled_builder`] dressed in `theme`.
 fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
     let mut clock = tilo_test_env::ScopedEnv::new();
     clock.set("TILO_CLOCK", "09:41");
@@ -2259,7 +2258,6 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
             let full = render_whole(&mut dense, &painted.scene, painted.revision, &label);
             let apart = pixels_apart(&shown, &full, size.0);
             let max = apart.iter().map(|&(_, _, step)| step).max().unwrap_or(0);
-            // Every fourth frame, against the desktop drawn without layers.
             if step % 4 == 3 {
                 assert_nothing_lost(&mut frame, &mut dense, (&shown, &painted), size, &label);
             }
@@ -2914,7 +2912,6 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
             assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
         }
         frame.host_mut().end_active_strip_pan(Instant::now(), false);
-        // What the last frame that came as layers rasterised.
         let mut last_layered = None;
         for step in 0..10 {
             frame.relayout();
@@ -3007,7 +3004,6 @@ fn assert_rests_in_screen_space(frame: &mut FrameBuilder, name: &str) {
     );
 }
 
-/// A layered pan steps by one device pixel, in layout pixels.
 #[test]
 fn layered_pans_step_by_one_device_pixel() {
     assert_eq!(pan_step(1.0), Some(1.0));
@@ -3415,7 +3411,6 @@ fn part_refusals(previous: Option<&ProducedSections>, frame: &FrameBuilder) -> S
                 }));
             }
         }
-        // And which named widgets are there.
         let names = bounds.map_or_else(Vec::new, |(x0, y0, x1, y1)| {
             let px = |value: usize| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
             let changed = Rect::new(px(x0), px(y0), px(x1) + 1.0, px(y1) + 1.0);

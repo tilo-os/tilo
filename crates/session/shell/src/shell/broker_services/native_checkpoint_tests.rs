@@ -1,4 +1,3 @@
-//! The installed room service, certified broker admission, and real retained backend.
 use super::*;
 use tilo_peer_state::workspace_checkpoint::{CheckpointCommand, CheckpointRequest};
 

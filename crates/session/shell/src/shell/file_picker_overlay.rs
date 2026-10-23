@@ -71,7 +71,6 @@ pub(crate) enum PickerPlace {
 }
 
 impl PickerPlace {
-    /// The dialog's own rect, if it is on screen.
     pub(crate) fn dialog_rect(self) -> Option<Rect> {
         match self {
             Self::Window { display, .. } => Some(file_picker_rect(display)),
@@ -483,9 +482,6 @@ fn picker_scope_for(
     let Some(chrome) = chrome else {
         return base;
     };
-    // Scoped so the `RefCell` borrow guard drops before
-    // `with_granted_paths` runs, rather than lingering to the end of the
-    // function for data it no longer needs.
     let granted: Vec<std::path::PathBuf> = {
         let state = chrome.borrow();
         let tree = state.tree();

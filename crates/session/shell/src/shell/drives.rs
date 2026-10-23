@@ -115,10 +115,6 @@ pub fn listed() -> Vec<DriveEntry> {
 /// applies and the request comes `from_files`: Files asks when the person
 /// clicks the drive there, which is the only moment a remembered drive opens
 /// without a question. Anything else asking is answered by the sheet.
-///
-/// # Errors
-///
-/// When the drive is unknown or drives are unavailable in this session.
 pub fn request_open(drive: &str, from_files: bool) -> Result<(), String> {
     if !shared()
         .drives

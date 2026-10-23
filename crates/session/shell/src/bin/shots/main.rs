@@ -334,12 +334,6 @@ impl Args {
 
 /// Parse a comma-separated `WxH,WxH,...` resolution list. Rejects empty
 /// entries and zero dimensions. Pure function for unit-test coverage.
-///
-/// # Errors
-///
-/// Returns an error if a non-empty entry isn't `WxH`, doesn't parse as two
-/// integers, or names a zero width or height, or if no non-empty entry
-/// remains once empty ones are skipped.
 pub fn parse_sweep_list(raw: &str) -> Result<Vec<(u32, u32)>, String> {
     let mut out = Vec::new();
     for entry in raw.split(',') {
@@ -752,15 +746,12 @@ mod tests {
 
     #[test]
     fn resolution_sweep_flag_parses_rejects_and_defaults() {
-        // Phase `sweep_flag_parses_multiple_resolutions`.
         {
             let res = parse_sweep_list("720x480,1366x768").expect("parse ok");
             assert_eq!(res, vec![(720, 480), (1366, 768)]);
-            // Case-insensitive separator + whitespace tolerance.
             let res = parse_sweep_list(" 800X600 , 1280x720 ").expect("parse ok");
             assert_eq!(res, vec![(800, 600), (1280, 720)]);
         }
-        // Phase `sweep_flag_rejects_bad_entries`.
         {
             assert!(parse_sweep_list("garbage").is_err());
             assert!(parse_sweep_list("").is_err());
@@ -768,7 +759,6 @@ mod tests {
             assert!(parse_sweep_list("800x0").is_err());
             assert!(parse_sweep_list("800,600").is_err());
         }
-        // Phase `default_sweep_covers_expected_resolutions`.
         {
             // Pinned so a future edit that drops 800x600 (the worst-case
             // narrow viewport regression catcher) is caught by CI.

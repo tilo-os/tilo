@@ -755,7 +755,6 @@ mod tests {
         );
     }
 
-    /// One wave at the same person a minute.
     #[test]
     fn waves_are_once_a_minute_per_person() {
         let mut me = SelfPresence::default();

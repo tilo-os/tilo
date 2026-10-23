@@ -62,7 +62,6 @@ impl RunSource for crate::shell::broker_services::NativeTrackerRuns {
 
 #[derive(Clone)]
 enum Purpose {
-    /// Ask the agent to answer the request or name its work.
     Respond(ComposerRequest),
     /// Ask for work: a request's, or what the person chose to do with an
     /// answer.
@@ -345,7 +344,6 @@ impl AgentActions {
             }
         }
         if !active {
-            // Read afresh when it is shown again.
             self.fresh.mark();
             return changed;
         }

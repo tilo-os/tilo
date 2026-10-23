@@ -47,7 +47,6 @@ pub struct DesktopControlAsk {
     /// The app as the person knows it.
     pub app_label: String,
     pub room: String,
-    /// The action asked for, by its title.
     pub action: String,
     /// Confirmed every time: offers only "Allow" and "Don't allow", and
     /// grants nothing beyond this one action.
@@ -127,7 +126,6 @@ impl DesktopControlGrants {
         }
     }
 
-    /// Whether the tab of `holder` may control the desktop now.
     #[must_use]
     pub fn tab_allowed(&self, holder: Holder) -> bool {
         self.tabs
@@ -283,7 +281,6 @@ mod tests {
         Holder { pid, start }
     }
 
-    /// A "this tab" grant ends when the tab's shell does.
     #[test]
     fn a_tab_grant_ends_when_its_tab_closes() {
         let mut grants = DesktopControlGrants::default();
@@ -311,7 +308,6 @@ mod tests {
         assert_eq!(grants.tabs().count(), 0);
     }
 
-    /// Stopping a tab grant takes effect at once.
     #[test]
     fn a_tab_grant_is_revoked_at_once() {
         let mut grants = DesktopControlGrants::default();
@@ -326,7 +322,6 @@ mod tests {
         assert!(grants.tab_allowed(tab));
         assert!(grants.revoke_tab(tab));
         assert!(!grants.tab_allowed(tab));
-        // Stopped from the tab it shows on.
         grants.allow_tab(TabGrant {
             holder: tab,
             package: TERMINAL.into(),

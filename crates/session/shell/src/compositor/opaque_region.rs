@@ -236,7 +236,6 @@ mod tests {
         // Phase `no_region`: the default is "potentially transparent".
         assert!(!covers(None, SURFACE));
         assert!(!covers(Some(&region(&[])), SURFACE));
-        // Phase `pieces_that_add_up`.
         assert!(covers(
             Some(&region(&[
                 (ADD, rect(0, 0, 960, 1080)),
@@ -278,7 +277,6 @@ mod tests {
             ])),
             SURFACE
         ));
-        // Phase `a_hole_subtracted`.
         assert!(!covers(
             Some(&region(&[
                 (ADD, rect(0, 0, 1920, 1080)),
@@ -295,7 +293,6 @@ mod tests {
             ])),
             SURFACE
         ));
-        // Phase `subtracted_outside_the_surface`.
         assert!(covers(
             Some(&region(&[
                 (ADD, rect(0, 0, 1920, 1080)),
@@ -303,7 +300,6 @@ mod tests {
             ])),
             SURFACE
         ));
-        // Phase `an_empty_surface`.
         assert!(!covers(Some(&region(&[(ADD, rect(0, 0, 1, 1))])), (0, 0)));
     }
 
@@ -317,7 +313,6 @@ mod tests {
             .chain([(ADD, rect(0, 0, 1920, 1080))])
             .collect();
         assert!(!covers(Some(&region(&stripes)), SURFACE));
-        // Scattered squares leave most of the surface undecided.
         let checks: Vec<_> = (0..MAX_RECTS)
             .map(|index| {
                 let index = i32::try_from(index).expect("a small count");

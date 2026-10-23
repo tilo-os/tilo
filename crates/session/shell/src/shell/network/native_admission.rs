@@ -68,7 +68,6 @@ impl State {
         self.carried.lock_recover().take()
     }
 
-    /// Whether an event is carried over.
     pub(super) fn carries(&self) -> bool {
         self.carried.lock_recover().is_some()
     }

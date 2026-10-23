@@ -1,4 +1,3 @@
-//! Human job rows read the same authorized invocation state as status actions.
 use super::{LiveAppActionsProvider, job_status_id};
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::search::{ResourceKind, SearchBudget, SearchContext, SearchProvider};

@@ -391,7 +391,6 @@ impl Pairing {
     }
 }
 
-/// The approval `args` ask for.
 pub(crate) fn approval(args: &ActionArgs) -> Result<Approval, String> {
     let role = PairRole::parse(args.text("role").unwrap_or_default())?;
     let workspace_ids = args

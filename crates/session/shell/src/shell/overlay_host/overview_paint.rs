@@ -542,7 +542,6 @@ impl ShellOverlayHost {
             &cards,
         );
 
-        // -- Where else you can go ----------------------------------------
         text_renderer.draw_style(
             scene,
             &t("overview-go-to"),

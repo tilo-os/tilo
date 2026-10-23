@@ -99,7 +99,6 @@ pub struct MemberChoice {
     pub preset: Option<AgentPreset>,
 }
 
-/// The person's answer to an agent admission.
 #[derive(Debug)]
 pub struct AgentAnswer {
     pub outcome: PromptOutcome,

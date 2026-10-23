@@ -71,9 +71,6 @@ pub trait ScreenshotSendBridge {
 /// Deliver the screenshot at `path` to `target`. A device must still be
 /// online and yours: the id is re-resolved here, never trusted from the
 /// picker that offered it.
-///
-/// # Errors
-/// A message for the person when the device is gone or the transport failed.
 pub fn route(
     path: &Path,
     target: &ScreenshotSendTarget,
@@ -104,9 +101,6 @@ fn exists(path: &Path) -> Result<(), String> {
 /// needs before it offers: a small one whole, a large one opened for its
 /// staging worker. Reads the disk: the capture worker calls it, and the
 /// loop then [`offer`]s what it read.
-///
-/// # Errors
-/// A message for the person when the screenshot is gone or unreadable.
 pub(crate) fn prepare_device_send(path: &Path) -> Result<PreparedNearbyDrop, String> {
     exists(path)?;
     let folder = path.parent().ok_or_else(|| {
@@ -122,10 +116,6 @@ pub(crate) fn prepare_device_send(path: &Path) -> Result<PreparedNearbyDrop, Str
 /// Offer a screenshot [`prepare_device_send`] read to device `id`. The
 /// device must still be online and yours: the id is re-resolved here, never
 /// trusted from the picker that offered it. Reads no file.
-///
-/// # Errors
-/// A message for the person when the read failed, the device is gone or
-/// the transport refused.
 pub(crate) fn offer(
     id: &str,
     screenshot: Result<PreparedNearbyDrop, String>,
@@ -177,9 +167,6 @@ impl std::fmt::Debug for PreparedScreenshot {
 }
 
 /// Copy `source` into `root/Screenshots`, never replacing an existing file.
-///
-/// # Errors
-/// The I/O error, phrased for the person.
 pub fn copy_into_workspace(source: &Path, root: &Path) -> Result<PathBuf, String> {
     let folder = root.join(WORKSPACE_SCREENSHOTS_DIR);
     std::fs::create_dir_all(&folder).map_err(|error| {

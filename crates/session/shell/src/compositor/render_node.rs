@@ -607,7 +607,6 @@ mod tests {
             assert_eq!(chosen.path, nodes[1]);
             assert_eq!(chosen.dev, 0xe281);
         }
-        // Phase `every_rejected_node_says_why`.
         {
             let nodes = vec![
                 PathBuf::from("/fake/dri/renderD128"),
@@ -658,7 +657,6 @@ mod tests {
             let text = ProbeError::NoRenderer(vec![(display, "no 3D".to_string())]).to_string();
             assert!(text.contains("renderD128: no 3D"), "{text}");
         }
-        // Phase `probe_result_is_self_describing`.
         {
             // Every rejection path has to say *why* in the boot log — "clients silently fell back to shm" is exactly the failure mode this module exists to prevent.
             let e = ProbeError::NoneUsable(vec![(
@@ -694,7 +692,6 @@ mod tests {
             );
             assert_eq!(probe(), Ok(node), "the probe answers once per process");
         }
-        // Phase `driver_lookup_rejects_paths_without_a_sysfs_entry`.
         assert_eq!(driver_for(Path::new("/dev/null")), None);
         assert_eq!(driver_for(Path::new("/dev/dri/renderD9999")), None);
         // Phase `probe_reports_a_stat_consistent_device_number` (defined above).
