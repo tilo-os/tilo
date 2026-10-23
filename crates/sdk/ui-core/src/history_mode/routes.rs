@@ -376,6 +376,7 @@ impl OwnerDocumentRoutes {
     /// [`Self::reconcile`] for a holder without a widget tree, whose
     /// records are `owners`: every one answers snapshot requests, as no host
     /// replays its route.
+    #[cfg(feature = "broker-transport")]
     pub(crate) fn reconcile_owners(
         &mut self,
         owners: &[HistoryOwner],
