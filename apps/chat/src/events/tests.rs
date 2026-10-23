@@ -1193,7 +1193,7 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
 
     // Phase: narrow_thread_is_a_full_detail_view_with_back_navigation.
     {
-        let (mut app, _doc) = app_with_doc();
+        let (mut app, mut doc) = app_with_doc();
         app.thread_open = Some("m_concept".into());
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 390.0, 844.0);
         app.reconcile_flaps();
@@ -1207,8 +1207,26 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
         render_frame(&mut app, 390.0, 844.0);
         assert_eq!(
             count_hits(&app, |h| matches!(h, Hit::CloseThread)),
-            1,
-            "the detail header supplies one Back control"
+            0,
+            "the thread page draws no Back or title of its own"
+        );
+        let toolbar = ui::window_toolbar::declared().expect("the thread's slots are declared");
+        assert_eq!(
+            toolbar.navigation.map(|navigation| navigation.back),
+            Some(true),
+            "the window bar leads the thread page with Back"
+        );
+        assert_eq!(
+            toolbar.location.map(|location| location.label),
+            Some(app.thread_title()),
+            "the window bar names the thread"
+        );
+        assert_eq!(toolbar.sidebar, None, "no sidebar toggle over the page");
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Back);
+        app.apply_window_toolbar(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(
+            app.thread_open.is_none(),
+            "the bar's Back closes the thread"
         );
     }
 
@@ -2163,14 +2181,21 @@ fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
         assert!(description(&app).contains("Latest intent: Add function"));
         assert!(description(&app).contains("Requested: Add function"));
 
-        let close = app
-            .hits
-            .iter()
-            .find(|(_, hit)| matches!(hit, Hit::CloseThread))
-            .expect("painted thread has a close/back control")
-            .0
-            .center();
-        click_point(&mut app, &mut doc, close);
+        if app.thread_is_page() {
+            // A thread that fills the window is the window bar's place: its
+            // Back closes it.
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Back);
+            app.apply_window_toolbar(&mut ui::widget::Edits::lend(&mut doc.chat));
+        } else {
+            let close = app
+                .hits
+                .iter()
+                .find(|(_, hit)| matches!(hit, Hit::CloseThread))
+                .expect("painted thread has a close control")
+                .0
+                .center();
+            click_point(&mut app, &mut doc, close);
+        }
         assert!(app.thread_open.is_none());
 
         // Render the settled closed flap, not the outgoing overlay frame

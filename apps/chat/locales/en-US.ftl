@@ -137,7 +137,6 @@ chat-bot-name = Bot
 chat-thread-start = Thread start
 chat-thread-end = Latest reply
 chat-thread-title = Thread
-chat-thread-back = Back
 chat-thread-close = Close thread
 chat-thread-replies = { $count ->
     [one] 1 reply
