@@ -6478,7 +6478,6 @@ mod tests {
                 path: PathBuf::from("/identity/primary.json"),
             }));
             view.identity_dir = Some(progress.path().to_path_buf());
-            view.session.home = Some(progress.path().to_path_buf());
             let mut document = AutoCommit::new();
             *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
             *view.backup_confirmation.lock().unwrap() = "correct horse battery staple".into();
@@ -8223,7 +8222,6 @@ mod tests {
                 path: PathBuf::from("/identity/primary.json"),
             }));
             view.identity_dir = Some(progress.path().to_path_buf());
-            view.session.home = Some(progress.path().to_path_buf());
             let mut doc = AutoCommit::new();
 
             *view.backup_passphrase.lock().unwrap() = "correct horse battery staple".into();
