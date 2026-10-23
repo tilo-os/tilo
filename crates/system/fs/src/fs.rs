@@ -1653,8 +1653,12 @@ impl QuickFS {
             reply.error(to_errno(libc::EAGAIN));
             return;
         }
+        // The kernel holds the page locked while the read waits, so anyone
+        // else touching it waits too: the read fails at its bound rather
+        // than wait on a peer that went quiet.
         rt.spawn(async move {
-            match hydrator.read(hash, offset, size).await {
+            let read = async move { hydrator.read(hash, offset, size).await };
+            match crate::hydration::bounded_read(crate::hydration::BLOCKED_READ_BOUND, read).await {
                 Ok(data) => reply.data(&data),
                 Err(error) => {
                     eprintln!("content hydration failed for {hash}: {error:#}");
@@ -1675,7 +1679,9 @@ impl QuickFS {
                 let hydrator = Arc::clone(&self.hydrator);
                 let rt = hydrator.runtime_handle.clone();
                 rt.spawn(async move {
-                    match missing.finish(&hydrator).await {
+                    let read = async move { Ok(missing.finish(&hydrator).await?) };
+                    let bound = crate::hydration::BLOCKED_READ_BOUND;
+                    match crate::hydration::bounded_read(bound, read).await {
                         Ok(bytes) => reply.data(&bytes),
                         Err(error) => {
                             eprintln!("content hydration for a staged read failed: {error:#}");
