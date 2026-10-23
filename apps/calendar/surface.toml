@@ -96,6 +96,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-start"
+kind = "outside"
+params = [
+  { name = "event", required = true, schema = { type = "string" } },
+  { name = "start", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
+]
+
+[[resources.verbs]]
 id = "move-to-calendar"
 kind = "outside"
 params = [
@@ -390,3 +398,4 @@ params = [
   { name = "person", required = true, schema = { type = "string" } },
   { name = "endpoint", required = true, schema = { type = "string" } },
 ]
+

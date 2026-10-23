@@ -178,6 +178,13 @@ impl ConfinedReplica {
         &self.app_id
     }
 
+    /// Whether an agent holds the record ([`ReplicaActor::Agent`]): only an
+    /// agent's renders go to the host's render service.
+    pub(crate) fn is_agents(&self) -> bool {
+        serde_json::from_str::<ReplicaActor>(&self.actor)
+            .is_ok_and(|actor| matches!(actor, ReplicaActor::Agent))
+    }
+
     /// Collaboration route of this record: [`crate::Replica::wire_record`].
     #[must_use]
     pub fn wire_record(&self) -> &str {
@@ -284,7 +291,9 @@ impl ConfinedReplica {
     pub fn survey(&self) -> Vec<ActionDescriptor> {
         let reply = self.call(&mut self.lock(), &Request::Survey);
         match reply {
-            Ok(Reply::Descriptors(text)) => serde_json::from_str(&text).unwrap_or_default(),
+            Ok(Reply::Descriptors(text)) => {
+                crate::render::offered(serde_json::from_str(&text).unwrap_or_default())
+            }
             _ => Vec::new(),
         }
     }
@@ -349,6 +358,12 @@ impl ConfinedReplica {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
     ) -> Result<ActionOutput, DoorError> {
+        // A render is made in the host's render service, never the worker.
+        if let Some(rendered) =
+            crate::render::route(self, self.content.as_ref(), address, arguments)
+        {
+            return rendered;
+        }
         let unavailable = |reason: String| DoorError::Unavailable {
             code: "app_worker".into(),
             reason,

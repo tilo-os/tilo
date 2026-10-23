@@ -2,6 +2,7 @@
 //! choices and separate service histories. Transport state belongs to the
 //! privileged broker; it is never inferred from names or widget state.
 
+pub mod conversations;
 mod enrollment;
 mod groups;
 mod history;
@@ -18,15 +19,10 @@ use ui::i18n::EmbeddedCatalog;
 use ui::prelude::*;
 use ui::widget::Element;
 
-/// The mounted resource carries no external message plaintext into a workspace
-/// CRDT. Private external histories remain the broker's account-owned data,
-/// and everything Messages does is one of its effects. The record's schema
-/// version is the framework's.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Messages {}
-
-#[resource(kind = "tilo.messages", label = "Messages")]
-impl Messages {}
+/// The record holds only conversations put into it on purpose (delivered
+/// or queued, see [`conversations`]); private external histories remain the
+/// broker's account-owned data, reached through effects.
+pub use conversations::Messages;
 
 #[derive(Clone, Effect)]
 #[effect(operation = "tilo.messages.view")]
@@ -201,6 +197,27 @@ pub enum MessagesEffect {
     /// the adapter must separately verify current provider identity before I/O.
     #[effect(destructive)]
     ConfirmAccount { person: String, choice: String },
+    /// Search messages
+    ///
+    /// The messages kept in this record (delivered into it or queued in
+    /// it) holding every word of the query in their sender, recipient,
+    /// conversation or text, newest first. Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    SearchMessages {
+        #[param("The words to find, in any case")]
+        query: String,
+    },
+    /// Export conversations
+    ///
+    /// Keeps the transcript of one conversation, or of every one, as
+    /// content, and answers with its content address. Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportContent {
+        #[param("md (the default) or json", choices = ["md", "json"])]
+        format: Option<String>,
+        #[param("The conversation; every one when omitted")]
+        conversation: Option<String>,
+    },
     /// Send through the currently authorized broker connection. It remains
     /// unavailable until the host supplies that connection; no local append
     /// or delivery state substitutes for a transport operation.

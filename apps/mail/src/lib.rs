@@ -63,6 +63,7 @@ pub mod engine;
 #[cfg(test)]
 #[cfg(feature = "live")]
 pub(crate) mod fake_imap;
+pub mod held;
 pub mod html_mail;
 pub mod html_text;
 pub mod i18n;

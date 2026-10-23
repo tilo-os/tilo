@@ -934,6 +934,9 @@ impl ResourceSurface<PdfMarkup, PdfEffect> for PdfApp {
             PdfEffect::LookPage { page, size } => self
                 .look_page(page, size)
                 .map(ui::framework::Effected::Done),
+            PdfEffect::ImportPdfContent { content, name } => self
+                .import_pdf_content(&content, name.as_deref(), cx)
+                .map(ui::framework::Effected::value),
             effect => self.answer_effect(&effect, || cx.reply()),
         }
     }

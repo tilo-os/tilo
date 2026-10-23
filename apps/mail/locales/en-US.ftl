@@ -69,6 +69,19 @@ mail-draft-state-rich-body = Edited the draft
 mail-save-draft = Saved the draft
 mail-attach = Attached { $name } to the draft
 mail-mail-server = Recorded how a mail server took a change
+mail-mail-held = Changed the mail held in the mailbox
+mail-held-message-message-id = Changed the Message-ID of a held message
+mail-held-message-from = Changed the sender of a held message
+mail-held-message-to = Changed the recipients of a held message
+mail-held-message-cc = Changed who a held message is copied to
+mail-held-message-subject = Changed the subject of a held message
+mail-held-message-body = Changed the text of a held message
+mail-held-message-minutes = Changed when a held message was sent
+mail-held-message-in-reply-to = Changed the message a held message answers
+mail-held-message-conversation = Moved a held message to another conversation
+mail-deliver-message = Delivered { $subject }
+mail-draft-message = Drafted { $subject }
+mail-draft-reply = Drafted a reply
 
 mail-import-sign-in-required = Imported account settings require authentication. Sign in before connecting.
 

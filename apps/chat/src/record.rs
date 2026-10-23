@@ -37,6 +37,27 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ATTACHMENT_NAME_BYTES: usize = 255;
 const MAX_ATTACHMENT_DIMENSION: u32 = 16_384;
 
+/// The longest channel id a caller may choose.
+const MAX_GIVEN_ID_CHARS: usize = 64;
+
+/// A channel id a caller chose (`create-channel`'s `id`): letters, digits,
+/// `-` and `_`, so it reads the same in an item address and a step.
+fn given_channel_id(given: &str) -> Result<Id, Refusal> {
+    let given = given.trim();
+    if given.is_empty()
+        || given.chars().count() > MAX_GIVEN_ID_CHARS
+        || !given
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '-' | '_'))
+    {
+        return Err(Refusal::new(format!(
+            "`{given}` is not a channel id: letters, digits, - and _, at most \
+             {MAX_GIVEN_ID_CHARS}"
+        )));
+    }
+    Ok(Id::from_raw(given))
+}
+
 /// The id of the room's text channel every chat opens with, `#chat`.
 pub const CHAT_CHANNEL: &str = "c_chat";
 /// The id of the room's voice channel every chat opens with, `#voice`.
@@ -919,6 +940,40 @@ impl Chat {
         self.channels.push(id, channel);
     }
 
+    /// Make channel `id` named `name`, refusing a category that is not
+    /// here and a name with nothing in it.
+    fn make_channel(
+        &mut self,
+        id: Id,
+        name: &str,
+        category: Option<Id>,
+        kind: Option<ChannelKind>,
+        topic: Option<String>,
+    ) -> Result<(), Refusal> {
+        if let Some(category) = &category
+            && !self.categories.contains(category)
+        {
+            return Err(Refusal::new("there is no such category"));
+        }
+        let name = name.trim().trim_start_matches('#');
+        if name.is_empty() {
+            return Err(Refusal::new("a channel needs a name"));
+        }
+        self.open_channel(
+            id,
+            Channel {
+                category,
+                name: name.to_owned(),
+                topic: topic
+                    .map(|topic| topic.trim().to_owned())
+                    .unwrap_or_default(),
+                kind: kind.unwrap_or_default(),
+                ..Channel::default()
+            },
+        );
+        Ok(())
+    }
+
     /// The person `id`, added when the room does not know them yet.
     fn person(&mut self, id: &str) -> Result<&mut Person, Refusal> {
         let key = Id::from_raw(id);
@@ -1059,30 +1114,33 @@ impl Chat {
         >,
         #[param("What the channel is about")] topic: Option<String>,
     ) -> Result<(), Refusal> {
-        if let Some(category) = &category
-            && !self.categories.contains(category)
-        {
-            return Err(Refusal::new("there is no such category"));
-        }
-        let name = name.trim().trim_start_matches('#');
-        if name.is_empty() {
-            return Err(Refusal::new("a channel needs a name"));
-        }
         let id = cx.id();
-        let kind = kind.unwrap_or_default();
-        self.open_channel(
-            id,
-            Channel {
-                category,
-                name: name.to_owned(),
-                topic: topic
-                    .map(|topic| topic.trim().to_owned())
-                    .unwrap_or_default(),
-                kind,
-                ..Channel::default()
-            },
-        );
-        Ok(())
+        self.make_channel(id, &name, category, kind, topic)
+    }
+
+    /// New channel with an id.
+    ///
+    /// A channel under an id of your choosing, so a later step can name it
+    /// before it exists (`chat.workspace/channels/<id>`). Naming a channel
+    /// that exists leaves it as it is.
+    #[action(moderation, audience = "agents")]
+    pub fn create_channel_with_id(
+        &mut self,
+        #[param("The channel's id: letters, digits, - and _, at most 64")] id: String,
+        #[param("Channel name")] name: String,
+        #[param("The category to list it under; none for uncategorised")] category: Option<Id>,
+        #[param("text for a conversation, voice for a call; text when absent")] kind: Option<
+            ChannelKind,
+        >,
+        #[param("What the channel is about")] topic: Option<String>,
+    ) -> Result<(), Refusal> {
+        let id = given_channel_id(&id)?;
+        // A step run again, or two seeds naming one channel, meet on the
+        // channel that is there.
+        if self.channels.contains(&id) {
+            return Ok(());
+        }
+        self.make_channel(id, &name, category, kind, topic)
     }
 
     /// Delete category.

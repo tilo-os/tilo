@@ -557,9 +557,59 @@ impl Notebook {
         );
         Ok(())
     }
+
+    /// Append to note
+    ///
+    /// Add Markdown at the end of the note titled `title` (ignoring case),
+    /// a block per line: headings, bullets, `- [ ]` checklists, quotes and
+    /// code. An agent names notes by the titles it reads, so it need not
+    /// look the note's id up first; answers the note's id and resource.
+    #[action(answers, audience = "agents")]
+    pub fn append_to_note(
+        &mut self,
+        #[param("The note's title, ignoring case")] title: String,
+        #[param("What to add, as Markdown")] markdown: String,
+    ) -> Result<(), Refusal> {
+        check_markdown_import(&markdown).map_err(Refusal::new)?;
+        if markdown.trim().is_empty() {
+            return Err(Refusal::new("give the Markdown to add"));
+        }
+        let id = self.titled(&title)?;
+        let note = self.pages.get_mut(&id).ok_or("no such note")?;
+        note.body.perform(RichTextAction::InsertMarkdown {
+            at: tilo_document::block_edit::Placement::End,
+            markdown,
+        });
+        Ok(())
+    }
 }
 
 impl Notebook {
+    /// The note titled `title`: an exact title first, else the one title
+    /// equal ignoring case; refused when none or several are.
+    fn titled(&self, title: &str) -> Result<Id, Refusal> {
+        let wanted = title.trim();
+        if wanted.is_empty() {
+            return Err(Refusal::new("name the note by its title"));
+        }
+        if let Some((id, _)) = self.pages.iter().find(|(_, page)| page.title == wanted) {
+            return Ok(id.clone());
+        }
+        let folded = wanted.to_lowercase();
+        let mut alike = self
+            .pages
+            .iter()
+            .filter(|(_, page)| page.title.trim().to_lowercase() == folded);
+        match (alike.next(), alike.next()) {
+            (Some((id, _)), None) => Ok(id.clone()),
+            (Some(_), Some(_)) => Err(Refusal::new(format!(
+                "several notes are titled “{wanted}”: give its exact title"
+            ))),
+            (None, _) => Err(Refusal::new(format!(
+                "no note is titled “{wanted}”; read the notebook for the notes it holds"
+            ))),
+        }
+    }
     /// The note `page` and every note under it, parents before their
     /// children, in notebook order.
     #[must_use]
@@ -723,6 +773,23 @@ impl Notebook {
     ) -> Option<serde_json::Value> {
         use tilo_resource::Resource as _;
         let notebook = Notebook::read(doc).ok()?;
+        // Appending names its note by title: answer the note it found.
+        if action == "append-to-note" {
+            return changes.iter().find_map(|patch| {
+                patch.path.iter().find_map(|(_, prop)| {
+                    let automerge::Prop::Map(key) = prop else {
+                        return None;
+                    };
+                    let page = page_of(&Id::from(key.as_str()))?;
+                    notebook.pages.contains(&page_id(page)).then(|| {
+                        serde_json::json!({
+                            "page": page.to_string(),
+                            "resource": crate::actions::page_resource_id(page),
+                        })
+                    })
+                })
+            });
+        }
         // A block action of a note's body answers the blocks it touched.
         if tilo_document::block_actions::ANSWERING.contains(&action) {
             return notebook.pages.iter().find_map(|(id, _)| {

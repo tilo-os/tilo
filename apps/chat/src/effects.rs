@@ -161,12 +161,25 @@ pub enum ChatEffect {
         #[param("Id of the channel")]
         channel: String,
         #[param(
-            "Maximum messages in this page, 1 to 32 (default 32)",
+            "Maximum messages in this page, 1 to 32 (default 32); more reads 32",
             name = "pageSize"
         )]
         page_size: Option<u8>,
         #[param("The preceding page's nextCursor")]
         cursor: Option<String>,
+    },
+    /// Export conversation
+    ///
+    /// Keeps the channel's transcript, oldest first, each line by the name
+    /// readers see and its time as RFC 3339, as content, from every part
+    /// of the chat's messages this window holds; answers with its content
+    /// address. Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportContent {
+        #[param("Id of the channel")]
+        channel: String,
+        #[param("md (the default) or json", choices = ["md", "json"])]
+        format: Option<String>,
     },
     /// Attach file
     ///
@@ -353,7 +366,9 @@ impl ChatApp {
                     "videoCapture": false,
                 })));
             }
-            ChatEffect::ReadRoom { .. } | ChatEffect::ReadMessages { .. } => {
+            ChatEffect::ReadRoom { .. }
+            | ChatEffect::ReadMessages { .. }
+            | ChatEffect::ExportContent { .. } => {
                 return Err("the record answers this read".into());
             }
             ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
@@ -781,16 +796,21 @@ const PAGE_MOST: usize = 32;
 /// the next page when there is more. Each names its author by id and by
 /// the name `name` gives them, as the window shows it.
 ///
+/// A page asked larger than [`PAGE_MOST`] reads a full page: a caller
+/// asking for more wants as many as it can have, and reads on from the
+/// cursor. A message delivered or bridged under another name is shown by
+/// it ([`crate::transcript::shown_author`]).
+///
 /// # Errors
-/// When `page_size` is out of bounds or `cursor` names no place.
+/// When `page_size` is zero or `cursor` names no place.
 pub(crate) fn read_messages(
     held: &crate::messages::Messages,
     (channel, name): (&str, &dyn Fn(&str) -> String),
     page_size: Option<u8>,
     cursor: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    let size = page_size.map_or(PAGE_MOST, usize::from);
-    if !(1..=PAGE_MOST).contains(&size) {
+    let size = page_size.map_or(PAGE_MOST, |size| usize::from(size).min(PAGE_MOST));
+    if size == 0 {
         return Err(format!("a page holds 1 to {PAGE_MOST} messages"));
     }
     let after = cursor
@@ -839,7 +859,7 @@ pub(crate) fn read_messages(
         "messages": messages.iter().map(|(id, found)| serde_json::json!({
             "id": id.as_str(),
             "author": found.author.0.as_str(),
-            "authorName": name(found.author.0.as_str()),
+            "authorName": crate::transcript::shown_author(found, name),
             "ts": found.ts.to_string(),
             "parent": found.parent.as_ref().map_or("", tilo_resource::Id::as_str),
             "edited": found.edited,

@@ -2995,6 +2995,7 @@ impl MailApp {
         let mail = read_mail(doc.doc()).unwrap_or_default();
         {
             let mut st = self.shared.borrow_mut();
+            mail.show_held(&mut st.mailbox);
             mail.apply_flags(&mut st.mailbox);
         }
         // A persisted draft becomes a local Drafts projection, but does not
@@ -4301,6 +4302,9 @@ impl MailApp {
             MailEffect::Save { message, index } => {
                 self.attachment_to_save(&message, index)?;
                 Err("saving an attachment asks the host where to put it".into())
+            }
+            MailEffect::SearchMessages { .. } | MailEffect::ExportContent { .. } => {
+                Err("held mail is answered from the mailbox".into())
             }
             effect @ (MailEffect::LoadRemoteContent { .. }
             | MailEffect::AlwaysLoadRemoteContent { .. }
