@@ -186,6 +186,10 @@ pub struct BotRunner {
     connectors: BTreeMap<String, Arc<ConnectorProcess>>,
     progress: Progress,
     state_file: PathBuf,
+    /// How many more changes are published before the room is made to
+    /// refuse one, for a test.
+    #[cfg(test)]
+    refuse_after: Mutex<Option<usize>>,
 }
 
 impl BotRunner {
@@ -271,7 +275,31 @@ impl BotRunner {
             connectors,
             progress,
             state_file,
+            #[cfg(test)]
+            refuse_after: Mutex::new(None),
         })
+    }
+
+    /// Have the room refuse the change published after `published` more.
+    #[cfg(test)]
+    pub(crate) fn refuse_change_after(&self, published: usize) {
+        *self.refuse_after.lock_recover() = Some(published);
+    }
+
+    #[cfg(test)]
+    fn refuse_for_test(&self) -> bool {
+        let mut left = self.refuse_after.lock_recover();
+        match *left {
+            Some(0) => {
+                *left = None;
+                true
+            }
+            Some(n) => {
+                *left = Some(n - 1);
+                false
+            }
+            None => false,
+        }
     }
 
     /// Firings that will not run again on their own, newest last: what
@@ -350,14 +378,12 @@ impl BotRunner {
             let firing = queued.firing.clone();
             let finished = match self.fire(&firing).await {
                 Ok(Fired::Refused(reason)) => {
-                    // Running it again would make the same change and meet
-                    // the same refusal.
+                    // What the run changed before the refused change stands
+                    // and the rest was dropped: run it again, from the
+                    // room's records, so it finishes what it started.
                     self.progress
                         .queue
-                        .dead_letter_head(&reason, tilo_clock::unix_now_ms_i64())
-                        .map_or(Finished::Done, |dead| {
-                            Finished::DeadLettered(Box::new(dead))
-                        })
+                        .refused(&reason, tilo_clock::unix_now_ms_i64())
                 }
                 Ok(Fired::Ran(report)) => {
                     let finished = self
@@ -566,23 +592,37 @@ impl BotRunner {
         .await
         .map_err(|error| error.to_string())?;
         let changes = self.held.lock_recover().take_changes();
-        let mut changes = changes.into_iter();
-        while let Some((route, mutation)) = changes.next() {
+        let count = changes.len();
+        let mut changes = changes.into_iter().enumerate();
+        while let Some((index, (route, mutation))) = changes.next() {
             if let Err(refusal) = self.publish(&route, mutation).await {
                 // The refused change, and every later one built on it, stay
                 // out of the room; the bot's replicas they touched start
                 // over from the room's records, or every later change of
                 // theirs would carry the refused one and be refused too.
-                let touched: BTreeSet<DocumentRoute> = std::iter::once(route)
-                    .chain(changes.map(|(route, _)| route))
+                let touched: BTreeSet<DocumentRoute> = std::iter::once(route.clone())
+                    .chain(changes.map(|(_, (route, _))| route))
                     .collect();
                 let mut held = self.held.lock_recover();
                 for route in &touched {
                     held.forget(route);
                 }
                 drop(held);
-                let reason = format!("the room refused the bot's change: {refusal}");
-                tracing::warn!(installation = %self.bot.installation, run = %firing.run.0, %reason, "bot change refused");
+                self.door.forget_steps();
+                let reason = format!(
+                    "the room refused the bot's change to {}/{}: {refusal}",
+                    route.app_id, route.record
+                );
+                tracing::warn!(
+                    installation = %self.bot.installation,
+                    run = %firing.run.0,
+                    app = %route.app_id,
+                    record = %route.record,
+                    change = index.saturating_add(1),
+                    of = count,
+                    %refusal,
+                    "bot change refused; the changes before it stand, the rest are dropped and the run goes again"
+                );
                 return Ok(Fired::Refused(reason));
             }
         }
@@ -656,6 +696,10 @@ impl BotRunner {
         route: &DocumentRoute,
         mutation: DocumentMutation,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if self.refuse_for_test() {
+            return Err("refused for the test".into());
+        }
         let bytes = match mutation {
             DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
         };
