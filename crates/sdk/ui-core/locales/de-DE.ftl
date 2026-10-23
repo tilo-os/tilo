@@ -728,6 +728,7 @@ display-arrangement-caption-status = { $status } · { $name }
 
 # Suche: die Zeile, die den Rest einer gekürzten Gruppe zeigt
 search-show-all = Alle { $count } zeigen
+search-no-matches = Keine Treffer
 approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 
 author-bot-chip = Bot
