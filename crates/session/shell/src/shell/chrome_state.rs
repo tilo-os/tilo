@@ -2060,6 +2060,7 @@ impl ChromeState {
                 person: &user,
                 role,
                 layout_shared: true,
+                members: None,
             };
             // Native strips and windows are kept by id namespace, not by
             // who made them.
