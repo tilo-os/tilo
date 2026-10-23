@@ -1105,7 +1105,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                 #krate::ActionKind::Undoable
             } else {
                 #krate::ActionKind::Outside
-            },))
+            },));
             }
             _ => kinds.push(quote!(Self::#variant(..) => #krate::ActionKind::#action_kind,)),
         }
