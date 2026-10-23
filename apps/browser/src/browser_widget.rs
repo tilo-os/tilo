@@ -2206,7 +2206,7 @@ impl BrowserWidget {
         value.insert("url".into(), url.into());
         value.insert("title".into(), self.title.as_str().into());
         value.insert("message".into(), message.into());
-        value.insert("navigated".into(), reply.navigated.into());
+        value.insert("navigation".into(), reply.navigation.as_str().into());
         if let Some(outline) = &reply.outline {
             value.insert("outline".into(), outline.as_str().into());
         }
@@ -7959,7 +7959,7 @@ mod tests {
                 message: "Clicked button \"Checkout\"".into(),
                 outline: None,
                 data: None,
-                navigated: true,
+                navigation: ui::webview::PageNavigation::Started,
                 loading: true,
             }));
             let click = start(
@@ -7998,7 +7998,7 @@ mod tests {
             let value = output.value.unwrap();
             assert_eq!(value["url"], "https://shop.test/checkout");
             assert_eq!(value["message"], "Clicked button \"Checkout\"");
-            assert_eq!(value["navigated"], true);
+            assert_eq!(value["navigation"], "started");
         }
 
         // Phase `engine_refusals_become_typed_invocation_failures`.

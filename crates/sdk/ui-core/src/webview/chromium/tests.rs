@@ -1471,7 +1471,7 @@ fn poisoned_tab_state_never_panics_or_poisons_routes() {
 
 #[test]
 fn page_requests_are_encoded_bounded_and_always_answered() {
-    use crate::webview::{PageFailure, PageKey, PageReply, PageRequest};
+    use crate::webview::{PageFailure, PageKey, PageNavigation, PageReply, PageRequest};
     // phase: page_requests_encode_to_the_host_page_op
     {
         let command = WebViewCommand::Page {
@@ -1528,7 +1528,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                     message: "Clicked".into(),
                     outline: None,
                     data: None,
-                    navigated: true,
+                    navigation: PageNavigation::Started,
                     loading: true,
                 }),
             })
