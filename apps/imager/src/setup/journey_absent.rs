@@ -98,9 +98,11 @@ pub mod prepared_media {
         false
     }
 
-    /// Retiring a prepared medium needs the native preparation.
+    /// Nothing to retire: without native preparation no drive carries a
+    /// prepared medium ([`pending_target`] is always false), and closing the
+    /// window retires each target it touched, which must not fail here.
     pub fn finish_target(_stable_id: &str) -> io::Result<()> {
-        Err(imager_backend::journey_media::Unsupported.into())
+        Ok(())
     }
 
     /// The journey's navigation back to a prepared medium.
