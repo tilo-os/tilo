@@ -14,6 +14,8 @@ use crate::headless::{self, FrameHarness};
 
 #[cfg(feature = "native")]
 mod app_log;
+#[cfg(feature = "native")]
+mod capture_clock;
 mod capture_settings;
 #[cfg(feature = "native")]
 use app_log::init_app_log;
@@ -778,8 +780,9 @@ fn run_with_args_with_attachment(
         spec.max_positionals,
     )?;
     validate_spec_args(&args, spec)?;
-    // A capture shows the same date and time on every run.
-    if args.shots.is_some() || args.responsive_matrix.is_some() {
+    // A capture shows the same date and time on every run, and so does a
+    // drive built from a scenario's fixtures: it is staged as its capture.
+    if capture_clock::pins_the_clock(&args) {
         crate::clock::freeze_for_capture();
     }
     if let Some(scale) = args.device_scale {
