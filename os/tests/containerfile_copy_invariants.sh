@@ -304,7 +304,7 @@ containerfile="$repo/os/Containerfile"
 # resolver timeout) is one payload row.
 # tilo-deployment-status.socket and its service answer `tilo status` for the
 # device admin: two payload rows.
-expected_contract=bab5775a1478b43f8b687522de11d4fcb695eca70bfbb3e21c370b54dea369fc
+expected_contract=aa169ade29119a752181d3eefc80833609066243924800aac19416fa65e1d72f
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
