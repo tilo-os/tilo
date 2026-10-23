@@ -3,6 +3,7 @@
 use super::*;
 use crate::{InputDisposition, TransportOrigin, peer_handle};
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
+use collab_types::CommitNamed as _;
 use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
 use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
@@ -1517,4 +1518,127 @@ fn a_compaction_folds_its_writes_exact_evidence_into_one_mark_per_writer() {
         restored.core.exact_admissions.encode().unwrap(),
         f.host.core.exact_admissions.encode().unwrap()
     );
+}
+
+fn sealer(
+    keys: &ChannelContentKeys,
+    record: &str,
+) -> impl FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+    let artifact = collab_types::document_artifact_id(APP, ROOM, record);
+    move |plaintext| {
+        keys.seal_content(artifact, ContentRetention::Delta, plaintext)
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[test]
+fn the_key_holder_seals_a_record_held_in_the_clear_from_its_next_write_on() {
+    let f = fixture();
+    let keys = f.keys();
+    let mut host = f.host.clone();
+    assert!(!host.is_sealed_record(APP, RECORD));
+    let mut document = AutoCommit::load(&host.document(APP, RECORD).unwrap()).unwrap();
+    let heads = document.get_heads();
+    document.put(ROOT, "value", "sealed").unwrap();
+    document.commit_edit("fixture", "value");
+    let message = host
+        .publish_sealed_incremental(
+            APP,
+            RECORD,
+            document.save_after(&heads),
+            &mut sealer(&keys, RECORD),
+            &f.owner,
+            f.now,
+        )
+        .unwrap();
+    assert!(envelope_of(&message).encryption.is_some());
+    assert!(host.is_sealed_record(APP, RECORD));
+    let opened = host
+        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        AutoCommit::load(&opened.document)
+            .unwrap()
+            .get(ROOT, "value")
+            .unwrap()
+            .unwrap()
+            .0
+            .to_string(),
+        "\"sealed\""
+    );
+    assert!(
+        host.publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
+            .is_err()
+    );
+
+    let mut keyless = f.host.clone();
+    admit(&mut keyless, &f.owner, message, f.now);
+    assert!(keyless.is_sealed_record(APP, RECORD));
+}
+
+/// A record is born from its owner's checkpoint, which holds nothing; its
+/// key holder's first write, its genesis, is sealed.
+#[test]
+fn the_key_holder_writes_a_new_records_genesis_sealed() {
+    let f = fixture();
+    let record = "tab:2";
+    let group = ChannelGroup::create(
+        collab_types::document_channel_id(APP, ROOM, record),
+        MemberKey::generate("owner").unwrap(),
+    )
+    .unwrap();
+    let keys = group.content_keys().unwrap();
+    let mut genesis = AutoCommit::new();
+    genesis.put(ROOT, "value", "born sealed").unwrap();
+    genesis.commit_edit("fixture", "value");
+    let mut host = f.host.clone();
+    host.publish_document(APP, record, AutoCommit::new().save(), &f.owner, f.now)
+        .unwrap();
+    let message = host
+        .publish_sealed_incremental(
+            APP,
+            record,
+            genesis.save_after(&[]),
+            &mut sealer(&keys, record),
+            &f.owner,
+            f.now,
+        )
+        .unwrap();
+    assert!(host.is_sealed_record(APP, record));
+    assert_eq!(
+        AutoCommit::load(&host.document(APP, record).unwrap())
+            .unwrap()
+            .get_heads(),
+        Vec::new()
+    );
+    let opened = host
+        .opened_document(APP, record, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        AutoCommit::load(&opened.document).unwrap().get_heads(),
+        genesis.get_heads()
+    );
+    assert!(envelope_of(&message).encryption.is_some());
+}
+
+#[test]
+fn a_record_its_key_holder_seals_is_never_published_in_the_clear_again() {
+    let f = fixture();
+    let mut host = f.host.clone();
+    assert!(host.seal_record(APP, RECORD));
+    assert!(host.is_sealed_record(APP, RECORD));
+    assert!(
+        host.clone()
+            .publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
+            .is_err()
+    );
+    let restored = f.restore(&host.durable().unwrap()).unwrap();
+    assert!(restored.is_sealed_record(APP, RECORD));
+    let messages = host.durable_bootstrap_messages(&f.owner, f.now, 2).unwrap();
+    assert!(!messages.iter().any(
+        |message| matches!(message, NeighbourMsg::AppDocument { record_id, .. } if record_id == RECORD)
+    ));
+    assert!(!host.seal_record(APP, "tab:2"));
 }

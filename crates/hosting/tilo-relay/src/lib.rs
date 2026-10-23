@@ -141,6 +141,8 @@ pub mod presence_mailbox;
 pub mod public_avatars;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
+#[cfg(feature = "agents")]
+pub mod reseal;
 #[cfg(not(target_arch = "wasm32"))]
 mod room_access;
 #[cfg(feature = "agents")]
@@ -149,6 +151,8 @@ pub mod room_bots;
 pub mod room_records;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rooms;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod state_lock;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 #[cfg(not(target_arch = "wasm32"))]

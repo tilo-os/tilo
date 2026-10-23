@@ -78,6 +78,8 @@ pub(super) struct Checked<'a> {
     entry: &'a ChannelEntry,
     route: Option<Route>,
     piece: Piece,
+    /// A verified frame written in the clear.
+    cleartext: bool,
 }
 
 impl<'a> Checked<'a> {
@@ -94,6 +96,11 @@ impl<'a> Checked<'a> {
     /// Whether the entry is a verified sealed frame.
     pub(super) const fn is_sealed(&self) -> bool {
         matches!(self.piece, Piece::Sealed)
+    }
+
+    /// Whether the entry is a verified frame written in the clear.
+    pub(super) const fn is_cleartext(&self) -> bool {
+        self.cleartext
     }
 
     pub(super) fn into_parts(self) -> (Option<Route>, Piece) {
@@ -131,6 +138,7 @@ impl Signatures {
             entry,
             route,
             piece: Piece::Opaque,
+            cleartext: false,
         };
         let Some((route, envelope)) = self.payloads.open_document(&entry.body) else {
             return opaque(None);
@@ -165,6 +173,7 @@ impl Signatures {
             entry,
             route: Some(route),
             piece,
+            cleartext: envelope.encryption.is_none(),
         }
     }
 

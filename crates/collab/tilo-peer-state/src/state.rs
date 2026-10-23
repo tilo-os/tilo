@@ -1225,6 +1225,25 @@ impl StatePeer {
             .map(|(route, _)| (route.app.clone(), route.record.clone()))
             .collect()
     }
+    /// Encrypt `record` of `app`, held in the clear, from now on: its
+    /// channel's key holder decided that its writes are sealed, so a write
+    /// in the clear is refused as a downgrade and no checkpoint of it is
+    /// published in the clear. Whether the record is held.
+    pub fn seal_record(&mut self, app: &str, record: &str) -> bool {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(document) = self.core.documents.get(&route) else {
+            return false;
+        };
+        if !document.encryption_required {
+            let mut sealed = document.clone();
+            sealed.encryption_required = true;
+            self.core.documents.insert(route, sealed);
+        }
+        true
+    }
     pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
         self.core
             .documents

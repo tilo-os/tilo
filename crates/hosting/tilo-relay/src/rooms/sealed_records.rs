@@ -186,6 +186,24 @@ pub(super) fn publish_changes(
     }
 }
 
+/// Start `record` of `app` in `candidate` as the room's host, signed with
+/// `key` and sealed with `keys`: the checkpoint every record is born from,
+/// which holds nothing, then `changes`, what the record starts with.
+#[cfg(feature = "agents")]
+pub(super) fn start_sealed(
+    candidate: &mut StatePeer,
+    keys: &RecordKeys,
+    (app, record): (&str, &str),
+    changes: Vec<u8>,
+    key: &SigningKey,
+    now: SystemTime,
+) -> Result<NeighbourMsg, String> {
+    if !candidate.holds_document(app, record) {
+        candidate.publish_document(app, record, automerge::AutoCommit::new().save(), key, now)?;
+    }
+    publish_changes(candidate, Some(keys), (app, record), changes, key, now)
+}
+
 /// Publish `changes` a bot's device `bot` made to a sealed record into
 /// `candidate`: decided as the bot's own sealed write, sealed with `keys`
 /// and published under the governor's `key`, which the room's members take
@@ -234,6 +252,224 @@ impl crate::compaction::StewardedKeys for Rooms {
 }
 
 impl Rooms {
+    /// Seal the records the rooms this relay stewards hold in the clear, from
+    /// now on: the host's operator decided it ([`crate::reseal`]).
+    #[cfg(feature = "agents")]
+    pub(crate) fn reseal_existing(&self) {
+        self.inner
+            .resealing
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "agents")]
+    fn resealing(&self) -> bool {
+        self.inner
+            .resealing
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Seal every record of the rooms this relay stewards: open the channel
+    /// of each that has none yet, and seal what each channel retains in the
+    /// clear, as `compactor` does ([`crate::compaction::Compactor::reseal`]):
+    /// records written before their channels were opened.
+    #[cfg(feature = "agents")]
+    pub(crate) async fn reseal_stewarded(&self, compactor: &crate::compaction::Compactor) {
+        let rooms: Vec<_> = self.inner.rooms.lock().await.values().cloned().collect();
+        for state in rooms {
+            let (name, workspace_id, routes) = {
+                let mut room = state.lock().await;
+                if room.stewardship.is_none() {
+                    continue;
+                }
+                let plaintext = room.peer().plaintext_routes();
+                let mut candidate = room.peer().clone();
+                for (app, record) in &plaintext {
+                    match self.sealing_keys(&room, app, record).await {
+                        Ok(_) => {
+                            candidate.seal_record(app, record);
+                        }
+                        Err(error) => tracing::warn!(room = %room.room(), %app, %record,
+                            %error, "a record's channel was not opened"),
+                    }
+                }
+                if candidate.sealed_routes().len() != room.peer().sealed_routes().len() {
+                    let collaboration = room.collaboration().clone();
+                    let settled = match room.commit(
+                        candidate,
+                        &self.inner.host.key,
+                        SystemTime::now(),
+                        |_, _| Ok(collaboration),
+                    ) {
+                        Ok(_) => self.settle(&mut room).await,
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = settled {
+                        tracing::warn!(room = %room.room(), %error,
+                            "the room's records were not sealed");
+                        continue;
+                    }
+                }
+                (
+                    room.room().to_owned(),
+                    room.workspace_id(),
+                    room.peer().sealed_routes(),
+                )
+            };
+            let Some(workspace) = self
+                .inner
+                .host
+                .workspaces
+                .lock()
+                .await
+                .get(&workspace_id)
+                .cloned()
+            else {
+                continue;
+            };
+            for (app, record) in routes {
+                let channel = neighbour_wire::app_document_channel(&app, &record);
+                let route = crate::compaction::Route {
+                    app_id: app,
+                    cluster_id: name.clone(),
+                    record_id: record,
+                };
+                if let Err(error) = compactor
+                    .reseal(&workspace, workspace_id, channel, &route)
+                    .await
+                {
+                    tracing::warn!(room = %name, app = %route.app_id, record = %route.record_id,
+                        %error, "a record's writes made in the clear were not sealed");
+                }
+            }
+            drop(workspace);
+        }
+    }
+
+    /// What each record channel of the rooms this relay stewards retains,
+    /// read with the channel's keys where it has a channel: per record, its
+    /// workspace, store channel and `(app, record)`.
+    #[cfg(feature = "agents")]
+    pub(crate) async fn stewarded_channels(
+        &self,
+    ) -> Vec<(u64, [u8; 32], (String, String), crate::compaction::Retained)> {
+        let payloads = self.inner.host.access.shell_payloads().clone();
+        let rooms: Vec<_> = self.inner.rooms.lock().await.values().cloned().collect();
+        let mut out = Vec::new();
+        for state in rooms {
+            let (steward, name, workspace_id, routes) = {
+                let room = state.lock().await;
+                let Some(steward) = room.stewardship.clone() else {
+                    continue;
+                };
+                let mut routes = room.peer().plaintext_routes();
+                routes.extend(room.peer().sealed_routes());
+                (steward, room.room().to_owned(), room.workspace_id(), routes)
+            };
+            let Some(workspace) = self
+                .inner
+                .host
+                .workspaces
+                .lock()
+                .await
+                .get(&workspace_id)
+                .cloned()
+            else {
+                continue;
+            };
+            let store = workspace.lock().await.store.clone();
+            drop(workspace);
+            for (app, record) in routes {
+                let keys = steward
+                    .channels
+                    .lock()
+                    .await
+                    .existing_keys(collab_types::document_channel_id(&app, &name, &record))
+                    .ok();
+                let open = |op: &SignedOp| {
+                    let keys = keys.as_ref()?;
+                    let metadata = op.encryption?;
+                    let ciphertext = collab_types::sealed_ciphertext(op).ok()?;
+                    keys.open_content(op.artifact, &metadata, &ciphertext)
+                        .ok()
+                        .map(|plaintext| plaintext.to_vec())
+                };
+                let channel = neighbour_wire::app_document_channel(&app, &record);
+                let entries = store.channel_entries(&channel).unwrap_or_default();
+                let retained = crate::compaction::retained(payloads.clone(), &entries, Some(&open));
+                out.push((workspace_id, channel, (app, record), retained));
+            }
+        }
+        out
+    }
+
+    /// The keys the governor writes `record` of `app` with: in a room whose
+    /// channels this relay stewards every new record is sealed from its
+    /// first write, so its channel is opened first when it has none (its
+    /// genesis, published before anything is written there). A record it
+    /// already holds in the clear stays so until the host's operator decides
+    /// to seal them ([`Rooms::reseal_existing`]). `None` in a room it does
+    /// not steward, where records are written in the clear.
+    ///
+    /// # Errors
+    ///
+    /// As [`GovernedRoom::record_keys`], or the channel cannot be opened.
+    #[cfg(feature = "agents")]
+    pub(super) async fn sealing_keys(
+        &self,
+        room: &GovernedRoom,
+        app: &str,
+        record: &str,
+    ) -> Result<Option<RecordKeys>, String> {
+        let Some(steward) = room.stewardship.clone() else {
+            return room.record_keys(app, record).await;
+        };
+        let held_in_the_clear =
+            room.peer().holds_document(app, record) && !room.peer().is_sealed_record(app, record);
+        if held_in_the_clear && !self.resealing() {
+            return room.record_keys(app, record).await;
+        }
+        let name = room.room();
+        let channel = collab_types::document_channel_id(app, name, record);
+        let mut stewardship = steward.channels.lock().await;
+        let keys = if let Ok(keys) = stewardship.existing_keys(channel) {
+            keys
+        } else {
+            steward.learn_route(channel, &collab_types::ChannelRoute::new(app, record));
+            self.open_record_channel(room, &steward, &mut stewardship, channel)
+                .await?;
+            stewardship.existing_keys(channel)?
+        };
+        Ok(Some(RecordKeys {
+            keys,
+            artifact: collab_types::document_artifact_id(app, name, record),
+        }))
+    }
+
+    /// Open `channel` of `room` as its steward, creating its group when it
+    /// has none, with the devices that may read its record admitted, and
+    /// publish that change before anything is written there.
+    #[cfg(feature = "agents")]
+    pub(super) async fn open_record_channel(
+        &self,
+        room: &GovernedRoom,
+        steward: &super::stewardship::Steward,
+        stewardship: &mut super::stewardship::Stewardship,
+        channel: collab_types::ChannelId,
+    ) -> Result<(), String> {
+        let now = SystemTime::now();
+        let allowed = super::readers(
+            room.peer(),
+            &room.peer().governance().governed_access(now)?,
+            Some(steward),
+            now,
+        )?;
+        let messages = stewardship.open_channel(channel, &allowed)?;
+        // After the channel changes a settle handed over.
+        room.publisher.flushed().await;
+        self.publish_channel_governance(room.workspace_id(), messages)
+            .await
+    }
+
     /// Compact every sealed record history of `room` that has used most of
     /// its bound into one sealed checkpoint, and commit and publish the
     /// compactions. A record whose history does not merge yet (a write it
