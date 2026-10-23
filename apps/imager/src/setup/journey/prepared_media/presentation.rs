@@ -605,10 +605,12 @@ pub(crate) fn finish_target(stable_id: &str) -> std::io::Result<()> {
     {
         super::prepared_media_native::finish_target(stable_id)
     }
+    // Without native preparation no target is pending (`pending_target`),
+    // so there is nothing to retire.
     #[cfg(not(target_os = "linux"))]
     {
         let _ = stable_id;
-        Err(imager_backend::journey_media::Unsupported.into())
+        Ok(())
     }
 }
 

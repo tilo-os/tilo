@@ -73,7 +73,8 @@ impl NativeProcessHost {
         )?;
         host.package_id = Some(resolved.package_id);
         if let Some(person) = resolved.person_dir {
-            host.keep_person_records_in(Rc::new(app_state::FsStore::new(person)));
+            // The launcher binds the person's directory into the sandbox.
+            host.keep_person_records_in(Rc::new(app_state::FsStore::provisioned(person)));
         }
         // Where a window that names no record gets its fallback. Every app
         // the framework builds keeps one record per workspace

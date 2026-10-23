@@ -128,6 +128,11 @@ pub struct SettingsApp {
     /// sync from the sections `value_follows` keeps and what the areas last
     /// read: cheap reads, compared to rebuild only on a change.
     found_reads: Vec<crate::setting::Read>,
+    /// The screen a narrow window showed when search found something and
+    /// brought what it found to the front: shown again when the search
+    /// finds nothing more. `None` while nothing found is shown, or once a
+    /// page was opened from it.
+    found_over: Option<NavPane>,
     value_follows: crate::setting::Follows,
 }
 
@@ -188,6 +193,7 @@ impl SettingsApp {
             found_query: String::new(),
             found: Vec::new(),
             found_reads: Vec::new(),
+            found_over: None,
             value_follows: crate::setting::Follows::default(),
         }
     }
@@ -540,10 +546,24 @@ impl SettingsApp {
         if found.is_empty() && self.found.is_empty() {
             return;
         }
+        let was_shown = !self.found.is_empty();
         self.found = found;
         self.read_found();
         self.structure_dirty = true;
         self.refresh_shell_children();
+        // In a narrow window what search found is a screen of its own, in
+        // front of the list it narrows; finding nothing more goes back.
+        let narrow = self.is_narrow();
+        if let Some(shell) = self.shell.as_mut().filter(|_| narrow) {
+            if !self.found.is_empty() && !was_shown {
+                self.found_over = Some(shell.front_pane());
+                shell.show(NavPane::Content);
+            } else if self.found.is_empty()
+                && let Some(over) = self.found_over.take()
+            {
+                shell.show(over);
+            }
+        }
     }
 
     /// Read what the settings found are set to; whether any reads otherwise
@@ -736,8 +756,10 @@ impl ui::widget::Collaborative for SettingsApp {
 }
 
 /// The window bar's search queries the shown pane where it offers a query
-/// ([`crate::area::PaneArea::query`]), and otherwise narrows the sidebar
-/// ([`ui::widget::NavList`] is the window's `Filterable`).
+/// ([`crate::area::PaneArea::query`]), and otherwise narrows the sidebar's
+/// list and lists the settings it finds: the window is its `Filterable`,
+/// so the search reaches the list while what it found is in front of it in
+/// a narrow window.
 impl SettingsApp {
     /// What the window bar's search queries now: the pane it opened on while
     /// it stays open, else the shown pane, when that pane offers a query.
@@ -767,12 +789,27 @@ impl ui::widget::Queryable for SettingsApp {
     }
 }
 
+impl ui::widget::Filterable for SettingsApp {
+    fn set_filter(&mut self, query: &str) {
+        self.narrow_sidebar(query);
+    }
+
+    fn filter_count(&self) -> Option<ui::widget::FilterCount> {
+        self.shell
+            .as_ref()?
+            .sidebar_ref::<ui::widget::NavList>()
+            .and_then(ui::widget::Filterable::filter_count)
+    }
+}
+
 impl Widget for SettingsApp {
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::widget::Queryable>() {
             if self.pane_query().is_some() {
                 request.provide::<dyn ui::widget::Queryable>(self);
             }
+        } else if request.wants::<dyn ui::widget::Filterable>() {
+            request.provide::<dyn ui::widget::Filterable>(self);
         } else if request.wants::<dyn ui::widget::Collaborative>() {
             request.provide::<dyn ui::widget::Collaborative>(self);
         } else if request.wants::<dyn ui::application_view::ApplicationViewState>() {
@@ -785,6 +822,8 @@ impl Widget for SettingsApp {
             if self.pane_query().is_some() {
                 request.provide::<dyn ui::widget::Queryable>(self);
             }
+        } else if request.wants::<dyn ui::widget::Filterable>() {
+            request.provide::<dyn ui::widget::Filterable>(self);
         } else if request.wants::<dyn ui::widget::Collaborative>() {
             request.provide::<dyn ui::widget::Collaborative>(self);
         } else if request.wants::<dyn ui::application_view::ApplicationViewState>() {
@@ -898,6 +937,7 @@ impl Widget for SettingsApp {
             // page; what search found is left behind.
             let found = !self.found.is_empty();
             self.found.clear();
+            self.found_over = None;
             if found && self.selected == category {
                 self.structure_dirty = true;
                 self.refresh_shell_children();

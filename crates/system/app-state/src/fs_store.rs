@@ -57,6 +57,9 @@ pub struct FsStore {
 
 struct Shared {
     root: PathBuf,
+    /// The host provisioned `root` ([`FsStore::provisioned`]): no directory
+    /// above it is the store's to sync.
+    provisioned: bool,
     state: Mutex<State>,
     changed: Condvar,
     debounce: Duration,
@@ -323,12 +326,25 @@ impl FsStore {
 
     /// As [`Self::new`], coalescing each key's writes for `debounce`.
     pub fn with_debounce(profile_root: impl Into<PathBuf>, debounce: Duration) -> Self {
-        let root = profile_root.into();
+        Self::over(profile_root.into(), false, debounce)
+    }
+
+    /// A store over `root`, a directory its host provisioned and owns, as
+    /// the Linux launcher binds the person's records into an app's sandbox:
+    /// the store makes what it creates beneath `root` durable, and never
+    /// opens a directory above it, which is the host's and which the sandbox
+    /// may not let it open.
+    pub fn provisioned(root: impl Into<PathBuf>) -> Self {
+        Self::over(root.into(), true, DEFAULT_DEBOUNCE)
+    }
+
+    fn over(root: PathBuf, provisioned: bool, debounce: Duration) -> Self {
         Self {
             namespace: root.to_string_lossy().into_owned(),
             root: root.clone(),
             shared: Arc::new(Shared {
                 root,
+                provisioned,
                 state: Mutex::new(State::default()),
                 changed: Condvar::new(),
                 debounce,
@@ -1245,7 +1261,8 @@ fn open_shared_owner(directory: &Path) -> Result<Owner, StoreError> {
 fn sync_ancestors(shared: &Shared, directory: &Path) -> Result<(), StoreError> {
     #[cfg(not(test))]
     let _ = shared;
-    sync_directory_ancestors(directory, |path| {
+    let provisioned = shared.provisioned.then_some(shared.root.as_path());
+    sync_directory_ancestors(directory, provisioned, |path| {
         #[cfg(test)]
         note_sync(shared);
         #[cfg(test)]

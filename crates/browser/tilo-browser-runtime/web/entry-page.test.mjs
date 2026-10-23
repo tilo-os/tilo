@@ -36,7 +36,8 @@ async function fixture({boot, remembered = []} = {}) {
   const peer = {origin: ORIGIN, room: 'current', userPublicKey: USER,
     host: {hostCert: {user_public_key: Array(32).fill(170), device_public_key: Array(32).fill(0xcd)}},
     createInvitation: async () => { calls.push('invite'); return 'signed-secret'; },
-    membership: {list: async () => ({name: 'Current', members: []})},
+    // A member, not the owner, of a host that keeps who asks to join to its owner.
+    membership: {list: async () => ({name: 'Current', members: []}), requests: async () => { throw new Error('only the owner sees who asks'); }},
     workspaces: {create: async name => ({room: 'created', name}), enter: async () => calls.push('enter')},
     dispose: async () => calls.push('dispose')};
   const page = {peer, entry: {base: 'https://web.example/'},

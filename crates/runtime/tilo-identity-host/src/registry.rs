@@ -622,10 +622,17 @@ mod tests {
         path
     }
 
+    /// Write a record the way every writer of the identity directory does:
+    /// private from creation and renamed into place. A record written open
+    /// and made private afterwards changes only its mode, which the
+    /// directory's change watch does not report.
     fn write_record(path: &Path, record: &IdentityRecord) {
-        fs::write(path, record.to_json_bytes().expect("encode")).expect("write");
-        #[cfg(unix)]
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("private record");
+        tilo_files::native::atomic::write_regenerable_with_mode(
+            path,
+            &record.to_json_bytes().expect("encode"),
+            0o600,
+        )
+        .expect("write");
     }
 
     /// The identity service answers every launch from the cached read; it
