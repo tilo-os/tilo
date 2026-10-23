@@ -3424,6 +3424,8 @@ pub struct CapnpBrokerState {
     /// action it holds no grant for. Nobody, until the host installs its
     /// sheet: such a request is then refused.
     app_action_consent: RwLock<Option<Arc<dyn crate::app_actions::AppActionConsentPrompter>>>,
+    /// The notices of runs' questions given, by handle, with their room.
+    run_question_notices: Mutex<HashMap<String, String>>,
     /// Applications with a grant question on screen, by room: one at a
     /// time each, so an app cannot bury the person in sheets.
     app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
@@ -4267,6 +4269,7 @@ impl CapnpBrokerState {
                         .unwrap_or_else(crate::app_actions::nothing_declared),
                 ),
                 app_action_consent: RwLock::new(None),
+                run_question_notices: Mutex::new(HashMap::new()),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 step_prompts: crate::automation::StepPrompts::default(),
                 invocation_generation: tokio::sync::watch::Sender::new(0),

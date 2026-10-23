@@ -1,8 +1,9 @@
 //! An agent a relay runs for Ada asks before an action her grants leave to
 //! her. Her laptop — a device holding her root, connected to the relay as
-//! its host — shows the question on its own confirmation sheet ("… wants to
-//! act for you", Allow once or Deny) and the relay hands the agent the
-//! witnessed answer for that one invocation.
+//! its host — tells her with a notification; its Answer shows the question
+//! on its own confirmation sheet ("… wants to act for you", Allow once or
+//! Deny) and the relay hands the agent the witnessed answer for that one
+//! invocation.
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -87,6 +88,30 @@ fn sheet_shows(sheet: &mut PortalDialogController) -> DialogView {
         assert!(
             Instant::now() < deadline,
             "the question never reached the sheet"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Ada answers the notice the question arrives as; until she does, no
+/// sheet takes her screen.
+fn answer_the_notice(sheet: &mut PortalDialogController) {
+    use crate::shell::app_action_consent::{Notice, answer_notice, drain_notices};
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let posted = drain_notices().into_iter().find_map(|notice| match notice {
+            Notice::Post { handle, .. } => Some(handle),
+            Notice::Withdraw { .. } => None,
+        });
+        if let Some(handle) = posted {
+            sheet.pump();
+            assert!(sheet.view().is_none(), "the agent never raises the sheet");
+            assert!(answer_notice(&handle));
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the question never arrived as a notice"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -201,6 +226,7 @@ fn the_persons_device_answers_a_relay_agents_question_on_its_sheet() {
     // Asked: the laptop shows the question on its confirmation sheet, and
     // Allow once is the only allowing answer.
     let answer = ask();
+    answer_the_notice(&mut sheet);
     let view = sheet_shows(&mut sheet);
     assert!(
         view.title().contains("Careful agent wants to act for you"),
@@ -230,6 +256,7 @@ fn the_persons_device_answers_a_relay_agents_question_on_its_sheet() {
 
     // Asked again, it is a new question; denied, the agent is refused.
     let answer = ask();
+    answer_the_notice(&mut sheet);
     sheet_shows(&mut sheet);
     let layout = sheet.layout(bounds).unwrap();
     assert!(sheet.click(layout.cancel.center(), &layout), "Deny answers");

@@ -202,7 +202,23 @@ pub trait AppActionConsentPrompter: Send + Sync {
     /// Put `request` to the person. `None` when nobody is there to answer,
     /// which refuses the request without asking.
     fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionConsent>>;
+
+    /// Tell the person about `request` without interrupting them, as an
+    /// ordinary notice; when they choose to answer it, `answer` is handed
+    /// what they answer on the sheet. `false` when nobody here is told.
+    fn notify(&self, request: AppActionConsentRequest, answer: AnswerLater) -> bool {
+        let _ = (request, answer);
+        false
+    }
+
+    /// Take back the notice of the request `handle`: answered or gone.
+    fn withdraw(&self, handle: &str) {
+        let _ = handle;
+    }
 }
+
+/// What a notified request does with the person's answer on the sheet.
+pub type AnswerLater = Box<dyn FnOnce(oneshot::Receiver<AppActionConsent>) + Send>;
 
 #[cfg(test)]
 mod tests {

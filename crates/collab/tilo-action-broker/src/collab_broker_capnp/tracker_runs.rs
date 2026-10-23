@@ -192,8 +192,11 @@ impl CapnpBrokerState {
     }
 
     /// Deliver every going run of the subscribed rooms' trackers to its
-    /// agent.
-    pub(super) fn refresh_tracker_runs(&self, rooms: &std::collections::BTreeSet<String>) {
+    /// agent, and tell its person what it asks.
+    pub(super) fn refresh_tracker_runs(
+        self: &Arc<Self>,
+        rooms: &std::collections::BTreeSet<String>,
+    ) {
         for room in rooms {
             let Some(service) = self.tracker_runs(room) else {
                 continue;
@@ -201,6 +204,7 @@ impl CapnpBrokerState {
             let Ok(runs) = service.runs(room) else {
                 continue;
             };
+            self.notify_run_questions(room, &runs);
             for run in runs.iter().filter(|run| run.active) {
                 if let Err(error) = self.dispatch_tracker_run(room, run) {
                     tracing::debug!(%error, issue = %run.issue, "approved issue run not delivered");

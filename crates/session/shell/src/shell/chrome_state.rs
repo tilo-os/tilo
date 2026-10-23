@@ -1142,6 +1142,8 @@ pub struct ChromeState {
     /// Notifications of new devices asking to be the person, with the
     /// request each answers and the code it shows.
     device_asking_toasts: BTreeMap<u64, ([u8; 32], String, bool)>,
+    /// Notices of requests waiting for the person's answer, by handle.
+    consent_notices: BTreeMap<String, u64>,
     /// Requests a notification was raised for, so it is raised once.
     device_asking_seen: std::collections::BTreeSet<[u8; 32]>,
     /// The person's answers to devices asking, for the network.
@@ -1332,6 +1334,7 @@ impl ChromeState {
             workspace_undo_toasts: BTreeMap::new(),
             memory_reopen_toasts: BTreeMap::new(),
             device_asking_toasts: BTreeMap::new(),
+            consent_notices: BTreeMap::new(),
             device_asking_seen: std::collections::BTreeSet::new(),
             device_answers: Vec::new(),
             records: RecordStore::in_memory(),
@@ -2748,6 +2751,49 @@ impl ChromeState {
         Some(self.push_notification_full(toast))
     }
 
+    /// Post and take back the notices of requests waiting for the person
+    /// ([`crate::shell::app_action_consent::SheetPrompter`]); whether there
+    /// were any.
+    pub fn post_consent_notices(
+        &mut self,
+        notices: Vec<crate::shell::app_action_consent::Notice>,
+    ) -> bool {
+        use crate::shell::app_action_consent::Notice;
+        if notices.is_empty() {
+            return false;
+        }
+        for notice in notices {
+            match notice {
+                Notice::Post { handle, notice } => {
+                    let id = self.push_notification_full(notice);
+                    if let Some(earlier) = self.consent_notices.insert(handle, id) {
+                        self.dismiss_notification(earlier);
+                    }
+                }
+                Notice::Withdraw { handle } => {
+                    if let Some(id) = self.consent_notices.remove(&handle) {
+                        self.dismiss_notification(id);
+                    }
+                }
+            }
+        }
+        self.bump();
+        true
+    }
+
+    /// The person chose `key` on notification `id`: when it answers a
+    /// request, the request goes on the sheet. Whether it was one.
+    pub fn answer_consent_notice(&mut self, id: u64, key: &str) -> bool {
+        let Some(handle) = key.strip_prefix(crate::shell::app_action_consent::ANSWER_PREFIX) else {
+            return false;
+        };
+        self.consent_notices.remove(handle);
+        crate::shell::app_action_consent::answer_notice(handle);
+        self.dismiss_notification(id);
+        self.bump();
+        true
+    }
+
     /// The buttons of notification `id` when it asks about a new device:
     /// Approve (naming the code) and Decline.
     pub fn device_asking_actions(&self, id: u64) -> Option<Vec<(String, String)>> {
@@ -3694,6 +3740,15 @@ impl ChromeState {
         };
         if self.workspace_undo_toasts.contains_key(&id) {
             self.undo_deleted_workspace(id);
+            return true;
+        }
+        if let Some(key) = removed.default_action_key()
+            && let Some(handle) = key.strip_prefix(crate::shell::app_action_consent::ANSWER_PREFIX)
+        {
+            self.consent_notices.remove(handle);
+            crate::shell::app_action_consent::answer_notice(handle);
+            self.record_history(removed);
+            self.bump();
             return true;
         }
         if self.memory_reopen_toasts.contains_key(&id) {

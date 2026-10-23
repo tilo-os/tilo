@@ -11825,6 +11825,8 @@ pub fn run() {
         frame_builder.with_chrome(|chrome| {
             session_changed |= chrome.post_queued(crate::shell::storage_notice::drain());
             session_changed |= chrome.post_queued(crate::shell::graphics_notice::drain());
+            session_changed |=
+                chrome.post_consent_notices(crate::shell::app_action_consent::drain_notices());
         });
         session_changed |= post_system_update_asks(&mut frame_builder, &session);
         session_changed |= post_collaborator_version_notices(&mut frame_builder);

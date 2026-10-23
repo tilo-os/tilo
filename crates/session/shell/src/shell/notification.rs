@@ -498,6 +498,13 @@ impl NotificationHost for ChromeNotifications<'_> {
         if let Some(actions) = state.device_asking_actions(notification.id) {
             return actions;
         }
+        if notification
+            .actions
+            .iter()
+            .any(|(key, _)| key.starts_with(crate::shell::app_action_consent::ANSWER_PREFIX))
+        {
+            return notification.actions.clone();
+        }
         let available = state.alarm_actions_available();
         if available && state.alarm_action_authorized(notification) {
             let snoozed = notification
@@ -514,6 +521,9 @@ impl NotificationHost for ChromeNotifications<'_> {
     }
 
     fn invoke_action(&self, id: u64, key: &str) {
+        if self.chrome.borrow_mut().answer_consent_notice(id, key) {
+            return;
+        }
         if matches!(key, "approve" | "decline")
             && self
                 .chrome
