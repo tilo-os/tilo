@@ -1223,20 +1223,15 @@ impl VideoPlayer {
         // Controls overlay, or whenever a settings menu is open (so it can't
         // vanish under the user's cursor).
         if !self.controls_visible_now() && self.open_menu.is_none() {
-            self.play_button_rect = Rect::ZERO;
-            self.scrub_track_rect = Rect::ZERO;
-            self.volume_track_rect = Rect::ZERO;
-            self.mute_button_rect = Rect::ZERO;
-            self.fullscreen_button_rect = Rect::ZERO;
-            self.gear_button_rect = Rect::ZERO;
-            self.setting_icon_rects.clear();
-            self.menu_hit_rects.clear();
+            self.forget_control_rects();
             self.paint_progress_line(scene, transform, theme);
             return;
         }
         self.progress_line_painted = Rect::ZERO;
         let opacity = self.controls_opacity();
         if opacity <= 0.0 {
+            // Nothing of the controls is drawn: none may be hit or read.
+            self.forget_control_rects();
             return;
         }
         scene.push_layer(
@@ -1249,6 +1244,39 @@ impl VideoPlayer {
         self.paint_controls(scene, transform, text_renderer, theme);
         scene.pop_layer();
         self.paint_accessibility_focus(scene, transform, theme);
+    }
+
+    /// The controls are not drawn: none of them may be hit, nor read in the
+    /// semantics tree from where an earlier frame drew them.
+    fn forget_control_rects(&mut self) {
+        self.play_button_rect = Rect::ZERO;
+        self.scrub_track_rect = Rect::ZERO;
+        self.volume_track_rect = Rect::ZERO;
+        self.mute_button_rect = Rect::ZERO;
+        self.fullscreen_button_rect = Rect::ZERO;
+        self.gear_button_rect = Rect::ZERO;
+        self.setting_icon_rects.clear();
+        self.menu_hit_rects.clear();
+    }
+
+    /// Whether the controls are there to see now: shown (or a settings menu
+    /// open) and not faded past half. The rects hold where the last frame
+    /// drew them; once the controls hid or faded, that frame is stale until
+    /// the next one, and the tree says so at once.
+    fn controls_seen(&self) -> bool {
+        (self.controls_visible_now() || self.open_menu.is_some()) && self.controls_opacity() >= 0.5
+    }
+
+    /// The controls a person can see and reach now, with where they are
+    /// drawn: what the semantics tree lists, in order.
+    fn seen_controls(&self) -> Vec<(String, crate::a11y::AccessNode, Rect)> {
+        if !self.controls_seen() {
+            return Vec::new();
+        }
+        self.semantic_controls()
+            .into_iter()
+            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
+            .collect()
     }
 
     fn paint_controls(
@@ -2594,10 +2622,12 @@ impl Widget for VideoPlayer {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        // Hidden or faded controls leave the tree: a reader is not sent to
+        // a control nobody can see, and the keys in the description reach
+        // all of them meanwhile.
         let children = self
-            .semantic_controls()
+            .seen_controls()
             .into_iter()
-            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
             .map(|(_, node, rect)| node.with_bounds(rect))
             .collect();
         Some(
@@ -2620,9 +2650,8 @@ impl Widget for VideoPlayer {
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let [index] = path else { return None };
-        self.semantic_controls()
+        self.seen_controls()
             .into_iter()
-            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
             .nth(*index)
             .map(|(_, _, rect)| rect)
     }
@@ -2630,9 +2659,8 @@ impl Widget for VideoPlayer {
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         let [index] = path else { return false };
         let target = self
-            .semantic_controls()
+            .seen_controls()
             .into_iter()
-            .filter(|(_, _, rect)| rect.width() > 0.0 && rect.height() > 0.0)
             .nth(*index)
             .map(|(target, _, _)| target);
         if let Some(target) = target {
@@ -3347,6 +3375,79 @@ mod tests {
         assert!(
             (line.width() - vp.rect.width() / 2.0).abs() < 2.0,
             "it is filled as far as the video has played: {line:?}"
+        );
+    }
+
+    /// The names of the controls the semantics tree lists now.
+    fn listed_controls(vp: &VideoPlayer) -> Vec<String> {
+        vp.accessibility()
+            .map(|node| {
+                node.children
+                    .iter()
+                    .filter_map(|child| child.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn controls_that_hid_or_faded_leave_the_tree_before_the_next_frame() {
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote {
+            url: "v.mp4".into(),
+        });
+        let mut vp = VideoPlayer::new().with_engine(engine);
+        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+        let doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        vp.engine_mut().unwrap().play();
+        vp.sync(&doc, &root);
+        draw_once(&mut vp);
+        assert!(
+            listed_controls(&vp)
+                .iter()
+                .any(|name| name == "Playback position"),
+            "shown controls are listed: {:?}",
+            listed_controls(&vp)
+        );
+
+        // The auto-hide deadline passes; no frame has been drawn since, so
+        // the rects still hold where the controls were.
+        vp.controls_visible_until = Some(crate::time::now());
+        assert!(vp.scrub_track_rect.width() > 0.0, "the frame is stale");
+        assert_eq!(
+            listed_controls(&vp),
+            Vec::<String>::new(),
+            "hidden controls are not read from a stale frame"
+        );
+        draw_once(&mut vp);
+        assert_eq!(
+            vp.scrub_track_rect,
+            Rect::ZERO,
+            "nor hit after the next one"
+        );
+        assert!(
+            vp.progress_line_painted.height() > 0.0,
+            "the progress line shows meanwhile"
+        );
+
+        // In the last moments of the fade the controls are all but gone.
+        vp.controls_visible_until = crate::time::now().checked_add(Duration::from_millis(5));
+        assert!(vp.controls_opacity() < 0.5);
+        draw_once(&mut vp);
+        assert_eq!(
+            listed_controls(&vp),
+            Vec::<String>::new(),
+            "controls faded past half are not listed"
+        );
+
+        vp.show_controls();
+        draw_once(&mut vp);
+        assert!(
+            listed_controls(&vp)
+                .iter()
+                .any(|name| name == "Playback position"),
+            "shown again, they are listed again"
         );
     }
 
