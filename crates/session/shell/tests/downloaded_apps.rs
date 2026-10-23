@@ -195,6 +195,37 @@ fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
     }
 }
 
+/// Closing the question means `file` is not asked about again, while it can
+/// still be added from search.
+fn declining_is_remembered_for_that_file(file: &Path, desktop_id: &str) {
+    let again = Running::start(file);
+    let mut h = harness_for(&again);
+    let (surface_id, window) = open_window(&mut h);
+    assert!(downloaded_apps::settle(WAIT));
+    let ask = downloaded_apps::take_ask().expect("with no entry, the file is asked about");
+    assert_eq!(ask.surface_id, surface_id);
+    downloaded_apps::answer(&Answer::Declined {
+        surface_id: ask.surface_id,
+    });
+    assert!(downloaded_apps::settle(WAIT));
+    assert!(entry(desktop_id).is_none(), "declining adds nothing");
+    drop(window);
+    drop(h);
+    drop(again);
+    let once_more = Running::start(file);
+    let mut h = harness_for(&once_more);
+    let (surface_id, _window) = open_window(&mut h);
+    assert!(downloaded_apps::settle(WAIT));
+    assert!(
+        downloaded_apps::take_ask().is_none(),
+        "that file is not asked about again"
+    );
+    assert!(
+        downloaded_apps::candidate(surface_id).is_some(),
+        "it can still be added from search"
+    );
+}
+
 #[test]
 fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     let home = tilo_test_env::TestHome::new().unwrap();
@@ -299,32 +330,7 @@ fn a_bare_binary_named_only_by_its_window_gets_one_entry_that_follows_it() {
     assert!(!icon.exists());
 
     // Phase `closing_the_question_means_that_file_is_not_asked_about_again`.
-    let again = Running::start(&first_file);
-    let mut h = harness_for(&again);
-    let (surface_id, window) = open_window(&mut h);
-    assert!(downloaded_apps::settle(WAIT));
-    let ask = downloaded_apps::take_ask().expect("with no entry, the file is asked about");
-    assert_eq!(ask.surface_id, surface_id);
-    downloaded_apps::answer(&Answer::Declined {
-        surface_id: ask.surface_id,
-    });
-    assert!(downloaded_apps::settle(WAIT));
-    assert!(entry(desktop_id).is_none(), "declining adds nothing");
-    drop(window);
-    drop(h);
-    drop(again);
-    let once_more = Running::start(&first_file);
-    let mut h = harness_for(&once_more);
-    let (surface_id, _window) = open_window(&mut h);
-    assert!(downloaded_apps::settle(WAIT));
-    assert!(
-        downloaded_apps::take_ask().is_none(),
-        "that file is not asked about again"
-    );
-    assert!(
-        downloaded_apps::candidate(surface_id).is_some(),
-        "it can still be added from search"
-    );
+    declining_is_remembered_for_that_file(&first_file, desktop_id);
     desktop_entry::cache::invalidate();
 }
 
