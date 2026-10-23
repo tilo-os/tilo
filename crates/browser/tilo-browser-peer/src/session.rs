@@ -2799,14 +2799,17 @@ impl Task {
                 .get_mut(&route)
                 .map(InboundHold::take)
                 .unwrap_or_default();
-            self.update(|status| {
-                if let Some(status) = status.routes.get_mut(&route) {
-                    status.awaiting_keys = 0;
-                }
-            });
+            // The count stands until each document is decided again: one
+            // still sealed is held again, and only what opened stops it.
             for (_, (body, author)) in held {
                 self.inbound_body(body, author);
             }
+            let waiting = self.held_inbound.get(&route).map_or(0, InboundHold::len);
+            self.update(|status| {
+                if let Some(status) = status.routes.get_mut(&route) {
+                    status.awaiting_keys = waiting;
+                }
+            });
         }
     }
 
@@ -2993,14 +2996,17 @@ impl Task {
                     .get_mut(&route)
                     .map(InboundHold::take)
                     .unwrap_or_default();
-                self.update(|status| {
-                    if let Some(status) = status.routes.get_mut(&route) {
-                        status.awaiting_keys = 0;
-                    }
-                });
+                // Open what waited first: a reader that sees the route no
+                // longer awaiting keys has its documents among the events.
                 for (_, (body, author)) in held {
                     self.inbound_body(body, author);
                 }
+                let waiting = self.held_inbound.get(&route).map_or(0, InboundHold::len);
+                self.update(|status| {
+                    if let Some(status) = status.routes.get_mut(&route) {
+                        status.awaiting_keys = waiting;
+                    }
+                });
                 self.replay_owed(&route, client);
                 if let Some(frames) = self.held_outbound.remove(&route) {
                     delivered &= self.publish(route, frames, client).await;
