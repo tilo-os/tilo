@@ -61,19 +61,26 @@ impl ClientAuthority for Granted {
 pub fn carrier(grant: &VoiceGrant, generation: u64) -> Client {
     Client::start(
         Connection {
-            scope: ConnectionScope {
-                endpoint: grant.endpoint.clone(),
-                fingerprints: grant.fingerprints.clone(),
-                owner_epoch: grant.participation,
-                carrier_generation: generation,
-                publication: grant.publication.clone(),
-                subscription_prefix: grant.directions.subscribe.then(|| hex::encode(grant.call)),
-            },
+            scope: scope(grant, generation),
             authorization: grant.token.clone(),
         },
         Arc::new(Granted),
     )
     .unwrap()
+}
+
+/// The carrier scope `grant` admits as carrier `generation`. As the native
+/// shell's participation does, a new grant replaces the carrier only when
+/// this changes: a renewed token or another roster keeps it.
+pub fn scope(grant: &VoiceGrant, generation: u64) -> ConnectionScope {
+    ConnectionScope {
+        endpoint: grant.endpoint.clone(),
+        fingerprints: grant.fingerprints.clone(),
+        owner_epoch: grant.participation,
+        carrier_generation: generation,
+        publication: grant.publication.clone(),
+        subscription_prefix: grant.directions.subscribe.then(|| hex::encode(grant.call)),
+    }
 }
 
 /// Until `client`'s status is `done`; a timeout names the statuses it went
