@@ -863,6 +863,13 @@ readers = [
 ]
 
 [[cargo]]
+package = "tilo-relay"
+# The room's bot runner is tested with the Discord bridge's program as it
+# ships, the import it plans resuming after the room refused part of a run.
+inputs = ["apps/discord/bridge/program.json"]
+readers = ["crates/hosting/tilo-relay/src/room_bots/tests.rs"]
+
+[[cargo]]
 package = "tilo-esp-write"
 # The ESP writer's tests run tilo-deployment's boot-counter pass, which reads
 # its UKIs with the built helper as tilo-uki-cmdline. The editor's own tests
