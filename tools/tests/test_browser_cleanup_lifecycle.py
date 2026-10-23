@@ -72,6 +72,9 @@ sys.exit(int(os.environ['PROBE_STATUS']))
         environment = dict(os.environ, CHROME=str(self.root / 'chrome'), RUNNER_TEMP=str(self.root),
                            FIXTURE_ROOT=str(self.root), DETACHED='1' if self.detached else '0',
                            PROBE_STATUS='7' if self.failure else '0', TILO_WEB_SMOKE_SHARDS='1',
+                           # The fixture browser always honours TERM; its close
+                           # must not race the supervisor's escalation to KILL.
+                           TILO_OWNED_BROWSER_TERM_GRACE_SECS=str(HANG_BOUND),
                            PATH=f'{self.root}:{os.environ["PATH"]}')
         self.process = subprocess.Popen(['bash', str(DRIVER), 'http://fixture', 'calculator'],
                                         cwd=REPO, env=environment, stdout=subprocess.PIPE,

@@ -10,6 +10,10 @@ import time
 
 
 stopping = False
+# How long the browser's descendants get to close after TERM before KILL.
+# Fixtures that always honour TERM raise it so a loaded host cannot turn
+# their graceful close into an escalation.
+TERM_GRACE = float(os.environ.get('TILO_OWNED_BROWSER_TERM_GRACE_SECS', '2'))
 
 
 def stop(_number, _frame):
@@ -120,7 +124,7 @@ def quiesce():
     sent = set()
     while not reap():
         elapsed = time.monotonic() - started
-        action = signal.SIGKILL if kill_deadline is not None or elapsed > 2 else signal.SIGTERM
+        action = signal.SIGKILL if kill_deadline is not None or elapsed > TERM_GRACE else signal.SIGTERM
         for pid, birth in children():
             key = (pid, birth, action)
             if key in sent:
