@@ -3866,7 +3866,7 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
 
 impl ui::semantic_document_read::SemanticReaders for ChatApp {
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
-        &crate::semantic_read::action::READERS
+        &crate::feedback::READERS
     }
 }
 
