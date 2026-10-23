@@ -1484,6 +1484,10 @@ impl MusicApp {
         effect: crate::actions::MusicEffect,
     ) -> Result<ui::framework::Effected, String> {
         use crate::actions::MusicEffect;
+        if matches!(effect, MusicEffect::SetVolume { volume } if volume > 0) {
+            // A volume above zero ends a mute, as the slider's does.
+            self.premute_volume = None;
+        }
         match effect {
             MusicEffect::PlaybackStatus => {
                 Ok(ui::framework::Effected::Done(tilo_actions::ActionOutput {
@@ -1630,6 +1634,13 @@ impl MusicApp {
                 self.dirty = true;
                 Ok(done)
             }
+            // Next, previous and mute take the steps the person's own
+            // controls take ([`Self::stepped_playback`]).
+            step @ (MusicEffect::Next | MusicEffect::Previous | MusicEffect::ToggleMute) => {
+                let next = self.stepped_playback(&step);
+                self.dirty = true;
+                self.start_or_apply_playback(invocation, next)
+            }
             transport => {
                 let next = crate::actions::next_playback(&transport, &self.pb, &|id| {
                     self.playback_track(id).is_some()
@@ -1641,14 +1652,22 @@ impl MusicApp {
                     )
                 })??;
                 self.dirty = true;
-                // Only starting a source waits for the audio it starts.
-                if next.playing && (self.pb.current != next.current || !self.pb.playing) {
-                    self.begin_resource_playback(invocation, next)
-                } else {
-                    self.apply_resource_playback(next)?;
-                    Ok(done)
-                }
+                self.start_or_apply_playback(invocation, next)
             }
+        }
+    }
+
+    /// Move to `next`: only starting a source waits for the audio it starts.
+    fn start_or_apply_playback(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        next: crate::model::Playback,
+    ) -> Result<ui::framework::Effected, String> {
+        if next.playing && (self.pb.current != next.current || !self.pb.playing) {
+            self.begin_resource_playback(invocation, next)
+        } else {
+            self.apply_resource_playback(next)?;
+            Ok(ui::framework::Effected::done())
         }
     }
 

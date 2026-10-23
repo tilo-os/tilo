@@ -309,6 +309,7 @@ impl ResourceApp for MusicShell {
             .content_kind(ui::widget::ContentKind::List)
             .with_window_toolbar()
             .with_pane_state(&pane);
+        let actions = app.transport_actions(&cx.actions());
         let app = app.in_shell(&places, &transport, shell.window_bar_link(), &pane);
         let sidebar = ui::widget::NavList::new(Vec::new())
             .with_id("music.places")
@@ -318,7 +319,9 @@ impl ResourceApp for MusicShell {
             shell
                 .sidebar(Box::new(sidebar))
                 .content(cx.surface(app))
-                .bottom_band(Box::new(ui::widget::MediaTransport::new(&transport))),
+                .bottom_band(Box::new(ui::widget::MediaTransport::new(
+                    &transport, actions,
+                ))),
         )
     }
 
