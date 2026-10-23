@@ -178,7 +178,7 @@ mod tests {
         toggle_sidebar(&mut app);
         assert!(surface(&mut app, |player| player.library_visible()));
         activate(&mut app, "video-player.library.tab.recent");
-        activate(&mut app, "video-player.library.close");
+        toggle_sidebar(&mut app);
         assert!(!surface(&mut app, |player| player.library_visible()));
         toggle_sidebar(&mut app);
         assert_eq!(

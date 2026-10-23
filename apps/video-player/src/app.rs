@@ -303,11 +303,33 @@ fn source_title(source: &media::Source) -> String {
     }
 }
 
-/// The synthesized clip a capture plays when its launch named no video.
+/// The video a capture plays when its launch named none: a four-second
+/// generated H.264/AAC clip (the decode fixture, `tests/fixtures`; no
+/// third-party media), decoded by the system's engine like any opened file.
+#[cfg(feature = "decode")]
+const DEMO_CLIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/h264-aac.mp4"));
+
+/// What the capture's demo clip is called.
+const DEMO_TITLE: &str = "Demo clip";
+
+/// Where a capture parks the demo clip, for a stable picture.
+const DEMO_POSITION_MS: u64 = 2_000;
+
+/// The capture's demo clip, staged as a file named by its contents, so every
+/// capture names the same source.
+#[cfg(feature = "decode")]
 fn demo_source() -> media::Source {
-    media::Source::Remote {
-        url: "https://demo.local/clip.mp4".into(),
-    }
+    media::Source::from_contents("Demo clip.mp4", DEMO_CLIP).unwrap_or_else(|error| {
+        tracing::warn!(%error, "video player: the demo clip could not be staged");
+        media::Source::LocalFile(PathBuf::from("Demo clip.mp4"))
+    })
+}
+
+/// Without the system's decoder there is no clip to decode; the capture
+/// says so instead of showing a picture.
+#[cfg(not(feature = "decode"))]
+fn demo_source() -> media::Source {
+    media::Source::LocalFile(PathBuf::from("Demo clip.mp4"))
 }
 
 /// The shareable identity of the capture's demo clip, which its scenarios'
@@ -341,6 +363,14 @@ pub struct PlayerApp {
     status_action_rect: Rect,
     /// A video dropped anywhere on the window opens like one chosen.
     file_open: ui::widget::FileOpenSurface,
+    /// How far the docked library pushes the picture in from the leading
+    /// edge, as the last layout laid the player out.
+    content_inset: f64,
+    /// The docked library's width changed since the player was laid out.
+    content_inset_stale: bool,
+    /// The top of the player's transport, shown or not: a floating library
+    /// stops above it.
+    transport_top: f64,
     /// The library sheet: a leading drawer over the video, on the side of
     /// the Library button that opens it.
     drawer: SidebarDrawer,
@@ -352,7 +382,6 @@ pub struct PlayerApp {
     library_queue_tab_rect: Rect,
     library_recent_tab_rect: Rect,
     library_shared_tab_rect: Rect,
-    library_close_rect: Rect,
     library_row_hits: Vec<LibraryRowHit>,
     library_clear_rect: Rect,
     shared_watch_later_rect: Rect,
@@ -774,14 +803,19 @@ impl PlayerApp {
             rect: Rect::ZERO,
             status_action_rect: Rect::ZERO,
             file_open: ui::widget::FileOpenSurface::default(),
-            drawer: SidebarDrawer::new().left().closed().overlay_only(),
+            drawer: SidebarDrawer::new()
+                .left()
+                .closed()
+                .content_kind(ui::widget::ContentKind::Document),
+            content_inset: 0.0,
+            content_inset_stale: false,
+            transport_top: 0.0,
             library_scroll: 0.0,
             library_max_scroll: 0.0,
             library_list_rect: Rect::ZERO,
             library_queue_tab_rect: Rect::ZERO,
             library_recent_tab_rect: Rect::ZERO,
             library_shared_tab_rect: Rect::ZERO,
-            library_close_rect: Rect::ZERO,
             library_row_hits: Vec::new(),
             library_clear_rect: Rect::ZERO,
             shared_watch_later_rect: Rect::ZERO,
@@ -880,22 +914,25 @@ impl PlayerApp {
         if matches!(scenario, Some("empty" | "error" | "missing-codec")) {
             return;
         }
+        // A capture shows a real video decoded, the launch's or the demo
+        // clip, never a synthesized stand-in: without the system decoder it
+        // waits for a picture that cannot come and refuses to capture.
+        let engine = media::MediaEngine::new();
+        if !engine.is_real_decode() {
+            self.open_error =
+                Some("A real video capture requires the GStreamer decoder and runtime".into());
+            self.capture_awaits = CaptureAwaits::Frame;
+            return;
+        }
+        self.player.set_engine(engine);
         if let Some(argument) = launched {
-            // A capture of a real file shows that file decoded, never the
-            // synthesized stand-in: without the system decoder it waits for
-            // a picture that cannot come and refuses to capture.
-            let engine = media::MediaEngine::new();
-            if !engine.is_real_decode() {
-                self.open_error =
-                    Some("A real video capture requires the GStreamer decoder and runtime".into());
-                self.capture_awaits = CaptureAwaits::Frame;
-                return;
-            }
-            self.player.set_engine(engine);
             let source = source_for_argument(argument);
             let title = source_title(&source);
             let queue_id = self.ensure_queued(source.clone(), title.clone());
             let _ = self.open_local_source(source, title, Some(queue_id));
+            // Held still for a stable picture, as the demo clip is; the
+            // `playing` scenario starts it.
+            self.player.pause();
             self.capture_awaits = match scenario {
                 Some("native-error") => CaptureAwaits::Outcome,
                 Some("loading") => CaptureAwaits::Nothing,
@@ -903,18 +940,16 @@ impl PlayerApp {
             };
             return;
         }
-        // The demo stays hermetic: the synthesized engine draws a
-        // deterministic frame and the placeholder host is never contacted.
         let source = demo_source();
-        let queue_id = self.ensure_queued(source.clone(), "Demo clip".into());
+        let queue_id = self.ensure_queued(source.clone(), DEMO_TITLE.into());
         let _ = self.set_current_source(&source);
         self.player.open(source);
-        self.title = "Demo clip".to_string();
+        self.title = DEMO_TITLE.to_string();
         self.current_queue_id = Some(queue_id);
         // Park at a fixed position for a stable reference frame. The
         // explicit `playing` fixture starts the engine below; default and
         // `paused` deliberately stay deterministic.
-        self.player.seek_to_ms(8_000);
+        self.player.seek_to_ms(DEMO_POSITION_MS);
         self.player.pause();
         if scenario != Some("loading") {
             self.capture_awaits = CaptureAwaits::Frame;
@@ -1471,24 +1506,23 @@ impl PlayerApp {
     }
 
     /// Give the keyboard to the library sheet's control at `path`, the
-    /// order [`Widget::accessibility`] lists them in: Close, the three tabs,
-    /// then the shared tab's actions and rows or the local rows.
+    /// order [`Widget::accessibility`] lists them in: the three tabs, then
+    /// the shared tab's actions and rows or the local rows.
     fn focus_player_control(&mut self, path: &[usize]) -> bool {
         if !self.library_visible {
             return false;
         }
         let shared = self.library_tab == LibraryTab::Shared;
         let focus = match path {
-            [0] => Some("library-close".to_owned()),
-            [1] => Some("library-tab-queue".to_owned()),
-            [2] => Some("library-tab-recent".to_owned()),
-            [3] => Some("library-tab-shared".to_owned()),
-            [4] if shared => Some("shared-watch-later".to_owned()),
-            [5] if shared => Some("shared-bookmark".to_owned()),
+            [0] => Some("library-tab-queue".to_owned()),
+            [1] => Some("library-tab-recent".to_owned()),
+            [2] => Some("library-tab-shared".to_owned()),
+            [3] if shared => Some("shared-watch-later".to_owned()),
+            [4] if shared => Some("shared-bookmark".to_owned()),
             [index] if shared => shared_accessibility_targets(self)
-                .get(index.saturating_sub(6))
+                .get(index.saturating_sub(5))
                 .map(|(focus, _, _)| focus.clone()),
-            [index] => self.local_row_focus(index.saturating_sub(4)),
+            [index] => self.local_row_focus(index.saturating_sub(3)),
             _ => None,
         };
         let Some(focus) = focus else {
@@ -2282,12 +2316,10 @@ impl PlayerApp {
     }
 
     fn handle_app_pointer(&mut self, _state: &mut ui::widget::Edits<'_>) -> bool {
-        self.drawer.resolve(self.rect);
+        self.resolve_library();
         let in_list = self.library_list_rect.contains(self.last_cursor);
         if self.library_visible && self.drawer.sidebar_contains(self.last_cursor) {
-            if self.library_close_rect.contains(self.last_cursor) {
-                self.request_library_hide();
-            } else if self.library_queue_tab_rect.contains(self.last_cursor) {
+            if self.library_queue_tab_rect.contains(self.last_cursor) {
                 self.request_library_tab(LibraryTab::Queue);
             } else if self.library_recent_tab_rect.contains(self.last_cursor) {
                 self.request_library_tab(LibraryTab::Recent);
@@ -2474,9 +2506,11 @@ impl Widget for PlayerApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.drawer.scale_for(theme);
-        // Edge-to-edge: the player fills the whole surface. The app keeps itself
-        // in the node map (so it can intercept the floating Open pill) by owning
-        // a single-child root that stretches the player to 100%×100%.
+        self.content_inset_stale = false;
+        // Edge-to-edge: the player fills the whole surface beside the docked
+        // library. The app keeps itself in the node map (so it can intercept
+        // the floating Open pill) by owning a single-child root that
+        // stretches the player over what the library leaves.
         let player_node = self.player.build_layout(taffy, theme, node_map);
         let root = parent_node(
             taffy,
@@ -2487,12 +2521,43 @@ impl Widget for PlayerApp {
                     width: percent(1.0_f32),
                     height: percent(1.0_f32),
                 },
+                padding: taffy::Rect {
+                    left: taffy::style_helpers::length(ui::num::f32_of_f64(self.content_inset)),
+                    ..taffy::Rect::zero()
+                },
                 ..Default::default()
             },
             &[player_node],
         );
         node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
+    }
+
+    /// The docked library's width, as the leading padding the player is
+    /// laid out beside, on a retained tree as on a rebuilt one.
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
+        self.content_inset_stale = false;
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let inset = taffy::style_helpers::length(ui::num::f32_of_f64(self.content_inset));
+        if style.padding.left == inset {
+            return false;
+        }
+        let mut style = style.clone();
+        style.padding.left = inset;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    /// The player's place follows the docked library, which follows the
+    /// window's width.
+    fn composition_follows_allocation(&self) -> bool {
+        true
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -2506,7 +2571,7 @@ impl Widget for PlayerApp {
             return;
         };
         self.player.apply_layout(taffy, player_node, new_origin);
-        self.drawer.resolve(self.rect);
+        self.resolve_library();
     }
 
     fn draw(
@@ -2522,6 +2587,8 @@ impl Widget for PlayerApp {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
         self.sync_library_sheet();
         self.drawer.tick(theme);
+        self.transport_top = self.player.transport_rect(theme).y0;
+        self.resolve_library();
         if self.shot_loading {
             self.paint_letterbox(scene, transform, theme);
         } else {
@@ -2548,7 +2615,7 @@ impl Widget for PlayerApp {
         // The library drawer reads its own dismissals (a press on the scrim,
         // Escape); the library's hide action is what closes it, so the
         // drawer stays open until that action lands.
-        self.drawer.resolve(self.rect);
+        self.resolve_library();
         let drawer_open = self.drawer.is_open();
         if self.drawer.handle_event(event, ctx) {
             if drawer_open && !self.drawer.is_open() {
@@ -2613,16 +2680,6 @@ impl Widget for PlayerApp {
         let mut children = Vec::new();
         if self.library_visible {
             children.extend([
-                AccessNode::new(Role::Button)
-                    .with_name("Close library")
-                    .with_description("Escape")
-                    .with_action_target("video-player.library.close")
-                    .with_bounds(self.library_close_rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.library_focus_id.as_deref() == Some("library-close"),
-                        ..Default::default()
-                    }),
                 AccessNode::new(Role::Tab)
                     .with_name("Queue")
                     .with_action_target("video-player.library.tab.queue")
@@ -2703,16 +2760,15 @@ impl Widget for PlayerApp {
         }
         let shared = self.library_tab == LibraryTab::Shared;
         match path {
-            [0] => Some(self.library_close_rect),
-            [1] => Some(self.library_queue_tab_rect),
-            [2] => Some(self.library_recent_tab_rect),
-            [3] => Some(self.library_shared_tab_rect),
-            [4] if shared => Some(self.shared_watch_later_rect),
-            [5] if shared => Some(self.shared_bookmark_rect),
+            [0] => Some(self.library_queue_tab_rect),
+            [1] => Some(self.library_recent_tab_rect),
+            [2] => Some(self.library_shared_tab_rect),
+            [3] if shared => Some(self.shared_watch_later_rect),
+            [4] if shared => Some(self.shared_bookmark_rect),
             [index] if shared => shared_accessibility_targets(self)
-                .get(index.saturating_sub(6))
+                .get(index.saturating_sub(5))
                 .map(|(_, _, rect)| *rect),
-            [index] => self.local_row_rect(index.saturating_sub(4)),
+            [index] => self.local_row_rect(index.saturating_sub(3)),
             _ => None,
         }
     }
@@ -2746,11 +2802,6 @@ impl Widget for PlayerApp {
             && matches!(action, ui::a11y::Action::Activate)
         {
             self.request_library_play(item_id);
-            true
-        } else if target == "video-player.library.close"
-            && matches!(action, ui::a11y::Action::Activate)
-        {
-            self.request_library_hide();
             true
         } else if target == "video-player.library.tab.queue"
             && matches!(action, ui::a11y::Action::Activate)
@@ -2813,8 +2864,6 @@ impl Widget for PlayerApp {
         }
         if self.status_action_rect.contains(self.last_cursor) {
             Some("Open video (Ctrl+O)")
-        } else if self.library_visible && self.library_close_rect.contains(self.last_cursor) {
-            Some("Close library (Escape)")
         } else if self.library_visible && self.library_queue_tab_rect.contains(self.last_cursor) {
             Some("Show this device's queue")
         } else if self.library_visible && self.library_recent_tab_rect.contains(self.last_cursor) {
@@ -2894,7 +2943,7 @@ impl Widget for PlayerApp {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.player.is_layout_dirty()
+        self.player.is_layout_dirty() || self.content_inset_stale
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3287,30 +3336,38 @@ mod tests {
                     remove: Some(Rect::new(44.0, 44.0, 88.0, 88.0)),
                 },
             ];
-            assert!(Widget::focus_synthetic_accessibility(&mut app, &[5]));
+            assert!(Widget::focus_synthetic_accessibility(&mut app, &[4]));
             assert_eq!(app.library_focus_id.as_deref(), Some(focused_id.as_str()));
             assert_eq!(
-                Widget::synthetic_accessibility_rect(&app, &[5]),
+                Widget::synthetic_accessibility_rect(&app, &[4]),
                 Some(Rect::new(0.0, 44.0, 44.0, 88.0))
             );
         }
         {
             let mut app = PlayerApp::for_shot(Some("library"));
-            app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
             app.library_queue_tab_rect = Rect::new(44.0, 0.0, 132.0, 44.0);
             app.library_recent_tab_rect = Rect::new(132.0, 0.0, 220.0, 44.0);
             app.library_shared_tab_rect = Rect::new(220.0, 0.0, 308.0, 44.0);
 
             let tree = Widget::accessibility(&app).expect("application accessibility tree");
-            assert_eq!(tree.children[0].name.as_deref(), Some("Close library"));
-            assert_eq!(tree.children[1].name.as_deref(), Some("Queue"));
-            assert!(tree.children[1].state.selected);
-            assert_eq!(tree.children[2].name.as_deref(), Some("Recent"));
+            assert_eq!(tree.children[0].name.as_deref(), Some("Queue"));
+            assert!(tree.children[0].state.selected);
+            assert_eq!(tree.children[1].name.as_deref(), Some("Recent"));
+            assert!(!tree.children[1].state.selected);
+            assert_eq!(tree.children[2].name.as_deref(), Some("Shared"));
             assert!(!tree.children[2].state.selected);
-            assert_eq!(tree.children[3].name.as_deref(), Some("Shared"));
-            assert!(!tree.children[3].state.selected);
+            let mut names = Vec::new();
+            for node in &tree.children {
+                names.extend(node.name.clone());
+            }
+            assert!(
+                !names
+                    .iter()
+                    .any(|name| name == "Library" || name == "Close library"),
+                "the sheet has no title or close of its own: {names:?}"
+            );
 
-            assert!(Widget::focus_synthetic_accessibility(&mut app, &[2]));
+            assert!(Widget::focus_synthetic_accessibility(&mut app, &[1]));
             assert_eq!(app.library_focus_id.as_deref(), Some("library-tab-recent"));
 
             app.perform(VideoEffect::ShowLibrary {
@@ -3329,11 +3386,7 @@ mod tests {
             assert!(!app.library_visible);
         }
         {
-            let mut app = PlayerApp::for_shot(Some("shared"));
-            app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
-            app.last_cursor = Point::new(20.0, 20.0);
-            assert_eq!(app.tooltip(), Some("Close library (Escape)"));
-
+            let app = PlayerApp::for_shot(Some("shared"));
             assert!(
                 app.handle_app_shortcut_input(
                     &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
@@ -3489,16 +3542,24 @@ mod tests {
             surface(&mut app, |player| player.library_tab_name()),
             "recent"
         );
-        let close = surface(&mut app, |player| player.library_close_rect.center());
-        app.harness().click_at(close.x, close.y);
-        app.settle();
-        assert!(!surface(&mut app, |player| player.library_visible));
-        app.effect(&VideoEffect::ShowLibrary {
-            tab: "queue".into(),
-        })
-        .unwrap();
-        assert!(surface(&mut app, |player| player.library_visible));
+        // Wide, the library is docked beside the picture: a press on the
+        // picture leaves it open.
         app.harness().click_at(1160.0, 400.0);
+        app.settle();
+        assert!(
+            surface(&mut app, |player| player.library_visible),
+            "a press beside the docked library keeps it"
+        );
+        // Narrow, it floats over the picture, and a press beside it puts it
+        // away.
+        app.harness()
+            .relayout_themed(
+                ui::headless::viewport((420.0, 800.0)),
+                Theme::dark().with_reduce_motion(true),
+            )
+            .unwrap();
+        app.settle();
+        app.harness().click_at(400.0, 400.0);
         app.settle();
         assert!(
             !surface(&mut app, |player| player.library_visible),
@@ -3506,7 +3567,7 @@ mod tests {
         );
         assert!(
             !surface(&mut app, |player| {
-                player.last_cursor = Point::new(1160.0, 400.0);
+                player.last_cursor = Point::new(400.0, 400.0);
                 player.handle_app_pointer(&mut ui::widget::Edits::lend(
                     &mut automerge::AutoCommit::new(),
                 ))
@@ -3546,10 +3607,11 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
-        // Case `library_sheet_stacks_header_tabs_and_rows`: the sheet is one
-        // column: its header, then the tab strip across it, then the rows,
-        // at 100% and 200% text, with the actions clear of one another.
+        // Case `library_sheet_stacks_tabs_and_rows`: the sheet is one
+        // column: the tab strip across it, then the rows, at 100% and 200%
+        // text, with the actions clear of one another.
         for scale in [1.0_f32, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
             let app = lay_out_still(
                 PlayerApp::for_shot_open(None, Some("library")),
                 (1200.0, 800.0),
@@ -3562,7 +3624,6 @@ mod tests {
                 "{scale}×: the sheet opens on the leading side, under the bar's sidebar toggle"
             );
             for rect in [
-                app.library_close_rect,
                 app.library_queue_tab_rect,
                 app.library_recent_tab_rect,
                 app.library_shared_tab_rect,
@@ -3573,8 +3634,10 @@ mod tests {
                 );
             }
             assert!(
-                app.library_close_rect.y1 <= app.library_queue_tab_rect.y0,
-                "{scale}×: tabs start under the header"
+                (app.library_queue_tab_rect.y0 - sheet.y0 - f64::from(theme.tokens.spacing.s4))
+                    .abs()
+                    < 0.01,
+                "{scale}×: the tabs lead the sheet, with no title above them"
             );
             assert!(
                 (app.library_queue_tab_rect.x1 - app.library_recent_tab_rect.x0).abs() < 0.01
@@ -3601,6 +3664,38 @@ mod tests {
                 );
             }
         }
+        // Case `library_never_covers_the_transport`: wide, the library docks
+        // beside the picture and the player lays out beside it; narrow, it
+        // floats over the picture and stops above the transport.
+        {
+            let mut app = lay_out_still(
+                PlayerApp::for_shot_open(None, Some("library")),
+                (1200.0, 800.0),
+                1.0,
+            );
+            Framed::harness_mut(&mut app).relayout();
+            let sheet = app.drawer.sidebar_rect();
+            assert!(app.drawer.is_docked(), "wide, the library docks");
+            assert!(
+                app.player.get_rect().x0 >= sheet.x1 - 0.5,
+                "the picture {:?} stands beside the library {sheet:?}",
+                app.player.get_rect()
+            );
+            let mut app = lay_out_still(
+                PlayerApp::for_shot_open(None, Some("library")),
+                (420.0, 800.0),
+                1.0,
+            );
+            Framed::harness_mut(&mut app).relayout();
+            let theme = Theme::dark().with_reduce_motion(true);
+            let sheet = app.drawer.sidebar_rect();
+            let transport = app.player.transport_rect(&theme);
+            assert!(app.drawer.is_overlay(), "narrow, the library floats");
+            assert!(
+                sheet.height() > 0.0 && sheet.y1 <= transport.y0,
+                "the library {sheet:?} stops above the transport {transport:?}"
+            );
+        }
         // Case `library_sheet_follows_its_drawer`: closing the library moves
         // no hit rect into the video.
         {
@@ -3616,7 +3711,7 @@ mod tests {
             app.sync_library_sheet();
             app.drawer.tick(&theme);
             app.paint_library_panel(&mut scene, Affine::IDENTITY, &mut text, &theme);
-            assert_eq!(app.library_close_rect, Rect::ZERO);
+            assert_eq!(app.library_queue_tab_rect, Rect::ZERO);
             assert!(app.library_row_hits.is_empty());
         }
         {
