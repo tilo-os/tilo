@@ -1506,9 +1506,7 @@ pub(crate) mod tests {
         assert!(
             !focus_order.iter().any(|node| matches!(
                 node.semantic_key.as_deref(),
-                Some(
-                    "search-open" | "add-account" | "nav-shell-more-content" | "nav-shell-history"
-                )
+                Some("add-account" | "nav-shell-more-content" | "nav-shell-history")
             )),
             "the modal trap excludes background header controls: {focus_order:?}"
         );

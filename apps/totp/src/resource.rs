@@ -10,7 +10,6 @@ use ui::framework::{
     SurfaceCx, ViewCx,
 };
 use ui::icons::Icon;
-use ui::search::SearchRequest;
 use ui::secrets::SecretStore;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Effect, Id, Invoke, Refusal, SearchEntry, resource};
@@ -175,8 +174,9 @@ pub const SCENARIOS: &[&str] = &[
     "expiring",
 ];
 
-/// Framework app: the navigation shell, whose header row carries the search
-/// and add buttons, around the authenticator surface over [`Totp`].
+/// Framework app: the navigation shell around the authenticator surface over
+/// [`Totp`]. In a window the desktop's bar hosts, its header is the bar's
+/// location and Add account; the bar's search is the vault's search.
 pub struct TotpShell;
 
 impl ResourceApp for TotpShell {
@@ -207,13 +207,6 @@ impl ResourceApp for TotpShell {
                 .with_count_signal(count.clone())
                 .with_notice_signal(notice.clone()),
         );
-        let search = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
-            if *has_accounts {
-                Box::new(cx.search_button(SearchRequest::this_app()))
-            } else {
-                Box::new(Spacer::token(SpacingStep::S0))
-            }
-        });
         let add = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
             if *has_accounts {
                 // The vault's own "Add account" effect, the one the palette
@@ -232,7 +225,7 @@ impl ResourceApp for TotpShell {
             shell: NavShell::new()
                 .content_kind(ui::widget::ContentKind::List)
                 .content(content)
-                .content_header("Accounts", vec![search, add]),
+                .content_header("Accounts", vec![add]),
             count,
             notice,
         })
@@ -921,6 +914,48 @@ mod tests {
         assert!(
             copied.iter().any(|value| value == "Copied GitHub code"),
             "Enter copies the selected account and says so: {copied:?}"
+        );
+    }
+
+    #[test]
+    fn the_window_bar_names_the_accounts_and_adds_one_and_the_app_draws_no_header() {
+        let (mut app, _host) = open(ui::secrets::memory_backend());
+        add_github(&mut app);
+        app.harness().present_in_window_bar();
+        settle(&mut app);
+
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Accounts")
+        );
+        let actions: Vec<&str> = bar
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect();
+        assert_eq!(
+            actions,
+            ["Add account"],
+            "the bar's search is the only search"
+        );
+        let listed = names(&mut app);
+        assert!(
+            !listed
+                .iter()
+                .any(|(role, name)| role == "Button" && name == "Add account"),
+            "the window draws no header of its own: {listed:?}"
+        );
+
+        let add = bar.actions[0].id.clone();
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: add });
+        settle(&mut app);
+        assert!(
+            names(&mut app)
+                .iter()
+                .any(|(role, name)| role == "Dialog" && name == "Add account"),
+            "the bar's Add account opens the sheet"
         );
     }
 
