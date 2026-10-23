@@ -1130,10 +1130,10 @@ pub struct LaunchEvent {
     pub package_id: String,
     pub display_name: String,
     /// The delegated agent this event belongs to, when the desktop started a
-    /// managed Task Center service. Ordinary app launches leave this unset.
+    /// managed agent service. Ordinary app launches leave this unset.
     pub managed_agent_id: Option<String>,
     /// Workspace paired with [`Self::managed_agent_id`], keeping a launch
-    /// event from one room from changing another room's Task Center state.
+    /// event from one room from changing another room's agent state.
     pub managed_workspace_id: Option<String>,
     pub kind: LaunchEventKind,
 }
@@ -3078,7 +3078,7 @@ pub fn launch(package_id: &str, room: RoomId) -> Result<InstalledApp, LaunchErro
 }
 
 /// Start one admitted agent as a desktop-managed headless service in its
-/// workspace. This is the native Task Center path: the signed package is
+/// workspace. This is the native agent path: the signed package is
 /// resolved again immediately before launch, then receives the same
 /// launcher-authenticated collaboration descriptor and selected identity as
 /// any other workspace app. Per-agent action authority remains broker-side.

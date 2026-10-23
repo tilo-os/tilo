@@ -117,16 +117,6 @@ impl ShellOverlayHost {
         self.tracker = tracker;
     }
 
-    pub(crate) fn attach_task_review(
-        &mut self,
-        review: crate::shell::task_review::NativeTaskReview,
-    ) {
-        self.room_activity.attach_task_review(review.clone());
-        self.search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::task_review::TaskReviewProvider::new(review),
-        ));
-    }
-
     /// Registers every built-in search provider and hands back the shared
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.

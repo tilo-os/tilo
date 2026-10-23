@@ -770,7 +770,7 @@ fn session_power_actions_respect_inhibitors_and_report_failure() {
 /// window still gets it, and a relaunch starts unproven.
 #[test]
 fn an_app_that_showed_its_window_and_then_failed_is_not_reported_as_unopened() {
-    let (mut host, chrome) = host_with_launch_polling();
+    let (host, chrome) = host_with_launch_polling();
     let package_id = "so.tilo.killed-after-window-fixture";
     let event = |kind| crate::shell::launcher::LaunchEvent {
         package_id: package_id.to_string(),
@@ -818,7 +818,7 @@ fn launch_notices_retire_once_and_escape_dismisses_the_latest_error() {
     /// maps a toplevel. The pending launch settles immediately while the
     /// placement promise remains available for the bounded handoff grace.
     fn clean_launch_exit_settles_its_pending_launch() {
-        let (mut host, _chrome) = host_with_launch_polling();
+        let (host, _chrome) = host_with_launch_polling();
         let package_id = "so.tilo.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,

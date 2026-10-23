@@ -138,10 +138,6 @@ a11y-shell-activity-boundary-newer-description = Diese Grenze neu ziehen, indem 
 a11y-shell-activity-boundary-older-description = Diese Grenze neu ziehen, indem eine Aktion in die ältere Arbeitssitzung wandert
 a11y-shell-activity-more-sessions = Weitere Arbeitssitzungen
 a11y-shell-activity-more-sessions-description = Weitere Arbeitssitzungen anzeigen
-a11y-shell-activity-new-task = Neue Aufgabe
-a11y-shell-activity-new-task-description = Eine Aufgabe im Arbeitsbereich erstellen, ohne ein Modell zu benötigen
-a11y-shell-activity-create-task = Aufgabe erstellen
-a11y-shell-activity-cancel-task = Erstellen der Aufgabe abbrechen
 a11y-shell-activity-everything = Alles
 a11y-shell-activity-agent-tasks = Agent-Aufgaben
 a11y-shell-activity-unclassified = Nicht zugeordnet
@@ -154,18 +150,13 @@ a11y-shell-activity-pause-replay = Wiedergabe pausieren
 a11y-shell-activity-play-replay = Wiedergabe abspielen
 a11y-shell-activity-history-scope = Verlaufsumfang
 a11y-shell-activity-history-view = Verlaufsansicht
+a11y-shell-activity-open-tasks-description = Öffnet die App Aufgaben mit den Aufgaben dieses Arbeitsbereichs
 a11y-shell-activity-time-range = Zeitraum
 a11y-shell-activity-person-filter = Personenfilter
 a11y-shell-activity-brief-description = { $detail }; zuletzt geändert { $when }; { $count } { $count ->
         [one] Änderung
        *[other] Änderungen
     } von { $authors }
-a11y-shell-activity-task-unassigned = nicht zugewiesen
-a11y-shell-activity-task-assigned-agent = einem Agenten zugewiesen
-a11y-shell-activity-task-no-resource = keine angehängte Ressource
-a11y-shell-activity-task-route = Ausführungsweg der Aufgabe
-a11y-shell-activity-task-composer-action = Aktion zum Erstellen der Aufgabe
-a11y-shell-activity-task-action = Aktion für die ausgewählte Aufgabe
 a11y-shell-activity-history-lens = Verlaufsansicht
 a11y-shell-activity-undo-task-description = Jeden betroffenen Eintrag dieser Agent-Aufgabe rückgängig machen; spätere Änderungen anderer bleiben erhalten
 a11y-shell-activity-history-action = Aktion für den ausgewählten Verlauf
@@ -174,11 +165,9 @@ a11y-shell-activity-timeline-description = Verlaufseinträge; mit den Pfeiltaste
 a11y-shell-activity-checkpoints-description = Durch die Zwischenstände des Arbeitsbereichs gehen
 a11y-shell-activity-replay-description = Die Wiedergabe des Arbeitsbereichs abspielen oder pausieren
 a11y-shell-activity-view-catch-up = Eine Zusammenfassung der Ergebnisse, seit dieses Gerät den Arbeitsbereich zuletzt angesehen hat
-a11y-shell-activity-view-tasks = Dauerhafte Aufgaben im Arbeitsbereich mit Ressourcenlinks, Ausführungswegen und Prüfprotokollen
 a11y-shell-activity-view-explore = Der vollständige Verlauf des Arbeitsbereichs mit Filtern und Herkunft
 a11y-shell-activity-view-replay = Eine kausale Wiedergabe der Anordnung und der Aktivität der Beteiligten
 a11y-shell-activity-entry-author = Von { $author }
-a11y-shell-activity-tasks = Aufgaben im Arbeitsbereich
 a11y-shell-activity-selected-detail = Details zum ausgewählten Verlauf
 a11y-shell-activity-selected-detail-description = { $title }; { $count } { $count ->
         [one] Aktion
@@ -188,18 +177,12 @@ a11y-shell-activity-agent-run-description = Anweisung: { $instruction }; zugewie
 a11y-shell-activity-reason-not-recorded = nicht erfasst
 a11y-shell-activity-agent-step = { $app } in { $record }: { $summary }
 a11y-shell-activity-agent-review = Prüfung der Agent-Aufgabe
-a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; { $count } { $count ->
-        [one] Prüfereignis
-       *[other] Prüfereignisse
-    }
-a11y-shell-activity-task-latest = zuletzt: { $latest }
 activity-view-catch-up = Neues
 activity-view-tasks = Aufgaben
 activity-view-explore = Verlauf
 activity-view-replay = Wiedergabe
 activity-title-catch-up = Während du weg warst
 activity-title-whats-new = Neues
-activity-title-tasks = Aufgabenzentrale
 activity-title-explore = Arbeitsbereich-Aktivität
 activity-title-replay = Arbeitsbereich wiedergeben
 activity-workspace-fallback = Dieser Arbeitsbereich
@@ -347,6 +330,8 @@ activity-undo-task-needs-documents = Nichts geändert. Öffne zuerst alle betrof
 activity-undo-task-partial = Aufgabe teilweise rückgängig gemacht; spätere Bearbeitungen anderer wurden behalten.
 activity-undo-task-done = Ganze Aufgabe als neuer Verlaufseintrag rückgängig gemacht.
 activity-undo-task-gone = Die Auswirkungen der Aufgabe waren bereits entfernt.
+activity-undo-task-refused = Die Aufgabe konnte nicht rückgängig gemacht werden. { $detail }
+activity-undo-task-unavailable = Aufgaben können hier nicht rückgängig gemacht werden.
 activity-removed-workspace = ein entfernter Arbeitsbereich
 activity-receipt-completed = Abgeschlossen
 activity-receipt-failed = Fehlgeschlagen
@@ -362,36 +347,6 @@ activity-replay-no-workspace = Der Arbeitsbereich existierte zu diesem Prüfpunk
 activity-replay-empty-window = Leeres Fenster
 activity-replay-layout-not-recorded = Fenstergrößen und ausgewählte Tabs wurden nicht aufgezeichnet
 activity-presence-trail = Anwesenheitsverlauf
-activity-tasks-subtitle = { $workspace } · { $active ->
-        [0] nichts offen
-        [one] 1 offene Aufgabe
-       *[other] { $active } offene Aufgaben
-    }
-activity-tasks-tagline = Was Personen und Agenten in diesem Arbeitsbereich erledigen
-activity-tasks-pending = Aufgaben warten auf laufende Bearbeitungen
-activity-tasks-empty = Noch keine Aufgaben
-activity-tasks-empty-hint = Lege hier eine an oder bitte in einer beliebigen App einen Agenten darum.
-activity-task-new = + Neue Aufgabe
-activity-task-queue = Warteschlange des Arbeitsbereichs
-activity-task-composer-title = Arbeit anlegen, ohne den Desktop zu verlassen
-activity-task-placeholder = Was muss erledigt werden?
-activity-task-executor-manual = Erledigt von dir oder einer anderen Person
-activity-task-executor-none = Kein Agent verfügbar. Die Aufgabe bleibt unzugewiesen.
-activity-task-executor-agent = Agent: { $agent }
-activity-task-no-attachment = Keine Ressource angehängt. Die Aufgabe gilt für den ganzen Arbeitsbereich.
-activity-task-attached = Angehängt: { $resource } in { $app }
-activity-task-attached-workspace = Arbeitsbereich
-activity-task-cancel-compose = Abbrechen
-activity-task-create = Anlegen
-activity-task-open-resource = Ressource öffnen
-activity-task-start-agent = Agent starten
-activity-task-launch-agent = Agent ausführen
-activity-task-mark-started = Als begonnen markieren
-activity-task-mark-done = Als erledigt markieren
-activity-task-cancel = Aufgabe abbrechen
-activity-task-retry-agent = Agent erneut versuchen
-activity-task-audit-trail = Prüfprotokoll
-activity-task-audit-noted = { $what }: { $note }
 workspace-create-task = { $manual ->
     [true] Aufgabe „{ $title }“ zum Selbermachen angelegt
    *[false] Aufgabe „{ $title }“ angelegt
@@ -418,28 +373,6 @@ workspace-set-status = { $status ->
     [done] Aufgabe als erledigt markiert
    *[cancelled] Aufgabe abgebrochen
 }
-activity-task-unassigned-by = Nicht zugewiesen · angelegt von { $creator }
-activity-task-agent-badge = Agent · { $name }
-activity-task-status-queued = In der Warteschlange
-activity-task-status-in-progress = In Arbeit
-activity-task-status-waiting = Wartet
-activity-task-status-done = Erledigt
-activity-task-status-cancelled = Abgebrochen
-activity-task-route-manual = Manuell · kein Modell
-activity-task-route-rules-only = Agent · nur Regeln
-activity-task-route-model = Agent · mit Modell
-activity-task-notice-no-agent = Kein aktivierter Agent ist zugewiesen, deshalb hat diese Aufgabe nicht begonnen.
-activity-task-notice-ready = Agent verbunden und bereit für diese Aufgabe.
-activity-task-notice-starting = Verwalteter Agent startet. Er wartet auf sein Broker-Abonnement.
-activity-task-notice-offline = Agent offline · { $detail }
-activity-task-notice-no-runtime = Die Agent-Laufzeit ist nicht verbunden, deshalb hat diese Aufgabe nicht begonnen.
-activity-agent-connect-timeout = Der Agent hat sich nicht mit dem Arbeitsbereich verbunden. Versuche es erneut, um eine neue verwaltete Sitzung zu starten.
-activity-agent-stopped = Der verwaltete Agent wurde vor dem Verbinden beendet.
-activity-agent-exited = Der Starter des verwalteten Agents wurde mit Status { $code } beendet.
-activity-agent-dispatch-failed = Aufgabe konnte nicht an den Agent übergeben werden
-activity-agent-dispatch-unavailable = Übergabe an Agents ist nicht verfügbar
-activity-agent-launch-unavailable = Agents können nicht gestartet werden
-
 # Ereignisse im Arbeitsbereich-Verlauf
 activity-event-removed-workspaces = { $count } { $count ->
         [one] Arbeitsbereich
@@ -1130,17 +1063,8 @@ tilo-about-link-community = Community
 
 notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
-activity-catch-up-goals = Aufgaben im Arbeitsbereich: { $done } abgeschlossen, { $unfinished } offen · aktualisiert { $when }
-activity-catch-up-review-description = Prüfe wartende Aufgaben, Ziele und die Arbeit von Agenten in diesem Arbeitsbereich. Das Lesen der Aktivitäten schließt keine Aufgabe ab.
-activity-catch-up-review-goals = Ziele und die Arbeit von Agenten prüfen
 activity-acknowledge-viewed = Als gesehen markieren
 activity-acknowledge-description = Markiert die hier gezeigten Änderungen als gesehen. Wartende Aufgaben bleiben offen.
-activity-catch-up-needs-review = Deine Prüfung ist nötig · { $count ->
-    [one] eine wartende Aufgabe
-   *[other] { $count } wartende Aufgaben
-    }
-activity-catch-up-waiting-detail = { $task } · { $who }
-
 notification-alarm-snoozed = Um 5 Minuten verschoben. Verwirf diesen Eintrag, um die ausstehende Erinnerung abzubrechen.
 notification-alarm-dismiss = Verwerfen
 notification-alarm-snooze = In 5 Minuten erneut erinnern
@@ -1148,96 +1072,6 @@ notification-alarm-action-failed = Dieser Wecker konnte nicht geändert werden
 notification-alarm-action-title = { $action }: { $title }
 notification-alarm-action-subtitle = Für dieses Weckereignis
 notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
-
-activity-task-review-unavailable = Der Arbeitsbereich ist gerade nicht erreichbar, daher lassen sich Aufgaben nicht ändern. Ihr Verlauf bleibt lesbar.
-activity-task-review-history = Änderungen ansehen
-activity-task-steer = Anweisungen ändern
-activity-task-cancel-run = Aufgabe abbrechen
-activity-task-retry-run = Erneut versuchen
-activity-task-direction-send = Anweisungen senden
-activity-task-direction-close = Zurück zur Aufgabe
-activity-task-direction-label = Anweisungen für den Agenten
-activity-task-direction-placeholder = Beschreibe, was der Agent ändern soll
-activity-task-direction-observation = Sag dem Agenten, was er anders machen soll. Er folgt deinen Anweisungen ab seinem nächsten Schritt, und alle in diesem Arbeitsbereich können sie sehen.
-activity-task-review-waiting = Warte auf die Antwort des Agenten.
-activity-task-review-refused = Nicht gespeichert. Dein Entwurf bleibt erhalten. { $detail }
-
-activity-confirm-waiting = Wartet auf deine Bestätigung
-activity-task-step-searching = Sucht im Web…
-activity-task-step-reading = Liest { $app }…
-activity-task-step-editing = Bearbeitet { $app }…
-activity-task-step-exploring = Schaut, was { $app } kann…
-activity-confirm-confirmed = Bestätigt
-activity-confirm-declined = Abgelehnt
-activity-confirm-risk-sends = Sendet nach außen
-activity-confirm-risk-deletes = Nicht rückgängig zu machen
-activity-confirm-risk-privileged = Ändert Zugriffe
-activity-confirm-risk-sensitive = Teilt private Daten
-activity-confirm-risk-changes = Ändert deine Arbeit
-activity-confirm-risk-reads = Liest deine Arbeit
-activity-confirm-meta = { $agent } fragt zuerst · { $resource }
-activity-confirm-withheld = Verborgen
-activity-confirm-yes = Ja
-activity-confirm-no = Nein
-activity-confirm-list = { $count }: { $items }
-activity-confirm-list-label = { $label } ({ $count })
-activity-confirm-more = { $count } weitere
-activity-confirm-to = An
-activity-confirm-cc = Cc
-activity-confirm-bcc = Bcc
-activity-confirm-subject = Betreff
-activity-confirm-body = Nachricht
-activity-confirm-attachments = Anhänge
-activity-confirm-confirm = Erlauben
-activity-confirm-edit = Bearbeiten
-activity-confirm-discard = Änderungen verwerfen
-activity-confirm-decline = Ablehnen
-activity-confirm-send-decline = Aktion ablehnen
-activity-confirm-back = Zurück
-activity-confirm-always = Immer erlauben
-activity-confirm-always-note = „Immer erlauben“ ändert den Agentenzugriff dieses Arbeitsbereichs und funktioniert deshalb nur auf dem Gerät, das den Arbeitsbereich verwaltet. Du kannst es in den Arbeitsbereichseinstellungen unter Agenten zurücknehmen.
-activity-confirm-reason-label = Grund für den Agenten (optional)
-activity-confirm-reason-placeholder = Sag, was stattdessen passieren soll
-activity-confirm-field-description = Vor dem Bestätigen ändern
-activity-confirm-on-its-way = Deine Antwort ist auf dem Weg zum Agenten.
-activity-confirm-notice-title = { $agent } fragt zuerst: { $action }
-activity-confirm-notice-body = { $task }
-activity-confirm-notice-gist = { $task } · { $gist }
-activity-confirm-notice-review = Ansehen
-
-activity-task-next = Nächste Aufgabe
-activity-task-previous = Vorherige Aufgabe
-activity-task-review-source = Stand beim Arbeitsbereich, Version { $generation } · abgerufen { $time }
-activity-task-review-status = { $status ->
-        [queued] { $agent } hat noch nicht angefangen
-        [in-progress] { $agent } arbeitet daran
-        [waiting] { $agent } hat angehalten, ohne fertig zu werden
-        [done] { $agent } ist damit fertig
-       *[cancelled] Abgebrochen
-    }
-activity-task-review-frontier = Lauf { $epoch } · { $revision ->
-        [one] 1 Anweisung gesendet
-       *[other] { $revision } Anweisungen gesendet
-    } · { $applied } vom Agenten übernommen
-activity-task-review-direction = { $author }: „{ $text }“
-activity-task-review-missing = Diese Aufgabe ist in diesem Arbeitsbereich nicht mehr verfügbar.
-
-activity-task-review-status-unassigned = { $status ->
-        [done] Erledigt
-        [cancelled] Abgebrochen
-       *[other] Noch arbeitet niemand daran
-    }
-activity-task-review-status-asking = { $agent } wartet auf deine Antwort
-activity-task-details = Details
-activity-task-hide-details = Details ausblenden
-activity-task-position = { $index } von { $count }
-activity-task-run-approved-by-you = Von dir freigegeben · { $time }
-activity-task-approve-run = Freigeben
-activity-task-run-approved = Freigegeben von { $person } · { $time }
-activity-task-awaiting-acceptance = Wartet darauf, dass der Agent die Aufgabe übernimmt. Er ist vielleicht offline.
-activity-task-run-accepted = Der Agent hat die Aufgabe übernommen · zuletzt { $time }
-activity-task-run-planning = Der Agent plant die Schritte · zuletzt { $time }
-activity-task-run-executing = Der Agent nimmt Änderungen vor · zuletzt { $time }
 
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen

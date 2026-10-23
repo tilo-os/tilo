@@ -63,6 +63,7 @@ impl NativeOwnerCommitService {
         }
     }
     /// The owner, waiting for its open: for a worker thread, never the loop.
+    #[cfg(test)]
     pub(crate) fn resolve_owner(
         &self,
     ) -> Result<super::native_workspace_owner::NativeWorkspaceOwner, String> {

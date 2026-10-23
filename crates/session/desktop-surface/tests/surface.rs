@@ -1181,25 +1181,8 @@ fn history_moves_the_windows_own_navigation_stack() {
 }
 
 #[test]
-fn the_tasks_view_opens_over_the_workspace_and_the_others_say_why_not() {
+fn an_activity_view_without_its_history_says_why_not() {
     let (mut driver, handle, _) = mount_apps(&["A"]);
-    let mut tree = handle.read(Clone::clone);
-    tree.workspaces[0]
-        .tasks
-        .push(tilo_desktop_model::WorkspaceTask {
-            id: "t1".into(),
-            title: "Review the draft".into(),
-            created_by: "tester".into(),
-            assigned_agent: None,
-            route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
-            status: tilo_desktop_model::WorkspaceTaskStatus::InProgress,
-            resource: None,
-            subject: None,
-            created_at: 1,
-            updated_at: 2,
-            audit: vec![],
-        });
-    handle.replace_tree(tree);
     driver.relayout();
     let workspace = handle.snapshot("g", vec![]).active_workspace;
 
@@ -1215,40 +1198,16 @@ fn the_tasks_view_opens_over_the_workspace_and_the_others_say_why_not() {
         );
         assert!(refused.unwrap_err().starts_with(reason), "{view}");
     }
-
-    let saved = handle.revision();
-    try_dispatch(
-        &mut driver,
-        &handle,
-        serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":workspace,"view":"tasks"}),
-    )
-    .unwrap();
-    let json = serde_json::to_value(handle.snapshot("g", vec![])).unwrap();
-    assert_eq!(json["workspaceActivity"]["view"], "tasks");
-    assert_eq!(json["workspaceActivity"]["workspace"], workspace);
-    assert_eq!(
-        json["workspaceActivity"]["tasks"][0]["title"],
-        "Review the draft"
+    // Tasks are an app, not a view of the workspace's activity.
+    assert!(
+        serde_json::from_value::<Command>(serde_json::json!({
+            "kind": "workspace-activity",
+            "generation": "g",
+            "workspace": workspace,
+            "view": "tasks",
+        }))
+        .is_err()
     );
-    assert_eq!(
-        json["workspaceActivity"]["tasks"][0]["statusLabel"],
-        "In progress"
-    );
-    assert_eq!(
-        handle.revision(),
-        saved,
-        "opening a view is not a tree change"
-    );
-
-    try_dispatch(
-        &mut driver,
-        &handle,
-        serde_json::json!({"kind":"close-workspace-activity","generation":"g","workspace":workspace}),
-    )
-    .unwrap();
-    let json = serde_json::to_value(handle.snapshot("g", vec![])).unwrap();
-    assert!(json["workspaceActivity"].is_null());
-    assert_eq!(json["workspaceActivityCloseReason"], "dismissed");
 }
 
 #[test]

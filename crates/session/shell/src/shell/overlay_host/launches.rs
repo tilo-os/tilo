@@ -137,7 +137,7 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "launch failures, expiries and placement repair share one ordered drain"
     )]
-    pub(crate) fn drain_launch_events(&mut self) -> bool {
+    pub(crate) fn drain_launch_events(&self) -> bool {
         use crate::shell::launcher::LaunchEventKind;
         if self.desktop_controls.is_explicit() {
             return false;
@@ -217,10 +217,6 @@ impl ShellOverlayHost {
                 _ => crate::shell::launcher::take_lost_tabs(&event.package_id),
             };
             let event = event.with_window_lost(lost);
-            if self.room_activity.observe_agent_launch_event(&event) {
-                chrome_handle.borrow_mut().bump();
-                posted = true;
-            }
             // Memory ended the app or one of its jobs: say which and why,
             // whether or not its window had shown, and offer the app back
             // where it was.

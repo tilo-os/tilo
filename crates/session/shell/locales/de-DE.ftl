@@ -1625,7 +1625,6 @@ search-action-archived-restore-subtitle = Diesen archivierten Arbeitsbereich zur
 search-action-archived-delete = Archivierten Arbeitsbereich { $workspace } löschen
 search-action-archived-delete-subtitle = Diesen archivierten Arbeitsbereich von diesem Computer löschen
 search-action-activity-catch-up-subtitle = Was andere seit deinem letzten Blick geändert haben
-search-action-activity-tasks-subtitle = Arbeit, die hier Personen und Agenten zugewiesen ist
 search-action-activity-explore-subtitle = Jede Änderung hier, nach Person, App und Zeit
 search-action-activity-replay-subtitle = Schritt für Schritt sehen, wie sich dieser Arbeitsbereich verändert hat
 search-action-quick-settings-unavailable = Der Dienst für die Schnelleinstellungen ist nicht verfügbar
@@ -2679,22 +2678,10 @@ device-fabric-error-layout-changed = Bildschirmanordnung geändert oder nicht ve
 search-action-activity-acknowledge = Aktivität als gesehen markieren
 search-action-activity-acknowledge-subtitle = Was du angesehen hast, zählt nicht mehr als neu
 search-action-activity-acknowledge-keywords = Rückblick gelesen gesehen prüfen Bestätigung
-search-action-activity-tasks = Ziele im Arbeitsbereich und die Arbeit von Agenten prüfen
-search-action-catch-up-tasks-subtitle = Wartende Aufgaben, Ergebnisse und Aktionsverlauf ansehen
-search-action-activity-tasks-keywords = Aktivitäten Rückblick Ziele Aufmerksamkeit Entscheidung wartend Agent Aufgaben
-
-task-review-inspect = Aufgabennachweise prüfen
-task-review-steer = Aufgabenanweisungen ändern
-task-review-cancel = Aufgabenlauf abbrechen
-task-review-retry = Aufgabe erneut versuchen
-task-review-status = Verfügbarkeit der Aufgabensteuerung prüfen
-task-review-provider = Aufgabenprüfung
 
 dictation-vocabulary-changed = Das Diktat wurde beendet, weil sich dein persönliches Wörterbuch geändert hat. Starte ein neues Diktat, um die aktualisierten Wörter zu verwenden.
 dictation-vocabulary-draft-retained = Dein persönliches Wörterbuch hat sich geändert. Das Diktat wurde beendet. Du kannst den letzten Entwurf kopieren; er ist möglicherweise unvollständig.
 
-host-history-task-refused-title = Aufgabe konnte nicht geändert werden
-host-history-task-refused-body = Der Arbeitsbereich hat diese Änderung nicht angenommen. Ihr Entwurf bleibt erhalten. Prüfen Sie vor einem erneuten Versuch Ihre Identität und die Berechtigungen im Arbeitsbereich.
 shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht verfügbar.
 shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.
 
@@ -2704,10 +2691,6 @@ shell-window-app-missing = { $app } ist nicht auf diesem Computer
 shell-window-get-app = { $app } holen
 shell-window-close = Schließen
 
-task-review-approve = Aufgabenausführung freigeben
-
-# Shared activity label used by native task-review rendering.
-activity-task-approve-run = Ausführung freigeben
 device-fabric-error-input-operation-unavailable = Die Eingabesteuerung ist beschäftigt. Versuche es erneut.
 device-fabric-error-input-decline-unavailable = Deine abgelehnten Eingabegeräte konnten nicht gelesen werden.
 device-fabric-error-input-decline-save-failed = Die Eingabesteuerung wurde widerrufen, aber die Ablehnung konnte nicht gespeichert werden. Automatische Eingabe bleibt deaktiviert.
@@ -2936,10 +2919,6 @@ agent-quick-steer-saved = Gesendet. { $agent } berücksichtigt es.
 agent-quick-steer-applied = { $agent } folgt deinem Hinweis.
 agent-quick-run-starting = Wird gestartet: { $task }
 agent-quick-run-working = In Arbeit: { $task }
-agent-quick-run-waiting = Wartet auf deine Bestätigung
-agent-quick-draft-confirm = Erlauben
-agent-quick-draft-edit = Bearbeiten
-agent-quick-draft-decline = Ablehnen
 agent-quick-run-done = { $agent } ist fertig.
 agent-quick-run-attention = { $agent } hat angehalten und braucht dich.
 agent-quick-run-stopped = Gestoppt.
