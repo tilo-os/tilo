@@ -29,6 +29,9 @@ use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
 
 const MAX_OWNED_NAVIGATIONS: usize = 32;
+/// The host numbers a page's popups from here, apart from the tabs the app
+/// opens.
+const FIRST_POPUP: u32 = 1 << 30;
 /// Longest address a page can have: Chromium's own limit
 /// (`url::kMaxURLChars`), in bytes.
 const MAX_PAGE_URL: usize = 2 * 1024 * 1024;
@@ -56,6 +59,16 @@ struct DocumentSizeReports {
 struct Shared {
     audio: audio::PageAudio,
     document_size: DocumentSizeReports,
+    /// Whether the host opens page popups as popups, whether this tab asked
+    /// for them, and whether the host was told.
+    popups_can: AtomicBool,
+    popups_asked: AtomicBool,
+    popups_told: AtomicBool,
+    /// Popups the page opened, not yet taken.
+    popups: Mutex<VecDeque<super::Popup>>,
+    /// The endpoints of popups the page opened, not yet adopted: each is
+    /// routed from the moment it opens, so its first frames reach it.
+    unadopted: Mutex<HashMap<u32, Arc<Shared>>>,
     /// The host reads a page's selection as text (`selection_text`).
     selection_text: AtomicBool,
     text_input: Mutex<super::text_input::Transactions>,
@@ -508,6 +521,11 @@ impl UnavailableEngine {
                 document_size: DocumentSizeReports::default(),
                 selection_text: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
+                popups_can: AtomicBool::default(),
+                popups_asked: AtomicBool::default(),
+                popups_told: AtomicBool::default(),
+                popups: Mutex::default(),
+                unadopted: Mutex::default(),
                 cursor: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
                 events: Mutex::new(VecDeque::new()),
@@ -1252,6 +1270,25 @@ impl ChromiumEngine {
 impl ChromiumEngine {
     /// Tell the host what this tab last asked of document size reports,
     /// once the host said it can measure.
+    /// Tell the host this tab takes its popups, once it asked and the host
+    /// said it can.
+    fn tell_popups(&self) {
+        let shared = &self.shared;
+        if !shared.popups_asked.load(Ordering::Acquire)
+            || !shared.popups_can.load(Ordering::Acquire)
+            || shared.popups_told.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        if self
+            .tx
+            .push(json!({"op":"popups","tab":self.tab,"enabled":true}))
+            .is_err()
+        {
+            shared.popups_told.store(false, Ordering::Release);
+        }
+    }
+
     fn tell_document_size(&self) {
         let reports = &self.shared.document_size;
         let asked = reports.asked.load(Ordering::Acquire);
@@ -1393,6 +1430,30 @@ impl WebViewEngine for ChromiumEngine {
     }
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         self.shared.open_tabs.lock_recover().drain(..).collect()
+    }
+
+    fn accept_popups(&self) {
+        self.shared.popups_asked.store(true, Ordering::Release);
+        self.tell_popups();
+    }
+
+    fn take_popups(&self) -> Vec<super::Popup> {
+        self.shared.popups.lock_recover().drain(..).collect()
+    }
+
+    fn adopt_popup(&self, popup: u32) -> Result<super::SharedEngine, String> {
+        let shared = self
+            .shared
+            .unadopted
+            .lock_recover()
+            .remove(&popup)
+            .ok_or("The popup is no longer open")?;
+        Ok(Arc::new(Self {
+            tx: self.tx.clone(),
+            shared,
+            runtime: self.runtime.clone(),
+            tab: popup,
+        }))
     }
 
     fn supports_native_filtering(&self) -> bool {
@@ -1538,6 +1599,7 @@ impl WebViewEngine for ChromiumEngine {
 
     fn drain_events(&self) -> Vec<WebViewEvent> {
         self.tell_document_size();
+        self.tell_popups();
         self.shared
             .events
             .lock()
@@ -1653,10 +1715,30 @@ fn route_native_event(
                 value["document_size"].as_bool() == Some(true),
                 Ordering::Release,
             );
+            shared
+                .popups_can
+                .store(value["popups"].as_bool() == Some(true), Ordering::Release);
             shared.selection_text.store(
                 value["selection_text"].as_bool() == Some(true),
                 Ordering::Release,
             );
+        }
+        if event_name == "popup"
+            && let Some(popup) = value["popup"]
+                .as_u64()
+                .and_then(|id| u32::try_from(id).ok())
+        {
+            if shared.remote.is_some() {
+                // A popup of another process's tab is that process's: its
+                // traffic goes where the tab's goes, until it closes.
+                routes
+                    .lock()
+                    .map_err(|_| "Tab routes unavailable")?
+                    .insert(popup, Arc::downgrade(&shared));
+            } else {
+                open_popup(&shared, popup, value, routes)?;
+                return Ok(());
+            }
         }
         if let Some(outbox) = &shared.remote {
             outbox.event(value.clone());
@@ -1841,6 +1923,46 @@ fn decode_favicon(value: &Value) -> Option<WebViewEvent> {
     })
 }
 
+/// A popup `opener`'s page opened: routed to an endpoint of its own at
+/// once, which waits to be adopted. One the app never adopts closes with
+/// its opener.
+fn open_popup(
+    opener: &Arc<Shared>,
+    popup: u32,
+    value: &Value,
+    routes: &Routes,
+) -> Result<(), &'static str> {
+    let mut routes = routes.lock().map_err(|_| "Tab routes unavailable")?;
+    let mut unadopted = opener.unadopted.lock_recover();
+    // Popups closed before they were adopted no longer count.
+    unadopted.retain(|id, shared| {
+        routes
+            .get(id)
+            .and_then(Weak::upgrade)
+            .is_some_and(|route| Arc::ptr_eq(&route, shared))
+    });
+    if unadopted.len() >= 8 {
+        return Ok(());
+    }
+    let shared = Arc::new(Shared {
+        waker: Mutex::new(opener.waker.lock_recover().clone()),
+        ..Shared::default()
+    });
+    routes.insert(popup, Arc::downgrade(&shared));
+    drop(routes);
+    unadopted.insert(popup, shared);
+    drop(unadopted);
+    let size = |key: &str| u32::try_from(value[key].as_u64().unwrap_or(0)).unwrap_or(0);
+    opener.popups.lock_recover().push_back(super::Popup {
+        id: popup,
+        url: value["url"].as_str().unwrap_or_default().into(),
+        width: size("width"),
+        height: size("height"),
+    });
+    opener.wake();
+    Ok(())
+}
+
 fn validate_event(value: &Value) -> Result<(), &'static str> {
     if value.get("tab").is_some_and(|tab| {
         !tab.as_u64()
@@ -1965,6 +2087,15 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "open_tab" => {
             value["url"].as_str().is_some_and(|url| url.len() <= 8192)
                 && value["background"].is_boolean()
+        }
+        "popup" => {
+            value["popup"]
+                .as_u64()
+                .is_some_and(|id| id >= u64::from(FIRST_POPUP) && i32::try_from(id).is_ok())
+                && value["url"].as_str().is_some_and(|url| url.len() <= 8192)
+                && ["width", "height"]
+                    .iter()
+                    .all(|key| value[*key].as_u64().is_some_and(|n| n <= 10_000))
         }
         "cursor" => value["cursor"]
             .as_str()
@@ -2592,5 +2723,7 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
     })
 }
 
+#[cfg(test)]
+mod popup_tests;
 #[cfg(test)]
 mod tests;

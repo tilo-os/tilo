@@ -212,6 +212,7 @@ enum PanelKind {
     Prompt,
     Pip,
     Extension,
+    Popup,
 }
 
 impl PipFeedback {
@@ -367,6 +368,8 @@ pub struct BrowserWidget {
     daily: crate::daily_controls::DailyControls,
     page_menu: crate::page_menu::PageMenu,
     site: crate::site_controls::SiteControls,
+    /// The page's popup windows (a sign-in), shown in the panel.
+    page_popups: crate::page_popups::PagePopups,
     credentials: crate::credentials::Credentials,
     /// The popover open next to the toolbar control it belongs to: the site
     /// or autofill panel, a permission or download question, or the no-video
@@ -1218,6 +1221,7 @@ impl BrowserWidget {
             daily: crate::daily_controls::DailyControls::default(),
             page_menu: crate::page_menu::PageMenu::default(),
             site: crate::site_controls::SiteControls::default(),
+            page_popups: crate::page_popups::PagePopups::default(),
             credentials: crate::credentials::Credentials::new(browsing_mode.is_private()),
             anchored_panel: None,
             panel_dismissed: ui::LocalState::new(None),
@@ -2419,6 +2423,7 @@ impl BrowserWidget {
                 PanelKind::Prompt => self.capabilities.decline_prompt(&self.engine),
                 PanelKind::Pip => self.pip_feedback = None,
                 PanelKind::Extension => self.extensions.dismiss(),
+                PanelKind::Popup => self.page_popups.close(),
             }
             self.structure_dirty = true;
         }
@@ -3760,8 +3765,18 @@ impl BrowserWidget {
         &self,
         width: f32,
         max_height: f32,
+        row: f32,
     ) -> Option<(PanelKind, Box<dyn Widget>, Vec<String>)> {
         let width = width.max(1.0);
+        // A popup the page just opened (a sign-in) comes first: the page
+        // waits on it.
+        if let Some(popup) = self.page_popups.panel(width, max_height, row) {
+            return Some((
+                PanelKind::Popup,
+                popup,
+                anchor_ids(&[URL_INPUT_ID, toolbar::OVERFLOW_ID]),
+            ));
+        }
         if self.credentials.open {
             let opener = if self.credentials.addresses_open() {
                 "browser.address.open"
@@ -3849,17 +3864,21 @@ impl BrowserWidget {
         // The popover pads its content on every side.
         let pad = 2.0 * spacing.s4;
         let room = window.width() as f32 - 2.0 * spacing.s3 - pad;
-        // An extension's popup or settings page takes its own width.
-        let width = (!self.credentials.open && !self.site.open)
-            .then(|| self.extensions.page_width(room))
-            .flatten()
-            .unwrap_or_else(|| metrics.panel_width_list.min(room));
+        // A page's popup, or an extension's popup or settings page, takes
+        // its own width.
+        let width = self.page_popups.width(room).or_else(|| {
+            (!self.credentials.open && !self.site.open)
+                .then(|| self.extensions.page_width(room))
+                .flatten()
+        });
+        let width = width.unwrap_or_else(|| metrics.panel_width_list.min(room));
         let toolbar_bottom = self
             .find_rect("browser.toolbar")
             .map_or(0.0, |toolbar| toolbar.y1);
         let max_height =
             (window.height() as f32 - toolbar_bottom as f32 - spacing.s3 - pad).max(160.0);
-        let (kind, content, anchors) = self.anchored_panel_parts(width, max_height)?;
+        let (kind, content, anchors) =
+            self.anchored_panel_parts(width, max_height, metrics.panel_row_height)?;
         // A control of the toolbar row opens its panel below the whole row,
         // so the row stays uncovered.
         let anchor = anchors.iter().find_map(|id| self.find_rect(id));
@@ -5854,6 +5873,7 @@ impl BrowserWidget {
         }
 
         self.structure_dirty |= self.extensions.sync(&self.engine, &self.current_uri);
+        self.structure_dirty |= self.page_popups.sync(&self.engine);
         self.structure_dirty |= self.daily.sync(&self.engine);
         let site_was_open = self.site.open;
         self.structure_dirty |= self.site.sync(&self.engine);

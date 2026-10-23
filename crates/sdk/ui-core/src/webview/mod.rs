@@ -203,6 +203,16 @@ pub struct SiteStatus {
     pub can_reset: bool,
 }
 
+/// A popup window a page opened, with the size it asked for (0 when it
+/// named none), in CSS pixels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Popup {
+    pub id: u32,
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     /// A DevTools command for extension management: the engine allows only
@@ -668,6 +678,36 @@ pub trait WebViewEngine: Send + Sync {
     /// Native new-window intents, delivered to browser chrome as tab requests.
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         Vec::new()
+    }
+
+    /// Have the page's popup windows (`window.open` with a size: a sign-in,
+    /// a payment) opened as popups of this page, which can answer it,
+    /// rather than as tabs: [`Self::take_popups`] then lists them. An engine
+    /// that cannot goes on opening them as tabs.
+    fn accept_popups(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.accept_popups();
+        }
+    }
+
+    /// The popups the page opened since the last call.
+    fn take_popups(&self) -> Vec<Popup> {
+        self.wrapped()
+            .map(|engine| engine.take_popups())
+            .unwrap_or_default()
+    }
+
+    /// The engine of a popup [`Self::take_popups`] listed, to show it.
+    /// Dropping it closes the popup.
+    ///
+    /// # Errors
+    /// Returns an error when the popup is no longer open or this engine has
+    /// none.
+    fn adopt_popup(&self, popup: u32) -> Result<SharedEngine, String> {
+        match self.wrapped() {
+            Some(engine) => engine.adopt_popup(popup),
+            None => Err("This engine opens no popups".into()),
+        }
     }
 
     /// Whether this backend accepts source rules instead of `WebKit` JSON.
