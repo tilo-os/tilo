@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use tilo_relay::{DeviceRole, RelayConfig, ReplicationIntent, WorkspaceBinding};
+use tilo_relay::{DeviceRole, RelayConfig};
 
 const RELAY_CONFIG: &str = "/etc/tilo/relay.toml";
 const HOME_PEER_CONFIG: &str = "/etc/tilo/home-peer.toml";
@@ -94,9 +94,6 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
     if request.workspace_ids.len() > 4096 {
         bail!("too many workspaces");
     }
-    let mut workspace_ids = request.workspace_ids.clone();
-    workspace_ids.sort_unstable();
-    workspace_ids.dedup();
     let mut config = if Path::new(RELAY_CONFIG).exists() {
         RelayConfig::load(Path::new(RELAY_CONFIG))?
     } else {
@@ -110,34 +107,20 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
     };
     let serving = config.device_role.can_serve();
     let full = config.device_role == DeviceRole::AlwaysOnServer;
-    let requested_replication = match request.replication.as_str() {
-        "workspace-only" => ReplicationIntent::WorkspaceOnly,
-        "on-demand" => ReplicationIntent::OnDemand,
-        "full" => ReplicationIntent::FullWorkspace,
-        _ => bail!("unknown replication intent"),
-    };
-    let replication = if full {
-        ReplicationIntent::FullWorkspace
-    } else {
-        requested_replication
-    };
+    // Which rooms this device holds, and how much of each, is the rooms'
+    // own hosting membership, not this file's.
+    if !matches!(
+        request.replication.as_str(),
+        "workspace-only" | "on-demand" | "full"
+    ) {
+        bail!("unknown replication intent");
+    }
     config.services.workspace_replication = serving;
     config.services.full_content_replication = full;
     config.services.inbound_relay = serving && request.inbound_relay;
     config.services.remote_control_relay = serving && request.remote_control_relay;
     config.services.app_serving = serving && request.app_serving;
     config.services.compute = serving && request.compute;
-    config.workspaces = workspace_ids
-        .into_iter()
-        .map(|id| WorkspaceBinding {
-            id,
-            pin: serving,
-            replication: replication.clone(),
-            admitted_users: Vec::new(),
-            shell_authority: None,
-            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
-        })
-        .collect();
     Ok(config)
 }
 
@@ -781,20 +764,7 @@ mod tests {
             };
             let config = desired_config(&request).unwrap();
             assert_eq!(config.device_role, DeviceRole::AlwaysOnServer);
-            assert_eq!(
-                config
-                    .workspaces
-                    .iter()
-                    .map(|entry| entry.id)
-                    .collect::<Vec<_>>(),
-                vec![2, 9]
-            );
-            assert!(
-                config
-                    .workspaces
-                    .iter()
-                    .all(|entry| entry.pin && entry.replication == ReplicationIntent::FullWorkspace)
-            );
+            assert!(config.services.full_content_replication);
         }
         {
             let dir = tempfile::tempdir().unwrap();

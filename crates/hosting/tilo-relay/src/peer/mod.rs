@@ -26,7 +26,6 @@ mod replay;
 mod session;
 mod state;
 mod subscribe;
-pub mod sync_refresh;
 mod test_hooks;
 
 use crate::store;
