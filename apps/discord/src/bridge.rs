@@ -457,7 +457,7 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
     let guild = read.guild;
     let inbound = match source {
         source::MESSAGE_CREATED => {
-            payload::<MessageCreated>(body).map(|e| inbound::plan_created(guild, &e))
+            payload::<MessageCreated>(body).map(|e| inbound::plan_created(guild, read.chat, &e))
         }
         source::MESSAGE_UPDATED => {
             payload::<MessageUpdated>(body).map(|e| inbound::plan_updated(guild, &e))

@@ -55,7 +55,7 @@ fn discord_origin(tilo: &str, discord: &str, root: Option<&str>) -> Mapping {
 
 #[test]
 fn a_message_is_posted_with_its_authors_appearance() {
-    let plan = plan_created(&guild(), &created("dm1", "hello"));
+    let plan = plan_created(&guild(), &serde_json::Value::Null, &created("dm1", "hello"));
     let post = &plan.posts[0];
     assert_eq!(
         (
@@ -77,10 +77,46 @@ fn a_message_is_posted_with_its_authors_appearance() {
 }
 
 #[test]
+fn a_linked_account_speaks_as_its_tilo_person() {
+    let mut g = guild();
+    g.links.push(Link {
+        discord_user: "u7".into(),
+        person: "u_ada".into(),
+        user_name: "alice".into(),
+        ..Link::default()
+    });
+    let chat = json!({"people": [
+        {"id": "u_ada", "value": {"id": "u_ada", "name": "Ada Lovelace", "avatar": "blob-ada"}},
+    ]});
+    let post = &plan_created(&g, &chat, &created("dm1", "hello")).posts[0];
+    assert_eq!(
+        post.appearance.name, "Ada Lovelace",
+        "Chat shows their Tilo name"
+    );
+    assert_eq!(post.appearance.avatar.as_deref(), Some("blob-ada"));
+    assert_eq!(
+        post.appearance.persona,
+        Persona {
+            service: "discord".into(),
+            account: "u7".into()
+        },
+        "still marked as written in Discord"
+    );
+
+    // Unlinked again, or a person Chat does not know: their Discord name.
+    let unknown = json!({"people": []});
+    let post = &plan_created(&g, &unknown, &created("dm2", "hi")).posts[0];
+    assert_eq!(post.appearance.name, "alice");
+    g.links.clear();
+    let post = &plan_created(&g, &chat, &created("dm3", "hey")).posts[0];
+    assert_eq!(post.appearance.name, "alice");
+}
+
+#[test]
 fn an_unknown_avatar_is_fetched_once_before_posting() {
     let mut g = guild();
     g.avatars.clear();
-    let plan = plan_created(&g, &created("dm1", "hello"));
+    let plan = plan_created(&g, &serde_json::Value::Null, &created("dm1", "hello"));
     assert!(plan.posts.is_empty());
     assert_eq!(plan.avatars[0].hash, "h1");
     assert_eq!(plan.avatars[0].op.max_bytes, MAX_AVATAR_BYTES);
@@ -92,20 +128,20 @@ fn echoes_and_blocked_personas_plan_nothing() {
     let mut own = created("dm1", "x");
     own.author.webhook_id = Some("wh1".into());
     assert_eq!(
-        plan_created(&g, &own),
+        plan_created(&g, &serde_json::Value::Null, &own),
         InboundPlan::default(),
         "the bridge's own webhook"
     );
     let mut bot = created("dm2", "x");
     bot.author.id = "b0".into();
     assert_eq!(
-        plan_created(&g, &bot),
+        plan_created(&g, &serde_json::Value::Null, &bot),
         InboundPlan::default(),
         "the bot user"
     );
     g.map.push(discord_origin("m3", "dm3", None));
     assert_eq!(
-        plan_created(&g, &created("dm3", "again")),
+        plan_created(&g, &serde_json::Value::Null, &created("dm3", "again")),
         InboundPlan::default(),
         "a replayed event"
     );
@@ -117,7 +153,7 @@ fn blocked_persona_is_skipped_for_every_event() {
     g.blocked_personas.insert("u7".into());
     g.map.push(discord_origin("m1", "dm1", None));
     assert_eq!(
-        plan_created(&g, &created("dm9", "spam")),
+        plan_created(&g, &serde_json::Value::Null, &created("dm9", "spam")),
         InboundPlan::default()
     );
     let update = MessageUpdated {
@@ -149,7 +185,9 @@ fn replies_join_the_roots_thread_and_quote_a_reply_to_a_reply() {
     let mut reply = created("d_new", "me too");
     reply.reply_to = Some("d_root".into());
     assert_eq!(
-        plan_created(&g, &reply).posts[0].parent.as_deref(),
+        plan_created(&g, &serde_json::Value::Null, &reply).posts[0]
+            .parent
+            .as_deref(),
         Some("root")
     );
 
@@ -157,7 +195,7 @@ fn replies_join_the_roots_thread_and_quote_a_reply_to_a_reply() {
     deep.reply_to = Some("d_r1".into());
     deep.reply_author = Some("bo".into());
     deep.reply_text = Some("first line\nsecond".into());
-    let post = &plan_created(&g, &deep).posts[0];
+    let post = &plan_created(&g, &serde_json::Value::Null, &deep).posts[0];
     assert_eq!(post.parent.as_deref(), Some("root"));
     assert_eq!(post.text, "> bo: first line\nagreed");
 }
@@ -172,7 +210,7 @@ fn a_message_in_a_discord_thread_replies_to_its_root() {
         id: "d_thread".into(),
         parent: "d1".into(),
     });
-    let post = &plan_created(&g, &event).posts[0];
+    let post = &plan_created(&g, &serde_json::Value::Null, &event).posts[0];
     assert_eq!(
         (post.channel.as_str(), post.parent.as_deref()),
         ("c1", Some("root"))
@@ -199,7 +237,7 @@ fn attachments_are_copied_up_to_chats_limit_and_linked_beyond() {
             ..AttachmentInfo::default()
         },
     ];
-    let plan = plan_created(&guild(), &event);
+    let plan = plan_created(&guild(), &serde_json::Value::Null, &event);
     assert_eq!(plan.files.len(), 1);
     assert_eq!(
         plan.files[0].fetch.attachment.as_ref().unwrap().kind,
@@ -231,19 +269,20 @@ fn a_fetched_attachment_is_one_chat_posts() {
         file("clip.mp4", "video/mp4", 0),
         file("notes.txt", "text/plain", 0),
     ];
-    let posted: Vec<chat::model::Attachment> = plan_created(&guild(), &event)
-        .files
-        .into_iter()
-        .map(|post| {
-            let attachment = InAttachment {
-                blob: "ab".repeat(32),
-                ..post.fetch.attachment.unwrap()
-            };
-            let update: chat::record::AttachmentUpdate =
-                serde_json::from_value(serde_json::to_value(attachment).unwrap()).unwrap();
-            update.attachment().unwrap()
-        })
-        .collect();
+    let posted: Vec<chat::model::Attachment> =
+        plan_created(&guild(), &serde_json::Value::Null, &event)
+            .files
+            .into_iter()
+            .map(|post| {
+                let attachment = InAttachment {
+                    blob: "ab".repeat(32),
+                    ..post.fetch.attachment.unwrap()
+                };
+                let update: chat::record::AttachmentUpdate =
+                    serde_json::from_value(serde_json::to_value(attachment).unwrap()).unwrap();
+                update.attachment().unwrap()
+            })
+            .collect();
     let blob = "ab".repeat(32);
     assert_eq!(
         posted,
@@ -312,7 +351,7 @@ fn deleting_a_discord_post_removes_every_attachment_copy() {
             ..AttachmentInfo::default()
         })
         .collect();
-    let posted = plan_created(&g, &event);
+    let posted = plan_created(&g, &serde_json::Value::Null, &event);
     assert_eq!(posted.files.len(), 3);
     for (index, file) in posted.files.iter().enumerate() {
         g.map.push(discord_origin(
