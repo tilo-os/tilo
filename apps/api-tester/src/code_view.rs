@@ -462,7 +462,11 @@ mod tests {
     fn tokens_follow_the_face_that_arrives_after_the_first_paint() {
         let root = ui::font_catalog::checkout_root();
         let fonts = ui::font_catalog::FontCatalog::product("", "en-US")
-            .load_browser_startup_bytes(ui::font_catalog::test_font_files(&root))
+            .load_browser_startup_bytes(|name| {
+                let bytes = std::fs::read(root.join(name)).ok()?;
+                let digest = ui::font_catalog::test_sha256(&bytes);
+                Some((bytes, digest))
+            })
             .expect("startup fonts");
         let body = serde_json::json!({ "name": "tilo", "count": 3 }).to_string();
         let mut d = FrameHarness::for_root_with(
