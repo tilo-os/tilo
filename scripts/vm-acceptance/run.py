@@ -32,6 +32,8 @@ sys.path.insert(0, str(HERE))
 from acceptance import core, records, report  # noqa: E402
 from acceptance.checks import (agent, apps, basics, daily_apps, input_devices,  # noqa: E402,F401
                                provenance, resources, search, startup, ui, window)
+# Last: it sets the VM's clock back and steps it forward again.
+from acceptance.checks import clock  # noqa: E402,F401
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
 from layer_artifacts import identities, verify as verify_artifacts  # noqa: E402

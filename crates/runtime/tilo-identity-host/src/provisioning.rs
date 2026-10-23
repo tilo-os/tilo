@@ -1207,6 +1207,39 @@ pub fn prepare_identity_directory(identity_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// This device's certificate, when it verifies but the clock's reading at
+/// `now_ns` is outside its validity: the identity is intact and the clock is
+/// wrong. `None` when the certificate is valid now, missing, or refused for
+/// any other reason (which the identity checks report themselves).
+#[must_use]
+pub fn device_certificate_clock_refusal(
+    paths: &IdentityPaths,
+    now_ns: u64,
+) -> Option<tilo_user_identity::CertificateClockError> {
+    let cert = persist::read_device_cert(&paths.device_cert).ok()?;
+    let error = tilo_user_identity::verify_device_cert_at(&cert, now_ns).err()?;
+    tilo_user_identity::CertificateClockError::of(&cert, now_ns, &error)
+}
+
+/// Why an enrolled device's identity cannot be used. A certificate refused
+/// for the clock's reading alone keeps its
+/// [`tilo_user_identity::CertificateClockError`], so startup tells a wrong
+/// clock apart from a broken identity and never offers to replace one that
+/// is intact.
+fn joined_device_unusable(error: persist::PersistError) -> io::Error {
+    match error {
+        persist::PersistError::Io(error)
+            if tilo_user_identity::CertificateClockError::in_io(&error).is_some() =>
+        {
+            error
+        }
+        error => io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("pre-enrolled device identity is not usable: {error}"),
+        ),
+    }
+}
+
 fn ensure_collaboration_identity_in_context(
     identity_dir: &Path,
     paths: &IdentityPaths,
@@ -1221,12 +1254,7 @@ fn ensure_collaboration_identity_in_context(
     match persist::joined_device_is_ready(paths, tilo_clock::unix_now_ns()) {
         Ok(true) => return Ok(ProvisionOutcome::Existing),
         Ok(false) => {}
-        Err(error) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("pre-enrolled device identity is not usable: {error}"),
-            ));
-        }
+        Err(error) => return Err(joined_device_unusable(error)),
     }
 
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
@@ -1605,12 +1633,7 @@ pub fn verify_collaboration_identity(
     }
     // A joined device holds no share of the identity's key: its record only
     // names the identity, and its certificate binds this device's key to it.
-    let joined = persist::joined_device_is_ready(paths, now_ns).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("pre-enrolled device identity is not usable: {error}"),
-        )
-    })?;
+    let joined = persist::joined_device_is_ready(paths, now_ns).map_err(joined_device_unusable)?;
     if joined {
         let metadata = runtime_identity::load_metadata_from_path(&primary_path)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -1637,8 +1660,12 @@ pub fn verify_collaboration_identity(
     let device = persist::load_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
     let cert = persist::read_device_cert(&paths.device_cert)
         .map_err(|e| io::Error::other(e.to_string()))?;
-    tilo_user_identity::verify_device_cert_at(&cert, now_ns)
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(|error| {
+        tilo_user_identity::CertificateClockError::of(&cert, now_ns, &error).map_or_else(
+            || io::Error::other(error.to_string()),
+            tilo_user_identity::CertificateClockError::into_io,
+        )
+    })?;
 
     let expected_root = identity.group_public_key();
     if root_public != expected_root || cert.user_public_key != expected_root {
@@ -1724,6 +1751,42 @@ mod tests {
     use super::*;
 
     const FILES: IdentityStorage = IdentityStorage::Files;
+
+    #[test]
+    fn a_device_certificate_the_clock_reads_before_is_a_clock_refusal_and_nothing_else() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(temp.path());
+        assert_eq!(
+            device_certificate_clock_refusal(&paths, 10),
+            None,
+            "no certificate"
+        );
+        let root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+
+        let refusal = device_certificate_clock_refusal(&paths, 500).expect("the clock is behind");
+        assert_eq!(refusal.valid_at_ns(), Some(1_000));
+        assert_eq!(device_certificate_clock_refusal(&paths, 1_000), None);
+
+        cert.device_label.push_str(" (tampered)");
+        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+        assert_eq!(
+            device_certificate_clock_refusal(&paths, 500),
+            None,
+            "a forged certificate is not a clock problem"
+        );
+    }
 
     #[test]
     fn installer_device_label_is_signed_once_and_existing_custody_is_unchanged() {

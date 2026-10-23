@@ -1268,10 +1268,19 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
         return Ok(false);
     }
     verify_device_cert_at(&cert, now_ns).map_err(|error| {
-        PersistError::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("enrolled device certificate did not verify: {error}"),
-        ))
+        // Refused for the clock's reading alone, the certificate still
+        // proves the enrolment: say so in a form callers can tell apart.
+        PersistError::Io(
+            crate::CertificateClockError::of(&cert, now_ns, &error).map_or_else(
+                || {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("enrolled device certificate did not verify: {error}"),
+                    )
+                },
+                crate::CertificateClockError::into_io,
+            ),
+        )
     })?;
     if cert.user_public_key != pubkey || cert.device_public_key != device.verifying_key().to_bytes()
     {

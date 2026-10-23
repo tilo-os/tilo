@@ -1045,6 +1045,10 @@ pub struct ChromeState {
     /// `None` is working; `Some(reason)` means every app runs alone —
     /// the one collaboration failure an app can't report for itself.
     pub collab_unavailable: Option<String>,
+    /// While this device's certificate is refused for the clock's reading
+    /// alone, the notice that says so: the identity is intact, and the
+    /// workspaces connect once the clock is right.
+    pub identity_clock_notice: Option<u64>,
     /// The documents open tabs are showing. Held here because chrome
     /// is what everything outside the widget tree already reaches
     /// through. Starts in-memory so tests write nothing to disk.
@@ -1299,6 +1303,7 @@ impl ChromeState {
             single_strip: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
+            identity_clock_notice: None,
             peer_sync_requests: Vec::new(),
             publications: BTreeMap::new(),
             presence_requests: Vec::new(),

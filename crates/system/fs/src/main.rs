@@ -14,7 +14,7 @@ mod workspace_startup;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
-use fs::clock::{unix_now_ms, unix_now_ns};
+use fs::clock::unix_now_ms;
 use fs::full_replica::{
     HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
     prune_obsolete_workspace_content, save_status, validate_home_peer_set,
@@ -39,7 +39,7 @@ use fs::{
     RecordProtocolSnapshotV1, RecordPublisher, RecordRepository, RecordServices,
     RecordSubscriptionFailureCode, RecordSubscriptionKey, RecordSubscriptionStore, ShareAuthority,
     ShareControlServer, ShareManagement, Ticket, Workspace, identity_paths,
-    load_certified_mount_identity, load_revocation_list, load_workspace_share_issuer,
+    load_certified_mount_identity_once_valid, load_revocation_list, load_workspace_share_issuer,
 };
 use fuser::{Config, MountOption, SessionACL};
 use std::io::Read;
@@ -1528,7 +1528,7 @@ async fn replica_workspace(
 
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
@@ -1837,7 +1837,7 @@ async fn serve(
     }
     let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let share_issuer = load_workspace_share_issuer(&paths, &credentials)?;
@@ -2443,7 +2443,7 @@ async fn mount(
     }
     let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
@@ -2625,7 +2625,7 @@ async fn mount_share(
         SharedCredential::Named(_) => None,
     };
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let actor = fs_protocol::FileActor {
@@ -2788,7 +2788,7 @@ async fn recipient_service(
     let listener = recipient_service_listener(&socket)?;
     std::fs::create_dir_all(&cache_root)?;
     let paths = identity_paths();
-    let certified = match load_certified_mount_identity(&paths, unix_now_ns()) {
+    let certified = match load_certified_mount_identity_once_valid(&paths).await {
         Ok(certified) => certified,
         Err(error) => {
             // Unconfigured session: keep the activation socket and wait for
