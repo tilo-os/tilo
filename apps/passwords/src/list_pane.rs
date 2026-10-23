@@ -105,6 +105,11 @@ impl ListPane {
     }
 
     fn empty(&self, core: &Core) -> EmptyState {
+        if core.opening {
+            return EmptyState::new("Opening your vault")
+                .with_icon(Icon::Shield)
+                .busy();
+        }
         let vault_empty = core.items.is_empty();
         let title = if vault_empty {
             "Your vault is empty"

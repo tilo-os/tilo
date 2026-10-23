@@ -101,6 +101,9 @@ pub struct SecretVault {
     pending: std::sync::Mutex<PendingEdits>,
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     page_in_flight: std::sync::Mutex<Option<PendingEdits>>,
+    /// A write on a thread of its own, for a caller that must not wait on
+    /// the disk ([`Self::commit`] on the compositor's frame loop).
+    native_in_flight: std::sync::Mutex<Option<NativeWrite>>,
     custody: SecretCustody,
     load_error: Option<String>,
     read_only: bool,
@@ -133,6 +136,7 @@ impl SecretVault {
                     page: None,
                     entries: BTreeMap::new(),
                     pending: std::sync::Mutex::default(),
+                    native_in_flight: std::sync::Mutex::default(),
                     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                     page_in_flight: std::sync::Mutex::default(),
                     custody: explicit_root_custody(),
@@ -173,6 +177,7 @@ impl SecretVault {
                 page: None,
                 entries: BTreeMap::new(),
                 pending: std::sync::Mutex::default(),
+                native_in_flight: std::sync::Mutex::default(),
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 page_in_flight: std::sync::Mutex::default(),
                 custody: explicit_root_custody(),
@@ -192,6 +197,7 @@ impl SecretVault {
             page: None,
             entries,
             pending: std::sync::Mutex::default(),
+            native_in_flight: std::sync::Mutex::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
             custody,
@@ -217,6 +223,7 @@ impl SecretVault {
             page: Some(page),
             entries,
             pending: std::sync::Mutex::default(),
+            native_in_flight: std::sync::Mutex::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
             custody: SecretCustody::System,
@@ -234,6 +241,7 @@ impl SecretVault {
                 page: None,
                 entries: BTreeMap::new(),
                 pending: std::sync::Mutex::default(),
+                native_in_flight: std::sync::Mutex::default(),
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 page_in_flight: std::sync::Mutex::default(),
                 custody,
@@ -259,6 +267,7 @@ impl SecretVault {
             page: None,
             entries,
             pending: std::sync::Mutex::default(),
+            native_in_flight: std::sync::Mutex::default(),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
             custody,
@@ -344,7 +353,7 @@ impl SecretVault {
     /// prepared, serialization or encryption fails, or the sealed file cannot
     /// be atomically persisted.
     pub fn try_save(&self) -> Result<(), String> {
-        match self.written()? {
+        match self.written(true)? {
             Written::Durable => Ok(()),
             Written::InFlight => Err(SAVE_PENDING.to_owned()),
             Written::Remaining => Err("credential save pending; retry remaining edits".to_owned()),
@@ -360,14 +369,19 @@ impl SecretVault {
     /// # Errors
     ///
     /// As [`Self::try_save`], except a write in flight.
+    ///
+    /// On a thread that must not wait on storage (the compositor's frame
+    /// loop, [`durable_store::waiting`]) a native vault is written the same
+    /// way: on a thread of its own, [`Saved::Pending`] until it is written.
     pub fn commit(&self) -> Result<Saved, String> {
-        Ok(match self.written()? {
+        let wait = !durable_store::waiting::forbidden();
+        Ok(match self.written(wait)? {
             Written::Durable => Saved::Durable,
             Written::InFlight | Written::Remaining => Saved::Pending,
         })
     }
 
-    fn written(&self) -> Result<Written, String> {
+    fn written(&self, wait: bool) -> Result<Written, String> {
         if self.read_only {
             return Err("read-only credential vault cannot be saved".to_string());
         }
@@ -382,30 +396,117 @@ impl SecretVault {
             #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             return Err("page credential storage is only available in a browser".into());
         }
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|error| format!("could not create vault directory: {error}"))?;
-        let _lock = advisory_lock::FileLock::open(
-            &self.dir.join("vault.lock"),
-            advisory_lock::LockMode::Exclusive,
-        )
-        .map_err(|error| format!("could not lock credential vault: {error}"))?;
-        let entries = self.merge_pending(load_entries(&self.dir, self.custody)?)?;
-        let key = load_or_create_key(&self.dir, self.custody)
-            .ok_or_else(|| "no vault key is available".to_string())?;
-        let plaintext = Zeroizing::new(
-            serde_json::to_vec(&entries)
-                .map_err(|error| format!("could not serialize credential vault: {error}"))?,
-        );
-        let blob = seal(&key, &plaintext)
-            .ok_or_else(|| "credential vault encryption failed".to_string())?;
-        tilo_files::native::atomic::write(&self.dir.join("vault.enc"), &blob)
-            .map_err(|error| format!("could not write credential vault: {error}"))?;
-        self.pending
+        // One writer at a time: a caller that may wait writes under this.
+        let mut in_flight = self
+            .native_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.write_native_vault(&mut in_flight, wait)
+    }
+
+    /// Settle the write `in_flight`, then write the pending edits: here when
+    /// the caller may `wait`, else on a thread of its own.
+    fn write_native_vault(
+        &self,
+        in_flight: &mut Option<NativeWrite>,
+        wait: bool,
+    ) -> Result<Written, String> {
+        if let Some(write) = in_flight.take() {
+            if !wait && !write.thread.is_finished() {
+                *in_flight = Some(write);
+                return Ok(Written::InFlight);
+            }
+            // A failed write leaves its edits pending, to be written again.
+            let written = write
+                .thread
+                .join()
+                .unwrap_or_else(|_| Err("the credential vault writer stopped".to_owned()));
+            written?;
+            self.settle(write.submitted);
+        }
+        let submitted = self
+            .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-        Ok(Written::Durable)
+            .clone();
+        if wait {
+            // Written even with no edits: a vault that cannot be read back
+            // is refused here rather than reported saved.
+            write_native(&self.dir, self.custody, &submitted)?;
+            self.settle(submitted);
+            return Ok(Written::Durable);
+        }
+        if submitted.is_empty() {
+            return Ok(Written::Durable);
+        }
+        let (dir, custody, edits) = (self.dir.clone(), self.custody, submitted.clone());
+        let thread = std::thread::Builder::new()
+            .name("credential-vault".into())
+            .spawn(move || write_native(&dir, custody, &edits))
+            .map_err(|error| format!("could not start writing the credential vault: {error}"))?;
+        *in_flight = Some(NativeWrite { submitted, thread });
+        Ok(Written::InFlight)
     }
+
+    /// Forget the edits a finished write kept, retaining any made since.
+    fn settle(&self, submitted: PendingEdits) {
+        settle_edits(
+            &mut self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            submitted,
+        );
+    }
+}
+
+/// Forget from `pending` the edits a finished write kept, retaining any
+/// made since.
+fn settle_edits(pending: &mut PendingEdits, submitted: PendingEdits) {
+    for (id, (_, saved)) in submitted {
+        if let Some((original, replacement)) = pending.get_mut(&id) {
+            if replacement == &saved {
+                pending.remove(&id);
+            } else {
+                // Edited again while that write was under way: the newer
+                // edit stays, based on the value now written.
+                *original = saved;
+            }
+        }
+    }
+}
+
+/// A native vault write under way on its own thread, and the edits it writes.
+struct NativeWrite {
+    submitted: PendingEdits,
+    thread: std::thread::JoinHandle<Result<(), String>>,
+}
+
+impl std::fmt::Debug for NativeWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeWrite").finish_non_exhaustive()
+    }
+}
+
+/// Seal and atomically write the vault in `dir` with `edits` merged into
+/// what it holds, under its lock.
+fn write_native(dir: &Path, custody: SecretCustody, edits: &PendingEdits) -> Result<(), String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|error| format!("could not create vault directory: {error}"))?;
+    let _lock =
+        advisory_lock::FileLock::open(&dir.join("vault.lock"), advisory_lock::LockMode::Exclusive)
+            .map_err(|error| format!("could not lock credential vault: {error}"))?;
+    let entries = merge_edits(load_entries(dir, custody)?, edits)?;
+    let key =
+        load_or_create_key(dir, custody).ok_or_else(|| "no vault key is available".to_string())?;
+    let plaintext = Zeroizing::new(
+        serde_json::to_vec(&entries)
+            .map_err(|error| format!("could not serialize credential vault: {error}"))?,
+    );
+    let blob =
+        seal(&key, &plaintext).ok_or_else(|| "credential vault encryption failed".to_string())?;
+    tilo_files::native::atomic::write(&dir.join("vault.enc"), &blob)
+        .map_err(|error| format!("could not write credential vault: {error}"))
 }
 
 /// Why [`SecretVault::try_save`] refuses while a browser write is in flight.
@@ -435,19 +536,6 @@ pub enum Saved {
 }
 
 impl SecretVault {
-    fn merge_pending(
-        &self,
-        entries: BTreeMap<String, Secret>,
-    ) -> Result<BTreeMap<String, Secret>, String> {
-        merge_edits(
-            entries,
-            &self
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
-    }
-
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     fn save_page(&self) -> Result<Written, String> {
         let mut pending = self
@@ -1240,6 +1328,38 @@ mod tests {
     }
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("tilo-accounts-vault-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn a_thread_that_must_not_wait_commits_the_vault_on_a_writer_of_its_own() {
+        let root = temp_root();
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(&AccountId::from("frame-loop"), &Secret::password("kept"));
+        {
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
+            assert_eq!(
+                vault.commit().unwrap(),
+                Saved::Pending,
+                "the frame loop never writes the vault itself"
+            );
+            vault.put(
+                &AccountId::from("edited-meanwhile"),
+                &Secret::password("too"),
+            );
+        }
+        // A caller that may wait takes the write under way, then writes
+        // the edit made meanwhile.
+        vault.try_save().unwrap();
+        let reopened = SecretVault::open_in(&root);
+        assert_eq!(
+            reopened.get(&AccountId::from("frame-loop")),
+            Some(Secret::password("kept"))
+        );
+        assert_eq!(
+            reopened.get(&AccountId::from("edited-meanwhile")),
+            Some(Secret::password("too"))
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
