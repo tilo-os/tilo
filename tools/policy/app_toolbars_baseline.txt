@@ -64,7 +64,6 @@ toolbar-row 1 apps/pdf-viewer/src/app_draw.rs
 toolbar-row 1 apps/typst-editor/src/chrome.rs
 # Books' shelf header: sort, Hide finished, Settings and Open book in a row of
 # its own; sort and Hide finished become the window bar's views and menu items.
-toolbar-band 1 apps/ebook/src/app.rs
 toolbar-band 1 apps/pdf-viewer/src/app_draw.rs
 toolbar-band 1 apps/typst-editor/src/app.rs
 toolbar-band 1 apps/video-editor/src/app.rs

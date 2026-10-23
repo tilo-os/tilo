@@ -1,4 +1,4 @@
-//! The settings page: its tabs, rows, the font and colour-scheme managers
+//! The settings page: the rows of each tab (the window bar offers the tabs),
 //! and their editors.
 
 use super::{
@@ -6,9 +6,8 @@ use super::{
     ControlSize, EmptyState, EmptyStateContent, Fill, FontChoice, FontEntry, FontKind,
     HostedDropdown, Icon, InputHint, ListRowFace, ModalAction, ModalSpec, NumberField, PAGE_MAX_W,
     PaintCtx, PathBuf, Point, ReadTheme, ReaderPalette, ReaderShortcut, Rect, RenameTarget,
-    ScrollMetrics, SegmentedFace, SegmentedStyle, SelectionState, SettingsTab, TextRole, Theme,
-    ToggleGroup, Widget, button_width, content, key_legend, modal_dialog, paint_scroll_thumb,
-    switch_size,
+    ScrollMetrics, SelectionState, SettingsTab, TextRole, Theme, Widget, button_width, content,
+    key_legend, modal_dialog, paint_scroll_thumb, switch_size,
 };
 
 /// The settings page's content column: its leading edge and width, bounded
@@ -105,30 +104,9 @@ pub(super) const SETTINGS_TABS: [(SettingsTab, &str); 4] = [
 impl BooksApp {
     pub(super) fn draw_settings(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
-        let r = self.rect;
-        let band = self.draw_page_header(ctx);
-        let size = ControlSize::Regular;
-        let height = size.height(theme);
-        let width = button_width(ctx, "Library", Some(Icon::ChevronLeft), size);
-        let x0 = band.x0 + f64::from(theme.tokens.spacing.s3);
-        let back = Rect::new(
-            x0,
-            band.center().y - height / 2.0,
-            x0 + width,
-            band.center().y + height / 2.0,
-        );
-        self.button(
-            ctx,
-            ButtonFace::new(back, "Library")
-                .icon(Icon::ChevronLeft)
-                .accessible_name("Back to library")
-                .role(ButtonRole::Plain),
-            Action::CloseSettings,
-        );
-
         let rhythm = &theme.tokens.spacing.rhythm;
         let gutter = f64::from(rhythm.group);
-        let body = Rect::new(r.x0, band.y1, r.x1, r.y1);
+        let body = self.rect;
         let col = SettingsColumn {
             x: body.x0 + gutter,
             w: (body.width() - 2.0 * gutter).clamp(1.0, PAGE_MAX_W),
@@ -141,15 +119,11 @@ impl BooksApp {
             &body,
         );
         let top = body.y0 + gutter - self.settings_scroll;
-        let mut y = Self::draw_page_title(ctx, Point::new(col.x, top), "Settings", None);
-        y += f64::from(rhythm.section);
-        y = self.draw_settings_tabs(ctx, col, y);
-        y += f64::from(rhythm.group);
         let end_y = match self.settings_tab {
-            SettingsTab::Library => self.draw_library_settings(ctx, col, y),
-            SettingsTab::Fonts => self.draw_fonts_manager(ctx, col, y),
-            SettingsTab::Colours => self.draw_schemes_manager(ctx, col, y),
-            SettingsTab::Shortcuts => self.draw_shortcuts_settings(ctx, col, y),
+            SettingsTab::Library => self.draw_library_settings(ctx, col, top),
+            SettingsTab::Fonts => self.draw_fonts_manager(ctx, col, top),
+            SettingsTab::Colours => self.draw_schemes_manager(ctx, col, top),
+            SettingsTab::Shortcuts => self.draw_shortcuts_settings(ctx, col, top),
         };
         ctx.scene.pop_layer();
         let content_h = end_y - top + 2.0 * gutter;
@@ -172,95 +146,6 @@ impl BooksApp {
             self.color_picker
                 .draw(ctx.scene, ctx.transform, ctx.text, theme, self.rect);
         }
-    }
-
-    /// The tab strip under the page title, aligned with the content column.
-    /// When the tabs do not fit on one line they wrap into further strips,
-    /// so every tab stays whole and reachable.
-    pub(super) fn draw_settings_tabs(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        col: SettingsColumn,
-        y: f64,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let size = ControlSize::Regular;
-        let height = SegmentedFace::height(size, theme);
-        // Each tab as wide as a tab strip makes it: packed from the leading
-        // edge, its label's own width.
-        let segments: Vec<ui::widget::Segment> = SETTINGS_TABS
-            .iter()
-            .map(|(_, label)| ui::widget::Segment::new(*label))
-            .collect();
-        let widths: Vec<f64> = SegmentedFace::partition_segments(
-            Rect::new(0.0, 0.0, f64::MAX / 4.0, height),
-            &segments,
-            SegmentedStyle::Tabs,
-            size,
-            ctx.text,
-            theme,
-        )
-        .iter()
-        .map(Rect::width)
-        .collect();
-        // Greedy rows of whole tabs.
-        let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
-        let mut x = 0.0;
-        for (i, width) in widths.iter().enumerate() {
-            if x > 0.0 && x + width > col.w {
-                rows.push(Vec::new());
-                x = 0.0;
-            }
-            if let Some(row) = rows.last_mut() {
-                row.push(i);
-            }
-            x += width;
-        }
-        // A tab strip's first label starts the strip, so the strip starts on
-        // the column: in line with the title and the rows below it.
-        let mut row_y = y;
-        for row in rows {
-            let mut x = col.x;
-            let segments: Vec<Rect> = row
-                .iter()
-                .map(|&i| {
-                    let w = widths.get(i).copied().unwrap_or(0.0);
-                    let rect = Rect::new(x, row_y, x + w, row_y + height);
-                    x += w;
-                    rect
-                })
-                .collect();
-            let labels: Vec<&str> = row
-                .iter()
-                .filter_map(|&i| SETTINGS_TABS.get(i).map(|(_, label)| *label))
-                .collect();
-            let selected = row
-                .iter()
-                .position(|&i| {
-                    SETTINGS_TABS
-                        .get(i)
-                        .is_some_and(|(tab, _)| *tab == self.settings_tab)
-                })
-                .unwrap_or(labels.len());
-            let hovered = segments.iter().position(|rect| rect.contains(self.cursor));
-            ToggleGroup::paint(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                theme,
-                &SegmentedFace::new(&segments, &labels, selected)
-                    .style(SegmentedStyle::Tabs)
-                    .control_size(size)
-                    .hovered(hovered),
-            );
-            for (&i, rect) in row.iter().zip(&segments) {
-                if let Some((tab, _)) = SETTINGS_TABS.get(i) {
-                    self.push_hit(*rect, Action::SetSettingsTab(*tab));
-                }
-            }
-            row_y += height;
-        }
-        row_y
     }
 
     /// A section of the settings page: its title in `Subheading` and, when
