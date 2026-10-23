@@ -554,7 +554,10 @@ pub mod live {
     /// only place the app opens a socket.
     pub struct LiveEngine {
         rt: &'static ui::rt::AppRuntime,
-        tls: Arc<rustls::ClientConfig>,
+        /// The system's trust, read when the engine first connects: an
+        /// engine that never reaches a server (one confined with no files to
+        /// read) does without it.
+        tls: std::sync::OnceLock<Arc<rustls::ClientConfig>>,
         /// Where draft attachment bytes are read from when building MIME.
         content: tilo_content::ContentStore,
         /// Holds OAuth grants: seals sign-ins, hands out current access
@@ -598,7 +601,7 @@ pub mod live {
             let rt = ui::rt::try_app().map_err(|e| e.to_string())?;
             Ok(Self {
                 rt,
-                tls: build_tls_config(),
+                tls: std::sync::OnceLock::new(),
                 content,
                 custodian: Custodian::live(),
                 sessions: std::collections::HashMap::new(),
@@ -617,8 +620,17 @@ pub mod live {
             tls: Arc<rustls::ClientConfig>,
         ) -> Result<Self, String> {
             let mut engine = Self::new(content, wake)?;
-            engine.tls = tls;
+            engine.tls = std::sync::OnceLock::from(tls);
             Ok(engine)
+        }
+
+        /// The client config servers are verified with, built on first use.
+        fn tls(&self) -> Result<Arc<rustls::ClientConfig>, String> {
+            if let Some(tls) = self.tls.get() {
+                return Ok(Arc::clone(tls));
+            }
+            let built = build_tls_config()?;
+            Ok(Arc::clone(self.tls.get_or_init(|| built)))
         }
 
         /// Watch `account`'s inbox from now on, in place of any earlier
@@ -643,9 +655,14 @@ pub mod live {
                 wake();
             };
             let key = account.email.clone();
-            let task = self
-                .rt
-                .spawn(watch_inbox(account, self.tls.clone(), arrived));
+            let tls = match self.tls() {
+                Ok(tls) => tls,
+                Err(error) => {
+                    tracing::debug!(%error, "mail: the inbox is not watched");
+                    return;
+                }
+            };
+            let task = self.rt.spawn(watch_inbox(account, tls, arrived));
             self.watches.insert(key, task);
         }
 
@@ -671,7 +688,7 @@ pub mod live {
             }
             if !self.sessions.contains_key(&key) {
                 let creds = resolve_auth(&self.custodian, account)?;
-                let session = self.block_on(connect_session(account, &creds, self.tls.clone()))?;
+                let session = self.block_on(connect_session(account, &creds, self.tls()?))?;
                 self.sessions
                     .insert(key.clone(), (session, std::time::Instant::now()));
             }
@@ -995,16 +1012,12 @@ pub mod live {
 
     /// Build the shared rustls client config against the system trust bundle.
     ///
-    /// # Panics
-    /// Never in practice: the ring provider always advertises the default
-    /// protocol versions, so this only fails against a provider built
-    /// without TLS 1.2/1.3 support.
-    #[allow(
-        clippy::expect_used,
-        reason = "the bundled ring provider always supports the default protocol versions; a TLS config with no usable version is not something the mail engine can degrade to"
-    )]
-    fn build_tls_config() -> Arc<rustls::ClientConfig> {
-        Arc::new(tilo_net::client_config().expect("rustls default protocol versions"))
+    /// # Errors
+    /// The system's trust could not be read.
+    fn build_tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
+        tilo_net::client_config()
+            .map(Arc::new)
+            .map_err(|error| format!("the system's trusted certificates are unreadable: {error}"))
     }
 
     /// The login user for an account (the explicit username, or the email).
@@ -1603,7 +1616,7 @@ pub mod live {
         let envelope = build_envelope(account, draft)?;
         // 465 → implicit TLS; anything else (587/25) → a required STARTTLS
         // upgrade. The connection races the host's addresses.
-        let mut connection = crate::connect::smtp(host, port, build_tls_config(), params).await?;
+        let mut connection = crate::connect::smtp(host, port, build_tls_config()?, params).await?;
         let sent = async {
             connection
                 .auth(&[mech], &creds_l)

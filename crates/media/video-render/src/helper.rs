@@ -65,6 +65,9 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 /// Entry point of `tilo-video-render`. Returns the exit code.
 #[must_use]
 pub fn run() -> u8 {
+    // Before any thread starts, so the address space capped below does not
+    // depend on how many cores the host has.
+    confine::share_allocator_arenas();
     // First, before any descriptor of its own is made: everything
     // inherited above stdio is closed.
     if let Err(error) = confine::detach() {

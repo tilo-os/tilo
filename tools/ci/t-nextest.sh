@@ -78,6 +78,14 @@ if tests imager && [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
     fi
 fi
 
+# An agent's host answers video renders in the `tilo-video-render` helper, which no
+# package depends on; named explicitly, it is found also where t runs an archive of
+# test binaries away from the build directory.
+if tests tilo-agent-participant; then
+    cargo build --locked -p tilo-video-render --bin tilo-video-render
+    export TILO_VIDEO_RENDER="${CARGO_TARGET_DIR:-$root/target}/debug/tilo-video-render"
+fi
+
 # The app-cli and app-host trust tests execute the installer, which no package
 # depends on.
 if tests app-cli app-host; then
