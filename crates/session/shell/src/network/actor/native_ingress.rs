@@ -2,11 +2,15 @@
 //!
 //! The session itself is `tilo_joined_room::session`'s; this actor keeps one
 //! route per enrolled room, dials it again when its pin changes and runs
-//! the connected session's pump beside every other host session.
+//! the connected session's pump beside every other host session. A room
+//! hosted on this device is not dialled: its session goes to this device's
+//! own host in process ([`super::super::local_host`]), through the same
+//! handshake and session code.
 use super::{
     ActorState, Arc, DeviceCert, HashMap, HostRuntime, InternalEvent, RelayCoeditSession,
     spawn_host_pump,
 };
+use crate::network::local_host::LocalHost;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 pub use tilo_joined_room::session::{Connect, Input, Scope};
 use tilo_peer_state::join::TransportHint;
@@ -22,6 +26,8 @@ struct Route {
     /// [`tilo_joined_room::session::UNANSWERED_BEFORE_PROBE`] the next one
     /// probes which.
     unanswered: u32,
+    /// The room's host is this device's own: its session stays in process.
+    local: bool,
 }
 /// A governed room's relay session is not up (yet): the caller may retry.
 pub(crate) const NOT_CONNECTED: &str = "the governed room is not connected";
@@ -47,8 +53,14 @@ impl Routes {
             crate::shell::room_sync::forget(ws);
         }
     }
-    pub(super) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+    /// Whether a route goes to a host on another machine: routes to this
+    /// device's own host keep no relay up and need no upkeep.
+    pub(super) fn any_remote(&self) -> bool {
+        self.entries.values().any(|route| !route.local)
+    }
+    /// Whether the room on topic `ws` is hosted on this device.
+    pub(super) fn is_local(&self, ws: u64) -> bool {
+        self.entries.get(&ws).is_some_and(|route| route.local)
     }
 }
 
@@ -58,7 +70,12 @@ impl Routes {
 /// A route whose custody no longer matches its room: when the device's
 /// certificate was renewed, it proves its membership with the renewal and
 /// dials once the room holds it.
-fn renew_route(route: &mut Route, endpoint: &iroh::Endpoint, identity: &super::HostIdentity) {
+fn renew_route(
+    route: &mut Route,
+    endpoint: &iroh::Endpoint,
+    identity: &super::HostIdentity,
+    local_host: Option<&LocalHost>,
+) {
     let renewed = matches!(route.connect.renewal(identity), Ok(Some(_)));
     if renewed
         && route
@@ -72,12 +89,13 @@ fn renew_route(route: &mut Route, endpoint: &iroh::Endpoint, identity: &super::H
         task.abort();
     }
     if renewed {
-        route.pending = Some(renew(
+        route.pending = renew(
             route.connect.clone(),
             route.https.clone(),
             endpoint.clone(),
             identity.clone(),
-        ));
+            local_host,
+        );
     }
 }
 
@@ -86,15 +104,28 @@ fn renew(
     https: Option<super::HttpsRoute>,
     endpoint: iroh::Endpoint,
     identity: super::HostIdentity,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let client = match https {
-            Some(super::HttpsRoute(http)) => {
-                tilo_relay_session::workspace_join::WorkspaceJoinClient::https(http, None)
-            }
-            None => tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
-        };
-        let room = connect.room();
+    local_host: Option<&LocalHost>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let room = connect.room();
+    // A room hosted here renews with this device's own host, in process.
+    let own = identity.device_cert.device_public_key;
+    let hosted_here = connect
+        .owner()
+        .with_current(room, |view| {
+            Ok(tilo_joined_room::session::hosted_by(
+                view.transport_hint()?,
+                &own,
+            ))
+        })
+        .unwrap_or(false);
+    let client = match (https, hosted_here) {
+        (_, true) => local_host?.join_client(own)?,
+        (Some(super::HttpsRoute(http)), false) => {
+            tilo_relay_session::workspace_join::WorkspaceJoinClient::https(http, None)
+        }
+        (None, false) => tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
+    };
+    Some(tokio::spawn(async move {
         match tilo_joined_room::enroll::renew_membership(
             client,
             identity,
@@ -109,7 +140,7 @@ fn renew(
                 tracing::warn!(%room, %error, "this device's renewed certificate was not taken");
             }
         }
-    })
+    }))
 }
 
 /// The connected relay session of the joined room on topic `ws`.
@@ -270,6 +301,7 @@ impl ActorState {
                 serial: self.native_routes.serial,
                 pending: None,
                 unanswered: 0,
+                local: false,
             },
         );
         self.retry_native_routes();
@@ -285,7 +317,7 @@ impl ActorState {
             }
             if material.is_err() {
                 self.host_sessions.retain(|(topic, _), _| *topic != ws);
-                renew_route(route, &self.endpoint, identity);
+                renew_route(route, &self.endpoint, identity, self.local_host.as_ref());
                 continue;
             }
             self.host_sessions.retain(|(topic, _), runtime| {
@@ -309,6 +341,28 @@ impl ActorState {
             let Ok((hint, cert, revocations, _)) = material else {
                 continue;
             };
+            route.local = tilo_joined_room::session::hosted_by(&hint, &cert.device_public_key);
+            if route.local {
+                // This device's own host serves the room: its session stays
+                // in process. Until the host opens there is nothing to
+                // join; its opening asks again ([`NetCmd::LocalHostReady`]).
+                let Some(host) = self.local_host.as_ref().and_then(LocalHost::get) else {
+                    continue;
+                };
+                route.pending = Some(join_local(
+                    host,
+                    ws,
+                    route.serial,
+                    hint,
+                    Member {
+                        cert,
+                        key: identity.device_signing_key.clone(),
+                        revocations,
+                    },
+                    self.internal_tx.clone(),
+                ));
+                continue;
+            }
             let expected_device = cert.clone();
             let endpoint = self.endpoint.clone();
             let key = identity.device_signing_key.clone();
@@ -383,6 +437,7 @@ impl ActorState {
             return;
         };
         route.pending = None;
+        let local = route.local;
         // The host is reachable again: a certificate renewal that failed
         // meanwhile tries again.
         if result.is_ok() {
@@ -470,10 +525,53 @@ impl ActorState {
                 session,
                 pump,
                 native_scope: Some(scope),
+                local,
             },
         );
         self.drive_native_publication(ws);
     }
+}
+
+/// This device as a member of a room: its certificate for the room, the
+/// key it signs with, and the revocations it presents.
+struct Member {
+    cert: DeviceCert,
+    key: ed25519_dalek::SigningKey,
+    revocations: tilo_user_identity::RevocationList,
+}
+
+/// Join the room on topic `ws`, hosted by this device's own `host`, as
+/// `member`: over the host's in-process carrier, through the handshake and
+/// session a remote member's dial takes, answering as a dial does.
+fn join_local(
+    host: std::sync::Arc<tilo_room_host::RoomHost>,
+    ws: u64,
+    serial: u64,
+    hint: TransportHint,
+    member: Member,
+    tx: tokio::sync::mpsc::Sender<InternalEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let Member {
+            cert,
+            key,
+            revocations,
+        } = member;
+        let own_device = cert.device_public_key;
+        let result = match host.connect_local(cert.clone(), key, revocations).await {
+            Ok(client) => tilo_joined_room::session::join_local(client, ws, &hint, own_device),
+            Err(error) => Err(tilo_joined_room::session::DialError::from(error)),
+        };
+        let _ = tx
+            .send(InternalEvent::NativeHostConnected {
+                ws,
+                serial,
+                hint: Box::new(hint),
+                certificate: cert,
+                result: Box::new(result),
+            })
+            .await;
+    })
 }
 
 /// What a failed dial of the joined room on topic `ws`, whose host is
