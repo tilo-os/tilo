@@ -179,11 +179,13 @@ fn verify_existing_identity(
                 // collaboration chain cannot verify. Never replace it
                 // or mint a second identity; native trusted chrome
                 // offers keyring recovery or encrypted restore.
+                let problem = shell::onboarding::IdentityProblem::of(&error);
                 tracing::warn!(
                     %error,
+                    problem = problem.map_or("unclassified", |problem| problem.as_str()),
                     "existing Tilo identity needs recovery; opening trusted recovery"
                 );
-                mark_identity_recovery();
+                mark_identity_recovery(problem);
             }
             ExistingIdentityFailureAction::AwaitClock => {
                 if let Some(refusal) = tilo_user_identity::CertificateClockError::in_io(&error) {
@@ -297,10 +299,19 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
     clippy::disallowed_methods,
     reason = "set before compositor startup; the only thread running then (font warm-up) never reads it"
 )]
-fn mark_identity_recovery() {
-    // SAFETY: only the font warm-up thread may run yet; it never reads this
-    // variable, and the marker only selects a stricter recovery surface.
-    unsafe { std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1") };
+fn mark_identity_recovery(problem: Option<shell::onboarding::IdentityProblem>) {
+    // SAFETY: only the font warm-up thread may run yet; it never reads these
+    // variables, and the markers only select a stricter recovery surface and
+    // the step it offers first.
+    unsafe {
+        std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1");
+        if let Some(problem) = problem {
+            std::env::set_var(
+                shell::onboarding::IdentityProblem::RECOVERY_ENV,
+                problem.as_str(),
+            );
+        }
+    }
 }
 
 fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::process::ExitCode {
