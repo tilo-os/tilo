@@ -572,7 +572,7 @@ impl PdfApp {
         }
         if !self.selection_pages_missing().is_empty() {
             self.pending_copy = true;
-            self.status_note.show("Copying…".to_string());
+            self.status_note.show_progress("Copying…".to_string());
             self.submit_text_batch();
             self.dirty = true;
             return true;

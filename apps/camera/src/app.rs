@@ -775,7 +775,8 @@ impl CameraApp {
             return;
         }
         if self.video_finalizing {
-            self.toast.show("Finalizing the previous video…".into());
+            self.toast
+                .show_progress("Finalizing the previous video…".into());
             return;
         }
         if let Err(error) = self.worker.start_recording() {
@@ -829,7 +830,7 @@ impl CameraApp {
         if let Some(invocation) = invocation {
             self.pending_video = Some((invocation, generation));
         }
-        self.toast.show("Finalizing video…".into());
+        self.toast.show_progress("Finalizing video…".into());
         Ok(())
     }
 
@@ -2138,7 +2139,7 @@ impl CameraApp {
                 if let Some(invocation) = invocation {
                     self.pending_capture = Some((invocation, generation));
                 }
-                self.toast.show("Saving photo…".into());
+                self.toast.show_progress("Saving photo…".into());
                 Ok(())
             }
         }
@@ -2423,7 +2424,7 @@ impl CameraApp {
         }
         self.scan_generation = generation;
         self.pending_scan = Some((id, generation));
-        self.toast.show("Scanning image…".into());
+        self.toast.show_progress("Scanning image…".into());
         Ok(())
     }
 
@@ -3032,6 +3033,11 @@ impl Widget for CameraApp {
         } else {
             self.draw_tooltip(scene, t, tr, theme);
         }
+        // A progress note stays while its photo, video or scan is in
+        // the works.
+        self.toast.keep_while(
+            self.worker.saving_photo() || self.video_finalizing || self.pending_scan.is_some(),
+        );
         self.toast.expire();
         self.draw_toast(scene, t, tr, theme, toast_area, toast_anchor);
     }

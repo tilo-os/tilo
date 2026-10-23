@@ -80,7 +80,7 @@ impl BooksApp {
                 self.notes_drawer.snap(false);
             }
             "import-error" => {
-                self.load_error.show(
+                self.report_failure(
                     "Couldn’t open damaged.epub: epub text is too large (maximum 64 MiB)".into(),
                 );
             }
@@ -90,7 +90,7 @@ impl BooksApp {
                     path: PathBuf::from("/home/reader/Books/Illustrated Atlas.epub"),
                     kind: ImportKind::Open,
                     expected_book_id: None,
-                    card: Transient::showing(()),
+                    card: Transient::showing_progress(()),
                 });
             }
             "type" => self.reading_settings.open(),
