@@ -206,7 +206,7 @@ pub trait Apply {
     /// PNG of the session's live scene.
     fn shot(&mut self, session: &Session) -> Result<Vec<u8>, DaemonError>;
     /// Capabilities and `SELinux` domain of the running session process,
-    /// or `None` when it is not running.
+    /// or `None` when it is not running as the slot user (yet).
     fn session_process(&mut self, session: &Session) -> Option<SessionProcess>;
     /// The main process of the running session unit, whose mount
     /// namespace has the slot's layers over `/usr`.
