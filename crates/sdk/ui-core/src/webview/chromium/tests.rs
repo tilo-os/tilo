@@ -1887,9 +1887,32 @@ fn owners_serve_until_idle_and_replace_dead_owners_sockets() {
         assert!(next.runtime.link.is_none());
         assert_host_spawns(&profile, 2);
     }
-    // phase: a_socket_path_too_long_to_bind_is_an_error
+    // phase: a_profile_deeper_than_a_socket_address_is_owned_and_joined
     {
-        let long = dir.path().join("x".repeat(120)).join("profile");
+        let deep = dir.path().join("x".repeat(120)).join("profile");
+        std::fs::create_dir_all(&deep).unwrap();
+        let socket = deep.canonicalize().unwrap().with_extension("sock");
+        assert!(std::os::unix::net::SocketAddr::from_pathname(&socket).is_err());
+        let owner = ChromiumEngine::with_host(&host, &deep).unwrap();
+        assert!(owner.runtime.link.is_none());
+        assert_host_spawns(&deep, 1);
+        assert!(socket.exists(), "the owner serves beside the deep profile");
+        let client = ChromiumEngine::with_host(&host, &deep).unwrap();
+        assert!(
+            client.runtime.link.is_some(),
+            "the second engine joins the owner"
+        );
+        client.send(WebViewCommand::Navigate(
+            "https://deep-profile.test/".into(),
+        ));
+        wait_for_command(&deep, "the client's navigation", |command| {
+            command["url"] == "https://deep-profile.test/"
+        });
+        assert_eq!(host_spawns(&deep), 1, "no second host for one profile");
+    }
+    // phase: a_socket_name_too_long_to_bind_is_an_error
+    {
+        let long = dir.path().join("y".repeat(120));
         let error = ChromiumEngine::with_host(&host, &long).err().unwrap();
         assert!(error.contains("too long"), "{error}");
         assert_eq!(host_spawns(&long), 0);
