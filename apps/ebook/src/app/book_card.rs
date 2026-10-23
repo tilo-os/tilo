@@ -23,6 +23,9 @@ pub(super) struct ShelfCard<'a> {
     pub(super) shared: bool,
     /// Since when its text has been on its way here, while it is.
     pub(super) arriving: Option<ui::time::Instant>,
+    /// Where its text stands while it is neither here nor on its way, and
+    /// what a screen reader hears besides.
+    pub(super) status: Option<(&'static str, Option<&'static str>)>,
     pub(super) progress: f32,
     pub(super) notes: Option<String>,
     pub(super) focused: bool,
@@ -69,6 +72,8 @@ impl BooksApp {
         let mut badges = Vec::with_capacity(2);
         if let Some(started) = card.arriving {
             badges.push(MediaBadge::Loading(started));
+        } else if let Some((label, detail)) = card.status {
+            badges.push(MediaBadge::Status { label, detail });
         } else if card.progress > 0.0 {
             badges.push(MediaBadge::Progress(f64::from(card.progress)));
         }

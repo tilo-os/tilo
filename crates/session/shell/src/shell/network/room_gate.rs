@@ -51,6 +51,7 @@ impl ShellNetwork {
             | NeighbourMsg::ScrollbackResponse { .. }
             | NeighbourMsg::RecordContentWant { .. }
             | NeighbourMsg::RecordContentPiece { .. }
+            | NeighbourMsg::RecordContentLacks { .. }
             // A viewer asking for a keyframe of a stream it receives; the
             // owner checks it is one.
             | NeighbourMsg::SurfaceKeyframeRequest { .. }

@@ -71,6 +71,11 @@ struct RoomSession {
     wake: Arc<Notify>,
     /// The connected session, while there is one.
     live: Option<Arc<RelayCoeditSession>>,
+    /// The device key of the host it is connected to, which serves the
+    /// room's content.
+    host: Option<[u8; 32]>,
+    /// The room's members connected to that host, as it reports them.
+    members: std::collections::BTreeSet<[u8; 32]>,
 }
 
 impl Joined {
@@ -241,6 +246,8 @@ impl Joined {
             RoomSession {
                 wake: Arc::clone(&wake),
                 live: None,
+                host: None,
+                members: std::collections::BTreeSet::new(),
             },
         );
         drop(sessions);
@@ -276,8 +283,14 @@ impl Joined {
             )
             .await?,
         );
+        let host = hint.host.device_public_key;
         let scope = Arc::new(Scope::new(connect, hint, device, continuity));
-        self.set_live(room, Some(Arc::clone(&session)));
+        self.set_live(room, Some((Arc::clone(&session), host)));
+        // On the host's live plane the room's members learn this device is
+        // connected, and it learns who of them is.
+        if let Err(error) = session.live_join() {
+            tracing::debug!(%error, %room, "joined room live plane not joined");
+        }
         self.publish(&scope, &session);
         let mut replay = true;
         let mut refresh = tokio::time::interval(REFRESH_INTERVAL);
@@ -305,6 +318,7 @@ impl Joined {
                     Some(Inbound::RecordContent { from, frame }) => {
                         self.content_arrived(room, from, &frame);
                     }
+                    Some(Inbound::Member { device, active }) => self.member(room, device, active),
                     Some(
                         Inbound::RemoteAction { .. }
                         | Inbound::Live { .. }
@@ -326,12 +340,61 @@ impl Joined {
         Ok(())
     }
 
-    fn set_live(&self, room: RoomId, live: Option<Arc<RelayCoeditSession>>) {
+    /// `room`'s session connected to its host, or ended. The room's content
+    /// follows: what is wanted is asked of a host that connected, and waits
+    /// while there is none.
+    fn set_live(&self, room: RoomId, live: Option<(Arc<RelayCoeditSession>, [u8; 32])>) {
         if let Ok(mut sessions) = self.sessions.lock()
             && let Some(session) = sessions.get_mut(&room)
         {
-            session.live = live;
+            (session.live, session.host) = live.unzip();
+            session.members.clear();
         }
+        if let Some(content) = self.content.get().cloned() {
+            tilo_rt::app().spawn_blocking(move || content.sources_changed());
+        }
+    }
+
+    /// A member of `room` joined (`active`) or left its host's live plane.
+    fn member(&self, room: RoomId, device: [u8; 32], active: bool) {
+        if device == self.custody.device_signing_key.verifying_key().to_bytes() {
+            return;
+        }
+        if let Ok(mut sessions) = self.sessions.lock()
+            && let Some(session) = sessions.get_mut(&room)
+        {
+            if active {
+                session.members.insert(device);
+            } else {
+                session.members.remove(&device);
+            }
+        }
+        if let Some(content) = self.content.get().cloned() {
+            tilo_rt::app().spawn_blocking(move || content.sources_changed());
+        }
+    }
+
+    /// The members of `room` connected to its host.
+    fn live_members(&self, room: RoomId) -> Vec<[u8; 32]> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| {
+                sessions
+                    .get(&room)
+                    .filter(|s| s.live.is_some())
+                    .map(|s| s.members.iter().copied().collect())
+            })
+            .unwrap_or_default()
+    }
+
+    /// The device key of the host `room`'s session is connected to.
+    fn live_host(&self, room: RoomId) -> Option<[u8; 32]> {
+        self.sessions.lock().ok().and_then(|sessions| {
+            sessions
+                .get(&room)
+                .and_then(|s| s.live.as_ref().and(s.host))
+        })
     }
 
     /// Room members' presence carries channel governance; nothing else of it

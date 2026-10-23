@@ -7775,6 +7775,7 @@ impl CapnpBrokerState {
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
+            | CollabEvent::RecordContentState { .. }
             | CollabEvent::RemoteAction { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
@@ -9283,11 +9284,11 @@ impl CapnpChannelHandle {
     }
 }
 
-/// Content arriving for one channel's record, pulled one piece of content
-/// per `read`.
+/// News of content for one channel's record, pulled one per `read`:
+/// content that arrived, or where a want of it has got to.
 struct BlobStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<crate::record_content::ContentArrival>>>,
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<crate::record_content::ContentNews>>>,
 }
 
 impl blob_stream::Server for BlobStreamServer {
@@ -9310,6 +9311,12 @@ impl blob_stream::Server for BlobStreamServer {
             let mut reply = results.get();
             reply.set_hash(&arrival.hash);
             reply.set_bytes(&arrival.bytes);
+            reply.set_state(match arrival.state {
+                tilo_content::ContentState::Resolved => runtime_collab::BlobState::Arrived,
+                tilo_content::ContentState::Pending => runtime_collab::BlobState::Fetching,
+                tilo_content::ContentState::Waiting => runtime_collab::BlobState::Waiting,
+                tilo_content::ContentState::Unavailable => runtime_collab::BlobState::Unavailable,
+            });
             Ok(())
         })
     }

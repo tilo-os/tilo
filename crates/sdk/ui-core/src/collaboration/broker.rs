@@ -1902,6 +1902,14 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             meter.bytes(bytes);
             "RecordContent"
         }
+        CollabEvent::RecordContentState { route, hash, .. } => {
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
+            }
+            meter.string_capacity(hash);
+            "RecordContentState"
+        }
         CollabEvent::RealtimeCommandResult { result, .. } => {
             match result {
                 Ok(reply) => serialized_bytes(reply, &mut meter),
@@ -5392,14 +5400,26 @@ async fn spawn_content_stream(
     let inbound_tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
         while let Ok(event) = stream.read().await {
-            if !inbound_tx
-                .send_document(CollabEvent::RecordContent {
+            use runtime_collab::BlobState;
+            let state = match event.state {
+                BlobState::Arrived => None,
+                BlobState::Fetching => Some(tilo_content::ContentState::Pending),
+                BlobState::Waiting => Some(tilo_content::ContentState::Waiting),
+                BlobState::Unavailable => Some(tilo_content::ContentState::Unavailable),
+            };
+            let event = match state {
+                None => CollabEvent::RecordContent {
                     route: route.clone(),
                     hash: event.hash,
                     bytes: event.bytes,
-                })
-                .await
-            {
+                },
+                Some(state) => CollabEvent::RecordContentState {
+                    route: route.clone(),
+                    hash: event.hash,
+                    state,
+                },
+            };
+            if !inbound_tx.send_document(event).await {
                 break;
             }
         }

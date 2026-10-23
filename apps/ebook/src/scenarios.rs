@@ -68,6 +68,8 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "search-in-book",
     "search-elsewhere",
     "fresh-device",
+    "fresh-device-waiting",
+    "fresh-device-unavailable",
 ];
 
 /// The books a capture shows, and where each would live on a reader's
@@ -187,7 +189,7 @@ pub(crate) fn actions(scenario: Option<&str>) -> Vec<Invoke<Ebook>> {
     if scenario == "onboarding" {
         return Vec::new();
     }
-    if scenario == "fresh-device" {
+    if scenario.starts_with("fresh-device") {
         return fresh_device_library();
     }
     let shelf = content::load_sample_library();

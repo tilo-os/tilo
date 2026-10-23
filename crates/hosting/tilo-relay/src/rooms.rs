@@ -30,6 +30,7 @@ mod applications;
 mod authority;
 mod collaboration;
 mod content;
+pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
 pub(crate) use desktop_writes::writes_desktop;

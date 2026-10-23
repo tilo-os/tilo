@@ -112,6 +112,14 @@ pub enum MediaBadge<'a> {
     /// the shared indeterminate bar along the bottom edge, in place of the
     /// progress.
     Loading(crate::time::Instant),
+    /// Where its content stands while it is neither here nor on its way
+    /// ("Waiting for a device that has it"): a still line along the bottom
+    /// edge, in place of the progress. `detail`, when given, is what the
+    /// card's accessible value adds to it.
+    Status {
+        label: &'a str,
+        detail: Option<&'a str>,
+    },
     /// Broadcasting now, at the top-leading corner.
     Live,
     /// Available offline, at the top-trailing corner.
@@ -498,6 +506,10 @@ impl<'a> MediaCardFace<'a> {
                 }
                 MediaBadge::Live => value.push("Live".to_owned()),
                 MediaBadge::Loading(_) => value.push("Loading".to_owned()),
+                MediaBadge::Status { label, detail } => {
+                    value.push((*label).to_owned());
+                    value.extend(detail.map(str::to_owned));
+                }
                 MediaBadge::Downloaded => value.push("Downloaded".to_owned()),
                 MediaBadge::Tag(tag, _) => value.push((*tag).to_owned()),
             }
@@ -773,6 +785,34 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
             if bar.width() > 0.0 {
                 crate::widget::ProgressBarFace::indeterminate(started).paint(ctx, bar);
             }
+        }
+        MediaBadge::Status { label, .. } => {
+            // A still line on the floating material across the art's foot,
+            // wrapping within it.
+            let width = (art.width() - 4.0 * pad).max(1.0);
+            #[allow(clippy::cast_possible_truncation, reason = "a width in pixels")]
+            let (w, h) = ctx.text.measure_style(label, Some(width as f32), &m.badge);
+            let plate = Rect::new(
+                art.x0 + pad,
+                art.y1 - pad - f64::from(h) - pad,
+                art.x1 - pad,
+                art.y1 - pad,
+            );
+            crate::floating_surface::paint_material(
+                ctx.scene,
+                ctx.transform,
+                &RoundedRect::from_rect(plate, pad),
+                crate::floating_surface::Material::Floating,
+                theme,
+            );
+            ctx.text(
+                label,
+                &m.badge,
+                theme.text_primary,
+                Point::new(plate.center().x - f64::from(w) / 2.0, plate.y0 + pad / 2.0),
+                #[allow(clippy::cast_possible_truncation, reason = "a width in pixels")]
+                Some(width as f32),
+            );
         }
         MediaBadge::Progress(share) => {
             // No progress draws nothing; some draws the design system's
