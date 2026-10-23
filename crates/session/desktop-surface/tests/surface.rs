@@ -2262,3 +2262,159 @@ fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
         "the page under the pointer moved up: its top {before} -> {after}"
     );
 }
+
+/// An app whose capture offers to open Writer, as Camera offers Photos.
+#[derive(Default)]
+struct OpensWriter {
+    rect: ui::kurbo::Rect,
+}
+
+impl ui::widget::Widget for OpensWriter {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        taffy
+            .new_leaf(ui::taffy::Style {
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn name(&self) -> &'static str {
+        "OpensWriter"
+    }
+
+    fn get_rect(&self) -> ui::kurbo::Rect {
+        self.rect
+    }
+}
+
+impl ui::resources::PublishesResources for OpensWriter {
+    fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        vec![
+            ui::tilo_actions::Resource::new("camera.capture", "camera.capture", "Capture")
+                .with_action(
+                    ui::tilo_actions::remote::ApplicationLaunch::app("so.tilo.writer").spec(
+                        "open-writer",
+                        "Open Writer",
+                        "Open Writer",
+                    ),
+                ),
+        ]
+    }
+}
+
+/// A desk whose Camera window offers to open Writer; any `so.tilo.` app
+/// launches as a window of its own.
+struct OpeningApps;
+
+impl TileSource for OpeningApps {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        if tab.title == "Camera" {
+            return TileHost::new(ui::widget::TileContent::App(Box::new(Hosted(Box::new(
+                OpensWriter::default(),
+            )))));
+        }
+        TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+
+    fn launch(&mut self, workspace: &Workspace, id: u64, app: &str) -> Option<Tab> {
+        Notices(Rc::new(Cell::new(0))).launch(workspace, id, app)
+    }
+}
+
+/// The page desktop: one frame hosting its windows in process, serving them
+/// its own session for the workspace `room`.
+fn serving_desk(
+    room: &str,
+) -> (
+    ui::headless::FrameHarness,
+    DesktopHandle,
+    tilo_desktop_surface::session::Openings,
+) {
+    let mut minter = IdMinter::new(7);
+    let camera = tab(&mut minter, "Camera");
+    let tree = seed_tree(&mut minter, "Desk", vec![camera]);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(OpeningApps));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.set_caller_palette_enabled(false);
+    let (session, openings) = tilo_desktop_surface::session::serve(room, std::sync::Arc::default());
+    driver.set_session_door(
+        ui::RemoteActions::with_host(
+            session,
+            ui::tilo_actions::remote::Caller::local_person("tester").in_room(room),
+        ),
+        Some(room.into()),
+    );
+    driver.relayout();
+    (driver, handle, openings)
+}
+
+/// Camera's "Open Photos" in the browser desktop: a window asks the page's
+/// session to open another app, and the desktop opens it as a window of its
+/// own beside the one that asked. What the desktop refuses to open is said
+/// over the window that asked, never dropped.
+#[test]
+fn a_window_opens_another_app_through_the_desktop_s_session() {
+    let (mut driver, handle, openings) = serving_desk("room");
+    driver
+        .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
+        .expect("the session takes the open");
+    assert_eq!(
+        handle.snapshot("g", vec![]).entries.len(),
+        1,
+        "not yet opened"
+    );
+    assert!(openings.open(&handle, "g", |_| Ok(())));
+    driver.idle();
+    driver.relayout();
+    let snapshot = handle.snapshot("g", vec![]);
+    assert_eq!(snapshot.entries.len(), 2, "{:?}", snapshot.entries);
+    assert_eq!(snapshot.entries[1].label, "writer");
+    assert_eq!(
+        snapshot.active.as_ref().unwrap(),
+        &snapshot.entries[1].route,
+        "the opened app is in front"
+    );
+    assert_eq!(driver.refusal_shown(), None);
+
+    let (mut driver, handle, openings) = serving_desk("room");
+    driver
+        .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
+        .expect("the session takes the open");
+    openings.open(&handle, "g", |_| {
+        Err(ui::tilo_actions::remote::ActionHostError::NotPermitted)
+    });
+    driver.idle();
+    assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
+    assert!(
+        driver.refusal_shown().is_some(),
+        "the refusal is said over the window that asked"
+    );
+}
