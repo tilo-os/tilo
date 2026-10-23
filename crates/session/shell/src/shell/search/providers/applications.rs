@@ -914,13 +914,6 @@ impl SearchProvider for ApplicationsProvider {
     fn launcher_section(&self) -> Option<crate::shell::search::launcher::LauncherSection> {
         Some(crate::shell::search::launcher::LauncherSection::Apps)
     }
-    fn app_category(&self, result: &SearchResult) -> Option<String> {
-        let snapshot = self.snapshot()?;
-        snapshot.entries.iter().find_map(|entry| match entry {
-            ApplicationEntry::Installed(app) if app.package_id == result.id => app.category.clone(),
-            ApplicationEntry::Installed(_) | ApplicationEntry::Dynamic(_) => None,
-        })
-    }
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if !ctx
             .wanted
