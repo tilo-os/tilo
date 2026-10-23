@@ -3,17 +3,19 @@
 //!
 //! `PlayerApp` is the root widget. The video fills the whole surface — there is
 //! **no persistent app chrome bar** (the OS owns window chrome; HIG §1e wants
-//! video immersive). Library, the media title and Open float over the picture
-//! in a strip that appears with the player's controls and auto-hides during
-//! playback (`strip`), and the library itself is a sheet over a scrim
-//! (`library`). With no picture the same area says why: nothing is open, a
-//! first frame is coming, or the open failed. It opens files through the XDG
+//! video immersive). The library's toggle, the media title and Open are slots
+//! in the window's bar (`window_bar`), which steps aside with the rest of the
+//! desktop's chrome while the video plays full screen, and the library
+//! itself is a sheet over a scrim (`library`). With no picture the area says
+//! why (`status`): nothing is open, a first frame is coming, or the open
+//! failed. It opens files through the XDG
 //! `FileChooser` portal (or `--open PATH`), and — when a collab session is
 //! attached — keeps playback in sync across peers via the shared [`media`]
 //! transport.
 
 mod library;
-mod strip;
+mod status;
+mod window_bar;
 
 use library::{
     local_library_accessibility_nodes, shared_accessibility_nodes, shared_accessibility_targets,
@@ -335,15 +337,6 @@ pub struct PlayerApp {
     player: VideoPlayer,
     title: String,
     rect: Rect,
-    /// The Open button's hit rect (top-right of the video). Zero while there
-    /// is nothing open: the empty state owns Open then.
-    open_button_rect: Rect,
-    library_button_rect: Rect,
-    /// The window's History control, held in the top strip: the strip is this
-    /// app's header row, so the window draws no bar above the picture.
-    history: ui::widget::HistoryOpener,
-    /// Where the History control sits in the strip.
-    history_button_rect: Rect,
     /// The action of the idle or error state over the picture.
     status_action_rect: Rect,
     /// A video dropped anywhere on the window opens like one chosen.
@@ -377,8 +370,6 @@ pub struct PlayerApp {
     portal_open: Option<PendingPortalOpen>,
     media_open: Option<PendingMediaOpen>,
     portal_generation: u64,
-    open_focused: bool,
-    library_focused: bool,
     library_focus_id: Option<String>,
     /// Playback watched together with everyone who has the same video open.
     together: Together,
@@ -418,7 +409,8 @@ pub struct PlayerApp {
     /// when a later picker request fails.
     open_error: Option<String>,
     missing_codec: Option<String>,
-    formats_focused: bool,
+    /// The empty state's action holds the keyboard.
+    status_focused: bool,
     formats_label: String,
     /// Where files have no path: the kept copy (`crate::kept`) of each
     /// queue or recent entry opened by contents, by entry id.
@@ -780,10 +772,6 @@ impl PlayerApp {
             player,
             title: "No media".to_string(),
             rect: Rect::ZERO,
-            open_button_rect: Rect::ZERO,
-            library_button_rect: Rect::ZERO,
-            history: ui::widget::HistoryOpener::new(),
-            history_button_rect: Rect::ZERO,
             status_action_rect: Rect::ZERO,
             file_open: ui::widget::FileOpenSurface::default(),
             drawer: SidebarDrawer::new().left().closed().overlay_only(),
@@ -808,8 +796,6 @@ impl PlayerApp {
             portal_open: None,
             media_open: None,
             portal_generation: 0,
-            open_focused: false,
-            library_focused: false,
             library_focus_id: None,
             together: Together::default(),
             preferences,
@@ -828,7 +814,7 @@ impl PlayerApp {
             shown_metadata: DecoderMetadata::default(),
             open_error: None,
             missing_codec: None,
-            formats_focused: false,
+            status_focused: false,
             formats_label: crate::i18n::t("video-formats-title"),
             kept: HashMap::new(),
             kept_retained,
@@ -954,7 +940,7 @@ impl PlayerApp {
                 self.missing_codec = Some("HEVC".into());
             }
             // A video opened and the decoder then gave up on it: the title
-            // and the strip stay, the picture is the failure.
+            // stays in the window's bar, the picture is the failure.
             Some("native-error") => {
                 self.shot_loading = true;
                 self.fail_playback();
@@ -1473,111 +1459,80 @@ impl PlayerApp {
         self.missing_codec.is_some() && self.open_error.is_some()
     }
 
-    fn formats_access_index(&self) -> Option<usize> {
-        self.accessibility()?
-            .children
-            .iter()
-            .position(|node| node.action_target.as_deref() == Some("video-player.formats"))
+    /// Where the empty state's action (Open a video, or the formats remedy)
+    /// stands among the player's accessible children, while it shows.
+    fn status_access_index(&self) -> Option<usize> {
+        self.accessibility()?.children.iter().position(|node| {
+            matches!(
+                node.action_target.as_deref(),
+                Some("video-player.formats" | "video-player.open")
+            )
+        })
     }
 
+    /// Give the keyboard to the library sheet's control at `path`, the
+    /// order [`Widget::accessibility`] lists them in: Close, the three tabs,
+    /// then the shared tab's actions and rows or the local rows.
     fn focus_player_control(&mut self, path: &[usize]) -> bool {
-        match path {
-            [0] => {
-                self.open_focused = true;
-                self.library_focused = false;
-                self.player.reveal_controls();
-                self.dirty = true;
-                true
-            }
-            [1] => {
-                self.library_focused = true;
-                self.open_focused = false;
-                self.player.reveal_controls();
-                self.dirty = true;
-                true
-            }
-            [2] if self.library_visible => {
-                self.library_focus_id = Some("library-close".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [3] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-queue".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [4] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-recent".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [5] if self.library_visible => {
-                self.library_focus_id = Some("library-tab-shared".into());
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                self.library_focus_id = Some("shared-watch-later".into());
-                self.dirty = true;
-                true
-            }
-            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                self.library_focus_id = Some("shared-bookmark".into());
-                self.dirty = true;
-                true
-            }
-            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                let Some((focus, _, _)) = shared_accessibility_targets(self)
-                    .get(index.saturating_sub(8))
-                    .cloned()
-                else {
-                    return false;
-                };
-                self.library_focus_id = Some(focus);
-                self.dirty = true;
-                true
-            }
-            [index] => {
-                let library_index = index.saturating_sub(6);
-                let play_count = self.library_row_hits.len();
-                self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
-                {
-                    Some(row.id.clone())
-                } else if self.library_tab == LibraryTab::Recent
-                    && !self.recent.is_empty()
-                    && library_index == play_count
-                {
-                    Some("library-clear".into())
-                } else {
-                    let remove_index = library_index.saturating_sub(
-                        play_count
-                            + usize::from(
-                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
-                            ),
-                    );
-                    self.library_row_hits
-                        .iter()
-                        .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
-                        .nth(remove_index)
-                        .map(|id| format!("library-remove-{id}"))
-                };
-                if self.library_focus_id.is_none() {
-                    return false;
-                }
-                self.open_focused = false;
-                self.library_focused = false;
-                self.dirty = true;
-                true
-            }
-            _ => false,
+        if !self.library_visible {
+            return false;
+        }
+        let shared = self.library_tab == LibraryTab::Shared;
+        let focus = match path {
+            [0] => Some("library-close".to_owned()),
+            [1] => Some("library-tab-queue".to_owned()),
+            [2] => Some("library-tab-recent".to_owned()),
+            [3] => Some("library-tab-shared".to_owned()),
+            [4] if shared => Some("shared-watch-later".to_owned()),
+            [5] if shared => Some("shared-bookmark".to_owned()),
+            [index] if shared => shared_accessibility_targets(self)
+                .get(index.saturating_sub(6))
+                .map(|(focus, _, _)| focus.clone()),
+            [index] => self.local_row_focus(index.saturating_sub(4)),
+            _ => None,
+        };
+        let Some(focus) = focus else {
+            return false;
+        };
+        self.library_focus_id = Some(focus);
+        self.dirty = true;
+        true
+    }
+
+    /// The focus id of the local list's control at `library_index`: each
+    /// row's Play, then Clear on the recent tab, then each row's Remove.
+    fn local_row_focus(&self, library_index: usize) -> Option<String> {
+        let play_count = self.library_row_hits.len();
+        let clears = self.library_tab == LibraryTab::Recent && !self.recent.is_empty();
+        if let Some(row) = self.library_row_hits.get(library_index) {
+            Some(row.id.clone())
+        } else if clears && library_index == play_count {
+            Some("library-clear".into())
+        } else {
+            let remove_index = library_index.saturating_sub(play_count + usize::from(clears));
+            self.library_row_hits
+                .iter()
+                .filter_map(|row| row.remove.as_ref().map(|_| row.id.as_str()))
+                .nth(remove_index)
+                .map(|id| format!("library-remove-{id}"))
+        }
+    }
+
+    /// Where the local list's control at `library_index` is, in the order
+    /// [`Self::local_row_focus`] names them.
+    fn local_row_rect(&self, library_index: usize) -> Option<Rect> {
+        let play_count = self.library_row_hits.len();
+        let clears = self.library_tab == LibraryTab::Recent && !self.recent.is_empty();
+        if let Some(row) = self.library_row_hits.get(library_index) {
+            Some(row.play)
+        } else if clears && library_index == play_count {
+            Some(self.library_clear_rect)
+        } else {
+            let remove_index = library_index.saturating_sub(play_count + usize::from(clears));
+            self.library_row_hits
+                .iter()
+                .filter_map(|row| row.remove)
+                .nth(remove_index)
         }
     }
 
@@ -2326,16 +2281,6 @@ impl PlayerApp {
         }
     }
 
-    /// Where Open is: its button over a video, the empty state's action
-    /// without one.
-    fn open_target_rect(&self) -> Rect {
-        if self.open_button_rect.width() > 0.0 {
-            self.open_button_rect
-        } else {
-            self.status_action_rect
-        }
-    }
-
     fn handle_app_pointer(&mut self, _state: &mut ui::widget::Edits<'_>) -> bool {
         self.drawer.resolve(self.rect);
         let in_list = self.library_list_rect.contains(self.last_cursor);
@@ -2403,14 +2348,6 @@ impl PlayerApp {
         }
         if self.status_action_rect.contains(self.last_cursor) {
             self.request_status_action();
-            return true;
-        }
-        if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
-            self.request_open_action();
-            return true;
-        }
-        if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
-            self.request_library_visibility_change();
             return true;
         }
         false
@@ -2510,7 +2447,6 @@ impl Widget for PlayerApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::WindowHeader,
         dyn ui::widget::controls::ActionControls,
     );
 
@@ -2525,6 +2461,10 @@ impl Widget for PlayerApp {
         self.drain_player_settings();
         self.maybe_loop_current_media();
         self.poll_open_frame();
+    }
+
+    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
+        self.run_window_toolbar();
     }
 
     fn build_layout(
@@ -2552,7 +2492,6 @@ impl Widget for PlayerApp {
             &[player_node],
         );
         node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        self.history.tree_rebuilt();
         root
     }
 
@@ -2578,6 +2517,9 @@ impl Widget for PlayerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // A key (L, Ctrl+O) or an arriving picture changes what the bar
+        // shows without a sync.
+        ui::window_toolbar::declare(Some(self.window_toolbar()));
         self.sync_library_sheet();
         self.drawer.tick(theme);
         if self.shot_loading {
@@ -2587,10 +2529,6 @@ impl Widget for PlayerApp {
                 .draw(scene, transform, text_renderer, theme, presence);
         }
         self.paint_media_status(scene, transform, text_renderer, theme);
-        self.place_top_strip(text_renderer, theme);
-        if self.overlay_visible() {
-            self.paint_overlay(scene, transform, text_renderer, theme);
-        }
         self.paint_library_panel(scene, transform, text_renderer, theme);
     }
 
@@ -2607,24 +2545,6 @@ impl Widget for PlayerApp {
             *ctx.handled = true;
             return;
         }
-        let history_hovered = self.history.is_hovered();
-        // The library paints above the strip and its scrim owns background
-        // input. In particular its Close face overlaps the trailing History
-        // face, so that covered control must not consume the library click.
-        let history_rect = if self.overlay_visible() && !self.library_visible {
-            self.history_button_rect
-        } else {
-            Rect::ZERO
-        };
-        if self
-            .history
-            .handle_event(event, history_rect, ctx.scale_factor)
-        {
-            *ctx.handled = true;
-            self.dirty = true;
-            return;
-        }
-        self.dirty |= history_hovered != self.history.is_hovered();
         // The library drawer reads its own dismissals (a press on the scrim,
         // Escape); the library's hide action is what closes it, so the
         // drawer stays open until that action lands.
@@ -2680,54 +2600,17 @@ impl Widget for PlayerApp {
         }
     }
 
-    /// The player, and the window's History control at its place in the
-    /// strip, so it is addressable like any control; the strip paints it
-    /// and routes its pointer through the opener.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children = vec![&self.player as &dyn Widget];
-        if let Some(history) = self.history.button() {
-            children.push(history);
-        }
-        children
+        vec![&self.player as &dyn Widget]
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children = vec![&mut self.player as &mut (dyn Widget + '_)];
-        if let Some(history) = self.history.button_mut() {
-            children.push(history);
-        }
-        children
+        vec![&mut self.player as &mut (dyn Widget + '_)]
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        let mut children = vec![
-            AccessNode::new(Role::Button)
-                .with_name("Open video")
-                .with_description("Ctrl+O")
-                .with_action_target("video-player.open")
-                .with_bounds(self.open_target_rect())
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.open_focused,
-                    disabled: self.portal_open.is_some(),
-                    ..Default::default()
-                }),
-            AccessNode::new(Role::Button)
-                .with_name(if self.library_visible {
-                    "Hide library"
-                } else {
-                    "Show queue and recent videos"
-                })
-                .with_description("L")
-                .with_action_target("video-player.library")
-                .with_bounds(self.library_button_rect)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.library_focused,
-                    ..Default::default()
-                }),
-        ];
+        let mut children = Vec::new();
         if self.library_visible {
             children.extend([
                 AccessNode::new(Role::Button)
@@ -2776,16 +2659,24 @@ impl Widget for PlayerApp {
             }
             children.extend(local_library_accessibility_nodes(self));
         }
-        children.extend(self.history.accessibility(self.history_button_rect));
-        if self.formats_visible() && self.status_action_rect.width() > 0.0 {
-            children.push(
+        if self.status_action_rect.width() > 0.0 {
+            let action = if self.formats_visible() {
                 AccessNode::new(Role::Button)
                     .with_name(self.formats_label.clone())
                     .with_action_target("video-player.formats")
+            } else {
+                AccessNode::new(Role::Button)
+                    .with_name("Open video")
+                    .with_description("Ctrl+O")
+                    .with_action_target("video-player.open")
+            };
+            children.push(
+                action
                     .with_bounds(self.status_action_rect)
                     .with_state(AccessState {
                         focusable: true,
-                        focused: self.formats_focused,
+                        focused: self.status_focused,
+                        disabled: self.portal_open.is_some() && !self.formats_visible(),
                         ..Default::default()
                     }),
             );
@@ -2803,66 +2694,38 @@ impl Widget for PlayerApp {
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         if let [index] = path
-            && self.formats_access_index() == Some(*index)
+            && self.status_access_index() == Some(*index)
         {
             return Some(self.status_action_rect);
         }
+        if !self.library_visible {
+            return None;
+        }
+        let shared = self.library_tab == LibraryTab::Shared;
         match path {
-            [0] => Some(self.open_target_rect()),
-            [1] => Some(self.library_button_rect),
-            [2] if self.library_visible => Some(self.library_close_rect),
-            [3] if self.library_visible => Some(self.library_queue_tab_rect),
-            [4] if self.library_visible => Some(self.library_recent_tab_rect),
-            [5] if self.library_visible => Some(self.library_shared_tab_rect),
-            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                Some(self.shared_watch_later_rect)
-            }
-            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                Some(self.shared_bookmark_rect)
-            }
-            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
-                shared_accessibility_targets(self)
-                    .get(index.saturating_sub(8))
-                    .map(|(_, _, rect)| *rect)
-            }
-            [index] => {
-                let library_index = index.saturating_sub(6);
-                let play_count = self.library_row_hits.len();
-                if let Some(row) = self.library_row_hits.get(library_index) {
-                    Some(row.play)
-                } else if self.library_tab == LibraryTab::Recent
-                    && !self.recent.is_empty()
-                    && library_index == play_count
-                {
-                    Some(self.library_clear_rect)
-                } else {
-                    let remove_index = library_index.saturating_sub(
-                        play_count
-                            + usize::from(
-                                self.library_tab == LibraryTab::Recent && !self.recent.is_empty(),
-                            ),
-                    );
-                    self.library_row_hits
-                        .iter()
-                        .filter_map(|row| row.remove)
-                        .nth(remove_index)
-                }
-            }
+            [0] => Some(self.library_close_rect),
+            [1] => Some(self.library_queue_tab_rect),
+            [2] => Some(self.library_recent_tab_rect),
+            [3] => Some(self.library_shared_tab_rect),
+            [4] if shared => Some(self.shared_watch_later_rect),
+            [5] if shared => Some(self.shared_bookmark_rect),
+            [index] if shared => shared_accessibility_targets(self)
+                .get(index.saturating_sub(6))
+                .map(|(_, _, rect)| *rect),
+            [index] => self.local_row_rect(index.saturating_sub(4)),
             _ => None,
         }
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         if let [index] = path
-            && self.formats_access_index() == Some(*index)
+            && self.status_access_index() == Some(*index)
         {
-            self.formats_focused = true;
-            self.open_focused = false;
-            self.library_focused = false;
+            self.status_focused = true;
             self.dirty = true;
             return true;
         }
-        self.formats_focused = false;
+        self.status_focused = false;
         self.focus_player_control(path)
     }
 
@@ -2876,13 +2739,8 @@ impl Widget for PlayerApp {
         if target == "video-player.formats" && matches!(action, ui::a11y::Action::Activate) {
             self.request(&VideoEffect::OpenFormats);
             true
-        } else if self.history.perform_semantic_action(target, action) {
-            true
         } else if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
             self.request_open_action();
-            true
-        } else if target == "video-player.library" && matches!(action, ui::a11y::Action::Activate) {
-            self.request_library_visibility_change();
             true
         } else if let Some(item_id) = target.strip_prefix("video-player.library.play.")
             && matches!(action, ui::a11y::Action::Activate)
@@ -2953,16 +2811,8 @@ impl Widget for PlayerApp {
         if self.formats_visible() && self.status_action_rect.contains(self.last_cursor) {
             return Some(self.formats_label.as_str());
         }
-        if (self.overlay_visible() && self.open_button_rect.contains(self.last_cursor))
-            || self.status_action_rect.contains(self.last_cursor)
-        {
+        if self.status_action_rect.contains(self.last_cursor) {
             Some("Open video (Ctrl+O)")
-        } else if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
-            Some(if self.library_visible {
-                "Hide queue and recent videos (L)"
-            } else {
-                "Show queue and recent videos (L)"
-            })
         } else if self.library_visible && self.library_close_rect.contains(self.last_cursor) {
             Some("Close library (Escape)")
         } else if self.library_visible && self.library_queue_tab_rect.contains(self.last_cursor) {
@@ -3061,23 +2911,9 @@ impl Widget for PlayerApp {
     }
 }
 
-/// The top strip is the window's header row: it holds the History control
-/// the host offers, over the picture, hiding with the other controls.
 impl ui::widget::controls::ActionControls for PlayerApp {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.history.take()
-    }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         ui::widget::semantic_action_bindings(self.accessibility())
-    }
-}
-
-impl ui::widget::WindowHeader for PlayerApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        if self.history.control() != control {
-            self.history.set_control(control);
-            self.dirty = true;
-        }
     }
 }
 
@@ -3085,7 +2921,6 @@ impl PlayerApp {}
 
 #[cfg(test)]
 mod tests {
-    use super::strip::TopStrip;
     use super::*;
     use ui::headless::Framed;
 
@@ -3108,17 +2943,12 @@ mod tests {
                 theme,
             );
             assert!(
-                framed.open_button_rect.width() > 0.0,
-                "another video stays reachable"
-            );
-            let open = framed.open_button_rect;
-            let formats = framed.status_action_rect;
-            assert!(
-                open.x1 <= formats.x0
-                    || formats.x1 <= open.x0
-                    || open.y1 <= formats.y0
-                    || formats.y1 <= open.y0,
-                "Open and the formats remedy have distinct painted targets"
+                framed
+                    .window_toolbar()
+                    .actions
+                    .iter()
+                    .any(|action| action.id == window_bar::OPEN && action.enabled),
+                "another video stays reachable from the window's bar"
             );
             let root = framed.accessibility().expect("player accessibility");
             let offers: Vec<_> = root
@@ -3141,28 +2971,19 @@ mod tests {
                     crate::i18n::t("video-formats-unavailable")
                 )));
             let index = framed
-                .formats_access_index()
+                .status_access_index()
                 .expect("the formats control is addressable");
             assert!(framed.focus_synthetic_accessibility(&[index]));
-            assert!(framed.formats_focused);
-            assert!(!framed.open_focused, "Formats focus excludes Open focus");
-            assert!(
-                framed.focus_synthetic_accessibility(&[0]),
-                "the original Open accessibility target keeps its index"
-            );
-            assert!(
-                framed.open_focused && !framed.formats_focused,
-                "returning to Open clears Formats focus"
-            );
+            assert!(framed.status_focused);
             let tree = framed
                 .accessibility()
                 .expect("focused player accessibility");
             assert_eq!(
-                tree.children[0].action_target.as_deref(),
-                Some("video-player.open")
+                tree.children[index].action_target.as_deref(),
+                Some("video-player.formats"),
+                "the formats remedy replaces the empty state's Open"
             );
-            assert!(tree.children[0].state.focused);
-            assert!(!tree.children[index].state.focused);
+            assert!(tree.children[index].state.focused);
             assert_eq!(
                 framed.synthetic_accessibility_rect(&[index]),
                 Some(framed.status_action_rect)
@@ -3466,10 +3287,10 @@ mod tests {
                     remove: Some(Rect::new(44.0, 44.0, 88.0, 88.0)),
                 },
             ];
-            assert!(Widget::focus_synthetic_accessibility(&mut app, &[7]));
+            assert!(Widget::focus_synthetic_accessibility(&mut app, &[5]));
             assert_eq!(app.library_focus_id.as_deref(), Some(focused_id.as_str()));
             assert_eq!(
-                Widget::synthetic_accessibility_rect(&app, &[7]),
+                Widget::synthetic_accessibility_rect(&app, &[5]),
                 Some(Rect::new(0.0, 44.0, 44.0, 88.0))
             );
         }
@@ -3481,15 +3302,15 @@ mod tests {
             app.library_shared_tab_rect = Rect::new(220.0, 0.0, 308.0, 44.0);
 
             let tree = Widget::accessibility(&app).expect("application accessibility tree");
-            assert_eq!(tree.children[2].name.as_deref(), Some("Close library"));
-            assert_eq!(tree.children[3].name.as_deref(), Some("Queue"));
-            assert!(tree.children[3].state.selected);
-            assert_eq!(tree.children[4].name.as_deref(), Some("Recent"));
-            assert!(!tree.children[4].state.selected);
-            assert_eq!(tree.children[5].name.as_deref(), Some("Shared"));
-            assert!(!tree.children[5].state.selected);
+            assert_eq!(tree.children[0].name.as_deref(), Some("Close library"));
+            assert_eq!(tree.children[1].name.as_deref(), Some("Queue"));
+            assert!(tree.children[1].state.selected);
+            assert_eq!(tree.children[2].name.as_deref(), Some("Recent"));
+            assert!(!tree.children[2].state.selected);
+            assert_eq!(tree.children[3].name.as_deref(), Some("Shared"));
+            assert!(!tree.children[3].state.selected);
 
-            assert!(Widget::focus_synthetic_accessibility(&mut app, &[4]));
+            assert!(Widget::focus_synthetic_accessibility(&mut app, &[2]));
             assert_eq!(app.library_focus_id.as_deref(), Some("library-tab-recent"));
 
             app.perform(VideoEffect::ShowLibrary {
@@ -3725,41 +3546,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn player_chrome_geometry_follows_the_theme_at_every_text_scale() {
-        // Case `top_strip_is_one_centre_line_that_contains_its_buttons`: the
-        // Library and Open buttons share the strip's centre line, sit inside
-        // the fade and keep the strip margin at 100% and 200% text.
-        for scale in [1.0_f32, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let app = lay_out(
-                PlayerApp::for_shot_open(None, Some("playing")),
-                (1200.0, 800.0),
-                scale,
-            );
-            let strip = TopStrip::at(app.rect.y0, &theme);
-            let margin = f64::from(theme.tokens.spacing.s4);
-            let (open, library) = (app.open_button_rect, app.library_button_rect);
-            assert!(
-                library.width() > 0.0 && open.width() > 0.0,
-                "{scale}×: both buttons are placed once painted"
-            );
-            assert!(
-                (open.center().y - strip.center_y).abs() < 0.01
-                    && (library.center().y - strip.center_y).abs() < 0.01,
-                "{scale}×: Open {open:?} and Library {library:?} share the strip centre {}",
-                strip.center_y
-            );
-            assert!(
-                open.y1 <= app.rect.y0 + strip.height && library.y1 <= app.rect.y0 + strip.height,
-                "{scale}×: the fade ({}) contains both buttons",
-                strip.height
-            );
-            assert!(
-                (app.rect.x1 - open.x1 - margin).abs() < 0.01
-                    && (library.x0 - app.rect.x0 - margin).abs() < 0.01,
-                "{scale}×: both buttons keep the strip margin"
-            );
-            assert!(open.x0 > library.x1, "{scale}×: the buttons do not meet");
-        }
         // Case `library_sheet_stacks_header_tabs_and_rows`: the sheet is one
         // column: its header, then the tab strip across it, then the rows,
         // at 100% and 200% text, with the actions clear of one another.
@@ -3773,7 +3559,7 @@ mod tests {
             assert!(sheet.width() > 0.0, "{scale}×: the sheet is open");
             assert!(
                 sheet.center().x < app.rect.center().x,
-                "{scale}×: the sheet opens on the Library button's side"
+                "{scale}×: the sheet opens on the leading side, under the bar's sidebar toggle"
             );
             for rect in [
                 app.library_close_rect,
