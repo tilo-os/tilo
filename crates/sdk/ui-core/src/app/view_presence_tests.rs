@@ -179,7 +179,7 @@ fn application_launch_receipts_are_bounded_terminal_and_admitted() {
         }
 
         assert!(matches!(
-            app.admit_application_launch(
+            app.broker_door().admit(
                 MAX_PENDING_APPLICATION_LAUNCHES as u64,
                 tilo_actions::InvocationId::new(),
             ),

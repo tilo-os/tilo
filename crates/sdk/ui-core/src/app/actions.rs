@@ -2239,24 +2239,14 @@ impl App {
         Ok(request_id)
     }
 
-    /// Retain exactly one broker request per admitted launcher invocation.
-    /// The fixed cap is a failure boundary: overflowing it must refuse the
-    /// invocation before it can be left Accepted without a terminal receipt.
-    fn admit_application_launch(
-        &mut self,
-        request_id: u64,
-        invocation: tilo_actions::InvocationId,
-    ) -> Result<(), tilo_actions::DoorError> {
-        if self.actions.pending_application_launches.len() >= MAX_PENDING_APPLICATION_LAUNCHES {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "application_launch_queue_full".into(),
-                reason: "Too many application launches are awaiting broker receipts".into(),
-            });
+    /// This window's session door: its workspace broker connection.
+    pub(super) fn broker_door(&mut self) -> BrokerDoor<'_> {
+        BrokerDoor {
+            manager: &mut self.collaboration.manager,
+            broker_requests: &mut self.actions.broker_requests,
+            next_broker_request_id: &mut self.actions.next_broker_request_id,
+            pending_application_launches: &mut self.actions.pending_application_launches,
         }
-        self.actions
-            .pending_application_launches
-            .insert(request_id, invocation);
-        Ok(())
     }
 
     fn invoke_document_resource_action(
@@ -2330,6 +2320,12 @@ impl App {
         // edit intact; the executor still receives the same committed baseline.
         let before = self.state.doc.get_heads();
         let route = self.primary_document_route();
+        let mut door = BrokerDoor {
+            manager: &mut self.collaboration.manager,
+            broker_requests: &mut self.actions.broker_requests,
+            next_broker_request_id: &mut self.actions.next_broker_request_id,
+            pending_application_launches: &mut self.actions.pending_application_launches,
+        };
         let started = crate::invocation_scope::with_mounted_document(
             route.clone(),
             &mut self.state.doc,
@@ -2353,6 +2349,7 @@ impl App {
                         source_invocation,
                         ambient: ambient_context,
                         scope,
+                        door: Some(&mut door),
                     },
                 )
             },
@@ -2486,11 +2483,18 @@ impl App {
                 )
         };
         let id = invocation.unwrap_or_default();
+        let mut door = BrokerDoor {
+            manager: &mut self.collaboration.manager,
+            broker_requests: &mut self.actions.broker_requests,
+            next_broker_request_id: &mut self.actions.next_broker_request_id,
+            pending_application_launches: &mut self.actions.pending_application_launches,
+        };
         let started = crate::bound_dispatch::invoke_resource_action(
             self.root_widget.as_mut(),
             &mut self.state.doc,
             target,
             self.actions.action_transport.as_mut(),
+            Some(&mut door),
             crate::bound_dispatch::ResourceActionRequest {
                 argument,
                 arguments: None,
@@ -2961,61 +2965,18 @@ impl App {
             // This branch runs only when the broker directs that admitted action
             // back to its source app, preserving the normal receipt lifecycle.
             if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
-                let launch: tilo_actions::remote::ApplicationLaunch =
-                    serde_json::from_slice(&encoded.payload).map_err(|_| {
-                        tilo_actions::DoorError::Failed("invalid application launch payload".into())
-                    })?;
-                if !launch.valid() {
-                    return Err(tilo_actions::DoorError::Failed(
-                        "application launch payload is out of bounds".into(),
-                    ));
-                }
-                if !self.collaboration.manager.is_connected() {
-                    return Err(tilo_actions::DoorError::Unavailable {
-                        code: "authoritative_host_unavailable".into(),
-                        reason: "Opening an application requires the workspace action broker"
-                            .into(),
-                    });
-                }
-                let Some(room) = self
-                    .collaboration
-                    .manager
-                    .primary_route()
-                    .map(|witness| witness.route.cluster_id.to_string())
-                else {
-                    return Err(tilo_actions::DoorError::Unavailable {
-                        code: "authoritative_host_unavailable".into(),
-                        reason: "Opening an application requires an admitted workspace route"
-                            .into(),
-                    });
-                };
-                let request_id = self.take_broker_request_id()?;
                 let Some(invocation) = invocation else {
                     return Err(tilo_actions::DoorError::Failed(
                         "application launch was not admitted by the broker".into(),
                     ));
                 };
-                self.admit_application_launch(request_id, invocation)?;
-                let request = tilo_actions::remote::InvokeRequest {
-                    on_behalf_of: None,
-                    invocation: tilo_actions::InvocationId::new(),
-                    target: launch.target(&room),
-                    argument: launch.argument(),
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    wait_ms: None,
-                    appearance: None,
-                };
-                self.actions
-                    .broker_requests
-                    .insert(BrokerReply::Receipt(request.invocation), request_id);
-                self.collaboration
-                    .manager
-                    .send(CollabRequest::RemoteAction {
-                        message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
-                    });
-                return Ok(crate::widget::ResourceOperationStart::Accepted);
+                return crate::session_door::start_application_launch(
+                    Some(&mut self.broker_door()),
+                    None,
+                    &encoded.payload,
+                    invocation,
+                    broker_admitted,
+                );
             }
             let operation_invocation = invocation.unwrap_or_default();
             if encoded.type_id == history_actions::OPERATION {
@@ -3160,6 +3121,12 @@ impl App {
                 })()
             } else {
                 let route = self.primary_document_route();
+                let mut door = BrokerDoor {
+                    manager: &mut self.collaboration.manager,
+                    broker_requests: &mut self.actions.broker_requests,
+                    next_broker_request_id: &mut self.actions.next_broker_request_id,
+                    pending_application_launches: &mut self.actions.pending_application_launches,
+                };
                 crate::invocation_scope::with_mounted_document(
                     route.clone(),
                     &mut self.state.doc,
@@ -3183,6 +3150,7 @@ impl App {
                                 source_invocation: broker_admitted.then_some(operation_invocation),
                                 ambient: ambient_context,
                                 scope: None,
+                                door: Some(&mut door),
                             },
                         )
                     },
@@ -5204,5 +5172,72 @@ fn collect_named_actions(
         for child in &resource.children {
             collect_named_actions(child, needle, depth.saturating_add(1), max_depth, out);
         }
+    }
+}
+
+/// A native window's session door ([`crate::session_door`]): the workspace
+/// broker its collaboration connection reaches.
+pub(super) struct BrokerDoor<'a> {
+    manager: &'a mut crate::collaboration::CollaborationManager,
+    broker_requests: &'a mut std::collections::HashMap<BrokerReply, u64>,
+    next_broker_request_id: &'a mut Option<u64>,
+    pending_application_launches:
+        &'a mut std::collections::HashMap<u64, tilo_actions::InvocationId>,
+}
+
+impl BrokerDoor<'_> {
+    /// Retain exactly one broker request per admitted launcher invocation.
+    /// The fixed cap is a failure boundary: overflowing it must refuse the
+    /// invocation before it can be left Accepted without a terminal receipt.
+    pub(super) fn admit(
+        &mut self,
+        request_id: u64,
+        operation: tilo_actions::InvocationId,
+    ) -> Result<(), tilo_actions::DoorError> {
+        if self.pending_application_launches.len() >= MAX_PENDING_APPLICATION_LAUNCHES {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: "application_launch_queue_full".into(),
+                reason: "Too many application launches are awaiting broker receipts".into(),
+            });
+        }
+        self.pending_application_launches
+            .insert(request_id, operation);
+        Ok(())
+    }
+}
+
+impl crate::session_door::SessionDoor for BrokerDoor<'_> {
+    fn workspace(&self) -> Option<String> {
+        self.manager
+            .primary_route()
+            .map(|witness| witness.route.cluster_id.to_string())
+    }
+
+    fn invoke(
+        &mut self,
+        operation: tilo_actions::InvocationId,
+        admitted: bool,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        if !self.manager.is_connected() {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: "authoritative_host_unavailable".into(),
+                reason: "Opening an application requires the workspace action broker".into(),
+            });
+        }
+        // A launch runs only as the broker delivered it here.
+        if !admitted {
+            return Err(tilo_actions::DoorError::Failed(
+                "application launch was not admitted by the broker".into(),
+            ));
+        }
+        let request_id = App::allocate_broker_request_id(self.next_broker_request_id)?;
+        self.admit(request_id, operation)?;
+        self.broker_requests
+            .insert(BrokerReply::Receipt(request.invocation), request_id);
+        self.manager.send(CollabRequest::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+        });
+        Ok(crate::widget::ResourceOperationStart::Accepted)
     }
 }
