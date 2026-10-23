@@ -10,8 +10,9 @@ use std::time::Duration;
 
 /// Bytes either local origin may cache.
 const ORIGIN_BYTES: u64 = 1024 * 1024;
-/// Local retention for presence and ops.
-const RETAIN: Duration = Duration::from_secs(2);
+/// Local retention of a group not read yet: a reader that fell behind still
+/// gets a track's last change, as the relay keeps it for such a reader.
+const RETAIN: Duration = super::EGRESS_KEEP;
 
 /// One connected live participant. Dropping it closes the session.
 pub struct Peer {
@@ -222,7 +223,7 @@ impl MemberPresence {
     #[must_use]
     pub fn follow(peer: &Peer, namespace: &str) -> Self {
         let (tx, frames) = tokio::sync::mpsc::channel(MEMBER_PRESENCE_QUEUE);
-        let follow = follow_member(peer, namespace, PRESENCE_TRACK, move |mut track| {
+        let follow = follow_member(peer, namespace, PRESENCE_TRACK, None, move |mut track| {
             let tx = tx.clone();
             async move {
                 while let Ok(Some(datagram)) = track.recv_datagram().await {
@@ -259,7 +260,13 @@ impl MemberPresence {
 /// re-announcement racing it on a slow node); either way the follower
 /// subscribes again, to the new broadcast or, shortly, to the same one.
 /// `read` returns whether anyone still listens; following stops when not.
-fn follow_member<F, R>(peer: &Peer, namespace: &str, track: &str, mut read: F) -> crate::Task
+fn follow_member<F, R>(
+    peer: &Peer,
+    namespace: &str,
+    track: &str,
+    subscription: Option<moq_net::track::Subscription>,
+    mut read: F,
+) -> crate::Task
 where
     F: FnMut(moq_net::track::Subscriber) -> R + Send + 'static,
     R: std::future::Future<Output = bool> + Send,
@@ -272,8 +279,8 @@ where
         // nothing more.
         while let Ok(broadcast) = origin.routed_broadcast(namespace.as_str()).await {
             if let Ok(consumer) = broadcast.track(&track)
-                && let Ok(subscription) = consumer.subscribe(None).await
-                && !read(subscription).await
+                && let Ok(subscriber) = consumer.subscribe(subscription.clone()).await
+                && !read(subscriber).await
             {
                 return;
             }
@@ -285,6 +292,11 @@ where
         std::future::pending::<()>().await;
     })
 }
+
+/// How far an ops reader may fall behind newer groups before it skips older
+/// ones: the page's ops subscription (`OPS_SUBSCRIPTION` in the browser
+/// runtime's live transport).
+const OPS_AGE: Duration = Duration::from_millis(2500);
 
 /// One room member's ops track, followed the way a page follows it
 /// (`subscribeOps` in the browser runtime's live transport): frames in
@@ -304,22 +316,31 @@ impl MemberOps {
     #[must_use]
     pub fn follow(peer: &Peer, namespace: &str, track: &str) -> Self {
         let (tx, frames) = tokio::sync::mpsc::channel(MEMBER_PRESENCE_QUEUE);
-        let follow = follow_member(peer, namespace, track, move |mut track| {
-            let tx = tx.clone();
-            async move {
-                while let Ok(Some(mut group)) = track.recv_group().await {
-                    while let Ok(Some(frame)) = group.read_frame().await {
-                        if frame.payload.is_empty() {
-                            continue;
-                        }
-                        if tx.send(frame.payload).await.is_err() {
-                            return false;
+        let subscription = moq_net::track::Subscription::default()
+            .with_priority(1)
+            .with_max_age(OPS_AGE);
+        let follow = follow_member(
+            peer,
+            namespace,
+            track,
+            Some(subscription),
+            move |mut track| {
+                let tx = tx.clone();
+                async move {
+                    while let Ok(Some(mut group)) = track.recv_group().await {
+                        while let Ok(Some(frame)) = group.read_frame().await {
+                            if frame.payload.is_empty() {
+                                continue;
+                            }
+                            if tx.send(frame.payload).await.is_err() {
+                                return false;
+                            }
                         }
                     }
+                    !tx.is_closed()
                 }
-                !tx.is_closed()
-            }
-        });
+            },
+        );
         Self {
             frames,
             _follow: follow,

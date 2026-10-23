@@ -972,7 +972,10 @@ async fn pump_ops(
         .with_priority(1)
         .with_max_age(OPS_LATENCY);
     let subscriber = match broadcast.track(&name) {
-        Ok(track) => track.subscribe(subscription).await.ok(),
+        Ok(track) => track
+            .subscribe(super::egress_subscription(&track, subscription))
+            .await
+            .ok(),
         Err(_) => None,
     };
     if let Some(mut subscriber) = subscriber {

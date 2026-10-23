@@ -79,10 +79,16 @@ const MAX_GROUPS_IN_FLIGHT: usize = 4;
 pub const HOST_SLOT_IDLE: Duration = Duration::from_secs(30);
 /// In-memory reorder window for ops groups; not storage.
 const OPS_WINDOW: Duration = Duration::from_secs(2);
-/// Egress retention of a superseded (non-latest) group: long enough to finish
-/// serving it to current subscribers, short enough that a late subscriber is
-/// not replayed it once the track was sealed.
+/// How far a reader may fall behind newer groups of an ops track before it
+/// skips the older ones (its reorder budget). A quiet track's seal is not a
+/// newer group in this sense: it is stamped right after the last change, so
+/// it never ages that change out.
 const EGRESS_RETAIN: Duration = OPS_WINDOW;
+/// How long the egress (and each subscriber's view of it) keeps a group no
+/// reader has read: a reader that fell behind still receives a track's last
+/// change, which nothing repeats. As long as a quiet host-fed namespace
+/// lives; the byte bounds below still cap the memory.
+pub(crate) const EGRESS_KEEP: Duration = HOST_SLOT_IDLE;
 /// Presence retention: latest value only.
 const PRESENCE_RETAIN: Duration = Duration::from_millis(100);
 /// Upper bound on bytes one publisher session may have buffered at ingress.
@@ -96,8 +102,6 @@ const REANNOUNCE_AFTER: Duration = Duration::from_millis(100);
 /// A quiet ops track is sealed with an empty group after this long, so a late
 /// subscriber (which starts at the latest group) is not replayed stale frames.
 pub const SEAL_AFTER: Duration = Duration::from_millis(250);
-/// Quiet time after which a late subscriber is no longer replayed old groups.
-pub const SEAL_QUIET: Duration = Duration::from_millis(250 + 2000 + 100);
 const PRESENCE_RETRY: Duration = Duration::from_millis(100);
 /// An ops track without subscribers for this long is withdrawn.
 pub(crate) const UNUSED_GRACE: Duration = Duration::from_secs(2);
@@ -327,7 +331,7 @@ impl LiveRelay {
     /// on it for as long as any clone of the relay lives.
     pub fn new(authority: Arc<dyn LiveAuthority>) -> Self {
         let (egress, task) =
-            carrier::OriginTask::produce(carrier::origin_config(EGRESS_POOL_BYTES, EGRESS_RETAIN));
+            carrier::OriginTask::produce(carrier::origin_config(EGRESS_POOL_BYTES, EGRESS_KEEP));
         Self(Arc::new(Inner {
             authority,
             egress,
@@ -676,7 +680,8 @@ impl LiveRelay {
                 let view = crate::mirror::Mirror::start(
                     egress.clone(),
                     VIEW_POOL_BYTES,
-                    EGRESS_RETAIN,
+                    EGRESS_KEEP,
+                    crate::mirror::Start::Egress,
                     None,
                 );
                 server = server.with_publisher(view.consume());
@@ -1367,32 +1372,48 @@ async fn copy_group(
 }
 
 /// After [`SEAL_AFTER`] of quiet, append a seal group so the last delivered
-/// group is no longer the latest; after [`EGRESS_RETAIN`] more, a second seal
-/// moves the live edge far enough that the delivered groups fall outside the
-/// track's retention. A late subscriber then starts at the seal instead of
-/// being replayed already delivered frames. A seal group holds one empty,
-/// timestamped frame (retention is measured on frame timestamps); readers
-/// skip empty frames, which no valid ops frame is. Nothing is sent once new
+/// group is no longer the latest. A late subscriber starts at the latest
+/// group (see [`egress_subscription`]), so it starts at the seal instead of being
+/// replayed already delivered frames. A seal group holds one empty frame;
+/// readers skip empty frames, which no valid ops frame is. Only one seal is
+/// written: a reader still behind keeps the last change, which a further
+/// seal stamped later would age out of its budget. Nothing is sent once new
 /// groups arrive.
 fn seal_later(track: moq_net::track::Producer, sequence: u64) {
     tokio::spawn(async move {
-        let mut expected = sequence;
-        for wait in [
-            SEAL_AFTER,
-            EGRESS_RETAIN.saturating_add(Duration::from_millis(100)),
-        ] {
-            tokio::time::sleep(wait).await;
-            if track.is_closed() || track.latest() != Some(expected) {
-                return;
-            }
-            let Ok(mut seal) = track.append_group() else {
-                return;
-            };
-            expected = seal.sequence;
-            let _ = seal.write_frame(stamp(), bytes::Bytes::new());
-            let _ = seal.finish();
+        tokio::time::sleep(SEAL_AFTER).await;
+        if track.is_closed() || track.latest() != Some(sequence) {
+            return;
         }
+        let Ok(mut seal) = track.append_group() else {
+            return;
+        };
+        let _ = seal.write_frame(stamp(), bytes::Bytes::new());
+        let _ = seal.finish();
     });
+}
+
+/// How the relay reads `track` of its egress for one subscriber, from what
+/// the subscriber asked for:
+///
+/// * floored at the track's latest group: a subscriber that joins late
+///   starts at the live edge (a sealed quiet track's seal, an open stream's
+///   latest group) and is not replayed what was delivered before it came;
+/// * with at least [`EGRESS_RETAIN`] of reorder budget, whatever budget the
+///   wire carried. With none, any newer group (a quiet track's seal written
+///   while the relay's copy for this subscriber still lags) would make the
+///   group before it stale, and a track's last change would be lost for
+///   good to a subscriber that fell behind.
+pub(crate) fn egress_subscription(
+    track: &moq_net::track::Consumer,
+    subscription: moq_net::track::Subscription,
+) -> moq_net::track::Subscription {
+    let max_age = subscription.max_age.max(EGRESS_RETAIN);
+    let subscription = subscription.with_max_age(max_age);
+    match track.latest() {
+        Some(latest) => subscription.with_start(moq_net::track::Position::group(latest)),
+        None => subscription,
+    }
 }
 
 /// Isolated loopback live relay with a generated short-lived certificate, for
