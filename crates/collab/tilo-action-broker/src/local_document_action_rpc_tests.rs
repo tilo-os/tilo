@@ -110,7 +110,7 @@ async fn local_report_admission(
                 .host_workers
                 .lock()
                 .unwrap()
-                .get(&903)
+                .only(903)
                 .unwrap()
                 .clone();
             let raw: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
@@ -226,10 +226,10 @@ async fn local_report_admission(
                 assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
                 no_delivery(&rig);
             }
-            // An app's own connection, the one its launcher hands it, is no
-            // host worker. Nothing reported on it can be admitted, so the
-            // broker refuses definitively: the app stops holding the report
-            // (and the surface it was made under) instead of waiting forever.
+            // A connection no launcher vouched for is no worker. Nothing
+            // reported on it can be admitted, so the broker refuses
+            // definitively: the app stops holding the report (and the
+            // surface it was made under) instead of waiting forever.
             let app_connection: channel_handle::Client =
                 capnp_rpc::new_client(CapnpChannelHandle {
                     person_chat_views: std::cell::RefCell::default(),
@@ -557,7 +557,7 @@ async fn local_report_admission(
             assert!(revoked_retry.send().promise.await.is_err());
             *env.authority.certificate.lock().unwrap() = original_host;
             // An old endpoint must not silently inherit a missing/replaced host.
-            rig.state.host_workers.lock().unwrap().remove(&903);
+            rig.state.host_workers.lock().unwrap().remove(903);
             pin_dropped.set(true);
             let mut stale_retry = raw.admit_local_document_action_request();
             stale_retry.get().set_request(&bytes);

@@ -230,6 +230,7 @@ room-sync-device-needs-update = Tilo needs to update to sync this workspace
 room-sync-device-needs-update-body = The update is on its way. Your changes stay on this device until then.
 history-local-action-not-saved = Couldn't save this change to your history.
 history-local-action-retry = Retry
+history-local-action-unrecorded = Your changes in this window are saved, but your history doesn't record them.
 
 history-sync-refused = Syncing stopped: this workspace didn't accept a change. Your edits stay on this device.
 history-sync-remote-waiting = Remote updates will apply when the current edit finishes.

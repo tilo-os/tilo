@@ -38,6 +38,7 @@ mod durable_local_invocation;
 mod file_clipboard;
 #[cfg(test)]
 mod history_agents_tests;
+mod host_workers;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
@@ -3475,8 +3476,9 @@ pub struct CapnpBrokerState {
     /// was asked and when the app was handed it.
     offloaded_here:
         Mutex<HashMap<u64, (tilo_actions::offload::OffloadRequest, std::time::Instant)>>,
-    /// Signed joins on actual private host-worker descriptors; never reconstructed from surfaces.
-    host_workers: Mutex<HashMap<u64, AdmittedJoinIdentity>>,
+    /// The worker connections' admitted joins, by connection and route
+    /// ([`host_workers`]); never reconstructed from surfaces.
+    host_workers: Mutex<host_workers::HostWorkers>,
     /// Peer ids of the broker's own services on its thread's runtime.
     service_peers: Mutex<Vec<u64>>,
     /// How often the broker thread unwound and started again.
@@ -3485,99 +3487,7 @@ pub struct CapnpBrokerState {
     thread_callbacks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
 
-/// Bound on live host-worker provenance entries (`host_workers`): one per
-/// connected RPC session whose join carries a private host-worker scope or a
-/// registered private worker, removed when that connection drops.
-///
-/// Measured use (Cloud host): one headless worker per hosted app record, and
-/// every record ever opened in the room stays hosted (each "Open Notes"
-/// creates a record), plus one registered connection per managed agent. A
-/// workspace with 16 agents and a few dozen records per app must fit: the
-/// former bound of 32 refused the 33rd record, which failed the whole worker
-/// mount and so every agent. Each entry is a small admitted identity (two
-/// certificates and a few ids, under 2 KiB), so this keeps memory bounded
-/// (well under 1 MiB) while leaving room for real workspaces.
-const MAX_HOST_WORKERS: usize = 256;
-
 impl CapnpBrokerState {
-    /// Host-local observation only; this predicate is never a wire proof.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host worker registry is unavailable.
-    pub fn is_current_host_worker(
-        &self,
-        peer: u64,
-        route: &CrdtRoute,
-        certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<bool, String> {
-        if !self.is_accepting() {
-            return Ok(false);
-        }
-        let admitted = self
-            .host_workers
-            .lock()
-            .map_err(|_| "host worker provenance unavailable")?
-            .get(&peer)
-            .cloned();
-        let Some(admitted) = admitted else {
-            return Ok(false);
-        };
-        if !admitted
-            .host_scope
-            .as_ref()
-            .is_some_and(|scope| &scope.route == route && &scope.certificate == certificate)
-        {
-            return Ok(false);
-        }
-        // The current owner callback may open Store. Never call it under the registry lock.
-        if self.revalidate_admission(route, &admitted).is_err() {
-            return Ok(false);
-        }
-        let workers = self
-            .host_workers
-            .lock()
-            .map_err(|_| "host worker provenance unavailable")?;
-        let unchanged = workers.get(&peer) == Some(&admitted);
-        drop(workers);
-        Ok(self.is_accepting() && unchanged)
-    }
-
-    fn retain_host_worker(
-        &self,
-        peer: u64,
-        admitted: &AdmittedJoinIdentity,
-    ) -> Result<(), capnp::Error> {
-        if admitted.host_scope.is_none() && admitted.worker_registration.is_none() {
-            return Ok(());
-        }
-        if !self.is_accepting() {
-            return Err(capnp::Error::failed("broker unavailable".into()));
-        }
-        let mut workers = self
-            .host_workers
-            .lock()
-            .map_err(|_| capnp::Error::failed("host worker provenance unavailable".into()))?;
-        if let Some(previous) = workers.get(&peer) {
-            if previous.host_scope != admitted.host_scope
-                || previous.worker_registration != admitted.worker_registration
-            {
-                return Err(capnp::Error::failed(
-                    "host worker scope replacement rejected".into(),
-                ));
-            }
-        } else {
-            if workers.len() >= MAX_HOST_WORKERS {
-                return Err(capnp::Error::failed(
-                    "host worker connection capacity reached".into(),
-                ));
-            }
-            workers.insert(peer, admitted.clone());
-        }
-        drop(workers);
-        Ok(())
-    }
-
     pub(crate) fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }
@@ -4294,7 +4204,7 @@ impl CapnpBrokerState {
                 local_turn,
                 offloads: Mutex::default(),
                 offloaded_here: Mutex::default(),
-                host_workers: Mutex::new(HashMap::new()),
+                host_workers: Mutex::default(),
                 service_peers: Mutex::new(Vec::new()),
                 thread_restarts: AtomicU64::new(0),
                 #[cfg(test)]
@@ -7001,12 +6911,8 @@ impl CapnpBrokerState {
         self.disconnect_device_media(peer_id);
         // Withdraw provenance before any stale surface can be observed during cleanup.
         match self.host_workers.lock() {
-            Ok(mut workers) => {
-                workers.remove(&peer_id);
-            }
-            Err(poisoned) => {
-                poisoned.into_inner().remove(&peer_id);
-            }
+            Ok(mut workers) => workers.remove(peer_id),
+            Err(poisoned) => poisoned.into_inner().remove(peer_id),
         }
         if let Some(realtime) = self.services.realtime.as_ref() {
             realtime.disconnect(peer_id);
@@ -8258,6 +8164,11 @@ fn default_pointer_key_bytes() -> Vec<u8> {
 /// Root capability server. One instance per connected RPC session.
 struct CapnpCollabService {
     worker: Option<WorkerBinding>,
+    /// The worker registration of a connection its launcher authenticated,
+    /// minted at connect for the app the shell launched: each route of
+    /// that app the connection joins as its person is one of its worker
+    /// routes ([`host_workers`]).
+    app_worker: Option<(uuid::Uuid, String)>,
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     /// Peer id assigned at accept time. Fanout uses it to skip the
@@ -8465,7 +8376,17 @@ impl collab_service::Server for CapnpCollabService {
                 },
                 "PROBE join_channel",
             );
-            state.retain_host_worker(peer_id, &verified_identity)?;
+            if self.worker.is_none()
+                && matches!(participant_kind, "" | "person")
+                && let Some(registration) = host_workers::packaged_app_registration(
+                    self.app_worker.as_ref(),
+                    &route,
+                    &verified_identity,
+                )
+            {
+                verified_identity.worker_registration = Some(registration);
+            }
+            state.retain_host_worker(peer_id, &route, &verified_identity)?;
             state.ensure_channel(&channel_id);
             state
                 .publisher()
@@ -8675,11 +8596,7 @@ fn private_display_control(
                         .lock()
                         .map_err(|_| "Settings worker registry is unavailable.")?;
                     let peer = workers
-                        .iter()
-                        .find_map(|(peer, worker)| {
-                            (worker.worker_registration.as_ref() == Some(&registration))
-                                .then_some(*peer)
-                        })
+                        .peer_of(&registration)
                         .ok_or("The admitted Settings worker has closed.")?;
                     drop(workers);
                     let pending = state
@@ -14555,8 +14472,12 @@ async fn drive_connection(
     let handed_descriptors = local_media
         .as_ref()
         .and_then(|local| local.descriptors.clone());
+    let app_worker = local_media
+        .as_ref()
+        .map(|app| (uuid::Uuid::new_v4(), app.app_id.clone()));
     let client: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
         worker,
+        app_worker,
         lease: Rc::new(ConnectionLease {
             local_media,
             state: Arc::clone(&state),
@@ -17062,6 +16983,7 @@ pub mod tests {
             });
             let raw: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
                 worker: None,
+                app_worker: None,
                 state: Arc::clone(&state),
                 directories,
                 peer_id,
@@ -20965,6 +20887,11 @@ mod host_worker_capacity_tests {
     fn retained(state: &CapnpBrokerState) -> usize {
         state.host_workers.lock().unwrap().len()
     }
+    fn retain(state: &CapnpBrokerState, peer: u64, record: usize) -> Result<(), capnp::Error> {
+        let worker = host_worker(record);
+        let route = worker.host_scope.clone().unwrap().route;
+        state.retain_host_worker(peer, &route, &worker)
+    }
 
     /// Repeated worker mounts (connect, then drop every connection) never
     /// grow the provenance registry: each disconnect withdraws its entry.
@@ -20976,9 +20903,7 @@ mod host_worker_capacity_tests {
             let first = peer;
             for record in 0..40 {
                 peer += 1;
-                state
-                    .retain_host_worker(peer, &host_worker(record))
-                    .unwrap();
+                retain(&state, peer, record).unwrap();
             }
             assert_eq!(retained(&state), 40);
             for connection in first + 1..=peer {
@@ -20996,28 +20921,30 @@ mod host_worker_capacity_tests {
         let agents = 16;
         let records = 5 * 40; // five hosted apps with 40 records each
         for peer in 0..(agents + records) {
-            state
-                .retain_host_worker(peer as u64 + 1, &host_worker(peer))
-                .unwrap();
+            retain(&state, peer as u64 + 1, peer).unwrap();
         }
-        for peer in (agents + records)..MAX_HOST_WORKERS {
-            state
-                .retain_host_worker(peer as u64 + 1, &host_worker(peer))
-                .unwrap();
+        for peer in (agents + records)..host_workers::MAX_HOST_WORKERS {
+            retain(&state, peer as u64 + 1, peer).unwrap();
         }
-        assert_eq!(retained(&state), MAX_HOST_WORKERS);
+        assert_eq!(retained(&state), host_workers::MAX_HOST_WORKERS);
         assert!(
-            state
-                .retain_host_worker(MAX_HOST_WORKERS as u64 + 1, &host_worker(MAX_HOST_WORKERS))
-                .is_err()
+            retain(
+                &state,
+                host_workers::MAX_HOST_WORKERS as u64 + 1,
+                host_workers::MAX_HOST_WORKERS
+            )
+            .is_err()
         );
         // A reconnect of an already admitted peer with the same scope is idempotent.
-        assert!(state.retain_host_worker(1, &host_worker(0)).is_ok());
+        assert!(retain(&state, 1, 0).is_ok());
         state.remove_connection(1);
         assert!(
-            state
-                .retain_host_worker(MAX_HOST_WORKERS as u64 + 1, &host_worker(MAX_HOST_WORKERS))
-                .is_ok()
+            retain(
+                &state,
+                host_workers::MAX_HOST_WORKERS as u64 + 1,
+                host_workers::MAX_HOST_WORKERS
+            )
+            .is_ok()
         );
     }
 }
