@@ -758,7 +758,6 @@ pub(super) mod tests {
         laptop_content.offer(&route, &hash, &poster).unwrap();
         let mut arrivals = phone_content.subscribe(&route);
 
-        // Hand every fabric frame `sent` holds to `to`, from `from`.
         let carry =
             |sent: &mut mpsc::Receiver<NetCmd>,
              to: &Arc<ShellNetwork>,

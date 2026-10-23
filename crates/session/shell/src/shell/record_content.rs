@@ -53,7 +53,6 @@ impl ContentShelf for SessionShelf {
     }
 }
 
-/// The shell network as the route of a record's content.
 struct NetworkPeers(Arc<ShellNetwork>);
 
 impl ContentPeers for NetworkPeers {
@@ -74,7 +73,6 @@ impl ContentPeers for NetworkPeers {
     }
 }
 
-/// The session's record-content service over `network`.
 pub fn session_record_content(network: &Arc<ShellNetwork>) -> Arc<RouteContent> {
     RouteContent::new(
         Arc::new(SessionShelf),
