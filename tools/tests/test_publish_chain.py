@@ -294,6 +294,7 @@ class GeneratorTests(unittest.TestCase):
                 self.assertNotIn("secrets", c[name], name)
                 self.assertNotIn("id_token", c[name], name)
             self.assertEqual(c[f"env-tools-{arch}"]["optional_needs"], ["env-tools-plan"])
+            self.assertEqual(c[f"env-tools-binaries-{arch}"]["optional_needs"], ["env-tools-plan"])
         self.assertEqual(c["env-tools-plan"]["on"], ["stable"])
         self.assertFalse(c["env-tools-plan"]["cache"])
         self.assertEqual(c["env-tools-plan"]["optional_needs"], ["release-env-runtime"])
