@@ -250,7 +250,7 @@ fn speed_markers_titles_and_the_frame_change_through_their_verbs() {
 
     // A title lands in the bin as a text source.
     replica
-        .apply(Project::ADD_TITLE.with("Opening\nsecond line".to_owned()))
+        .apply(Project::ADD_TITLE.with(("Opening\nsecond line".to_owned(), None, None, None)))
         .unwrap();
     let state = replica.state().unwrap();
     let title = state
@@ -816,7 +816,7 @@ fn verbs_replay_to_the_same_document_on_a_peer() {
         .apply(Project::PLACE_CLIP.with((id(media), id(track), 200.0)))
         .unwrap();
     origin
-        .apply(Project::ADD_TITLE.with("Credits".to_owned()))
+        .apply(Project::ADD_TITLE.with(("Credits".to_owned(), None, None, None)))
         .unwrap();
     origin
         .apply(Project::PLACE_MARKER.with((3.0, "Beat".to_owned())))

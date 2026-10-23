@@ -42,6 +42,8 @@ fn instant(at: f64) -> Result<f64, Refusal> {
     label = "Project",
     params = video_project,
     search = crate::search::project_entries,
+    read_content = crate::agent_timeline::read_timeline,
+    answer = crate::agent_timeline::answer,
 )]
 impl Project {
     /// Set the frame size.
@@ -97,13 +99,29 @@ impl Project {
     }
 
     /// Add a title.
-    #[action]
+    ///
+    /// Answers the new source's id: place it with add-clip.
+    #[action(answers)]
     pub fn add_title(
         &mut self,
         #[param("The words the title shows; empty reads as “Title”")] text: String,
-    ) {
+        #[param("The words' colour, #rrggbb or a colour word; white when omitted")] colour: Option<
+            String,
+        >,
+        #[param("Letter height as a fraction of the frame height, 0.02 to 0.5; 0.12 when omitted")]
+        size: Option<f64>,
+        #[param("left, center or right; center when omitted")] align: Option<String>,
+    ) -> Result<(), Refusal> {
         let words = text.trim();
         let content = if words.is_empty() { "Title" } else { words };
+        let mut source = TextSource::new(content);
+        crate::agent_timeline::TitleStyle {
+            text: None,
+            colour,
+            size,
+            align,
+        }
+        .apply(&mut source)?;
         let palette = u8::try_from(self.media.len() % 7).unwrap_or(0);
         self.media.push(MediaItem {
             id: tilo_resource::fresh_uuid(),
@@ -114,9 +132,102 @@ impl Project {
             palette,
             // A title has no bytes: nothing to hydrate or fetch.
             path: String::new(),
-            text: Some(TextSource::new(content)),
+            text: Some(source),
             ..MediaItem::default()
         });
+        Ok(())
+    }
+
+    /// Restyle a title.
+    #[action(answers, item = media)]
+    pub fn set_title(
+        &mut self,
+        media: &Id,
+        #[param("New words; the bin name follows their first line")] text: Option<String>,
+        #[param("The words' colour, #rrggbb or a colour word")] colour: Option<String>,
+        #[param("Letter height as a fraction of the frame height, 0.02 to 0.5")] size: Option<f64>,
+        #[param("left, center or right")] align: Option<String>,
+    ) -> Result<(), Refusal> {
+        self.agent_set_title(
+            media,
+            &crate::agent_timeline::TitleStyle {
+                text,
+                colour,
+                size,
+                align,
+            },
+        )
+    }
+
+    /// Add a clip.
+    ///
+    /// Places a bin source, by id or name, on a track: by default the first
+    /// track of its kind, after the clips already there, its whole length.
+    /// Answers the new clip's id.
+    #[action(id = "add-clip", answers)]
+    pub fn add_named_clip(
+        &mut self,
+        #[param(flatten)] placing: crate::agent_timeline::ClipPlacement,
+    ) -> Result<(), Refusal> {
+        self.agent_add_clip(&placing).map(drop)
+    }
+
+    /// Move a clip, and the clips linked to it, to a time.
+    #[action(id = "move-clip", answers, item = clips)]
+    pub fn shift_clip(
+        &mut self,
+        clip: &Id,
+        #[param("Seconds on the timeline where it starts")] at: f64,
+        #[param("Another track of its kind, by id or name; its own when omitted")] track: Option<
+            String,
+        >,
+    ) -> Result<(), Refusal> {
+        let id = self.editable_link_group(clip)?;
+        self.agent_move_clip(id, at, track.as_deref())
+    }
+
+    /// Set a clip's fades, opacity, volume and transition.
+    #[action(answers, item = clips)]
+    pub fn set_clip(
+        &mut self,
+        clip: &Id,
+        #[param("Seconds of fade from black (and silence) at its head")] fade_in: Option<f64>,
+        #[param("Seconds of fade to black (and silence) at its tail")] fade_out: Option<f64>,
+        #[param("Opacity from 0 to 1")] opacity: Option<f64>,
+        #[param("Volume from 0 to 2; 1 is as recorded")] volume: Option<f64>,
+        #[param("Transition into it: none, dissolve, fade, dip or wipe")] transition: Option<
+            String,
+        >,
+        #[param("Seconds the transition lasts")] transition_duration: Option<f64>,
+    ) -> Result<(), Refusal> {
+        let id = self.editable(clip)?;
+        let settings = crate::agent_timeline::ClipSettings {
+            fade_in,
+            fade_out,
+            opacity,
+            volume,
+            transition,
+            transition_duration,
+        };
+        self.agent_set_clip(id, &settings)
+    }
+
+    /// Remove a clip, and the clips linked to it.
+    #[action(id = "remove-clip", answers, item = clips, destructive)]
+    pub fn remove_clip_closing(
+        &mut self,
+        clip: &Id,
+        #[param("Close the gap it leaves by moving later clips on its track back")] ripple: Option<
+            bool,
+        >,
+    ) -> Result<(), Refusal> {
+        let id = self.editable_link_group(clip)?;
+        if ripple.unwrap_or(false) {
+            self.ripple_delete_linked(id);
+        } else {
+            self.delete_linked(id);
+        }
+        Ok(())
     }
 
     /// Add a timeline marker.

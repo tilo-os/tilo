@@ -87,6 +87,27 @@ pub enum VideoEditorEffect {
     /// Cancel export.
     #[effect(destructive)]
     CancelExport,
+    /// Import content.
+    ///
+    /// Brings a video, sound or picture the room holds, by its content
+    /// address, into the bin. Its kind, length, frame size and rate come
+    /// from its container. Answers the new source: place it with add-clip.
+    /// Importing the same content again answers the source already there.
+    #[effect(kind = "undoable", returns, idempotent, audience = "agents")]
+    ImportContent {
+        #[param(content, "The media's content address, tilo.content:<hash>")]
+        content: String,
+        #[param("The source's name in the bin, e.g. interview.mp4; made up when omitted")]
+        name: Option<String>,
+        #[param("Seconds the source lasts, used only when its container does not say")]
+        duration: Option<f64>,
+    },
+    /// Export timeline.
+    ///
+    /// Keeps the timeline as JSON content, what read answers with, and
+    /// answers its content address. Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportTimelineContent,
     /// Render video.
     ///
     /// Renders the timeline, or a part of it, on this device into a video
