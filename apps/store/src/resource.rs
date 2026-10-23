@@ -242,12 +242,6 @@ pub enum StoreEffect {
         #[param("App identity")]
         app: String,
     },
-    /// Remove.
-    #[effect(job, destructive)]
-    Remove {
-        #[param("App identity")]
-        app: String,
-    },
     /// Keep on device.
     #[effect(job)]
     Pin {
@@ -275,12 +269,6 @@ pub enum StoreEffect {
     /// Open.
     #[effect(job)]
     FlatpakOpen {
-        #[param("App identity")]
-        app: String,
-    },
-    /// Remove.
-    #[effect(job, destructive)]
-    FlatpakRemove {
         #[param("App identity")]
         app: String,
     },
@@ -374,10 +362,11 @@ pub enum StoreEffect {
 }
 
 impl StoreEffect {
-    /// The effect that carries out `action` on `app`.
-    pub fn package(action: ActionKind, item: &crate::StoreItem) -> Self {
+    /// The effect that carries out `action` on `app`, when the Store carries
+    /// it out: uninstalling is the system's one action (`app.uninstall`).
+    pub fn package(action: ActionKind, item: &crate::StoreItem) -> Option<Self> {
         let app = item.id.clone();
-        match action {
+        Some(match action {
             ActionKind::RuntimeInstall => Self::InstallRuntime {
                 app,
                 root: item
@@ -388,16 +377,15 @@ impl StoreEffect {
             },
             ActionKind::Open => Self::OpenApp { app },
             ActionKind::Update => Self::Update { app },
-            ActionKind::Remove => Self::Remove { app },
+            ActionKind::Remove | ActionKind::FlatpakRemove => return None,
             ActionKind::MarkInstalled => Self::Pin { app },
             ActionKind::Unmark => Self::Unpin { app },
             ActionKind::FlatpakInstall => Self::FlatpakInstall { app },
             ActionKind::FlatpakUpdate => Self::FlatpakUpdate { app },
             ActionKind::FlatpakOpen => Self::FlatpakOpen { app },
-            ActionKind::FlatpakRemove => Self::FlatpakRemove { app },
             ActionKind::NeedsFlatpakHost => Self::FlatpakSetup { app },
             ActionKind::AddBot => Self::AddBot { app },
-        }
+        })
     }
 
     /// The app and the package operation this effect carries out, when it is
@@ -407,13 +395,11 @@ impl StoreEffect {
             Self::InstallRuntime { app, .. } => (app, ActionKind::RuntimeInstall),
             Self::OpenApp { app } => (app, ActionKind::Open),
             Self::Update { app } => (app, ActionKind::Update),
-            Self::Remove { app } => (app, ActionKind::Remove),
             Self::Pin { app } => (app, ActionKind::MarkInstalled),
             Self::Unpin { app } => (app, ActionKind::Unmark),
             Self::FlatpakInstall { app } => (app, ActionKind::FlatpakInstall),
             Self::FlatpakUpdate { app } => (app, ActionKind::FlatpakUpdate),
             Self::FlatpakOpen { app } => (app, ActionKind::FlatpakOpen),
-            Self::FlatpakRemove { app } => (app, ActionKind::FlatpakRemove),
             Self::FlatpakSetup { app } => (app, ActionKind::NeedsFlatpakHost),
             Self::AddBot { app } => (app, ActionKind::AddBot),
             _ => return None,
