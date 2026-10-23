@@ -316,6 +316,14 @@ impl DeviceProfile {
 
 /// Resolve the local-only profile path. `TILO_MUSIC_PROFILE` is useful for
 /// sandboxed tests; it is never a replication input.
+/// Whether this device keeps the playback profile in a file. A browser page
+/// has no file paths: the player keeps its state in memory there, and
+/// opening or playing a file never fails for want of saving it.
+pub fn device_profile_has_a_place() -> bool {
+    tilo_paths::availability(tilo_paths::Feature::NativePaths)
+        == tilo_paths::Availability::Available
+}
+
 pub fn device_profile_path() -> PathBuf {
     if let Ok(p) = std::env::var("TILO_MUSIC_PROFILE") {
         return PathBuf::from(p);
