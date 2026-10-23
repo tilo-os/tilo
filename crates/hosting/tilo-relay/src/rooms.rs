@@ -78,7 +78,7 @@ use web_time::SystemTime;
 pub(crate) use actions::{GovernedPlane, HostRoomActions};
 pub use admin::RoomAdminProtocol;
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
-pub use collaboration::{CollaborationError, GovernanceCompletion, RoomJoinService};
+pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use pages::PreAdmitRequest;
 // The administration vocabulary (the actions' names and answers, and the
 // wire door's) and the device's client, under the daemon's historic paths.
@@ -1007,10 +1007,10 @@ impl Rooms {
         &self.inner.host.cert
     }
 
-    /// The join service answering invitation redemption for these rooms.
+    /// The governor answering the workspace-join exchange for these rooms.
     #[must_use]
-    pub fn join_service(&self) -> RoomJoinService {
-        RoomJoinService::new(self.clone())
+    pub fn join_service(&self) -> tilo_governor::Governor<Self> {
+        tilo_governor::Governor(self.clone())
     }
 
     /// The current role of `device` only when room Write permission is allowed,

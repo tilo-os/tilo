@@ -6,14 +6,10 @@
 //! owns who may ask what of this relay's rooms, and the durability barrier
 //! before each answer.
 
+use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
-use tilo_peer_state::join::{
-    JoinBootstrap, JoinChallengeRequest, JoinChallengeResponse, JoinCompleteRequest,
-    JoinInspection, JoinProof, JoinTransportRequest, JoinTransportResponse,
-    MembershipChallengeRequest, MembershipChallengeResponse, MembershipCompleteRequest,
-    VerifiedJoin, VerifiedRedemption,
-};
+use tilo_governor::{GovernorStore, RoomTxn};
+use tilo_peer_state::join::{JoinBootstrap, JoinProof, VerifiedRedemption};
 use tilo_peer_state::join_ledger::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_ledger::{JoinError as CollaborationError, Redeeming};
 use tilo_relay_session::rooms::{
@@ -906,31 +902,6 @@ impl Rooms {
         Ok(GovernanceCompletion { generation })
     }
 
-    pub(super) fn inspect(
-        room: &GovernedRoom,
-        signed_invitation: &[u8],
-        now: u64,
-    ) -> Result<VerifiedJoin, CollaborationError> {
-        room.collaboration()
-            .inspect(&room.governed(), signed_invitation, now)
-    }
-
-    /// Issue the device at `remote_endpoint` a challenge for `request`,
-    /// answered once the room has written it.
-    pub(super) async fn challenge(
-        &self,
-        remote_endpoint: [u8; 32],
-        request: JoinChallengeRequest,
-        now: u64,
-    ) -> Result<JoinChallengeResponse, CollaborationError> {
-        let room_id = invitation_room(&request.signed_invitation)?;
-        let room = self.room(&room_id).await?;
-        let challenge =
-            Self::stage_challenge(&mut *room.lock().await, remote_endpoint, request, now)?;
-        self.written(&room_id, false).await?;
-        Ok(JoinChallengeResponse { challenge })
-    }
-
     /// Wait until `room`'s next write, which takes the room once for every
     /// change staged in it before: a crowd joining wrote the whole room once
     /// per challenge, one after another under its lock.
@@ -991,55 +962,6 @@ impl Rooms {
         }
     }
 
-    /// Record a challenge for `request` in `room`, unwritten.
-    fn stage_challenge(
-        room: &mut GovernedRoom,
-        remote_endpoint: [u8; 32],
-        request: JoinChallengeRequest,
-        now: u64,
-    ) -> Result<tilo_peer_state::join::JoinChallenge, CollaborationError> {
-        let mut ledger = room.collaboration().clone();
-        let challenge =
-            ledger.challenge(&room.governed(), remote_endpoint, request, random()?, now)?;
-        room.record.collaboration = ledger;
-        Ok(challenge)
-    }
-
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "one locked admission: verify the proof, admit the device, record its receipt and publish, in order"
-    )]
-    async fn complete(
-        &self,
-        remote_endpoint: [u8; 32],
-        request: JoinCompleteRequest,
-        now: u64,
-    ) -> Result<JoinBootstrap, CollaborationError> {
-        let room = self.room(&request.proof.challenge.room).await?;
-        let mut room = room.lock().await;
-        let request_id = request.proof.challenge.request_id;
-        let proof_digest = request_digest(&request.proof)?;
-        if let Some(prior) = room.collaboration().completed(
-            &room.governed(),
-            remote_endpoint,
-            request_id,
-            proof_digest,
-            now,
-        )? {
-            return Ok(prior);
-        }
-        let redemption = Self::redeem(&room, remote_endpoint, &request.proof, now)?;
-        self.admit_redemption(
-            &mut room,
-            remote_endpoint,
-            request_id,
-            proof_digest,
-            &redemption,
-            now,
-        )
-        .await
-    }
-
     /// Verify `proof` against the challenge `room` issued to the device at
     /// `remote_endpoint`, for an invitation still redeemable.
     pub(super) fn redeem(
@@ -1052,34 +974,11 @@ impl Rooms {
             .redeem(&room.governed(), remote_endpoint, proof, now)
     }
 
-    /// Admit the verified `redemption` to `room`: commit its governance,
-    /// record its receipt and publish, in order.
-    pub(super) async fn admit_redemption(
-        &self,
-        room: &mut GovernedRoom,
-        remote_endpoint: [u8; 32],
-        request_id: [u8; 32],
-        proof_digest: [u8; 32],
-        redemption: &VerifiedRedemption,
-        now: u64,
-    ) -> Result<JoinBootstrap, CollaborationError> {
-        let join = Redeeming {
-            remote_endpoint,
-            request_id,
-            proof_digest,
-            redemption,
-        };
-        self.admit_redemptions(room, &[join], now)
-            .await?
-            .pop()
-            .unwrap_or_else(|| Err(CollaborationError::new("join bootstrap was not built")))
-    }
-
-    /// Admit the verified `joins` to `room` in one governance change. Each
-    /// is checked on its own and refused alone; everyone admitted is then
-    /// committed, recorded and published together, in order. People arriving
-    /// together cost the room one write and one publication instead of one
-    /// each, and each of those grows with the room.
+    /// Admit the verified `joins` to `room` in one governance change: the
+    /// shared admission ([`tilo_governor::admit`]), published before anyone
+    /// hears their answer. People arriving together cost the room one write
+    /// and one publication instead of one each, and each of those grows
+    /// with the room.
     ///
     /// Answers each join in order. Fails as a whole when the change cannot
     /// be committed or published.
@@ -1089,155 +988,109 @@ impl Rooms {
         joins: &[Redeeming<'_>],
         now: u64,
     ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
-        let mut candidate = room.peer().clone();
-        let refusals = room
-            .collaboration()
-            .admit(&mut candidate, joins, &self.inner.host.key, now);
-        for (join, refused) in joins.iter().zip(&refusals) {
-            if let Some(error) = refused {
-                tracing::warn!(
-                    room = %room.room(),
-                    invite_id = %hex::encode(join.redemption.join().invite_id()),
-                    person = %hex::encode(join.redemption.certificate().user_public_key),
-                    outcome = "replay_rejected",
-                    reason = %error,
-                    "workspace invitation redemption rejected"
-                );
-            }
+        let key = &self.inner.host.key;
+        let mut held = HeldRoom::new(key, room);
+        let admitted = tilo_governor::admit(&mut held, joins, key, now);
+        if held.committed {
+            self.settle(room).await?;
         }
-        if refusals.iter().all(Option::is_some) {
-            return Ok(refusals.into_iter().flatten().map(Err).collect());
+        admitted
+    }
+}
+
+/// A room of this relay while a governor decides, under its lock: whether
+/// its ledger changed unwritten, and whether a governance change was
+/// committed that its members have not been sent yet.
+struct HeldRoom<'a> {
+    key: &'a SigningKey,
+    room: &'a mut GovernedRoom,
+    staged: bool,
+    committed: bool,
+}
+
+impl<'a> HeldRoom<'a> {
+    const fn new(key: &'a SigningKey, room: &'a mut GovernedRoom) -> Self {
+        Self {
+            key,
+            room,
+            staged: false,
+            committed: false,
         }
-        let mut ledger = room.collaboration().clone();
-        let mut delivered = Vec::new();
-        room.commit(
-            candidate,
-            &self.inner.host.key,
-            system_time(now),
-            |record, peer| {
-                delivered = ledger
-                    .complete(&governed(record, peer), joins, &refusals)
-                    .map_err(|error| error.to_string())?;
-                Ok(ledger)
-            },
-        )?;
-        self.settle(room).await?;
-        for bootstrap in delivered.iter().flatten() {
-            tracing::info!(
-                room = %bootstrap.room,
-                invite_id = %hex::encode(bootstrap.invite_id),
-                person = %hex::encode(bootstrap.device_cert.user_public_key),
-                device = %hex::encode(bootstrap.device_cert.device_public_key),
-                role = ?bootstrap.role,
-                outcome = "redeemed",
-                "workspace invitation redemption committed"
-            );
-        }
-        Ok(delivered)
+    }
+}
+
+impl RoomTxn for HeldRoom<'_> {
+    fn room(&self) -> &str {
+        self.room.room()
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed, published and answered"
-    )]
-    async fn membership_challenge(
-        &self,
-        remote_endpoint: [u8; 32],
-        request: MembershipChallengeRequest,
-        now: u64,
-    ) -> Result<MembershipChallengeResponse, CollaborationError> {
-        let room = self.room(&request.room).await?;
-        let mut room = room.lock().await;
-        let mut state = room.collaboration().clone();
-        let challenge = state.membership_challenge(
-            &room.governed(),
-            remote_endpoint,
-            request,
-            random()?,
-            now,
-        )?;
-        if state != *room.collaboration() {
-            room.commit_state(state)?;
-        }
-        Ok(MembershipChallengeResponse { challenge })
+    fn governed(&self) -> Governed<'_> {
+        self.room.governed()
     }
 
-    /// The room's current state for a member that proved its membership.
-    /// A member proving with its renewed certificate first has the room
-    /// hold that certificate in place of the one it replaces, committed and
-    /// published before the answer.
-    async fn membership_complete(
-        &self,
-        remote_endpoint: [u8; 32],
-        request: MembershipCompleteRequest,
+    fn ledger(&self) -> &CollaborationState {
+        self.room.collaboration()
+    }
+
+    fn stage_ledger(&mut self, ledger: CollaborationState) {
+        if *self.room.collaboration() != ledger {
+            self.room.record.collaboration = ledger;
+            self.staged = true;
+        }
+    }
+
+    fn commit_governance(
+        &mut self,
+        peer: tilo_peer_state::StatePeer,
         now: u64,
-    ) -> Result<JoinBootstrap, CollaborationError> {
-        let room = self.room(&request.proof.challenge.room).await?;
-        let mut room = room.lock().await;
-        let renewal = room.collaboration().membership_renewal(
-            &room.governed(),
-            remote_endpoint,
-            &request,
-            now,
-        )?;
-        if let Some(renewed) = renewal {
-            let mut candidate = room.peer().clone();
-            candidate.governance_mut().renew_member_certificate(
-                &renewed,
-                &self.inner.host.key,
-                system_time(now),
-            )?;
-            let state = room.collaboration().clone();
-            room.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
-                Ok(state)
+        ledger: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
+    ) -> Result<(), CollaborationError> {
+        self.room
+            .commit(peer, self.key, system_time(now), |record, peer| {
+                ledger(&governed(record, peer)).map_err(|error| error.to_string())
             })?;
-            self.settle(&mut room).await?;
-            tracing::info!(
-                room = %room.room(),
-                person = %hex::encode(renewed.user_public_key),
-                device = %hex::encode(renewed.device_public_key),
-                outcome = "renewed",
-                "member device certificate renewed"
-            );
-        }
-        room.collaboration()
-            .membership_complete(&room.governed(), remote_endpoint, &request, now)
+        // The commit wrote the whole record, the ledger staged before
+        // included.
+        self.staged = false;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+/// This relay's rooms, to the governor that answers their workspace-join
+/// exchange: a change is staged in the room's record and written once for
+/// everyone who staged one meanwhile ([`Rooms::written`]); a governance
+/// change is committed under the room's lock and published before the
+/// lock is released.
+impl GovernorStore for Rooms {
+    fn key(&self) -> &SigningKey {
+        &self.inner.host.key
     }
 
-    async fn handle_join(
+    fn nonce(&self) -> Result<[u8; 32], CollaborationError> {
+        random()
+    }
+
+    async fn with_room<T: Send>(
         &self,
-        remote_endpoint: [u8; 32],
-        request: JoinTransportRequest,
-    ) -> Result<JoinTransportResponse, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        Ok(match request {
-            JoinTransportRequest::Inspect { signed_invitation } => {
-                let room = self.room(&invitation_room(&signed_invitation)?).await?;
-                let join = Self::inspect(&*room.lock().await, &signed_invitation, now)?;
-                JoinTransportResponse::Inspection(JoinInspection {
-                    invite_id: join.invite_id(),
-                    grant: join.grant().clone(),
-                })
-            }
-            JoinTransportRequest::Challenge(request) => JoinTransportResponse::Challenge(
-                self.challenge(remote_endpoint, request, now).await?,
-            ),
-            JoinTransportRequest::Complete(request) => {
-                JoinTransportResponse::Complete(self.complete(remote_endpoint, request, now).await?)
-            }
-            JoinTransportRequest::MembershipChallenge(request) => {
-                JoinTransportResponse::MembershipChallenge(
-                    self.membership_challenge(remote_endpoint, request, now)
-                        .await?,
-                )
-            }
-            JoinTransportRequest::MembershipComplete(request) => {
-                JoinTransportResponse::MembershipComplete(
-                    self.membership_complete(remote_endpoint, request, now)
-                        .await?,
-                )
-            }
-        })
+        room: &str,
+        decide: impl FnOnce(&mut dyn RoomTxn) -> Result<T, CollaborationError> + Send,
+    ) -> Result<T, CollaborationError> {
+        let held = self.room(room).await?;
+        let mut locked = held.lock().await;
+        let (answer, staged, committed) = {
+            let mut held = HeldRoom::new(&self.inner.host.key, &mut locked);
+            let answer = decide(&mut held);
+            (answer, held.staged, held.committed)
+        };
+        if committed {
+            self.settle(&mut locked).await?;
+        }
+        drop(locked);
+        if staged {
+            self.written(room, false).await?;
+        }
+        answer
     }
 }
 
@@ -1251,40 +1104,6 @@ impl GovernedRoom {
     pub(super) fn admitted_device(&self, request_id: [u8; 32]) -> Option<[u8; 32]> {
         self.collaboration().admitted_device(request_id)
     }
-}
-
-/// The workspace-join service of the rooms this relay governs.
-#[derive(Clone, Debug)]
-pub struct RoomJoinService {
-    rooms: Rooms,
-}
-
-impl RoomJoinService {
-    pub(super) const fn new(rooms: Rooms) -> Self {
-        Self { rooms }
-    }
-}
-
-impl WorkspaceJoinService for RoomJoinService {
-    async fn handle(
-        &self,
-        remote_endpoint: [u8; 32],
-        request: JoinTransportRequest,
-    ) -> JoinTransportResponse {
-        self.rooms
-            .handle_join(remote_endpoint, request)
-            .await
-            .unwrap_or_else(|error| JoinTransportResponse::Error {
-                code: error.code(),
-                message: error.to_string(),
-            })
-    }
-}
-
-/// The room an invitation names, read without trusting it: the room it
-/// names is then verified against what that room issued.
-pub(super) fn invitation_room(signed_invitation: &[u8]) -> Result<String, CollaborationError> {
-    tilo_peer_state::join_ledger::invitation_room(signed_invitation, tilo_clock::unix_now_ns())
 }
 
 pub(super) use tilo_peer_state::join_ledger::request_digest;

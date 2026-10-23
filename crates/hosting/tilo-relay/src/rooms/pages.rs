@@ -11,8 +11,10 @@
 //! requests; the person asks again.
 
 use tilo_action_policy::roles::governance;
+use tilo_governor::Governor;
 use tilo_peer_state::join::{
-    JoinChallenge, JoinChallengeRequest, JoinProof, MemberRole, VerifiedRedemption,
+    JoinChallenge, JoinChallengeRequest, JoinChallengeResponse, JoinProof, JoinTransportRequest,
+    JoinTransportResponse, MemberRole, VerifiedRedemption,
 };
 use tilo_relay_protocol::rooms::{
     Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_REQUESTS, PendingInvite, PreAdmission,
@@ -634,15 +636,16 @@ impl Rooms {
             RoomOp::Invite(redemption.join().grant().role.into()),
             now,
         )?;
-        self.admit_redemption(
-            &mut room,
-            device,
+        let join = super::collaboration::Redeeming {
+            remote_endpoint: device,
             request_id,
             proof_digest,
-            &redemption,
-            now,
-        )
-        .await?;
+            redemption: &redemption,
+        };
+        self.admit_redemptions(&mut room, &[join], now)
+            .await?
+            .pop()
+            .unwrap_or_else(|| Err(CollaborationError::new("join bootstrap was not built")))?;
         self.page_joins()
             .0
             .retain(|join| !(join.room == room_id && join.request.request_id == request_id));
@@ -661,10 +664,15 @@ impl Rooms {
         match step {
             JoinStep::Inspect { invitation } => {
                 let room = self
-                    .room(&super::collaboration::invitation_room(&invitation)?)
+                    .room(&tilo_peer_state::join_ledger::invitation_room(
+                        &invitation,
+                        now,
+                    )?)
                     .await?;
                 let room = room.lock().await;
-                let join = Self::inspect(&room, &invitation, now)?;
+                let join = room
+                    .collaboration()
+                    .inspect(&room.governed(), &invitation, now)?;
                 Ok(JoinReply::Invitation {
                     room: room.room().to_owned(),
                     workspace_id: room.workspace_id(),
@@ -683,18 +691,18 @@ impl Rooms {
                 request_id,
             } => {
                 let remote = device_cert.device_public_key;
-                let challenge = self
-                    .challenge(
-                        remote,
-                        JoinChallengeRequest {
-                            signed_invitation: invitation,
-                            device_cert,
-                            request_id,
-                        },
-                        now,
-                    )
-                    .await?
-                    .challenge;
+                let request = JoinTransportRequest::Challenge(JoinChallengeRequest {
+                    signed_invitation: invitation,
+                    device_cert,
+                    request_id,
+                });
+                let JoinTransportResponse::Challenge(JoinChallengeResponse { challenge }) =
+                    Governor(self.clone()).decide(remote, request, now).await?
+                else {
+                    return Err(CollaborationError::new(
+                        "the governor answered no challenge",
+                    ));
+                };
                 Ok(JoinReply::Challenge {
                     challenge: postcard::to_stdvec(&challenge)
                         .map_err(|error| CollaborationError::new(error.to_string()))?,
