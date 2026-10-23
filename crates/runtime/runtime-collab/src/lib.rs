@@ -4054,6 +4054,20 @@ impl LocalDocumentActionReport {
 /// committed admission and must never release the caller's recovery custody.
 pub const LOCAL_DOCUMENT_REJECTED: &str = "local-document-rejected: ";
 
+/// Why a report on a connection that is no host worker is refused: nothing
+/// reported on that connection can ever be admitted.
+pub const LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING: &str =
+    "this connection admits no local document reports";
+
+/// The broker's marked rejection, under every Cap'n Proto hop's prefix.
+#[must_use]
+pub fn local_document_rejection(mut reason: &str) -> Option<&str> {
+    while let Some(inner) = reason.strip_prefix("remote exception: ") {
+        reason = inner;
+    }
+    reason.strip_prefix(LOCAL_DOCUMENT_REJECTED)
+}
+
 /// A rejection is definitive; an uncertain outcome must retain the exact UUID.
 #[derive(Clone, Debug)]
 pub enum LocalDocumentActionError {
@@ -4100,15 +4114,10 @@ impl ChannelHandle {
         let mut request = self.inner.admit_local_document_action_request();
         request.get().set_request(&bytes);
         let reply = request.send().promise.await.map_err(|error| {
-            if error.kind == capnp::ErrorKind::Failed {
-                // Two-party Cap'n Proto prefixes exception reasons on receipt.
-                let reason = error
-                    .extra
-                    .strip_prefix("remote exception: ")
-                    .unwrap_or(&error.extra);
-                if let Some(reason) = reason.strip_prefix(LOCAL_DOCUMENT_REJECTED) {
-                    return LocalDocumentActionError::Rejected(reason.to_owned());
-                }
+            if error.kind == capnp::ErrorKind::Failed
+                && let Some(reason) = local_document_rejection(&error.extra)
+            {
+                return LocalDocumentActionError::Rejected(reason.to_owned());
             }
             LocalDocumentActionError::Uncertain(error.to_string())
         })?;

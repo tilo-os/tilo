@@ -367,7 +367,9 @@ pub fn has_invocation() -> bool {
     PUBLISHED.with(|published| published.borrow().is_some())
 }
 
-/// Reserve before mutation: saturation refuses without speculative writes.
+/// Reserve before mutation. A saturated queue reserves nothing: the edit runs
+/// unreported and the queue records the refusal, so no report is ever lost
+/// silently and no keystroke is ever refused for want of report capacity.
 pub(crate) fn reserve(
     encoded: &EncodedAction,
     context: Option<&ActionContext>,
@@ -448,10 +450,13 @@ pub(crate) fn reserve(
         || pending.reserved >= CAPACITY
         || bytes > BYTE_BUDGET.saturating_sub(pending.bytes)
     {
+        // The person's edit never waits on the history. While every report
+        // the queue may hold is still on its way (or no surface can be held
+        // for this one), the edit lands unreported and the gap is shown, as
+        // for an action with no published address. The bound stays a bound
+        // on reports, never on typing.
         pending.refused = true;
-        return Err(ActionError::Refused(
-            "local action observation queue is full".into(),
-        ));
+        return Ok(None);
     }
     pending.reserved += 1;
     pending.bytes += bytes;

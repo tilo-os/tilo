@@ -297,7 +297,7 @@ fn registered_bound_read_projection_captures_empty_report_without_mutation() {
 }
 
 #[test]
-fn blocked_host_does_not_delay_local_edits_and_capacity_refusal_is_atomic() {
+fn blocked_host_does_not_delay_local_edits_and_a_full_queue_still_takes_the_edit() {
     let mut fixture = ActionFixture::broker();
     let sent = Rc::new(RefCell::new(Vec::new()));
     fixture.app.collaboration.manager =
@@ -318,45 +318,40 @@ fn blocked_host_does_not_delay_local_edits_and_capacity_refusal_is_atomic() {
             .read(&record, |doc| doc.clone().get_heads())
             .unwrap()
     };
-    // CapturePeer never returns a reply. Each synchronous call must commit a
-    // distinct edit while earlier reports still hold their capacity leases.
-    let mut completed = 0;
+    // CapturePeer never returns a reply. Every synchronous call commits its
+    // edit, whether or not the reports still on their way leave room for
+    // its own: an edit beyond the queue lands unreported, and says so.
+    let mut reported = 0;
     for expected in 1..=129 {
         let before = heads(&fixture);
-        if fixture
+        fixture
             .app
             .invoke_local_resource_action(&address, &serde_json::Map::new())
-            .is_err()
-        {
-            assert_eq!(
-                heads(&fixture),
-                before,
-                "capacity refusal precedes mutation"
-            );
-            break;
-        }
-        completed = expected;
+            .expect("an edit never waits for the history");
         assert_ne!(
             heads(&fixture),
             before,
             "edit {expected} finished without a host reply"
         );
-        assert_eq!(fixture.app.local_input_capture.pending_count(), expected);
-        assert_eq!(
-            sent.borrow()
-                .iter()
-                .filter(|(_, request)| matches!(
-                    request,
-                    CollabRequest::ReportLocalDocumentAction { .. }
-                ))
-                .count(),
-            expected
-        );
-        assert!(fixture.app.local_input_capture.failure.is_none());
+        let pending = fixture.app.local_input_capture.pending_count();
+        assert_eq!(capture_reports(&sent).len(), pending);
+        if pending == expected {
+            reported = expected;
+            assert!(fixture.app.local_input_capture.failure.is_none());
+        } else {
+            assert_eq!(
+                pending, reported,
+                "an edit beyond the queue is not reported"
+            );
+            assert!(
+                fixture.app.local_input_capture.failure.is_some(),
+                "an edit the history could not take is shown"
+            );
+        }
     }
     // The conservative byte budget may saturate before the count limit.
-    assert!((2..=128).contains(&completed));
-    assert_eq!(fixture.app.local_input_capture.pending_count(), completed);
+    assert!((2..=128).contains(&reported));
+    assert_eq!(fixture.app.local_input_capture.pending_count(), reported);
     assert_eq!(fixture.app.local_document_action_admissions().count(), 0);
 }
 
@@ -734,33 +729,34 @@ fn uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliatio
     fixture.app.collaboration.manager =
         CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
     let address = capture_address(&mut fixture);
+    let heads = |fixture: &ActionFixture| {
+        fixture
+            .records
+            .read(&fixture.bindings[0].checkout.id, |doc| {
+                doc.clone().get_heads()
+            })
+            .unwrap()
+    };
     let mut admitted = 0;
     for _ in 0..65 {
-        let before = fixture
-            .records
-            .read(&fixture.bindings[0].checkout.id, |doc| {
-                doc.clone().get_heads()
-            })
-            .unwrap();
-        let result = fixture
+        let before = heads(&fixture);
+        fixture
             .app
-            .invoke_local_resource_action(&address, &serde_json::Map::new());
-        let after = fixture
-            .records
-            .read(&fixture.bindings[0].checkout.id, |doc| {
-                doc.clone().get_heads()
-            })
-            .unwrap();
-        if result.is_err() {
-            assert_eq!(after, before, "budget refusal must precede mutation");
-            break;
-        }
+            .invoke_local_resource_action(&address, &serde_json::Map::new())
+            .expect("uncertain earlier reports never refuse an edit");
         assert_ne!(
-            after, before,
+            heads(&fixture),
+            before,
             "uncertain earlier reports do not block edits"
         );
+        let mut reports = capture_reports(&sent);
+        if reports.len() == admitted {
+            // Every surface that may be held is held by a change on its way:
+            // this edit landed without a report.
+            break;
+        }
         admitted += 1;
-        let (request_id, _) = capture_reports(&sent).pop().unwrap();
+        let (request_id, _) = reports.pop().unwrap();
         fixture
             .app
             .apply_collab_event_for_test(CollabEvent::LocalDocumentActionReported {
@@ -775,25 +771,16 @@ fn uncertain_local_capture_backpressure_is_bounded_and_releases_on_reconciliatio
     assert!((2..=64).contains(&admitted));
     assert_eq!(fixture.app.local_input_capture.pending_count(), admitted);
     assert!(fixture.app.local_input_capture.custody_size() < 4 * 1024 * 1024);
-    let heads = fixture
-        .records
-        .read(&fixture.bindings[0].checkout.id, |doc| {
-            doc.clone().get_heads()
-        })
-        .unwrap();
-    let _ = fixture
+    // One more edit still lands; the history cannot carry it, and the window
+    // says so rather than dropping the keystroke.
+    let before = heads(&fixture);
+    fixture
         .app
-        .invoke_local_resource_action(&address, &serde_json::Map::new());
+        .invoke_local_resource_action(&address, &serde_json::Map::new())
+        .expect("a full history never refuses an edit");
+    assert_ne!(heads(&fixture), before, "the edit lands unreported");
     assert_eq!(capture_reports(&sent).len(), admitted);
-    assert_eq!(
-        fixture
-            .records
-            .read(&fixture.bindings[0].checkout.id, |doc| doc
-                .clone()
-                .get_heads())
-            .unwrap(),
-        heads
-    );
+    assert!(fixture.app.local_input_capture.failure.is_some());
     assert_eq!(
         fixture
             .app
@@ -1000,4 +987,62 @@ fn the_header_retry_button_runs_the_windows_retry() {
     assert_eq!(fixture.app.document_sync_status(), None);
     fixture.app.drain_local_input_capture();
     assert_eq!(capture_reports(&sent).len(), 2, "reported again");
+}
+
+/// An app's own connection is no host worker: the broker admits no report on
+/// it. The edit stays, saved and unreported; the window stops reporting on
+/// that connection, says nothing and offers nothing to retry, and every later
+/// edit lands at once.
+#[test]
+fn edits_on_a_connection_that_admits_no_reports_land_quietly_unreported() {
+    let mut fixture = ActionFixture::broker();
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    fixture.app.collaboration.manager =
+        CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
+    let address = capture_address(&mut fixture);
+    let heads = |fixture: &ActionFixture| {
+        fixture
+            .records
+            .read(&fixture.bindings[0].checkout.id, |doc| {
+                doc.clone().get_heads()
+            })
+            .unwrap()
+    };
+    fixture
+        .app
+        .invoke_local_resource_action(&address, &serde_json::Map::new())
+        .unwrap();
+    let (request_id, _) = capture_reports(&sent).pop().unwrap();
+    fixture
+        .app
+        .apply_collab_event_for_test(CollabEvent::LocalDocumentActionReported {
+            request_id,
+            result: Err(runtime_collab::LocalDocumentActionError::Rejected(
+                runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING.into(),
+            )),
+        });
+    assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
+    assert_eq!(fixture.app.document_sync_status(), None);
+    assert!(!fixture.app.has_unsaved_changes_to_retry());
+    assert_eq!(
+        fixture
+            .app
+            .actions
+            .local_document_directory_pins
+            .iter()
+            .filter(|pin| pin.strong_count() > 0)
+            .count(),
+        0,
+        "no surface is held for a report that cannot be made"
+    );
+    for _ in 0..200 {
+        let before = heads(&fixture);
+        fixture
+            .app
+            .invoke_local_resource_action(&address, &serde_json::Map::new())
+            .expect("the edit lands");
+        assert_ne!(heads(&fixture), before);
+    }
+    assert_eq!(capture_reports(&sent).len(), 1, "nothing more is reported");
+    assert_eq!(fixture.app.document_sync_status(), None);
 }

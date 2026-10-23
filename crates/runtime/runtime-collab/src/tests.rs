@@ -323,3 +323,21 @@ fn action_directory_and_view_metadata_round_trip() {
         );
     }
 }
+
+#[test]
+fn a_rejection_relayed_through_several_hops_is_still_a_rejection() {
+    let marked = format!("{LOCAL_DOCUMENT_REJECTED}{LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING}");
+    for hops in 0..3 {
+        let relayed = format!("{}{marked}", "remote exception: ".repeat(hops));
+        assert_eq!(
+            local_document_rejection(&relayed),
+            Some(LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING),
+            "{hops} hops"
+        );
+    }
+    assert_eq!(
+        local_document_rejection("remote exception: admission journal outcome unknown"),
+        None,
+        "an unmarked failure stays uncertain"
+    );
+}

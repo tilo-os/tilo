@@ -226,6 +226,42 @@ async fn local_report_admission(
                 assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
                 no_delivery(&rig);
             }
+            // An app's own connection, the one its launcher hands it, is no
+            // host worker. Nothing reported on it can be admitted, so the
+            // broker refuses definitively: the app stops holding the report
+            // (and the surface it was made under) instead of waiting forever.
+            let app_connection: channel_handle::Client =
+                capnp_rpc::new_client(CapnpChannelHandle {
+                    person_chat_views: std::cell::RefCell::default(),
+                    committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                    state: rig.state.clone(),
+                    directories: rig.directories.clone(),
+                    channel_id: env.route.channel_key(),
+                    peer_id: 904,
+                    verified_identity: identity.clone(),
+                    record_kind: None,
+                    lease: None,
+                });
+            let mut call = app_connection.admit_local_document_action_request();
+            call.get()
+                .set_request(&serde_json::to_vec(&request).unwrap());
+            let error = call
+                .send()
+                .promise
+                .await
+                .err()
+                .expect("a connection that is no host worker admits no report");
+            assert!(
+                error.to_string().contains(&format!(
+                    "{}{}",
+                    runtime_collab::LOCAL_DOCUMENT_REJECTED,
+                    runtime_collab::LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING
+                )),
+                "{error}"
+            );
+            assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
+            no_delivery(&rig);
+            drop(app_connection);
             let mut wrong_revision = request.clone();
             wrong_revision.revision = "not-retained".into();
             wrong_revision.invocation = wrong_revision.bound_invocation().unwrap();
