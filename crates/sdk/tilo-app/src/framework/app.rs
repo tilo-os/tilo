@@ -90,7 +90,10 @@ pub trait ResourceApp: 'static {
     /// (Word Processor, Code Editor, Sheets), a terminal session. A window
     /// that names none starts a new one, and two windows show two of them
     /// (or one document together, when both open it); no window mirrors
-    /// another. Without it the app's record is its library and settings,
+    /// another. The documents earlier windows started stay in the workspace:
+    /// the app lists them with [`RecordEnv::window_documents`](super::RecordEnv::window_documents)
+    /// and opens one in a window with [`RecordEnv::open_here`](super::RecordEnv::open_here).
+    /// Without it the app's record is its library and settings,
     /// one per workspace, which every window of the app there shows.
     const WINDOW_RESOURCE: bool = false;
     /// The app's own command-line options that take a value
@@ -1235,10 +1238,14 @@ fn open_in_place(
     // asking view handles the event or operation that asked.
     reopener.replace_with(move |reopener| {
         let definition = (app.definition)();
-        let record = (app.launch_record)(&LaunchInput::new(&arguments, None))
+        // A record named by its uri (one of the app's documents a list
+        // offers) opens as a launch naming it does.
+        let (named, rest) = record_argument(&arguments);
+        let record = named
+            .or_else(|| (app.launch_record)(&LaunchInput::new(rest, None)))
             .unwrap_or_else(RecordId::minted);
         let (mut context, target) = reopener.prepare(definition, record)?;
-        hand_launch_to(definition, &arguments, &mut context)?;
+        hand_launch_to(definition, rest, &mut context)?;
         let component = definition.instantiate(context, target, RestoreInput::None)?;
         Ok(ui_core::application::ComponentReplacement::new(
             component, arguments,
@@ -1290,7 +1297,6 @@ fn prepare_definition(
 /// The record a launch names with a first argument
 /// `tilo-record:<id>` ([`RecordId::uri`]), as the session launches an app to
 /// run an action on one of its records, and the arguments after it.
-#[cfg(tilo_native_runner)]
 fn record_argument(arguments: &[String]) -> (Option<RecordId>, &[String]) {
     match arguments.split_first() {
         Some((first, rest)) => match RecordId::from_uri(first) {

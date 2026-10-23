@@ -3421,12 +3421,13 @@ impl RecordStore {
 
     /// Every [window default record](RecordId::window_default) of `kind`
     /// this package keeps in this room, sorted by id, each as last made
-    /// durable: what an app that kept a record per window left behind once
-    /// it keeps one per room. Read without taking any writer, so a window
+    /// durable: the documents an app's windows started, which it lists so a
+    /// closed window's document is reached again, or left behind once it
+    /// keeps one per room. Read without taking any writer, so a window
     /// still showing one keeps it, and nothing here changes them. A record
     /// that cannot be read, is retired, or is not of `kind` in this room is
-    /// left out (and logged), never an error: these are a migration's
-    /// sources, and one bad one must not keep the others out.
+    /// left out (and logged), never an error: one bad one must not keep the
+    /// others out.
     pub fn window_records(&self, kind: &RecordKind) -> Vec<(RecordId, AutoCommit)> {
         let Some(store) = self.backend() else {
             return Vec::new();

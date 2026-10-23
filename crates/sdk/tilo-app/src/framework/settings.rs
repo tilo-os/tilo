@@ -234,6 +234,12 @@ impl ViewStorage {
         &self.storage
     }
 
+    /// The store of the app's records in the workspace; `None` in a view of
+    /// a past version.
+    pub(crate) fn room_store(&self) -> Option<&ui_core::record::RecordStore> {
+        self.room.as_ref().map(|room| &room.store)
+    }
+
     /// This device's id, in a live window.
     pub(crate) fn device(&self) -> Option<&str> {
         self.device.as_deref()

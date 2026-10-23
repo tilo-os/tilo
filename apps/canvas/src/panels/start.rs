@@ -654,12 +654,21 @@ fn placed(card: Element, compact: bool) -> Element {
     )
 }
 
-/// The artworks worked on lately, each opened by a click.
+/// How many artworks the welcome lists.
+const RECENT_ROWS: usize = 4;
+
+/// The artworks worked on lately, each opened by a click: those the
+/// workspace keeps from earlier windows, saved to a file or not, the most
+/// recently changed first, then the files opened or saved lately.
 fn recent_list(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let files = tools.files.clone();
-    cx.switch(&tools.recents, move |_, recents: &RecentArtworks| {
+    cx.switch(&tools.recents, move |cx, recents: &RecentArtworks| {
+        // A window that was opened and left blank made nothing to return to.
+        let mut kept = cx.window_documents();
+        kept.retain(|kept| !kept.state.marks.is_empty() || !kept.state.title.is_empty());
+        kept.truncate(RECENT_ROWS);
         let recents = &recents.artworks;
-        if recents.is_empty() {
+        if recents.is_empty() && kept.is_empty() {
             return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
         }
         let mut list = Column::new()
@@ -667,7 +676,38 @@ fn recent_list(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Tight)
             .push(super::heading("canvas-recent"));
-        for recent in recents.iter().take(4) {
+        let here = ui::i18n::I18nManager::lookup_plain("canvas-recent-workspace");
+        for (index, artwork) in kept.iter().enumerate() {
+            let art = &artwork.state;
+            let name = if art.title.is_empty() {
+                ui::i18n::I18nManager::lookup_plain("canvas-untitled")
+            } else {
+                art.title.clone()
+            };
+            let content = Row::new()
+                .no_wrap()
+                .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Tight)
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .with_align_items(ui::taffy::AlignItems::Center)
+                .push(Box::new(ui::widget::IconWidget::new(Icon::Image).dim()))
+                .push(Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_gap(0.0)
+                        .push(Box::new(Text::new(&name)))
+                        .push(caption(&sides(art.width, art.height)))
+                        .push(caption(&here)),
+                ));
+            // The file desk opens it in this window and clears the request.
+            list = list.push(Box::new(
+                ui::widget::ControlRow::new(content)
+                    .choosing(&files, Some(FileRequest::OpenWorkspace(artwork.uri())))
+                    .with_id(format!("canvas-recent-artwork-{index}"))
+                    .with_accessible_name(format!("{name}, {here}")),
+            ));
+        }
+        for recent in recents.iter().take(RECENT_ROWS.saturating_sub(kept.len())) {
             let name = if recent.title.is_empty() {
                 std::path::Path::new(&recent.path)
                     .file_stem()
