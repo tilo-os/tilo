@@ -1786,9 +1786,13 @@ pub enum FabricInputEvent {
         button: u32,
         pressed: bool,
     },
+    /// Amounts in [`ScrollUnit::STEPS`] of `unit`, so a high-resolution
+    /// wheel's part notches and a touchpad's sub-pixel motion add up as
+    /// they do on the device they came from.
     Scroll {
-        horizontal: i16,
-        vertical: i16,
+        horizontal: i32,
+        vertical: i32,
+        unit: ScrollUnit,
     },
     Key {
         keycode: u32,
@@ -1797,17 +1801,38 @@ pub enum FabricInputEvent {
     },
 }
 
+/// What a scroll moves by: wheel lines, or the pixels of finger and
+/// continuous scrolling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollUnit {
+    Lines,
+    Pixels,
+}
+
+impl ScrollUnit {
+    /// Steps a scroll amount counts per line or pixel.
+    pub const STEPS: f64 = 120.0;
+}
+
 impl FabricInputEvent {
-    pub(super) fn validate(self) -> bool {
+    pub(crate) fn validate(self) -> bool {
         match self {
             Self::PointerMotion { x, y } => {
                 x.unsigned_abs() <= 1_000_000 && y.unsigned_abs() <= 1_000_000
             }
             Self::PointerButton { button, .. } => (1..=0x3ff).contains(&button),
+            // A finger scroll ends with an empty frame (kinetic scrolling
+            // starts from it); an empty wheel step means nothing.
             Self::Scroll {
                 horizontal,
                 vertical,
-            } => horizontal != 0 || vertical != 0,
+                unit,
+            } => {
+                horizontal.unsigned_abs() <= 1_000_000
+                    && vertical.unsigned_abs() <= 1_000_000
+                    && (unit == ScrollUnit::Pixels || horizontal != 0 || vertical != 0)
+            }
             Self::Key {
                 keycode, modifiers, ..
             } => keycode <= 0x2ff && modifiers <= 0xffff,
@@ -2812,6 +2837,34 @@ pub enum FabricError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scroll_says_its_unit_and_only_a_finger_scroll_may_be_empty() {
+        let scroll = |horizontal, vertical, unit| FabricInputEvent::Scroll {
+            horizontal,
+            vertical,
+            unit,
+        };
+        assert!(scroll(0, -30, ScrollUnit::Lines).validate());
+        assert!(
+            scroll(0, 0, ScrollUnit::Pixels).validate(),
+            "a finger scroll's end"
+        );
+        assert!(!scroll(0, 0, ScrollUnit::Lines).validate());
+        assert!(!scroll(2_000_000, 0, ScrollUnit::Pixels).validate());
+        let wire = serde_json::to_string(&scroll(0, -60, ScrollUnit::Lines)).unwrap();
+        assert_eq!(
+            wire,
+            r#"{"scroll":{"horizontal":0,"vertical":-60,"unit":"lines"}}"#
+        );
+        assert!(
+            serde_json::from_str::<FabricInputEvent>(
+                r#"{"scroll":{"horizontal":0,"vertical":-2}}"#
+            )
+            .is_err(),
+            "a scroll without a unit is not guessed at"
+        );
+    }
 
     fn id(value: &str) -> DeviceId {
         DeviceId::new(value).unwrap()

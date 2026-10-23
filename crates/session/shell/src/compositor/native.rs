@@ -7201,7 +7201,7 @@ fn queue_personal_fabric_input(
     backend: &mut dyn Backend,
     pending: &mut std::collections::VecDeque<BackendEvent>,
 ) {
-    use crate::shell::device_fabric::FabricInputEvent;
+    use crate::shell::device_fabric::{FabricInputEvent, ScrollUnit};
     let device_id = winit::event::DeviceId::dummy();
     for event in state.take_personal_fabric_input() {
         let input = match event {
@@ -7216,33 +7216,46 @@ fn queue_personal_fabric_input(
                     position: winit::dpi::PhysicalPosition::new(point.0, point.1),
                 }
             }
-            FabricInputEvent::PointerButton { button, pressed } => WindowEvent::MouseInput {
-                device_id,
-                state: if pressed {
-                    ElementState::Pressed
-                } else {
-                    ElementState::Released
-                },
-                button: match button {
-                    0x110 => MouseButton::Left,
-                    0x111 => MouseButton::Right,
-                    0x112 => MouseButton::Middle,
-                    0x116 => MouseButton::Back,
-                    0x115 => MouseButton::Forward,
-                    other => MouseButton::Other(u16::try_from(other).unwrap_or(u16::MAX)),
-                },
-            },
+            FabricInputEvent::PointerButton { button, pressed } => {
+                let Some(button) =
+                    crate::compositor::backend::drm::runtime::map_mouse_button(button)
+                else {
+                    continue;
+                };
+                WindowEvent::MouseInput {
+                    device_id,
+                    state: if pressed {
+                        ElementState::Pressed
+                    } else {
+                        ElementState::Released
+                    },
+                    button,
+                }
+            }
             FabricInputEvent::Scroll {
                 horizontal,
                 vertical,
-            } => WindowEvent::MouseWheel {
-                device_id,
-                delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
-                    f64::from(horizontal),
-                    f64::from(vertical),
-                )),
-                phase: winit::event::TouchPhase::Moved,
-            },
+                unit,
+            } => {
+                let (x, y) = (
+                    f64::from(horizontal) / ScrollUnit::STEPS,
+                    f64::from(vertical) / ScrollUnit::STEPS,
+                );
+                WindowEvent::MouseWheel {
+                    device_id,
+                    delta: match unit {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "wheel lines, which winit carries as f32"
+                        )]
+                        ScrollUnit::Lines => MouseScrollDelta::LineDelta(x as f32, y as f32),
+                        ScrollUnit::Pixels => {
+                            MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(x, y))
+                        }
+                    },
+                    phase: winit::event::TouchPhase::Moved,
+                }
+            }
             FabricInputEvent::Key {
                 keycode, pressed, ..
             } => {
@@ -7329,10 +7342,10 @@ fn spatial_coord(value: f64) -> i32 {
     clippy::cast_possible_truncation,
     reason = "wheel deltas are clamped to the bounded fabric wire representation"
 )]
-fn spatial_scroll(value: f64) -> i16 {
-    value
-        .clamp(f64::from(i16::MIN), f64::from(i16::MAX))
-        .round() as i16
+fn spatial_scroll(value: f64) -> i32 {
+    (value * crate::shell::device_fabric::ScrollUnit::STEPS)
+        .clamp(-1_000_000.0, 1_000_000.0)
+        .round() as i32
 }
 
 fn nearby_drop_candidate(
@@ -7820,24 +7833,12 @@ fn forward_spatial_window_event(
     let Some(session) = active.as_ref() else {
         return false;
     };
-    if let WindowEvent::KeyboardInput { event, .. } = event
-        && event.state == ElementState::Pressed
-        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
-    {
-        end_spatial_control(network, active);
-        return true;
-    }
     let target = session.target.clone();
     let fabric_event = match event {
         WindowEvent::CursorMoved { .. } => return true,
         WindowEvent::MouseInput { state, button, .. } => {
-            let button = match button {
-                MouseButton::Left => 0x110,
-                MouseButton::Right => 0x111,
-                MouseButton::Middle => 0x112,
-                MouseButton::Back => 0x116,
-                MouseButton::Forward => 0x115,
-                MouseButton::Other(button) => u32::from(*button),
+            let Some(button) = crate::shell::input_policy::evdev_button(*button) else {
+                return true;
             };
             crate::shell::device_fabric::FabricInputEvent::PointerButton {
                 button,
@@ -7845,23 +7846,34 @@ fn forward_spatial_window_event(
             }
         }
         WindowEvent::MouseWheel { delta, .. } => {
-            let (horizontal, vertical) = match delta {
-                MouseScrollDelta::LineDelta(x, y) => {
-                    (spatial_scroll(f64::from(*x)), spatial_scroll(f64::from(*y)))
-                }
-                MouseScrollDelta::PixelDelta(position) => {
-                    (spatial_scroll(position.x), spatial_scroll(position.y))
-                }
+            use crate::shell::device_fabric::ScrollUnit;
+            let (horizontal, vertical, unit) = match delta {
+                MouseScrollDelta::LineDelta(x, y) => (
+                    spatial_scroll(f64::from(*x)),
+                    spatial_scroll(f64::from(*y)),
+                    ScrollUnit::Lines,
+                ),
+                MouseScrollDelta::PixelDelta(position) => (
+                    spatial_scroll(position.x),
+                    spatial_scroll(position.y),
+                    ScrollUnit::Pixels,
+                ),
             };
-            if horizontal == 0 && vertical == 0 {
-                return true;
-            }
-            crate::shell::device_fabric::FabricInputEvent::Scroll {
+            let event = crate::shell::device_fabric::FabricInputEvent::Scroll {
                 horizontal,
                 vertical,
+                unit,
+            };
+            if !event.validate() {
+                return true;
             }
+            event
         }
         WindowEvent::KeyboardInput { event, .. } => {
+            // A repeat is no new press: the key is still down over there.
+            if event.repeat {
+                return true;
+            }
             let Some(keycode) = ui::evdev::from_physical(event.physical_key) else {
                 return true;
             };
@@ -11421,9 +11433,10 @@ pub fn run() {
                         forward_spatial_window_event(wev, network, &mut spatial_control)
                     }) {
                         // The physical keyboard/pointer is logically on the
-                        // adjacent certified device until it crosses back or
-                        // Escape is pressed. Reserved shell chords above stay
-                        // local and remain an unconditional escape path.
+                        // adjacent certified device until it crosses back:
+                        // Escape there is that device's. Reserved shell chords
+                        // above stay local and remain an unconditional escape
+                        // path (Super+Esc ends control).
                     } else {
                         // InputCapture deliberately sits after the compositor's
                         // power/VT/lock/panic controls but before client/chrome
