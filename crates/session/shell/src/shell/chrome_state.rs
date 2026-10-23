@@ -2972,6 +2972,20 @@ impl ChromeState {
         moved
     }
 
+    /// Move the workspace on screen to place `index` in the person's list,
+    /// counting from `0`; past the end means last.
+    pub fn move_active_workspace_to(&mut self, index: usize) -> bool {
+        let moved = {
+            let mut tree = self.tree_mut();
+            let active = tree.desktop.active;
+            tree.move_workspace_to(active, index)
+        };
+        if moved {
+            self.bump();
+        }
+        moved
+    }
+
     /// Show the workspace on screen on the `index`th of the person's devices
     /// in its menu, or keep it off there.
     pub fn toggle_active_workspace_device(&mut self, index: usize) -> bool {

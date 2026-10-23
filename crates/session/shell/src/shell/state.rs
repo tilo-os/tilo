@@ -4882,10 +4882,21 @@ impl WorkspaceTree {
             1 => Some(index.saturating_add(1)).filter(|t| *t < self.desktop.workspaces.len()),
             _ => None,
         };
-        let Some(target) = target else {
+        target.is_some_and(|target| self.move_workspace_to(id, target))
+    }
+
+    /// Move workspace `id` to place `index` in the list, counting from `0`;
+    /// past the end means last. Returns whether it moved.
+    pub fn move_workspace_to(&mut self, id: WorkspaceId, index: usize) -> bool {
+        let Some(from) = self.desktop.workspaces.iter().position(|w| w.id == id) else {
             return false;
         };
-        self.desktop.workspaces.swap(index, target);
+        let to = index.min(self.desktop.workspaces.len().saturating_sub(1));
+        if from == to {
+            return false;
+        }
+        let workspace = self.desktop.workspaces.remove(from);
+        self.desktop.workspaces.insert(to, workspace);
         self.seed_doc_from_cache();
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
         self.queue_save();

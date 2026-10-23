@@ -27,6 +27,7 @@ mod identity_admin;
 mod native_identity;
 mod quick_settings;
 mod strips;
+mod workspaces;
 pub(crate) use quick_settings::{
     QS_AIRPLANE_ID, QS_BLUETOOTH_ID, QS_BRIGHTNESS_ID, QS_POWER_ID, QS_VOLUME_ID, QS_VPN_ID,
     QS_WIFI_ID, SharedQsActions, SharedQsDispatcher, ValidatedQsActions,
@@ -38,6 +39,10 @@ use strips::{
     move_strip, remove_strip, rename_strip,
 };
 pub(crate) use strips::{STRIP_NAME_MAX_CHARS, valid_strip_name};
+use workspaces::{
+    WORKSPACE_DELETE_PARAMS, WORKSPACE_MOVE_PARAMS, WORKSPACE_RENAME_PARAMS, delete_workspace,
+    move_workspace, rename_workspace, valid_workspace_name,
+};
 
 use crate::shell::shared_display_actions;
 
@@ -74,12 +79,8 @@ fn workspace_create_context(
 fn create_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     let default_name = t("search-action-workspace-create-default-name");
     let supplied = args.text("name").unwrap_or(&default_name);
-    let name = supplied.trim();
-    if name.is_empty() || name.chars().count() > 120 || supplied.chars().any(char::is_control) {
-        return Err(ActionError::Explained(t(
-            "search-action-workspace-create-invalid-name",
-        )));
-    }
+    let name = valid_workspace_name(supplied)
+        .ok_or_else(|| ActionError::Explained(t("search-action-workspace-create-invalid-name")))?;
     state.add_workspace(name);
     Ok(())
 }
@@ -375,7 +376,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
-        "workspace.create" | "strip.create" | "strip.rename" | "strip.move" | "strip.remove" => {
+        "workspace.create" | "workspace.rename" | "workspace.move" | "strip.create"
+        | "strip.rename" | "strip.move" | "strip.remove" => {
             contract = workspace_create_contract();
         }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
@@ -403,7 +405,13 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         // admitting it again.
         // The app leaves the device; what of the person's it held goes to
         // the Trash, never further.
-        BOT_REMOVE_ID | "agent.remove" | APP_UNINSTALL_ID | APP_REMOVE_FROM_APPS_ID => {
+        // A deleted workspace leaves the person's other devices too, and a
+        // host's room is left rather than kept for an undo.
+        BOT_REMOVE_ID
+        | "agent.remove"
+        | "workspace.delete"
+        | APP_UNINSTALL_ID
+        | APP_REMOVE_FROM_APPS_ID => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Destructive;
             contract.confirmation = ConfirmationPolicy::Confirm;
@@ -476,9 +484,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "peer.pair-device" => tilo_actions::OperationKind::View,
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
-        | "workspace.create" | "strip.create" | "strip.rename" | "strip.move" | "strip.remove" => {
-            tilo_actions::OperationKind::Document
-        }
+        | "workspace.create" | "workspace.rename" | "workspace.move" | "strip.create"
+        | "strip.rename" | "strip.move" | "strip.remove" => tilo_actions::OperationKind::Document,
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
         _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
             tilo_actions::OperationKind::View
@@ -2761,6 +2768,30 @@ impl Action {
             subtitle: "search-action-workspace-create-subtitle",
             params: WORKSPACE_CREATE_PARAMS,
             apply: create_workspace,
+        },
+        // The workspace settings' name field, Move up and Move down, and
+        // Delete workspace, as actions: a capability reachable only by
+        // clicking is not finished.
+        Action {
+            id: "workspace.rename",
+            label: "search-action-workspace-rename",
+            subtitle: "search-action-workspace-rename-subtitle",
+            params: WORKSPACE_RENAME_PARAMS,
+            apply: rename_workspace,
+        },
+        Action {
+            id: "workspace.move",
+            label: "search-action-workspace-move",
+            subtitle: "search-action-workspace-move-subtitle",
+            params: WORKSPACE_MOVE_PARAMS,
+            apply: move_workspace,
+        },
+        Action {
+            id: "workspace.delete",
+            label: "search-action-workspace-delete",
+            subtitle: "search-action-workspace-delete-subtitle",
+            params: WORKSPACE_DELETE_PARAMS,
+            apply: delete_workspace,
         },
         chrome(
             "workspace.previous",
