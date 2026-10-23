@@ -574,9 +574,12 @@ impl App {
                 },
             )?;
         }
-        if crate::window_toolbar::take_search_request() {
+        if let Some(opening) = crate::window_toolbar::take_search_request() {
             client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::OpenSearch { instance },
+                &crate::floating_surface::FloatingSurfaceClientMessage::OpenSearch {
+                    instance,
+                    opening,
+                },
             )?;
             *changed = true;
         }

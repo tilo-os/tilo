@@ -1279,8 +1279,19 @@ impl WindowGroup {
     /// offers a document or a list, else the platform search narrowed to
     /// the app (what the control always did).
     pub fn open_search(&mut self, source: crate::tokens::MotionSource) {
+        self.open_search_as(source, crate::window_toolbar::SearchOpening::Find);
+    }
+
+    /// [`Self::open_search`] as `opening` asks: for the replace chord, with
+    /// the replacement holding the keyboard.
+    pub fn open_search_as(
+        &mut self,
+        source: crate::tokens::MotionSource,
+        opening: crate::window_toolbar::SearchOpening,
+    ) {
         let active = self.bar.active_id();
-        let offered = self.window_offer(active).map(|offer| offer.search.into());
+        let offer = self.window_offer(active).copied();
+        let offered = offer.map(|offer| offer.search.into());
         let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) else {
             return;
         };
@@ -1298,10 +1309,14 @@ impl WindowGroup {
             });
             return;
         }
-        if offered.is_some() {
+        if let Some(offer) = offer {
             self.search.open_remote(in_place, source);
+            self.search.set_remote_abilities(offer.find);
         } else {
             self.search.open(in_place, source);
+        }
+        if opening == crate::window_toolbar::SearchOpening::Replace {
+            self.search.focus_replacement();
         }
         self.search_tab = Some(active);
         self.search_active = true;
@@ -1353,6 +1368,7 @@ impl WindowGroup {
         {
             self.search
                 .set_remote_count(offer.count.map(super::FilterCount::from));
+            self.search.set_remote_abilities(offer.find);
         }
         if control_changed {
             self.style_dirty = true;
@@ -1362,17 +1378,25 @@ impl WindowGroup {
     }
 
     /// The app of tab `id`, in a process of its own, asked for the window's
-    /// search (its Ctrl+F): open it, or give the open one the keyboard.
-    /// Only the tab the window shows searches. Returns whether it did.
-    pub fn open_search_for_app(&mut self, id: u64) -> bool {
+    /// search (its Ctrl+F, or its Ctrl+H for `SearchOpening::Replace`): open
+    /// it, or give the open one the keyboard. Only the tab the window shows
+    /// searches. Returns whether it did.
+    pub fn open_search_for_app(
+        &mut self,
+        id: u64,
+        opening: crate::window_toolbar::SearchOpening,
+    ) -> bool {
         if id != self.bar.active_id() || !self.navigation_bar_visible() {
             return false;
         }
         if self.search.is_open() {
-            self.search.take_keyboard();
+            match opening {
+                crate::window_toolbar::SearchOpening::Find => self.search.take_keyboard(),
+                crate::window_toolbar::SearchOpening::Replace => self.search.focus_replacement(),
+            }
             return true;
         }
-        self.open_search(crate::tokens::MotionSource::Keyboard);
+        self.open_search_as(crate::tokens::MotionSource::Keyboard, opening);
         self.search.is_open() || self.pending_search_open.is_some()
     }
 
@@ -1450,38 +1474,33 @@ impl WindowGroup {
         }
     }
 
-    /// Whether `event` is Find (Ctrl+F, ⌘F) and this window can search in
-    /// place: the window opens its search, or gives the open one the
+    /// Whether `event` is Find (Ctrl+F, ⌘F), or Find and Replace (Ctrl+H,
+    /// ⌘⌥F), and this window can search in place (for replacing, a
+    /// document): the window opens its search, or gives the open one the
     /// keyboard, instead of the app opening a find of its own.
     fn takes_find(&mut self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Character(key),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
+        let Some(opening) = super::window_search::search_chord(
+            event,
+            modifiers.state(),
+            crate::platform::PlatformConventions::default(),
+        ) else {
             return false;
         };
-        let state = modifiers.state();
-        if !key.eq_ignore_ascii_case("f")
-            || state.shift_key()
-            || state.alt_key()
-            || !crate::platform::PlatformConventions::default().command_modifier_down(state)
-            || !self.focused
-            || !self.navigation_bar_visible()
-        {
+        if !self.focused || !self.navigation_bar_visible() {
             return false;
         }
+        let replace = opening == crate::window_toolbar::SearchOpening::Replace;
         if self.search.is_open() {
             if self.search.has_keyboard() {
-                // Find again widens: the search's own key handling.
+                // Find again widens, and the replace chord goes to the
+                // replacement: the search's own key handling.
                 return false;
             }
-            self.search.take_keyboard();
+            if replace {
+                self.search.focus_replacement();
+            } else {
+                self.search.take_keyboard();
+            }
             return true;
         }
         let active = self.bar.active_id();
@@ -1491,10 +1510,11 @@ impl WindowGroup {
                 .active_host_mut()
                 .map_or(super::InPlace::Nothing, TileHost::in_place_search),
         };
-        if in_place == super::InPlace::Nothing {
+        if in_place == super::InPlace::Nothing || (replace && in_place != super::InPlace::Document)
+        {
             return false;
         }
-        self.open_search(crate::tokens::MotionSource::Keyboard);
+        self.open_search_as(crate::tokens::MotionSource::Keyboard, opening);
         true
     }
 
@@ -2093,8 +2113,9 @@ impl WindowGroup {
         self.bar.tooltip_target_at(p)
     }
 
-    /// Paint the menus of the bar's slots (the overflow's, the
-    /// suggestions), for a host that draws the windows' top layer itself.
+    /// Paint the bar's top layer (its slots' menus, the overflow's and the
+    /// suggestions, and the search's options), for a host that draws the
+    /// windows' top layer itself.
     pub fn draw_bar_popups(
         &mut self,
         scene: &mut Scene,
@@ -2105,6 +2126,8 @@ impl WindowGroup {
     ) {
         if self.navigation_bar_visible() {
             self.bar
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+            self.search
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }

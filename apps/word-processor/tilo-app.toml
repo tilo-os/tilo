@@ -61,7 +61,7 @@ file-chooser = "via-host"
 [sandbox.services]
 collab = "optional@5"
 tilo-fs = "optional@5"
-shell-ui = "optional@13"
+shell-ui = "optional@14"
 
 [entrypoint]
 bin             = "bin/word-processor"

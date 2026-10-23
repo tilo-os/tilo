@@ -38,7 +38,10 @@ use crate::widget::{
 };
 
 /// What a find runs over: text, or a byte view's hex digits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum FindMode {
     #[default]
     Text,
@@ -48,11 +51,69 @@ pub enum FindMode {
     Regex,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+/// The options a find runs under: the bar's chips, the window search's
+/// options.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
 pub struct FindOptions {
     pub match_case: bool,
     pub whole_word: bool,
     pub mode: FindMode,
+}
+
+/// What a document's find offers beyond matching text under Match case and
+/// Whole word: replacing matches, a regular expression, a byte view's hex
+/// digits. The find's options offer just these.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(default)]
+pub struct FindAbilities {
+    pub replace: bool,
+    pub regex: bool,
+    pub hex: bool,
+}
+
+impl FindAbilities {
+    /// What `target` offers.
+    #[must_use]
+    pub fn of(target: &dyn Findable) -> Self {
+        Self {
+            replace: target.supports_replace(),
+            regex: target.supports_regex(),
+            hex: target.supports_hex(),
+        }
+    }
+
+    /// What the first [`Findable`] in `root`'s subtree offers; nothing
+    /// beyond matching when there is none.
+    #[must_use]
+    pub fn of_root(root: &mut dyn Widget) -> Self {
+        with_findable(root, &mut |target| Self::of(target)).unwrap_or_default()
+    }
+
+    /// Whether it offers nothing beyond matching text.
+    #[must_use]
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// `options` as this find can run them: a mode it does not offer falls
+    /// back to text.
+    #[must_use]
+    pub fn allow(self, mut options: FindOptions) -> FindOptions {
+        let offered = match options.mode {
+            FindMode::Text => true,
+            FindMode::Hex => self.hex,
+            FindMode::Regex => self.regex,
+        };
+        if !offered {
+            options.mode = FindMode::Text;
+        }
+        options
+    }
 }
 
 /// One match, as a span of the findable's own content (a byte range of its

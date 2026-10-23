@@ -3268,8 +3268,8 @@ pub mod empty_state;
 pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout};
 pub mod find_bar;
 pub use find_bar::{
-    FindBar, FindMatch, FindMode, FindOptions, FindScope, FindSession, Findable, paint_find_match,
-    with_findable,
+    FindAbilities, FindBar, FindMatch, FindMode, FindOptions, FindScope, FindSession, Findable,
+    paint_find_match, with_findable,
 };
 pub mod search_field;
 pub use search_field::{

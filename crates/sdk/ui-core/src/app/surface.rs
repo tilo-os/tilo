@@ -409,14 +409,16 @@ impl App {
             } = event
         {
             let shift = app.input.modifiers.state().shift_key();
-            // Find opens the window bar's search, which acts on this app in
-            // place, ahead of any find of the app's own.
-            if c.eq_ignore_ascii_case("f")
-                && !shift
-                && !app.input.modifiers.state().alt_key()
-                && app.window_bar_takes_find()
+            // Find (and Find and Replace) opens the window bar's search,
+            // which acts on this app in place, ahead of any find of the
+            // app's own.
+            if let Some(opening) = crate::widget::window_search::search_chord(
+                &event,
+                app.input.modifiers.state(),
+                app.input.platform,
+            ) && app.window_bar_takes(opening)
             {
-                crate::window_toolbar::open_search();
+                crate::window_toolbar::open_search(opening);
                 handled = true;
             }
             match crate::platform::HostShortcut::resolve(app.input.platform, c, shift) {

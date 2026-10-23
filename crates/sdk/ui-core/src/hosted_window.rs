@@ -53,8 +53,9 @@ struct State {
     session: Option<String>,
     /// The app asked to edit its location (its Ctrl+L).
     edit: bool,
-    /// The app asked to open the window's search (its Ctrl+F).
-    search: bool,
+    /// The app asked to open the window's search (its Ctrl+F, or Ctrl+H
+    /// for the replacement field).
+    search: Option<crate::window_toolbar::SearchOpening>,
     /// What the host runs when the app declared or asked to close, so it
     /// looks again even while nothing else is happening.
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -162,10 +163,10 @@ impl HostedWindow {
 
     /// Ask the bar to open the window's search, as a click on its control
     /// does.
-    pub fn open_search(&self) {
+    pub fn open_search(&self, opening: crate::window_toolbar::SearchOpening) {
         let wake = {
             let mut state = self.state();
-            state.search = true;
+            state.search = Some(opening);
             state.wake.clone()
         };
         Self::wake(wake);
@@ -191,11 +192,11 @@ impl HostedWindow {
         std::mem::take(&mut self.state().edit)
     }
 
-    /// Whether the app asked to open the window's search since the last
+    /// How the app asked to open the window's search since the last
     /// call.
     #[must_use]
-    pub fn take_search_request(&self) -> bool {
-        std::mem::take(&mut self.state().search)
+    pub fn take_search_request(&self) -> Option<crate::window_toolbar::SearchOpening> {
+        self.state().search.take()
     }
 
     /// What the host runs when the app declares new slots or asks to close.
