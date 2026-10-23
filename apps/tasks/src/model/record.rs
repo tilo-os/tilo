@@ -29,11 +29,6 @@ pub struct Tracker {
     /// deleted.
     #[model(readonly)]
     pub imported: Set<String>,
-    /// Private issues
-    ///
-    /// Each kept in a tracker of its own that only its readers read
-    /// ([`crate::model::private`]), listed here by its id alone.
-    pub private: tilo_resource::children::Children,
 }
 
 fn no_issue() -> Refusal {
@@ -91,22 +86,8 @@ impl Tracker {
         self.issues.get_mut(issue).ok_or_else(no_issue)
     }
 
-    /// The next number, past every issue held: a private tracker starts
-    /// with an issue numbered in the workspace's tracker and numbers on from
-    /// it.
     fn next_number(&mut self) -> u64 {
-        let highest = self
-            .issues
-            .values()
-            .map(|issue| issue.number)
-            .max()
-            .unwrap_or_default();
-        let current = u64::try_from(self.numbers.get()).unwrap_or_default();
-        let by = highest
-            .max(current)
-            .saturating_sub(current)
-            .saturating_add(1);
-        self.numbers.add(i64::try_from(by).unwrap_or(1));
+        self.numbers.add(1);
         u64::try_from(self.numbers.get()).unwrap_or_default()
     }
 
