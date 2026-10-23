@@ -9,6 +9,11 @@
 //! Both come from the one index Settings' own sidebar reads
 //! ([`settings_store::index`]), and Enter opens them through Settings'
 //! `settings://` links, the way every other app reaches it.
+//!
+//! A yes-or-no setting the session keeps ([`index::Switch`]) is the switch
+//! itself: its row says whether it is on, and Enter flips it through its
+//! section's field edit, the edit its switch in Settings and in Settings'
+//! own search makes.
 
 use settings_store::index;
 use ui::search::FieldWeight;
@@ -74,6 +79,9 @@ struct Built {
     pages: usize,
     /// For each setting row, in order, the row of the page it is on.
     setting_pages: Vec<usize>,
+    /// The switch each row flips, in row order: `None` for a row that
+    /// opens Settings.
+    switches: Vec<Option<index::Switch>>,
 }
 
 /// Settings the palette already offers as quick actions under the same
@@ -107,6 +115,71 @@ impl SettingsPagesProvider {
     }
 }
 
+/// A row flipping the yes-or-no setting `switch`; listed, it reads on or
+/// off ([`live`]).
+fn switching(
+    kind: &ResourceKind,
+    id: String,
+    title: String,
+    facts: Vec<String>,
+    switch: index::Switch,
+) -> SearchResult {
+    let invoked_by = settings_store::InvokingAction::action(format!("{PROVIDER_ID}:{id}"));
+    let flip = move |chrome: &crate::shell::chrome_state::Chrome,
+                     args: &crate::shell::search::action_api::ActionArgs| {
+        let confirmed = args.boolean(CONFIRM) == Some(true);
+        let on = crate::shell::settings_records::flip(switch, confirmed, &invoked_by)?;
+        // The desktop's own look follows at once rather than at the next
+        // reading of the settings file.
+        if switch.section
+            == <settings_sections::prefs::AppearancePrefs as tilo_resource::Resource>::KIND
+        {
+            chrome.borrow_mut().note_appearance_change();
+        }
+        Ok::<bool, ActionError>(on)
+    };
+    let invoke = flip.clone();
+    SearchResult {
+        operation_kind: tilo_actions::OperationKind::Effect,
+        on_open: std::rc::Rc::new(
+            move |_doc: &mut ui::widget::Edits<'_>,
+                  _root: &automerge::ObjId,
+                  chrome: &crate::shell::chrome_state::Chrome,
+                  args: &crate::shell::search::action_api::ActionArgs| {
+                flip(chrome, args).map(drop)
+            },
+        ),
+        on_invoke: Some(std::rc::Rc::new(
+            move |_doc: &mut ui::widget::Edits<'_>,
+                  _root: &automerge::ObjId,
+                  chrome: &crate::shell::chrome_state::Chrome,
+                  args: &crate::shell::search::action_api::ActionArgs| {
+                invoke(chrome, args).map(|on| {
+                    crate::shell::search::ActionReceipt::completed_with(
+                        serde_json::json!({ "on": on }),
+                    )
+                })
+            },
+        )),
+        // A flip that makes the device less safe (notifications on the
+        // lock screen) asks the person first, as the palette's other
+        // settings do.
+        params: vec![
+            crate::shell::search::action_api::ActionParam::optional_owned(
+                CONFIRM,
+                crate::shell::search::action_api::ParamType::Boolean,
+                "Confirm a change that makes the device less safe.",
+            )
+            .with_labelled_choices([("true", t("setting-confirm-weaker"))]),
+        ],
+        ..SearchResult::nullary(kind.clone(), PROVIDER_ID, id, title, None, 0, |_, _, _| {})
+    }
+    .with_facts(facts)
+}
+
+/// The argument carrying the person's confirmation of a flip.
+const CONFIRM: &str = "confirm";
+
 /// A row opening `uri` in Settings.
 fn opening(
     kind: &ResourceKind,
@@ -136,8 +209,13 @@ fn opening(
 
 impl SettingsPagesProvider {
     fn build(kind: &ResourceKind, locale: String) -> Built {
+        // A switch is offered where the session keeps its section.
+        let kept = crate::shell::settings_records::switches_on(
+            index::SETTINGS.iter().map(|setting| setting.switch),
+        );
         let mut rows = Vec::new();
         let mut fields = Vec::new();
+        let mut switches = Vec::new();
         for page in index::PAGES {
             let title = t(&page.title_key());
             let subtitle = t(&page.subtitle_key());
@@ -152,6 +230,7 @@ impl SettingsPagesProvider {
                     .map(|word| (word, FieldWeight::KEYWORD)),
             );
             fields.push(row);
+            switches.push(None);
             rows.push(opening(
                 kind,
                 format!("page:{}", page.slug),
@@ -162,7 +241,7 @@ impl SettingsPagesProvider {
         }
         let pages = rows.len();
         let mut setting_pages = Vec::new();
-        for setting in index::SETTINGS {
+        for (setting, kept) in index::SETTINGS.iter().zip(&kept) {
             if QUICK_ACTION_SETTINGS.contains(&setting.id) {
                 continue;
             }
@@ -192,15 +271,16 @@ impl SettingsPagesProvider {
             );
             fields.push(row);
             setting_pages.push(page_row);
-            rows.push(opening(
-                kind,
-                format!("setting:{}", setting.id),
-                name,
-                // The page is what tells two settings apart; the app is
-                // already the section the row stands in.
-                vec![page_title.clone()],
-                setting.link(),
-            ));
+            let id = format!("setting:{}", setting.id);
+            // The page is what tells two settings apart; the app is
+            // already the section the row stands in.
+            let facts = vec![page_title.clone()];
+            let switch = setting.switch.filter(|_| kept.is_some());
+            switches.push(switch);
+            rows.push(match switch {
+                Some(switch) => switching(kind, id, name, facts, switch),
+                None => opening(kind, id, name, facts, setting.link()),
+            });
         }
         Built {
             locale,
@@ -208,6 +288,7 @@ impl SettingsPagesProvider {
             fields,
             pages,
             setting_pages,
+            switches,
         }
     }
 
@@ -223,6 +304,7 @@ impl SettingsPagesProvider {
                 .map(|row| row.iter().map(|(text, weight)| (text.as_str(), *weight))),
         );
         let browsing = needle.trim().is_empty();
+        let kept = std::cell::OnceCell::new();
         let page_rank = |at: usize| {
             at.checked_sub(built.pages)
                 .and_then(|setting| built.setting_pages.get(setting))
@@ -249,10 +331,33 @@ impl SettingsPagesProvider {
                     } else {
                         score
                     },
-                    ..row.clone()
+                    ..live(built, at, row, &kept)
                 })
             })
             .collect()
+    }
+}
+
+/// Row `at` of `built` as it reads now: a switch says whether it is on, as
+/// stored at this moment wherever it last changed. Every switch is read
+/// once into `kept`, and only when a switch is listed.
+fn live(
+    built: &Built,
+    at: usize,
+    row: &SearchResult,
+    kept: &std::cell::OnceCell<Vec<Option<bool>>>,
+) -> SearchResult {
+    let badge = built.switches.get(at).copied().flatten().and_then(|_| {
+        kept.get_or_init(|| {
+            crate::shell::settings_records::switches_on(built.switches.iter().copied())
+        })
+        .get(at)
+        .copied()
+        .flatten()
+    });
+    SearchResult {
+        badge: badge.map(super::actions::on_off_badge),
+        ..row.clone()
     }
 }
 
@@ -291,6 +396,19 @@ impl SearchProvider for SettingsPagesProvider {
         page_icon(slug)
     }
 
+    /// A switch row flips in place: the palette stays open and its row reads
+    /// the value it was just switched to.
+    fn toggles_in_place(&self, result: &SearchResult) -> bool {
+        let built = self.built.borrow();
+        built.as_ref().is_some_and(|built| {
+            built
+                .rows
+                .iter()
+                .zip(&built.switches)
+                .any(|(row, switch)| row.id == result.id && switch.is_some())
+        })
+    }
+
     fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
         let built = self.built.borrow();
         let built = built.as_ref()?;
@@ -326,7 +444,13 @@ impl SearchProvider for SettingsPagesProvider {
     /// opens it.
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         self.with_built(&ctx, |built| {
-            built.rows.iter().find(|row| row.id == id).cloned()
+            let at = built.rows.iter().position(|row| row.id == id)?;
+            Some(live(
+                built,
+                at,
+                built.rows.get(at)?,
+                &std::cell::OnceCell::new(),
+            ))
         })
         .flatten()
     }
@@ -360,5 +484,202 @@ mod icon_tests {
             let icon = super::page_icon(slug).unwrap_or_else(|| panic!("{slug} has no icon"));
             assert_ne!(icon, ui::icons::Icon::Search, "{slug}");
         }
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::search::action_api::ActionArgs;
+    use automerge::AutoCommit;
+
+    /// Every yes-or-no setting the index names is a section's field the
+    /// session keeps: the palette offers each as the switch it is.
+    #[test]
+    fn every_indexed_switch_is_a_field_the_session_keeps() {
+        for setting in index::SETTINGS {
+            let Some(switch) = setting.switch else {
+                continue;
+            };
+            assert!(
+                crate::shell::settings_records::switch_is_on(switch).is_some(),
+                "{}: {} has no yes-or-no field {}",
+                setting.id,
+                switch.section,
+                switch.field
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn every_setting_switch_flips_both_ways_and_its_row_shows_the_live_value() {
+        let config = tempfile::tempdir().expect("isolated settings");
+        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
+        let records = settings_store::SessionSettings::open(paths.clone()).expect("records");
+        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
+
+        let provider = SettingsPagesProvider::new();
+        let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+        let doc = AutoCommit::new();
+        let kind = provider.kinds[0].clone();
+        let wanted = [kind];
+        // The row as the palette lists it for the setting's name, and as an
+        // exact address finds it.
+        let listed = |setting: &index::Setting| {
+            let state = chrome.borrow();
+            let name = t(&setting.name_key());
+            provider
+                .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
+                    needle: &name,
+                    wanted: &wanted,
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|row| row.id == format!("setting:{}", setting.id))
+        };
+        let resolved = |setting: &index::Setting| {
+            let state = chrome.borrow();
+            provider.resolve(
+                &format!("setting:{}", setting.id),
+                SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
+                    needle: "",
+                    wanted: &wanted,
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                },
+            )
+        };
+        let stored = |switch: index::Switch| {
+            crate::shell::settings_records::switch_is_on(switch).expect("kept")
+        };
+        // Activated as the palette runs it: a flip its section asks the
+        // person about first changes nothing until they confirm it.
+        let activate = |row: &SearchResult, switch: index::Switch| {
+            let run = |args: &ActionArgs| {
+                let mut document = AutoCommit::new();
+                (row.on_open)(
+                    &mut ui::widget::Edits::lend(&mut document),
+                    &automerge::ROOT,
+                    &chrome,
+                    args,
+                )
+            };
+            let before = stored(switch);
+            match run(&ActionArgs::none()) {
+                Err(ActionError::ConfirmationRequired) => {
+                    assert_eq!(
+                        stored(switch),
+                        before,
+                        "{}: nothing changed unconfirmed",
+                        row.id
+                    );
+                    let confirmed = ActionArgs::bind(
+                        &row.params,
+                        vec![(
+                            CONFIRM.to_owned(),
+                            crate::shell::search::action_api::ArgValue::Boolean(true),
+                        )],
+                    )
+                    .expect("the switch takes a confirmation");
+                    run(&confirmed)
+                }
+                outcome => outcome,
+            }
+            .unwrap_or_else(|error| panic!("{} flips: {error:?}", row.id));
+        };
+
+        let mut switches = 0;
+        for setting in index::SETTINGS {
+            let Some(switch) = setting.switch else {
+                continue;
+            };
+            let id = setting.id;
+            // A setting the palette offers as a quick action of the same
+            // name is that row.
+            let Some(row) = resolved(setting) else {
+                assert!(QUICK_ACTION_SETTINGS.contains(&id), "{id} is offered");
+                continue;
+            };
+            switches += 1;
+            assert!(
+                provider.toggles_in_place(&row),
+                "{id}: the palette stays open on a switch so its row shows the new state"
+            );
+            let original = stored(switch);
+            assert_eq!(
+                row.badge,
+                Some(super::super::actions::on_off_badge(original))
+            );
+            if let Some(listed) = listed(setting) {
+                assert_eq!(listed.badge, row.badge, "{id}: listed as resolved");
+            }
+
+            let before =
+                std::fs::read_to_string(paths.change_log()).map_or(0, |log| log.lines().count());
+            activate(&row, switch);
+            assert_eq!(
+                stored(switch),
+                !original,
+                "{id}: the first activation flips it"
+            );
+            let log = std::fs::read_to_string(paths.change_log()).expect("change log");
+            let entries: Vec<serde_json::Value> = log
+                .lines()
+                .skip(before)
+                .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
+                .collect();
+            assert_eq!(entries.len(), 1, "{id}: one leaf changed: {entries:?}");
+            let entry = &entries[0];
+            assert_eq!(
+                entry["action"],
+                format!("{}/field-edit", switch.section),
+                "{id}: the switch flips through its section's field edit: {entry}"
+            );
+            // The log keeps the section's top field whole; a switch nested
+            // in it (`focus.enabled`) is read inside.
+            let mut path = switch.path();
+            assert_eq!(entry["leaf"], path.next().unwrap_or_default(), "{entry}");
+            let after = path.fold(&entry["after"], |value, field| &value[field]);
+            assert_eq!(*after, !original, "{entry}");
+            let row = resolved(setting).expect("still offered");
+            assert_eq!(
+                row.badge,
+                Some(super::super::actions::on_off_badge(!original)),
+                "{id}: the row shows the state it was just switched to"
+            );
+
+            // Changed elsewhere (in Settings, on another device): the row
+            // reads what is stored, not what search last wrote.
+            crate::shell::settings_records::flip(
+                switch,
+                true,
+                &settings_store::InvokingAction::action("elsewhere"),
+            )
+            .expect("changed elsewhere");
+            let row = resolved(setting).expect("still offered");
+            assert_eq!(
+                row.badge,
+                Some(super::super::actions::on_off_badge(original)),
+                "{id}: the row follows a change made elsewhere"
+            );
+            activate(&row, switch);
+            assert_eq!(stored(switch), !original, "{id}: it flips the live value");
+            activate(&resolved(setting).expect("still offered"), switch);
+            assert_eq!(
+                stored(switch),
+                original,
+                "{id}: the second activation puts the original value back"
+            );
+        }
+        assert!(switches > 0, "the palette offers the index's switches");
     }
 }

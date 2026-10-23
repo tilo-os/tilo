@@ -976,6 +976,28 @@ fn the_docked_call_shows_the_other_person_large_and_follows_who_speaks() {
 }
 
 #[test]
+fn the_call_panel_says_how_many_are_in_the_call_where_it_paints_it() {
+    let (mut app, _doc) = app_with_doc();
+    service_streams(&mut app, "c_huddle", 1);
+    render_frame(&mut app, 1280.0, 800.0);
+    let root = app.accessibility().expect("chat semantics");
+    let count = root
+        .children
+        .iter()
+        .find(|node| {
+            matches!(node.role, ui::a11y::Role::StaticText)
+                && node.name.as_deref() == Some("2 in call")
+        })
+        .expect("the call's count is in the semantics tree");
+    let bounds = count.bounds.expect("the count has bounds").to_rect();
+    let panel = app.huddle_panel();
+    assert!(
+        bounds.width() > 0.0 && panel.contains(bounds.center()),
+        "read where the panel paints it: {bounds:?} in {panel:?}"
+    );
+}
+
+#[test]
 fn a_call_that_ended_for_a_reason_no_longer_counts_you_in_it() {
     use ui::presence::capability::PublishesPresence;
     let (mut app, _doc) = app_with_doc();

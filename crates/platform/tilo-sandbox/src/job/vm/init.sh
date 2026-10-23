@@ -30,10 +30,13 @@ by_serial() {
 	return 1
 }
 
-# Report $1 as the status and stop the machine.
+# Report $1 as the status and stop the machine. Only the output disk is flushed, outputs and
+# status alike (dd's fsync of the device): nothing else outlives the machine. A global sync
+# also syncs every filesystem shared with the step over virtio-fs, which the host serves by
+# syncing its own filesystem as a whole: on a busy node that waited behind all its writeback
+# for longer than t lets a step make no progress, and a step that had passed was ended as hung.
 finish() {
-	out_disk=$(by_serial output) && printf 'T-VM-STATUS %s\n' "$1" | dd of="$out_disk" conv=notrunc 2>/dev/null
-	sync
+	out_disk=$(by_serial output) && printf 'T-VM-STATUS %s\n' "$1" | dd of="$out_disk" conv=notrunc,fsync 2>/dev/null
 	reboot -f
 	sleep 5
 }

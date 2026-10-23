@@ -774,6 +774,35 @@ mod tests {
     }
 
     #[test]
+    fn the_init_flushes_only_the_output_disk_before_it_stops_the_machine() {
+        // A global sync reaches the host's whole filesystem through every virtio-fs share,
+        // and a busy node took longer to sync it than t lets a step make no progress.
+        let commands: Vec<&str> = INIT
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .collect();
+        assert!(
+            !commands
+                .iter()
+                .any(|l| l.split([' ', ';', '&', '|']).any(|w| w == "sync")),
+            "the init syncs every filesystem"
+        );
+        let finish = INIT
+            .split("finish() {")
+            .nth(1)
+            .and_then(|f| f.split("\n}").next())
+            .expect("the init has finish()");
+        let flush = finish
+            .find("conv=notrunc,fsync")
+            .expect("finish flushes the output disk");
+        assert!(
+            flush < finish.find("reboot -f").expect("finish stops the machine"),
+            "{finish}"
+        );
+    }
+
+    #[test]
     fn a_status_line_is_read_back_and_outputs_unpacked() {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("output.img");

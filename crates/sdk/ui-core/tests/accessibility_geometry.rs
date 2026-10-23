@@ -131,3 +131,74 @@ fn an_open_dropdowns_options_are_in_the_tree_where_they_are_drawn_and_choosable(
     );
     assert!(!dropdown.is_open(), "and closes the list");
 }
+
+/// The label of the option the focused combobox names as its active
+/// descendant, after checking the tree's focus stayed on the combobox.
+fn active_option(harness: &FrameHarness) -> Option<String> {
+    use tilo_ui::accesskit::Role as AkRole;
+    let (_, combo) = harness.a11y_focus().expect("something holds focus");
+    assert_eq!(
+        combo.role(),
+        AkRole::ComboBox,
+        "focus stays on the combobox"
+    );
+    let active = combo.active_descendant()?;
+    let nodes = harness.a11y_nodes();
+    let (_, option) = nodes
+        .iter()
+        .find(|(id, _)| *id == active)
+        .expect("the active descendant is in the tree");
+    assert_eq!(option.role(), AkRole::ListBoxOption);
+    Some(option.label().expect("an option has a name").to_owned())
+}
+
+#[test]
+fn an_open_dropdown_keeps_focus_and_names_its_highlighted_option() {
+    let options = vec![
+        "Plain text".to_owned(),
+        "Shell".to_owned(),
+        "Rust".to_owned(),
+    ];
+    let mut harness = FrameHarness::for_root(
+        State::new(),
+        Dropdown::new(options.clone(), "language").with_placeholder("Language"),
+        (600, 500),
+        Theme::dark(),
+    );
+    harness.relayout();
+    harness.tab(false);
+    harness.key("Enter");
+    harness.relayout();
+    assert!(harness.root::<Dropdown>().is_open());
+
+    // The tree's focus stays on the combobox, which names the option the
+    // keyboard is on as its active descendant, as a platform list box does.
+    let first = active_option(&harness).expect("the open combobox names its highlighted option");
+    harness.key("ArrowDown");
+    harness.relayout();
+    let second = active_option(&harness).expect("and still does after moving");
+    assert_ne!(
+        first, second,
+        "moving the highlight moves the active descendant"
+    );
+    assert_eq!(
+        Some(&second),
+        options.get(harness.root::<Dropdown>().highlight_index()),
+        "the active descendant is the highlighted option"
+    );
+
+    // The built-in screen reader reads the option as the highlight moves.
+    let combo = harness
+        .focused_access_node()
+        .expect("the combobox is focused");
+    let spoken = tilo_ui::screen_reader::describe_state(&combo);
+    assert!(spoken.starts_with(&second), "{spoken:?}");
+
+    harness.key("Escape");
+    harness.relayout();
+    assert_eq!(
+        active_option(&harness),
+        None,
+        "a closed list names no option"
+    );
+}

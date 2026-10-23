@@ -683,7 +683,7 @@ mod tests {
         }]);
         let groups = search("", &[&apps(), &windows, &actions], 0);
         let kinds: Vec<&str> = groups.iter().map(|g| g.kind.label()).collect();
-        assert!(kinds.contains(&"Applications"));
+        assert!(kinds.contains(&"Apps"));
         assert!(kinds.contains(&WINDOWS_KIND));
         assert!(!kinds.contains(&"Actions"));
     }

@@ -114,7 +114,7 @@ impl Action {
 
     /// Whether it opens an app rather than acting inside one.
     fn is_application(&self) -> bool {
-        matches!(self.kind.as_str(), "Applications" | "Host Apps")
+        self.kind == "Apps"
     }
 
     /// The names it answers to: its title's slug, that and where it acts,
@@ -981,7 +981,7 @@ pub fn pick_app(input: &str, actions: &[Action]) -> Option<usize> {
 
 /// The listing kinds that are apps: Tilo apps (here or to get) and the
 /// host's own.
-const APP_KINDS: &[&str] = &["application", "host app"];
+const APP_KINDS: &[&str] = &["app"];
 
 /// The installed-app address that opens files and links (the shell's
 /// `open-with:` row of the `applications` provider).

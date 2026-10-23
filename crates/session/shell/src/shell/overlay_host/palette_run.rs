@@ -593,6 +593,13 @@ impl ShellOverlayHost {
         // What was typed for it, too: the same text leads with it next time.
         crate::shell::search::usage::record_choice(&flow.query, &result.provider_id, &result.id);
         self.end_palette_steps();
+        // A switch stays in view, showing what it was switched to, as it
+        // does when it asks nothing first.
+        if self.search_registry.toggles_in_place(&result) {
+            self.last_search_revision.clear();
+            self.refresh_search_results(doc, root);
+            return;
+        }
         self.palette_visible = false;
         self.palette.close();
     }

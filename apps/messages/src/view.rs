@@ -10,8 +10,8 @@ use ui::icons::Icon;
 use ui::prelude::{Collection, Id};
 use ui::widget::virtual_list::{VecListModel, VirtualList};
 use ui::widget::{
-    Button, Column, Container, Dropdown, Element, EmptyState, ListRow, ModelView, NavPane,
-    NavShell, Row, Scrollable, Text, TextInput,
+    Button, Column, Container, Element, EmptyState, ListRow, ModelView, NavPane, NavShell, Row,
+    Scrollable, Text, TextInput,
 };
 
 use crate::{CATALOG, Messages, MessagesEffect};
@@ -380,7 +380,17 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     let projected_setup = setup.clone();
     let scheduled_setup = setup.clone();
     let projected_groups = groups.clone();
-    Box::new(
+    let link = Rc::new(std::cell::RefCell::new(None));
+    let bar = crate::window_bar::Bar {
+        sources: sources.clone(),
+        selection: selection.clone(),
+        history: history.clone(),
+        setup: setup.clone(),
+        groups: groups.clone(),
+        dispatcher: cx.dispatcher(),
+        link: Rc::clone(&link),
+    };
+    let content = Box::new(
         ModelView::from_document(
             move |_, _| {
                 (
@@ -407,39 +417,53 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
                         watched_history.read(&watched_sources, &watched_selection, &choice, cx)
                     });
                 }
-                let detail_sources = sources.clone();
-                let detail_actions = actions.clone();
-                let detail_history = history.clone();
-                let detail_sending = sending.clone();
-                let conversation = Box::new(ModelView::from_state(&selection, move |selected| {
-                    detail(
-                        &detail_sources,
-                        &detail_actions,
-                        selected,
-                        &detail_history,
-                        &detail_sending,
-                    )
-                }));
-                let detail = if groups.visible() {
-                    groups.panel(&sources, &actions)
-                } else if setup.visible() {
-                    setup.panel(&sources, &actions)
-                } else {
-                    conversation
-                };
-                let detail = Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .filling()
-                        .with_child(detail),
+                let detail = shown(
+                    &sources, &actions, &selection, &history, &sending, &setup, &groups,
                 );
-                navigation(detail, &sources, &actions, selected, &setup, &groups)
+                let shell = navigation(detail, &sources, &actions, selected, &setup, &groups);
+                link.replace(Some(shell.window_bar_link()));
+                Box::new(shell) as Element
             },
         )
         .with_wake_deadline(move || scheduled_setup.next_wake_deadline()),
+    );
+    Box::new(crate::window_bar::MessagesWindow { content, bar })
+}
+
+/// What the content column shows: the open groups, the account setup or
+/// the conversation with the selected person.
+fn shown(
+    sources: &Sources,
+    actions: &Actions<Messages>,
+    selection: &LocalState<Selection>,
+    history: &crate::history::HistoryView,
+    sending: &crate::sending::Sending,
+    setup: &crate::setup::SetupView,
+    groups: &crate::groups::GroupsView,
+) -> Element {
+    let detail = if groups.visible() {
+        groups.panel(sources, actions)
+    } else if setup.visible() {
+        setup.panel(sources, actions)
+    } else {
+        let sources = sources.clone();
+        let actions = actions.clone();
+        let history = history.clone();
+        let sending = sending.clone();
+        Box::new(ModelView::from_state(selection, move |selected| {
+            detail(&sources, &actions, selected, &history, &sending)
+        }))
+    };
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .filling()
+            .with_child(detail),
     )
 }
 
+/// The people beside the open conversation, groups or account setup. The
+/// window bar names which and holds its actions ([`crate::window_bar`]).
 fn navigation(
     detail: Element,
     sources: &Sources,
@@ -447,12 +471,12 @@ fn navigation(
     selected: &Selection,
     setup: &crate::setup::SetupView,
     groups: &crate::groups::GroupsView,
-) -> Element {
-    let overview = Box::new(
-        Column::new()
-            .push(groups.entries(sources, actions))
-            .push(overview(sources, actions, &selected.person)),
-    );
+) -> NavShell {
+    let people = overview(sources, actions, &selected.person);
+    let overview: Element = match groups.entries(sources, actions) {
+        Some(entries) => Box::new(Column::new().push(entries).push(people)),
+        None => people,
+    };
     let pane = LocalState::new(
         if selected.person.is_empty() && !setup.visible() && !groups.visible() {
             NavPane::Overview
@@ -460,34 +484,12 @@ fn navigation(
             NavPane::Content
         },
     );
-    Box::new(
-        NavShell::new()
-            .content_kind(ui::widget::ContentKind::Reading)
-            .overview(overview)
-            .overview_header(
-                CATALOG.t("messages-people"),
-                // While setup is open its title says Accounts; a second
-                // Accounts button beside it would open what is open.
-                if setup.visible() {
-                    Vec::new()
-                } else {
-                    vec![account_setup_action(actions)]
-                },
-            )
-            .content(detail)
-            .content_header_leading(if groups.visible() {
-                Box::new(Text::new(&CATALOG.t("messages-list-groups")))
-            } else if setup.visible() {
-                Box::new(Text::new(&CATALOG.t("messages-setup-accounts")))
-            } else if selected.person.is_empty() {
-                // No conversation yet: a route menu would be a lone chevron
-                // choosing among nothing.
-                Box::new(Column::new())
-            } else {
-                route_header(sources, actions, selected)
-            })
-            .with_pane_state(&pane),
-    )
+    NavShell::new()
+        .content_kind(ui::widget::ContentKind::Reading)
+        .with_window_toolbar()
+        .overview(overview)
+        .content(detail)
+        .with_pane_state(&pane)
 }
 
 fn discard_invalid_route(
@@ -513,13 +515,6 @@ fn discard_invalid_route(
         choice: String::new(),
     });
     true
-}
-
-fn account_setup_action(actions: &Actions<Messages>) -> Element {
-    Box::new(actions.bind_effect_invocation(
-        Button::new("messages.accounts", "messages-setup-accounts"),
-        &MessagesEffect::OpenAccountSetup,
-    ))
 }
 
 fn register_capture_selection(
@@ -666,46 +661,6 @@ fn overview(sources: &Sources, actions: &Actions<Messages>, selected: &str) -> E
     Box::new(Container::new().filling().with_child(Box::new(list)))
 }
 
-fn route_header(sources: &Sources, actions: &Actions<Messages>, selected: &Selection) -> Element {
-    let options = choices(sources, &selected.person);
-    let accessible = options
-        .iter()
-        .find(|choice| choice.value() == selected.choice)
-        .map_or_else(
-            || CATALOG.t("messages-route"),
-            |choice| {
-                CATALOG.t_args(
-                    "messages-route-current",
-                    &[("route", ArgValue::Text(choice.label(sources)))],
-                )
-            },
-        );
-    let value = LocalState::new(selected.choice.clone());
-    let mut dropdown = Dropdown::from_state(Vec::new(), &value)
-        .with_id("messages.route")
-        .with_accessible_name(accessible)
-        .with_placeholder(&CATALOG.t("messages-route-placeholder"))
-        .as_menu(Icon::ChevronDown);
-    dropdown.set_value_options(
-        options
-            .iter()
-            .map(|choice| (choice.value(), choice.label(sources)))
-            .collect(),
-    );
-    let dropdown = actions.bind_effect(dropdown, MessagesEffect::SELECT_ROUTE);
-    let name = sources
-        .contacts()
-        .people
-        .get(&Id::from_raw(&selected.person))
-        .map_or_else(String::new, |person| person.label.clone());
-    Box::new(
-        Row::new()
-            .no_wrap()
-            .push(Box::new(Text::dynamic(move || name.clone())))
-            .push(Box::new(dropdown)),
-    )
-}
-
 fn detail(
     sources: &Sources,
     actions: &Actions<Messages>,
@@ -750,7 +705,7 @@ fn detail(
             "messages.history:{}:{}",
             selected.person, selected.choice
         ))
-        .with_child(history_view.widget(sources, actions, selected, chosen, hint));
+        .with_child(history_view.widget(sources, selected, chosen, hint));
     let mut body = Column::new();
     if let Some(choice) = chosen {
         let label = choice.label(sources);

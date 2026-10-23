@@ -268,12 +268,26 @@ fn act(app: &mut TestApp<App>, target: &str, action: &Action) {
         .unwrap_or_else(|error| panic!("{target}: {error}"));
 }
 
+/// Press the window's action `id` in its bar, once the bar offers it.
+fn press_bar(app: &mut TestApp<App>, id: &str) {
+    app.settle();
+    let offered = ui::window_toolbar::declared().is_some_and(|bar| {
+        bar.actions
+            .iter()
+            .any(|action| action.id == id && action.enabled)
+    });
+    assert!(offered, "the window bar offers {id}");
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+    app.settle();
+}
+
 #[test]
 fn the_app_starts_empty_and_reads_the_door_as_itself() {
     let (host, _guard, mut app) = open();
     assert!(app.state().drafts.is_empty(), "no seeded drafts");
     app.harness()
-        .wait_for_named("new-shortcut", tilo_test_env::hang_bound())
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
         host.callers
@@ -287,6 +301,55 @@ fn the_app_starts_empty_and_reads_the_door_as_itself() {
     assert_eq!(host.library_calls("list").len(), 1, "the library is read");
     let audit = app.harness().native_app_audit();
     assert!(audit.issues.is_empty(), "{audit:#?}");
+}
+
+#[test]
+fn the_window_bar_names_the_page_and_holds_its_actions() {
+    let (_host, _guard, mut app) = open();
+    app.harness()
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
+        .expect("the library shows");
+    let bar = |app: &mut TestApp<App>| {
+        app.settle();
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let location = bar.location.map(|location| location.label);
+        let actions: Vec<(String, bool)> = bar
+            .actions
+            .into_iter()
+            .map(|action| (action.id, action.enabled))
+            .collect();
+        (location, actions)
+    };
+    let (location, actions) = bar(&mut app);
+    assert_eq!(location.as_deref(), Some("Overview"));
+    assert_eq!(
+        actions,
+        [
+            ("new-shortcut".to_owned(), true),
+            ("reload".to_owned(), true)
+        ]
+    );
+    for drawn in ["new-shortcut", "reload"] {
+        assert!(
+            !app.harness().targets().contains_key(drawn),
+            "the window draws no {drawn} of its own"
+        );
+    }
+
+    press_bar(&mut app, "new-shortcut");
+    assert_eq!(app.state().drafts.len(), 1, "New shortcut starts a draft");
+    let (location, actions) = bar(&mut app);
+    assert_eq!(
+        location.as_deref(),
+        Some("New shortcut"),
+        "the draft is open"
+    );
+    assert!(
+        actions.contains(&("review-save".to_owned(), false)),
+        "a draft without steps cannot be saved yet: {actions:?}"
+    );
+    press_bar(&mut app, "discard-draft");
+    assert!(app.state().drafts.is_empty(), "Discard draft discards it");
 }
 
 #[test]
@@ -397,7 +460,7 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
         .expect("the draft checks");
 
     // Review what it may do, then save.
-    act(&mut app, "review-save", &Action::Activate);
+    press_bar(&mut app, "review-save");
     app.harness()
         .wait_for_named("shortcuts-save-sheet", tilo_test_env::hang_bound())
         .expect("the sheet shows");
@@ -454,7 +517,7 @@ fn with_agent() -> FakeHost {
 fn drafting_is_hidden_without_the_agent() {
     let (_host, _guard, mut app) = open();
     app.harness()
-        .wait_for_named("new-shortcut", tilo_test_env::hang_bound())
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
         !app.harness().targets().contains_key("describe-shortcut"),
@@ -665,7 +728,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     render_morning_matrix(&mut app, &output, "draft");
     app.harness().set_theme(ui::Theme::light());
     app.harness().resize((1600, 1000)).unwrap();
-    act(&mut app, "review-save", &Action::Activate);
+    press_bar(&mut app, "review-save");
     app.harness()
         .expect(
             &SemanticExpectation::named("schedule-review-0")
@@ -770,7 +833,7 @@ fn the_save_review_says_what_saving_allows() {
         "id": "no-actions", "name": "Only a branch", "steps": [{"id": "branch", "step": "if", "cond": {"truthy": {"literal": true}}, "then": []}]
     })))
     .unwrap();
-    act(&mut app, "review-save", &Action::Activate);
+    press_bar(&mut app, "review-save");
     let explain = ui::i18n!("shortcuts-grant-explain");
     assert!(
         explain.contains("app actions listed") && explain.contains("person running it"),

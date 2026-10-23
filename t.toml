@@ -1640,7 +1640,7 @@ env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin
 requires = ["arch=x86_64"]
 writable_sources = true
 isolation = "vm"
-inputs = [".forgejo/workflows/vm-acceptance.yml", "scripts/vm-acceptance/**", "scripts/vm-acceptance/test_app_cohort.py", "scripts/vm-acceptance/test_app_startup.py", "scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_ci_select.py", "scripts/vm-acceptance/test_component_replacement.py", "scripts/vm-acceptance/test_device_fidelity.py", "scripts/vm-acceptance/test_dialog_guard.py", "scripts/vm-acceptance/test_frames.py", "scripts/vm-acceptance/test_layer_artifacts.py", "scripts/vm-acceptance/test_lock_guard.py", "scripts/vm-acceptance/test_management.py", "scripts/vm-acceptance/test_provenance.py", "scripts/vm-acceptance/test_records.py", "scripts/vm-acceptance/test_resources.py", "scripts/vm-acceptance/test_runtime_backing.py", "scripts/vm-acceptance/test_session_restart.py", "scripts/vm-acceptance/test_store_chooser.py", "scripts/vm-acceptance/test_terminal_cohort.py", "scripts/vm-acceptance/test_ui.py", "scripts/vm-acceptance/test_vm_actions.py", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/perf/**", "tools/with-test-environment.sh"]
+inputs = ["scripts/vm-acceptance/**", "scripts/vm-acceptance/test_app_cohort.py", "scripts/vm-acceptance/test_app_startup.py", "scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_ci_select.py", "scripts/vm-acceptance/test_component_replacement.py", "scripts/vm-acceptance/test_device_fidelity.py", "scripts/vm-acceptance/test_dialog_guard.py", "scripts/vm-acceptance/test_frames.py", "scripts/vm-acceptance/test_layer_artifacts.py", "scripts/vm-acceptance/test_lock_guard.py", "scripts/vm-acceptance/test_management.py", "scripts/vm-acceptance/test_provenance.py", "scripts/vm-acceptance/test_records.py", "scripts/vm-acceptance/test_resources.py", "scripts/vm-acceptance/test_runtime_backing.py", "scripts/vm-acceptance/test_session_restart.py", "scripts/vm-acceptance/test_store_chooser.py", "scripts/vm-acceptance/test_terminal_cohort.py", "scripts/vm-acceptance/test_ui.py", "scripts/vm-acceptance/test_vm_actions.py", "t.toml", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/vm-acceptance.sh", "tools/ci/vm-cohort.sh", "tools/perf/**", "tools/with-test-environment.sh"]
 on = ["stable", "dispatch", "idle"]
 default = false
 
@@ -1651,7 +1651,7 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 4, memory = "1GiB" }
-inputs = [".forgejo/workflows/vm-acceptance.yml", "apps/*/tilo-app.toml", "apps/settings-core/src/categories.rs", "crates/dev/room-load/src/**", "crates/dev/ui-examples/examples/dashboard_perf_bench.rs", "crates/hosting/tilo-relay/examples/legacy_stream_source.rs", "crates/hosting/tilo-relay/examples/relay_load/main.rs", "crates/session/shell/examples/redraw_bench.rs", "crates/session/shell/src/compositor/switch_latency.rs", "crates/session/shell/src/shell/search/providers/files.rs", "crates/system/fs/tests/performance_timing.rs", "dist/apps/app-collections.toml", "scripts/perf/**", "scripts/perf/agent_rtt_test.py", "scripts/perf/agent_task_test.py", "scripts/perf/browser_qualification.test.mjs", "scripts/perf/code_editor_effects_test.py", "scripts/perf/collect_code_editor_native_test.py", "scripts/perf/collect_file_explorer_native_test.py", "scripts/perf/collect_scratchpad_native_test.py", "scripts/perf/collect_settings_native_test.py", "scripts/perf/device_latency_bench_test.py", "scripts/perf/device_notes_latency_test.py", "scripts/perf/device_notes_trace_test.py", "scripts/perf/file_explorer_effects_test.py", "scripts/perf/input_latency_test.py", "scripts/perf/latency_bench_test.py", "scripts/perf/main_stages_test.py", "scripts/perf/native_app_capture_test.py", "scripts/perf/native_delivery_test.py", "scripts/perf/native_stream_qualification.test.mjs", "scripts/perf/physical_notes_latency_test.py", "scripts/perf/physical_notes_stages_test.py", "scripts/perf/presentation_feedback_test.py", "scripts/perf/render_bench_test.py", "scripts/perf/render_boundaries_test.py", "scripts/perf/resource_bench_test.py", "scripts/perf/runtime_benchmark_test.py", "scripts/perf/scratchpad_effects_test.py", "scripts/perf/settings_effects_test.py", "scripts/perf/word_processor_effects_test.py", "scripts/perf/worker_handoff_test.py", "t.toml", "tools/apps/app_release.py", "tools/ci/perf-compare.sh", "tools/ci/perf-scheduled.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/perf/**", "tools/perf/test_ab.py", "tools/perf/test_adapters.py", "tools/perf/test_compare.py", "tools/perf/test_image_size.py", "tools/perf/test_record.py", "tools/perf/test_room_capacity.py", "tools/perf/test_runtime_size_ratchet.py", "tools/perf/test_store.py", "tools/perf/test_tapp_size_ratchet.py", "tools/web/chrome.mjs", "tools/with-test-environment.sh"]
+inputs = ["apps/*/tilo-app.toml", "apps/settings-core/src/categories.rs", "crates/dev/room-load/src/**", "crates/dev/ui-examples/examples/dashboard_perf_bench.rs", "crates/hosting/tilo-relay/examples/legacy_stream_source.rs", "crates/hosting/tilo-relay/examples/relay_load/main.rs", "crates/session/shell/examples/redraw_bench.rs", "crates/session/shell/src/compositor/switch_latency.rs", "crates/session/shell/src/shell/search/providers/files.rs", "crates/system/fs/tests/performance_timing.rs", "dist/apps/app-collections.toml", "scripts/perf/**", "scripts/perf/agent_rtt_test.py", "scripts/perf/agent_task_test.py", "scripts/perf/browser_qualification.test.mjs", "scripts/perf/code_editor_effects_test.py", "scripts/perf/collect_code_editor_native_test.py", "scripts/perf/collect_file_explorer_native_test.py", "scripts/perf/collect_scratchpad_native_test.py", "scripts/perf/collect_settings_native_test.py", "scripts/perf/device_latency_bench_test.py", "scripts/perf/device_notes_latency_test.py", "scripts/perf/device_notes_trace_test.py", "scripts/perf/file_explorer_effects_test.py", "scripts/perf/input_latency_test.py", "scripts/perf/latency_bench_test.py", "scripts/perf/main_stages_test.py", "scripts/perf/native_app_capture_test.py", "scripts/perf/native_delivery_test.py", "scripts/perf/native_stream_qualification.test.mjs", "scripts/perf/physical_notes_latency_test.py", "scripts/perf/physical_notes_stages_test.py", "scripts/perf/presentation_feedback_test.py", "scripts/perf/render_bench_test.py", "scripts/perf/render_boundaries_test.py", "scripts/perf/resource_bench_test.py", "scripts/perf/runtime_benchmark_test.py", "scripts/perf/scratchpad_effects_test.py", "scripts/perf/settings_effects_test.py", "scripts/perf/word_processor_effects_test.py", "scripts/perf/worker_handoff_test.py", "t.toml", "tools/apps/app_release.py", "tools/ci/perf-compare.sh", "tools/ci/perf-scheduled.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/perf/**", "tools/perf/test_ab.py", "tools/perf/test_adapters.py", "tools/perf/test_compare.py", "tools/perf/test_image_size.py", "tools/perf/test_record.py", "tools/perf/test_room_capacity.py", "tools/perf/test_runtime_size_ratchet.py", "tools/perf/test_store.py", "tools/perf/test_tapp_size_ratchet.py", "tools/web/chrome.mjs", "tools/with-test-environment.sh"]
 
 [[check]]
 name = "suite-developer-scripts"
@@ -3195,8 +3195,9 @@ plan = "full"
 # perf-scheduled, which compares them with the store and publishes them where
 # the run holds TILO_PACKAGES_TOKEN: the server's secret config names the
 # references that get it (`t dispatch perf-scheduled --ref main`, or `--ref
-# stable` once stable is among them). Groups run alone with `t test perf-render`; the whole run with
-# `t dispatch perf-scheduled` (inputs: accept, synthetic_series,
+# stable` once stable is among them). One group runs alone with `t test perf-render`
+# (browser and stream measure a commit: `t dispatch perf-stream --ref <branch>`); the whole
+# run with `t dispatch perf-scheduled` (inputs: accept, synthetic_series,
 # synthetic_factor). Measurements of the node they ran on, never stored results.
 
 [[check]]
@@ -3319,8 +3320,10 @@ on = ["stable", "dispatch"]
 requires = ["arch=x86_64"]
 run = "bash tools/ci/perf-scheduled.sh hosting-room"
 env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
-# 100 guests and their host on one node, as on the large Forgejo runner.
-requirement = { cores = 16, memory = "32GiB" }
+# 100 guests and their host on one node with the quota of the machine the series and
+# docs/benchmarks/room-host-capacity-2026-10.md were measured on, 40 CPUs and 36 GiB: the host
+# and the driver start a runtime worker per core, which perf-scheduled.sh holds at that 40.
+requirement = { cores = 40, memory = "36GiB" }
 inputs = ["crates/**", "vendor/**", "apps/**", "examples/**", "scripts/perf/**", "scripts/moq-browser/**", "tools/**", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/perf/hosting-room/**"]
 cache = false
@@ -3364,7 +3367,9 @@ default = false
 name = "perf-scheduled"
 run = "bash tools/ci/perf-compare.sh"
 image = "registry.tilo.so/tilo/ci-fast@sha256:f84f99fb5586335f3850c06c7daaf26a12903c4cb29513b9a9c95a9f266f56f1"
-needs = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
+# Whatever the groups' outcome, so one failing group doesn't cost the others their records:
+# perf-compare.sh fails for those T_NEEDS_FAILED names, and for any group with no records.
+needs_any_outcome = ["perf-fs", "perf-agent", "perf-footprint", "perf-footprint-image", "perf-latency", "perf-render", "perf-wakeups", "perf-search", "perf-hosting", "perf-hosting-room", "perf-browser", "perf-stream"]
 inputs = ["tools/perf/**", "tools/upload_immutable_packages.sh", "tools/ci/perf-compare.sh"]
 outputs = ["/target/perf/compare/**"]
 # TILO_PACKAGES_TOKEN may write tilo's generic packages, which is where the
@@ -3420,23 +3425,25 @@ relay_cpus = ""
 # ---------------------------------------------------------------------------
 # Checks for nodes with KVM, a privileged VM or 100 GB of disk.
 
-# The OS image's acceptance scenarios in tilo-vm (.forgejo/workflows/vm-acceptance.yml),
-# on a privileged x86-64 node with KVM: this tree's components swapped onto the
-# dev disk of the newest main commit before it that has one (tools/ci/vm-acceptance.sh).
-# `t dispatch vm-acceptance --input swap=all --input only=input` runs a selection;
+# The OS image's acceptance scenarios in tilo-vm (scripts/vm-acceptance), on a
+# privileged x86-64 node with KVM: this tree's own dev image (os-dev-image-x86_64)
+# installed to a disk and booted in a libvirt guest (tools/ci/vm-acceptance.sh).
+# `t dispatch vm-acceptance --input only=input --input swap=all` runs a selection;
 # `t test vm-acceptance` the checks a working tree's changes select; `t outputs
-# vm-acceptance` gives the report. vm-acceptance-perf runs it on release candidates and when
-# dispatched, and publishes its performance records where the run holds TILO_PACKAGES_TOKEN
-# (`t dispatch vm-acceptance-perf --ref main`, or any reference the server's secret config gives
-# it to).
+# vm-acceptance` gives the report. vm-acceptance-perf runs every check on release candidates
+# and when dispatched, and publishes its performance records where the run holds
+# TILO_PACKAGES_TOKEN (`t dispatch vm-acceptance-perf --ref main`, or any reference the
+# server's secret config gives it to). The micro-VM holds the guest (6 vCPUs, 4.5 GiB) beside
+# the image install and the tilo-vm build.
 [[check]]
 name = "vm-acceptance"
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-requirement = { cores = 1, memory = "6GiB" }
+requirement = { cores = 8, memory = "16GiB" }
 privileged = true
 git = true
 writable_sources = true
 run = "bash tools/ci/vm-acceptance.sh"
+needs = ["os-dev-image-x86_64"]
 inputs = ["**"]
 outputs = ["/target/vm-acceptance/report/**"]
 cache = false
@@ -3446,10 +3453,69 @@ default = false
 on = ["dispatch"]
 
 [check.dispatch_inputs]
-swap = "default"
+swap = "none"
 only = ""
 outputs = "1920x1080@1,1280x800@1.25"
 gl = "auto"
+
+# The same suite with this commit's launcher, install, shell and apps+runtime entering as
+# prebuilt signed layers through verified swap-artifact (docs/layer-artifacts.md,
+# tools/ci/vm-cohort.sh): vm-cohort-x86_64 packs them with this tree's tilo-vm, and
+# vm-cohort-verifier-x86_64 builds the tilo-vm that verifies and imports them from main's head,
+# never from the tree under test. The receipt names an exact clean commit: `t dispatch
+# vm-acceptance-cohort --ref <branch>`, or `t test` of a clean checkout of a pushed commit.
+[[check]]
+name = "vm-acceptance-cohort"
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+requirement = { cores = 8, memory = "16GiB" }
+privileged = true
+git = true
+writable_sources = true
+run = "bash tools/ci/vm-acceptance.sh cohort"
+needs = ["os-dev-image-x86_64", "vm-cohort-x86_64", "vm-cohort-verifier-x86_64"]
+inputs = ["**"]
+outputs = ["/target/vm-acceptance/report/**"]
+cache = false
+timeout_secs = 10800
+cost = "heavy"
+default = false
+on = ["dispatch"]
+
+[check.dispatch_inputs]
+only = ""
+outputs = "1920x1080@1,1280x800@1.25"
+gl = "auto"
+
+# The packs are tilo-vm-pack-apps-x86_64's: the apps' layout runs in bubblewrap sandboxes of its
+# own ("nested"), with the engine and fixtures from their checks.
+[[check]]
+name = "vm-cohort-x86_64"
+run = "bash tools/ci/vm-cohort.sh produce"
+env = { CARGO_BUILD_JOBS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets", TILO_RUNTIME_BUNDLE_DIR = "/target/engine-dev/x86_64/bundles", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["**"]
+needs = ["tilo-vm-binary-x86_64", "test-assets", "engine-dev-x86_64"]
+outputs = ["/target/vm-cohort/**"]
+git = true
+writable_sources = true
+requires = ["arch=x86_64"]
+requirement = { cores = 16, memory = "32GiB" }
+isolation = "nested"
+cost = "heavy"
+timeout_secs = 7200
+default = false
+
+[[check]]
+name = "vm-cohort-verifier-x86_64"
+run = "bash tools/ci/vm-cohort.sh verify"
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+inputs = ["tools/ci/vm-cohort.sh"]
+needs = ["vm-cohort-x86_64"]
+outputs = ["/target/vm-cohort-verifier/**"]
+requires = ["arch=x86_64"]
+# main's head moves: a cached verifier would be an older main's.
+cache = false
+cost = "minutes"
+default = false
 
 [[check]]
 name = "vm-acceptance-perf"
@@ -3922,7 +3988,8 @@ on = ["dispatch"]
 # and `dev-<commit>-<arch>` for each image), signed with the development key (keys/cosign-dev.pub)
 # by sign-dev-ci-builder; nothing a consumer resolves by a moving tag or verifies against
 # keys/cosign.pub comes from main. Stable signs the index and both
-# images with the release key and publishes `<commit>` and `<rust channel>`. `latest`, which
+# images with the release key, each with a transparency log entry so that a plain `cosign verify
+# --key keys/cosign.pub` accepts them, and publishes `<commit>` and `<rust channel>`. `latest`, which
 # resolve_builder.py and tilo-app-cli's generated CI follow, is not moved yet: stable lags main,
 # and moving `latest` from it would hand main's consumers an older toolchain.
 [[check]]
@@ -3960,9 +4027,9 @@ bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/pub
 """
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["image-ci-builder", "image-ci-builder-x86_64", "image-ci-builder-aarch64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-cache-warm-aarch64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-browser-aarch64", "canary-ci-builder-x11-bridge-x86_64"]
-outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
+outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/x86_64/bundle.json", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/aarch64/bundle.json", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub", "/target/publish/ci-builder/index/bundle.json"]
 id_token = ["sts.amazonaws.com"]
-env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 requires = ["arch=any"]
 on = ["stable"]
 
@@ -5325,7 +5392,10 @@ on = ["stable"]
 # signs each architecture's image and attests its SLSA provenance (kernel-rpm/v1: the source
 # commit and the buildroot it was built FROM, which os/dev/verify-kernel-provenance.sh checks),
 # both with a transparency log entry, publishes them as `sha-<commit>-<arch>` and sets the
-# `kernel` pointer, which pin-kernel commits to os/kernel-snapshot.env on main. Main publishes
+# `kernel` pointer, which pin-kernel commits to os/kernel-snapshot.env on main. That tag is
+# pushed once: a stable run again on the same commit whose rebuild differs leaves it, and the
+# digest pinned from it, where they are, rather than moving the tag and leaving the earlier digest
+# untagged. Main publishes
 # nothing, since the OS build verifies the kernel's signature. No compiler cache reaches checks yet, so every build compiles the
 # whole kernel.
 [[check]]
@@ -5373,8 +5443,8 @@ on = ["stable"]
 name = "publish-kernel"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = """
-bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64 'sha-{commit}-x86_64'
-bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64 'sha-{commit}-aarch64'
+bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/x86_64 'once:sha-{commit}-x86_64'
+bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/tilo-kernel /target/publish/kernel/aarch64 'once:sha-{commit}-aarch64'
 bash tools/ci/publish/kernel.sh pins /target/publish/kernel
 """
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**", "os/kernel/**", "os/kernel-buildroot-snapshot.env", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "tools/ci/publish/kernel.sh"]
@@ -5513,15 +5583,25 @@ timeout_secs = 5400
 default = false
 
 # BEGIN generated by tools/ci/t_toml.py: products-env-tools
-# The env tool catalog's build half (tools/ci/publish/env-tools.sh): every tool of
-# os/env-tools-catalog.txt built natively against the published env-runtime, sealed with a
-# throwaway key, as root in the CI builder in a micro-VM step (the build sandbox makes user
-# namespaces and mounts overlays). It proves the catalog builds; build-env-tools.yml still
-# publishes it, sealed with the publisher identity.
+# The env tool catalog (tools/ci/publish/env-tools.sh): every tool of os/env-tools-catalog.txt
+# built natively against the published env-runtime, as root in the CI builder in a micro-VM step
+# (the build sandbox makes user namespaces and mounts overlays). The build runs package
+# scriptlets, so it holds no key: it seals each tool for the runtime's publisher with a
+# placeholder signature. `t test env-tools-x86_64` builds the catalog from a working tree (on an
+# unpublished preview of the runtime while none is published), `t test image-env-tools-preview`
+# the image of both architectures. On stable, env-tools-plan names the tag the catalog publishes
+# as, `<runtime tag>-<catalog fingerprint>`; where that is published already nothing is built,
+# else it fetches the runtime release-env-runtime published for the builds. seal-env-tools, which
+# builds nothing, checks the tools and signs them with the publisher identity, rewriting each
+# catalog to name the signed ids; image-env-tools puts both architectures in one image for both
+# platforms, sign-env-tools signs its digest with a transparency log entry and publish-env-tools
+# pushes it once under the tag. Main publishes nothing: the publisher identity reaches stable
+# only.
 [[check]]
 name = "env-tools-binaries-{arch}"
-run = "bash tools/ci/publish/env-tools.sh binaries /target/publish/env-tools/{arch}/bin"
+run = "bash tools/ci/publish/env-tools.sh binaries /target/publish/env-tools/{arch}/bin /target/publish/env-tools/plan"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+optional_needs = ["env-tools-plan"]
 outputs = ["/target/publish/env-tools/{arch}/bin/*"]
 requires = ["arch={arch}"]
 cost = "heavy"
@@ -5532,9 +5612,11 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "env-tools-{arch}"
-run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog"
+run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog /target/publish/env-tools/plan"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "os/dev/build-env-tools.sh", "os/dev/preview-env-runtime.sh", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "crates/packaging/registry-types/src/lib.rs", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["env-tools-binaries-{arch}"]
+optional_needs = ["env-tools-plan"]
+outputs = ["/target/publish/env-tools/{arch}/catalog/**"]
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 requirement = { cores = 8, memory = "16GiB" }
@@ -5543,6 +5625,85 @@ default = false
 
 [check.matrix]
 arch = ["x86_64", "aarch64"]
+
+# It holds the registry audience only so that it runs in trusted runs alone (an optional need
+# holding no credential would apply to a working tree's builds too); it reads the registry
+# anonymously, as devices do, and runs nothing a build made. What it finds depends on the
+# registry, so it is never cached, and the builds after it are keyed by what it found.
+[[check]]
+name = "env-tools-plan"
+run = "bash tools/ci/publish/env-tools-release.sh plan /target/publish/env-tools/plan"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "crates/runtime/env-tools/src/key.rs", "crates/runtime/env-tools/src/seal.rs", "crates/runtime/env-tools/src/sandbox.rs", "crates/runtime/env-tools/src/builder.rs", "crates/runtime/env-tools/src/image.rs", "crates/runtime/env-tools/src/resolve.rs", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "crates/packaging/registry-types/src/lib.rs", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/oci-sign.sh"]
+optional_needs = ["release-env-runtime"]
+outputs = ["/target/publish/env-tools/plan/**"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+isolation = "vm"
+cost = "minutes"
+on = ["stable"]
+default = false
+cache = false
+
+[[check]]
+name = "seal-env-tools"
+run = "bash tools/ci/publish/env-tools-release.sh seal /target/publish/env-tools/plan /target/publish/env-tools /target/publish/env-tools/x86_64/bin /target/publish/env-tools/sealed"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/oci-sign.sh"]
+needs = ["env-tools-plan", "env-tools-x86_64", "env-tools-aarch64", "env-tools-binaries-x86_64"]
+outputs = ["/target/publish/env-tools/sealed/**"]
+requires = ["arch=x86_64"]
+cost = "minutes"
+requirement = { cores = 2, memory = "8GiB" }
+on = ["stable"]
+default = false
+secrets = ["TAPP_PUBLISHER_IDENTITY"]
+
+[[check]]
+name = "image-env-tools"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/env-tools-release.sh image /target/publish/env-tools/sealed /target/publish/env-tools/image /target/publish/env-tools/plan"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/Containerfile.env-tools", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/oci-sign.sh"]
+needs = ["env-tools-plan", "seal-env-tools"]
+outputs = ["/target/publish/env-tools/image/image.oci.tar", "/target/publish/env-tools/image/digest"]
+isolation = "vm"
+cost = "minutes"
+requirement = { cores = 2, memory = "8GiB" }
+default = false
+
+[[check]]
+name = "image-env-tools-preview"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/env-tools-release.sh preview /target/publish/env-tools /target/publish/env-tools/preview-image"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/Containerfile.env-tools", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/oci-sign.sh"]
+needs = ["env-tools-x86_64", "env-tools-aarch64"]
+isolation = "vm"
+cost = "minutes"
+requirement = { cores = 2, memory = "8GiB" }
+default = false
+
+[[check]]
+name = "sign-env-tools"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/env-tools-release.sh sign /target/publish/env-tools/plan /target/publish/env-tools/image"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/oci-sign.sh"]
+needs = ["env-tools-plan", "image-env-tools"]
+outputs = ["/target/publish/env-tools/image/payload.json", "/target/publish/env-tools/image/signature", "/target/publish/env-tools/image/bundle.json"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+requires = ["arch=any"]
+on = ["stable"]
+default = false
+
+[[check]]
+name = "publish-env-tools"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/env-tools-release.sh release /target/publish/env-tools/plan /target/publish/env-tools/image"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/oci-sign.sh"]
+needs = ["env-tools-plan", "image-env-tools", "sign-env-tools"]
+outputs = ["/target/publish/env-tools/image/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["stable"]
+default = false
 # END generated
 
 # BEGIN generated by tools/ci/t_toml.py: products-windows

@@ -2896,7 +2896,7 @@ pub use router::{RouteError, RouteHandle, RouteSnapshot, Router};
 mod document_view;
 pub use document_view::ModelView;
 mod divider;
-pub use divider::{Divider, DividerAxis};
+pub use divider::{Divider, DividerAxis, RuleEdge, paint_rule};
 mod link;
 pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
 mod flap;

@@ -196,5 +196,5 @@ marginal cost today is a share of a node it already pays for.
   (`tilo_rooms_max_guests` and `tilo_rooms_max_spectators`, which the room
   service now exports), and the container above 85 % of its memory limit.
 
-The nightly **Perf / scheduled** `hosting-room` job guards the 100-guest
+t's `perf-hosting-room` check, in the performance run, guards the 100-guest
 point (`tools/perf/kpi-budgets.toml`, `hosting.room.*.g100`).

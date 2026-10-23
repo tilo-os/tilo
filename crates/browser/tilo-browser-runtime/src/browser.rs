@@ -439,9 +439,28 @@ struct Desktop {
     /// last seen, by user root: their windows still name them once they
     /// left.
     people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
+    /// The session the desktop serves its windows, handed to the frame once
+    /// it exists: where a window's "open another app" goes.
+    session: Option<std::sync::Arc<tilo_desktop_surface::session::DesktopSession>>,
+    /// The desktop's end of that session.
+    openings: tilo_desktop_surface::session::Openings,
+    /// What this person may do here, which decides what the session opens
+    /// as the workspace broker decides it on a native desktop.
+    permissions: Rc<RefCell<PermissionContext>>,
+    /// The workspace the session serves.
+    room: String,
 }
 
 impl Desktop {
+    /// Open the apps the windows asked for since the last frame. Whether
+    /// any were asked.
+    fn open_requested_apps(&self) -> bool {
+        let permissions = self.permissions.borrow();
+        self.openings.open(&self.handle, &self.generation, |app| {
+            crate::desktop::may_open(&permissions, app)
+        })
+    }
+
     /// Tell this person, in a banner that retires to the notification
     /// centre, about something someone else did in the room.
     fn notify(&self, title: &str) {
@@ -1242,6 +1261,7 @@ fn present_desktop(
     dyn_store: Rc<dyn durable_store::DurableStore>,
     permissions: Rc<RefCell<PermissionContext>>,
 ) -> Result<Presentation, JsValue> {
+    let opening_permissions = Rc::clone(&permissions);
     let views = Rc::new(
         InstanceViewStore::with_store(Rc::clone(&dyn_store), &config.device, &config.room)
             .map_err(error)?,
@@ -1319,6 +1339,8 @@ fn present_desktop(
             }),
         },
     );
+    let (session, openings) =
+        tilo_desktop_surface::session::serve(config.room.clone(), Arc::clone(&shared.woken));
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
         stores: Rc::clone(&shared.stores),
@@ -1334,6 +1356,10 @@ fn present_desktop(
             here,
             author: config.author(),
             people,
+            session: Some(session),
+            openings,
+            permissions: opening_permissions,
+            room: config.room.clone(),
         }),
     })
 }
@@ -1497,7 +1523,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         checkout,
         images,
         image_owners,
-        desktop,
+        mut desktop,
     } = match definition {
         Some(definition) => {
             present_component(definition, &config, dyn_store, Rc::clone(&permissions))?
@@ -1559,10 +1585,22 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             )
         }
     };
-    if let Some(desktop) = &desktop {
+    if let Some(desktop) = &mut desktop {
         frame
             .attach_owner_wake_queue(desktop.shared.owner_wakes.clone())
             .map_err(|e| error(format!("{e:?}")))?;
+        // A window opens another app by asking the session, as on a native
+        // desktop; this page's desktop is that session.
+        if let Some(session) = desktop.session.take() {
+            frame.set_session_door(
+                ui::RemoteActions::with_host(
+                    session,
+                    tilo_actions::remote::Caller::local_person(desktop.author.clone())
+                        .in_room(desktop.room.clone()),
+                ),
+                Some(desktop.room.clone()),
+            );
+        }
     }
     frame.set_input_scale(dpr).map_err(error)?;
     // Every input asks for a redraw on the next animation frame, which
@@ -2126,6 +2164,13 @@ impl Mount {
             }
             reasons
         });
+        if self
+            .desktop
+            .as_ref()
+            .is_some_and(Desktop::open_requested_apps)
+        {
+            self.pending = true;
+        }
         // Host wakes are consumed only after acquiring a surface. A skipped
         // acquisition must retain them for the next redraw.
         let desktop_woken = self.desktop.as_ref().is_some_and(|desktop| {

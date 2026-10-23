@@ -21,8 +21,8 @@ the push is based on, and only what fails there too passes. A lint (`clippy/*`) 
 step's problem (`policy/*`, tools/policy/findings.py) are compared one finding at a time, so a
 push that adds one is refused however red main is. A check that fails as a whole (a compile
 error, a generated file out of date) can only be compared as a whole: it passes when main fails
-it too, and the hook says which passed that way and why; one that runs tests is refused instead,
-since tests that did not run can't be compared with main's.
+it too, and the hook says which passed that way and why. One that runs tests, or whose failure
+on main named its findings, is refused instead: what fails can't be told from main's.
 
   pre_push.py select --scope SCOPE.json --changed CHANGED.txt
       SCOPE.json is `t scope --rev <commit> --json`, CHANGED.txt the paths the push changes, one
@@ -111,8 +111,8 @@ def blame_note(result: dict) -> str:
     if blame == "flaky":
         return " (flaky)"
     if blame == "uncompared":
-        return (" (its tests did not run, so they can't be compared with main's: main failing it as a whole "
-                "doesn't make it main's)")
+        return (" (it failed as a whole, so what fails can't be compared with main's one by one: its tests did "
+                "not run, or main's failure named findings this one doesn't; main failing too doesn't make it main's)")
     failures = result.get("failures") or []
     findings = [f for f in failures if f.get("test")]
     if blame == "inherited":

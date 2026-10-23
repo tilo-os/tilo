@@ -1177,7 +1177,7 @@ mod tests {
         let mut doc = owner.new_document().unwrap();
         doc.put(ROOT, "body", "typed").unwrap();
         {
-            let _loop = durable_store::waiting::forbid_commit_waits_strictly();
+            let _loop = durable_store::waiting::forbid_strictly_on_this_thread();
             let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
             doc.put(ROOT, "body", "typed more").unwrap();
             writer.save(&mut doc);

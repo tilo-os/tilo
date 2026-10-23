@@ -1,7 +1,7 @@
 //! The window's content, built from the toolkit's widgets.
 //!
 //! The saved connections are the shell's overview list; the selected
-//! connection is one scrolling page of badges, tabs, stat tiles, the
+//! connection is one scrolling page of badges, stat tiles, the
 //! throughput chart and its details. Nothing here sizes or colours chrome:
 //! every control says what it is and the theme decides how it looks. The one
 //! piece of content drawing is the throughput plot, painted by the library
@@ -22,16 +22,16 @@ use ui::theme::Theme;
 use ui::tokens::{SpacingStep, TextRole};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    AxisTick, Badge, Banner, Button, ButtonRole, CartesianPlot, CartesianStyle, ChipStyle, Column,
-    Container, ControlSize, Element, EmptyState, Field, FormSection, LegendPosition, ListRow,
-    PlotAxis, PlotDatum, PlotSeries, Property, PropertyList, Row, Scrollable, Section, SeriesKind,
-    Spacer, StatGroup, StatTile, Text, Toggle, ToggleGroup, Tone, Widget,
+    AxisTick, Badge, Banner, Button, CartesianPlot, CartesianStyle, ChipStyle, Column, Container,
+    Element, EmptyState, Field, FormSection, LegendPosition, ListRow, PlotAxis, PlotDatum,
+    PlotSeries, Property, PropertyList, Row, Scrollable, Section, SeriesKind, Spacer, StatGroup,
+    StatTile, Text, Toggle, ToggleGroup, Tone, Widget,
 };
 
 use crate::model::{ConnId, ConnKind, ConnStatus, Connection, LocalProfileDetails, human_ago};
 use crate::net::Transfer;
 
-/// Which tab of the detail page is showing.
+/// Which view of the detail page is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum DetailTab {
     Status,
@@ -42,6 +42,15 @@ pub(crate) enum DetailTab {
 impl DetailTab {
     pub(crate) const ALL: [DetailTab; 3] =
         [DetailTab::Status, DetailTab::Config, DetailTab::Activity];
+
+    /// The view's id in the window bar's switcher.
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            DetailTab::Status => "vpn-view-status",
+            DetailTab::Config => "vpn-view-configuration",
+            DetailTab::Activity => "vpn-view-activity",
+        }
+    }
 
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -232,12 +241,6 @@ fn connection_row(entry: &ListEntry<'_>, selected: Option<ConnId>, intents: &Int
     row.action(Icon::Power, label, intents.sender(Intent::MainAction(id)))
 }
 
-/// The overview's one header action.
-pub(crate) fn import_button(intents: &Intents) -> Button {
-    Button::icon_only("vpn-import", Icon::Plus, "Import configuration")
-        .on_view(intents.sender(Intent::OpenImport))
-}
-
 /// Nothing saved yet: one sentence and the one way forward.
 pub(crate) fn empty_state(intents: &Intents) -> Element {
     Box::new(
@@ -299,8 +302,8 @@ pub(crate) struct DetailModel<'a> {
     pub tor_global: bool,
 }
 
-/// The selected connection: where it stands, its main action, and one tab
-/// of detail.
+/// The selected connection: where it stands and the detail the window
+/// bar's view switcher chose.
 pub(crate) fn detail(
     model: &DetailModel<'_>,
     intents: &Intents,
@@ -311,7 +314,6 @@ pub(crate) fn detail(
         page = page.push(notice(n, intents));
     }
     page = page.push(Box::new(summary(model)));
-    page = page.push(Box::new(tabs(model.tab, intents)));
     page = page.push(match model.tab {
         DetailTab::Status => status(model, intents),
         DetailTab::Config => config(model),
@@ -358,141 +360,6 @@ fn summary(model: &DetailModel<'_>) -> Row {
         row = row.push(Box::new(Badge::text("Tor").style(ChipStyle::Neutral)));
     }
     row
-}
-
-/// The selected connection's main action, as the detail toolbar shows it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ToolbarAction {
-    pub id: ConnId,
-    pub action: MainAction,
-}
-
-/// Where the app says what the detail toolbar's main action is; the
-/// toolbar button follows it.
-#[derive(Clone, Default)]
-pub(crate) struct ToolbarActionSlot(Rc<Cell<Option<ToolbarAction>>>);
-
-impl ToolbarActionSlot {
-    pub(crate) fn set(&self, action: Option<ToolbarAction>) {
-        self.0.set(action);
-    }
-
-    fn get(&self) -> Option<ToolbarAction> {
-        self.0.get()
-    }
-}
-
-/// The detail toolbar's main action: Connect, Disconnect or Set up on this
-/// device for the selected connection, and nothing while it is changing
-/// state (its status says so).
-pub(crate) struct MainActionButton {
-    slot: ToolbarActionSlot,
-    intents: Intents,
-    shown: Option<ToolbarAction>,
-    row: Row,
-    changed: bool,
-}
-
-impl MainActionButton {
-    pub(crate) fn new(slot: &ToolbarActionSlot, intents: &Intents) -> Self {
-        Self {
-            slot: slot.clone(),
-            intents: intents.clone(),
-            shown: None,
-            row: Row::new().no_wrap(),
-            changed: false,
-        }
-    }
-
-    /// Rebuild the button when the main action changed since it was built.
-    fn follow(&mut self) -> bool {
-        let wanted = self.slot.get();
-        if wanted == self.shown {
-            return false;
-        }
-        self.shown = wanted;
-        let mut row = Row::new().no_wrap();
-        if let Some(ToolbarAction { id, action }) =
-            wanted.filter(|toolbar| toolbar.action != MainAction::Connecting)
-        {
-            let role = match action {
-                MainAction::Disconnect => ButtonRole::Secondary,
-                _ => ButtonRole::Primary,
-            };
-            row = row.push(Box::new(
-                Button::new("vpn-main-action", action.label())
-                    .role(role)
-                    .control_size(ControlSize::Small)
-                    .on_effect(self.intents.sender(Intent::MainAction(id))),
-            ));
-        }
-        self.row = row;
-        self.changed = true;
-        true
-    }
-}
-
-impl ui::widget::Decorator for MainActionButton {
-    type Inner = Row;
-
-    fn inner(&self) -> &Row {
-        &self.row
-    }
-
-    fn inner_mut(&mut self) -> &mut Row {
-        &mut self.row
-    }
-
-    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
-        self.follow();
-        Widget::sync(&mut self.row, state, path);
-    }
-
-    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        let changed = self.follow();
-        Widget::update(&mut self.row, state, path) || changed
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.follow();
-        self.changed = false;
-        Widget::build_layout(&mut self.row, taffy, theme, node_map)
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let changed = self.follow() || self.changed;
-        Widget::take_structure_dirty(&mut self.row) || changed
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.changed || self.slot.get() != self.shown || Widget::is_layout_dirty(&self.row)
-    }
-}
-
-fn tabs(selected: DetailTab, intents: &Intents) -> ToggleGroup {
-    let index = DetailTab::ALL
-        .iter()
-        .position(|tab| *tab == selected)
-        .unwrap_or(0);
-    let intents = intents.clone();
-    ToggleGroup::new(
-        DetailTab::ALL
-            .iter()
-            .map(|tab| Segment::new(tab.label()))
-            .collect(),
-        index,
-    )
-    .with_id("vpn-tabs")
-    .on_change(move |i| {
-        if let Some(tab) = DetailTab::ALL.get(i) {
-            intents.push(Intent::SetTab(*tab));
-        }
-    })
 }
 
 fn status(model: &DetailModel<'_>, intents: &Intents) -> Element {

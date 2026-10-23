@@ -6,7 +6,7 @@
 // draws it over the window's tile. It measures what a person sees and checks
 // that what they see is right. It writes one report; `tools/perf/adapters.py
 // native-stream` turns it into the `stream` KPI group's records
-// (Perf / scheduled, tools/perf/kpi-budgets.toml).
+// (t's perf-stream, tools/perf/kpi-budgets.toml).
 //
 // usage: node scripts/perf/native_stream_qualification.mjs BUNDLE_DIR --out REPORT_JSON
 //          --relay TILO_RELAY --source LEGACY_STREAM_SOURCE --renderer gpu|swiftshader

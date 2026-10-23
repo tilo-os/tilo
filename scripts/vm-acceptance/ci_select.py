@@ -28,7 +28,8 @@ INERT = re.compile(r"^(README\.md|test_[a-z_]+\.py|prune_disks\.py|build-disk\.s
                    r"component-replacement\.py|acceptance/replacement\.py)$")
 
 
-WORKFLOW = ".forgejo/workflows/vm-acceptance.yml"
+# The runner of the suite on t: a change to it can change any result.
+RUNNER = "tools/ci/vm-acceptance.sh"
 # Source paths and the checks that prove them in a session. `input` is the device-profile
 # area; B04 (layout) and W17 (typing into Terminal) are the older checks on the same path.
 INPUT = "input,B04,W17"
@@ -68,7 +69,7 @@ def select(changed: list[str], suite: Path = HERE) -> str:
     inert = False
     features: list[str] = []
     for path in changed:
-        if path == WORKFLOW:
+        if path == RUNNER:
             return ""
         feature = next((ids for pattern, ids in FEATURES if pattern.match(path)), None)
         if feature:

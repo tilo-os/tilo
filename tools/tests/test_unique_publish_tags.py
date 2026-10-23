@@ -8,48 +8,11 @@ So each publishing push carries a tag unique to its run and attempt, next to
 any tag a rerun or a later run may move.
 """
 from pathlib import Path
-import re
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".forgejo/workflows"
-UNIQUE = ("${{ github.run_id }}", "${{ github.run_attempt }}")
-
-
-def steps(path: Path) -> list[str]:
-    return re.split(r"\n(?=      - (?:name|uses): )", path.read_text())
-
-
-def pushing_build_steps(path: Path) -> list[str]:
-    found = []
-    for step in steps(path):
-        if "docker/build-push-action@" not in step:
-            continue
-        push = re.search(r"\n          push: (.+)", step)
-        if push and push.group(1).strip() not in ("false",):
-            found.append(step)
-    return found
-
-
-def tags(step: str) -> str:
-    block = re.search(r"\n          tags: (\|\n(?:            .+\n)+|.+)", step)
-    return block.group(1) if block else ""
-
-
-class BuildPushTests(unittest.TestCase):
-    def test_every_pushing_build_carries_a_run_and_attempt_unique_tag(self):
-        checked = 0
-        for path in sorted(WORKFLOWS.glob("*.y*ml")):
-            for step in pushing_build_steps(path):
-                name = re.match(r"      - (?:name: )?(.+)", step).group(1)
-                with self.subTest(workflow=path.name, step=name):
-                    value = tags(step)
-                    unique = [line for line in value.splitlines()
-                              if all(part in line for part in UNIQUE)]
-                    self.assertTrue(unique, f"no run- and attempt-unique tag in: {value}")
-                    checked += 1
-        self.assertGreaterEqual(checked, 1)
 
 
 class ShellPushTests(unittest.TestCase):

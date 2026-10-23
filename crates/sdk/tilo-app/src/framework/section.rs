@@ -31,6 +31,8 @@ enum SectionOp<'a> {
     /// The section the document holds, published under an id and a label.
     Publish(&'a Doc, &'a str, &'a str),
     Decode(&'a EncodedAction),
+    /// The section as stored now.
+    Stored,
 }
 
 /// What a [`SectionOp`] answers.
@@ -39,6 +41,7 @@ enum SectionOut {
     Holds(bool),
     Published(Box<tilo_actions::Resource>),
     Decoded(Box<dyn Action>),
+    Value(serde_json::Value),
 }
 
 /// What a section's record does with the section's type: one function per
@@ -126,6 +129,14 @@ impl SectionKind {
             _ => Err("the section decoded nothing".into()),
         }
     }
+
+    /// The section as stored now, as its model writes it.
+    fn stored(&self) -> Result<serde_json::Value, String> {
+        match (self.ops)(self, SectionOp::Stored)? {
+            SectionOut::Value(value) => Ok(value),
+            _ => Err("the section read nothing".into()),
+        }
+    }
 }
 
 /// Everything a section's record asks of the section type `T`.
@@ -167,6 +178,9 @@ where
             tilo_actions::decode_json::<T::Action>(&action.payload)
                 .map_err(|error| error.to_string())?,
         )),
+        SectionOp::Stored => {
+            SectionOut::Value(tilo_resource::Model::to_json(&kind.settings::<T>().get()))
+        }
     })
 }
 
@@ -707,6 +721,18 @@ impl SettingsRecords {
             Some(person) => person.resources(),
             None => self.doors.iter().map(|door| door.publish()).collect(),
         }
+    }
+
+    /// The section `kind` (`settings.appearance`) as stored now, as its
+    /// model writes it: what a control showing one of its fields shows.
+    /// `None` for a section not declared here.
+    #[must_use]
+    pub fn stored(&self, kind: &str) -> Option<serde_json::Value> {
+        let door = self.doors.iter().find(|door| door.kind.kind == kind)?;
+        door.kind
+            .stored()
+            .map_err(|error| tracing::warn!(kind, %error, "settings section unreadable"))
+            .ok()
     }
 
     /// Run the action at `address` with its typed `arguments` for `invoker`,

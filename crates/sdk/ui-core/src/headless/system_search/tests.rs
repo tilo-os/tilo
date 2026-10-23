@@ -106,7 +106,7 @@ fn global_search_owns_ime_and_restores_document_focus() {
         "Writer",
         "Trip notes",
         "Insert table",
-        "Filter: Applications",
+        "Filter: Apps",
         "Everywhere",
     ] {
         assert!(json.contains(name), "missing {name}");
@@ -386,7 +386,7 @@ fn accesskit_filters_and_query_share_the_current_native_controls() {
     f.perform_a11y_action(workspace, &crate::a11y::Action::Activate)
         .unwrap();
     assert!(!f.inspection_json().unwrap().contains("Other workspace"));
-    let app_filter = f.a11y_node_named("Filter: Applications").unwrap();
+    let app_filter = f.a11y_node_named("Filter: Apps").unwrap();
     f.perform_a11y_action(app_filter, &crate::a11y::Action::Activate)
         .unwrap();
     assert_eq!(

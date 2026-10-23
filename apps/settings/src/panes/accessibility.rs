@@ -299,51 +299,20 @@ impl AccessibilityPane {
         id: &str,
         path: tilo_resource::Path<AccessibilitySettings, V>,
     ) -> SettingRow<'_, AccessibilitySettings, V> {
-        self.cx
-            .row(t(label))
-            .described(t(&format!("{label}-desc")))
-            .id(id)
-            .of(&self.access, path)
+        assist(&self.cx, &self.access, label, id, path)
     }
 
     // --- Vision: high contrast, reduce motion, text size.
     fn build_vision_card(&self) -> SettingsSection {
-        let appearance = AppearancePrefs::paths();
         let access = AccessibilitySettings::paths();
         section(
             &t("a11y-vision-title"),
             rows(vec![
-                self.cx
-                    .row(t("a11y-high-contrast"))
-                    .described(t("a11y-high-contrast-desc"))
-                    .id("a11y.high_contrast")
-                    .of(&self.appearance, appearance.high_contrast)
-                    .toggle(),
-                self.cx
-                    .row(t("a11y-reduce-motion"))
-                    .described(t("a11y-reduce-motion-desc"))
-                    .id("a11y.reduce_motion")
-                    .of(&self.appearance, appearance.reduce_motion)
-                    .toggle(),
-                self.cx
-                    .row(t("a11y-text-size"))
-                    .id("a11y.text_size")
-                    .of(&self.appearance, appearance.text_scale)
-                    .among(TEXT_SIZES.iter().map(|(_, scale)| *scale), |scale: &f64| {
-                        text_size_label(*scale)
-                    }),
-                self.cx
-                    .row(t("a11y-colour-filter"))
-                    .id("a11y.color_filter")
-                    .of(&self.access, access.color_filter)
-                    .choose(),
-                self.cx
-                    .row(t("a11y-magnifier"))
-                    .id("a11y.magnifier")
-                    .of(&self.access, access.magnifier_zoom)
-                    .among(magnifier::zoom_levels(), |zoom: &u8| {
-                        magnifier::zoom_label(*zoom).to_owned()
-                    }),
+                high_contrast(&self.cx, &self.appearance),
+                reduce_motion(&self.cx, &self.appearance),
+                text_size(&self.cx, &self.appearance),
+                colour_filter(&self.cx, &self.access),
+                magnifier_zoom(&self.cx, &self.access),
                 self.cx
                     .row(t("a11y-magnifier-view"))
                     .id("a11y.magnifier_view")
@@ -359,22 +328,10 @@ impl AccessibilityPane {
         section(
             &t("a11y-pointer-title"),
             rows(vec![
-                self.assist("a11y-mouse-keys", "a11y.mouse_keys", access.mouse_keys)
-                    .toggle(),
+                mouse_keys(&self.cx, &self.access),
                 note(&t("a11y-mouse-keys-caption")),
-                self.assist(
-                    "a11y-large-cursor",
-                    "a11y.large_cursor",
-                    access.large_cursor,
-                )
-                .toggle(),
-                self.cx
-                    .row(t("a11y-cursor-size"))
-                    .id("a11y.cursor_size")
-                    .of(&self.access, access.cursor_size)
-                    .among(values(AccessibilitySettings::CURSOR_SIZES), |size: &u32| {
-                        AccessibilitySettings::cursor_size_label(*size).to_owned()
-                    }),
+                large_cursor(&self.cx, &self.access),
+                cursor_size(&self.cx, &self.access),
                 self.assist(
                     "a11y-pointer-crosshair",
                     "a11y.cursor_crosshair",
@@ -397,12 +354,9 @@ impl AccessibilityPane {
         section(
             &t("a11y-typing-title"),
             rows(vec![
-                self.assist("a11y-sticky-keys", "a11y.sticky_keys", access.sticky_keys)
-                    .toggle(),
-                self.assist("a11y-slow-keys", "a11y.slow_keys", access.slow_keys)
-                    .toggle(),
-                self.assist("a11y-bounce-keys", "a11y.bounce_keys", access.bounce_keys)
-                    .toggle(),
+                sticky_keys(&self.cx, &self.access),
+                slow_keys(&self.cx, &self.access),
+                bounce_keys(&self.cx, &self.access),
                 self.cx
                     .row(t("a11y-bounce-delay"))
                     .id("a11y.bounce_delay")
@@ -416,18 +370,8 @@ impl AccessibilityPane {
                     access.bounce_keys_alert,
                 )
                 .toggle(),
-                self.assist(
-                    "a11y-osk",
-                    "a11y.on_screen_keyboard",
-                    access.on_screen_keyboard,
-                )
-                .choose(),
-                self.assist(
-                    "a11y-switch-control",
-                    "a11y.switch_control",
-                    access.switch_control,
-                )
-                .toggle(),
+                on_screen_keyboard(&self.cx, &self.access),
+                switch_control(&self.cx, &self.access),
                 self.cx
                     .row(t("a11y-switch-keys"))
                     .id("a11y.switch_keys")
@@ -508,12 +452,7 @@ impl AccessibilityPane {
                             access.dictation_literal,
                         )
                         .toggle(),
-                        self.assist(
-                            "a11y-visual-alerts",
-                            "a11y.visual_alerts",
-                            access.visual_alerts,
-                        )
-                        .toggle(),
+                        visual_alerts(&self.cx, &self.access),
                         value_row(
                             &t("a11y-focus-highlight"),
                             &t("a11y-focus-highlight-status"),
@@ -560,6 +499,118 @@ impl AccessibilityPane {
                 },
             )
     }
+}
+
+/// The row of the assist at `path` of `access`, labelled by `label` and its
+/// `-desc` line, its control `id`.
+fn assist<'a, V>(
+    cx: &'a PaneCx,
+    access: &'a Followed<AccessibilitySettings>,
+    label: &str,
+    id: &str,
+    path: tilo_resource::Path<AccessibilitySettings, V>,
+) -> SettingRow<'a, AccessibilitySettings, V> {
+    cx.row(t(label))
+        .described(t(&format!("{label}-desc")))
+        .id(id)
+        .of(access, path)
+}
+
+pub(crate) fn high_contrast(cx: &PaneCx, appearance: &Followed<AppearancePrefs>) -> Item {
+    cx.row(t("a11y-high-contrast"))
+        .described(t("a11y-high-contrast-desc"))
+        .id("a11y.high_contrast")
+        .of(appearance, AppearancePrefs::paths().high_contrast)
+        .toggle()
+}
+
+pub(crate) fn reduce_motion(cx: &PaneCx, appearance: &Followed<AppearancePrefs>) -> Item {
+    cx.row(t("a11y-reduce-motion"))
+        .described(t("a11y-reduce-motion-desc"))
+        .id("a11y.reduce_motion")
+        .of(appearance, AppearancePrefs::paths().reduce_motion)
+        .toggle()
+}
+
+pub(crate) fn text_size(cx: &PaneCx, appearance: &Followed<AppearancePrefs>) -> Item {
+    cx.row(t("a11y-text-size"))
+        .id("a11y.text_size")
+        .of(appearance, AppearancePrefs::paths().text_scale)
+        .among(TEXT_SIZES.iter().map(|(_, scale)| *scale), |scale: &f64| {
+            text_size_label(*scale)
+        })
+}
+
+pub(crate) fn colour_filter(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    cx.row(t("a11y-colour-filter"))
+        .id("a11y.color_filter")
+        .of(access, AccessibilitySettings::paths().color_filter)
+        .choose()
+}
+
+pub(crate) fn magnifier_zoom(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    cx.row(t("a11y-magnifier"))
+        .id("a11y.magnifier")
+        .of(access, AccessibilitySettings::paths().magnifier_zoom)
+        .among(magnifier::zoom_levels(), |zoom: &u8| {
+            magnifier::zoom_label(*zoom).to_owned()
+        })
+}
+
+pub(crate) fn mouse_keys(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().mouse_keys;
+    assist(cx, access, "a11y-mouse-keys", "a11y.mouse_keys", path).toggle()
+}
+
+pub(crate) fn large_cursor(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().large_cursor;
+    assist(cx, access, "a11y-large-cursor", "a11y.large_cursor", path).toggle()
+}
+
+pub(crate) fn cursor_size(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    cx.row(t("a11y-cursor-size"))
+        .id("a11y.cursor_size")
+        .of(access, AccessibilitySettings::paths().cursor_size)
+        .among(values(AccessibilitySettings::CURSOR_SIZES), |size: &u32| {
+            AccessibilitySettings::cursor_size_label(*size).to_owned()
+        })
+}
+
+pub(crate) fn sticky_keys(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().sticky_keys;
+    assist(cx, access, "a11y-sticky-keys", "a11y.sticky_keys", path).toggle()
+}
+
+pub(crate) fn slow_keys(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().slow_keys;
+    assist(cx, access, "a11y-slow-keys", "a11y.slow_keys", path).toggle()
+}
+
+pub(crate) fn bounce_keys(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().bounce_keys;
+    assist(cx, access, "a11y-bounce-keys", "a11y.bounce_keys", path).toggle()
+}
+
+pub(crate) fn on_screen_keyboard(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().on_screen_keyboard;
+    assist(cx, access, "a11y-osk", "a11y.on_screen_keyboard", path).choose()
+}
+
+pub(crate) fn switch_control(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().switch_control;
+    assist(
+        cx,
+        access,
+        "a11y-switch-control",
+        "a11y.switch_control",
+        path,
+    )
+    .toggle()
+}
+
+pub(crate) fn visual_alerts(cx: &PaneCx, access: &Followed<AccessibilitySettings>) -> Item {
+    let path = AccessibilitySettings::paths().visual_alerts;
+    assist(cx, access, "a11y-visual-alerts", "a11y.visual_alerts", path).toggle()
 }
 
 impl Widget for AccessibilityPane {

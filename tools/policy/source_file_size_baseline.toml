@@ -12,7 +12,6 @@
 "apps/canvas/src/surface.rs" = 4000
 "apps/chat/src/app.rs" = 5500
 "apps/chat/src/render_chat.rs" = 4000
-"apps/code-editor/src/app.rs" = 3500
 "apps/code-editor/src/editor_view.rs" = 4000
 "apps/contacts/src/app/tests.rs" = 5000
 "apps/ebook/src/app.rs" = 9500
@@ -107,7 +106,7 @@
 "crates/sdk/ui-core/src/text_render.rs" = 5500
 "crates/sdk/ui-core/src/ui_graph.rs" = 5000
 "crates/sdk/ui-core/src/widget/activity_timeline.rs" = 6500
-"crates/sdk/ui-core/src/widget/block_editor.rs" = 14000
+"crates/sdk/ui-core/src/widget/block_editor.rs" = 13500
 "crates/sdk/ui-core/src/widget/button.rs" = 4000
 "crates/sdk/ui-core/src/widget/capture_studio.rs" = 3500
 "crates/sdk/ui-core/src/widget/cartesian_plot.rs" = 4000

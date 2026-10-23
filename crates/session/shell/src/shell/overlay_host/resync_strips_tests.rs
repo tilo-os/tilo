@@ -1605,7 +1605,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
         );
         assert_eq!(
             host.active_kind_filter,
-            vec![ResourceKind::Application, ResourceKind::HostApplication],
+            vec![ResourceKind::Application],
             "the group + is an app picker, not generic search"
         );
         assert!(host.palette_visible(), "the picker opens immediately");

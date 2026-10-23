@@ -154,7 +154,10 @@ fn search_preserves_production_network_pane_but_category_switch_replaces_it() {
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = wide(&config);
     let network = named_widget_identity(&*h, "NetworkPane").unwrap();
-    bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "z");
+    // A query that finds no setting narrows the list and leaves the pane;
+    // one that finds settings shows them instead.
+    bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "zqx");
+    assert!(h.found_settings().is_empty());
     assert_eq!(named_widget_identity(&*h, "NetworkPane"), Some(network));
     select(&mut h, Category::About);
     assert_eq!(h.selected(), super::Category::About);
@@ -247,7 +250,8 @@ fn keyboard_map_observes_foreground_physical_keys_while_the_list_is_narrowed() {
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = wide(&config);
     select(&mut h, Category::Keyboard);
-    bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "k");
+    bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "zqx");
+    assert!(h.found_settings().is_empty(), "the keyboard pane stays");
     let compiled = crate::keyboard_preview::compilation_count();
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
     let original_heads = heads(&mut h);
@@ -268,7 +272,7 @@ fn keyboard_map_observes_foreground_physical_keys_while_the_list_is_narrowed() {
         compiled,
         "recomposition must retain the bounded compiled preview"
     );
-    assert_eq!(snapshot(&h)["search_query"], "k");
+    assert_eq!(snapshot(&h)["search_query"], "zqx");
     dispatch_preview_key(&mut h, ElementState::Released);
     assert_eq!(keyboard_map_pressed(&*h, key), Some(false));
     dispatch_preview_key(&mut h, ElementState::Pressed);

@@ -779,6 +779,9 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
     });
     Framed::harness_mut(&mut app).relayout();
     let script = zoom_script(app.zoom(), top);
+    // A native window draws on its frame clock: input between two frames
+    // is dispatched as it arrives and drawn once, in the next.
+    Framed::harness_mut(&mut app).set_coalesce_input_frames(true);
     // The CPU renderer the desktop draws with where it has no GPU: the
     // same pixels, on any machine, pinned to any CPU.
     let mut raster = tilo_cpu_raster::CpuRasterizer::default();
@@ -795,9 +798,7 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
     for step in script {
         next += period;
         // Ctrl goes down before the Ctrl+wheel and keyboard steps and stays
-        // down through them, as a hand holds it; the harness runs a frame
-        // for each event, so pressing it within a step would count frames
-        // of its own.
+        // down through them, as a hand holds it.
         let ctrl = matches!(step, ZoomStep::CtrlWheel(_) | ZoomStep::Key(_));
         if ctrl != ctrl_held {
             let held: &[String] = if ctrl { &["ctrl".to_owned()] } else { &[] };
@@ -807,11 +808,11 @@ fn drive_zoom(path: &std::path::Path, (w, h): (u32, u32), top: f64) -> Option<Ve
         let cpu = ui::rt::thread_cpu_time();
         let t = ui::time::now();
         let harness = Framed::harness_mut(&mut app);
-        // An event runs its own frame; a frame with no input runs one.
-        if matches!(step, ZoomStep::Idle) {
-            harness.relayout();
-        } else {
-            send_zoom_step(harness, step);
+        // The step's input is dispatched as it arrives and the window draws
+        // once, on its frame clock.
+        send_zoom_step(harness, step);
+        if let Err(error) = harness.poll_frame() {
+            panic!("frame {}: {error:?}", samples.len());
         }
         let cpu_ms = match (cpu, ui::rt::thread_cpu_time()) {
             (Some(before), Some(after)) => after.saturating_sub(before).as_secs_f64() * 1000.0,

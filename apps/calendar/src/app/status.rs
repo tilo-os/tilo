@@ -29,6 +29,7 @@ impl CalendarApp {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.status.keep_while(self.syncing);
         self.status.expire();
         let Some(message) = self.status.get() else {
             return;
@@ -110,5 +111,44 @@ mod tests {
                 .any(|(_, action)| matches!(action, Action::DismissStatus)),
             "the gone status leaves no close button behind"
         );
+    }
+
+    /// "Syncing…" stays for as long as the sync runs, past a notice's
+    /// lifetime, and goes once the sync is over.
+    #[test]
+    fn syncing_stays_while_the_sync_runs() {
+        use ui::time::testing::with_monotonic_time;
+        let mut app = CalendarApp::new_detached();
+        let start = ui::time::now();
+        let at = |seconds: u64| start + std::time::Duration::from_secs(seconds);
+        let draw = |app: &mut CalendarApp| {
+            app.hits.clear();
+            app.draw_status(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::default(),
+            );
+            app.status.as_deref().map(str::to_owned)
+        };
+        with_monotonic_time(start, || app.shots_set_sync_state("syncing"));
+        for second in [3, 6, 9] {
+            with_monotonic_time(at(second), || {
+                assert_eq!(
+                    draw(&mut app).as_deref(),
+                    Some("Syncing calendars…"),
+                    "still syncing at {second}s"
+                );
+            });
+        }
+        assert_eq!(
+            app.status.deadline(),
+            Some(at(9) + ui::widget::toast::NOTICE_LIFETIME),
+            "the app wakes to look again"
+        );
+        app.syncing = false;
+        with_monotonic_time(at(10), || {
+            assert_eq!(draw(&mut app), None, "the sync is over");
+        });
     }
 }

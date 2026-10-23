@@ -184,8 +184,10 @@ case $group in
   hosting-room)
     cargo build --locked --release -p tilo-room-load --features tilo-relay/agents
     env_json release none kvm > "$out/env.json"
+    # t sizes TOKIO_WORKER_THREADS by the cores a job is given, which may be more than it asks
+    # for; the series was measured with a runtime worker per core of a 40-CPU quota.
     for run in 1 2 3; do
-      "$target/release/tilo-room-load" bench --guests 100 --malloc-arenas 2 --hold 60 \
+      TOKIO_WORKER_THREADS=40 "$target/release/tilo-room-load" bench --guests 100 --malloc-arenas 2 --hold 60 \
         > "$out/room-load-$run.json" 2> "$out/room-load-$run.log"
     done
     python3 tools/perf/adapters.py room-load --env-json "$out/env.json" "$out"/room-load-*.json \

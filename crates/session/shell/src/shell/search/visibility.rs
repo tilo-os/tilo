@@ -80,7 +80,7 @@ pub fn required_action(
 
         // Launching puts a tab in the workspace: an undoable change of that
         // app.
-        ResourceKind::Application | ResourceKind::HostApplication => Some((
+        ResourceKind::Application => Some((
             TreePath::root().app(resource.id.clone()),
             ActionKind::Undoable,
         )),

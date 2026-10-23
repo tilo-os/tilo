@@ -3003,9 +3003,6 @@ impl Widget for NotesApp {
         if self.handle_help_key(event, ctx) {
             return;
         }
-        if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
-            return;
-        }
         if self.handle_new_note_shortcut(event, ctx) {
             return;
         }
@@ -3321,39 +3318,6 @@ impl NotesApp {
         self.shortcuts.set_visible(true);
         *ctx.handled = true;
         self.refresh_status();
-        true
-    }
-
-    /// Window-level Find always targets the current note body. The searchable
-    /// editor and overlay live in `ui::BlockEditor`; Notes only routes the
-    /// conventional command when a sibling such as the title owns focus.
-    fn handle_find_shortcut(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-        focus_target: &mut Option<NodeId>,
-        handled: &mut bool,
-    ) -> bool {
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Character(key),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let mods = modifiers.state();
-        if !(mods.control_key() || mods.super_key()) || !key.eq_ignore_ascii_case("f") {
-            return false;
-        }
-        if !self.main.open_find(focus_target) {
-            return false;
-        }
-        *handled = true;
         true
     }
 

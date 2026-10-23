@@ -433,7 +433,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "notifications.dnd.toggle"
         | "appearance.theme.dark"
         | "appearance.theme.light"
-        | "appearance.high-contrast"
         | "appearance.language" => {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
@@ -1495,64 +1494,6 @@ pub(super) fn set_mode(
         invoked_by,
     )?;
     st.note_appearance_change();
-    Ok(())
-}
-
-/// A boolean setting offered as a switch row. Activating the row (a click,
-/// a tap, Enter) flips the value stored at that moment, so a second
-/// activation puts back what the first changed, and the row's pill reads the
-/// stored value each time search lists it: ON or OFF, wherever the setting
-/// last changed (here, in Settings, from another device). Every boolean
-/// setting search offers as one row is declared here, so they all behave
-/// alike, and each flips its setting through its Settings section's field
-/// edit, which records the switch as the action that ran it.
-struct SettingToggle {
-    /// The action's id.
-    id: &'static str,
-    /// The setting it flips, as the session reads it.
-    key: settings_store::Key<bool>,
-    /// The Settings section whose field edit changes it (`settings.appearance`).
-    section: &'static str,
-    /// The section's field it is.
-    field: &'static str,
-    /// What the running session does once the new value is stored.
-    applied: fn(&mut ChromeState),
-}
-
-const SETTING_TOGGLES: &[SettingToggle] = &[
-    // High contrast in the current mode's polarity.
-    SettingToggle {
-        id: "appearance.high-contrast",
-        key: settings_store::appearance::HIGH_CONTRAST,
-        section: "settings.appearance",
-        field: "high_contrast",
-        applied: ChromeState::note_appearance_change,
-    },
-];
-
-fn setting_toggle(id: &str) -> Option<&'static SettingToggle> {
-    SETTING_TOGGLES.iter().find(|toggle| toggle.id == id)
-}
-
-/// Whether the boolean setting the switch row `id` flips is on now.
-fn setting_toggle_is_on(toggle: &SettingToggle) -> bool {
-    toggle.key.from_document(&settings_store::load())
-}
-
-/// Flip the boolean setting behind the switch row `id`: on when it is off,
-/// off when it is on.
-fn flip_setting(st: &mut ChromeState, id: &str) -> Result<(), ActionError> {
-    use crate::shell::settings_records::{address, change, set_field};
-    let toggle =
-        setting_toggle(id).ok_or_else(|| ActionError::Refused(format!("{id} is not a switch")))?;
-    let on = !setting_toggle_is_on(toggle);
-    change(
-        &address(toggle.section, "field-edit"),
-        &set_field(toggle.field, &on.into()),
-        false,
-        &settings_store::InvokingAction::action(toggle.id),
-    )?;
-    (toggle.applied)(st);
     Ok(())
 }
 
@@ -3005,12 +2946,6 @@ impl Action {
                 let invoked_by = settings_store::InvokingAction::action("appearance.theme.light");
                 set_mode(st, "light", &invoked_by)
             },
-        ),
-        chrome(
-            "appearance.high-contrast",
-            "search-action-appearance-high-contrast",
-            "search-action-appearance-high-contrast-subtitle",
-            |st, _| flip_setting(st, "appearance.high-contrast"),
         ),
         Action {
             id: "appearance.language",
@@ -5127,7 +5062,6 @@ pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
         ("quick-settings", Icon::Settings2),
         ("appearance.theme.dark", Icon::Moon),
         ("appearance.theme.light", Icon::Sun),
-        ("appearance.high-contrast", Icon::Contrast),
         ("appearance.language", Icon::Globe),
         ("appearance", Icon::Palette),
         ("notifications", Icon::Bell),
@@ -5183,8 +5117,7 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
             | "appearance.theme.light"
             | "navigation.axis.enable"
             | "navigation.axis.disable"
-    ) || setting_toggle(id).is_some()
-        || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
+    ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
         || LEVEL_STEPS.iter().any(|step| step.id == id)
         || id == QS_MUTE_ID
 }
@@ -5421,7 +5354,7 @@ fn radio_is_on(state: &ChromeState, set_enabled_id: &str) -> bool {
 }
 
 /// `ON` or `OFF`, as the search-source switches say it.
-fn on_off_badge(on: bool) -> String {
+pub(super) fn on_off_badge(on: bool) -> String {
     t(if on {
         "search-action-provider-badge-on"
     } else {
@@ -5433,9 +5366,6 @@ fn on_off_badge(on: bool) -> String {
 /// switch: on or off, or which mode is current.
 fn state_badge(id: &str, state: &ChromeState) -> Option<String> {
     use settings_store::appearance::{HIGH_CONTRAST, MODE};
-    if let Some(toggle) = setting_toggle(id) {
-        return Some(on_off_badge(setting_toggle_is_on(toggle)));
-    }
     match id {
         "notifications.dnd.toggle" => Some(on_off_badge(state.dnd())),
         "navigation.axis.enable" => state
@@ -7733,10 +7663,6 @@ mod tests {
             "appearance.theme.light"
         );
         assert_eq!(
-            id_of("high contrast", "appearance.high-contrast"),
-            "appearance.high-contrast"
-        );
-        assert_eq!(
             id_of("language", "appearance.language"),
             "appearance.language"
         );
@@ -7753,9 +7679,6 @@ mod tests {
         );
         assert_eq!(MODE.get().as_deref(), Some("dark"));
         assert!(!HIGH_CONTRAST.get());
-
-        invoke_action(&query("high contrast"), "appearance.high-contrast", &chrome);
-        assert!(HIGH_CONTRAST.get());
 
         let language = query("language")
             .into_iter()
@@ -7855,138 +7778,6 @@ mod tests {
             "light",
             "processes reading the copy see the typed write"
         );
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn every_setting_switch_flips_both_ways_and_its_row_shows_the_live_value() {
-        let config = tempfile::tempdir().expect("isolated settings");
-        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
-        let records = settings_store::SessionSettings::open(paths.clone()).expect("records");
-        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
-
-        let provider = ActionsProvider::new();
-        let chrome = chrome_with_room();
-        let doc = AutoCommit::new();
-        // The row as the palette lists it for its name, and as an exact
-        // address finds it.
-        let listed = |id: &str| {
-            let action = Action::ALL
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap_or_else(|| panic!("{id} is a table action"));
-            let name = t(action.label);
-            let state = chrome.borrow();
-            provider
-                .query(SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle: &name,
-                    wanted: &[ResourceKind::Action],
-                    chrome: &state,
-                    doc: &doc,
-                    doc_root: &automerge::ROOT,
-                })
-                .into_iter()
-                .find(|row| row.id == id)
-                .unwrap_or_else(|| panic!("search lists the switch {id}"))
-        };
-        let resolved = |id: &str| {
-            let state = chrome.borrow();
-            provider
-                .resolve(
-                    id,
-                    SearchContext {
-                        query_scope: None,
-                        include_programmatic: false,
-                        needle: id,
-                        wanted: &[ResourceKind::Action],
-                        chrome: &state,
-                        doc: &doc,
-                        doc_root: &automerge::ROOT,
-                    },
-                )
-                .unwrap_or_else(|| panic!("the switch {id} resolves"))
-        };
-        let activate = |id: &str| {
-            let row = listed(id);
-            let mut document = AutoCommit::new();
-            (row.on_open)(
-                &mut ui::widget::Edits::lend(&mut document),
-                &automerge::ROOT,
-                &chrome,
-                &ActionArgs::none(),
-            )
-            .unwrap_or_else(|err| panic!("{id} flips: {err:?}"));
-        };
-
-        assert!(!SETTING_TOGGLES.is_empty());
-        for toggle in SETTING_TOGGLES {
-            let id = toggle.id;
-            assert!(
-                toggles_in_place(id),
-                "{id}: the palette stays open on a switch so its row shows the new state"
-            );
-            let original = toggle.key.get();
-            assert_eq!(listed(id).badge, Some(on_off_badge(original)), "{id}");
-
-            let before =
-                std::fs::read_to_string(paths.change_log()).map_or(0, |log| log.lines().count());
-            activate(id);
-            assert_eq!(
-                toggle.key.get(),
-                !original,
-                "{id}: the first activation flips it"
-            );
-            let log = std::fs::read_to_string(paths.change_log()).expect("change log");
-            let entries: Vec<serde_json::Value> = log
-                .lines()
-                .skip(before)
-                .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
-                .collect();
-            assert_eq!(entries.len(), 1, "{id}: one leaf changed: {entries:?}");
-            let entry = &entries[0];
-            assert_eq!(entry["leaf"], toggle.field, "{entry}");
-            assert_eq!(entry["after"], !original, "{entry}");
-            assert_eq!(
-                entry["action"],
-                format!("{}/field-edit", toggle.section),
-                "{id}: the switch flips through its section's field edit: {entry}"
-            );
-            assert_eq!(
-                entry["invoked_by"],
-                serde_json::json!({ "action": id }),
-                "{id}: the switch is kept as the action that ran the edit: {entry}"
-            );
-            assert_eq!(
-                listed(id).badge,
-                Some(on_off_badge(!original)),
-                "{id}: the row shows the state it was just switched to"
-            );
-
-            activate(id);
-            assert_eq!(
-                toggle.key.get(),
-                original,
-                "{id}: the second activation puts the original value back"
-            );
-            assert_eq!(listed(id).badge, Some(on_off_badge(original)), "{id}");
-
-            // Changed elsewhere (Settings, another device): the row reads the
-            // stored value, not the last one search wrote.
-            toggle.key.set(!original).expect("settings write");
-            assert_eq!(
-                resolved(id).badge,
-                Some(on_off_badge(!original)),
-                "{id}: the row follows a change made elsewhere"
-            );
-            activate(id);
-            assert_eq!(
-                toggle.key.get(),
-                original,
-                "{id}: activating flips the live value, whoever set it"
-            );
-        }
     }
 
     #[test]

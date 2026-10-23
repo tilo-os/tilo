@@ -1,6 +1,6 @@
 // Tests of the browser runtime qualification's checks and arithmetic
 // (scripts/perf/browser_qualification.mjs); the measurement itself needs a
-// built bundle and Chrome, which Perf / scheduled's `browser` job has.
+// built bundle and Chrome, which t's perf-browser check has.
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';

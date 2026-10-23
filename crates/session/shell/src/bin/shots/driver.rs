@@ -757,24 +757,28 @@ impl ShellDriver {
         // (active-tab writeback, focused-group marking, scroll-into-view,
         // cross-strip dispatch) is reflected in what gets captured.
         let root = self.root_obj.clone();
-        self.fb.pump_apps(&mut self.state, &root);
         // Work a person would see finish a moment after the window opened
         // (an app's first save being confirmed, an image arriving) finishes
         // before the capture too; what is still pending after the bound is
-        // stuck, and the shot shows it.
+        // stuck, and the shot shows it. Each check follows an update and a
+        // paint: what arrived during the last wait is taken in, and what
+        // drawing asks for (an icon decoded at the size it is drawn) is
+        // waited for too.
         let deadline = Instant::now().checked_add(CAPTURE_SETTLE);
-        while self.fb.host().has_pending_visual_work() {
+        loop {
+            self.fb.pump_apps(&mut self.state, &root);
+            let scene = self.fb.paint_settled();
+            if !self.fb.host().has_pending_visual_work() {
+                return scene;
+            }
             if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
                 eprintln!(
                     "shots: visual work still pending after {CAPTURE_SETTLE:?}; capturing it"
                 );
-                break;
+                return scene;
             }
             std::thread::sleep(Duration::from_millis(FRAME_MS));
-            self.fb.pump_apps(&mut self.state, &root);
-            let _ = self.fb.paint_settled();
         }
-        self.fb.paint_settled()
     }
 }
 

@@ -681,8 +681,13 @@ fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, S
     if landing(&address)? {
         return Ok(false);
     }
-    let kept = keep(&address, &data_home, &bytes)?;
-    reopen_on(&address, &data_home, item.tab, Some(&kept));
+    // Its profile's store opens the record on its own thread first.
+    let Some(kept) = keep(&address, &data_home, &bytes)? else {
+        return Ok(false);
+    };
+    if !reopen_on(&address, &data_home, item.tab, Some(&kept)) {
+        return Ok(false);
+    }
     Ok(!landing(&address)?)
 }
 
@@ -1039,8 +1044,11 @@ fn bring_over_continued_record(
     let Some(data_home) = ::launcher::appdir::host_data_home() else {
         return Ok(());
     };
-    let record = if kept_here(&address, &data_home) {
-        None
+    let Some(kept) = kept_here(&address, &data_home) else {
+        return Err(bringing_note());
+    };
+    let record = if let Some(kept) = kept {
+        Some(kept)
     } else {
         match hydrate(&address, &data_home) {
             Hydration::Waiting => return Err(bringing_note()),
@@ -1051,7 +1059,9 @@ fn bring_over_continued_record(
             }
         }
     };
-    crate::shell::record_hydration::reopen_on(&address, &data_home, instance, record.as_ref());
+    if !crate::shell::record_hydration::reopen_on(&address, &data_home, instance, record.as_ref()) {
+        return Err(bringing_note());
+    }
     // The app reads what was kept from the disk: open it once it is there.
     match crate::shell::record_hydration::landing(&address) {
         Ok(false) => Ok(()),

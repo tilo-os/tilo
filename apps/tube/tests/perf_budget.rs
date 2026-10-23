@@ -161,15 +161,12 @@ fn visible_card(app: &mut ui::framework::testing::TestApp<tube::TubeShell>, skip
 }
 
 fn click_back(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) {
-    let centre = app
-        .harness()
-        .controls()
-        .into_iter()
-        .find(|control| control.name.as_deref() == Some("Back"))
-        .and_then(|control| control.bounds)
-        .expect("the watch page exposes Back")
-        .center();
-    app.harness().click_at(centre.x, centre.y);
+    assert!(
+        ui::window_toolbar::declared().is_some_and(|bar| !bar.leading.is_empty()),
+        "the watch page offers Back in the window bar"
+    );
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
     app.settle();
 }
 

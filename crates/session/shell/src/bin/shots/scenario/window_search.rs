@@ -56,6 +56,37 @@ pub(super) fn notes_search_options() -> Scenario {
     }
 }
 
+pub(super) fn notes_replace_in_place() -> Scenario {
+    Scenario {
+        name: "notes_replace_in_place",
+        description: "Replace in the window bar's search on the long note: the options panel holds the replacement, Replace changes the current match in the note and the count drops by one, Replace all changes the rest.",
+        actions: vec![
+            Action::SeedLongNotes(0),
+            Action::Wait(2),
+            Action::Relayout,
+            Action::ClickNamed("window-search-open"),
+            Action::Wait(24),
+            Action::Type("capture 1"),
+            Action::Wait(8),
+            Action::ClickNamed("window-search-options"),
+            Action::Wait(24),
+            Action::ClickNamed("window-search-replacement"),
+            Action::Type("draft 1"),
+            Action::Wait(8),
+            Action::Relayout,
+            Action::Snapshot("01-replacement-typed"),
+            Action::ClickNamed("window-search-replace"),
+            Action::Wait(8),
+            Action::Relayout,
+            Action::Snapshot("02-one-replaced"),
+            Action::ClickNamed("window-search-replace-all"),
+            Action::Wait(8),
+            Action::Relayout,
+            Action::Snapshot("03-all-replaced"),
+        ],
+    }
+}
+
 pub(super) fn own_process_notes_search() -> Scenario {
     Scenario {
         name: "own_process_notes_search",

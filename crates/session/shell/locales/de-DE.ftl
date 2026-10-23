@@ -1269,9 +1269,8 @@ bluetooth-handoff-failure-rollback = Zurücksetzen der Quelle fehlgeschlagen
 
 # Arten von Suchergebnissen, wie Filterchips und Gruppenüberschriften sie nennen
 search-kind-actions = Aktionen
-search-kind-applications = Anwendungen
+search-kind-applications = Apps
 search-group-in-the-store = Im Store
-search-kind-host-apps = Host-Apps
 search-kind-notes = Notizen
 search-kind-records = Einträge
 search-kind-files = Dateien
@@ -1342,7 +1341,6 @@ search-record-in-another-workspace = In einem anderen Arbeitsbereich
 search-files-no-app = Keine App auf diesem Desktop öffnet .{ $ext }-Dokumente.
 search-files-folder-failed = Dateien konnte diesen Ordner nicht öffnen.
 search-files-home = Persönlicher Ordner
-search-files-location = { $folder } · { $age }
 
 # Suche: Host-Apps
 
@@ -1536,8 +1534,6 @@ search-action-appearance-theme-dark = Dunkles Design
 search-action-appearance-theme-dark-subtitle = Dunkle Oberfläche und Apps
 search-action-appearance-theme-light = Helles Design
 search-action-appearance-theme-light-subtitle = Helle Oberfläche und Apps
-search-action-appearance-high-contrast = Hoher Kontrast
-search-action-appearance-high-contrast-subtitle = Mehr Kontrast im aktuellen Design
 search-action-appearance-language = Sprache ändern
 search-action-appearance-language-subtitle = Die Sprache des Desktops, in den Einstellungen
 search-action-identity-connect = Vorhandene Identität hinzufügen
@@ -2112,8 +2108,10 @@ peer-sync-token-incomplete = Noch keine Website und kein Link
 # Übrige Shell-Hinweise: Dokumente öffnen, Herkunft von Host-Apps, Ruhestatus, Zusammenarbeit
 doc-open-failed = { $name } konnte nicht geöffnet werden
 doc-open-unnamed-file = Datei
-host-app-source-flatpak = Flatpak
-host-app-source-system = System
+app-kind-flatpak = Flatpak
+app-kind-appimage = AppImage
+app-kind-program = Programm
+app-kind-system = System
 downloaded-app-missing = Diese App ist nicht auffindbar
 downloaded-app-locate = Suchen
 downloaded-app-locate-path = Gib den vollständigen Pfad der App-Datei ein, beginnend mit /
@@ -3023,7 +3021,6 @@ search-kw-tab-move-to-new-group = neue gruppe, lösen, abtrennen, tab abtrennen
 search-kw-notifications-dnd-toggle = nicht stören, bitte nicht stören, ruhemodus, benachrichtigungen aus, benachrichtigungen stumm, fokus, ruhig
 search-kw-appearance-theme-dark = dunkelmodus, dunkles design, nachtmodus, dunkel, nachtdesign, dark mode
 search-kw-appearance-theme-light = hellmodus, helles design, tagmodus, hell, tagdesign, light mode
-search-kw-appearance-high-contrast = hoher kontrast, kontrast, barrierefreiheit, sichtbarkeit
 search-kw-appearance-language = sprache, sprache wechseln, lokalisierung, deutsch, englisch, spracheinstellung
 search-kw-record-bring = hinzufügen, importieren, dokument hinzufügen, anhängen
 search-kw-shortcut-help-toggle = hilfe, tastenkürzel, tastaturkürzel, tastenkombinationen, anleitung, spickzettel

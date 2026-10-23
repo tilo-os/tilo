@@ -141,6 +141,11 @@ pub trait Findable {
     /// emphasised (see [`paint_find_match`]).
     fn reveal(&mut self, index: usize);
 
+    /// Paint match `index` emphasised without moving the view: the content
+    /// changed under the find and the current match kept its place. A view
+    /// that keeps its current match across [`Self::find`] needs nothing.
+    fn mark_current(&mut self, _index: usize) {}
+
     /// The bar closed: stop painting matches.
     fn clear_find(&mut self) {
         let _ = self.find("", FindOptions::default());
@@ -160,6 +165,13 @@ pub trait Findable {
     /// Replace every match; returns how many changed.
     fn replace_all(&mut self, _with: &str) -> usize {
         0
+    }
+
+    /// Whether a replacement this view took is written later, through its
+    /// host's edit path (on its next frame), rather than at once. The find
+    /// then runs again once the content moved, to show the next match.
+    fn replaces_later(&self) -> bool {
+        false
     }
 
     /// Whether this view shows bytes, so the bar offers a text/hex mode.
@@ -316,6 +328,9 @@ pub struct FindSession {
     searched_revision: u64,
     /// The view reports its own results ([`Self::set_results`]).
     engine_results: bool,
+    /// A replacement the view applies later, through its host's edit path:
+    /// the next find, once the content moved, shows the current match.
+    reveal_after_edit: bool,
 }
 
 impl FindSession {
@@ -363,6 +378,7 @@ impl FindSession {
         options: FindOptions,
         keep: Option<usize>,
     ) {
+        self.reveal_after_edit = false;
         if self.find(target, query, options, keep)
             && let Some(current) = self.current
         {
@@ -371,10 +387,47 @@ impl FindSession {
     }
 
     /// Find `query` again without moving the view, keeping the current
-    /// match: the content changed under the find.
+    /// match: the content changed under the find. After a replacement the
+    /// view applied later, the match now current is shown as after any
+    /// replacement.
     pub fn refresh(&mut self, target: &mut dyn Findable, query: &str, options: FindOptions) {
         let keep = self.current;
-        let _ = self.find(target, query, options, keep);
+        if self.reveal_after_edit {
+            self.search(target, query, options, keep);
+            return;
+        }
+        if self.find(target, query, options, keep)
+            && let Some(current) = self.current
+        {
+            target.mark_current(current);
+        }
+    }
+
+    /// Replace the current match of `query` under `options` with `with`, or
+    /// every match (`all`), then show the match that is current after it:
+    /// the one that followed the replaced match. A view that applies the
+    /// edit later is found again once its content moved. Returns whether the
+    /// view took the replacement.
+    pub fn replace(
+        &mut self,
+        target: &mut dyn Findable,
+        query: &str,
+        options: FindOptions,
+        with: &str,
+        all: bool,
+    ) -> bool {
+        let current = self.current;
+        let changed = if all {
+            target.replace_all(with) > 0
+        } else {
+            current.is_some_and(|current| target.replace(current, with))
+        };
+        if changed && target.replaces_later() {
+            self.reveal_after_edit = true;
+        } else {
+            self.search(target, query, options, current);
+        }
+        changed
     }
 
     /// Run the find; whether it produced results to show (an engine that
@@ -675,21 +728,10 @@ impl FindBar {
         let stale = self.session.is_stale(&query, self.options);
         if let Some(request) = pending.replace {
             let with = self.replace_field.value().to_owned();
-            let current = self
+            let all = request == ReplaceRequest::All;
+            let _ = self
                 .session
-                .position()
-                .map(|(current, _)| current.saturating_sub(1));
-            match request {
-                ReplaceRequest::One => {
-                    if let Some(current) = current {
-                        target.replace(current, &with);
-                    }
-                }
-                ReplaceRequest::All => {
-                    target.replace_all(&with);
-                }
-            }
-            self.session.search(target, &query, self.options, current);
+                .replace(target, &query, self.options, &with, all);
         } else if pending.search || stale {
             self.session.search(target, &query, self.options, Some(0));
         } else if pending.refresh || self.session.content_moved(target) {
@@ -2259,5 +2301,101 @@ mod host_driven_tests {
         assert!(!quiet.is_open());
         quiet.open();
         assert!(quiet.is_open(), "the host opens it");
+    }
+
+    /// A document whose host writes a replacement on its next frame, as the
+    /// block editor's does; it forgets its current match on every find.
+    #[derive(Default)]
+    struct Deferred {
+        text: String,
+        found: Vec<FindMatch>,
+        queued: Option<(usize, String)>,
+        revision: u64,
+        current: Option<usize>,
+        /// Each match scrolled into view, in order.
+        revealed: Vec<usize>,
+    }
+
+    impl Deferred {
+        /// The host's frame: write the queued replacement.
+        fn write(&mut self) {
+            if let Some((index, with)) = self.queued.take() {
+                let found = self.found[index].clone();
+                self.text.replace_range(found.start..found.end, &with);
+                self.revision += 1;
+            }
+        }
+    }
+
+    impl Findable for Deferred {
+        fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
+            self.current = None;
+            self.found = Log {
+                text: self.text.clone(),
+                ..Log::default()
+            }
+            .find(query, options);
+            self.found.clone()
+        }
+        fn reveal(&mut self, index: usize) {
+            self.current = Some(index);
+            self.revealed.push(index);
+        }
+        fn mark_current(&mut self, index: usize) {
+            self.current = Some(index);
+        }
+        fn supports_replace(&self) -> bool {
+            true
+        }
+        fn replace(&mut self, index: usize, with: &str) -> bool {
+            self.queued = Some((index, with.to_owned()));
+            true
+        }
+        fn replaces_later(&self) -> bool {
+            true
+        }
+        fn content_revision(&self) -> u64 {
+            self.revision
+        }
+    }
+
+    #[test]
+    fn after_a_replacement_written_later_the_next_match_is_current_and_shown() {
+        let mut doc = Deferred {
+            text: "a1 a2 a3".into(),
+            ..Deferred::default()
+        };
+        let options = FindOptions::default();
+        let mut session = FindSession::default();
+        session.search(&mut doc, "a", options, Some(0));
+        session.step(&mut doc, true);
+        assert_eq!(session.position(), Some((2, 3)));
+        assert!(session.replace(&mut doc, "a", options, "b", false));
+        doc.write();
+        assert!(session.content_moved(&doc));
+        session.refresh(&mut doc, "a", options);
+        assert_eq!(doc.text, "a1 b2 a3");
+        assert_eq!(session.position(), Some((2, 2)), "a3 is current");
+        assert_eq!(doc.current, Some(1), "the document paints it as current");
+        assert_eq!(doc.revealed.last(), Some(&1), "and scrolls it into view");
+    }
+
+    #[test]
+    fn an_edit_from_elsewhere_keeps_the_current_match_painted_without_scrolling() {
+        let mut doc = Deferred {
+            text: "a1 a2".into(),
+            ..Deferred::default()
+        };
+        let options = FindOptions::default();
+        let mut session = FindSession::default();
+        session.search(&mut doc, "a", options, Some(0));
+        session.step(&mut doc, true);
+        let shown = doc.revealed.len();
+        doc.text.push_str(" a3");
+        doc.revision += 1;
+        session.refresh(&mut doc, "a", options);
+        assert_eq!(session.position(), Some((2, 3)));
+        assert_eq!(doc.current, Some(1), "the current match stays emphasised");
+        assert_eq!(doc.revealed.len(), shown, "the view stays where it was");
     }
 }

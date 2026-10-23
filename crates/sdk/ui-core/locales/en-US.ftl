@@ -316,11 +316,6 @@ table-add-row = Add row
 table-add-column = Add column
 
 block-editor-empty = Write something…
-block-editor-find-placeholder = Find in note
-block-editor-find-no-results = No results
-block-editor-find-previous = Previous match
-block-editor-find-next = Next match
-block-editor-find-close = Close find
 block-editor-change-type = Change block type
 block-editor-copy-code-hint = Copy code
 
@@ -642,12 +637,6 @@ widget-block-duplicate-selection = Duplicate selected or focused blocks
 widget-block-move-selection-up = Move selected blocks up
 widget-block-move-selection-down = Move selected blocks down
 
-block-editor-replace-placeholder = Replace with
-block-editor-replace = Replace
-
-block-editor-replace-all = Replace all
-block-editor-replace-all-help = Shift+Enter in the replacement field replaces all
-
 block-callout-note = Note
 block-callout-tip = Tip
 block-callout-important = Important
@@ -733,6 +722,7 @@ display-arrangement-caption-status = { $status } · { $name }
 
 # Search: the row that lists the rest of a group the palette cut short
 search-show-all = Show all { $count }
+search-no-matches = No matches
 
 approved-check-reports-disabled = Phase reports unavailable
 

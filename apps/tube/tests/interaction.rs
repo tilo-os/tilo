@@ -25,6 +25,7 @@ use tube::model::Route;
 use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::{MediaSize, Widget};
+use ui::window_toolbar::ToolbarEvent;
 use vello::kurbo::Rect;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
@@ -64,6 +65,11 @@ fn click_id(framed: &mut Framed<TubeApp>, id: &str) {
         .click_named(id)
         .unwrap_or_else(|error| panic!("{error}"));
     harness.relayout();
+}
+
+/// Whether the window bar's navigation offers Back.
+fn bar_offers_back() -> bool {
+    ui::window_toolbar::declared().is_some_and(|bar| !bar.leading.is_empty())
 }
 
 fn find<'a>(w: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
@@ -154,16 +160,14 @@ impl Harness {
         find(&*self.app, id).map(Widget::get_rect)
     }
     fn has_id(&self, id: &str) -> bool {
-        self.rect_by_id(if id == "back_btn" {
-            "nav-shell-back"
-        } else {
-            id
-        })
-        .is_some()
+        if id == "back_btn" {
+            return bar_offers_back();
+        }
+        self.rect_by_id(id).is_some()
     }
     fn click_id(&mut self, id: &str) {
         if id == "back_btn" {
-            click_control(&mut self.app, "Back");
+            Framed::harness_mut(&mut self.app).press_window_slot(ToolbarEvent::Back);
         } else {
             click_id(&mut self.app, id);
         }
@@ -295,15 +299,11 @@ fn the_rail_and_cards_navigate_and_back_returns() {
         };
         app.effect(&effect).unwrap();
         app.settle();
-        let centre = app
-            .harness()
-            .controls()
-            .into_iter()
-            .find(|control| control.name.as_deref() == Some("Back"))
-            .and_then(|control| control.bounds)
-            .expect("browsed content exposes Back")
-            .center();
-        app.harness().click_at(centre.x, centre.y);
+        assert!(
+            bar_offers_back(),
+            "the window bar offers Back on browsed content"
+        );
+        app.harness().press_window_slot(ToolbarEvent::Back);
         app.settle();
         assert_eq!(
             route(&mut app),
@@ -498,7 +498,7 @@ fn pages_lay_out_without_overlap_at_every_size() {
             "narrowing keeps the page in front of the rail"
         );
 
-        app.harness().click_named("nav-shell-back").unwrap();
+        app.harness().press_window_slot(ToolbarEvent::Back);
         app.settle();
         app.harness().relayout();
         assert!(open(&mut app), "Back goes to the rail");
@@ -524,49 +524,26 @@ fn search_inputs_are_present_and_navigate() {
             // At its first text size the window docks the rail beside the
             // grid; the larger text leaves no room for both, so it shows one
             // screen at a time and keeps the page it was on. Back goes to
-            // the rail; the search belongs to the page a destination shows.
+            // the rail.
             let on_rail = app
                 .with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
                 .expect("the window shows Tube");
             if !on_rail {
-                app.harness().click_named("nav-shell-back").unwrap();
+                app.harness().press_window_slot(ToolbarEvent::Back);
                 app.settle();
                 app.harness().relayout();
             }
             click(&mut app, "nav_home");
         }
-        // The page a destination shows slides in, and the window bar's
-        // search moves with it. A control that moved between press and
-        // release does not complete the press (the toolkit's pointer
-        // replay), so click it where it rests, not mid-slide.
-        let moving = std::time::Instant::now();
-        while app.frame() {
-            assert!(
-                moving.elapsed() <= tilo_test_env::hang_bound(),
-                "the window never stopped animating"
-            );
-        }
-        let search = app
-            .harness()
-            .controls()
-            .into_iter()
-            .find(|control| {
-                control.name.as_deref()
-                    == Some(ui::i18n::I18nManager::lookup_plain("standalone-search-title").as_str())
-            })
-            .expect("system search is present even with an empty query");
-        let bounds = search.bounds.expect("search has measured geometry");
-        assert!(
-            bounds.width() > 10.0 && bounds.height() > 10.0,
-            "search is reachable: {bounds:?}"
-        );
-        let centre = bounds.center();
-        app.harness().click_at(centre.x, centre.y);
+        // The window bar's search opens platform search narrowed to Tube.
+        app.harness()
+            .open_search(&ui::search::SearchRequest::this_app())
+            .expect("the window bar's search opens");
         app.settle();
         let (_, focused) = app
             .harness()
             .a11y_focus()
-            .expect("pointer activation focuses the platform search input");
+            .expect("opening search focuses the platform search input");
         assert_eq!(focused.role(), ui::accesskit::Role::TextInput);
         assert_eq!(focused.label(), Some("Search"));
         assert_eq!(focused.description(), Some("Search actions and results"));
@@ -595,14 +572,6 @@ fn search_inputs_are_present_and_navigate() {
                 .all(|control| !(control.role == ui::accesskit::Role::TextInput
                     && control.name.as_deref() == Some("Search"))),
             "Escape closes the actual platform query field"
-        );
-        assert!(
-            app.harness()
-                .controls()
-                .iter()
-                .any(|control| control.role == ui::accesskit::Role::Button
-                    && control.name.as_deref() == search.name.as_deref()),
-            "Escape restores the platform Search button"
         );
         assert_eq!(
             route(&mut app),
@@ -663,7 +632,7 @@ fn search_inputs_are_present_and_navigate() {
             "clicking a result opens its watch page"
         );
 
-        // Press Back (a real click on the top-bar Back button).
+        // Press the window bar's Back.
         assert!(
             h.has_id("back_btn"),
             "the Back affordance is present on the watch page"
@@ -688,21 +657,14 @@ fn search_inputs_are_present_and_navigate() {
     }
 }
 
-/// Search from Tube's own button: a hit opens what it names, and anything
+/// Search from the window bar: a hit opens what it names, and anything
 /// else typed searches `YouTube` for it, with Enter alone.
 #[test]
 fn platform_search_opens_hits_and_searches_youtube() {
-    let search = ui::i18n::I18nManager::lookup_plain("standalone-search-title");
     let open_search = |app: &mut ui::framework::testing::TestApp<tube::TubeShell>| {
-        let centre = app
-            .harness()
-            .controls()
-            .into_iter()
-            .find(|control| control.name.as_deref() == Some(search.as_str()))
-            .and_then(|control| control.bounds)
-            .expect("the search button is reachable")
-            .center();
-        app.harness().click_at(centre.x, centre.y);
+        app.harness()
+            .open_search(&ui::search::SearchRequest::this_app())
+            .expect("the window bar's search opens");
         app.settle();
     };
     let sample = tube::sample::model();

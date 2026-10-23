@@ -22,6 +22,7 @@
 mod controls;
 mod document_history;
 pub mod host_media;
+mod keys;
 
 pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput};
 use tilo_sort::CompactSort as _;
@@ -349,6 +350,9 @@ pub struct FrameHarness {
     /// search and History are hosted there and every capture paints it over
     /// the app's frame ([`Self::present_in_window_bar`]).
     window_bar: bool,
+    /// The window bar's search over the app's widgets, painted in the bar
+    /// ([`Self::search_in_window`]).
+    window_search: crate::widget::WindowSearch,
     /// The app a concrete root stands for ([`Self::for_app`]): its kind and
     /// title, which its window's bar wears as a desktop window's tab does.
     window_app: Option<(crate::widget::AppKind, String)>,
@@ -466,6 +470,9 @@ pub struct FrameHarness {
     /// Tests register document action types explicitly, just as `main` does.
     action_registry: tilo_actions::ActionRegistry,
     action_transport: Box<dyn tilo_actions::ActionTransport>,
+    /// The session this window's host serves it: where opening another app
+    /// goes ([`crate::session_door`]). `None` until the host installs one.
+    session_door: Option<crate::session_door::ClientDoor>,
     pending_control_invocations: HashSet<tilo_actions::InvocationId>,
     control_failures: Vec<String>,
     /// What stands in for the providers whose actions the app's controls
@@ -1045,7 +1052,10 @@ impl FrameHarness {
     fn pump_component_wakes_checked(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         self.readmit_owner_service_layout()?;
         self.drain_component_wakes();
-        if self.take_wake() {
+        // A host on its own frame clock takes a wake in its next frame, as
+        // the live window's redraw request does; input arriving before it
+        // is dispatched against the last frame, as there.
+        if !self.coalesce_input_frames && self.take_wake() {
             self.relayout();
         }
         self.readmit_owner_service_layout()
@@ -1590,6 +1600,7 @@ impl FrameHarness {
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
             window_bar: false,
+            window_search: crate::widget::WindowSearch::new(),
             window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
             bound_resource_frames: 0,
@@ -1641,6 +1652,7 @@ impl FrameHarness {
             author: author(),
             action_registry: tilo_actions::ActionRegistry::new(),
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
+            session_door: None,
             pending_control_invocations: HashSet::new(),
             control_failures: Vec::new(),
             providers: HashMap::new(),
@@ -1956,6 +1968,14 @@ impl FrameHarness {
         }
         self.action_transport = transport;
         Ok(())
+    }
+
+    /// Serve this window the session `client` stands for, in `workspace`:
+    /// where opening another app goes. A host that serves its windows in
+    /// process, such as a page, installs its own session here.
+    pub fn set_session_door(&mut self, client: crate::RemoteActions, workspace: Option<String>) {
+        self.invalidate_local();
+        self.session_door = Some(crate::session_door::ClientDoor::new(client, workspace));
     }
 
     pub fn action_registry_mut(&mut self) -> &mut tilo_actions::ActionRegistry {
@@ -2714,6 +2734,10 @@ impl FrameHarness {
             || self.search_pending
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
+            || self
+                .session_door
+                .as_ref()
+                .is_some_and(crate::session_door::ClientDoor::is_busy)
             || self.wake_pending();
         self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
@@ -4080,7 +4104,7 @@ impl FrameHarness {
         self.draw_tooltip(transform);
         // Other people's pointers over everything: they point at whatever
         // is under them, a popover or the bar as much as a window. A pointer
-        // right beside its person's caret leaves the name to the caret's tag.
+        // whose tag would meet its person's caret tag leaves the name to it.
         let pointers = self.pointers_beside_caret_tags(transform);
         crate::presence::draw_peer_cursors(
             &mut self.scene,
@@ -5321,7 +5345,13 @@ impl FrameHarness {
             self.set_focused(Some(taffy_id));
         }
         if !handled {
-            if semantic_target.is_some() && !matches!(action, crate::a11y::Action::Focus) {
+            // A painted empty state's action is pressed where it is drawn,
+            // below; any other target its widget did not handle is refused.
+            if semantic_target
+                .as_deref()
+                .is_some_and(|target| !crate::widget::empty_state::is_painted_target(target))
+                && !matches!(action, crate::a11y::Action::Focus)
+            {
                 return Err(format!(
                     "the current semantic target did not handle {action:?}"
                 ));
@@ -5486,6 +5516,9 @@ impl FrameHarness {
             let target = semantic_target
                 .ok_or_else(|| "palette action needs a published semantic target".to_owned())?;
             return self.perform_palette_action(target, action);
+        }
+        if name.starts_with("window-search-") {
+            return self.perform_window_search_semantic(name, action);
         }
 
         if self.global_search_query().is_some() {
@@ -6456,7 +6489,13 @@ impl FrameHarness {
             self.interaction = environment;
             self.root.set_interaction_environment(environment);
             self.invalidate_layout_tree();
-            self.relayout();
+            // The live window lays out again in its next frame; a host on
+            // its own frame clock does the same.
+            if self.coalesce_input_frames {
+                self.input_frame_pending = true;
+            } else {
+                self.relayout();
+            }
         }
         if self.active_input_instance.is_some()
             && self.focused.is_none()
@@ -6674,7 +6713,7 @@ impl FrameHarness {
         }
         self.last_send_skipped_relayout = inert;
         // A host on its own frame clock takes the frame of a wheel notch, a
-        // key, a composed text or a pointer move there: they arrive faster
+        // pinch, a key, a composed text or a pointer move there: they arrive faster
         // than frames (a word typed, a drag), and each frame composed here
         // would be replaced unseen by the next, before the host's own frame
         // lays out and draws once more for the screen.
@@ -6683,6 +6722,7 @@ impl FrameHarness {
             && matches!(
                 event,
                 WindowEvent::MouseWheel { .. }
+                    | WindowEvent::PinchGesture { .. }
                     | WindowEvent::KeyboardInput { .. }
                     | WindowEvent::Ime(_)
                     | WindowEvent::CursorMoved { .. }
@@ -6702,7 +6742,7 @@ impl FrameHarness {
         }
     }
 
-    /// Leave the frame a wheel, key, composed text or pointer move asks for
+    /// Leave the frame a wheel, pinch, key, composed text or pointer move asks for
     /// to the host's next [`Self::poll_frame`] instead of composing, laying
     /// out and drawing it inside [`Self::send_host_event`]. For a host that
     /// presents on its own frame clock, as a browser page does on animation
@@ -7455,6 +7495,7 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
+            session_door(&mut self.session_door),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(arguments),
@@ -7759,6 +7800,7 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
+            session_door(&mut self.session_door),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(&intent.arguments),
@@ -7877,15 +7919,25 @@ impl FrameHarness {
                 arguments.as_ref(),
                 None,
             )?;
-            let result = invoke_legacy_effect(
-                self.root.as_mut(),
-                target,
-                invocation,
-                spec.kind,
-                &encoded,
-                &mut self.state.doc,
-                None,
-            )?;
+            let result = if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
+                crate::session_door::start_application_launch(
+                    session_door(&mut self.session_door),
+                    None,
+                    &encoded.payload,
+                    invocation,
+                    false,
+                )?
+            } else {
+                invoke_legacy_effect(
+                    self.root.as_mut(),
+                    target,
+                    invocation,
+                    spec.kind,
+                    &encoded,
+                    &mut self.state.doc,
+                    None,
+                )?
+            };
             match &result {
                 crate::widget::ResourceOperationStart::Accepted
                     if spec.contract.execution == tilo_actions::ExecutionMode::Immediate =>
@@ -8117,6 +8169,7 @@ impl FrameHarness {
                     &mut self.state.doc,
                     &target,
                     self.action_transport.as_mut(),
+                    session_door(&mut self.session_door),
                     crate::bound_dispatch::ResourceActionRequest {
                         argument,
                         arguments: json,
@@ -8182,15 +8235,26 @@ impl FrameHarness {
                         arguments.as_ref(),
                         argument,
                     )?;
-                    let result = invoke_legacy_effect(
-                        self.root.as_mut(),
-                        &target,
-                        invocation_id,
-                        spec.kind,
-                        &encoded,
-                        &mut self.state.doc,
-                        None,
-                    )?;
+                    let result = if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE
+                    {
+                        crate::session_door::start_application_launch(
+                            session_door(&mut self.session_door),
+                            None,
+                            &encoded.payload,
+                            invocation_id,
+                            false,
+                        )?
+                    } else {
+                        invoke_legacy_effect(
+                            self.root.as_mut(),
+                            &target,
+                            invocation_id,
+                            spec.kind,
+                            &encoded,
+                            &mut self.state.doc,
+                            None,
+                        )?
+                    };
                     match &result {
                         crate::widget::ResourceOperationStart::Accepted
                             if spec.contract.execution
@@ -8275,6 +8339,7 @@ impl FrameHarness {
                         source_invocation: None,
                         ambient: None,
                         scope: None,
+                        door: session_door(&mut self.session_door),
                     },
                 )?;
                 if let Some(before) = before {
@@ -8430,6 +8495,7 @@ impl FrameHarness {
                         source_invocation: None,
                         ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                         scope: None,
+                        door: session_door(&mut self.session_door),
                     },
                 )?;
                 if let Some(before) = before {
@@ -8538,6 +8604,7 @@ impl FrameHarness {
                 source_invocation: None,
                 ambient: None,
                 scope: None,
+                door: session_door(&mut self.session_door),
             },
         )?;
         if let Some(before) = before {
@@ -8555,6 +8622,19 @@ impl FrameHarness {
     }
 
     fn poll_control_invocations(&mut self) {
+        let finished = self
+            .session_door
+            .as_mut()
+            .map(crate::session_door::ClientDoor::take_finished)
+            .unwrap_or_default();
+        for (invocation, result) in finished {
+            self.pending_control_invocations.remove(&invocation);
+            self.bound_invocations.remove(&invocation);
+            if let Err(error) = result {
+                tracing::warn!(code = error.code(), %error, "headless: an app did not open");
+                self.refuse_visibly(&error);
+            }
+        }
         let bound = self
             .bound_invocations
             .iter()
@@ -8906,7 +8986,7 @@ impl FrameHarness {
         });
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
         self.pump_component_wakes();
-        let key = parse_key(spec);
+        let key = keys::parse_key(spec);
         for state in [ElementState::Pressed, ElementState::Released] {
             self.send_host_event(&key_input(&key, state));
         }
@@ -9017,14 +9097,17 @@ impl FrameHarness {
     }
 
     /// The placed pointers as the last frame drew them: without the name of
-    /// one right beside the caret tag of the same person.
-    pub fn drawn_placed_pointers(&self) -> Vec<crate::presence::PeerCursor> {
+    /// one whose tag would meet the caret tag of the same person.
+    pub fn drawn_placed_pointers(&mut self) -> Vec<crate::presence::PeerCursor> {
         self.pointers_beside_caret_tags(self.capture_draw_transform())
     }
 
     /// [`Self::drawn_placed_pointers`]. Caret tags are noted in scene
     /// coordinates; `transform` is the one the frame drew them with.
-    fn pointers_beside_caret_tags(&self, transform: Affine) -> Vec<crate::presence::PeerCursor> {
+    fn pointers_beside_caret_tags(
+        &mut self,
+        transform: Affine,
+    ) -> Vec<crate::presence::PeerCursor> {
         let mut pointers = self.placed_pointers.clone();
         if pointers.is_empty() {
             return pointers;
@@ -9035,11 +9118,23 @@ impl FrameHarness {
             .caret_tags()
             .into_iter()
             .map(|tag| crate::presence::CaretTag {
-                at: to_surface * tag.at,
+                rect: to_surface.transform_rect_bbox(tag.rect),
                 ..tag
             })
             .collect();
-        crate::presence::hide_names_beside_caret_tags(&mut pointers, &tags);
+        let viewport = Rect::new(
+            0.0,
+            0.0,
+            f64::from(self.viewport.0),
+            f64::from(self.viewport.1),
+        );
+        crate::presence::hide_names_beside_caret_tags(
+            &mut pointers,
+            &tags,
+            viewport,
+            &mut self.text,
+            &self.theme,
+        );
         pointers
     }
 
@@ -9659,6 +9754,7 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
+            session_door(&mut self.session_door),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(arguments),
@@ -10236,36 +10332,6 @@ fn next_widget_path(
     (name, path, current)
 }
 
-fn parse_key(spec: &str) -> Key {
-    match spec {
-        "Enter" | "Return" => Key::Named(NamedKey::Enter),
-        "Tab" => Key::Named(NamedKey::Tab),
-        "Escape" | "Esc" => Key::Named(NamedKey::Escape),
-        "Space" => Key::Named(NamedKey::Space),
-        "Backspace" => Key::Named(NamedKey::Backspace),
-        "Delete" => Key::Named(NamedKey::Delete),
-        "ArrowUp" | "Up" => Key::Named(NamedKey::ArrowUp),
-        "ArrowDown" | "Down" => Key::Named(NamedKey::ArrowDown),
-        "ArrowLeft" | "Left" => Key::Named(NamedKey::ArrowLeft),
-        "ArrowRight" | "Right" => Key::Named(NamedKey::ArrowRight),
-        "F1" => Key::Named(NamedKey::F1),
-        "F2" => Key::Named(NamedKey::F2),
-        "F3" => Key::Named(NamedKey::F3),
-        "F4" => Key::Named(NamedKey::F4),
-        "F5" => Key::Named(NamedKey::F5),
-        "F6" => Key::Named(NamedKey::F6),
-        "F7" => Key::Named(NamedKey::F7),
-        "F8" => Key::Named(NamedKey::F8),
-        "F9" => Key::Named(NamedKey::F9),
-        "F10" => Key::Named(NamedKey::F10),
-        "F11" => Key::Named(NamedKey::F11),
-        "F12" => Key::Named(NamedKey::F12),
-        "Home" => Key::Named(NamedKey::Home),
-        "End" => Key::Named(NamedKey::End),
-        other => Key::Character(other.into()),
-    }
-}
-
 /// Parse `--headless-drive '<json>'` (or `--headless-drive=<json>`) out of
 /// argv. `None` when the flag is absent, which is every normal launch.
 ///
@@ -10276,7 +10342,8 @@ fn parse_key(spec: &str) -> Key {
 /// `{"key": "Enter"}`, `{"type": "hello"}`, `{"modifiers": ["ctrl"]}`,
 /// `{"wait_for_named":{"target":"result","timeout_ms":1000}}`,
 /// `{"expect":{"target":"result","name_contains":"Done"}}`,
-/// `{"perform":{"target":"name","action":"activate"}}`),
+/// `{"perform":{"target":"name","action":"activate"}}`, which drives the
+/// window bar's search on a `window-search-*` target),
 /// `audit` (fail on semantic accessibility violations), `audit_report` (path
 /// for its versioned JSON result), `dump` (path for document JSON), `targets`
 /// (path for the addressable-widget list), and `inspect` (path for the combined
@@ -10557,6 +10624,14 @@ fn write_headless_output(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, contents)
+}
+
+/// The session door a window's host installed, as the execution body takes it.
+fn session_door(
+    door: &mut Option<crate::session_door::ClientDoor>,
+) -> Option<&mut dyn crate::session_door::SessionDoor> {
+    door.as_mut()
+        .map(|door| door as &mut dyn crate::session_door::SessionDoor)
 }
 
 #[cfg(test)]

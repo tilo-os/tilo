@@ -340,8 +340,6 @@ mod tests {
     struct HeldDisk {
         inner: app_state::FsStore,
         held: std::sync::atomic::AtomicBool,
-        /// The wake the loop installed when it declined waiting.
-        wake: std::sync::Mutex<Option<durable_store::ReadyWake>>,
         /// A call that waits on the disk was made while it was held.
         waited_while_held: std::sync::atomic::AtomicBool,
     }
@@ -355,8 +353,8 @@ mod tests {
         /// the store's thread.
         fn release(&self) {
             self.held.store(false, std::sync::atomic::Ordering::Relaxed);
-            let wake = self.wake.lock().unwrap().clone();
-            if let Some(wake) = wake {
+            // The loop's thread: the wake its mark carries.
+            if let Some(wake) = durable_store::waiting::wake() {
                 wake();
             }
         }
@@ -435,10 +433,6 @@ mod tests {
             self.opening(key)?;
             self.inner.lease_shared(key)
         }
-        fn decline_waiting(&self, ready: durable_store::ReadyWake) {
-            *self.wake.lock().unwrap() = Some(std::sync::Arc::clone(&ready));
-            self.inner.decline_waiting(ready);
-        }
         fn declined_waiting_here(&self) -> bool {
             self.inner.declined_waiting_here()
         }
@@ -485,7 +479,6 @@ mod tests {
         let disk = std::rc::Rc::new(HeldDisk {
             inner: app_state::FsStore::new(tmp.path()),
             held: std::sync::atomic::AtomicBool::new(false),
-            wake: std::sync::Mutex::new(None),
             waited_while_held: std::sync::atomic::AtomicBool::new(false),
         });
         let store = RecordStore::new(ui::record::RecordSet::open_in(

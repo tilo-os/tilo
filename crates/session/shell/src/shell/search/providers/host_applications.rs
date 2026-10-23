@@ -1,13 +1,7 @@
-//! Host applications provider: everything already installed on the machine
-//! that Tilo did not package.
-//!
-//! Deliberately a separate provider under a separate [`ResourceKind`]
-//! rather than more rows under [`ApplicationsProvider`]: a Tilo app runs
-//! sandboxed with one writable directory, a host app runs unconfined with
-//! the user's own files. Own chip ("Host Apps") and own group header: the
-//! header says where the rows come from, so each row is just the app's name.
-//!
-//! [`ApplicationsProvider`]: super::applications::ApplicationsProvider
+//! Apps on the machine that Tilo did not package: Flatpaks, downloaded
+//! programs and the system's own. They are apps like any other, in the one
+//! Apps group; each row says which kind of app it is
+//! ([`HostApp::kind_label`]), the words the person's app list uses.
 
 use super::background_index::BackgroundIndex;
 use crate::shell::chrome_state::Chrome;
@@ -23,8 +17,7 @@ use std::sync::{Arc, Mutex};
 use tilo_desktop::notifications::{Notification, NotificationSeverity};
 use tilo_search::{Document, FieldWeight, Matching, SearchIndex};
 
-/// Chip label / group header, mirroring [`ResourceKind::HostApplication`].
-pub const HOST_APPLICATIONS_KIND: &str = "Host Apps";
+pub const PROVIDER_ID: &str = "host-applications";
 
 pub struct HostApplicationsProvider {
     kinds: Vec<ResourceKind>,
@@ -83,7 +76,7 @@ impl HostAppsTestSource {
 impl HostApplicationsProvider {
     pub fn new() -> Self {
         Self {
-            kinds: vec![ResourceKind::HostApplication],
+            kinds: vec![ResourceKind::Application],
             index: BackgroundIndex::new("tilo-host-search-index"),
             #[cfg(test)]
             source: None,
@@ -183,16 +176,14 @@ impl HostApplicationsProvider {
             .iter()
             .filter_map(|hit| {
                 let app = apps.get(usize::try_from(hit.key).ok()?)?;
-                Some(self.row(app, score_for(needle, hit.rank), apps))
+                Some(self.row(app, score_for(needle, hit.rank)))
             })
             .collect()
     }
 
-    /// The open row for `app`, titled by its name. Its second line is empty:
-    /// the "Host Apps" group already says where it comes from, and its id is
-    /// searchable but never shown. Only when another of `apps` has the same
-    /// name does the row say which one it is (Flatpak or System).
-    fn row(&self, app: &HostApp, score: i32, apps: &[HostApp]) -> SearchResult {
+    /// The open row for `app`, titled by its name, with the kind of app it
+    /// is as its fact. Its id is searchable but never shown.
+    fn row(&self, app: &HostApp, score: i32) -> SearchResult {
         if app
             .downloaded
             .as_ref()
@@ -201,24 +192,19 @@ impl HostApplicationsProvider {
             // Starting it would only fail: the row says the file is gone,
             // and choosing it asks where the file is now.
             let mut row = self.locate_row(app, score);
-            row.kind = ResourceKind::HostApplication;
+            row.kind = ResourceKind::Application;
             app.desktop_id.clone_into(&mut row.id);
             app.name.clone_into(&mut row.title);
             return row.with_facts([t("downloaded-app-missing")]);
         }
-        let twin = apps
-            .iter()
-            .filter(|other| other.name.eq_ignore_ascii_case(&app.name))
-            .nth(1)
-            .is_some();
         let desktop_id = app.desktop_id.clone();
         let notify_name = app.name.clone();
         SearchResult::nullary(
-            ResourceKind::HostApplication,
+            ResourceKind::Application,
             self.id(),
             app.desktop_id.clone(),
             app.name.clone(),
-            twin.then(|| app.source_display()),
+            None,
             score,
             move |_doc, _root, chrome: &Chrome| {
                 // Decided now, while the layout is still true; a
@@ -266,13 +252,14 @@ impl HostApplicationsProvider {
                             err.notification_message(),
                         )
                         .with_severity(NotificationSeverity::Error)
-                        .with_app_name(HOST_APPLICATIONS_KIND)
+                        .with_app_name(t("search-kind-applications"))
                         .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
                     );
                     st.bump();
                 }
             },
         )
+        .with_facts([app.kind_label()])
     }
 }
 
@@ -423,13 +410,13 @@ impl Default for HostApplicationsProvider {
 
 impl SearchProvider for HostApplicationsProvider {
     fn id(&self) -> &'static str {
-        "host-applications"
+        PROVIDER_ID
     }
     /// Uninstall, as everywhere; a downloaded app can also just leave the
     /// person's apps while its file stays. A missing one is located by
     /// choosing its row.
     fn secondary_actions(&self, result: &SearchResult) -> Vec<SearchResult> {
-        if result.kind != ResourceKind::HostApplication {
+        if result.kind != ResourceKind::Application {
             return Vec::new();
         }
         let mut rows: Vec<SearchResult> =
@@ -440,6 +427,9 @@ impl SearchProvider for HostApplicationsProvider {
             rows.push(self.remove_row(&app, result.score));
         }
         rows
+    }
+    fn row_image(&self, result: &SearchResult) -> Option<ui::icons::AppImage> {
+        crate::app_icons::for_desktop_id(&result.id)
     }
     fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
         result.id.eq_ignore_ascii_case(app_id)
@@ -462,10 +452,10 @@ impl SearchProvider for HostApplicationsProvider {
                     .iter()
                     .any(|identity| identity.eq_ignore_ascii_case(app_id))
         })?;
-        Some(self.row(app, 0, &snapshot.apps))
+        Some(self.row(app, 0))
     }
-    fn name(&self) -> &str {
-        HOST_APPLICATIONS_KIND
+    fn name(&self) -> &'static str {
+        "Host apps"
     }
     fn display_name(&self) -> String {
         t("search-provider-host-apps")
@@ -477,7 +467,7 @@ impl SearchProvider for HostApplicationsProvider {
         if !ctx
             .wanted
             .iter()
-            .any(|k| matches!(k, ResourceKind::HostApplication))
+            .any(|k| matches!(k, ResourceKind::Application))
         {
             return Vec::new();
         }
@@ -510,7 +500,7 @@ impl SearchProvider for HostApplicationsProvider {
     /// host apps, so resolving through it left every later app unreachable
     /// by id.
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
-        if !ctx.wanted.contains(&ResourceKind::HostApplication) {
+        if !ctx.wanted.contains(&ResourceKind::Application) {
             return None;
         }
         if self.snapshot().is_none() {
@@ -538,7 +528,7 @@ impl SearchProvider for HostApplicationsProvider {
                         .installed_ids
                         .contains(&app.desktop_id.to_ascii_lowercase())
             })
-            .map(|app| self.row(app, score_for(ctx.needle, None), &snapshot.apps))
+            .map(|app| self.row(app, score_for(ctx.needle, None)))
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -556,7 +546,7 @@ impl SearchProvider for HostApplicationsProvider {
         cursor: Option<&SearchCursor>,
         budget: SearchBudget,
     ) -> SearchPage {
-        if !ctx.wanted.contains(&ResourceKind::HostApplication)
+        if !ctx.wanted.contains(&ResourceKind::Application)
             || budget.max_results == 0
             || budget.max_work == 0
         {
@@ -576,7 +566,7 @@ impl SearchProvider for HostApplicationsProvider {
                 let app = usize::try_from(hit.key)
                     .ok()
                     .and_then(|at| snapshot.apps.get(at))?;
-                Some(self.row(app, score_for(ctx.needle, hit.rank), &snapshot.apps))
+                Some(self.row(app, score_for(ctx.needle, hit.rank)))
             },
         )
     }
@@ -602,7 +592,7 @@ mod tests {
         HostApp {
             desktop_id: desktop_id.to_string(),
             name: name.to_string(),
-            source_label: "Flatpak",
+            kind: desktop_entry::EntryKind::Flatpak,
             categories: Vec::new(),
             keywords: Vec::new(),
             mime_types: Vec::new(),
@@ -678,7 +668,7 @@ mod tests {
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].title, "Spotify");
             assert_eq!(out[0].id, "com.spotify.Client");
-            assert_eq!(out[0].kind, ResourceKind::HostApplication);
+            assert_eq!(out[0].kind, ResourceKind::Application);
         }
 
         // Phase `keywords_and_categories_are_matchable`.
@@ -805,7 +795,7 @@ mod tests {
                 query_scope: None,
                 include_programmatic: false,
                 needle: "",
-                wanted: &[ResourceKind::HostApplication],
+                wanted: &[ResourceKind::Application],
                 chrome: &chrome,
                 doc: &doc,
                 doc_root: &automerge::ROOT,
@@ -868,7 +858,7 @@ mod tests {
             query_scope: None,
             include_programmatic: false,
             needle: "unique-tail",
-            wanted: &[ResourceKind::HostApplication],
+            wanted: &[ResourceKind::Application],
             chrome: &chrome,
             doc: &doc,
             doc_root: &automerge::ROOT,
@@ -911,7 +901,7 @@ mod tests {
                 query_scope: None,
                 include_programmatic: false,
                 needle: "unique-tail",
-                wanted: &[ResourceKind::HostApplication],
+                wanted: &[ResourceKind::Application],
                 chrome: &chrome,
                 doc: &doc,
                 doc_root: &automerge::ROOT,
@@ -954,7 +944,7 @@ mod tests {
             query_scope: None,
             include_programmatic: false,
             needle: "unique-source-tail",
-            wanted: &[ResourceKind::HostApplication],
+            wanted: &[ResourceKind::Application],
             chrome: &chrome,
             doc: &doc,
             doc_root: &automerge::ROOT,
@@ -1016,15 +1006,15 @@ mod tests {
     }
 
     #[test]
-    fn host_app_rows_are_a_separate_lower_ranked_kind_that_names_its_provenance() {
-        // Phase `the_row_is_the_app_name_without_metadata`.
-        // The group header says "Host Apps"; ids, provenance and "unconfined"
-        // are not row text. The id stays searchable.
+    fn host_app_rows_are_apps_that_say_which_kind_of_app_they_are() {
+        // Phase `the_row_is_the_app_name_and_its_kind`.
+        // Ids are not row text; the id stays searchable.
         {
             let p = HostApplicationsProvider::new();
             let out = p.results_against("spot", &[app("com.spotify.Client", "Spotify")], &[]);
             assert_eq!(out[0].title, "Spotify");
-            assert_eq!(out[0].subtitle, None, "no metadata under a lone app");
+            assert_eq!(out[0].subtitle, None);
+            assert_eq!(out[0].facts, ["Flatpak"]);
             let by_id =
                 p.results_against("com.spotify", &[app("com.spotify.Client", "Spotify")], &[]);
             assert_eq!(by_id.len(), 1, "the id is still searchable");
@@ -1034,28 +1024,21 @@ mod tests {
         {
             let p = HostApplicationsProvider::new();
             let system = HostApp {
-                source_label: "System",
+                kind: desktop_entry::EntryKind::System,
                 ..app("org.gnome.Console", "Terminal")
             };
             let flatpak = app("org.example.Terminal", "Terminal");
             let out = p.results_against("terminal", &[system, flatpak], &[]);
-            let mut subtitles: Vec<_> = out
-                .iter()
-                .map(|row| row.subtitle.clone().expect("a twin names its source"))
-                .collect();
-            subtitles.sort();
-            assert_eq!(subtitles, ["Flatpak", "System"]);
+            let mut kinds: Vec<_> = out.iter().map(|row| row.facts.clone()).collect();
+            kinds.sort();
+            assert_eq!(kinds, [["Flatpak"], ["System"]]);
         }
 
-        // Phase `host_apps_are_a_separate_kind_from_tilo_applications`.
+        // Phase `host_apps_are_apps`.
         {
             let p = HostApplicationsProvider::new();
-            assert_eq!(p.resource_kinds(), &[ResourceKind::HostApplication]);
-            assert_eq!(ResourceKind::HostApplication.label(), "Host Apps");
-            assert_ne!(
-                ResourceKind::HostApplication.label(),
-                ResourceKind::Application.label()
-            );
+            assert_eq!(p.resource_kinds(), &[ResourceKind::Application]);
+            assert_eq!(ResourceKind::Application.label(), "Apps");
         }
 
         // Phase `a_host_app_scores_below_an_equally_good_tilo_match`.

@@ -2306,6 +2306,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
                         doc,
                         &target,
                         fixture.app.actions.action_transport.as_mut(),
+                        None,
                         crate::bound_dispatch::ResourceActionRequest {
                             argument: None,
                             arguments: None,

@@ -2301,7 +2301,7 @@ impl PdfApp {
             Ok(request) => {
                 self.pending_import = Some(request);
                 self.status_note
-                    .show("Preparing pages for shared import…".to_string());
+                    .show_progress("Preparing pages for shared import…".to_string());
                 self.dirty = true;
                 true
             }
@@ -4625,7 +4625,9 @@ impl Widget for PdfApp {
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if self.status_note.expire() {
+        // A progress note stays while its copy or import is under way.
+        let working = self.pending_copy || self.pending_import.is_some();
+        if self.status_note.keep_while(working) | self.status_note.expire() {
             self.dirty = true;
         }
         if self.region_copy.failed() {
@@ -4861,7 +4863,14 @@ impl Widget for PdfApp {
                         .with_live(Politeness::Polite),
                 );
             } else {
-                children.push(button("Open PDF", "pdf.open", self.canvas_rect));
+                // Where the button is drawn, once it is; the canvas until then.
+                let drawn = self.empty_open_button_rect();
+                let bounds = if drawn.area() > 0.0 {
+                    drawn
+                } else {
+                    self.canvas_rect
+                };
+                children.push(button("Open PDF", "pdf.open", bounds));
             }
             if let Some(error) = &self.load_error {
                 children.push(

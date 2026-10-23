@@ -1011,7 +1011,7 @@ fn an_apps_search_request_opens_the_palette_scoped_to_its_tab() {
 #[serial_test::serial(process_env)]
 fn a_search_scoped_to_an_app_shows_only_that_app_until_the_scope_is_cleared() {
     use crate::shell::chrome_state::SearchScope;
-    use crate::shell::search::providers::{actions, live_app_actions};
+    use crate::shell::search::providers::{live_app_actions, settings_pages};
     let config = tempfile::tempdir().expect("isolated settings");
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_CONFIG_HOME", config.path());
@@ -1061,7 +1061,8 @@ fn a_search_scoped_to_an_app_shows_only_that_app_until_the_scope_is_cleared() {
         .refresh_search_results_for_shots(&mut doc, &automerge::ROOT);
     assert!(
         h.host.search_results.iter().any(|row| {
-            row.provider_id == actions::PROVIDER_ID && row.id == "appearance.high-contrast"
+            row.provider_id == settings_pages::PROVIDER_ID
+                && row.id == "setting:appearance.high_contrast"
         }),
         "without the scope the system's high contrast switch is found again"
     );

@@ -11,13 +11,24 @@
 //
 // The report: {"entry", "room", "shows"} ("shows" only with --expect; when it
 // is false, also "why": the step at which the page's Chat found no channel,
-// or the channel it read). Exits
+// or the channel it read, and "reads": what its Chat holds there). Exits
 // 1 when the page did not open, 2 when Chrome cannot draw here.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {chromeFlags} from '../../../../scripts/perf/browser_qualification.mjs';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {CHAT_CHANNEL, CHAT_WHY, chatShows, open, page} from './auth-e2e.mjs';
+
+/** In the page: what its Chat holds for `channel` (how many messages, the
+ * latest few texts), or why it could not say. */
+const CHANNEL_READS = ({window, channel}) => `(async () => {
+  const result = await tiloMount.invokeAction('chat.workspace', 'read-messages',
+    {channel: ${JSON.stringify(channel)}, page_size: 32}, {window: ${JSON.stringify(window)}});
+  const messages = result?.output?.value?.messages;
+  return {state: result?.state ?? null, error: result?.error ?? null,
+    count: Array.isArray(messages) ? messages.length : null,
+    latest: Array.isArray(messages) ? messages.slice(-3).map(message => message.text) : null};
+})()`;
 
 function parse(argv) {
   const options = {timeout: 120};
@@ -79,6 +90,7 @@ async function main() {
         && Boolean(await until(() => chatShows(tab, channel.channel, options.expect), timeout));
       if (!report.shows) {
         report.why = channel ?? await tab.evaluate(CHAT_WHY).catch(error => String(error?.message ?? error));
+        if (channel) report.reads = await tab.evaluate(CHANNEL_READS(channel)).catch(error => String(error?.message ?? error));
       }
     }
     if (options.out) {

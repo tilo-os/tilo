@@ -2698,6 +2698,9 @@ pub(crate) struct ResourceOperation<'a> {
     pub(crate) source_invocation: Option<tilo_actions::InvocationId>,
     pub(crate) ambient: Option<&'a tilo_actions::ActionContext>,
     pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
+    /// The session's action door of the host running it: where opening
+    /// another app goes ([`crate::session_door`]).
+    pub(crate) door: Option<&'a mut dyn crate::session_door::SessionDoor>,
 }
 
 /// One execution body for bound components and legacy shell roots. Broker
@@ -2723,6 +2726,7 @@ pub(crate) fn execute_resource_operation(
         source_invocation,
         ambient,
         scope,
+        door,
     } = operation;
     debug_assert!(
         !broker_admitted || source_invocation.is_some(),
@@ -2789,6 +2793,9 @@ pub(crate) fn execute_resource_operation(
     let capture_encoded = observation.as_ref().map(|_| encoded.clone());
     let capture_context = observation.as_ref().map(|_| context.clone());
     let result = (|| {
+        // The session answers an app it was asked to open when it has opened
+        // it, as a broker does: that wait is the session's, not the app's.
+        let asked_of_session = encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE;
         let started = if spec.kind == tilo_actions::OperationKind::Document {
             let action = registry
                 .decode(&encoded)
@@ -2923,6 +2930,15 @@ pub(crate) fn execute_resource_operation(
             crate::widget::ResourceOperationStart::Completed(
                 selected.read(scope, doc).map_err(refused)?,
             )
+        } else if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
+            // Opening another app is the session's, whichever host runs it.
+            crate::session_door::start_application_launch(
+                door,
+                target_route.as_ref(),
+                &encoded.payload,
+                source_invocation.unwrap_or(invocation),
+                broker_admitted,
+            )?
         } else {
             let target = target_route.map(|route| {
                 crate::widget::resource_operation::OperationTarget::new(route, address.clone())
@@ -2953,10 +2969,11 @@ pub(crate) fn execute_resource_operation(
         };
         match &started {
             crate::widget::ResourceOperationStart::Accepted
-                if matches!(
-                    spec.contract.execution,
-                    tilo_actions::ExecutionMode::Immediate
-                ) =>
+                if !asked_of_session
+                    && matches!(
+                        spec.contract.execution,
+                        tilo_actions::ExecutionMode::Immediate
+                    ) =>
             {
                 return Err(tilo_actions::DoorError::Failed(
                     "an immediate operation cannot remain pending".into(),
@@ -3022,6 +3039,7 @@ pub(crate) fn invoke_resource_action(
     document: &mut AutoCommit,
     target: &BoundActionTarget,
     transport: &mut dyn tilo_actions::ActionTransport,
+    mut door: Option<&mut dyn crate::session_door::SessionDoor>,
     request: ResourceActionRequest<'_>,
 ) -> Result<crate::widget::ResourceOperationStart, BoundActionError> {
     let ResourceActionRequest {
@@ -3207,6 +3225,10 @@ pub(crate) fn invoke_resource_action(
                                 source_invocation,
                                 ambient: ambient.or(Some(&binding.operation_context)),
                                 scope,
+                                door: match door.as_mut() {
+                                    Some(door) => Some(&mut **door as &mut dyn crate::session_door::SessionDoor),
+                                    None => None,
+                                },
                             },
                         ))
                     };

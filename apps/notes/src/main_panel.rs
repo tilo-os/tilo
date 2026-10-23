@@ -762,24 +762,6 @@ impl MainPanel {
         self.dirty = true;
     }
 
-    /// Route the window-level Find command into the shared structured editor,
-    /// even when the note title or another sibling currently owns focus.
-    pub fn open_find(&mut self, focus_target: &mut Option<NodeId>) -> bool {
-        if self.page_id.is_none() {
-            return false;
-        }
-        if self.title_label.is_editing() {
-            self.title_label.commit();
-            if let EditOutcome::Committed(title) = self.title_label.take_outcome() {
-                self.pending_rename = Some(title);
-            }
-        }
-        self.editor.editor_mut().open_find();
-        *focus_target = self.editor_node;
-        self.dirty = true;
-        true
-    }
-
     /// Clear the panel back to the empty state.
     pub fn clear(&mut self) {
         self.page_id = None;
@@ -2047,12 +2029,15 @@ impl Widget for MainPanel {
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
             // invite the first note rather than look broken.
-            EmptyState::paint(
+            // What is drawn is what takes the click and what the tree
+            // describes, whatever the layout pass measured before it.
+            self.empty_action_rect = EmptyState::paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
                 &self.empty_labels.content(),
                 self.last_pointer,
-            );
+            )
+            .unwrap_or(Rect::ZERO);
             if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
                 ui::widget::paint_focus_ring(
                     scene,

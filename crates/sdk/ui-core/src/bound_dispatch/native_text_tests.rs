@@ -134,6 +134,7 @@ fn edit(
                         source_invocation: None,
                         ambient: None,
                         scope: None,
+                        door: None,
                     },
                 )
             })
