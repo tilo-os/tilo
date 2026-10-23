@@ -6488,6 +6488,32 @@ default = false
 [check.matrix]
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
 
+# The devices and desktop a person gets from os-image-{arch} and os-dev-image-{arch}, booted under
+# KVM on throwaway overlays of the dev image's installed disk (tools/ci/publish/os-acceptance.sh):
+# a joined device signs in; nearby pairing from first-boot onboarding, sibling unlock and, on
+# x86_64, wake; device-admin reach through a relay; the installed desktop from the sign-in screen through first use, the apps,
+# hot-plugged input and the lock screen to tilo-vmd and app updates; the boot splash on a large
+# panel; and the OS image's size budget. `t outputs os-acceptance-x86_64` gives every gate's
+# report and the guests' logs.
+[[check]]
+name = "os-acceptance-{arch}"
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "os/image-size-budget.toml", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/image_size.py", "tools/perf/record.py"]
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "signing-tools"]
+outputs = ["/target/publish/os-acceptance/{arch}/**"]
+git = true
+requires = ["{node}", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 16, memory = "32GiB" }
+timeout_secs = 10800
+on = ["stable", "dispatch", "idle"]
+default = false
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
 # Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 # firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
 # since bootc takes a device tree only from one. When dispatched (`t dispatch
