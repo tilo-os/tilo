@@ -775,7 +775,17 @@ impl Pan {
     /// view with the strip's gutter after it, as the leading inset keeps
     /// one before the first.
     fn max_scroll_x(&self) -> f64 {
-        (self.content_w + self.trailing_gutter() - self.viewport.width()).max(0.0)
+        self.max_scroll_x_of(self.content_w)
+    }
+
+    /// [`Self::max_scroll_x`] once the windows are `content_w` wide.
+    fn max_scroll_x_of(&self, content_w: f64) -> f64 {
+        let gutter = if content_w > self.inset {
+            self.inset
+        } else {
+            0.0
+        };
+        (content_w + gutter - self.viewport.width()).max(0.0)
     }
 
     /// The leading inset again after the last group, once there is one.
@@ -906,9 +916,19 @@ impl Pan {
         true
     }
 
-    /// The offset that brings a group laid out at `gr` fully inside the
-    /// viewport, or `None` when it already is.
+    /// [`Self::reveal_target`] on a strip whose windows are not moving.
+    #[cfg(test)]
     fn scroll_target_for(&self, gr: Rect) -> Option<f64> {
+        self.reveal_target(gr, self.max_scroll_x())
+    }
+
+    /// The offset that brings a group laid out at `gr` fully inside the
+    /// viewport, or `None` when it already is, on a strip whose windows end
+    /// at offset `end` once their width springs settle. A reveal comes to
+    /// rest within the windows, as the pan does once nothing moves it, so it
+    /// never eases into the canvas past the last window only to be pulled
+    /// back.
+    fn reveal_target(&self, gr: Rect, end: f64) -> Option<f64> {
         // Degenerate rect → layout hasn't run for this group yet.
         if gr.width() <= 0.0 {
             return None;
@@ -933,17 +953,15 @@ impl Pan {
         } else if gr.x0 < left_bound {
             sx -= left_bound - gr.x0;
         }
-        let viewport = self.viewport.width().max(1.0);
         let upper = if self.absolute {
             self.max_scroll_x()
         } else {
-            self.max_scroll_x().max(viewport * 3.0)
+            end
         };
         // A reveal that would stop within the gutter of either end of the
         // strip goes to that end, when what it reveals still fits there:
         // flush with the screen edge, the first or last window's border and
         // corners are cut off by it.
-        let end = self.max_scroll_x();
         let at = |to: f64| gr + vello::kurbo::Vec2::new(self.scroll_x - to, 0.0);
         if self.inset > 0.0 {
             if sx > 0.0 && sx <= self.inset + 0.5 && at(0.0).x1 <= right_bound + 0.5 {
@@ -2731,7 +2749,24 @@ impl GroupRow {
     /// new window is left off screen.
     fn scroll_target_for(&self, group_id: u64) -> Option<f64> {
         let (lane, rect) = self.settled_rect_of(group_id)?;
-        self.pan_of_lane(lane).scroll_target_for(rect)
+        self.pan_of_lane(lane)
+            .reveal_target(rect, self.settled_max_scroll_x(lane))
+    }
+
+    /// The furthest a reveal pans `lane` once the slot-width springs of its
+    /// laid-out groups have settled: [`Pan::max_scroll_x`] of the finished
+    /// layout.
+    fn settled_max_scroll_x(&self, lane: usize) -> f64 {
+        let growth: f64 = self
+            .groups
+            .iter()
+            .filter(|g| {
+                self.laid_group_ids.contains(&g.id) && self.lane_of_group(g.id).unwrap_or(0) == lane
+            })
+            .map(|g| g.dest_width_px() - g.layout_width_px())
+            .sum();
+        let pan = self.pan_of_lane(lane);
+        pan.max_scroll_x_of(pan.content_w + growth)
     }
 
     /// Pan so that `keep` and `also` are both wholly in view when they fit
@@ -2760,7 +2795,7 @@ impl GroupRow {
         } else {
             kept
         };
-        let Some(sx) = pan.scroll_target_for(rect) else {
+        let Some(sx) = pan.reveal_target(rect, self.settled_max_scroll_x(lane)) else {
             return false;
         };
         self.pan_of_group_mut(keep).absolute = false;
@@ -9460,6 +9495,28 @@ mod tests {
         assert!(
             (target - 1496.0).abs() < 0.01,
             "the strip's end with its gutter: {target}"
+        );
+    }
+
+    /// Without a gutter the last window's reveal stops at the strip's end,
+    /// where the pan rests once nothing moves it: easing on past it, into
+    /// the canvas a person's own pan may reach, it was pulled back the
+    /// moment the ease ended.
+    #[test]
+    fn revealing_the_last_window_without_a_gutter_stops_at_the_strip_end() {
+        let pan = Pan {
+            viewport: Rect::new(0.0, 0.0, 1000.0, 600.0),
+            scroll_x: 400.0,
+            content_w: 2400.0,
+            ..Pan::default()
+        };
+        let target = pan
+            .scroll_target_for(Rect::new(1800.0 - 400.0, 0.0, 2400.0 - 400.0, 600.0))
+            .expect("the last group is revealed");
+        assert!(
+            (target - pan.max_scroll_x()).abs() < 0.01,
+            "the strip's end ({}), not past it: {target}",
+            pan.max_scroll_x()
         );
     }
 
