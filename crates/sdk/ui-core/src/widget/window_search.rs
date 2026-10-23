@@ -1312,22 +1312,26 @@ impl WindowSearch {
         let app_w = width_of(&app_label, text);
         let everywhere_w = width_of(&everywhere_label, text);
         let stepper = self.in_place == InPlace::Document;
-        // A document's steps, and its options after them.
-        let steps_w = if stepper {
-            3.0 * CONTROL_PX + 2.0 * gap
-        } else {
-            0.0
-        };
         // What follows the field, dropped from the widest reach inwards when
-        // the bar is narrow: everywhere, then the app, then the steps.
+        // the bar is narrow: everywhere, then the app, then Previous, then
+        // Next. A document's options never give way: they hold the mode and
+        // Replace, which a narrow window (a phone, a touch screen with no
+        // keyboard to press Enter on) needs as much as a wide one.
         let mut want_everywhere = true;
         // A query view searches the whole app in place already.
         let mut want_app = self.in_place != InPlace::Query;
-        let mut want_steps = stepper;
-        let after = |everywhere: bool, app: bool, steps: bool| {
+        let mut want_previous = stepper;
+        let mut want_next = stepper;
+        let after = |everywhere: bool, app: bool, previous: bool, next: bool| {
             let mut w = CONTROL_PX + sibling;
-            if steps {
-                w += steps_w + sibling;
+            if stepper {
+                w += CONTROL_PX + sibling;
+            }
+            if previous {
+                w += CONTROL_PX + gap;
+            }
+            if next {
+                w += CONTROL_PX + gap;
             }
             if app {
                 w += app_w + gap;
@@ -1340,21 +1344,22 @@ impl WindowSearch {
         // The field's width when the bar has room for it: eleven controls.
         let field_max = 11.0 * height;
         let field_min = field_min(theme);
-        for give_way in 0..3 {
-            if room - after(want_everywhere, want_app, want_steps) >= field_min {
+        for give_way in 0..4 {
+            if room - after(want_everywhere, want_app, want_previous, want_next) >= field_min {
                 break;
             }
             match give_way {
                 0 => want_everywhere = false,
                 1 => want_app = false,
-                _ => want_steps = false,
+                2 => want_previous = false,
+                _ => want_next = false,
             }
         }
-        let field_w =
-            (room - after(want_everywhere, want_app, want_steps)).clamp(CONTROL_PX, field_max);
+        let after = after(want_everywhere, want_app, want_previous, want_next);
+        let field_w = (room - after).clamp(CONTROL_PX, field_max);
         // Open, the search starts at the control and reaches right; at the
         // end of an app's slots it ends at the control and reaches back.
-        let block = field_w + after(want_everywhere, want_app, want_steps);
+        let block = field_w + after;
         let start = if self.trailing {
             self.anchor.x1 - block
         } else {
@@ -1368,11 +1373,15 @@ impl WindowSearch {
         // The parts stand where the open search puts them, fading in.
         let mut x = start + field_w + sibling;
         let square = |x: f64| Rect::new(x, y0, x + CONTROL_PX, y1);
-        if want_steps {
+        if want_previous {
             self.parts.push((Part::Previous, square(x)));
             x += CONTROL_PX + gap;
+        }
+        if want_next {
             self.parts.push((Part::Next, square(x)));
             x += CONTROL_PX + gap;
+        }
+        if stepper {
             self.parts.push((Part::Options, square(x)));
             x += CONTROL_PX + sibling;
         }
@@ -2214,5 +2223,29 @@ mod tests {
             search.field_rect.x0 == 100.0,
             "it grows from where the control stands"
         );
+
+        // A phone-wide bar: the steps give way, Previous first, but the
+        // options (the mode, Replace) and Close stay.
+        let narrow = |reach: f64, search: &mut WindowSearch, text: &mut TextRenderer| {
+            search.place(Rect::new(40.0, 6.0, 68.0, 34.0), 40.0 + reach);
+            search.layout(1.0, text, &theme);
+            search.parts.iter().map(|(p, _)| *p).collect::<Vec<Part>>()
+        };
+        let one_step = field_min + 3.0 * CONTROL_PX + 2.0 * f64::from(theme.tokens.spacing.s2);
+        assert_eq!(
+            narrow(
+                one_step + 4.0 * f64::from(theme.tokens.spacing.s1),
+                &mut search,
+                &mut text
+            ),
+            [Part::Next, Part::Options, Part::Close],
+            "Previous gives way before Next"
+        );
+        assert_eq!(
+            narrow(200.0, &mut search, &mut text),
+            [Part::Options, Part::Close],
+            "the options never give way"
+        );
+        assert!(search.parts.iter().all(|(_, r)| r.x1 <= 240.0 + 0.5));
     }
 }
