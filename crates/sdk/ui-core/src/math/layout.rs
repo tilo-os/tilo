@@ -1648,7 +1648,6 @@ mod layout_tests {
         let wrapped = layout_wrapped(&row, &mut tr, 20.0, whole.width / 2.0);
         assert!(wrapped.height > whole.height * 1.5, "it takes more lines");
         assert!(wrapped.width <= whole.width / 2.0 + 20.0);
-        // Every top-level caret stop survives exactly once.
         for index in 0..=row.len() {
             assert_eq!(
                 wrapped

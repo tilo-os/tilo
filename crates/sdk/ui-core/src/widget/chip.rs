@@ -1540,7 +1540,6 @@ mod activation_tests {
             &automerge::ROOT,
         ));
         assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
-        // A pointer click runs it too.
         let mut harness = crate::headless::FrameHarness::new(
             crate::State::new(),
             Box::new(crate::widget::Row::new().push(Box::new(chip))),

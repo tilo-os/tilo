@@ -766,7 +766,6 @@ fn a_frame_reads_its_motions_at_one_instant_across_its_layout_passes() {
         passes += 1;
         let at = frame_now();
         seen.push(at);
-        // A size that follows the motion's clock, as a disclosure's does.
         let grown = at.saturating_duration_since(start).as_secs_f32();
         std::thread::sleep(std::time::Duration::from_millis(2));
         Ok((

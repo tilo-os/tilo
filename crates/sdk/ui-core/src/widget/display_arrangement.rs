@@ -1703,7 +1703,6 @@ mod tests {
         // view puts the hand, which a loaded test machine would make vary.
         let _frame = crate::motion::pin_frame();
         assert!(canvas.press(monitor.center()));
-        // Drop it roughly under the panel, a little off every edge.
         let target = Point::new(
             panel.center().x + 3.0,
             panel.y1 + monitor.height() / 2.0 + 4.0,
@@ -2152,7 +2151,6 @@ mod tests {
         );
         let monitor = fitted.to_canvas(displays()[1].placement);
         assert!(canvas.press(monitor.center()));
-        // Under the panel, past the canvas's bottom edge.
         let panel = fitted.to_canvas(displays()[0].placement);
         assert!(canvas.drag_to(Point::new(panel.center().x, canvas.rect.y1 + 40.0)));
         let later = crate::motion::frame_now() + crate::time::Duration::from_secs(2);

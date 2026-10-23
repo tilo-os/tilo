@@ -205,7 +205,6 @@ struct ClosingTab {
 /// it pulls a little and springs back, and hovering it names them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabHolder {
-    /// Their name, as presence shows it.
     pub name: String,
     /// Their presence colour.
     pub rgb: (u8, u8, u8),
@@ -260,7 +259,6 @@ enum GroupFocus {
 pub enum TabMark {
     /// The content is loading.
     Busy,
-    /// The content is playing sound.
     Playing,
     /// The content's sound is muted.
     Muted,
@@ -851,7 +849,6 @@ impl TabBar {
         )
     }
 
-    /// The active tab's slots, on a window's bar.
     fn active_toolbar(&self) -> Option<&crate::window_toolbar::WindowToolbar> {
         self.window_controls
             .then(|| self.toolbars.get(&self.active_id))
@@ -1067,7 +1064,6 @@ impl TabBar {
         turning.then(|| crate::animation::next_indicator_step(busy_epoch(), now))
     }
 
-    /// Tab `id`'s mark, if any.
     pub fn mark(&self, id: u64) -> Option<TabMark> {
         self.marks.get(&id).copied()
     }
@@ -2662,7 +2658,6 @@ impl TabBar {
     pub fn clear_accent(&mut self, id: u64) {
         self.accent_ids.remove(&id);
     }
-    /// The accent set for `id`, if any.
     pub fn accent(&self, id: u64) -> Option<vello::peniko::Color> {
         self.accent_ids.get(&id).copied()
     }
@@ -2986,7 +2981,6 @@ impl TabBar {
             self.advance_changed = true;
         }
     }
-    /// The History control tab `id` shows, if any.
     #[must_use]
     pub fn history_control(&self, id: u64) -> Option<HistoryControl> {
         self.history.get(&id).copied()
@@ -3993,7 +3987,6 @@ impl Widget for TabBar {
                 .then(|| tab_progress(ListChange::MOVE, Direction::Enter, elapsed))
         });
 
-        // Stop `needs_animation_frame` pumping forever once every insert-fade elapses.
         let fade_window = insert_fade();
         self.inserted_at.retain(|_, started| {
             crate::time::now().saturating_duration_since(*started) < fade_window
@@ -5203,7 +5196,6 @@ impl TabBar {
             return;
         }
 
-        // Close button takes priority over selection/drag.
         if let Some(ci) = close_idx
             && let Some(t) = self.tabs.get(ci)
         {
@@ -5502,7 +5494,6 @@ mod tests {
 
     #[test]
     fn tab_titles_stay_distinguishable_elided_and_named_at_every_width() {
-        // Case `compact_large_text_document_tabs_remain_distinguishable`.
         {
             let theme = Theme::dark().with_text_scale(2.0);
             let mut tr = TextRenderer::new();
@@ -5586,7 +5577,6 @@ mod tests {
                 "the elided title must be shorter than the real one, got {long:?}",
             );
 
-            // And a title that does fit is left exactly alone.
             let mut roomy = TabBar::new("g2", vec![TabDescriptor::new(1, "Notes")], 1);
             lay_out_at_width(&mut roomy, 600.0);
             assert_eq!(
@@ -5612,7 +5602,6 @@ mod tests {
                 ],
                 1,
             );
-            // Default single-group desktop width.
             lay_out_at_width(&mut b, 1300.0);
             for i in 0..b.tabs().len() {
                 let title = b.tabs()[i].title.clone();
@@ -5626,7 +5615,6 @@ mod tests {
             }
         }
 
-        // Case `squeezed_pills_still_name_their_tabs`.
         {
             let mut tr = TextRenderer::new();
             let theme = crate::theme::Theme::dark();
@@ -5674,7 +5662,6 @@ mod tests {
 
     #[test]
     fn tab_list_mutations_pick_neighbours_and_clean_sidecars() {
-        // Case `remove_tab_drops_it_and_picks_neighbour_when_active`.
         {
             let mut b = bar();
             b.set_active(2);
@@ -5684,7 +5671,6 @@ mod tests {
             assert_eq!(b.active_id(), 3);
         }
 
-        // Case `remove_tab_at_end_picks_last_remaining`.
         {
             let mut b = bar();
             b.set_active(3);
@@ -5692,7 +5678,6 @@ mod tests {
             assert_eq!(b.active_id(), 2);
         }
 
-        // Case `reorder_moves_tab_to_requested_index`.
         {
             let mut b = bar();
             b.reorder(0, 2);
@@ -5700,7 +5685,6 @@ mod tests {
             assert_eq!(ids, vec![2, 3, 1]);
         }
 
-        // Case `pin_sidecar_tracks_ids_and_remove_tab_cleans_up`.
         {
             let mut b = bar();
             // bar() seeds tabs [1, 2, 3]
@@ -5726,7 +5710,6 @@ mod tests {
             assert!(!b.is_pinned(3), "remove_tab must drop the sidecar entry");
         }
 
-        // Case `accent_sidecar_tracks_ids_and_is_cleaned_up_on_remove`.
         {
             let mut b = bar();
             let red = vello::peniko::Color::from_rgba8(200, 60, 30, 255);
@@ -5747,7 +5730,6 @@ mod tests {
 
     #[test]
     fn leading_slot_reserves_width_for_accents_and_app_icons() {
-        // Case `tab_descriptor_new_sets_app_kind_none`.
         {
             // app_kind must default to None so `TabBar::draw` skips the
             // leading-icon reservation.
@@ -5757,7 +5739,6 @@ mod tests {
             assert!(d.app_kind.is_none());
         }
 
-        // Case `pill_reserves_extra_width_when_app_kind_set`.
         {
             // With `app_kind = Some(kind)`, `apply_layout` reserves an extra
             // 20 px (icon_w 14 + icon_gap 6) on the leading edge.
@@ -5809,7 +5790,6 @@ mod tests {
             assert!(width_b > 0.0);
         }
 
-        // Case `an_accent_opens_the_leading_slot_like_an_app_icon`.
         {
             // One slot, two occupants, one width: a strip mixing accented and
             // app-typed tabs must not wobble from one pill to the next — an
@@ -5884,7 +5864,6 @@ mod tests {
                 r.x0 + PILL_PAD_X,
                 "no glyph: title on the inset"
             );
-            // The pinned marker occupies the same slot, centred on the pill.
             let pinned = square_at(r.center(), ICON_W);
             assert!((pinned.center().x - r.center().x).abs() < 1e-9);
             assert_eq!(pinned.width(), ICON_W);
@@ -5893,7 +5872,6 @@ mod tests {
 
     #[test]
     fn modified_tab_shows_a_dot_at_rest_and_the_close_glyph_on_hover() {
-        // Case `modified_tab_holds_its_close_slot_open_at_rest`.
         {
             let mut b = bar(); // active = 1 (A); tab 2 (B) is idle and inactive.
             lay_out_at_width(&mut b, 900.0);
@@ -5922,7 +5900,6 @@ mod tests {
             );
         }
 
-        // Case `modified_dot_paints_at_rest_and_the_x_returns_on_hover`.
         {
             let mut b = bar(); // active = 1 (A)
             b.set_modified(2, true); // inactive tab B, data index 1
@@ -6028,7 +6005,6 @@ mod tests {
             );
         }
 
-        // Case `accessibility_reports_a_modified_tab_via_description`.
         {
             use crate::a11y::Role;
             use crate::i18n::I18nManager;
@@ -6062,7 +6038,6 @@ mod tests {
 
     #[test]
     fn inactive_tab_action_chips_fire_on_first_click_unless_withheld() {
-        // Case `press_on_inactive_tab_maximize_icon_fires_on_first_click`.
         {
             let mut b = bar();
             // A sits at [0..80], B at [86..166], C at [172..252]. Tab `1` (A)
@@ -6118,9 +6093,7 @@ mod tests {
             );
         }
 
-        // Case `press_on_inactive_tab_search_icon_fires_on_first_click`.
         {
-            // Twin of the maximize test above, for the search icon.
             let mut b = bar();
             b.rect = Rect::new(0.0, 0.0, 252.0, 40.0);
             b.tab_rects = vec![
@@ -6172,7 +6145,6 @@ mod tests {
             );
         }
 
-        // Case `set_show_maximize_false_withholds_the_hover_chip_cluster`.
         {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let width = 900.0;
@@ -6209,7 +6181,6 @@ mod tests {
 
     #[test]
     fn pinned_tabs_lead_the_bar_and_never_close() {
-        // Case `pinned_tabs_render_to_the_left_of_unpinned`.
         {
             use crate::theme::Theme;
             use std::collections::HashMap;
@@ -6277,7 +6248,6 @@ mod tests {
             );
         }
 
-        // Case `pinned_tabs_have_no_close_rect`.
         {
             use crate::theme::Theme;
             use std::collections::HashMap;
@@ -6325,7 +6295,6 @@ mod tests {
             );
         }
 
-        // Case `pinned_tab_press_at_close_position_does_not_close`.
         {
             let mut b = bar();
             // Hand-built rects (no taffy): three pills [0..80], [86..166],
@@ -6490,7 +6459,6 @@ mod tests {
             }
         }
 
-        // Case `pressed_pill_uses_active_visuals_and_scales_down`.
         {
             let theme = Theme::dark();
             let pressed_inactive = pill_appearance(
@@ -6599,7 +6567,6 @@ mod tests {
             );
         }
 
-        // Case `peer_on_another_tab_paints_navigation_mist`.
         {
             use vello_encoding::DrawTag;
 
@@ -6651,7 +6618,6 @@ mod tests {
             );
         }
 
-        // Case `peers_on_a_tab_show_faces_that_give_way_to_the_title`.
         {
             fn faces_at(width: f64) -> (Vec<PillFaces>, f64) {
                 faces_with_front(width, 2)
@@ -6818,7 +6784,6 @@ mod tests {
             assert_eq!(b.pill_faces[1], one, "the grown pill shows the face");
         }
 
-        // Case `user_color_is_stable_per_id_and_differs_across_ids`.
         {
             let a1 = user_color("alice");
             let a2 = user_color("alice");
@@ -6833,7 +6798,6 @@ mod tests {
         // Fresh curves are read in the instant they start: a descheduled
         // runner cannot age them.
         with_monotonic_time(crate::time::now(), || {
-            // Case `drop_index_for_uses_pill_midpoints`.
             {
                 // Hand-built (no taffy): A [0,80], B [80,160], C [160,240].
                 let mut b = bar();
@@ -6853,7 +6817,6 @@ mod tests {
                 assert_eq!(b.drop_index_for(Point::new(230.0, 20.0)), 3);
             }
 
-            // Case `drop_index_for_empty_bar_is_zero`.
             {
                 // A just-emptied bar should accept any drop at index 0.
                 let mut b = bar();
@@ -6862,7 +6825,6 @@ mod tests {
                 assert_eq!(b.drop_index_for(Point::new(1000.0, 0.0)), 0);
             }
 
-            // Case `release_reorders_to_indicated_gap_not_only_onto_a_pill`.
             {
                 use winit::event::{ElementState, MouseButton};
 
@@ -6937,7 +6899,6 @@ mod tests {
                 let _ = (ElementState::Pressed, MouseButton::Left);
             }
 
-            // Case `drop_zone_target_tracks_cursor_during_drag`.
             {
                 let mut b = bar();
                 // Pills: A [0..80], B [80..160], C [160..240].
@@ -6986,9 +6947,7 @@ mod tests {
                 );
             }
 
-            // Case `hover_drop_idx_follows_own_bar_drag_cursor`.
             {
-                // Same three-pill fixture as the drop-zone test above.
                 let mut b = bar();
                 b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
                 b.tab_rects = vec![
@@ -7065,7 +7024,6 @@ mod tests {
                 b.set_external_drag_hover(Some(Point::new(10.0, 20.0)));
                 assert_eq!(b.hover_drop_idx(), Some(0));
 
-                // None clears.
                 b.set_external_drag_hover(None);
                 assert_eq!(b.hover_drop_idx(), None);
 
@@ -7091,7 +7049,6 @@ mod tests {
 
     #[test]
     fn pending_tab_requests_drain_exactly_once() {
-        // Case `take_max_drains_pending_request_exactly_once`.
         {
             let mut b = bar();
             assert_eq!(b.take_max(), None);
@@ -7101,7 +7058,6 @@ mod tests {
             assert_eq!(b.take_max(), None);
         }
 
-        // Case `take_search_drains_pending_request_exactly_once`.
         {
             let mut b = bar();
             assert_eq!(b.take_search(), None);
@@ -7110,7 +7066,6 @@ mod tests {
             assert_eq!(b.take_search(), None);
         }
 
-        // Case `take_close_moves_id_into_closing_vec`.
         {
             let mut b = bar_with_laid_out_rects();
             assert!(b.closing_tab_ids().is_empty(), "precondition: no closing");
@@ -7150,7 +7105,6 @@ mod tests {
         // Fresh curves are read in the instant they start: a descheduled
         // runner cannot age them.
         with_monotonic_time(crate::time::now(), || {
-            // Case `reorder_starts_layout_spring_and_snapshots_prev_rects`.
             {
                 let mut b = bar();
                 assert!(b.prev_tab_rects_by_id.is_empty());
@@ -7178,7 +7132,6 @@ mod tests {
                 );
             }
 
-            // Case `insert_tab_triggers_layout_spring`.
             {
                 let mut b = bar();
                 b.tab_rects = vec![
@@ -7195,7 +7148,6 @@ mod tests {
                 assert!(b.prev_tab_rects_by_id.contains_key(&1));
             }
 
-            // Case `remove_tab_triggers_layout_spring`.
             {
                 let mut b = bar();
                 b.tab_rects = vec![
@@ -7212,7 +7164,6 @@ mod tests {
                 assert!(b.prev_tab_rects_by_id.contains_key(&3));
             }
 
-            // Case `insert_tab_records_inserted_at_for_fade_in`.
             {
                 let mut b = bar();
                 b.tab_rects = vec![
@@ -7232,7 +7183,6 @@ mod tests {
                 );
             }
 
-            // Case `insert_fade_clears_after_duration`.
             {
                 // Backdate `inserted_at` so both `draw`'s retain and the timestamp check
                 // here consider it expired, rather than waiting out the fade.
@@ -7249,7 +7199,6 @@ mod tests {
                 );
             }
 
-            // Case `layout_spring_clears_itself_after_duration`.
             {
                 // Backdate `layout_anim_started` rather than waiting out the move.
                 let mut b = bar();
@@ -7268,17 +7217,14 @@ mod tests {
 
     #[test]
     fn chip_glyphs_and_hover_tints_come_from_icons_and_tokens() {
-        // Case `tab_close_glyph_draws_via_icons_module`.
         {
             assert_eq!(TabBar::close_glyph_icon_for_tests(), icons::Icon::X);
         }
 
-        // Case `tab_max_glyph_draws_via_icons_module`.
         {
             assert_eq!(TabBar::max_glyph_icon_for_tests(), icons::Icon::Maximize2);
         }
 
-        // Case `tab_search_glyph_draws_via_icons_module`.
         {
             assert_eq!(TabBar::search_glyph_icon_for_tests(), icons::Icon::Search);
         }
@@ -7372,7 +7318,6 @@ mod tests {
         // Fresh curves are read in the instant they start: a descheduled
         // runner cannot age them.
         with_monotonic_time(crate::time::now(), || {
-            // Case `drag_ghost_paints_at_cursor_while_drag_in_flight`.
             {
                 let mut b = ghost_test_bar();
                 let mut handled = false;
@@ -7476,7 +7421,6 @@ mod tests {
                 assert!(!b.drag_in_flight());
             }
 
-            // Case `source_pill_alpha_dims_while_dragged`.
             {
                 let mut b = bar();
                 assert!((b.pill_draw_alpha(0) - 1.0).abs() < f32::EPSILON);
@@ -7538,7 +7482,6 @@ mod tests {
         assert_eq!(b.pending_close, None);
         assert!(b.closing_tabs.is_empty());
         assert_eq!(b.active_id(), 2);
-        // Its own tab beside it closes as ever.
         let mut b = bar_with_laid_out_rects();
         b.set_holder(2, Some(holder()));
         move_to(&mut b, 69.0, 20.0);
@@ -7552,7 +7495,6 @@ mod tests {
         move_to(&mut b, 88.0, 20.0);
         let mut handled = false;
         b.on_left_press(&mut handled);
-        // Far past the drag threshold, and out of the bar.
         move_to(&mut b, 400.0, 220.0);
         assert!(b.pending_drag.is_none(), "it is not lifted");
         let (tab, pull) = b.resist_offset().expect("it is pulled");
@@ -7565,14 +7507,12 @@ mod tests {
         assert_eq!(b.pending_detach, None);
         assert_eq!(b.pending_reorder, None);
         assert!(b.needs_animation_frame(), "it springs back");
-        // Once back, nothing more moves.
         b.resist = b.resist.map(|resist| Resist {
             released_at: crate::time::now().checked_sub(resist_return() + Duration::from_millis(1)),
             ..resist
         });
         assert_eq!(b.resist_offset(), None);
 
-        // Its own tab still lifts.
         let mut b = bar_with_laid_out_rects();
         b.set_holder(2, Some(holder()));
         move_to(&mut b, 6.0, 20.0);
@@ -7614,7 +7554,6 @@ mod tests {
         // Fresh curves are read in the instant they start: a descheduled
         // runner cannot age them.
         with_monotonic_time(crate::time::now(), || {
-            // Case `is_closing_tracks_the_fade_until_finalize_close_and_cleans_up_sidecars`.
             {
                 let mut b = bar_with_laid_out_rects();
                 b.set_accent(2, vello::peniko::Color::from_rgba8(1, 2, 3, 255));
@@ -7646,7 +7585,6 @@ mod tests {
                 );
             }
 
-            // Case `closing_tab_still_renders_pill_during_fade`.
             {
                 let mut b = bar_with_laid_out_rects();
                 assert!(!b.has_closing(), "precondition: no closing pills");
@@ -7668,7 +7606,6 @@ mod tests {
                 assert_eq!(live, vec![1, 3], "closing tab is out of the live list");
             }
 
-            // Case `closing_tab_active_shifts_to_neighbour_immediately`.
             {
                 let mut b = bar_with_laid_out_rects();
                 b.set_active(2);
@@ -7688,7 +7625,6 @@ mod tests {
                 assert!(b.has_closing(), "close fade is still in flight");
             }
 
-            // Case `closing_tab_is_not_hit_testable`.
             {
                 let mut b = bar_with_laid_out_rects();
                 b.set_active(1);
@@ -7732,7 +7668,6 @@ mod tests {
                 let _ = (before_count, before_tabs);
             }
 
-            // Case `a_closing_pill_keeps_its_body_under_the_chips_it_is_still_painting`.
             {
                 let theme = crate::theme::Theme::dark(); // motion on
                 let mut b = four_tab_bar();
@@ -7745,7 +7680,6 @@ mod tests {
                 with_monotonic_time(opened, || lay_out_at_width_with(&mut b, width, &theme));
                 assert!(b.close_rects[1].area() > 0.0);
 
-                // The pointer leaves and the next frame lays out in the same instant.
                 with_monotonic_time(opened, || {
                     let mut handled = false;
                     dispatch_cursor(&mut b, Point::new(-50.0, -50.0), &mut handled);
@@ -8026,7 +7960,6 @@ mod tests {
             );
             assert_eq!(b.hover_search_idx, Some(1));
             assert_eq!(b.hover_max_idx, None);
-            // The press resolves the same way, from the authoritative rects.
             b.last_cursor = Point::new(124.0, 20.0);
             b.hover_idx = Some(1);
             b.on_left_press(&mut handled);
@@ -8131,7 +8064,6 @@ mod tests {
                 "stale hover_idx must be cleared when the rect cache no \
              longer covers it",
             );
-            // Also guards the `pill = self.tab_rects[idx]` line below `origin`.
             assert!(b.press_origin.is_none());
             assert!(b.drag_offset.is_none());
         }
@@ -8139,13 +8071,11 @@ mod tests {
 
     #[test]
     fn tab_bar_accessibility_names_role_value_and_tab_controls() {
-        // Case `tab_bar_test_id_returns_tabs`.
         {
             let bar = TabBar::new("grp", vec![TabDescriptor::new(1, "a")], 1);
             assert_eq!(Widget::test_id(&bar), Some("tabs"));
         }
 
-        // Case `accessibility_reports_tabbar_role_and_active_title`.
         {
             use crate::a11y::Role;
             // `bar()` builds tabs A/B/C with active_id = 1 ("A").
@@ -8163,7 +8093,6 @@ mod tests {
             assert_eq!(node.state.disabled, !Widget::is_enabled(&b));
         }
 
-        // Case `accessibility_value_follows_active_tab`.
         {
             let mut b = bar();
             b.set_active(3); // "C"
@@ -8175,7 +8104,6 @@ mod tests {
             );
         }
 
-        // Case `accessible_new_and_close_controls_dispatch_the_same_tab_intents`.
         {
             let mut b = bar();
             let mut doc = AutoCommit::new();
@@ -8200,7 +8128,6 @@ mod tests {
 
     #[test]
     fn keyboard_and_programmatic_selection_track_stable_tab_identity() {
-        // Case `focused_tab_list_uses_standard_arrow_home_and_end_navigation`.
         {
             let mut b = bar();
             assert!(
@@ -8231,7 +8158,6 @@ mod tests {
             assert!(node.state.focused, "AT sees the same focus the ring paints");
         }
 
-        // Case `synthetic_tab_activation_selects_by_stable_tab_id`.
         {
             let mut b = bar();
             assert!(Widget::perform_semantic_action(
@@ -8252,7 +8178,6 @@ mod tests {
             ));
         }
 
-        // Case `programmatic_selection_does_not_masquerade_as_user_activation`.
         {
             let mut b = bar();
             b.set_active(3);
@@ -8271,7 +8196,6 @@ mod tests {
             );
         }
 
-        // Case `keyboard_focus_reveals_active_actions_immediately`.
         {
             let theme = Theme::dark().with_reduce_motion(true);
             let mut b = four_tab_bar();
@@ -8283,7 +8207,6 @@ mod tests {
             assert!(a11y.state.focused);
         }
 
-        // Case `group_focus_is_distinct_from_active_tab_identity`.
         {
             let mut bar = four_tab_bar();
             assert_eq!(bar.group_focus, GroupFocus::Focused);
@@ -8494,7 +8417,6 @@ mod tests {
             }
         }
 
-        // Case `a_squeezed_pill_gives_up_chips_before_it_gives_up_its_name`.
         {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut tr = TextRenderer::new();
@@ -8822,7 +8744,6 @@ mod tests {
         b.set_window_controls(true);
         b.set_toolbar(1, Some(slots));
         lay_out_at_width_with(&mut b, 900.0, &theme);
-        // The breadcrumb lays its levels out as it is painted.
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
         b.draw(
@@ -9257,7 +9178,6 @@ mod tests {
             assert!(chips_open(&b, 0));
         }
 
-        // Stopping short, under the pill and off any other pill.
         {
             let (mut b, opened) = bar_with_pill_one_open(&theme);
             let r = b.tab_rects()[1];
@@ -9397,7 +9317,6 @@ mod tests {
             assert_eq!(row_geometry(&b), rest, "the × moved {later} ms in");
         }
 
-        // Straight onto the ×, and onto every corner of its target.
         let inset = 1.0;
         for p in [
             x,
@@ -9431,7 +9350,6 @@ mod tests {
         let close = b.close_hit_rect(0).expect("the active pill shows its ×");
         let y = r.center().y;
         let from = Point::new(b.tab_rects()[1].x0 + 10.0, y);
-        // Where the search chip will sit once the pill has opened.
         let to = Point::new(close.x0 - 30.0, y);
         let t0 = crate::time::now();
         let mut entered = None;
@@ -9540,7 +9458,6 @@ mod tests {
             let chip = b.search_rects()[1].center();
             let lift = Point::new((x.x + chip.x) / 2.0, b.rect.y0 + 2.0);
             assert!(lift.y < r.y0, "the path leaves the pill");
-            // Along the pill to its ×, then up over the bar and onto search.
             let mut points = vec![Point::new(r.x0 + 12.0, r.center().y)];
             points.extend(path(points[0], x, steps));
             points.extend(path(x, lift, steps));
@@ -9855,7 +9772,6 @@ mod tests {
 
     #[test]
     fn revealed_chip_cluster_widens_only_its_pill_and_eases_open() {
-        // Case `hovering_a_pill_widens_it_by_the_cluster_it_reveals`.
         {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut b = four_tab_bar();
@@ -9893,7 +9809,6 @@ mod tests {
             );
         }
 
-        // Case `an_opening_pill_moves_nothing_at_or_left_of_its_own_leading_edge`.
         {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut b = four_tab_bar();
@@ -9932,7 +9847,6 @@ mod tests {
             );
         }
 
-        // Case `an_idle_pill_holds_no_room_for_chips_it_is_not_painting`.
         {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut b = four_tab_bar();
@@ -9966,7 +9880,6 @@ mod tests {
             );
         }
 
-        // Case `chip_hit_targets_exist_exactly_when_the_pill_is_showing_them`.
         {
             let theme = crate::theme::Theme::dark().with_reduce_motion(true);
             let mut b = four_tab_bar();

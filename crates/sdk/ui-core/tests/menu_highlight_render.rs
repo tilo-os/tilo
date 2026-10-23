@@ -256,7 +256,6 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
             for label in labels() {
                 menu.push(MenuItem::action(label, || {}));
             }
-            // The legacy point-placement path every right-click host uses.
             menu.open_at([40.0, 40.0]);
             let row1 = menu.item_rect(1).expect("row 1 is an action row");
             dispatch(&mut menu, &cursor_moved(row1.center()));

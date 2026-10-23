@@ -78,7 +78,6 @@ struct Fit {
     total: f64,
 }
 
-/// Paints an empty state's illustration into the square it is given.
 pub type Illustration<'a> = &'a dyn Fn(&mut PaintCtx<'_>, Rect);
 
 /// What an empty state shows: optional icon or illustration, title,
@@ -144,7 +143,6 @@ struct StackStyle {
     pad_y: f64,
     min_button: f64,
     glyph: f64,
-    /// The technical detail's text, under its disclosure.
     details: TextStyle,
     /// The height of the "Details" disclosure control.
     details_toggle: f64,
@@ -620,7 +618,6 @@ pub struct EmptyState {
     layout_dirty: bool,
     /// The technical detail behind the "Details" disclosure.
     details: Option<String>,
-    /// Whether the disclosure is open.
     details_open: bool,
     /// Where the disclosure control was drawn (empty without details).
     details_rect: Rect,
@@ -726,7 +723,6 @@ impl EmptyState {
         }
     }
 
-    /// Whether the "Details" disclosure is open.
     #[must_use]
     pub fn details_open(&self) -> bool {
         self.details_open
@@ -1835,7 +1831,6 @@ mod tests {
             let mut es = EmptyState::new("Nothing here").with_action("Add");
             lay_out(&mut es, 600.0, 400.0);
             let _ = draw(&mut es);
-            // Top-left corner is well outside the centered pill.
             dispatch(&mut es, &cursor(Point::new(2.0, 2.0)));
             assert!(
                 !dispatch(&mut es, &mouse_press()),

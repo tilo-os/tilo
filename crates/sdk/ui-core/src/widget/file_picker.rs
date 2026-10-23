@@ -114,7 +114,6 @@ struct PickerMetrics {
     search_w: f64,
     /// A footer button is never narrower than this.
     min_button_w: f64,
-    /// The Save field's label column.
     name_label_w: f64,
     /// The band under the Save field that says why a name can't be used.
     error_h: f64,
@@ -473,7 +472,6 @@ enum Listing {
     Search(String),
 }
 
-/// One row of the picker's file list.
 struct PickerRow {
     entry: FilePickerEntry,
     /// The folder it is in, for a row that is not in the folder in view (a
@@ -631,7 +629,6 @@ pub struct FilePicker {
     waker: Option<std::task::Waker>,
     /// The listing being read, while it is.
     lookup: Option<Lookup>,
-    /// The rows of the listing in view, as last read.
     read: Vec<reading::Row>,
     /// What the folder in view is, as last read.
     here: Option<Real>,
@@ -659,7 +656,6 @@ pub struct FilePicker {
     crumbs: Breadcrumb,
     /// Where each trail segment goes, in trail order.
     crumb_targets: Vec<PathBuf>,
-    /// The trail segment the person clicked.
     crumb_clicked: Rc<Cell<Option<usize>>>,
     /// The person clicked the trail's empty space to type a path.
     crumb_edit: Rc<Cell<bool>>,
@@ -1276,7 +1272,6 @@ impl FilePicker {
                 .is_some_and(|filter| filter.matches(path))
     }
 
-    /// An entry for a row read on the worker.
     fn entry_for(row: &reading::Row) -> FilePickerEntry {
         let (path, is_dir, meta) = (row.path.clone(), row.is_dir, row.meta.as_ref());
         let name = path.file_name().map_or_else(
@@ -3375,7 +3370,6 @@ impl Widget for FilePicker {
 }
 
 impl FilePicker {
-    /// The name of the file the replace prompt is about.
     fn replace_prompt_name(&self) -> Option<String> {
         let target = self.replace_prompt.as_ref()?;
         Some(target.file_name().map_or_else(

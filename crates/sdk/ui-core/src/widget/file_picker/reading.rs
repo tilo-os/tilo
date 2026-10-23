@@ -14,7 +14,6 @@ use std::task::Waker;
 /// What a path is once links are followed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Kind {
-    /// Nothing is there.
     #[default]
     Nothing,
     /// A link to nothing: the name is taken, but there is nothing to open.
@@ -34,7 +33,6 @@ pub(super) struct Real {
 }
 
 impl Real {
-    /// A file the chooser may give.
     pub(super) fn is_file_inside(self) -> bool {
         self.kind == Kind::File && self.inside
     }
@@ -50,7 +48,6 @@ impl Real {
     }
 }
 
-/// A row read for a listing.
 pub(super) struct Row {
     pub(super) path: PathBuf,
     /// A folder to go into. In a folder this is the entry itself (a link
@@ -117,7 +114,6 @@ fn on_worker<T: Send + 'static>(
         .map(|()| Pending { answer })
 }
 
-/// Read `source` on the worker.
 pub(super) fn list(
     source: Source,
     roots: Vec<PathBuf>,

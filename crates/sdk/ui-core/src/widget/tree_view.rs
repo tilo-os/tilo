@@ -3024,7 +3024,6 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         // The indent and disclosure column hit-testing uses, resolved from
         // this theme at layout.
         let indent_px = self.indent_px;
-        // Drop and insertion marks are the person's own colour.
         let insertion = tokens.colors.intent.accent_ink;
         let now = crate::time::now();
         // The tree stands on the ground its container handed it (the
@@ -4475,7 +4474,6 @@ mod tests {
 
     #[test]
     fn owned_tree_reorder_moves_subtrees_rejects_invalid_targets_and_commits_drops() {
-        // Case `owned_tree_reorder_moves_complete_subtrees_across_parents`.
         {
             let mut tree = reorder_tree();
             assert!(tree.reorder(&ReorderDrop {
@@ -4499,7 +4497,6 @@ mod tests {
             assert_eq!(tree.find(3).map(|node| node.data), Some("first-data"));
         }
 
-        // Case `owned_tree_reorder_rejects_cycles_invalid_targets_and_noops`.
         {
             let mut tree = reorder_tree();
             let original = tree.children.iter().map(|node| node.id).collect::<Vec<_>>();
@@ -4538,14 +4535,12 @@ mod tests {
             assert_eq!(tree.parent_id(5), Some(4));
         }
 
-        // Case `owned_tree_reorderable_installs_safe_default_controller`.
         {
             let view = TreeView::new(reorder_tree()).reorderable();
             assert!(view.reorder_validator.is_some());
             assert!(view.reorder_commit.is_some());
         }
 
-        // Case `owned_tree_reorderable_commits_the_pointer_drop_without_app_bookkeeping`.
         {
             let mut view = TreeView::new(sample_tree())
                 .with_expanded([1])
@@ -5152,7 +5147,6 @@ mod tests {
             layout(&mut view, &theme);
             let before = paint(&mut view, &theme, &mut text);
             view.mark_drawn();
-            // The open item's row is set in the heavier weight.
             view.set_current(Some(3));
             layout(&mut view, &theme);
             let after = paint(&mut view, &theme, &mut text);
@@ -5256,7 +5250,6 @@ mod tests {
             );
         }
 
-        // Case `tree_view_expand_node_shows_children`.
         {
             let mut view = TreeView::new(sample_tree());
             let rows = view.visible_rows();
@@ -5277,7 +5270,6 @@ mod tests {
             assert_eq!(rows.len(), 3);
         }
 
-        // Case `tree_view_arrow_right_expands_focused_node`.
         {
             let mut view = TreeView::new(sample_tree());
             view.set_focus(true);
@@ -5292,7 +5284,6 @@ mod tests {
             );
         }
 
-        // Case `empty_branch_remains_expandable_for_lazy_population`.
         {
             let mut view = TreeView::new(TreeNode::branch(1, "loading", (), Vec::new()));
             view.toggle_expand(1);
@@ -5301,7 +5292,6 @@ mod tests {
             assert_eq!(node.children[0].state.expanded, Some(true));
         }
 
-        // Case `expansion_has_a_persistable_builder_and_change_callback`.
         {
             let changes = Rc::new(RefCell::new(Vec::new()));
             let sink = changes.clone();
@@ -5321,7 +5311,6 @@ mod tests {
             );
         }
 
-        // Case `restoring_expansion_does_not_echo_to_the_host`.
         {
             let echoed = Rc::new(Cell::new(0));
             let count = Rc::clone(&echoed);
@@ -5336,7 +5325,6 @@ mod tests {
             assert_eq!(echoed.get(), 1, "a user change still reports");
         }
 
-        // Case `the_disclosure_toggles_without_activating`.
         {
             let (view, activated, _) = logged(
                 TreeView::new(navigator_tree())
@@ -5360,7 +5348,6 @@ mod tests {
 
     #[test]
     fn selection_reports_callbacks_and_multiselect_by_stable_id() {
-        // Case `tree_view_select_node_calls_on_select`.
         {
             let captured: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
             let captured_clone = captured.clone();
@@ -5416,7 +5403,6 @@ mod tests {
             assert_eq!(view.selected(), Some(2));
         }
 
-        // Case `multiselect_uses_stable_ids_and_survives_collapse_and_move`.
         {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1, 2])
@@ -5448,7 +5434,6 @@ mod tests {
             assert!(view.selection().is_selected(&20));
         }
 
-        // Case `multiselect_supports_visible_ranges_and_constant_space_select_all`.
         {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1, 2])
@@ -5500,7 +5485,6 @@ mod tests {
 
     #[test]
     fn keyboard_navigation_moves_focus_and_separates_selection_from_activation() {
-        // Case `tree_view_arrow_down_moves_focus_to_next_visible_row`.
         {
             let mut view = TreeView::new(sample_tree());
             view.toggle_expand(1);
@@ -5518,7 +5502,6 @@ mod tests {
             );
         }
 
-        // Case `keyboard_navigation_reveals_focus_and_follows_tree_parents`.
         {
             let children = (2_u64..=20)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -5538,7 +5521,6 @@ mod tests {
             assert_eq!(view.scroll_y(), 0.0, "revealing the root returns to top");
         }
 
-        // Case `enter_activates_while_space_and_arrows_only_select`.
         {
             let (view, activated, selected) = logged(
                 TreeView::new(navigator_tree())
@@ -5565,7 +5547,6 @@ mod tests {
             assert!(selected.borrow().contains(&5));
         }
 
-        // Case `arrows_do_not_select_unless_selection_follows_focus`.
         {
             let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
             view.set_focus(true);
@@ -5576,7 +5557,6 @@ mod tests {
             assert!(activated.borrow().is_empty());
         }
 
-        // Case `an_unfocused_tree_leaves_keys_to_its_siblings`.
         {
             let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
             view.focused = Some(TreeRowKey::Node(2));
@@ -5589,7 +5569,6 @@ mod tests {
 
     #[test]
     fn accessibility_reports_tree_role_value_focus_and_row_state() {
-        // Case `accessibility_reports_tree_role_and_no_value_when_unselected`.
         {
             use crate::a11y::Role;
             let view = TreeView::new(sample_tree());
@@ -5602,13 +5581,11 @@ mod tests {
             assert!(!node.state.focused);
         }
 
-        // Case `tree_view_exposes_an_explicit_stable_id`.
         {
             let view = TreeView::new(sample_tree()).with_id("workspace-tree");
             assert_eq!(Widget::test_id(&view), Some("workspace-tree"));
         }
 
-        // Case `accessibility_value_is_selected_row_label`.
         {
             let mut view = TreeView::new(sample_tree());
             view.toggle_expand(1);
@@ -5621,7 +5598,6 @@ mod tests {
             );
         }
 
-        // Case `accessibility_reflects_focus_state`.
         {
             let mut view = TreeView::new(sample_tree());
             view.set_focus(true);
@@ -5632,7 +5608,6 @@ mod tests {
             );
         }
 
-        // Case `tree_items_publish_level_expansion_selection_and_focus`.
         {
             let mut view = TreeView::new(sample_tree());
             view.toggle_expand(1);
@@ -5650,7 +5625,6 @@ mod tests {
             assert_eq!(node.children[1].name.as_deref(), Some("child1"));
         }
 
-        // Case `decorations_see_row_state_and_describe_rows`.
         {
             let seen = Rc::new(RefCell::new(Vec::new()));
             let log = Rc::clone(&seen);
@@ -5701,7 +5675,6 @@ mod tests {
 
     #[test]
     fn bounded_viewport_windows_paint_and_semantics_around_a_stable_anchor() {
-        // Case `tree_viewport_builder_enables_the_bounded_internal_window`.
         {
             let children = (2_u64..102)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -5714,7 +5687,6 @@ mod tests {
             assert!(view.visible_row_range().len() < view.visible_len());
         }
 
-        // Case `large_tree_bounds_paint_and_accessibility_windows`.
         {
             let children = (2_u64..=100_001)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -5734,7 +5706,6 @@ mod tests {
             assert!(first.pos_in_set.expect("absolute position") > 49_000);
         }
 
-        // Case `semantic_tree_rows_publish_scrolled_viewport_geometry`.
         {
             let mut view = TreeView::new(sample_tree());
             view.toggle_expand(1);
@@ -5750,7 +5721,6 @@ mod tests {
             );
         }
 
-        // Case `expanding_above_viewport_preserves_the_stable_row_anchor`.
         {
             let root = TreeNode::branch(
                 1,
@@ -5786,7 +5756,6 @@ mod tests {
 
     #[test]
     fn external_model_changes_reconcile_state_and_keep_anchors() {
-        // Case `batched_model_updates_reconcile_lazy_children_and_deleted_selection`.
         {
             let mut view =
                 TreeView::new(TreeNode::branch(1, "root", (), Vec::new())).with_expanded([1]);
@@ -5809,7 +5778,6 @@ mod tests {
             assert!(view.is_expanded(1), "the surviving lazy branch stays open");
         }
 
-        // Case `external_model_queries_only_expanded_branches_and_preserves_insert_anchor`.
         {
             let mut view = TreeView::from_model(external_model());
             assert_eq!(
@@ -5855,7 +5823,6 @@ mod tests {
             assert_eq!(view.viewport.item_view_top(anchor), before);
         }
 
-        // Case `post_mutation_notification_uses_the_cached_stable_anchor`.
         {
             let children = Rc::new(RefCell::new(vec![2, 3, 4]));
             let mut view = TreeView::from_model(SharedOrderModel {
@@ -5879,7 +5846,6 @@ mod tests {
             assert_eq!(view.viewport.item_view_top(anchor), before);
         }
 
-        // Case `granular_external_changes_refresh_data_and_reconcile_removed_state`.
         {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1])
@@ -5917,7 +5883,6 @@ mod tests {
             assert_eq!(view.visible_index_of(3), None);
         }
 
-        // Case `external_move_keeps_measurements_attached_to_node_ids`.
         {
             let mut view = TreeView::from_model(external_model()).with_expanded([1]);
             let old_index = view.visible_index_of(3).unwrap();
@@ -5945,7 +5910,6 @@ mod tests {
 
     #[test]
     fn scroll_input_pages_wheels_and_drags_over_sparse_rows() {
-        // Case `page_navigation_and_accelerated_wheel_share_sparse_row_geometry`.
         {
             let children = (2_u64..=101)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -5974,7 +5938,6 @@ mod tests {
             assert!(view.scroll_y() > immediate, "momentum advances after input");
         }
 
-        // Case `body_drag_scrolls_tree_without_selecting_but_click_still_selects`.
         {
             let children = (2_u64..=101)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -6003,7 +5966,6 @@ mod tests {
             );
         }
 
-        // Case `reduced_motion_keeps_direct_scroll_without_wheel_or_drag_decay`.
         {
             let children = (2_u64..102)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
@@ -6031,7 +5993,6 @@ mod tests {
 
     #[test]
     fn paged_tree_demands_visible_slots_and_recovers_from_errors() {
-        // Case `paged_tree_demands_only_the_visible_window_once`.
         {
             let requests = Rc::new(RefCell::new(Vec::new()));
             let captured = Rc::clone(&requests);
@@ -6064,7 +6025,6 @@ mod tests {
             assert_eq!(view.visible_len(), 100_000_001);
         }
 
-        // Case `model_owned_paged_tree_drains_slot_completions_during_update`.
         {
             let mut view = TreeView::from_model(PagedModel {
                 count: 4,
@@ -6098,7 +6058,6 @@ mod tests {
             assert_eq!(view.request_visible_rows(), 0);
         }
 
-        // Case `paged_error_is_keyboard_retryable_and_ready_row_inherits_focus_and_anchor`.
         {
             let states = Rc::new(RefCell::new(HashMap::from([(0, PagedSlotState::Error)])));
             let requests = Rc::new(RefCell::new(Vec::new()));
@@ -6163,7 +6122,6 @@ mod tests {
             assert!(loaded.state.focused);
         }
 
-        // Case `paged_slot_delegate_localizes_measures_and_rebuilds_changed_placeholders`.
         {
             let states = Rc::new(RefCell::new(HashMap::from([
                 (0, PagedSlotState::Loading),
@@ -6253,7 +6211,6 @@ mod tests {
 
     #[test]
     fn hundred_million_child_trees_stay_sparse_end_to_end() {
-        // Case `sparse_tree_index_resolves_a_hundred_million_children`.
         {
             let model = HugeModel {
                 child_id_queries: Cell::new(0),
@@ -6290,7 +6247,6 @@ mod tests {
             );
         }
 
-        // Case `tree_view_virtualizes_a_hundred_million_child_model_end_to_end`.
         {
             let model = HugeModel {
                 child_id_queries: Cell::new(0),
@@ -6314,7 +6270,6 @@ mod tests {
             );
         }
 
-        // Case `delegated_tree_mounts_only_the_hundred_million_row_window`.
         {
             let builds = Rc::new(Cell::new(0_usize));
             let captured = Rc::clone(&builds);
@@ -6344,7 +6299,6 @@ mod tests {
 
     #[test]
     fn delegated_rows_mount_measure_and_handle_input_before_selection() {
-        // Case `interactive_tree_delegate_wins_before_row_selection_and_nests_semantics`.
         {
             let presses = Rc::new(Cell::new(0_usize));
             let captured = Rc::clone(&presses);
@@ -6374,7 +6328,6 @@ mod tests {
             );
         }
 
-        // Case `delegated_tree_measures_variable_rows_and_invalidates_only_changed_ids`.
         {
             let builds = Rc::new(Cell::new(0_usize));
             let captured = Rc::clone(&builds);
@@ -6475,7 +6428,6 @@ mod tests {
         }
         tree_reorder_previews_and_commits_a_valid_sibling_drop();
 
-        // Case `tree_reorder_rejects_a_drop_into_its_own_descendant`.
         {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1, 2])
@@ -6491,7 +6443,6 @@ mod tests {
             assert_eq!(view.model().nodes.get(&1).unwrap().children, vec![2, 3, 4]);
         }
 
-        // Case `tree_reorder_hover_expands_a_collapsed_inside_target`.
         {
             let mut view = TreeView::from_model(external_model())
                 .with_expanded([1])
@@ -6518,7 +6469,6 @@ mod tests {
 
     #[test]
     fn structural_transitions_animate_keyed_rows_unless_motion_is_reduced() {
-        // Case `keyed_tree_transitions_move_survivors_and_retain_departing_rows`.
         {
             let mut view = TreeView::from_model(external_model()).with_expanded([1]);
             view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
@@ -6561,7 +6511,6 @@ mod tests {
             );
         }
 
-        // Case `reduced_motion_snaps_tree_structure_without_transition_state`.
         {
             let mut view = TreeView::from_model(external_model()).with_expanded([1]);
             view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
@@ -6586,8 +6535,6 @@ mod tests {
             );
         }
     }
-
-    // --- activation, navigator configuration, decoration -------------------
 
     pub(super) fn navigator_tree() -> TreeNode<()> {
         TreeNode::branch(
@@ -6654,7 +6601,6 @@ mod tests {
 
     #[test]
     fn activation_follows_click_mode_and_semantic_activate() {
-        // Case `single_click_activation_opens_on_one_click`.
         {
             let (view, activated, _) = logged(
                 TreeView::new(navigator_tree())
@@ -6668,7 +6614,6 @@ mod tests {
             assert_eq!(view.selected(), Some(5));
         }
 
-        // Case `double_click_activation_needs_a_second_click`.
         {
             let (view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
             let mut view = view;
@@ -6680,7 +6625,6 @@ mod tests {
             assert_eq!(*activated.borrow(), [5], "the second click activates");
         }
 
-        // Case `semantic_activate_selects_and_activates`.
         {
             let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
             let mut doc = AutoCommit::new();
@@ -6698,7 +6642,6 @@ mod tests {
 
     #[test]
     fn layout_places_heading_hidden_root_and_viewport() {
-        // Case `a_hidden_root_puts_its_children_at_the_top_level`.
         {
             let mut view = TreeView::new(navigator_tree()).hide_root();
             assert_eq!(
@@ -6727,7 +6670,6 @@ mod tests {
             );
         }
 
-        // Case `the_heading_sits_above_the_rows_and_names_the_tree`.
         {
             let mut view = TreeView::new(navigator_tree())
                 .hide_root()
@@ -6762,7 +6704,6 @@ mod tests {
             assert_eq!(semantics.name.as_deref(), Some("Explorer"));
         }
 
-        // Case `place_at_moves_paint_hit_testing_and_a_filling_viewport`.
         {
             let children = (2_u64..=40)
                 .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))

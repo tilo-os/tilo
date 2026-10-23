@@ -1267,7 +1267,6 @@ mod tests {
             "one request per Enter"
         );
 
-        // With nothing matching, the count slot offers the same escalation.
         sf.set_count(Some(FilterCount::new(0, 12)));
         sf.input.set_focus(false);
         draw(&mut sf);

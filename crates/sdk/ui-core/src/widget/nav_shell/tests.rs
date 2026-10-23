@@ -260,7 +260,6 @@ fn the_minimum_window_width_is_the_compact_layouts() {
                 shell.minimum_width() <= 360.0 * f64::from(theme.text_growth()),
                 "phone width"
             );
-            // At that width the compact layout shows something whole.
             let width = shell.minimum_width().ceil();
             #[allow(
                 clippy::cast_possible_truncation,
@@ -537,7 +536,6 @@ fn the_shell_follows_the_window_and_the_text_scale() {
                     g.stack
                 );
             }
-            // Every shown body sits under the one header row.
             for id in ["sidebar", "overview", "content"] {
                 if let Some(rect) = child_rect(&h, id) {
                     assert!(

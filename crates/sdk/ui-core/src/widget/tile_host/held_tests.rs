@@ -1,5 +1,3 @@
-//! A window of an app the shell runs itself, held still for a screenshot.
-
 use std::cell::Cell;
 use std::rc::Rc;
 

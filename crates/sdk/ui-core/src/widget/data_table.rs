@@ -90,7 +90,6 @@ pub enum ColumnWidth {
 /// What a cell's row is doing when the cell paints.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CellState {
-    /// The row is selected.
     pub selected: bool,
     /// The row is under the pointer.
     pub hovered: bool,
@@ -1534,7 +1533,6 @@ impl DataTableCore {
         Some(Rect::new(band.x0, y0, band.x1, y0 + height))
     }
 
-    /// The display row under `point`, if any.
     pub fn row_at_point(&self, point: Point) -> Option<usize> {
         self.row_at(point)
     }
@@ -4851,7 +4849,6 @@ fn paint_header_label(
     }
 }
 
-/// One column of a [`DataTableFace`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FaceColumn<'a> {
     pub header: &'a str,
@@ -4919,21 +4916,18 @@ impl<'a> DataTableFace<'a> {
         self
     }
 
-    /// The selected row, by index into the rows given.
     #[must_use]
     pub fn selected(mut self, row: Option<usize>) -> Self {
         self.selected = row;
         self
     }
 
-    /// The row under the pointer.
     #[must_use]
     pub fn hovered(mut self, row: Option<usize>) -> Self {
         self.hovered = row;
         self
     }
 
-    /// The sorted column and its direction.
     #[must_use]
     pub fn sorted_by(mut self, column: usize, ascending: bool) -> Self {
         self.sort = Some((column, ascending));
@@ -4982,7 +4976,6 @@ impl<'a> DataTableFace<'a> {
         )
     }
 
-    /// One row's height.
     pub fn row_height(&self, theme: &Theme) -> f64 {
         let tokens = &theme.tokens;
         let floor = table_row_floor(theme, self.compact);
@@ -5050,7 +5043,6 @@ impl<'a> DataTableFace<'a> {
         Rect::new(rect.x0 - bleed, y0, rect.x1 + bleed, y0 + h)
     }
 
-    /// The row under `point` in a table painted into `rect`.
     pub fn row_at(&self, rect: Rect, point: Point, theme: &Theme) -> Option<usize> {
         let top = rect.y0 + self.header_band(theme);
         if point.y < top || point.x < rect.x0 || point.x > rect.x1 {
@@ -5989,7 +5981,6 @@ mod tests {
             let mut t = DataTable::<R>::new(sample_cols());
             // No comparator installed yet → toggle returns None.
             assert!(t.toggle_sort(0).is_none());
-            // Install comparator, then toggling the same column flips direction.
             t.set_rows(vec![R { name: "b".into() }, R { name: "a".into() }]);
             t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
             assert_eq!(t.view_rows()[0].name, "a");
@@ -6108,7 +6099,6 @@ mod tests {
             assert_eq!(*activations.borrow(), [1]);
             assert_eq!(table.selected_rows(), [1]);
 
-            // Flipping keeps the selection on "a", now shown last.
             assert_eq!(table.toggle_sort(0), Some(("name".into(), false)));
             assert_eq!(table.selected_rows(), [1]);
             assert!(table.selection().is_selected(2));
@@ -6148,7 +6138,6 @@ mod tests {
             t.set_rows(rows4());
             // Active sort surfaces via the column's human header, not its key.
             t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
-            // Select the second display row.
             t.selection_mut().select_only(1);
             let node = Widget::accessibility(&t).expect("table is not presentational");
             assert_eq!(node.role, Role::Table);
@@ -6344,7 +6333,6 @@ mod tests {
                 assert_eq!(row.children[1].name.as_deref(), Some("X"));
                 assert_eq!(row.children[1].pos_in_set, Some(2));
             }
-            // The selected display row carries the selected flag on its node.
             assert!(
                 node.children[2].state.selected,
                 "row 3 (index 2) is selected"
@@ -6461,7 +6449,6 @@ mod tests {
                 },
             );
         };
-        // Case `actions_mount_for_the_hovered_row_only`.
         {
             let builds = Rc::new(Cell::new(0));
             let mut columns = interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds));
@@ -6496,7 +6483,6 @@ mod tests {
                 "the actions follow the pointer"
             );
         }
-        // Case `a_host_scrolled_table_windows_rows_without_a_bar_or_header`.
         {
             let mut table = DataTable::new(sample_cols())
                 .selectable(true)
@@ -6828,7 +6814,6 @@ mod tests {
     /// 100 rows at 300×400, internal-scroll with a 5-row viewport (120 px
     /// body over 2400 px of rows → bar is live). Bar centre x is 294.
     fn scrolling_table() -> (DataTable<R>, TaffyTree<()>, NodeId) {
-        // A body that drags to scroll, as a finger's does.
         let mut t = DataTable::<R>::new(sample_cols())
             .selectable(true)
             .drag_scroll();
@@ -6867,7 +6852,6 @@ mod tests {
         assert!((band.x0 - first.x0).abs() < 1e-6);
         assert!((band.x1 - (rect.x1 - gutter)).abs() < 1e-6 && band.x1 <= track.x0);
 
-        // Without a bar the band runs the bleed past the trailing edge too.
         let mut plain = DataTable::<R>::new(sample_cols()).selectable(true);
         plain.set_rows(rows4());
         let _laid = lay_out(&mut plain);

@@ -73,11 +73,6 @@ impl FrameHarness {
     /// Press the window's History control as the bar hands the press over:
     /// it runs on the app's History door, as the History shortcut does, and
     /// never reaches the app.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the app has no History to open, or its door
-    /// refuses the control.
     pub fn press_window_history(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let control = self

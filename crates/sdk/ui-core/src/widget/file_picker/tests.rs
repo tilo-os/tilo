@@ -1006,7 +1006,6 @@ fn saving_over_an_existing_file_asks_first() {
         dispatch(&mut picker, &mouse_press());
         settle(&mut picker);
         assert!(picker.replace_prompt().is_some(), "Save asks first");
-        // The picker's own Save button is behind the prompt now.
         dispatch(&mut picker, &mouse_press());
         settle(&mut picker);
         assert_eq!(picker.take_outcome(), None);

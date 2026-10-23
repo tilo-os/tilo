@@ -71,7 +71,6 @@ struct Basis {
     catalogue: u64,
 }
 
-/// One change of the log.
 struct Logged {
     hash: ChangeHash,
     id: HistoryEntryId,
