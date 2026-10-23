@@ -75,6 +75,21 @@ def fixture_manifests():
     return sorted(found)
 
 
+# The pinned Cosign of both architectures, downloaded once for every check that verifies or signs
+# with it (tools/ci/publish/lib.sh use_cosign), apart from os-assets so a signer waits for no more.
+SIGNING_TOOLS = "/target/signing-tools"
+COSIGN_ASSETS = ["cosign-v2.5.2-linux-amd64", "cosign-v2.5.2-linux-arm64"]
+
+
+def signing_tools_check():
+    return check([("name", '"signing-tools"'),
+                  ("run", f'"TILO_GITHUB_ASSET_CACHE={SIGNING_TOOLS} TILO_ASSET_STORE= bash os/dev/cache-github-assets.sh {" ".join(COSIGN_ASSETS)}"'),
+                  ("inputs", arr(["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"])),
+                  ("outputs", arr([f"{SIGNING_TOOLS}/**"])),
+                  ("requires", arr(["arch=any"])),
+                  ("cost", '"minutes"'), ("requirement", requirement(1, "1GiB")), ("default", "false")])
+
+
 def test_assets_check():
     manifests = fixture_manifests()
     return check([("name", '"test-assets"'),
@@ -131,6 +146,7 @@ def block():
                   ("inputs", arr(["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/image/build-layer.sh"])),
                   ("outputs", arr(["os/external-assets/cache/**"])),
                   ("cost", '"minutes"'), ("default", "false")]),
+           signing_tools_check(),
            test_assets_check()]
     builder_sources = pieces.inputs_of_text(pieces.helpers()["builder-sources"])
     for arch, node in ARCHES:
@@ -162,7 +178,7 @@ def block():
                 ("image", ASSEMBLER_IMAGE.format(arch=arch)),
                 ("run", f'"bash os/image/build-layer.sh image {name} {arch} /target/os/{arch}/{name}"'),
                 ("inputs", arr(files)),
-                ("needs", arr([f"os-base-{arch}", "os-assets", f"image-rpms-{arch}"])),
+                ("needs", arr([f"os-base-{arch}", "os-assets", "signing-tools", f"image-rpms-{arch}"])),
                 ("outputs", arr([f"/target/os/{arch}/{name}/**"])),
                 ("requires", req), ("isolation", '"vm"'), ("writable_sources", "true"),
                 ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "7200"),
@@ -205,7 +221,7 @@ def block():
             if not l.get("scratch"):
                 given.add(pieces.parent(name))
             files = sorted(set(tools + piece_files(name, given) + pieces.inputs(name, given)))
-            needs = [f"os-base-{arch}", "os-assets", f"image-rpms-{arch}"] + below
+            needs = [f"os-base-{arch}", "os-assets", "signing-tools", f"image-rpms-{arch}"] + below
             for g in l.get("given", []):
                 if g == "compiled":
                     needs.append(f"os-compile-{arch}")

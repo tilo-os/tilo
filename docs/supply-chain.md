@@ -261,6 +261,8 @@ operate it. Companion to `docs/security/design-rationale.md`.
   keeps the verified files as its outputs; every image build that takes an
   asset needs that check and only verifies what it is given
   (`TILO_ASSET_OFFLINE=1`), so no build job downloads one from upstream.
+  Cosign, which every verifying and signing step runs, comes the same way
+  from the smaller `signing-tools` check.
   CI and local scripts expose the cache as a separate named build context;
   Containerfiles consume it through read-only mounts. Archives therefore never
   enter layer history or the Rust workspace context, and builds never fetch

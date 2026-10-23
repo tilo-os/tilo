@@ -540,7 +540,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn("'release:sha-{commit}'", publish["run"], name)
             self.assertIn(f"sign-{name}", publish["optional_needs"], name)
         # The web entry's release is the image carrying production's version, not the bare build.
-        self.assertEqual(checks["sign-web-entry"]["needs"], ["carry-web-entry"])
+        self.assertEqual(checks["sign-web-entry"]["needs"], ["carry-web-entry", "signing-tools"])
         self.assertIn("carry-web-entry", checks["publish-web-entry"]["optional_needs"])
 
 
