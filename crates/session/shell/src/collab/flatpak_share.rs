@@ -318,6 +318,10 @@ pub struct SharedFlatpakSession {
     keyframe_after: AtomicU64,
     /// When a viewer's request last forced a keyframe.
     keyframe_requested: Mutex<Option<Instant>>,
+    /// The newest unit while it is a keyframe. A reader starting while the
+    /// window has not changed since starts at it, so subscribing costs no
+    /// encode however often it happens.
+    standing_keyframe: Mutex<Option<EncodedFrame>>,
     color_override: Arc<Mutex<ColorOverride>>,
     /// The workspace tab holding the window, announced with the stream so a
     /// viewer shows it in exactly that tab; `0` names none.
@@ -506,6 +510,7 @@ impl SharedFlatpakSession {
             paint_seq: AtomicU64::new(0),
             keyframe_after: AtomicU64::new(0),
             keyframe_requested: Mutex::new(None),
+            standing_keyframe: Mutex::new(None),
             color_override: Arc::new(Mutex::new(None)),
             tab: 0,
         }
@@ -603,6 +608,7 @@ impl SharedFlatpakSession {
         };
         *self.encoder.lock_recover() = encoder;
         *self.codec_state.lock_recover() = state;
+        *self.standing_keyframe.lock_recover() = None;
         self.stream_sender.set_format(
             state.codec,
             display_size(state.codec, state.encoded.0, state.encoded.1),
@@ -866,6 +872,7 @@ impl SharedFlatpakSession {
                         // The next unit would reference this one without a
                         // gap in the sequence to tell viewers it is missing.
                         self.encoder.lock_recover().force_keyframe();
+                        *self.standing_keyframe.lock_recover() = None;
                         return None;
                     }
                 };
@@ -873,13 +880,15 @@ impl SharedFlatpakSession {
                     self.keyframe_after
                         .fetch_max(seq.saturating_add(1), Ordering::AcqRel);
                 }
-                Some(EncodedFrame {
+                let frame = EncodedFrame {
                     surface: self.surface_id,
                     source_peer: self.host_user_id,
                     nalus,
                     capture_ts_ns: carried_ts,
                     seq,
-                })
+                };
+                *self.standing_keyframe.lock_recover() = stats.keyframe.then(|| frame.clone());
+                Some(frame)
             }
             Err(err) => {
                 tracing::debug!(
@@ -914,28 +923,36 @@ impl SharedFlatpakSession {
         true
     }
 
-    /// A new reader started on the stream past its viewers' backs (a room's
-    /// carrier, whose relay fans one stream out to members as they start
-    /// showing it): it can start at nothing but a keyframe, so the next unit
-    /// is one. Pending until encoded, and one answers every reader started
-    /// meanwhile; the caller encodes the window as it stands at once.
-    pub fn start_reader(&self) {
+    /// A new reader can start only at a keyframe. Returns the standing one
+    /// for the caller to send that reader; otherwise the next unit is a
+    /// keyframe, which the caller encodes from the window as it stands.
+    pub fn start_reader(&self) -> Option<EncodedFrame> {
         if self.paint {
-            return;
+            return None;
         }
-        self.encoder.lock_recover().force_keyframe();
+        let standing = self.standing_keyframe.lock_recover().clone();
+        if standing.is_none() {
+            self.encoder.lock_recover().force_keyframe();
+        }
+        standing
+    }
+
+    /// The keyframe a viewer added while the window stands still starts at;
+    /// the caller sends it to that viewer.
+    pub fn standing_keyframe(&self) -> Option<EncodedFrame> {
+        self.standing_keyframe.lock_recover().clone()
     }
 
     /// Register a peer as a viewer with the given read-only state (flip
     /// later via [`Self::set_read_only`]) and subscribe them to the
-    /// [`SurfaceStreamSender`].
+    /// [`SurfaceStreamSender`]. It starts at [`Self::start_reader`]'s
+    /// keyframe.
     pub fn add_viewer(&self, peer: PeerId, read_only: bool) {
         let mut reg = self.share_registry.lock_recover();
         reg.insert(peer, self.surface_id, StreamingShare { read_only });
         drop(reg);
         self.stream_sender.subscribe(peer);
-        // A new viewer can only start decoding at a keyframe.
-        self.encoder.lock_recover().force_keyframe();
+        let _ = self.start_reader();
     }
 
     /// Drop a viewer — subsequent `RemoteInput` events fall on the floor and
@@ -1415,6 +1432,38 @@ mod tests {
             active.store(false, Ordering::Release);
             assert!(s.encode_next_frame(Instant::now()).is_none());
         }
+    }
+
+    #[test]
+    fn a_reader_starts_at_the_standing_keyframe_until_the_window_changes() {
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let s = SharedFlatpakSession::start(1, "x", 7, W, H, &cfg_software()).expect("start");
+        let changed = || {
+            let mut frame = gradient_frame(W, H);
+            frame.iter_mut().take(4096).for_each(|byte| *byte = !*byte);
+            frame
+        };
+        let mut now = Instant::now();
+        s.deposit_captured_rgba(gradient_frame(W, H));
+        let first = s.encode_next_frame(now).expect("first frame");
+        assert_eq!(s.standing_keyframe(), Some(first.clone()));
+        s.add_viewer(9, true);
+        assert_eq!(s.start_reader(), Some(first.clone()));
+        assert_eq!(s.start_reader(), Some(first.clone()));
+
+        now += Duration::from_millis(100);
+        s.deposit_captured_rgba(changed());
+        let delta = s.encode_next_frame(now).expect("the changed window");
+        assert!(delta.seq > first.seq);
+        assert_eq!(s.standing_keyframe(), None);
+        assert_eq!(s.start_reader(), None);
+
+        now += Duration::from_millis(100);
+        s.deposit_captured_rgba(changed());
+        let keyframe = s.encode_next_frame(now).expect("a keyframe of the window");
+        assert_eq!(s.standing_keyframe(), Some(keyframe.clone()));
+        assert_eq!(s.start_reader(), Some(keyframe));
     }
 
     #[test]
