@@ -110,8 +110,7 @@ const ONLINE_CATALOGUE: bool = cfg!(feature = "live");
 /// connecting one (a folder of their own files, Spotify, `YouTube` Music), and
 /// fetches nothing until they do.
 const HOME_EMPTY_TITLE: &str = "Add music";
-const HOME_EMPTY_MESSAGE: &str =
-    "Open your own audio files with the folder button, or connect Spotify or YouTube Music.";
+const HOME_EMPTY_MESSAGE: &str = "Play an audio file from this device with the folder button, or connect Spotify or YouTube Music.";
 const HOME_EMPTY_ACTION: &str = "Connect a source";
 
 /// The first-run Home message, and whether searching is worth offering.
@@ -120,7 +119,7 @@ fn first_run_copy(online: bool) -> (&'static str, bool) {
         ("Find a song, album or artist, or open an audio file.", true)
     } else {
         (
-            "This version can't find music online yet. Open an audio file with the folder button to play it.",
+            "This version can't find music online yet. Play an audio file from this device with the folder button.",
             false,
         )
     }
@@ -298,6 +297,13 @@ struct TrackTableSlot {
     queue_offset: Option<usize>,
 }
 
+/// An Open audio file chooser in flight: a path where files have them,
+/// else the chosen file's contents.
+enum LocalFilePick {
+    Path(PortalChannel),
+    Contents(ui::portal::ContentsChannel),
+}
+
 #[derive(Clone, Debug)]
 struct PendingMediaHandoff {
     uri: String,
@@ -445,7 +451,7 @@ pub struct MusicApp {
     handoff: media::handoff::AppPlaybackHandle,
     pending_media_handoff: Option<PendingMediaHandoff>,
     local_file: Option<crate::local_file::LocalFile>,
-    local_file_pick: Option<(tilo_actions::InvocationId, PortalChannel)>,
+    local_file_pick: Option<(tilo_actions::InvocationId, LocalFilePick)>,
 
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
@@ -1125,7 +1131,7 @@ impl MusicApp {
         crate::storage::save_device_profile(&crate::storage::DeviceProfile {
             spotify_catalogue: self.spotify_catalogue,
             catalogue_connected: self.catalogue_connected,
-            local_file: self.local_file.clone(),
+            local_file: self.kept_local_file(),
             playback: self.pb.clone(),
             queue_catalogue: self.queue_catalogue(),
         })

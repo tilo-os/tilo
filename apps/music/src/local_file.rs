@@ -10,6 +10,11 @@ pub struct LocalFile {
     /// Decoder metadata retained when the finished pipeline is torn down.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_duration_ms: Option<u64>,
+    /// Where a file chosen by its contents plays from on a host whose files
+    /// have no paths (a browser page): a page-local URL over the bytes. It
+    /// lasts as long as the page, so it is never saved.
+    #[serde(skip)]
+    pub page_url: Option<String>,
 }
 
 impl LocalFile {
@@ -35,28 +40,7 @@ impl LocalFile {
         if !crate::files::is_nonempty_file(&path) {
             return Err("Choose a non-empty audio file".into());
         }
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if !matches!(
-            extension.as_str(),
-            "wav"
-                | "wave"
-                | "mp3"
-                | "flac"
-                | "ogg"
-                | "oga"
-                | "opus"
-                | "m4a"
-                | "aac"
-                | "aif"
-                | "aiff"
-                | "wma"
-        ) {
-            return Err("This file type is not supported by Music".into());
-        }
+        check_supported(&path)?;
         // Validate readability without copying or hashing the media on the UI
         // thread. Codec errors remain the asynchronous decoder's authority.
         crate::files::metadata(&path)
@@ -79,11 +63,62 @@ impl LocalFile {
             },
             path,
             observed_duration_ms: None,
+            page_url: None,
+        })
+    }
+
+    /// A file the host handed over as contents, playing from `url`, a
+    /// page-local URL over its bytes. `name` is what the person chose.
+    pub(crate) fn from_page_url(name: &str, url: String) -> Result<Self, String> {
+        let path = PathBuf::from(name);
+        check_supported(&path)?;
+        Ok(Self {
+            track: crate::model::Track {
+                id: format!("local-{}", uuid::Uuid::new_v4()),
+                title: file_title(&path),
+                album_id: String::new(),
+                artist_id: String::new(),
+                track_no: 1,
+                duration_s: 0,
+                yt_id: String::new(),
+                plays: 0,
+            },
+            path,
+            observed_duration_ms: None,
+            page_url: Some(url),
         })
     }
 }
 
-fn file_title(path: &Path) -> String {
+/// Whether Music plays files of `path`'s type.
+pub(crate) fn check_supported(path: &Path) -> Result<(), String> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(
+        extension.as_str(),
+        "wav"
+            | "wave"
+            | "mp3"
+            | "flac"
+            | "ogg"
+            | "oga"
+            | "opus"
+            | "m4a"
+            | "aac"
+            | "aif"
+            | "aiff"
+            | "wma"
+    ) {
+        Ok(())
+    } else {
+        Err("This file type is not supported by Music".into())
+    }
+}
+
+pub(crate) fn file_title(path: &Path) -> String {
     path.file_stem()
         .unwrap_or_default()
         .to_string_lossy()
