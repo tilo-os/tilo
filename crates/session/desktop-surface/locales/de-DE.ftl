@@ -950,6 +950,7 @@ people-panel-here-watching = { $count ->
 }, { $watching } schauen zu
 people-panel-section-people = Personen
 people-panel-section-agents = Agenten
+people-panel-section-devices = Deine Geräte
 people-panel-wave = Winken
 people-panel-waved = Gewunken
 people-panel-join = Beitreten

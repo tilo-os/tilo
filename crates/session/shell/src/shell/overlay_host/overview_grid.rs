@@ -197,7 +197,8 @@ impl ShellOverlayHost {
         let people: Vec<PersonOnTab> =
             tilo_desktop::collaborators::collaborator_roster_rows(&tree.desktop, &local_user)
                 .into_iter()
-                .filter(|row| !row.invited && row.id != own && row.id != local_user)
+                .filter(|row| !row.invited && !row.own_device && row.id != own)
+                .filter(|row| row.id != local_user)
                 .filter_map(|row| {
                     let tab = workspace
                         .collaborators

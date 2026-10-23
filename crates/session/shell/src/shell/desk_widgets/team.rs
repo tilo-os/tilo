@@ -46,7 +46,8 @@ pub fn members(
     let mut rows: Vec<TeamMember> =
         tilo_desktop::collaborators::collaborator_roster_rows(desktop, local_user)
             .into_iter()
-            .filter(|row| !row.invited && row.id != own_id && row.id != local_user)
+            .filter(|row| !row.invited && !row.own_device && row.id != own_id)
+            .filter(|row| row.id != local_user)
             .map(|mut row| {
                 row.status = status_line(presence, &row, now);
                 // Idle or away dims their face; a call rings it, as

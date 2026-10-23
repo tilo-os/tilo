@@ -702,7 +702,8 @@ impl ShellOverlayHost {
             if workspace.has_windows() {
                 return None;
             }
-            // Anyone else who may come in, or who is here now.
+            // Anyone else who may come in, or who is here now; this
+            // person's other devices are not anyone else.
             let others = workspace
                 .roster()
                 .into_iter()
@@ -710,7 +711,7 @@ impl ShellOverlayHost {
                 || workspace
                     .collaborators
                     .iter()
-                    .any(|person| person.id != state.local_user_id);
+                    .any(|person| person.id != state.local_user_id && !person.own_device);
             (workspace.room(), others)
         };
         drop(tree);

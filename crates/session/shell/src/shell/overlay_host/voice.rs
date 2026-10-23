@@ -212,6 +212,7 @@ mod tests {
             availability: ui::Availability::Available,
             call: None,
             join: None,
+            own_device: false,
         }
     }
 

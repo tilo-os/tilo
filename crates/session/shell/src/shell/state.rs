@@ -1812,6 +1812,30 @@ impl WorkspaceTree {
     /// count — never a peer's own claim — and a revoked or expired device
     /// maps to nobody.
     pub fn room_peer_principals(&self, room: RoomId) -> std::collections::BTreeMap<u64, UserId> {
+        self.room_peer_certificates(room)
+            .into_iter()
+            .filter_map(|(handle, cert)| Some((handle, person_id_of(cert.user_public_key)?)))
+            .collect()
+    }
+
+    /// The other devices of this device's person in `room`, keyed by
+    /// presence handle, each with the name it was certified under: the
+    /// same certified devices as [`Self::room_peer_principals`].
+    pub fn room_own_devices(&self, room: RoomId) -> std::collections::BTreeMap<u64, String> {
+        let Some(local) = self.local_person else {
+            return std::collections::BTreeMap::new();
+        };
+        self.room_peer_certificates(room)
+            .into_iter()
+            .filter(|(_, cert)| cert.user_public_key == local)
+            .map(|(handle, cert)| (handle, cert.device_label))
+            .collect()
+    }
+
+    fn room_peer_certificates(
+        &self,
+        room: RoomId,
+    ) -> std::collections::BTreeMap<u64, tilo_user_identity::DeviceCert> {
         let identities = if self.governs_room(room) {
             self.room_peer_identities
                 .get(&room)
@@ -1838,7 +1862,7 @@ impl WorkspaceTree {
                 let parsed = peer.parse::<iroh::EndpointId>().ok()?;
                 Some((
                     crate::network::behaviour::peer_liveness_handle(&parsed),
-                    person_id_of(cert.user_public_key)?,
+                    identity.device_cert,
                 ))
             })
             .collect()
