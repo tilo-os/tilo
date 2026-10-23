@@ -322,7 +322,13 @@ export function createActions({
 
   /** Run one action; see the module comment. */
   function invoke(target, argument, {confirmation = null, invocation, label, resourceLabel, appId} = {}) {
-    if (!target?.provider || !target?.address?.resource || !target?.address?.action) {
+    // An empty resource names a record's own, which the record's host
+    // resolves: a page holding none of the app's code still reaches it (the
+    // profile card reading and linking the person's account on the room's
+    // Discord).
+    const resource = target?.address?.resource;
+    const recordsOwn = resource === '' && String(target?.provider).startsWith('record:');
+    if (!target?.provider || !(resource || recordsOwn) || !target?.address?.action) {
       throw new TypeError('target is {provider, address: {resource, action}} copied from a catalogue row');
     }
     const id = invocation ?? newId();
