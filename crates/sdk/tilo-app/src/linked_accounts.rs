@@ -111,6 +111,11 @@ pub trait LinkedAccountsHost {
     fn revision(&self) -> u64;
     /// Ask again where every account stands.
     fn refresh(&self);
+    /// Ask again where the account with `app`'s service stands.
+    fn refresh_app(&self, app: &str) {
+        let _ = app;
+        self.refresh();
+    }
     /// Start linking the person's account with `app`'s service.
     fn link(&self, app: &str);
     /// Unlink the person's account with `app`'s service.
@@ -153,6 +158,12 @@ impl LinkedAccounts {
         }
     }
 
+    pub fn refresh_app(&self, app: &str) {
+        if let Some(host) = &self.0 {
+            host.refresh_app(app);
+        }
+    }
+
     pub fn link(&self, app: &str) {
         if let Some(host) = &self.0 {
             host.link(app);
@@ -187,19 +198,28 @@ impl LinkingRecheck {
         shown: bool,
         now: ui_core::time::Instant,
     ) -> Option<ui_core::time::Instant> {
-        let waiting = shown
-            && accounts
+        // Only the services a code waits for are asked: every other record
+        // of the room answers no reading, each ask a refusal at the host.
+        let waiting: Vec<String> = if shown {
+            accounts
                 .accounts()
-                .iter()
-                .any(|account| matches!(account.state, LinkState::Linking(_)));
-        if !waiting {
+                .into_iter()
+                .filter(|account| matches!(account.state, LinkState::Linking(_)))
+                .map(|account| account.app)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if waiting.is_empty() {
             self.due = None;
             return None;
         }
         match self.due {
             Some(due) if now < due => {}
             Some(_) => {
-                accounts.refresh();
+                for app in &waiting {
+                    accounts.refresh_app(app);
+                }
                 self.due = now.checked_add(LINKING_RECHECK);
             }
             None => self.due = now.checked_add(LINKING_RECHECK),
@@ -357,6 +377,10 @@ impl LinkedAccountsHost for RoomAccounts {
         }
     }
 
+    fn refresh_app(&self, app: &str) {
+        self.read(app);
+    }
+
     fn link(&self, app: &str) {
         let Some(action) = self
             .known
@@ -422,6 +446,8 @@ mod tests {
     #[derive(Default)]
     struct Host {
         reading: RefCell<Reading>,
+        /// The apps asked, in order.
+        asked: RefCell<Vec<String>>,
     }
 
     impl RoomRecordActions for Rc<Host> {
@@ -436,6 +462,7 @@ mod tests {
             _: serde_json::Map<String, serde_json::Value>,
             done: Box<dyn FnOnce(ActionAnswer)>,
         ) {
+            self.asked.borrow_mut().push(app.to_owned());
             if app != "so.tilo.discord" {
                 return done(Err("unknown_action".into()));
             }
@@ -465,6 +492,7 @@ mod tests {
                 link: "link-account".into(),
                 ..Reading::default()
             }),
+            asked: RefCell::default(),
         });
         let woken = Rc::new(Cell::new(0));
         let wake = Rc::clone(&woken);
@@ -515,6 +543,7 @@ mod tests {
                 link: "link-account".into(),
                 ..Reading::default()
             }),
+            asked: RefCell::default(),
         });
         let accounts = LinkedAccounts::new(Rc::new(RoomAccounts::new(
             Rc::new(Rc::clone(&host)),
@@ -553,7 +582,13 @@ mod tests {
             matches!(accounts.accounts()[0].state, LinkState::Linking(_)),
             "not asked again before it is due"
         );
+        host.asked.borrow_mut().clear();
         recheck.follow(&accounts, true, later(LINKING_RECHECK));
+        assert_eq!(
+            *host.asked.borrow(),
+            ["so.tilo.discord"],
+            "only the service a code waits for is asked again"
+        );
         assert!(matches!(accounts.accounts()[0].state, LinkState::Linked(_)));
         assert_eq!(
             recheck.follow(&accounts, true, later(LINKING_RECHECK)),
