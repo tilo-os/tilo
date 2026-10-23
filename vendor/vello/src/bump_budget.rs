@@ -947,6 +947,19 @@ pub(crate) mod test_helpers {
             .done = Arc::new(Mutex::new(ready));
     }
 
+    /// Hold the latest readback's callback slot empty and hand it back, so a
+    /// test lands the callback itself, from another thread or later. The
+    /// real GPU buffer must already have completed mapping.
+    pub(crate) fn hold_ready(tracker: &mut BudgetTracker) -> Arc<Mutex<Option<bool>>> {
+        let slot = Arc::new(Mutex::new(None));
+        tracker
+            .pending
+            .back_mut()
+            .expect("actual pending readback")
+            .done = slot.clone();
+        slot
+    }
+
     pub(crate) fn fail_poll(tracker: &mut BudgetTracker, engine: &mut WgpuEngine) {
         tracker.collect_with_poll(engine, || Err(wgpu::PollError::Timeout));
     }

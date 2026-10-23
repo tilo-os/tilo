@@ -1680,11 +1680,12 @@ pub(crate) fn sparse_coarse_adaptive_selection(
     }
 }
 
-#[cfg(feature = "wgpu")]
 /// How many waits [`Renderer::settle_bump_budget`] gives a counter readback
 /// whose callback another thread's poll is running.
+#[cfg(feature = "wgpu")]
 const SETTLE_POLLS: usize = 10_000;
 
+#[cfg(feature = "wgpu")]
 impl Renderer {
     /// Run every GPU pipeline's first dispatch now, spread over this device and up to
     /// `helpers` more opened by `open_device`, each driven from its own thread.
@@ -4304,6 +4305,48 @@ mod tests {
     /// large render was never measured while the small one's was in flight:
     /// it overflowed, unseen, on every attempt (a 2560x1600@2 desktop with
     /// Quick Settings open never produced a screenshot).
+    /// A device shared by threads runs a map callback on whichever
+    /// thread's poll took it, so the counters' callback can land after this
+    /// thread's own wait returned. Settling waits for it: an overflow it
+    /// reports late is still this frame's, never mistaken for a fit (a
+    /// frame reported complete then overflowed on its next render).
+    #[test]
+    fn settling_waits_for_counters_whose_callback_lands_on_another_thread() {
+        use bump_budget::test_helpers::hold_ready;
+        let (device, queue) = checked_bump_device();
+        let params = RenderParams {
+            base_color: Color::BLACK,
+            width: 512,
+            height: 512,
+            antialiasing_method: AaConfig::Area,
+        };
+        let (_texture, view) = damage_target_with_size(&device, &queue, 512, 512);
+        // Five zigzags over one another overflow a fresh 512x512 reservation.
+        let mut large = Scene::new();
+        for _ in 0..5 {
+            large.append(&zigzag_scene(), None);
+        }
+        let mut renderer = Renderer::new(&device, RendererOptions::default()).unwrap();
+        renderer
+            .render_to_texture(&device, &queue, &large, &view, &params)
+            .unwrap();
+        // The counters are mapped; their callback is held, and lands from
+        // another thread a moment after this thread starts waiting.
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let slot = hold_ready(&mut renderer.budget);
+        let overflowed = thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(std::time::Duration::from_millis(1));
+                *slot.lock().unwrap() = Some(true);
+            });
+            renderer.settle_bump_budget(&device)
+        });
+        assert!(
+            overflowed,
+            "the overflow its late callback reports is this frame's"
+        );
+    }
+
     #[test]
     fn a_render_issued_while_another_readback_is_in_flight_is_measured() {
         use bump_budget::test_helpers::set_ready;
