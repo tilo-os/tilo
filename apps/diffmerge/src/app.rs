@@ -922,6 +922,13 @@ impl Widget for DiffMergeApp {
         }
     }
 
+    /// Both views are laid out; the one not shown stands off-band.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.diff);
+        visitor(&self.merge);
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         match self.mode {
             Mode::Diff => vec![&mut self.diff],

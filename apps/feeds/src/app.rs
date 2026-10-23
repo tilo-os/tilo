@@ -2337,6 +2337,18 @@ impl ui::widget::Decorator for FeedsApp {
         }
     }
 
+    /// The shell, and the overlays it may mount over it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.shell);
+        if let Some(modal) = &self.modal {
+            visitor(&modal.dialog);
+        }
+        if let Some(panel) = &self.settings_panel {
+            visitor(panel);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let Some(mount) = self.mount else {
             return Widget::children_mut(&mut self.shell);

@@ -88,6 +88,32 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
 
+/// A widget as `&dyn Widget`, also one that already is a trait object: a
+/// decorator's inner widget may be either, and its layout walk hands the
+/// inner widget on ([`Widget::for_each_layout_child`]).
+pub trait AsDynWidget {
+    /// This widget as a trait object.
+    fn as_dyn_widget(&self) -> &dyn Widget;
+}
+
+impl<T: Widget> AsDynWidget for T {
+    fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+}
+
+impl AsDynWidget for dyn Widget {
+    fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+}
+
+impl AsDynWidget for dyn super::AppWidget {
+    fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+}
+
 /// Point `node` at `widget` in the host's node map, replacing the inner
 /// widget's own registration. For a [`Decorator`] that overrides a hook the
 /// host reaches through the node map (a cursor shape, a tooltip, undo
@@ -245,7 +271,7 @@ decorator_trait! {
     /// forwarding the rest. See the [module docs](self).
     trait {
         /// The widget this one extends.
-        type Inner: Widget + ?Sized;
+        type Inner: Widget + AsDynWidget + ?Sized;
 
         /// The extended widget.
         fn inner(&self) -> &Self::Inner;
@@ -256,6 +282,15 @@ decorator_trait! {
         #[doc(hidden)]
         fn concrete_type_name(&self) -> &'static str {
             std::any::type_name::<Self>()
+        }
+
+        /// The inner widget itself: the decorator's layout node stands for
+        /// it, so a retained layout is checked through the inner widget and
+        /// what it lays out. A decorator that lays out more than its inner
+        /// widget (an overlay it mounts) lists that too.
+        fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+            visitor(self.inner().as_dyn_widget());
+            true
         }
 
         fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
@@ -339,6 +374,10 @@ decorator_trait! {
             Decorator::concrete_type_name(self)
         }
 
+        fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+            Decorator::for_each_layout_child(self, visitor)
+        }
+
         fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
             Decorator::provide(self, request);
         }
@@ -417,7 +456,6 @@ decorator_trait! {
         fn layout_info() -> Option<LayoutInfo>;
         fn children() -> Vec<&dyn Widget>;
         fn for_each_child(visitor: &mut dyn FnMut(&dyn Widget));
-        fn for_each_layout_child(visitor: &mut dyn FnMut(&dyn Widget)) -> bool;
         fn name() -> &str;
         fn test_id() -> Option<&str>;
         fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
