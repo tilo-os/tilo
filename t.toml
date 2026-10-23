@@ -6515,6 +6515,31 @@ default = false
 [check.matrix]
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
 
+# Main's dev VM image and its gated disk, once os-acceptance-{arch} passed on them
+# (tools/ci/publish/os-dev-publish.sh): registry.tilo.so/tilo/tilo-ci:main-<commit7>-{arch} (the
+# OS image), registry.tilo.so/tilo/tilo-vm:main-<commit7>-ci (an index of the architectures
+# published so far) and its disk in the tilo-vm-disk package, which `tilo-vm vm create` and `vm
+# upgrade --from sha:<commit>` take; tilo-vm:latest and, with both architectures, tilo-vm:main-ci
+# move forward to it. Dispatched on main (`t dispatch publish-os-dev-x86_64 --ref main`): it builds
+# the whole OS image, so main doesn't run it on its own.
+[[check]]
+name = "publish-os-dev-{arch}"
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-dev-publish.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh"]
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-acceptance-{arch}"]
+id_token = ["registry.tilo.so"]
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+requirement = { cores = 2, memory = "4GiB" }
+timeout_secs = 3600
+on = ["dispatch"]
+secrets = ["TILO_PACKAGES_TOKEN"]
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
 # Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 # firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
 # since bootc takes a device tree only from one. When dispatched (`t dispatch

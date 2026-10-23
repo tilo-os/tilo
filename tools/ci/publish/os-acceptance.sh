@@ -7,8 +7,9 @@
 #
 # Without a VM, the OS image is held to its size budget (os/image-size-budget.toml). Then the dev
 # image is installed onto a disk (os/dev/build-image.sh with TILO_SKIP_BUILD=1; it carries sshd
-# and tilo-control, which the gates drive the guests with) and three tracks run side by side,
-# each booting throwaway overlays of that disk or the OS image's own UKI:
+# and tilo-control, which the gates drive the guests with), kept in OUT/disk for
+# publish-os-dev-ARCH, and three tracks run side by side, each booting throwaway overlays of that
+# disk or the OS image's own UKI:
 #
 #   devices  a joined device signs in (os/dev/test-joined-device-startup.sh); nearby pairing,
 #            a third device through one without the identity key, sibling unlock and, on
@@ -53,16 +54,25 @@ python3 tools/perf/image_size.py --oci-layout "$image/oci" --arch "$arch" --json
   && python3 os/tests/image_size_budget.py check --flavour "production-$arch" --report "$out/image-size.json" \
   || { echo 'FAIL  the OS image is over its size budget'; status=1; }
 
+# The disk publish-os-dev-ARCH publishes once every gate passed: never booted itself (the gates
+# boot overlays of it), with zstd clusters, following the dev image it is published beside.
+revision=$(git rev-parse --verify HEAD) || die 'the disk names its commit: git = true'
 id=$(podman pull -q "oci:$dev/oci")
 [[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$dev/digest")" ]] || die "$dev/oci is not the image $dev/digest names"
 podman tag "$id" localhost/tilo-vm:ci
 export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo
+mkdir -p "$out/disk"
+if [[ $arch == aarch64 ]]; then export TILO_DEV_DIRECT_BUNDLE_DIR=$out/disk/direct-boot; fi
 TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_OUTPUT=$scratch/dev-disk TILO_RUN=$scratch/dev-disk-run \
-  TILO_DISK_SIZE=64G bash os/dev/build-image.sh > "$out/install.log" 2>&1 \
+  TILO_DISK_SIZE=64G TILO_QCOW2_COMPRESS=1 TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:main-${revision:0:7}-ci" \
+  bash os/dev/build-image.sh > "$out/install.log" 2>&1 \
   || { tail -n 80 "$out/install.log"; die 'the dev image does not install onto a disk'; }
+unset TILO_DEV_DIRECT_BUNDLE_DIR
 podman rmi -f localhost/tilo-vm:ci >/dev/null
-disk=$scratch/dev-disk/qcow2/disk.qcow2
-[[ -s $disk ]] || die "the dev image's install wrote no disk"
+disk=$out/disk/disk.qcow2
+mv "$scratch/dev-disk/qcow2/disk.qcow2" "$disk"
+printf '%s\n' "$revision" > "$out/disk/revision"
+cp "$dev/digest" "$out/disk/image-digest"
 
 # A host without a usable render node boots the guests on the 2D virtio display; the
 # compositor paints on the CPU there, and every gate must pass either way.
@@ -72,7 +82,7 @@ for node in /dev/dri/renderD*; do
 done
 
 wake=()
-[[ $arch == x86_64 ]] && wake=(--wake)
+if [[ $arch == x86_64 ]]; then wake=(--wake); fi
 devices() {
   local rc=0
   bash os/dev/test-joined-device-startup.sh "$disk" --out "$out/joined-device" || rc=1
@@ -100,5 +110,4 @@ for i in "${!tracks[@]}"; do
     status=1
   fi
 done
-rm -f "$disk"
 exit "$status"
