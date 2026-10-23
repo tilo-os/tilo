@@ -129,7 +129,7 @@ impl CodeApp {
         &mut self,
         lang: crate::model::Language,
         root: &std::path::Path,
-        started: Result<crate::lsp::LspClient, String>,
+        started: Result<crate::lsp::LspClient, crate::lsp::LspFailure>,
     ) {
         self.lsp_launching = false;
         match started {
@@ -217,9 +217,14 @@ impl CodeApp {
                 }
                 crate::lsp::LspEvent::Exited => {
                     let server = self.lsp_server_name();
+                    let detail = self
+                        .lsp
+                        .as_mut()
+                        .and_then(crate::lsp::LspClient::exit_detail);
                     self.lsp = None;
                     self.lsp_language = None;
-                    self.lsp_status = LspStatus::Failed(format!("{server} exited"));
+                    self.lsp_status =
+                        LspStatus::Failed(crate::lsp::LspFailure::Stopped { server, detail });
                 }
             }
         }
