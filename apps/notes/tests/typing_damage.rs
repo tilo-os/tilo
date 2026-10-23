@@ -428,6 +428,9 @@ fn open_a_new_note(app: &mut App, host: &mut Host, theme: Theme) {
     host.frames(app, 5);
     let first = bounds_of(app, "New note");
     host.click(app, first.center());
+    // The new note opens to be named; Enter keeps its name and goes to
+    // its body.
+    host.key(app, &Key::Named(NamedKey::Enter));
     // The pointer rests in the empty page below the note, so no button's
     // tooltip comes and goes while a test measures the note.
     host.input(app, cursor_moved(640.0, 700.0));

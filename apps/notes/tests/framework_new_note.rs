@@ -107,6 +107,25 @@ fn the_sidebar_plus_creates_a_root_note() {
     assert_eq!(page_count(&app), 2, "and another on a second click");
 }
 
+/// The header's "+" opens the new note with its title taking the keyboard,
+/// as Ctrl+N does: what is typed next names the note.
+#[test]
+fn the_header_plus_opens_the_new_note_to_be_named() {
+    use crate::framework_support::surface;
+    let mut app = fresh();
+    let plus = app.harness().targets()["new-note"];
+    app.harness().click_at(plus.center().x, plus.center().y);
+    app.settle();
+    assert!(
+        surface(&mut app, |notes| notes.main_title_editing_for_test()),
+        "the new note's title takes the keyboard"
+    );
+    app.harness().type_text("Groceries");
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(app.read_document(read::list_pages)[0].title, "Groceries");
+}
+
 #[test]
 fn the_published_surface_validates_as_the_host_checks_it() {
     let mut app = fresh();
