@@ -660,14 +660,21 @@ fn priority(m: &Mark) -> u8 {
 /// span whose `range.start == i`, append the byte, then close any
 /// span whose `range.end == i+1`. At a shared start the longest span
 /// opens first, so contained formatting closes inside its parent. Equal
-/// spans use the canonical bold, italic, code/link priority.
+/// spans use the canonical bold, italic, code/link priority. Spans that
+/// cross rather than nest are split where the first one ends: it closes the
+/// later ones with it, which open again straight after.
 pub fn serialize_inline(text: &InlineText) -> String {
     let mut out = String::with_capacity(text.text.len() + text.marks.len() * 4);
     // For each byte position we maintain a stack of currently-open
     // marks (in order of opening). We open marks at their `start`
     // byte (longest first, then Bold → Italic → Code/Link) and close
     // them at their `end` byte in reverse order.
-    let mut marks = text.marks.clone();
+    let mut marks: Vec<MarkSpan> = text
+        .marks
+        .iter()
+        .filter(|m| m.range.start < m.range.end)
+        .cloned()
+        .collect();
     marks.sort_by(|a, b| {
         a.range
             .start
@@ -686,13 +693,18 @@ pub fn serialize_inline(text: &InlineText) -> String {
     // skip ahead the rest of its bytes.
     let mut i = 0usize;
     while i <= bytes_len {
-        // Close any marks whose range.end == i (deepest first).
-        while let Some(top) = open.last() {
-            if top.range.end == i {
-                out.push_str(&close_marker(&top.mark));
-                open.pop();
-            } else {
-                break;
+        // Close the marks ending here, deepest first. A mark that ends while
+        // one opened after it goes on (bold over "abcde", italic over
+        // "defgh") closes that one too, which opens again just after, so the
+        // Markdown stays balanced.
+        if let Some(first) = open.iter().position(|m| m.range.end <= i) {
+            let closed = open.split_off(first);
+            for m in closed.iter().rev() {
+                out.push_str(&close_marker(&m.mark));
+            }
+            for m in closed.into_iter().filter(|m| m.range.end > i) {
+                out.push_str(open_marker(&m.mark));
+                open.push(m);
             }
         }
         while let Some(m) = marks.get(mi).filter(|m| m.range.start == i) {
@@ -1602,6 +1614,58 @@ Last paragraph.
             let exported = serialize_inline(&InlineText::new(text, marks.clone()));
             assert_eq!(exported, md, "export of {text:?} with {marks:?}");
             assert_eq!(parse_inline(&exported).marks, marks, "{md:?} read back");
+        }
+    }
+
+    /// Formatting a person applies over overlapping selections — bold on
+    /// the start of a sentence, italic on its end, the two crossing — exports
+    /// as balanced Markdown that reads back with every character keeping its
+    /// marks, rather than leaving the first mark open to the end of the line.
+    #[test]
+    fn overlapping_marks_export_balanced_and_read_back() {
+        fn covered(text: &InlineText, kind: &Mark) -> Vec<bool> {
+            (0..text.text.len())
+                .map(|at| {
+                    text.marks
+                        .iter()
+                        .any(|span| span.mark.same_kind(kind) && span.range.contains(&at))
+                })
+                .collect()
+        }
+        let cases = [
+            (Mark::Bold, 0..5, Mark::Italic, 3..8),
+            (Mark::Italic, 0..5, Mark::Bold, 3..8),
+            (Mark::Bold, 0..5, Mark::Strikethrough, 2..8),
+            (
+                Mark::ExternalLink("https://example.test/a".into()),
+                0..5,
+                Mark::Bold,
+                3..8,
+            ),
+        ];
+        for (first, first_range, second, second_range) in cases {
+            let edited = InlineText::new(
+                "abcdefgh",
+                vec![
+                    MarkSpan::new(first_range, first.clone()),
+                    MarkSpan::new(second_range, second.clone()),
+                ],
+            );
+            let exported = serialize_inline(&edited);
+            let read = parse_inline(&exported);
+            assert_eq!(read.text, edited.text, "text of {exported:?}");
+            for kind in [&first, &second] {
+                assert_eq!(
+                    covered(&read, kind),
+                    covered(&edited, kind),
+                    "{kind:?} read back from {exported:?}"
+                );
+            }
+            assert_eq!(
+                serialize_inline(&read),
+                exported,
+                "{exported:?} exports the same again"
+            );
         }
     }
 
