@@ -79,8 +79,10 @@ class BuilderResolutionTests(unittest.TestCase):
         )
         self.assertNotIn('credentials:', shared)
         self.assertNotIn('enable-openid-connect:', shared)
-        callers = (
-            'build-env-tools.yml',
+        # Every workflow that calls the shared lookup, whichever remain.
+        callers = sorted(
+            path.name for path in (ROOT / '.forgejo/workflows').glob('*.yml')
+            if 'resolve-builder.yml' in path.read_text() and path.name != 'resolve-builder.yml'
         )
         for name in callers:
             workflow = (ROOT / '.forgejo/workflows' / name).read_text()
