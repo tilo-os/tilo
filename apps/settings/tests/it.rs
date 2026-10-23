@@ -121,3 +121,6 @@ mod a11y_bus;
 
 #[path = "perf_interaction.rs"]
 mod perf_interaction;
+
+#[path = "every_pane.rs"]
+mod every_pane;
