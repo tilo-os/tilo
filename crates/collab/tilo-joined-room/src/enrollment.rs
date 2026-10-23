@@ -36,11 +36,7 @@ pub(crate) fn restore(
     }
     match &record.enrollment {
         Some(enrollment) => validate_enrollment(room, record, enrollment)?,
-        // A room this device created and governs: no join to check it against.
-        None if record.governor != record.device => {
-            return Err("a room governed here is governed by this device".into());
-        }
-        None => {}
+        None => return Err("a native room record holds no enrollment".into()),
     }
     let (governor, revocations) = record.current_governor(now);
     let peer = StatePeer::restore(
@@ -437,7 +433,6 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             effect_history_root: None,
             successions: Vec::new(),
-            join_ledger: tilo_peer_state::join_ledger::JoinLedger::default(),
         };
         self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
     }
@@ -504,8 +499,7 @@ impl NativeWorkspaceOwner {
             .map_err(|e| e.to_string())?
             .is_some()
         {
-            if !candidate.governed_here()
-                && !publication::has_exact(&candidate, &outgoing)?
+            if !publication::has_exact(&candidate, &outgoing)?
                 && !publication::retry_covered(&candidate, &outgoing)?
             {
                 return Err("exact local admission has no retained publication custody".into());

@@ -2719,14 +2719,18 @@ impl ShellNetwork {
         if !joined.insert(ws) {
             return true;
         }
-        if self
-            .cmd_tx
-            .try_send(NetCmd::JoinWorkspace {
-                ws,
-                on_event: self.event_tx.clone(),
-            })
-            .is_err()
+        let on_event = self.event_tx.clone();
+        // The person's own topic also travels directly between their
+        // devices; a room's travels over its host sessions alone.
+        let command = if self
+            .personal_continuity_user
+            .is_some_and(|user| ws == personal_continuity_topic_id(&user))
         {
+            NetCmd::JoinPersonalTopic { ws, on_event }
+        } else {
+            NetCmd::JoinWorkspace { ws, on_event }
+        };
+        if self.cmd_tx.try_send(command).is_err() {
             joined.remove(&ws);
             return false;
         }
