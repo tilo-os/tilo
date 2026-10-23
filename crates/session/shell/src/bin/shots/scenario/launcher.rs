@@ -14,7 +14,7 @@ pub(super) fn fresh() -> Scenario {
         actions: vec![
             Action::SeedLauncherFresh,
             Action::OpenPalette,
-            Action::Wait(2),
+            Action::WaitSettled,
             Action::Snapshot("01-launcher-fresh"),
         ],
     }
@@ -30,17 +30,17 @@ pub(super) fn busy() -> Scenario {
         actions: vec![
             Action::SeedLauncherBusy,
             Action::OpenPalette,
-            Action::Wait(2),
+            Action::WaitSettled,
             Action::Snapshot("01-launcher-workspace"),
             Action::Key(Key::Named(NamedKey::Backspace)),
-            Action::Wait(2),
+            Action::WaitSettled,
             Action::Snapshot("02-launcher-every-workspace"),
             Action::Type("pi"),
-            Action::Wait(2),
+            Action::WaitSettled,
             Action::Snapshot("03-typed"),
             Action::Key(Key::Named(NamedKey::Backspace)),
             Action::Key(Key::Named(NamedKey::Backspace)),
-            Action::Wait(2),
+            Action::WaitSettled,
             Action::Snapshot("04-cleared"),
         ],
     }

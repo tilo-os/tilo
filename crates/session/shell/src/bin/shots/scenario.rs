@@ -31,8 +31,8 @@ use ui::widget::GroupRow;
 use super::driver::ShellDriver;
 
 mod file_chooser;
-mod window_search;
 mod launcher;
+mod window_search;
 
 /// One tab of a window seeded for the window-bar shots.
 #[derive(Debug, Clone, Copy)]
@@ -154,6 +154,11 @@ pub enum Action {
     /// still growing and the strip's content width moving under the next
     /// gesture. Reach for this before a capture that reads a resting strip.
     WaitStripSettled(u32),
+    /// Step frames until the work a person would see finish a moment
+    /// later has finished (a search index building, an icon arriving), as
+    /// a scene-set capture does; what is still pending after the bound is
+    /// stuck, and the next capture shows it.
+    WaitSettled,
     /// Re-run layout without stepping the clock.
     ///
     /// A tab title's shaped width is recorded during `draw` and consumed
@@ -1007,6 +1012,9 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::Modifiers(m) => driver.set_modifiers(*m),
         Action::Wait(n) => driver.step_frames(*n),
         Action::WaitStripSettled(max) => wait_strip_settled(driver, *max),
+        Action::WaitSettled => {
+            let _ = driver.paint_settled();
+        }
         Action::Snapshot(name) => {
             // Always settle the layout pass before capturing — overlay
             // toggles since the last snapshot may have changed
