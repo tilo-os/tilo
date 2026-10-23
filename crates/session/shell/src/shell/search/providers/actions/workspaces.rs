@@ -163,12 +163,13 @@ mod tests {
     fn workspace_rename_refuses_a_person_who_may_not_rename_it() {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let chrome = chrome_with_room();
-        {
-            let state = chrome.borrow();
-            let mut tree = state.tree_mut();
-            let workspace = tree.desktop.active_workspace_mut().expect("a workspace");
-            workspace.set_owner("someone-else");
-        }
+        chrome
+            .borrow()
+            .tree_mut()
+            .desktop
+            .active_workspace_mut()
+            .expect("a workspace")
+            .set_owner("someone-else");
         assert!(!chrome.borrow().may_rename_active_workspace());
         assert!(
             invoke_shell_action(
