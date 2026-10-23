@@ -1369,3 +1369,52 @@ mod tests {
         );
     }
 }
+
+/// One open window of an app, as its other windows can tell, in every
+/// process: each holds a shared lock on one file. An app whose windows are
+/// processes of their own (each Browser tab) learns from it when its last
+/// window closes, the moment "the app closes" means.
+#[derive(Debug)]
+pub struct OpenWindow {
+    lock: advisory_lock::FileLock,
+    path: PathBuf,
+}
+
+impl OpenWindow {
+    /// Count this window among those counted in `dir`, which exists.
+    ///
+    /// # Errors
+    /// Returns an error when the lock file cannot be opened or locked.
+    pub fn open(dir: &Path) -> std::io::Result<Self> {
+        let path = dir.join("open-windows.lock");
+        let lock = advisory_lock::FileLock::open(&path, advisory_lock::LockMode::Shared)?;
+        Ok(Self { lock, path })
+    }
+
+    /// Stop counting this window. Returns whether it was the last: no other
+    /// window holds the lock once this one lets go of it.
+    #[must_use]
+    pub fn close(self) -> bool {
+        let Self { lock, path } = self;
+        drop(lock);
+        advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod open_window_tests {
+    use super::*;
+
+    #[test]
+    fn the_last_window_to_close_is_the_app_closing() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = OpenWindow::open(dir.path()).unwrap();
+        let second = OpenWindow::open(dir.path()).unwrap();
+        assert!(!first.close(), "a window closes, another stays open");
+        let third = OpenWindow::open(dir.path()).unwrap();
+        assert!(!second.close());
+        assert!(third.close(), "the last one closes: the app is closing");
+        let again = OpenWindow::open(dir.path()).unwrap();
+        assert!(again.close(), "an app opened later is counted afresh");
+    }
+}

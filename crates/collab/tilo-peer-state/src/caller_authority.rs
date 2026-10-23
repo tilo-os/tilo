@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// Authority retained by the host, never decoded from action arguments.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum WorkspaceTaskAuthority {
+pub enum CallerAuthority {
     Person {
         caller: tilo_user_identity::DeviceCert,
     },
@@ -18,7 +18,7 @@ pub enum WorkspaceTaskAuthority {
     },
 }
 
-impl WorkspaceTaskAuthority {
+impl CallerAuthority {
     #[must_use]
     pub fn certificate(&self) -> &tilo_user_identity::DeviceCert {
         match self {

@@ -181,7 +181,7 @@ impl CapnpBrokerState {
     /// # Errors
     /// The tracker cannot be read, or holds no such run any more.
     pub(super) fn tracker_run_of(&self, run: &PendingTaskRun) -> Result<TrackerRun, String> {
-        let binding = run.native.as_ref().ok_or("not a native task run")?;
+        let binding = &run.native;
         let runs = self
             .tracker_runs(&run.cluster_id)
             .ok_or("the tracker is unavailable")?
@@ -239,7 +239,11 @@ impl CapnpBrokerState {
         );
         let context = tilo_actions::ActionContext::default()
             .with_purpose(run.title.clone())
-            .with_group(run.issue.clone(), run.title.clone(), "task");
+            .with_group(
+                runtime_collab::task_run_group(&run.issue, run_id),
+                run.title.clone(),
+                "task",
+            );
         self.offer_native_run(
             room,
             NativeTaskBinding {
@@ -278,7 +282,7 @@ impl CapnpBrokerState {
         run: &PendingTaskRun,
         lease: &str,
     ) -> Result<runtime_collab::TaskRunStatus, String> {
-        let binding = run.native.as_ref().ok_or("not a native task run")?;
+        let binding = &run.native;
         let (_, revision) =
             runtime_collab::native_task_revision(lease).ok_or("invalid native task lease")?;
         let current = self.tracker_run_of(run)?;
@@ -303,7 +307,7 @@ impl CapnpBrokerState {
 
     /// An agent's report on its run of an issue. The tracker is told by the
     /// agent itself, through the tracker's actions; here a run that ends
-    /// stops its children.
+    /// stops its children and goes to history, as one run to undo whole.
     ///
     /// # Errors
     /// The run's children cannot be stopped.
@@ -312,13 +316,26 @@ impl CapnpBrokerState {
         run: &PendingTaskRun,
         update: &runtime_collab::TaskRunUpdate,
     ) -> Result<(), String> {
-        if matches!(
-            update,
-            runtime_collab::TaskRunUpdate::Failed { .. }
-                | runtime_collab::TaskRunUpdate::Cancelled { .. }
-        ) {
+        let outcome = match update {
+            runtime_collab::TaskRunUpdate::Succeeded { .. } => "completed",
+            runtime_collab::TaskRunUpdate::Failed { .. } => "stopped",
+            runtime_collab::TaskRunUpdate::Cancelled { .. } => "cancelled",
+            _ => return Ok(()),
+        };
+        if outcome != "completed" {
             self.cancel_native_children(run)?;
         }
+        let ended = self.tracker_run_of(run).ok();
+        let group = run.action_context.group.as_ref();
+        self.ended_runs.tasks.push(crate::task_runs::EndedTaskRun {
+            room: run.cluster_id.clone(),
+            group: group.map_or_else(|| run.task_id.clone(), |group| group.id.clone()),
+            title: group.map_or_else(|| run.task_id.clone(), |group| group.label.clone()),
+            agent: format!("agent:{}", run.agent_id),
+            person: run.native.starter.clone().unwrap_or_default(),
+            instruction: ended.map(|ended| ended.instruction),
+            outcome: outcome.to_owned(),
+        });
         Ok(())
     }
 
@@ -362,7 +379,7 @@ impl CapnpBrokerState {
         (resource, action): (&str, &str),
         argument: Option<&str>,
     ) -> Result<NativeGate, String> {
-        let binding = run.native.clone().ok_or("not a native task run")?;
+        let binding = run.native.clone();
         let prefixed =
             argument.and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX));
         let json = prefixed.or(argument);
@@ -396,7 +413,7 @@ impl CapnpBrokerState {
             .ok_or("invalid native lease")?
             .1;
         let requirement = NativeTaskActionRequirement {
-            binding: Some(current_binding),
+            binding: current_binding,
             app: app.to_owned(),
             resource_kind: descriptor.resource_kind.clone(),
             resource: resource.into(),

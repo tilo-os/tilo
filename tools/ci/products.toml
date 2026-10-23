@@ -789,7 +789,9 @@ privileged = true
 writable_sources = true
 # Packages record their source commit and time; the Nix lane reads the tree through Git.
 git = true
-timeout_secs = 14400
+# Five userspaces, about an hour each for the four that compile the session (arch, Ubuntu,
+# Debian, Fedora): the amd64 lane was still linking Fedora's at four hours.
+timeout_secs = 21600
 cost = "heavy"
 # The lanes build one after another, TILO_CARGO_JOBS (6) compilers at a time; fat-LTO links
 # peak at several GiB each, and the guest is OOM-killed beyond what it reserves.

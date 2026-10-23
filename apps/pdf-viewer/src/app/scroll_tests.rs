@@ -16,8 +16,12 @@ struct FrameSample {
     ui_ms: f64,
     /// The same frame's CPU time on the UI thread: its own work, apart
     /// from time it was preempted (falls back to `ui_ms` where the
-    /// platform keeps no thread clock).
+    /// platform keeps no thread clock). Reported for measurements; it
+    /// varies with the machine and its load, so no test asserts on it.
     cpu_ms: f64,
+    /// What the frame did on the UI thread, counted: the same on any
+    /// machine under any load.
+    work: FrameWork,
     /// The scene rasterised on the GPU, when measured.
     gpu_ms: Option<f64>,
     scroll_y: f64,
@@ -152,21 +156,17 @@ fn drive_scroll(
     for _ in 0..frames {
         next += period;
         let t = ui::time::now();
-        let cpu = ui::rt::thread_cpu_time();
-        Framed::harness_mut(&mut app).send(&winit::event::WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
-                0.0,
-                -px_per_frame,
-            )),
-            phase: winit::event::TouchPhase::Moved,
+        let (work, cpu_ms) = FrameWork::count(Framed::harness_mut(&mut app), |harness| {
+            harness.send(&winit::event::WindowEvent::MouseWheel {
+                device_id: winit::event::DeviceId::dummy(),
+                delta: winit::event::MouseScrollDelta::PixelDelta(
+                    winit::dpi::PhysicalPosition::new(0.0, -px_per_frame),
+                ),
+                phase: winit::event::TouchPhase::Moved,
+            });
+            harness.relayout();
         });
-        Framed::harness_mut(&mut app).relayout();
         let ui_ms = t.elapsed().as_secs_f64() * 1000.0;
-        let cpu_ms = match (cpu, ui::rt::thread_cpu_time()) {
-            (Some(before), Some(after)) => after.saturating_sub(before).as_secs_f64() * 1000.0,
-            _ => ui_ms,
-        };
         let gpu_ms = renderer.as_mut().map(|renderer| {
             let t = ui::time::now();
             renderer.render_gpu_wait(
@@ -178,6 +178,7 @@ fn drive_scroll(
         samples.push(FrameSample {
             ui_ms,
             cpu_ms,
+            work,
             gpu_ms,
             scroll_y: app.scroll_y(),
             blank_pages: blank_pages(&app),
@@ -261,14 +262,16 @@ fn report(label: &str, samples: &[FrameSample]) {
     };
     eprintln!(
         "SCROLL {label}: frames={} ui p50={p50:.2} p95={p95:.2} p99={p99:.2} max={max:.2} \
-         over_16.7ms={over} frames_with_blank_page={blank} frames_not_sharp={unsharp}{cpu_line}{gpu_line} scrolled={:.0}px",
+         over_16.7ms={over} frames_with_blank_page={blank} frames_not_sharp={unsharp}{cpu_line}{gpu_line} scrolled={:.0}px \
+         most work in a frame: {:?}",
         samples.len(),
         samples.last().map_or(0.0, |s| s.scroll_y),
+        FrameWork::most(samples.iter().map(|s| s.work)),
     );
     if std::env::var_os("PDF_SCROLL_TRACE").is_some() {
         for (i, s) in samples.iter().enumerate() {
             eprintln!(
-                "  frame {i:4} t={:7.1}ms ui={:7.2}ms cpu={:6.2}ms gpu={:?} y={:8.1} blank={} pending={} held={}",
+                "  frame {i:4} t={:7.1}ms ui={:7.2}ms cpu={:6.2}ms gpu={:?} y={:8.1} blank={} pending={} held={} {:?}",
                 i as f64 * 16.667,
                 s.ui_ms,
                 s.cpu_ms,
@@ -276,7 +279,8 @@ fn report(label: &str, samples: &[FrameSample]) {
                 s.scroll_y,
                 s.blank_pages,
                 s.pending,
-                s.held
+                s.held,
+                s.work
             );
         }
     }
@@ -312,16 +316,25 @@ fn measure_sustained_scroll() {
     report(&path.display().to_string(), &samples);
 }
 
-/// One frame's budget at 60 Hz, in milliseconds.
-const FRAME_BUDGET_MS: f64 = 16.667;
+/// Text runs a scroll frame may shape: most shape none, and a measured run
+/// shaped at most three in one frame.
+const SCROLL_MAX_TEXT_SHAPED: u64 = 4;
+
+/// Draw objects a scroll frame may encode: the chrome and the pages on
+/// screen come to at most 168; far more means something draws what is not
+/// on screen.
+const SCROLL_MAX_DRAWS: usize = 256;
 
 #[serial_test::serial(pdfium)]
 #[test]
 fn sustained_scroll_never_waits_on_rendering() {
     // Five seconds of touchpad scrolling through a document whose pages take
-    // the engine far longer than a frame to rasterise. Every frame must fit
-    // the 60 Hz budget on the UI thread and move the document: rasterising
-    // happens on the worker, and the window composites what it holds.
+    // the engine far longer than a frame to rasterise. Every frame must move
+    // the document without doing more on the UI thread than a scroll needs:
+    // no call into the engine (rasterising happens on the worker, and the
+    // window composites what it holds), no layout rebuilt, and bounded
+    // measuring, shaping and drawing. The work is counted rather than timed,
+    // so a loaded machine cannot fail it and a regression fails it anywhere.
     let dir = tempfile::tempdir().expect("temp dir");
     let path = heavy_pdf(dir.path(), 24);
     let render_ms = {
@@ -343,10 +356,14 @@ fn sustained_scroll_never_waits_on_rendering() {
     eprintln!("SCROLL one heavy page renders in {render_ms:?} ms on the worker");
 
     for (i, sample) in samples.iter().enumerate() {
+        let work = sample.work;
         assert!(
-            sample.cpu_ms <= FRAME_BUDGET_MS,
-            "frame {i} took {:.2} ms of UI-thread time, over the {FRAME_BUDGET_MS} ms budget",
-            sample.cpu_ms
+            work.engine_calls == 0
+                && work.rebuilt_layouts == 0
+                && work.measured_leaves <= MAX_MEASURED_LEAVES
+                && work.text_shaped <= SCROLL_MAX_TEXT_SHAPED
+                && work.draws <= SCROLL_MAX_DRAWS,
+            "frame {i} did {work:?} on the UI thread, more than a scroll frame needs"
         );
     }
     for (i, pair) in samples.windows(2).enumerate() {
@@ -759,6 +776,17 @@ impl FrameWork {
         };
         (work, cpu_ms)
     }
+
+    /// The most of each kind of work any one of `frames` did.
+    fn most(frames: impl Iterator<Item = Self>) -> Self {
+        frames.fold(Self::default(), |most, work| Self {
+            engine_calls: most.engine_calls.max(work.engine_calls),
+            rebuilt_layouts: most.rebuilt_layouts.max(work.rebuilt_layouts),
+            measured_leaves: most.measured_leaves.max(work.measured_leaves),
+            text_shaped: most.text_shaped.max(work.text_shaped),
+            draws: most.draws.max(work.draws),
+        })
+    }
 }
 
 /// One frame of a driven zoom.
@@ -1081,7 +1109,7 @@ fn zooming_across_every_breakpoint_never_shows_a_blank_page() {
     );
 }
 
-/// Layout leaves a zoom frame may measure again: a zoom step measures one.
+/// Layout leaves a zoom or scroll frame may measure again: each measures one.
 const MAX_MEASURED_LEAVES: usize = 2;
 
 /// Text runs a zoom frame may shape: a zoom step shapes one, the new
@@ -1116,15 +1144,7 @@ fn zoom_report(samples: &[ZoomSample]) -> String {
         .iter()
         .map(|s| s.paper_px as f64 / s.sampled_px.max(1) as f64)
         .fold(0.0, f64::max);
-    let most = samples
-        .iter()
-        .fold(FrameWork::default(), |most, s| FrameWork {
-            engine_calls: most.engine_calls.max(s.work.engine_calls),
-            rebuilt_layouts: most.rebuilt_layouts.max(s.work.rebuilt_layouts),
-            measured_leaves: most.measured_leaves.max(s.work.measured_leaves),
-            text_shaped: most.text_shaped.max(s.work.text_shaped),
-            draws: most.draws.max(s.work.draws),
-        });
+    let most = FrameWork::most(samples.iter().map(|s| s.work));
     let line = format!(
         "ZOOM frames={} frames_with_paper={blank} worst_paper={:.1}% cpu p50={:.2} p95={:.2} max={:.2} most work in a frame: {most:?}",
         samples.len(),

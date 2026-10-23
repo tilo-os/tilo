@@ -722,10 +722,12 @@ impl BooksApp {
         let end_ch = if end.block == start.block {
             end.ch.max(start.ch)
         } else {
-            self.layout
-                .as_ref()
-                .and_then(|layout| layout.blocks.iter().find(|b| b.index == start.block))
-                .map_or(start.ch, |block| block.char_len)
+            self.open_book()
+                .and_then(|book| book.chapters.get(self.chapter))
+                .and_then(|chapter| chapter.blocks.get(start.block))
+                .map_or(start.ch, |block| {
+                    crate::paginate::selectable_text(block).0.chars().count()
+                })
         };
         Some(books::AddNote {
             passage: Passage {
@@ -760,7 +762,11 @@ impl BooksApp {
             .and_then(|book| book.chapters.get(chapter))
             .map(|chapter| &chapter.blocks)
             .ok_or("chapter is not in this book")?;
-        let chars = |block: usize| blocks.get(block).map(|b| b.plain_text().chars().count());
+        let chars = |block: usize| {
+            blocks
+                .get(block)
+                .map(|b| crate::paginate::selectable_text(b).0.chars().count())
+        };
         let (start_block, end_block) = (start.0, end.0);
         let (Some(start_len), Some(end_len)) = (chars(start_block), chars(end_block)) else {
             return Err("block is not in this chapter".into());
@@ -3258,27 +3264,20 @@ impl BooksApp {
     /// laid-out page, or the gesture resolves to nothing.
     fn resolve_highlight_plan(&self, sel: TextSel, color: HiColor) -> Option<books::Highlight> {
         let (start, end) = sel.ordered();
-        // Prefer painted layout metrics; fall back to chapter block lengths so a
-        // select-passage View can publish highlight-selection before the next
-        // frame lays out the reader.
-        let blocks: Vec<(usize, usize, String)> = if let Some(layout) = self.layout.as_ref() {
-            layout
-                .blocks
-                .iter()
-                .map(|b| (b.index, b.char_len, b.text.clone()))
-                .collect()
-        } else {
-            let chapter = self.open_book()?.chapters.get(self.chapter)?;
-            chapter
-                .blocks
-                .iter()
-                .enumerate()
-                .map(|(index, block)| {
-                    let text = block.plain_text();
-                    (index, text.chars().count(), text)
-                })
-                .collect()
-        };
+        // Read from the book, not the layout: a select-passage View publishes
+        // highlight-selection before the worker has set the chapter.
+        let chapter = self.open_book()?.chapters.get(self.chapter)?;
+        let blocks: Vec<(usize, usize, String)> = chapter
+            .blocks
+            .iter()
+            .enumerate()
+            .skip(start.block)
+            .take((end.block + 1).saturating_sub(start.block))
+            .map(|(index, block)| {
+                let (text, _) = crate::paginate::selectable_text(block);
+                (index, text.chars().count(), text)
+            })
+            .collect();
         let clens: HashMap<usize, usize> = blocks
             .iter()
             .map(|(index, char_len, _)| (*index, *char_len))
@@ -3653,29 +3652,35 @@ impl BooksApp {
             return String::new();
         };
         let (start, end) = sel.ordered();
-        let Some(layout) = self.layout.as_ref() else {
+        // The book holds the text, not the layout: a selection made by an
+        // action reads the same before the worker has set its chapter.
+        let Some(chapter) = self
+            .open_book()
+            .and_then(|book| book.chapters.get(self.chapter))
+        else {
             return String::new();
         };
         let mut out = String::new();
-        for b in &layout.blocks {
-            if b.index < start.block || b.index > end.block {
-                continue;
-            }
-            let lo = if b.index == start.block { start.ch } else { 0 };
-            let hi = if b.index == end.block {
-                end.ch
-            } else {
-                b.char_len
-            };
-            let lo = lo.min(b.char_len);
-            let hi = hi.min(b.char_len);
+        let selected = chapter
+            .blocks
+            .iter()
+            .enumerate()
+            .skip(start.block)
+            .take((end.block + 1).saturating_sub(start.block));
+        for (index, block) in selected {
+            let (text, hard_breaks) = crate::paginate::selectable_text(block);
+            let char_len = text.chars().count();
+            let lo = if index == start.block { start.ch } else { 0 };
+            let hi = if index == end.block { end.ch } else { char_len };
+            let lo = lo.min(char_len);
+            let hi = hi.min(char_len);
             if lo < hi {
                 if !out.is_empty() {
                     out.push_str(if keep_lines { "\n\n" } else { " " });
                 }
-                out.extend(b.text.chars().enumerate().skip(lo).take(hi - lo).map(
+                out.extend(text.chars().enumerate().skip(lo).take(hi - lo).map(
                     |(index, character)| {
-                        if keep_lines && b.hard_breaks.binary_search(&index).is_ok() {
+                        if keep_lines && hard_breaks.binary_search(&index).is_ok() {
                             '\n'
                         } else {
                             character

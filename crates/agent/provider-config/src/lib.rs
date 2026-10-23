@@ -714,19 +714,7 @@ settings_store::read_through_json_value!(AgentModel);
 #[cfg(feature = "model")]
 tilo_resource::json_model!(AgentModel);
 
-/// A model a person may pick for an agent's run: one model of an enabled
-/// provider, named the way pickers show it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OfferedModel {
-    /// The provider profile's id.
-    pub profile: String,
-    /// The provider's label.
-    pub provider: String,
-    /// The model's id at that provider.
-    pub model: String,
-    /// The model's label, its id without one.
-    pub label: String,
-}
+pub use tilo_agent_models::{OfferedModel, OfferedModels};
 
 impl ProviderConfig {
     /// Every model of the enabled providers, in Settings' order: what a

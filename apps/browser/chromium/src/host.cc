@@ -134,6 +134,45 @@ void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr)
   fields->SetString("event",name); auto value=CefValue::Create(); value->SetDictionary(fields);
   output->Send(1,CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString());
 }
+// A pointer shape by the CSS name Tilo's toolkit takes it in.
+const char* CursorName(cef_cursor_type_t type) {
+  switch(type) {
+    case CT_HAND: return "pointer";
+    case CT_IBEAM: return "text";
+    case CT_VERTICALTEXT: return "vertical-text";
+    case CT_CROSS: return "crosshair";
+    case CT_WAIT: return "wait";
+    case CT_PROGRESS: return "progress";
+    case CT_HELP: return "help";
+    case CT_MOVE: return "move";
+    case CT_CELL: return "cell";
+    case CT_CONTEXTMENU: return "context-menu";
+    case CT_ALIAS: return "alias";
+    case CT_COPY: return "copy";
+    case CT_NODROP: return "no-drop";
+    case CT_NOTALLOWED: return "not-allowed";
+    case CT_GRAB: return "grab";
+    case CT_GRABBING: return "grabbing";
+    case CT_ZOOMIN: return "zoom-in";
+    case CT_ZOOMOUT: return "zoom-out";
+    case CT_NONE: return "none";
+    case CT_EASTRESIZE: return "e-resize";
+    case CT_WESTRESIZE: return "w-resize";
+    case CT_NORTHRESIZE: return "n-resize";
+    case CT_SOUTHRESIZE: return "s-resize";
+    case CT_NORTHEASTRESIZE: return "ne-resize";
+    case CT_NORTHWESTRESIZE: return "nw-resize";
+    case CT_SOUTHEASTRESIZE: return "se-resize";
+    case CT_SOUTHWESTRESIZE: return "sw-resize";
+    case CT_EASTWESTRESIZE: return "ew-resize";
+    case CT_NORTHSOUTHRESIZE: return "ns-resize";
+    case CT_NORTHEASTSOUTHWESTRESIZE: return "nesw-resize";
+    case CT_NORTHWESTSOUTHEASTRESIZE: return "nwse-resize";
+    case CT_COLUMNRESIZE: return "col-resize";
+    case CT_ROWRESIZE: return "row-resize";
+    default: return "default";
+  }
+}
 void StringEvent(const std::string& name,const std::string& key,const CefString& text) {
   auto d=CefDictionaryValue::Create();d->SetString(key,text);Event(name,d);
 }
@@ -153,6 +192,8 @@ class FaviconDownload final : public CefDownloadImageCallback {
   IMPLEMENT_REFCOUNTING(FaviconDownload);
 };
 std::map<int,CefRefPtr<Client>> clients;
+// A page's popups are tabs too, numbered apart from the tabs the app opens.
+int next_popup=1<<30;
 CefRefPtr<CefRequestContext> shared_context;
 void CreateTab(int id);
 void PublishZoomLevels();
@@ -302,12 +343,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(id_==1 && tilo::StartupDiagnostics::Enabled()){startup_diagnostics_=new tilo::StartupDiagnostics(browser);startup_diagnostics_->Attach();}
     request_filter->Begin(browser->GetIdentifier(),"about:blank");
     site_clear_=new tilo::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
-    document_scripts_=new tilo::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
+    document_scripts_=new tilo::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { if(native_closing_)return;StringEvent("error","message","Document-start script registration failed");CloseHost(); });
     document_scripts_->Attach();
     // Register before releasing navigation. A late private context must not
     // infer idle composition from the absence of an event it could not observe.
+    // A registration cut short by its tab closing (DevTools detaches with
+    // it) leaves nothing unobserved.
     composition_scripts_=new tilo::DocumentScripts(browser,[this] { ScheduleNavigation(); },
-        [this] { StringEvent("error","message","Private composition observer registration failed");CloseHost(); },
+        [this] { if(native_closing_)return;StringEvent("error","message","Private composition observer registration failed");CloseHost(); },
         "tilo-private-text-input");
     composition_scripts_->Attach();
     composition_scripts_->Configure(R"JS(globalThis.__tiloTextComposition = (() => {
@@ -350,7 +393,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
@@ -383,6 +426,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(service_session_import_)service_session_import_->Detach();service_session_import_=nullptr;
     browser_=nullptr;
     download_owners.Destroy(id_);
+    // Its popups go with it: nothing is left for them to answer.
+    std::vector<CefRefPtr<Client>> popups;
+    for(const auto& [id,client]:clients)if(client->opener_==id_)popups.push_back(client);
+    for(const auto& popup:popups)popup->CloseNative();
     Event("closed");clients.erase(id_);PublishDownloadRuntime();
     if(closing && clients.empty())CefQuitMessageLoop();
   }
@@ -395,8 +442,21 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
-  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
+  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures& features,CefWindowInfo& window,CefRefPtr<CefClient>& client,CefBrowserSettings& settings,CefRefPtr<CefDictionaryValue>&,bool*) override {
     if(sealed_documents && !user_gesture) return true;
+    // A popup window the page opens (window.open with a size: a sign-in, a
+    // payment) stays its popup, so it can answer the page that opened it.
+    // The app shows it beside the page, where it asked for them.
+    if(disposition==CEF_WOD_NEW_POPUP && popups_ && !sealed_documents && !closing && clients.size()<64 && url.length()<=8192 && next_popup<INT32_MAX) {
+      const int id=next_popup++;
+      auto popup=CefRefPtr<Client>(new Client(id));popup->opener_=id_;clients.emplace(id,popup);
+      window.SetAsWindowless(0);client=popup;
+      settings.windowless_frame_rate=kOffscreenFrameRate;settings.background_color=CefColorSetARGB(255,255,255,255);
+      auto d=CefDictionaryValue::Create();d->SetInt("popup",id);d->SetString("url",url);
+      d->SetInt("width",features.widthSet?std::clamp(features.width,0,10000):0);d->SetInt("height",features.heightSet?std::clamp(features.height,0,10000):0);
+      Event("popup",d);
+      return false;
+    }
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
   }
   void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || url==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(url.ToString()); } main_navigation_finished_=false;++favicon_generation_;std::optional<std::pair<std::string,std::pair<uint64_t,bool>>> pending;if(pending_main_media_token_){const auto key=frame->GetIdentifier().ToString();auto found=media_frames_.find(key);if(found!=media_frames_.end() && found->second.first==*pending_main_media_token_)pending=std::make_pair(key,std::make_pair(found->second.first,false));}media_frames_.clear();if(pending)media_frames_.insert(*pending);pending_main_media_token_.reset();media_limit_reported_=false;last_media_playing_.reset();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false); } }
@@ -407,6 +467,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!sealed_documents) return;
     auto text=value.ToString();if(text.length()>8192) text.clear();
     StringEvent("link_status","url",text);
+  }
+  // The pointer over the page takes the shape the page asks for: a hand on
+  // a link, an I-beam on text. Sent by its CSS name, once per change.
+  bool OnCursorChange(CefRefPtr<CefBrowser>,CefCursorHandle,cef_cursor_type_t type,const CefCursorInfo&) override {
+    const char* name=CursorName(type);
+    if(cursor_!=name) {cursor_=name;StringEvent("cursor","cursor",cursor_);}
+    return true;
   }
   void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,const std::vector<CefString>& urls) override {
     if(urls.empty() || urls.front().ToString().size()>8192) return;
@@ -580,6 +647,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(action=="revoke") {
         capabilities_->Close();auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:tilo::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_BLOCK);
         SiteResult(request,origin,document->generation,action,true,"Permissions blocked. Reload to end existing media sessions.");
+      } else if(action=="reset") {
+        // Back to asking: what was blocked or allowed for the site is forgotten.
+        auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:tilo::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_DEFAULT);
+        SiteResult(request,origin,document->generation,action,true,"The site asks again for what it needs.");
       } else if(action=="enable" || action=="disable") {
         auto origins=request_filter->Snapshot()->exceptions;if(action=="disable")origins.insert(origin);else origins.erase(origin);
         if(origins.size()>1024) {SiteResult(request,origin,document->generation,action,false,"Site exception limit reached");return false;}
@@ -587,7 +658,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
       return false;
     }
-    auto state=request_filter->Snapshot();auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",actual);d->SetDouble("generation",document->generation);d->SetDouble("blocked",std::min<uint64_t>(document->blocked.load(),9007199254740991ULL));d->SetBool("global_enabled",state->enabled);d->SetBool("excepted",state->exceptions.count(actual));d->SetBool("effective",state->enabled && !state->exceptions.count(actual));
+    auto state=request_filter->Snapshot();auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",actual);d->SetDouble("generation",document->generation);d->SetDouble("blocked",std::min<uint64_t>(document->blocked.load(),9007199254740991ULL));d->SetBool("global_enabled",state->enabled);d->SetBool("excepted",state->exceptions.count(actual));d->SetBool("effective",state->enabled && !state->exceptions.count(actual));d->SetBool("can_reset",true);
     auto entry=browser_->GetHost()->GetVisibleNavigationEntry();auto ssl=entry && tilo::Origin(entry->GetURL())==actual?entry->GetSSLStatus():nullptr;
     const bool secure=ssl && ssl->IsSecureConnection() && !CefIsCertStatusError(ssl->GetCertStatus());
     d->SetString("security",actual.starts_with("http:")?"insecure":secure?"secure":"unverified");d->SetInt("certificate_status",ssl?ssl->GetCertStatus():0);d->SetInt("tls_version",ssl?ssl->GetSSLVersion():0);d->SetInt("content_status",ssl?ssl->GetContentStatus():0);
@@ -724,6 +795,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
+    else if(op=="popups") popups_=d->GetBool("enabled");
     else if(op=="selection_text") {
       // The renderer reads the selection; the embedder puts it on the
       // system clipboard, which an offscreen engine cannot reach.
@@ -771,10 +843,27 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
       if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
-      else if(op=="scroll") host->SendMouseWheelEvent(event,static_cast<int>(Number(d,"dx")/geometry_.scale()),static_cast<int>(Number(d,"dy")/geometry_.scale()));
+      else if(op=="scroll") {
+        // A trackpad moves in fractions of a pixel: carry what an integer
+        // wheel event cannot, so slow scrolling adds up instead of vanishing.
+        const double dx=Number(d,"dx")/geometry_.scale()+wheel_rest_x_,dy=Number(d,"dy")/geometry_.scale()+wheel_rest_y_;
+        const int whole_x=static_cast<int>(dx),whole_y=static_cast<int>(dy);
+        wheel_rest_x_=dx-whole_x;wheel_rest_y_=dy-whole_y;
+        if(whole_x||whole_y) host->SendMouseWheelEvent(event,whole_x,whole_y);
+      }
       else { std::string button=d->GetString("button");auto type=button=="right"?MBT_RIGHT:button=="middle"?MBT_MIDDLE:MBT_LEFT;bool down=d->GetBool("down");
         int flag=type==MBT_RIGHT?EVENTFLAG_RIGHT_MOUSE_BUTTON:type==MBT_MIDDLE?EVENTFLAG_MIDDLE_MOUSE_BUTTON:EVENTFLAG_LEFT_MOUSE_BUTTON;
-        if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_|key_modifiers_;host->SendMouseClickEvent(event,type,!down,1); }
+        if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_|key_modifiers_;
+        // A second and third press of the same button soon after, near the
+        // first, is a double and a triple click: a word, then its paragraph.
+        if(down) {
+          const auto now=std::chrono::steady_clock::now();
+          const bool again=click_count_>0 && type==click_button_ && now-click_time_<=std::chrono::milliseconds(500)
+            && std::abs(event.x-click_x_)<=4 && std::abs(event.y-click_y_)<=4;
+          click_count_=again?std::min(click_count_+1,3):1;
+          click_button_=type;click_time_=now;click_x_=event.x;click_y_=event.y;
+        }
+        host->SendMouseClickEvent(event,type,!down,std::max(click_count_,1)); }
     } else if(op=="modifiers") key_modifiers_=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
     else if(op=="edit_history") {
       auto frame=browser_->GetFocusedFrame();
@@ -782,7 +871,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     else if(op=="key") Key(d);
     else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
-    else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"));
+    else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"),d->HasKey("dismiss") && d->GetType("dismiss")==VTYPE_BOOL && d->GetBool("dismiss"));
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
     else if(op=="devtools") { CefWindowInfo window;
       host->ShowDevTools(window,new DevToolsClient,CefBrowserSettings(),CefPoint());
@@ -1137,7 +1226,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     message->GetArgumentList()->SetString(1,frame->GetURL());
     frame->SendProcessMessage(PID_RENDERER,message);
   }
-  int id_;bool visible_=true,transfer_owner_=false,native_closing_=false;int key_modifiers_=0;uint64_t favicon_generation_=0;
+  int id_;bool visible_=true,transfer_owner_=false,native_closing_=false,popups_=false;int opener_=0,key_modifiers_=0;uint64_t favicon_generation_=0;
   std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
   std::optional<uint64_t> pending_main_media_token_;
   std::optional<bool> last_media_playing_;bool media_limit_reported_=false;
@@ -1171,6 +1260,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::SiteClear> site_clear_;
   CefRefPtr<tilo::ServiceSessionImport> service_session_import_;
   int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
+  // The press a following press may continue as a double or triple click.
+  int click_count_=0,click_x_=0,click_y_=0;cef_mouse_button_type_t click_button_=MBT_LEFT;std::chrono::steady_clock::time_point click_time_;
+  // What of the wheel's last movement was less than a whole pixel.
+  double wheel_rest_x_=0,wheel_rest_y_=0;
+  // The pointer shape the page last asked for, by its CSS name.
+  std::string cursor_;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
   tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
@@ -1406,7 +1501,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="site_status" || op=="site_action") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("origin",VTYPE_STRING) || d->GetString("origin").length()>8192)return false;
     if(op=="site_status")return true;
-    const auto action=d->GetString("action");return number("generation") && tilo::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="enable" || action=="disable" || action=="reload");
+    const auto action=d->GetString("action");return number("generation") && tilo::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="reset" || action=="enable" || action=="disable" || action=="reload");
   }
   if(op=="text_input") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
@@ -1462,6 +1557,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id")return false;
     return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0;
   }
+  if(op=="popups") return type("enabled",VTYPE_BOOL);
   if(op=="document_size") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="enabled")return false;
@@ -1574,14 +1670,18 @@ int RunHost(int argc,char** argv) {
   profile=std::filesystem::canonical(profile).string();
   if(downloads_directory.empty()) downloads_directory=profile+"/downloads";
   Output writer;output=&writer;
-#if defined(OS_LINUX)
+#if defined(OS_LINUX) || defined(OS_MAC)
   // Chromium's pipe handler reads commands on fd 3 and replies on fd 4. Use
-  // them only when nothing else holds those descriptors.
+  // them only when nothing else holds those descriptors. Extensions are
+  // loaded, turned off and removed while the browser runs through it, on
+  // macOS as on Linux.
   if(fcntl(3,F_GETFD)<0 && fcntl(4,F_GETFD)<0) {
     // Keep every pipe end clear of 3 and 4 until it is moved there on purpose.
     auto high=[](int fd){int moved=fcntl(fd,F_DUPFD_CLOEXEC,5);close(fd);return moved;};
+    // macOS has no pipe2; each end is moved high, close-on-exec, at once.
+    auto open_pipe=[](int ends[2]){return pipe(ends)==0 && fcntl(ends[0],F_SETFD,FD_CLOEXEC)==0 && fcntl(ends[1],F_SETFD,FD_CLOEXEC)==0;};
     int commands[2],replies[2];
-    if(pipe2(commands,O_CLOEXEC)==0 && pipe2(replies,O_CLOEXEC)==0) {
+    if(open_pipe(commands) && open_pipe(replies)) {
       int chromium_reads=high(commands[0]),host_writes=high(commands[1]);
       int host_reads=high(replies[0]),chromium_writes=high(replies[1]);
       if(chromium_reads>=0 && host_writes>=0 && host_reads>=0 && chromium_writes>=0 &&

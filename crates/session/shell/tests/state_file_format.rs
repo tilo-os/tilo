@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use shell::shell::state::{
     Access, AppKind, CapOverride, NativeDocumentReference, PeerOrigin, RoomAuthority, RoomId,
     Scope, Strip, StripId, Subject, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId, WorkspaceTask, WorkspaceTaskRoute, WorkspaceTaskStatus, WorkspaceTree,
+    WorkspaceId, WorkspaceTree,
 };
 
 const FIXTURE: &str = "tests/fixtures/state_v1.json";
@@ -64,19 +64,6 @@ fn populated_tree() -> WorkspaceTree {
         .with_id("cap-fixed"),
     );
     ws.share_surface(7, 42);
-    ws.tasks.push(WorkspaceTask {
-        id: "task-1".into(),
-        title: "Review".into(),
-        created_by: "owner-key".into(),
-        assigned_agent: None,
-        route: WorkspaceTaskRoute::Manual,
-        status: WorkspaceTaskStatus::Queued,
-        resource: None,
-        subject: None,
-        created_at: 10,
-        updated_at: 20,
-        audit: Vec::new(),
-    });
     (ws.shortcuts, ws.schedule_claims) = saved_shortcuts();
     let mut strip = Strip::new(StripId(2), "Main");
     strip.window_groups.push(WindowGroup {
@@ -187,5 +174,27 @@ fn state_file_fixture_is_current_and_round_trips_unchanged() {
         let tree: WorkspaceTree = serde_json::from_str(&fixture).expect("fixture loads");
         let rewritten = serde_json::to_string_pretty(&tree).expect("serialize");
         assert_eq!(canonical(&rewritten), canonical(&fixture));
+    }
+
+    // Phase `a_file_from_when_workspaces_kept_tasks_loads_without_them`.
+    {
+        let fixture = canonical(
+            &std::fs::read_to_string(fixture_path()).expect("read the state.json fixture"),
+        );
+        let mut old = fixture.clone();
+        old["workspaces"][0]["tasks"] = serde_json::json!([{
+            "id": "task-1",
+            "title": "Review",
+            "created_by": "owner-key",
+            "assigned_agent": null,
+            "route": "manual",
+            "status": "queued",
+            "resource": null,
+            "created_at": 10,
+            "updated_at": 20,
+            "audit": []
+        }]);
+        let tree: WorkspaceTree = serde_json::from_value(old).expect("an older file loads");
+        assert_eq!(serde_json::to_value(&tree).expect("serialize"), fixture);
     }
 }

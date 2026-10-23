@@ -766,6 +766,41 @@ fn push_word_fragments(ctx: &mut FragmentBuildCtx<'_>, source: &SourceWord<'_>) 
     }
 }
 
+/// A block's canonical selectable text and its hard-break offsets, as its
+/// [`LaidBlock::text`] and [`LaidBlock::hard_breaks`] hold them, read from
+/// the book alone: selections are in these char offsets whether or not the
+/// chapter has been laid out yet.
+pub fn selectable_text(block: &Block) -> (String, Vec<usize>) {
+    if let Block::Math { source, .. } = block {
+        return (source.clone(), Vec::new());
+    }
+    let mut text = String::new();
+    let mut chars = 0;
+    let mut hard_breaks = Vec::new();
+    let mut push = |word: &str, space_before: bool, line_break: bool| {
+        if !text.is_empty() && space_before {
+            if line_break {
+                hard_breaks.push(chars);
+            }
+            text.push(' ');
+            chars += 1;
+        }
+        text.push_str(word);
+        chars += word.chars().count();
+    };
+    for span in block.spans() {
+        if span.math.is_some() {
+            push(&span.text, span.space_before, span.line_break);
+            continue;
+        }
+        for (wi, word) in span.text.split_whitespace().enumerate() {
+            let space_before = if wi == 0 { span.space_before } else { true };
+            push(word, space_before, wi == 0 && span.line_break);
+        }
+    }
+    (text, hard_breaks)
+}
+
 /// Build the measured word list for a text block, plus its canonical
 /// selectable text (words joined by single spaces). The first word of each
 /// span inherits the span's `space_before`; later words are
@@ -1928,6 +1963,42 @@ mod tests {
     }
 
     /// Verse sets one ragged line per source line, indents marked lines, hangs wrapped ones, and keeps the prose offsets.
+    #[test]
+    fn a_blocks_selectable_text_is_the_laid_out_one() {
+        let mut tr = TextRenderer::new();
+        let book = crate::content::bundled_sample().expect("bundled book");
+        let mut blocks: Vec<Block> = book
+            .chapters
+            .iter()
+            .flat_map(|chapter| chapter.blocks.iter().cloned())
+            .collect();
+        blocks.push(Block::Verse {
+            spans: vec![
+                Span::plain("Tell me,   O Muse,"),
+                line("Who, having\toverthrown", 0),
+                line(" Of Ilium ", 2),
+            ],
+            quoted: false,
+        });
+        blocks.push(para("  spaced   out \n words  "));
+        let layout = test_layout(
+            &mut tr,
+            &blocks,
+            360.0,
+            2000.0,
+            &book_settings(),
+            "en-US",
+            &FontChoice::Serif,
+        );
+        assert_eq!(layout.blocks.len(), blocks.len());
+        for laid in &layout.blocks {
+            let (text, hard_breaks) = selectable_text(&blocks[laid.index]);
+            assert_eq!(text, laid.text, "block {}", laid.index);
+            assert_eq!(text.chars().count(), laid.char_len, "block {}", laid.index);
+            assert_eq!(hard_breaks, laid.hard_breaks, "block {}", laid.index);
+        }
+    }
+
     #[test]
     fn verse_lays_out_one_ragged_line_per_source_line() {
         // --- phase: verse_lines_are_ragged_indented_and_hang_when_wrapped ---

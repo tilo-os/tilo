@@ -105,7 +105,7 @@ fn native_request(
     record: &str,
 ) -> serde_json::Value {
     let mut request = serde_json::json!({"task":run.task_id,
-        "epoch":run.native.as_ref().map(|binding| binding.epoch),
+        "epoch":run.native.epoch,
         "peer_id":target.peer_id,"app":app,"record":record,
         "resource":target.resource,"action":target.action,"argument":target.argument});
     if !target.provider.is_empty()
@@ -280,7 +280,7 @@ impl CapnpBrokerState {
         target: runtime_collab::TaskAction<'_>,
         caller: &durable_local_invocation::LocalCaller,
     ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, String> {
-        let binding = run.native.as_ref().ok_or("native task binding absent")?;
+        let binding = &run.native;
         if self.tracker_run_of(run)?.epoch != binding.epoch {
             return Err("native task observation source was replaced".into());
         }
@@ -310,16 +310,7 @@ impl CapnpBrokerState {
         let Some(record) = record else {
             return self.native_host_observation(run, target, caller, invocation);
         };
-        let requirement = caller.authorize_retained_task(
-            self,
-            (
-                &record,
-                &run.native
-                    .as_ref()
-                    .ok_or("native binding absent")?
-                    .actor()?,
-            ),
-        )?;
+        let requirement = caller.authorize_retained_task(self, (&record, &run.native.actor()?))?;
         self.authorize_task_action(run, &requirement)?;
         let (app, record_id) = if target.provider.is_empty() {
             let offered = self
@@ -361,7 +352,7 @@ impl CapnpBrokerState {
     }
 
     pub(super) fn cancel_native_children(&self, run: &PendingTaskRun) -> Result<(), String> {
-        let binding = run.native.as_ref().ok_or("native task binding absent")?;
+        let binding = &run.native;
         let owner = InvocationOwner::NativeTask {
             agent: run.agent_id.clone(),
             task: run.task_id.clone(),
@@ -413,11 +404,7 @@ impl CapnpBrokerState {
             return Err("task target changed workspace".into());
         }
         let intent = native_request(run, target, &offered.0.app_id, &offered.0.route.record_id);
-        let actor = run
-            .native
-            .as_ref()
-            .ok_or("native binding absent")?
-            .actor()?;
+        let actor = run.native.actor()?;
         // Admission checked the person's answer for this exact invocation;
         // the token carries it to the dispatch, bound to these arguments.
         let token = if super::requires_store_witness(&offered.0.app_id, &offered.1.action) {
@@ -466,7 +453,7 @@ impl CapnpBrokerState {
             AdmissionProvenance {
                 durable: Some(DurableContext::Task {
                     caller,
-                    binding: run.native.as_ref().ok_or("native binding absent")?,
+                    binding: &run.native,
                     invocation,
                     intent: &intent,
                 }),
@@ -517,7 +504,7 @@ impl CapnpBrokerState {
                 lease: envelope.lease.clone(),
                 action_context: envelope.action_context.clone(),
                 terminal: false,
-                native: Some(binding),
+                native: binding,
             },
         );
         drop(pending);
@@ -559,7 +546,6 @@ impl CapnpBrokerState {
         run: &PendingTaskRun,
         lease: &str,
     ) -> Result<runtime_collab::TaskRunStatus, String> {
-        run.native.as_ref().ok_or("not a native task run")?;
         self.tracker_status(run, lease)
     }
 }

@@ -10,7 +10,7 @@ use crate::extensions::ExtensionError;
 
 const UPDATE_SERVICE: &str = "https://clients2.google.com/service/update2/crx";
 /// Matches `extensions::MAX_ARCHIVE_BYTES`.
-const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 /// The Chromium the engine runs when it has not reported its version.
 pub const FALLBACK_CHROMIUM_VERSION: &str = "152.0.7977.83";
 
@@ -52,7 +52,19 @@ pub fn item_from_url(address: &str) -> Option<Item> {
 /// The update-service address of the CRX3 package for `id` that Chromium
 /// `chromium_version` would be offered, on this platform.
 pub fn crx_url(id: &str, chromium_version: &str) -> Option<Url> {
+    crx_url_from(id, None, chromium_version)
+}
+
+/// The update-service address of a newer package for `id` than version
+/// `installed`; the service answers with nothing when there is none.
+fn crx_url_from(id: &str, installed: Option<&str>, chromium_version: &str) -> Option<Url> {
     if !crate::crx::is_extension_id(id)
+        || installed.is_some_and(|version| {
+            version.is_empty()
+                || !version
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        })
         || chromium_version.is_empty()
         || !chromium_version
             .bytes()
@@ -76,7 +88,13 @@ pub fn crx_url(id: &str, chromium_version: &str) -> Option<Url> {
         .append_pair("prodversion", chromium_version)
         .append_pair("lang", "en-US")
         .append_pair("acceptformat", "crx3")
-        .append_pair("x", &format!("id={id}&installsource=ondemand&uc"));
+        .append_pair(
+            "x",
+            &match installed {
+                Some(version) => format!("id={id}&v={version}&installsource=ondemand&uc"),
+                None => format!("id={id}&installsource=ondemand&uc"),
+            },
+        );
     Some(url)
 }
 
@@ -96,7 +114,31 @@ fn trusted_host(host: &str) -> bool {
 /// service redirects off Google's hosts, the request fails, or the package
 /// exceeds the size limit. The package is not verified here.
 pub fn download(id: &str, chromium_version: &str) -> Result<Vec<u8>, ExtensionError> {
-    let url = crx_url(id, chromium_version)
+    fetch(id, None, chromium_version)?.ok_or_else(|| {
+        // Above all a Manifest V2 extension, which Chrome no longer runs.
+        ExtensionError::Download(crate::CATALOG.t("browser-extension-no-version"))
+    })
+}
+
+/// The package of a newer version of `id` than `installed`, or `None` when
+/// it is current. Blocking; call from a worker thread.
+///
+/// # Errors
+/// As [`download`].
+pub fn update(
+    id: &str,
+    installed: &str,
+    chromium_version: &str,
+) -> Result<Option<Vec<u8>>, ExtensionError> {
+    fetch(id, Some(installed), chromium_version)
+}
+
+fn fetch(
+    id: &str,
+    installed: Option<&str>,
+    chromium_version: &str,
+) -> Result<Option<Vec<u8>>, ExtensionError> {
+    let url = crx_url_from(id, installed, chromium_version)
         .ok_or_else(|| ExtensionError::Download("invalid extension identifier".into()))?;
     let client = tilo_net::http::blocking_client()
         .timeout(Duration::from_secs(60))
@@ -131,13 +173,9 @@ pub fn download(id: &str, chromium_version: &str) -> Result<Vec<u8>, ExtensionEr
     if bytes.len() as u64 > MAX_DOWNLOAD_BYTES {
         return Err(ExtensionError::Download("package is too large".into()));
     }
-    if bytes.is_empty() {
-        // The service answers 204 for an unknown or unavailable item.
-        return Err(ExtensionError::Download(
-            "the Web Store has no package for this extension".into(),
-        ));
-    }
-    Ok(bytes)
+    // The service answers 204, nothing, for no package: an item with none
+    // for this browser, or none newer than the one installed.
+    Ok((!bytes.is_empty()).then_some(bytes))
 }
 
 #[cfg(test)]

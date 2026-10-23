@@ -11954,6 +11954,9 @@ pub fn run() {
                 force_first_paint = true;
             }
             input_steps.step("settings-appearance");
+            if settings_change.agent_providers() {
+                crate::shell::settings_records::provider_settings_changed();
+            }
             if settings_change.power() {
                 power_policy = reapply_power_policy(&mut session, &power_bridge, headless);
             }

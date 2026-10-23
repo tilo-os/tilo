@@ -367,9 +367,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
     if let Some(contract) = dedicated_contract(id) {
         return contract;
     }
-    if let Some(contract) = super::system_settings::contract_for(id) {
-        return contract;
-    }
     let mut contract = ActionContract::default();
     match id {
         "shortcut-help.toggle" | "overview.toggle" => {

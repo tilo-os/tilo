@@ -30,7 +30,7 @@ fn native_run_fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> 
     f.run.action_context = serde_json::to_value(
         tilo_actions::ActionContext::default()
             .with_purpose(title)
-            .with_group(f.run.task_id.as_str(), title, "task"),
+            .with_group(f.run.group(), title, "task"),
     )
     .unwrap();
     super::super::super::validate_task_run(&f.run).unwrap();

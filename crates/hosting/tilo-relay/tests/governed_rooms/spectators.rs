@@ -223,6 +223,25 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     let watcher_key = watcher.device_pubkey();
     let watching = connect(&relay, &watcher).await;
     assert_eq!(subscribe(&watching, workspace_id).await, Ok(()));
+    // Asked what it may do, the page hears it writes nowhere, as the room's
+    // viewer: no refusal for a device the room's roster never lists.
+    for node in tilo_action_policy::roles::telling_nodes(&room.room) {
+        assert_eq!(
+            relay
+                .rooms()
+                .unwrap()
+                .page_rooms(
+                    &watcher.cert,
+                    tilo_relay_protocol::rooms::RoomsRequest::Permits {
+                        room: room.room.clone(),
+                        node: node.to_string(),
+                    },
+                )
+                .await,
+            tilo_relay_protocol::rooms::RoomsReply::Permits(false),
+            "{node}"
+        );
+    }
     crate::common::wait_until_subscribed(&relay, workspace_id, &watcher_key).await;
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "welcome").unwrap();

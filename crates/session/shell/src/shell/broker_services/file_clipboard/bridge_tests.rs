@@ -288,7 +288,18 @@ impl Connection {
         clippy::future_not_send,
         reason = "Cap'n Proto runs on this test's LocalSet"
     )]
-    async fn settled(&self, operation: &str) -> Reply {
+    #[track_caller]
+    fn settled<'a>(&'a self, operation: &'a str) -> impl std::future::Future<Output = Reply> + 'a {
+        let awaited = std::panic::Location::caller();
+        async move { self.settled_at(operation, awaited).await }
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "Cap'n Proto runs on this test's LocalSet"
+    )]
+    async fn settled_at(&self, operation: &str, awaited: &std::panic::Location<'_>) -> Reply {
+        let last = std::cell::RefCell::new(None);
         tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 let reply = self
@@ -300,11 +311,17 @@ impl Connection {
                 if matches!(reply, Reply::Settled { .. }) {
                     break reply;
                 }
+                *last.borrow_mut() = Some(reply);
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("bounded clipboard worker settlement")
+        .unwrap_or_else(|_| {
+            panic!(
+                "clipboard worker never settled {operation} (awaited at {awaited}); last observed {:?}",
+                last.borrow()
+            )
+        })
     }
 }
 fn selected(path: &Path) -> (File, SelectedDescriptor) {

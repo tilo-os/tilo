@@ -601,6 +601,9 @@ fn client_command(
         .get("tab")
         .and_then(Value::as_u64)
         .and_then(|tab| u32::try_from(tab).ok());
+    if let Some(tab) = tab {
+        adopt_client_popup(runtime, tab, tabs, outbox);
+    }
     let owned = tab.and_then(|tab| tabs.get_mut(&tab));
     match owned {
         _ if matches!(op.as_str(), "shutdown" | "create_tab") => {
@@ -624,6 +627,39 @@ fn client_command(
     }
     if let Err(error) = runtime.tx.push(command) {
         tracing::warn!(%error, op, "Chromium command from a Browser process was not queued");
+    }
+}
+
+/// A popup of one of the client's tabs is the client's: its events already
+/// go where the tab's go, and its commands are taken like the tab's. It
+/// closes with the client.
+fn adopt_client_popup(
+    runtime: &Runtime,
+    tab: u32,
+    tabs: &mut HashMap<u32, ClientTab>,
+    outbox: &Arc<Outbox>,
+) {
+    if tab < super::FIRST_POPUP || tabs.contains_key(&tab) {
+        return;
+    }
+    let route = runtime
+        .routes
+        .lock_recover()
+        .get(&tab)
+        .and_then(Weak::upgrade);
+    if let Some(shared) = route
+        && shared
+            .remote
+            .as_ref()
+            .is_some_and(|remote| Arc::ptr_eq(remote, outbox))
+    {
+        tabs.insert(
+            tab,
+            ClientTab {
+                shared,
+                closing: false,
+            },
+        );
     }
 }
 

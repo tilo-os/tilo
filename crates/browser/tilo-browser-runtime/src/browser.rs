@@ -1520,7 +1520,13 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .map_err(error)?;
     let text_renderer = ui::TextRenderer::with_browser_font_system(system);
     let definition = definition(config.app.as_deref())?;
-    let store = crate::storage::load(&config.profile, &config.device, &hydrated)?;
+    let profile = crate::storage::load(&config.profile, &config.device, &hydrated)?;
+    // Through a peer kept in no profile (a watching page's), the mount keeps
+    // its records where the peer keeps what the room delivers: in the page.
+    let store = config
+        .peer
+        .and_then(crate::replication::page_store)
+        .unwrap_or(profile);
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
     let permissions = Rc::new(RefCell::new(PermissionContext::member(
         config.author(),

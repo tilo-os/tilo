@@ -414,7 +414,16 @@ impl SiteControls {
                     ))
                     .push(note(
                         "Blocks camera, microphone, location and notifications. Reload the page to end sessions already running.",
-                    ))
+                    ));
+                // Undoes a block, and an allow given at a prompt: the site
+                // asks again. Offered where the engine can.
+                if status.can_reset {
+                    column = column.push(Box::new(
+                        self.button("browser.site.reset", "Ask again", action("reset"))
+                            .with_enabled(self.action.is_none()),
+                    ));
+                }
+                column = column
                     .push(Box::new(
                         self.button("browser.site.clear", "Clear site data", action("clear"))
                             .role(ButtonRole::Destructive)
@@ -743,6 +752,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_blocked_site_can_ask_again_where_the_engine_can_reset() {
+        let mut controls = protection_toggle("revoke");
+        controls.action = None;
+        controls.information = true;
+        let panel = controls.panel(360.0, 800.0);
+        assert!(
+            ui::widget::find_test_id(panel.as_ref(), "browser.site.reset").is_some(),
+            "a block can be undone"
+        );
+        if let Some(status) = controls.status.as_mut() {
+            status.can_reset = false;
+        }
+        let panel = controls.panel(360.0, 800.0);
+        assert!(
+            ui::widget::find_test_id(panel.as_ref(), "browser.site.reset").is_none(),
+            "an engine that cannot reset is not asked to"
+        );
+        // Choosing it asks the engine to put the site back to asking.
+        let capture = ui::webview::test_engine::TestEngine::new();
+        let engine: ui::webview::SharedEngine = capture.clone();
+        controls.pending.set(Some(Pending::Action {
+            origin: "https://one.test".into(),
+            generation: 3,
+            kind: "reset".into(),
+        }));
+        controls.sync(&engine);
+        assert!(capture.commands().iter().any(|command| matches!(
+            command,
+            WebViewCommand::SiteAction { action, .. } if action == "reset"
+        )));
+    }
+
     fn protection_toggle(kind: &str) -> SiteControls {
         SiteControls {
             committed: Some("https://one.test".into()),
@@ -762,6 +804,7 @@ mod tests {
                 issuer: String::new(),
                 expires: 0.0,
                 permissions: Vec::new(),
+                can_reset: true,
             }),
             action: Some((
                 7,

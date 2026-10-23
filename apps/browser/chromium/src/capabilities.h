@@ -266,10 +266,13 @@ class Capabilities final : public CefPermissionHandler {
   void OnDismissPermissionPrompt(CefRefPtr<CefBrowser>,uint64_t prompt,cef_permission_request_result_t) override {
     for(auto it=permissions_.begin();it!=permissions_.end();++it) if(it->second.prompt && it->second.prompt==prompt) {int id=it->first;permissions_.erase(it);Closed(id);break;}
   }
-  void PermissionDecision(int id,bool allow) {
+  // `dismissed`: set aside unanswered (Escape, a click elsewhere, no answer
+  // in time), which Chromium does not remember as a block, so the site may
+  // ask again.
+  void PermissionDecision(int id,bool allow,bool dismissed=false) {
     auto it=permissions_.find(id);if(it==permissions_.end()) return;
     auto p=it->second;permissions_.erase(it);
-    if(p.permission) p.permission->Continue(allow?CEF_PERMISSION_RESULT_ACCEPT:CEF_PERMISSION_RESULT_DENY);
+    if(p.permission) p.permission->Continue(allow?CEF_PERMISSION_RESULT_ACCEPT:dismissed?CEF_PERMISSION_RESULT_DISMISS:CEF_PERMISSION_RESULT_DENY);
     if(p.media) {
       // A different tab may revoke the origin while this prompt is pending.
       allow=allow && !MediaBlocked(p.context,p.origin,p.mask);
@@ -300,7 +303,7 @@ class Capabilities final : public CefPermissionHandler {
   }
   void Prompt(int id,const CefString& origin,const std::string& permissions) {
     auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("origin",origin);d->SetString("permissions",permissions);emit_("permission_prompt",d);
-    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Capabilities> self,int id){self->PermissionDecision(id,false);},CefRefPtr<Capabilities>(this),id),60000);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Capabilities> self,int id){self->PermissionDecision(id,false,true);},CefRefPtr<Capabilities>(this),id),60000);
   }
   void Closed(int id) {auto d=CefDictionaryValue::Create();d->SetInt("id",id);emit_("permission_closed",d);}
   struct Permission {CefRefPtr<CefPermissionPromptCallback> permission;CefRefPtr<CefMediaAccessCallback> media;uint32_t mask;uint64_t prompt;CefRefPtr<CefRequestContext> context;std::string origin;};

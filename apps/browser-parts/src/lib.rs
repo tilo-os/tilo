@@ -87,6 +87,8 @@ pub mod notice;
 #[cfg(not(test))]
 pub mod page_menu;
 #[cfg(not(test))]
+pub mod page_popups;
+#[cfg(not(test))]
 pub mod private_window;
 #[cfg(not(test))]
 pub mod rows;

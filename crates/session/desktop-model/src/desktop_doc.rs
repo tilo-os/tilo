@@ -12,7 +12,7 @@
 //! Shape: `{ active: uint, workspaces: [ { id, name, room, owner?,
 //! members: {person → json role}, members_joined_v1: {person → json Unix ms}, grants: {id → json}, sandbox: {id → json},
 //! presets_v1: {key → json},
-//! tasks_v1: {id → json}, effect_receipts_v1: {invocation → json},
+//! effect_receipts_v1: {invocation → json},
 //! automations_v1: {shortcut id → json},
 //! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, tile_json } ] } ] } ] } ] }`.
 //! Geometry and maximization are presentation state and never written.
@@ -34,7 +34,7 @@ use crate::projection::{
     ROOM_AUTOMATIONS_KEY, ROOM_EFFECT_RECEIPTS_KEY, ROOM_MEMBERS_JOINED_KEY,
     ROOM_SCHEDULE_CLAIMS_KEY,
 };
-use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
+use crate::receipt::WorkspaceEffectReceipt;
 use crate::topology::{DropTarget, TabMove};
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
@@ -352,12 +352,8 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
             .iter()
             .map(|preset| (preset_key(&preset.name), preset)),
     );
-    sync_blob_map(
-        doc,
-        entry,
-        TASKS_KEY,
-        ws.tasks.iter().map(|task| (task.id.clone(), task)),
-    );
+    // Workspaces kept tasks here before the Tasks app kept them.
+    delete_if_present(doc, entry, TASKS_KEY);
     sync_blob_map(
         doc,
         entry,
@@ -492,10 +488,6 @@ fn read_presets(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<Preset>> {
     Some(presets)
 }
 
-fn read_tasks(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceTask> {
-    read_blob_map(doc, entry, TASKS_KEY).unwrap_or_default()
-}
-
 fn read_shortcuts(doc: &AutoCommit, entry: &ObjId) -> Vec<tilo_automation::Shortcut> {
     let mut shortcuts: Vec<tilo_automation::Shortcut> =
         read_blob_map(doc, entry, ROOM_AUTOMATIONS_KEY).unwrap_or_default();
@@ -527,7 +519,7 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 }
 
 /// Refresh `desktop` from `doc`. The active workspace, names, rooms,
-/// ownership, members, grants, sandbox, grant sets, tasks, receipts and shortcuts come from the
+/// ownership, members, grants, sandbox, grant sets, receipts and shortcuts come from the
 /// document; `active_strip`, `active_group` and presence stay as the tree
 /// had them. Each workspace keeps its existing strips by id, then the
 /// document's topology and tabs are folded in: width and maximization stay
@@ -586,7 +578,6 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         if let Some(presets) = read_presets(doc, entry) {
             ws.presets = presets;
         }
-        ws.tasks = read_tasks(doc, entry);
         ws.effect_receipts = read_effect_receipts(doc, entry);
         ws.shortcuts = read_shortcuts(doc, entry);
         ws.schedule_claims = read_schedule_claims(doc, entry);
@@ -845,10 +836,6 @@ pub fn revoke_sandbox(doc: &mut AutoCommit, workspace_id: WorkspaceId, cap_id: &
 pub fn upsert_preset(doc: &mut AutoCommit, workspace_id: WorkspaceId, preset: &Preset) -> bool {
     let key = preset_key(&preset.name);
     upsert_blob(doc, workspace_id, PRESETS_KEY, &key, preset)
-}
-
-pub fn upsert_task(doc: &mut AutoCommit, workspace_id: WorkspaceId, task: &WorkspaceTask) -> bool {
-    upsert_blob(doc, workspace_id, TASKS_KEY, &task.id, task)
 }
 
 /// Record a shortcut under its id, replacing any earlier version of it.

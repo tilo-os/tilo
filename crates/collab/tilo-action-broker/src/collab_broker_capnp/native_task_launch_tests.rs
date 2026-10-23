@@ -366,7 +366,7 @@ async fn a_cold_package_activates_before_fresh_resource_actions_move_the_writer_
         writer.settle(found.0).await;
         let doc = writer.app.peer_document();
         writer.app.with_surface::<WordProcessorWidget, _>(|widget| {
-            let agent = widget.participant_view_or_default(&tilo_actions::ParticipantId::for_agent_task(&f.task).unwrap(), &doc).unwrap();
+            let agent = widget.participant_view_or_default(&tilo_actions::ParticipantId::for_agent_task(&run.group()).unwrap(), &doc).unwrap();
             assert_eq!(agent.find.query, "governed");
             assert!(agent.anchor.is_some(), "navigation must select the visible match");
             assert_eq!(widget.local_participant_view(), person, "agent navigation must preserve the person's caret");

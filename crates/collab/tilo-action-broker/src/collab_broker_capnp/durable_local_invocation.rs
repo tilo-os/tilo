@@ -65,11 +65,7 @@ impl LocalCaller {
     ) -> Result<Vec<tilo_action_policy::GrantId>, String> {
         self.current(state)?;
         // The host action serves the run's task: it is its starter's.
-        let actor = requirement
-            .binding
-            .as_ref()
-            .ok_or("native task action binding absent")?
-            .actor()?;
+        let actor = requirement.binding.actor()?;
         let now = state.checked_policy_time(Some(&self.time))?.1 / 1_000_000_000;
         let spent = state
             .membership
@@ -165,15 +161,15 @@ impl LocalCaller {
         Ok(crate::services::NativeTaskActionRequirement {
             binding: match &record.key.owner {
                 InvocationOwner::NativeTask { task, agent, epoch } => {
-                    Some(crate::services::NativeTaskBinding {
+                    crate::services::NativeTaskBinding {
                         task_id: task.clone(),
                         agent_id: agent.clone(),
                         epoch: *epoch,
                         revision: 0,
                         starter: None,
-                    })
+                    }
                 }
-                _ => None,
+                _ => return Err("the retained invocation is not a run's".into()),
             },
             app: app.into(),
             resource_kind: resource_kind.into(),

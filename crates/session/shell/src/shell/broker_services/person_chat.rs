@@ -7,7 +7,7 @@ mod remote;
 mod tests;
 use tilo_action_broker::services::person_chat::{PersonChatCommand, PersonChatServices};
 use tilo_joined_room::{DirectConversation, DirectConversationPage, DirectMessageSend};
-use tilo_peer_state::workspace_task::WorkspaceTaskAuthority;
+use tilo_peer_state::caller_authority::CallerAuthority;
 
 impl PersonChatServices for NativeOwnerCommitService {
     fn subscribe(
@@ -33,7 +33,7 @@ impl PersonChatServices for NativeOwnerCommitService {
         owner.subscribe_direct_conversation(
             room,
             peer,
-            &WorkspaceTaskAuthority::Person {
+            &CallerAuthority::Person {
                 caller: caller.clone(),
             },
             std::time::SystemTime::now(),
@@ -65,7 +65,7 @@ impl PersonChatServices for NativeOwnerCommitService {
         }
         drop(route);
         check_local_governor(&owner, room, caller)?;
-        let authority = WorkspaceTaskAuthority::Person {
+        let authority = CallerAuthority::Person {
             caller: caller.clone(),
         };
         let now = std::time::SystemTime::now();
@@ -134,7 +134,7 @@ fn read_all(
     owner: &tilo_joined_room::NativeWorkspaceOwner,
     room: tilo_desktop_model::RoomId,
     peer: &str,
-    authority: &WorkspaceTaskAuthority,
+    authority: &CallerAuthority,
     now: std::time::SystemTime,
 ) -> Result<DirectConversation, String> {
     let mut result = owner.read_direct_conversation(
