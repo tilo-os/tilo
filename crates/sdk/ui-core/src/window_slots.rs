@@ -200,7 +200,7 @@ impl WindowSlots {
                 }
                 if let Some(offer) = self.window_offer(id) {
                     // Unchanged offers change nothing in the group.
-                    group.set_tab_window_offer(id, Some(*offer));
+                    group.set_tab_window_offer(id, Some(offer.clone()));
                 } else if offers_cleared.contains(&id) {
                     group.set_tab_window_offer(id, None);
                 }

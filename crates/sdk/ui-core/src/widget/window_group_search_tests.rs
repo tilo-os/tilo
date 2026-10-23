@@ -229,8 +229,11 @@ fn an_app_in_its_own_process_gets_the_query_and_the_bar_shows_its_count() {
         search: SearchOffer::List,
         ..WindowOffer::default()
     };
-    assert!(group.set_tab_window_offer(1, Some(list)));
-    assert!(!group.set_tab_window_offer(1, Some(list)), "nothing new");
+    assert!(group.set_tab_window_offer(1, Some(list.clone())));
+    assert!(
+        !group.set_tab_window_offer(1, Some(list.clone())),
+        "nothing new"
+    );
 
     group.open_search(crate::tokens::MotionSource::Pointer);
     assert!(group.window_search().is_open() && group.window_search().is_remote());

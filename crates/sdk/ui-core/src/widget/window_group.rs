@@ -1344,8 +1344,8 @@ impl WindowGroup {
         opening: crate::window_toolbar::SearchOpening,
     ) {
         let active = self.bar.active_id();
-        let offer = self.window_offer(active).copied();
-        let offered = offer.map(|offer| offer.search.into());
+        let offer = self.window_offer(active).cloned();
+        let offered = offer.as_ref().map(|offer| offer.search.into());
         let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) else {
             return;
         };
@@ -1403,10 +1403,10 @@ impl WindowGroup {
                 at.and_then(|at| self.window_offers.get(at))
                     .map(|(_, offer)| offer),
             );
-        match (at, offer) {
-            (Some(at), Some(offer)) if self.window_offers[at].1 == offer => return false,
-            (Some(at), Some(offer)) => self.window_offers[at].1 = offer,
-            (None, Some(offer)) => self.window_offers.push((id, offer)),
+        match (at, offer.as_ref()) {
+            (Some(at), Some(offer)) if self.window_offers[at].1 == *offer => return false,
+            (Some(at), Some(offer)) => self.window_offers[at].1 = offer.clone(),
+            (None, Some(offer)) => self.window_offers.push((id, offer.clone())),
             (Some(at), None) => {
                 self.window_offers.remove(at);
                 if self.search_tab == Some(id) && self.search.is_remote() {
@@ -1423,6 +1423,9 @@ impl WindowGroup {
             self.search
                 .set_remote_count(offer.count.map(super::FilterCount::from));
             self.search.set_remote_abilities(offer.find);
+            if let Some(adopted) = &offer.adopted {
+                self.search.set_remote_adopted(adopted);
+            }
         }
         if control_changed {
             self.style_dirty = true;
