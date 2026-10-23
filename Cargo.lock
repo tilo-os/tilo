@@ -16559,6 +16559,7 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-browser-peer",
  "tilo-clock",
+ "tilo-content",
  "tilo-crypto",
  "tilo-desktop",
  "tilo-desktop-model",

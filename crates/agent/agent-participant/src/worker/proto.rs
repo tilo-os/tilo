@@ -10,6 +10,12 @@
 //! record ids, the participant's public name, Automerge bytes and the read
 //! policy a caller already holds, and returns descriptors, outputs and
 //! unsigned Automerge bytes the supervisor admits before it signs them.
+//!
+//! Content a record references (a picture's bytes, named by hash) crosses
+//! one item at a time each way: the supervisor puts what an operation names
+//! and what the record refers to, and takes what the app stored and the
+//! hashes it asked for and lacked. What comes back is hashed again before
+//! the room keeps it.
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::door::DoorError;
@@ -18,9 +24,17 @@ use wire_frame::Framing;
 /// Frames in either direction: a record's whole document, with room.
 pub(crate) const FRAMING: Framing = Framing::little_endian(64 * 1024 * 1024);
 
+/// Most bytes of one content item that cross in a frame, leaving the
+/// frame's encoding room.
+pub(crate) const MAX_CONTENT_ITEM_BYTES: usize = FRAMING.max_len().saturating_sub(64 * 1024);
+
+/// Most bytes of content one [`Reply::Content`] carries; the rest waits for
+/// the next take.
+pub(crate) const CONTENT_BATCH_BYTES: usize = 32 * 1024 * 1024;
+
 /// Bumped whenever a message changes shape. A supervisor and a worker are the
 /// same executable, so a mismatch means a stale binary on disk.
-pub(crate) const PROTOCOL_VERSION: u32 = 3;
+pub(crate) const PROTOCOL_VERSION: u32 = 4;
 
 /// What a worker is started to do. It decides what the worker prepares
 /// before it confines itself: a reader loads the fonts a component lays its
@@ -137,6 +151,12 @@ pub(crate) enum Request {
     },
     /// Report what the confinement still lets the worker do at `path`.
     Probe { path: String },
+    /// Keep one content item where the app's code reads it; answered with
+    /// [`Reply::Stored`].
+    PutContent(Vec<u8>),
+    /// What the app stored since the last take and what it asked for but
+    /// lacked; answered with [`Reply::Content`].
+    TakeContent,
 }
 
 /// A worker's replies.
@@ -167,6 +187,15 @@ pub(crate) enum Reply {
     Failed(String),
     /// What a probe could do.
     Probe(ProbeReport),
+    /// The content was kept under this hash.
+    Stored(String),
+    /// Content the app stored since the last take, at most
+    /// [`CONTENT_BATCH_BYTES`] of it unless one item is larger, and the
+    /// hashes it asked for that the worker lacks. Neither is trusted.
+    Content {
+        offered: Vec<Vec<u8>>,
+        wanted: Vec<String>,
+    },
 }
 
 /// What the confinement let a probe do; every field must come back `false`.

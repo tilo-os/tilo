@@ -12,6 +12,13 @@
 //! Durable state moves as Automerge changes: [`Replica::take_mutation`]
 //! returns this participant's own changes since the last call (never ones it
 //! received), and [`Replica::apply`] merges another participant's.
+//!
+//! An agent also runs the record's effects and views that answer with what
+//! they found or made (a look at an artwork, a PDF's text, an export), in
+//! the same view and through the same door ([`offered_to_agents`]): never
+//! one reaching a person's own device or needing them attending, and never
+//! told where on a device to write, so what an effect makes is kept as
+//! content in the store the view is lent ([`Replica::open_lending`]).
 
 use collab_types::DocumentMutation;
 use tilo_actions::ActionOutput;
@@ -202,6 +209,108 @@ pub struct Replica {
     /// route plan): a bot's steps read through them, where a person's
     /// reads go through the record's mounted component.
     offers_reads: bool,
+    /// An agent's: it also runs the record's effects and views that answer
+    /// ([`offered_to_agents`]), waiting for what they end as.
+    runs_effects: bool,
+}
+
+/// The parameter an effect is told where on a device to write by. An agent
+/// is never offered it, so what the effect makes is kept as content.
+pub const PATH_PARAM: &str = "path";
+
+/// The longest an agent's effect runs before it is given up on: well inside
+/// the app worker supervisor's limit on one request, so the worker answers
+/// first.
+pub const EFFECT_TIMEOUT: ui::time::Duration = ui::time::Duration::from_secs(45);
+
+/// Whether `descriptor` carries the contract tag `tag`.
+fn tagged(descriptor: &ActionDescriptor, tag: &str) -> bool {
+    descriptor.contract.tags.iter().any(|held| held == tag)
+}
+
+/// Whether an operation of `contract` answers with something: a value, or
+/// a resource (content it made). A job that answers only that it ran does
+/// not.
+const fn answers(contract: &tilo_actions::ActionContract) -> bool {
+    matches!(
+        contract.result,
+        tilo_actions::ResultSpec::Json { .. } | tilo_actions::ResultSpec::Resource { .. }
+    )
+}
+
+/// Whether an agent is offered `descriptor`, an effect or view of its
+/// record, to run in the record's view: one listed for agents, that
+/// neither acts on a person's own device nor needs them attending, nor is
+/// rendered by a host's render service ([`tilo_actions::HOST_RENDER_TAG`]),
+/// and that answers with what it found or made (a PDF's text, a look, an
+/// export kept as content). One answering nothing leaves an agent nothing to
+/// go on: a view that only moves a window nobody sees, a read that opens an
+/// editor for a person (a vault's "New item"), a file saved or a picker
+/// opened. Document operations are offered by the door alone.
+#[must_use]
+pub fn offered_to_agents(descriptor: &ActionDescriptor) -> bool {
+    descriptor.kind != tilo_actions::OperationKind::Document
+        && descriptor.contract.reaches_agents()
+        && !tagged(descriptor, tilo_actions::OWN_DEVICE_SCOPE)
+        && !tagged(descriptor, tilo_actions::ATTENDED_TAG)
+        && !tagged(descriptor, tilo_actions::HOST_RENDER_TAG)
+        && answers(&descriptor.contract)
+}
+
+/// Whether an agent may run `descriptor` while it plans a task, to learn
+/// what an edit needs before it makes it (an artwork's size, a PDF's text,
+/// a look at a page): a view or an effect declared `kind = "read"`, which
+/// changes nothing, asks no one first and answers with what it found rather
+/// than with content of its own making.
+#[must_use]
+pub fn readable(descriptor: &ActionDescriptor) -> bool {
+    let contract = &descriptor.contract;
+    let reads = matches!(
+        descriptor.kind,
+        tilo_actions::OperationKind::View | tilo_actions::OperationKind::Effect
+    ) && contract.kind == policy::ActionKind::Read;
+    let found = match &contract.result {
+        tilo_actions::ResultSpec::Json { .. } => true,
+        tilo_actions::ResultSpec::Resource { resource_kind } => {
+            resource_kind != tilo_actions::CONTENT_RESOURCE_KIND
+        }
+        _ => false,
+    };
+    reads && found && contract.confirmation == tilo_actions::ConfirmationPolicy::None
+}
+
+/// Why an agent may not run `descriptor`, an effect or view of its record
+/// that [`offered_to_agents`] leaves out.
+fn not_offered(descriptor: &ActionDescriptor) -> DoorError {
+    let label = &descriptor.action_label;
+    let (code, reason) = if tagged(descriptor, tilo_actions::OWN_DEVICE_SCOPE) {
+        (
+            "own_device",
+            format!("{label} acts on a person's own device; an agent does not run it"),
+        )
+    } else if tagged(descriptor, tilo_actions::ATTENDED_TAG) {
+        (
+            "attended",
+            format!("{label} needs its person attending; an agent does not run it"),
+        )
+    } else if tagged(descriptor, tilo_actions::HOST_RENDER_TAG) {
+        (
+            "host_render",
+            format!("{label} is rendered by a host's render service, which this host does not run"),
+        )
+    } else {
+        (
+            "effect_not_offered",
+            format!(
+                "{label} answers with nothing an agent could use; an agent runs the effects \
+                 and views that answer with what they found or made"
+            ),
+        )
+    };
+    DoorError::Unavailable {
+        code: code.into(),
+        reason,
+    }
 }
 
 /// Whether any member of the room may ask the host to run `descriptor` for
@@ -232,6 +341,26 @@ impl Replica {
         actor: ReplicaActor,
         seed: Seed,
     ) -> Result<Self, AppError> {
+        Self::open_lending(catalogue, app_id, room, participant, actor, seed, None)
+    }
+
+    /// [`Self::open`], lending the record's view `content`, as a host lends
+    /// a window its store: the bytes a content hash names (a picture
+    /// another app made) are read from it, and what the app keeps as
+    /// content (an export, a rendered look) is stored there.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub fn open_lending(
+        catalogue: &AppCatalogue,
+        app_id: &str,
+        room: &str,
+        participant: &str,
+        actor: ReplicaActor,
+        seed: Seed,
+        content: Option<tilo_content::ContentStore>,
+    ) -> Result<Self, AppError> {
         let definition = catalogue
             .get(app_id)
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
@@ -240,6 +369,7 @@ impl Replica {
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
         let mut invoker = tilo_actions::ActionInvoker::actor(participant);
         let offers_reads = matches!(actor, ReplicaActor::Bot { .. });
+        let runs_effects = matches!(actor, ReplicaActor::Agent);
         let permissions = match actor {
             ReplicaActor::Agent => {
                 let operator = policy::roles::AgentPreset::Operator.grants(
@@ -313,15 +443,15 @@ impl Replica {
             kind.read(&doc)
                 .map_err(|error| AppError::Merge(error.to_string()))?;
         }
-        let view = AttachedView::open_for(
-            definition,
-            room,
-            checkout,
-            bytes,
-            &invoker,
-            permissions,
-            created,
-        )
+        let opening = AttachedView::opening(definition, room, checkout, bytes)
+            .for_invoker(&invoker)
+            .with_permissions(permissions)
+            .created(created);
+        let view = match content {
+            Some(store) => opening.lending(store),
+            None => opening,
+        }
+        .open()
         .map_err(AppError::Launch)?;
         Ok(Self {
             app_id: definition.app_id,
@@ -329,6 +459,7 @@ impl Replica {
             view,
             place: None,
             offers_reads,
+            runs_effects,
         })
     }
 
@@ -371,42 +502,105 @@ impl Replica {
     /// view now, as inert descriptors — those on the parts of a chain the
     /// app keeps beside the record included — and the effects any member may ask
     /// the host to run for themselves ([`tilo_actions::MEMBER_OWN_TAG`]);
-    /// for a bot, the record's read effects too.
+    /// for a bot, the record's read effects too; for an agent, the effects
+    /// and views [`offered_to_agents`], without a [`PATH_PARAM`] to write
+    /// to.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
         let resources = self.view.resources();
-        // A chain the app keeps beside the record publishes its parts'
-        // document actions routed to the part they change: document
-        // operations all the same.
-        let mut in_chains = std::collections::HashSet::new();
-        for resource in resources
-            .iter()
-            .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
-        {
-            if ui::record::chain_of_resource_id(resource.id.as_str()).is_some() {
-                chain_ids(resource, &mut in_chains);
-            }
-        }
+        let in_chains = chain_resources(&resources);
         tilo_actions::door::survey(&resources)
             .into_iter()
             // An action for people only (copying a link to the clipboard)
             // means nothing to an agent.
             .filter(|descriptor| descriptor.contract.reaches_agents())
-            .filter(|descriptor| match descriptor.kind {
-                tilo_actions::OperationKind::Document => true,
-                tilo_actions::OperationKind::Effect
-                    if in_chains.contains(descriptor.address.resource.as_str()) =>
-                {
-                    true
+            .filter(|descriptor| self.offers(descriptor, &in_chains))
+            .map(|mut descriptor| {
+                if self.runs_effects && descriptor.kind != tilo_actions::OperationKind::Document {
+                    descriptor.params.retain(|param| param.name != PATH_PARAM);
                 }
-                tilo_actions::OperationKind::Effect => {
-                    member_own(descriptor)
-                        || (self.offers_reads
-                            && descriptor.contract.kind == policy::ActionKind::Read)
-                }
-                tilo_actions::OperationKind::View => false,
+                descriptor
             })
             .collect()
+    }
+
+    /// Whether [`Self::survey`] lists `descriptor`, of a tree whose chains
+    /// publish the resources `in_chains`.
+    fn offers(
+        &self,
+        descriptor: &ActionDescriptor,
+        in_chains: &std::collections::HashSet<String>,
+    ) -> bool {
+        match descriptor.kind {
+            tilo_actions::OperationKind::Document => true,
+            // A chain the app keeps beside the record publishes its parts'
+            // document actions routed to the part they change: document
+            // operations all the same.
+            tilo_actions::OperationKind::Effect
+                if in_chains.contains(descriptor.address.resource.as_str()) =>
+            {
+                true
+            }
+            tilo_actions::OperationKind::Effect => {
+                member_own(descriptor)
+                    || (self.offers_reads && descriptor.contract.kind == policy::ActionKind::Read)
+                    || (self.runs_effects && offered_to_agents(descriptor))
+            }
+            tilo_actions::OperationKind::View => self.runs_effects && offered_to_agents(descriptor),
+        }
+    }
+
+    /// For an agent, whether the operation at `address` is an effect or
+    /// view of the record, which it then runs to the end, refused when it
+    /// is not one [`Self::survey`] offers or names where to write. A view of
+    /// the agent's own caret runs as any participant's does.
+    fn agent_effect(
+        &self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<bool, DoorError> {
+        if !self.runs_effects {
+            return Ok(false);
+        }
+        let resources = self.view.resources();
+        let Some(descriptor) = tilo_actions::door::survey(&resources)
+            .into_iter()
+            .find(|descriptor| descriptor.address == *address)
+        else {
+            // The door refuses what the view does not publish.
+            return Ok(false);
+        };
+        if descriptor.kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        // A view that moves only the agent's own caret, or types at it, is
+        // the agent's own to run as the door admits it for any participant,
+        // though it answers nothing a plan is offered it for.
+        let device = tagged(&descriptor, tilo_actions::OWN_DEVICE_SCOPE)
+            || tagged(&descriptor, tilo_actions::ATTENDED_TAG)
+            || tagged(&descriptor, tilo_actions::HOST_RENDER_TAG);
+        if descriptor.kind == tilo_actions::OperationKind::View
+            && descriptor.contract.is_participant_view()
+            && !device
+        {
+            return Ok(false);
+        }
+        if !descriptor.contract.reaches_agents()
+            || !self.offers(&descriptor, &chain_resources(&resources))
+        {
+            return Err(not_offered(&descriptor));
+        }
+        if arguments.contains_key(PATH_PARAM) {
+            return Err(DoorError::Unavailable {
+                code: "effect_path".into(),
+                reason: format!(
+                    "an agent's {} writes to no path: leave `{PATH_PARAM}` out and what it \
+                     makes is kept as content",
+                    descriptor.action_label
+                ),
+            });
+        }
+        Ok(true)
     }
 
     /// Discover one existing resource's local view metadata under the caller's
@@ -491,18 +685,29 @@ impl Replica {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
     ) -> Result<ActionOutput, DoorError> {
+        let effect = self.agent_effect(address, arguments)?;
         let previous = context.as_ref().map(|_| self.view.context().cloned());
         if context.is_some() {
             self.view.set_context(context);
         }
-        let output = match invoker {
-            Some(invoker) => self.view.invoke_as(
+        let output = match (invoker, effect) {
+            // An agent's effect answers with what it ended as: a job (a
+            // render, an export) is waited for, bounded.
+            (invoker, true) => {
+                let invoker = match invoker {
+                    Some(invoker) => invoker.with_appearance(appearance),
+                    None => self.view.invoker_appearing(appearance),
+                };
+                self.view
+                    .invoke_as_awaiting(invoker, address, arguments, confirm, EFFECT_TIMEOUT)
+            }
+            (Some(invoker), false) => self.view.invoke_as(
                 invoker.with_appearance(appearance),
                 address,
                 arguments,
                 confirm,
             ),
-            None => self
+            (None, false) => self
                 .view
                 .invoke_appearing(address, arguments, confirm, appearance),
         };
@@ -627,6 +832,20 @@ impl Replica {
             self.view.read_record(record, read)
         }
     }
+}
+
+/// The ids of every resource the chains among `resources` publish.
+fn chain_resources(resources: &[tilo_actions::Resource]) -> std::collections::HashSet<String> {
+    let mut in_chains = std::collections::HashSet::new();
+    for resource in resources
+        .iter()
+        .flat_map(|resource| std::iter::once(resource).chain(&resource.children))
+    {
+        if ui::record::chain_of_resource_id(resource.id.as_str()).is_some() {
+            chain_ids(resource, &mut in_chains);
+        }
+    }
+    in_chains
 }
 
 /// The ids of `resource` and everything published under it.
