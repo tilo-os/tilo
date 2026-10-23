@@ -269,6 +269,10 @@ pub struct Spec {
     /// Coordinates (`click_at`, `tap_at`, `swipe_at`, `targets`) are then
     /// the window's, as a capture shows it; the bar itself takes no presses.
     pub window_bar: bool,
+    /// Mount the app as `--shots --scenario <name>` does: built from that
+    /// scenario's fixtures instead of the device's sources, with the
+    /// scenario staged before the actions run.
+    pub scenario: Option<String>,
 }
 
 /// Parse and strictly validate one complete headless-driver payload.
@@ -292,9 +296,10 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
                 | "capture"
                 | "resources"
                 | "window_bar"
+                | "scenario"
         ) {
             return Err(format!(
-                "unknown field {key:?}; expected viewport, actions, capture, audit, audit_report, dump, targets, inspect, results, resources, or window_bar"
+                "unknown field {key:?}; expected viewport, actions, capture, audit, audit_report, dump, targets, inspect, results, resources, window_bar, or scenario"
             ));
         }
     }
@@ -332,6 +337,7 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
             .map(|value| value.as_bool().ok_or("window_bar must be true or false"))
             .transpose()?
             .unwrap_or(false),
+        scenario: optional_string(object, "scenario")?,
     })
 }
 
@@ -969,6 +975,20 @@ const BASIC_PERFORM_FIELDS: &[&str] = &["target", "semantic_target", "action"];
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A drive names its scenario by a string, and none by default.
+    #[test]
+    fn a_drive_names_its_scenario() {
+        assert_eq!(parse_spec("{}").unwrap().scenario, None);
+        assert_eq!(
+            parse_spec(r#"{"scenario":"detail"}"#)
+                .unwrap()
+                .scenario
+                .as_deref(),
+            Some("detail")
+        );
+        assert!(parse_spec(r#"{"scenario":true}"#).is_err());
+    }
 
     /// Complete payloads and standalone actions share one grammar, bound
     /// answers fill later resources and arguments, and captures name a path.

@@ -264,7 +264,8 @@ impl LaunchSpec {
     }
 
     /// Apply capture-only interactions after the normal factory and restoration.
-    /// Never runs for live/headless launches or native certification audits.
+    /// Runs for captures and for headless drives that name a scenario; never
+    /// for live launches or native certification audits.
     #[must_use]
     pub fn capture_scenario(mut self, scenario: ComponentCaptureScenario) -> Self {
         self.component_capture_scenario = Some(scenario);
@@ -1242,11 +1243,18 @@ fn dispatch_definition_with_manager(
         spec.prepare_component(args, prepared.context, prepared.target, prepared.restore)
     })?;
     if let Some(headless) = &args.headless {
-        return Ok(DefinitionDispatch::Headless(headless::run_component(
-            headless,
-            component,
-            prepared.runner_inputs,
-        )));
+        // A drive that names a scenario was built from its fixtures; it is
+        // staged as its capture is, before the drive's actions.
+        let scenario = spec
+            .component_capture_scenario
+            .filter(|_| args.scenario.is_some());
+        return Ok(DefinitionDispatch::Headless(
+            headless::run_component_staged(headless, component, prepared.runner_inputs, |driver| {
+                scenario.map_or(Ok(()), |stage| {
+                    stage(driver, args).map_err(|e| e.to_string())
+                })
+            }),
+        ));
     }
     if args.shots.is_some() || args.responsive_matrix.is_some() || args.native_audit {
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(args));
@@ -1691,6 +1699,19 @@ fn parse_args_extended(
     if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
     }
+    // A drive names its scenario in its spec or with `--scenario`.
+    if let Some(named) = parsed
+        .headless
+        .as_ref()
+        .and_then(|spec| spec.scenario.clone())
+    {
+        if parsed.scenario.as_ref().is_some_and(|flag| *flag != named) {
+            return Err(LaunchError::Scenario(
+                "--scenario and the drive's \"scenario\" name different scenarios".to_owned(),
+            ));
+        }
+        parsed.scenario = Some(named);
+    }
     // Every scenario is captured; naming one is a single `--shots`.
     if parsed.shots_dir.is_some() && parsed.scenario.is_some() {
         return Err(LaunchError::ConflictingModes);
@@ -1733,8 +1754,8 @@ fn parse_args_extended(
         if parsed.window.your_colour.is_some() {
             return Err(LaunchError::ShotsOnly("--your-colour".to_owned()));
         }
-        // A headless drive may name a scenario: it dumps that fixture's
-        // geometry, the counterpart of `--shots --scenario`.
+        // A headless drive may name a scenario: it is built from that
+        // scenario's fixtures and staged, as `--shots --scenario` is.
         if parsed.scenario.is_some() && parsed.headless.is_none() {
             return Err(LaunchError::ShotsOnly("--scenario".to_owned()));
         }
@@ -1997,6 +2018,21 @@ mod tests {
             let spec = parsed.headless.expect("headless spec");
             assert_eq!(spec.viewport, Some((800, 600)));
             assert_eq!(spec.actions.len(), 1);
+        }
+
+        // A drive names its scenario in its spec, or with the same flag.
+        {
+            let drive = |extra: &[&str]| {
+                let mut args = vec!["app", "--headless-drive", r#"{"scenario":"wide"}"#];
+                args.extend(extra);
+                parse_args(&strings(&args), &[], &[])
+            };
+            assert_eq!(drive(&[]).unwrap().scenario.as_deref(), Some("wide"));
+            assert!(drive(&["--scenario=wide"]).is_ok());
+            assert!(matches!(
+                drive(&["--scenario=tall"]),
+                Err(LaunchError::Scenario(_))
+            ));
         }
 
         {

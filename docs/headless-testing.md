@@ -792,6 +792,19 @@ not offer now (hex mode on plain text, the desktop's search) fails the step.
  "capture": [{"path": "out/search-hex-dark.png", "theme": "dark"}]}
 ```
 
+`scenario` names one of the app's capture scenarios (what `--shots
+--scenario <name>` takes; `--scenario <name>` beside `--headless-drive` is the
+same). The app is then built as that capture is: from the scenario's fixtures
+(its sample processes, forecast or library) instead of the device's live
+sources, with the scenario's edits applied and its scene staged, and only then
+do the actions run. With `window_bar` it is how a review shows the app's real
+content under the bar, from the one set of sample data the app's shots use:
+
+```json
+{"scenario": "detail", "window_bar": true,
+ "capture": [{"path": "out/detail-dark-wide.png", "theme": "dark", "viewport": [1280, 800]}]}
+```
+
 `resources` writes the published resource tree after the actions ran: each
 resource's id, kind and label, its actions with their parameters (and why one
 is unavailable), and its children. It is what a scenario can `invoke`:
