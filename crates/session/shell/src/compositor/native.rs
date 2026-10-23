@@ -10015,6 +10015,7 @@ pub fn run() {
     let mut retained_files = crate::onboarding_prepared::session_home()
         .map(|home| crate::retained_files::Session::open(home, Arc::clone(&session_wake)));
     state.output_management.set_wake(Arc::clone(&session_wake));
+    state.set_share_encode_wake(Arc::clone(&session_wake));
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
     crate::shell::storage_notice::start(Arc::clone(&session_wake));
     // NTFS drives open only through the shell's own sheet; see shell::drives.

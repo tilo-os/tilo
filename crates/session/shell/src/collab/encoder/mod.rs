@@ -334,7 +334,6 @@ fn media_config(init: &EncoderInit, choice: EncoderChoice) -> EncoderConfig {
     config.output_size = init.output.map(|(width, height)| (width & !1, height & !1));
     config.color = colour(init.colorimetry);
     config.hdr = init.hdr.map(hdr_metadata);
-    config.screen_content = true;
     config.policy = choice.policy();
     config
 }

@@ -15,8 +15,8 @@
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Condvar, Mutex,
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -38,15 +38,17 @@ use smithay::backend::allocator::Buffer as _;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use tilo_lock::MutexRecover as _;
 
-/// Software-encoder FPS ceiling — a CPU encoder can't sustain more on a
-/// typical laptop; hardware backends lift this.
-const SOFTWARE_FPS_CEILING: u32 = 30;
-
 /// The least time between two keyframes forced at viewers' requests. Every
 /// viewer of a share decodes the same stream, so one keyframe answers all of
 /// them; this bounds what viewers asking repeatedly (or a hostile one) cost
 /// the encoder and the link.
 pub const KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_millis(250);
+
+/// The time between two frames at `hz`, rounded up so a second never holds
+/// one more.
+fn frame_interval(hz: u32) -> Duration {
+    Duration::from_micros(1_000_000_u64.div_ceil(u64::from(hz.max(1))))
+}
 
 /// Frame waiting in the encoder's staging slot: source bytes/handle paired
 /// with capture time so the wire preserves moment-of-capture, not
@@ -295,6 +297,8 @@ pub struct SharedFlatpakSession {
     metrics: Option<PeerSurfaceMetrics>,
     capture_path: Arc<Mutex<CapturePath>>,
     throttle: Arc<Mutex<StreamingThrottle>>,
+    /// Frames a second a changing window is streamed at.
+    rate_hz: AtomicU32,
     /// Owner-side gate for inbound `NeighbourMsg::RemoteInput`; shared with
     /// the compositor's `State` via `Arc` so input routing sees the same
     /// permissions.
@@ -304,6 +308,16 @@ pub struct SharedFlatpakSession {
     /// The capture timestamp is stamped at deposit time, not encode time,
     /// so the receiver's latency measurement includes encode cost.
     staged_frame: Arc<Mutex<Option<StagedFrame>>>,
+    /// Rung when a frame is staged or the session ends, for the thread that
+    /// encodes in the background ([`Self::encode_in_background`]).
+    staged_ready: Arc<Condvar>,
+    /// Frames that thread encoded, waiting for [`Self::pump`] to take them.
+    encoded: Mutex<Vec<EncodedFrame>>,
+    /// Whether a thread of its own encodes this window.
+    in_background: AtomicBool,
+    /// The next frame encoded is a keyframe. A flag, not a call on the
+    /// encoder, so asking never waits for an encode in progress.
+    keyframe_wanted: AtomicBool,
     origin: Instant,
     active: Arc<AtomicBool>,
     /// Per-share video substream sender — every `encode_next_frame` deposits
@@ -463,20 +477,7 @@ impl SharedFlatpakSession {
             metrics,
             paint,
         } = started;
-        // Software encoders cannot sustain more than the ceiling.
-        let effective_fps = if state.kind.is_hardware() {
-            config.target_fps.max(1)
-        } else {
-            config.target_fps.clamp(1, SOFTWARE_FPS_CEILING)
-        };
-        // `effective_fps` is at least 1, so this division never hits zero;
-        // `checked_div` plus a 1-second fallback keeps that provable.
-        let interval = std::time::Duration::from_micros(
-            1_000_000u64
-                .checked_div(u64::from(effective_fps))
-                .unwrap_or(1_000_000)
-                .max(1),
-        );
+        let effective_fps = config.target_fps.max(1);
         let stream_sender = Arc::new(SurfaceStreamSender::new(surface_id, host_user_id));
         stream_sender.set_format(
             state.codec,
@@ -501,9 +502,16 @@ impl SharedFlatpakSession {
             local_caps,
             metrics,
             capture_path: Arc::new(Mutex::new(CapturePath::ShmReadback)),
-            throttle: Arc::new(Mutex::new(StreamingThrottle::with_interval(interval))),
+            throttle: Arc::new(Mutex::new(StreamingThrottle::with_interval(
+                frame_interval(effective_fps),
+            ))),
+            rate_hz: AtomicU32::new(effective_fps),
             share_registry: Arc::new(Mutex::new(ShareRegistry::new())),
             staged_frame: Arc::new(Mutex::new(None)),
+            staged_ready: Arc::new(Condvar::new()),
+            encoded: Mutex::new(Vec::new()),
+            in_background: AtomicBool::new(false),
+            keyframe_wanted: AtomicBool::new(false),
             origin: Instant::now(),
             active: Arc::new(AtomicBool::new(true)),
             stream_sender,
@@ -687,6 +695,21 @@ impl SharedFlatpakSession {
         self.tab
     }
 
+    /// Stream a changing window at `hz`: the refresh of the display it is on.
+    pub fn set_rate(&self, hz: u32) {
+        let rate = hz.max(1);
+        if self.rate_hz.swap(rate, Ordering::AcqRel) != rate {
+            self.throttle
+                .lock_recover()
+                .set_interval(frame_interval(rate));
+        }
+    }
+
+    /// Frames a second a changing window is streamed at.
+    pub fn rate(&self) -> u32 {
+        self.rate_hz.load(Ordering::Acquire)
+    }
+
     pub fn snapshot_config(&self) -> FlatpakShareConfig {
         self.config.clone()
     }
@@ -776,6 +799,82 @@ impl SharedFlatpakSession {
             kind,
             capture_ts_ns,
         });
+        drop(slot);
+        self.staged_ready.notify_one();
+    }
+
+    /// Encode this window on a thread of its own from now on, so an encode
+    /// never holds up the compositor. Each frame it encodes waits for
+    /// [`Self::pump`], and `encoded` is called to say one does. The thread
+    /// ends with the session.
+    ///
+    /// # Errors
+    ///
+    /// The thread could not be spawned; the session then keeps encoding
+    /// where [`Self::pump`] is called.
+    pub fn encode_in_background(
+        self: &Arc<Self>,
+        encoded: Arc<dyn Fn() + Send + Sync>,
+    ) -> std::io::Result<()> {
+        if self.paint || self.in_background.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let session = Arc::downgrade(self);
+        let slot = Arc::clone(&self.staged_frame);
+        let ready = Arc::clone(&self.staged_ready);
+        let active = Arc::clone(&self.active);
+        let spawned = std::thread::Builder::new()
+            .name(format!("share-encode-{}", self.surface_id))
+            .spawn(move || {
+                let mut due_in: Option<Duration> = None;
+                loop {
+                    {
+                        let staged = slot.lock_recover();
+                        let live = |staged: &mut Option<StagedFrame>| {
+                            staged.is_none() && active.load(Ordering::Acquire)
+                        };
+                        match due_in {
+                            Some(wait) => drop(ready.wait_timeout_while(staged, wait, live)),
+                            None => drop(ready.wait_while(staged, live)),
+                        }
+                    }
+                    if !active.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let Some(session) = session.upgrade() else {
+                        return;
+                    };
+                    let now = Instant::now();
+                    if session.staged_due().is_some_and(|due| due <= now)
+                        && let Some(frame) = session.encode_next_frame(now)
+                    {
+                        session.encoded.lock_recover().push(frame);
+                        encoded();
+                    }
+                    due_in = session
+                        .staged_due()
+                        .map(|due| due.saturating_duration_since(Instant::now()));
+                }
+            });
+        if let Err(error) = spawned {
+            self.in_background.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// The frames encoded since last asked: those the background thread
+    /// encoded, or, without one, the staged frame encoded now if it is due.
+    pub fn pump(&self, now: Instant) -> Vec<EncodedFrame> {
+        if self.in_background.load(Ordering::Acquire) {
+            return std::mem::take(&mut *self.encoded.lock_recover());
+        }
+        self.encode_next_frame(now).into_iter().collect()
+    }
+
+    /// Whether a thread of its own encodes this window.
+    pub fn encodes_in_background(&self) -> bool {
+        self.in_background.load(Ordering::Acquire)
     }
 
     /// Zero-copy sibling of [`Self::deposit_captured_rgba`] — drop-oldest,
@@ -827,6 +926,9 @@ impl SharedFlatpakSession {
         let carried_ts = staged.capture_ts_ns;
 
         let mut encoder = self.encoder.lock_recover();
+        if self.keyframe_wanted.swap(false, Ordering::AcqRel) {
+            encoder.force_keyframe();
+        }
         let mut nalus = Vec::new();
         // DMABUF paths lift plane fd/offset/stride off the `Dmabuf` handle
         // (Arc keeps the fds alive for the borrow); RGBA paths just hand the
@@ -857,8 +959,7 @@ impl SharedFlatpakSession {
                         m.record_keyframe();
                     }
                     // Rough bitrate sample: bytes-per-frame * fps.
-                    let bytes_per_sec =
-                        (stats.bytes as u64).saturating_mul(u64::from(self.config.target_fps));
+                    let bytes_per_sec = (stats.bytes as u64).saturating_mul(u64::from(self.rate()));
                     m.record_bitrate(bytes_per_sec);
                 }
                 let seq = match self.stream_sender.publish(stats.keyframe, nalus.clone()) {
@@ -919,7 +1020,7 @@ impl SharedFlatpakSession {
         }
         *requested = Some(now);
         drop(requested);
-        self.encoder.lock_recover().force_keyframe();
+        self.keyframe_wanted.store(true, Ordering::Release);
         true
     }
 
@@ -932,7 +1033,7 @@ impl SharedFlatpakSession {
         }
         let standing = self.standing_keyframe.lock_recover().clone();
         if standing.is_none() {
-            self.encoder.lock_recover().force_keyframe();
+            self.keyframe_wanted.store(true, Ordering::Release);
         }
         standing
     }
@@ -1067,12 +1168,6 @@ impl SharedFlatpakSession {
         reg.route_to(peer, self.surface_id, event, sink)
     }
 
-    /// Stop the session (flips `active`, so `encode_next_frame`
-    /// short-circuits). Publish [`Self::stream_end_msg`] *before* calling this.
-    pub fn stop(self) {
-        self.active.store(false, Ordering::Release);
-    }
-
     /// Monotonic ns counter for outgoing wire messages; wraps at u64
     /// overflow (~584 years), not a practical concern.
     #[allow(
@@ -1104,6 +1199,16 @@ fn display_size(codec: Codec, width: u32, height: u32) -> Option<(u16, u16)> {
             u16::try_from(height).unwrap_or(u16::MAX),
         )
     })
+}
+
+/// Ending the session ends the thread encoding it.
+impl Drop for SharedFlatpakSession {
+    fn drop(&mut self) {
+        let slot = self.staged_frame.lock_recover();
+        self.active.store(false, Ordering::Release);
+        drop(slot);
+        self.staged_ready.notify_all();
+    }
 }
 
 #[cfg(test)]
@@ -1319,20 +1424,59 @@ mod tests {
                 Ok(_) => panic!("oversized-width session should not construct"),
             }
         }
-        // Phase `target_fps_clamps_to_software_ceiling`.
+        // Phase `a_software_encoder_streams_at_the_display_rate`.
         {
             let cfg = FlatpakShareConfig {
-                target_fps: 60,
+                target_fps: 90,
                 ..cfg_software()
             };
             let s =
                 SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, &cfg).expect("start");
-            assert_eq!(
-                s.snapshot_config().target_fps,
-                SOFTWARE_FPS_CEILING,
-                "SW encoder must clamp target_fps to the ceiling"
-            );
+            assert_eq!(s.rate(), 90);
+            let frame = vec![0x80_u8; 64 * 64 * 4];
+            let start = Instant::now();
+            let encoded_at = |at: Instant| {
+                s.deposit_captured_rgba(frame.clone());
+                s.encode_next_frame(at).is_some()
+            };
+            assert!(encoded_at(start));
+            assert!(encoded_at(start + Duration::from_micros(11_200)));
+            assert!(!encoded_at(start + Duration::from_micros(13_000)));
+            s.set_rate(144);
+            assert_eq!(s.rate(), 144);
+            assert!(encoded_at(start + Duration::from_micros(29_200)));
         }
+    }
+
+    #[test]
+    fn a_window_encoded_on_its_own_thread_hands_each_frame_to_the_pump() {
+        let session = Arc::new(
+            SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, &cfg_software())
+                .expect("start"),
+        );
+        let (encoded, wakes) = std::sync::mpsc::channel();
+        let encoded = Mutex::new(encoded);
+        session
+            .encode_in_background(Arc::new(move || {
+                let _ = encoded.lock_recover().send(());
+            }))
+            .expect("encode thread");
+        assert!(session.encodes_in_background());
+
+        session.deposit_captured_rgba(vec![0x20_u8; 64 * 64 * 4]);
+        wakes
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the frame is encoded");
+        assert_eq!(session.pump(Instant::now()).len(), 1);
+        assert!(session.pump(Instant::now()).is_empty());
+
+        // Deposited before the next frame is due: held back, then encoded
+        // when due without another commit.
+        session.deposit_captured_rgba(vec![0xE0_u8; 64 * 64 * 4]);
+        wakes
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the held-back frame is encoded");
+        assert_eq!(session.pump(Instant::now()).len(), 1);
     }
 
     #[test]

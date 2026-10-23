@@ -1095,6 +1095,9 @@ pub struct State {
     /// known. Installed by the native compositor when peer sync is on;
     /// absent in isolated tests and offline sessions.
     legacy_stream_publisher: Option<LegacyStreamPublisher>,
+    /// Wakes the loop when a streamed window's own thread encoded a frame.
+    /// Without it, as in tests, windows are encoded on this thread.
+    share_encode_wake: Option<Arc<dyn Fn() + Send + Sync>>,
     /// The workspace topic each streamed window's traffic goes to: its tab's
     /// room, which need not be the workspace this device shows.
     legacy_stream_routes: HashMap<SurfaceId, u64>,
@@ -1165,6 +1168,8 @@ pub struct State {
     presenter_pin: Option<presenter_screen::PresenterPin>,
     /// Preferred scale per client surface id, derived from [`Self::output_layout`] + tile position; refreshed by the run loop, the only place with both.
     pub surface_scales: HashMap<u64, f64>,
+    /// Where each placed client surface's tile sits, in the logical desktop.
+    surface_origins: HashMap<u64, (f64, f64)>,
     /// **Transient fullscreen surface** — the window group id of the
     /// toplevel currently holding the output fullscreen via
     /// `xdg_toplevel.set_fullscreen`, or `None`. Set by
@@ -2136,6 +2141,7 @@ impl State {
             active_sessions: HashMap::new(),
             paint_apps: HashMap::new(),
             legacy_stream_publisher: None,
+            share_encode_wake: None,
             legacy_stream_routes: HashMap::new(),
             legacy_share_failures: HashMap::new(),
             personal_stream_viewers: std::collections::HashSet::new(),
@@ -2162,6 +2168,7 @@ impl State {
             output_table: Vec::new(),
             presenter_pin: None,
             surface_scales: HashMap::new(),
+            surface_origins: HashMap::new(),
             fullscreen_group: None,
             fullscreen_output: None,
             output_presentation_surfaces: Vec::new(),
@@ -2494,6 +2501,7 @@ impl State {
             })
             .collect();
         self.surface_scales.clear();
+        self.surface_origins.clear();
         if self
             .fullscreen_output
             .is_some_and(|wanted| !outputs.iter().any(|o| o.id == wanted))
@@ -2767,6 +2775,29 @@ impl State {
         )
     }
 
+    /// The refresh rate of the display at `origin`; the fastest display's
+    /// where none is; `None` when no display reports one.
+    fn refresh_hz_at(&self, origin: (f64, f64)) -> Option<u32> {
+        let point = vello::kurbo::Point::new(origin.0, origin.1);
+        let hz = |output: &crate::compositor::backend::Output| {
+            output
+                .refresh_mhz
+                .filter(|mhz| *mhz > 0)
+                .map(|mhz| mhz.div_ceil(1000))
+        };
+        self.output_table
+            .iter()
+            .find(|output| output.logical_rect().contains(point))
+            .and_then(hz)
+            .or_else(|| self.output_table.iter().filter_map(hz).max())
+    }
+
+    /// The rate `surface`'s stream follows: its display's refresh.
+    fn share_rate_hz(&self, surface: SurfaceId) -> Option<u32> {
+        let origin = self.surface_origins.get(&surface).copied();
+        self.refresh_hz_at(origin.unwrap_or((f64::NAN, f64::NAN)))
+    }
+
     /// The scale of the output under the pointer, which a client's cursor
     /// surface is drawn at.
     ///
@@ -2814,6 +2845,12 @@ impl State {
     /// value actually moved generate wire traffic — recomputing and calling unconditionally would walk every surface's state lock for nothing.
     pub fn update_surface_scales(&mut self, placements: &[(u64, (f64, f64))]) {
         for (surface_id, origin) in placements {
+            if self.surface_origins.insert(*surface_id, *origin) != Some(*origin)
+                && let Some(session) = self.active_sessions.get(surface_id)
+                && let Some(hz) = self.refresh_hz_at(*origin)
+            {
+                session.set_rate(hz);
+            }
             let scale = self.scale_for_origin(*origin);
             let previous = self.surface_scales.insert(*surface_id, scale);
             if previous == Some(scale) {
@@ -2844,6 +2881,7 @@ impl State {
         // Surfaces no longer placed lose their cached scale, so a re-placed one is recomputed, not resurrected at its last value.
         let live: HashSet<u64> = placements.iter().map(|(id, _)| *id).collect();
         self.surface_scales.retain(|id, _| live.contains(id));
+        self.surface_origins.retain(|id, _| live.contains(id));
     }
 
     /// The theme's capture placeholder colour, for windows streamed to
@@ -2902,6 +2940,12 @@ impl State {
     }
 
     /// Install the non-blocking network bridge used by live legacy streams.
+    /// Encode each streamed window on a thread of its own, waking the loop
+    /// with `wake` when a frame is ready for [`Self::flush_share_sessions`].
+    pub fn set_share_encode_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.share_encode_wake = Some(wake);
+    }
+
     pub fn set_legacy_stream_publisher(&mut self, publisher: LegacyStreamPublisher) {
         self.legacy_stream_publisher = Some(publisher);
     }
@@ -2953,27 +2997,37 @@ impl State {
         self.legacy_stream_routes.extend(routes);
     }
 
-    /// Encode and send each streamed window's held-back frame that is due
-    /// now. Returns how many went out.
+    /// Send each streamed window's frames encoded since, encoding its
+    /// held-back frame first where this thread encodes it and it is due.
+    /// Returns how many went out.
     pub fn flush_share_sessions(&mut self) -> usize {
         let now = std::time::Instant::now();
         let mut sent = 0_usize;
         let sessions = self.active_sessions.values().cloned().collect::<Vec<_>>();
         for session in sessions {
-            if session.staged_due().is_some_and(|due| due <= now)
-                && let Some(frame) = session.encode_next_frame(now)
-            {
-                let _ = self.publish_legacy(session.surface_id, frame.into_neighbour_msg());
-                sent = sent.saturating_add(1);
-            }
+            sent = sent.saturating_add(self.publish_encoded(&session, now));
         }
         sent
     }
 
-    /// When the earliest held-back frame of a streamed window is due.
+    /// Publish what `session` encoded by `now`; returns how many frames.
+    fn publish_encoded(&self, session: &SharedFlatpakSession, now: std::time::Instant) -> usize {
+        let frames = session.pump(now);
+        let count = frames.len();
+        if self.legacy_stream_publisher.is_some() {
+            for frame in frames {
+                let _ = self.publish_legacy(session.surface_id, frame.into_neighbour_msg());
+            }
+        }
+        count
+    }
+
+    /// When the earliest held-back frame of a window this thread encodes is
+    /// due.
     pub fn legacy_stream_deadline(&self) -> Option<std::time::Instant> {
         self.active_sessions
             .values()
+            .filter(|session| !session.encodes_in_background())
             .filter_map(|session| session.staged_due())
             .min()
     }
@@ -3169,6 +3223,11 @@ impl State {
         let viewers = session.viewer_ids();
         // In place before its start goes out, so the start takes the
         // session's own route (to its viewers alone, when it may).
+        if let Some(wake) = &self.share_encode_wake
+            && let Err(error) = session.encode_in_background(Arc::clone(wake))
+        {
+            tracing::warn!(surface, %error, "window encode thread did not start; encoding here");
+        }
         self.active_sessions.insert(surface, session);
         if self.legacy_stream_publisher.is_some() {
             let _ = self.publish_legacy(surface, start);
@@ -3490,6 +3549,10 @@ impl State {
             // The window is still shared: its stream is replaced, not ended,
             // unless the new one cannot start.
             let replaced = self.active_sessions.remove(&surface);
+            let config = &crate::config::FlatpakShareConfig {
+                target_fps: self.share_rate_hz(surface).unwrap_or(config.target_fps),
+                ..config.clone()
+            };
             let started = if paint {
                 SharedFlatpakSession::start_paint(host_peer, app_id, surface, width, height, config)
             } else {
@@ -3702,11 +3765,7 @@ impl State {
                 .map(|frame| frame.rgba)
         }) {
             session.deposit_captured_rgba(rgba);
-            if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
-                && self.legacy_stream_publisher.is_some()
-            {
-                let _ = self.publish_legacy(surface, frame.into_neighbour_msg());
-            }
+            self.publish_encoded(session, std::time::Instant::now());
         }
     }
 
@@ -3864,11 +3923,7 @@ impl State {
                 return false;
             };
             session.deposit_captured_rgba(rgba);
-            if let Some(frame) = session.encode_next_frame(tilo_clock::now())
-                && self.legacy_stream_publisher.is_some()
-            {
-                let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
-            }
+            self.publish_encoded(&session, tilo_clock::now());
             return true;
         }
         // DMABUF-direct path takes priority when the commit hook stashed a
@@ -3904,11 +3959,7 @@ impl State {
             frame.height,
         );
         session.deposit_captured_rgba(rgba);
-        if let Some(frame) = session.encode_next_frame(tilo_clock::now())
-            && self.legacy_stream_publisher.is_some()
-        {
-            let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
-        }
+        self.publish_encoded(&session, tilo_clock::now());
         true
     }
 
@@ -8696,6 +8747,27 @@ mod tick_hook_tests {
             logical_position: position,
             identity: crate::compositor::backend::OutputIdentity::default(),
         }
+    }
+
+    #[test]
+    fn a_streamed_window_follows_the_refresh_of_the_display_it_is_on() {
+        let mut panel = out(0, (0, 0), (1920, 1080), 1.0);
+        panel.refresh_mhz = Some(60_000);
+        let mut monitor = out(1, (1920, 0), (2560, 1440), 1.0);
+        monitor.refresh_mhz = Some(143_912);
+        let mut state = make_state();
+        state.set_output_layout(&[panel, monitor]);
+        let session = Arc::new(
+            SharedFlatpakSession::start(0xAAAA, "app", 42, 64, 64, &cfg()).expect("session"),
+        );
+        state.register_share_session(Arc::clone(&session));
+
+        state.update_surface_scales(&[(42, (10.0, 10.0))]);
+        assert_eq!(session.rate(), 60);
+        state.update_surface_scales(&[(42, (2500.0, 10.0))]);
+        assert_eq!(session.rate(), 144);
+        state.update_surface_scales(&[(42, (10.0, 10.0))]);
+        assert_eq!(session.rate(), 60);
     }
 
     #[test]
