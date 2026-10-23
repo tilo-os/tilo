@@ -9,6 +9,8 @@ use std::rc::Rc;
 use ui::num::u32_of_usize;
 
 use accounts::{SecretId, SecretItemKind};
+
+use crate::pages::ItemActions;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -114,16 +116,21 @@ pub struct PasswordsSurface {
     core: Shared,
     requests: Requests,
     shell: NavShell,
-    /// The page revision the content column was built from.
-    built_page: Option<u64>,
+    /// The page revision the content column was built from, and whether
+    /// the item's actions were the window bar's then.
+    built_page: Option<(u64, bool)>,
     /// The list revision the overview title and search index follow.
     built_list: Option<u64>,
     overview_title: String,
     /// The overview header is in the window's bar ([`ui::window_toolbar`]).
     header_in_bar: bool,
-    /// The list title and the shell's own slots the bar's slots were last
-    /// declared with.
-    declared_bar: Option<(String, ui::window_toolbar::WindowToolbar)>,
+    /// The list title, the shell's own slots and the item's actions the
+    /// bar's slots were last declared with.
+    declared_bar: Option<(
+        String,
+        ui::window_toolbar::WindowToolbar,
+        Option<ItemActions>,
+    )>,
     shows_list: bool,
     /// The empty vault stands in for the list and the item
     /// ([`NavShell::nothing_listed`]).
@@ -135,8 +142,12 @@ pub struct PasswordsSurface {
     acknowledger: ui::widget::acknowledgement::Acknowledger,
 }
 
-/// The action id of the window bar's New item.
+/// The action ids of the window bar's slots: New item, and copying,
+/// editing and starring the item shown.
 const NEW_ITEM: &str = "new-item";
+const COPY_SECRET: &str = "copy-secret";
+const EDIT_ITEM: &str = "edit-item";
+const FAVORITE: &str = "favorite";
 
 impl PasswordsSurface {
     /// The overview header's actions: search and New item.
@@ -150,14 +161,16 @@ impl PasswordsSurface {
             )
             .on_own_device_effect(move || requests.borrow_mut().push(Request::NewItem))
         };
+        // window-bar: fallback, the bar's search while it hosts the window
         let search = ui::search::search_button(ui::search::SearchRequest::this_app());
         vec![Box::new(search) as Element, Box::new(new_item)]
     }
 
     /// The overview header moves into the window's bar while the bar hosts
     /// the slots ([`ui::window_toolbar`]) and back when it does not: the
-    /// list shown is the window's location, New item its action, and search
-    /// the bar's own. What the person did there is queued like a click.
+    /// list shown is the window's location, New item its action, then
+    /// copying, editing and starring the item shown, and search the bar's
+    /// own. What the person did there is queued like a click.
     fn sync_window_toolbar(&mut self) {
         use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
         let hosted = ui::window_toolbar::is_hosted();
@@ -167,6 +180,7 @@ impl PasswordsSurface {
             if hosted {
                 self.shell.set_overview_header("", Vec::new());
             } else {
+                // window-bar: fallback, the bar holds New item while it hosts the window
                 self.shell.set_overview_header(
                     self.overview_title.clone(),
                     Self::overview_actions(&self.requests),
@@ -181,7 +195,8 @@ impl PasswordsSurface {
         // The shell's own slots: the sidebar's toggle, and Back while an
         // item in a narrow window has its list to go back to.
         let shell = self.shell.window_toolbar();
-        let key = (self.overview_title.clone(), shell.clone());
+        let item = crate::pages::item_actions(&self.core.borrow());
+        let key = (self.overview_title.clone(), shell.clone(), item);
         if self.declared_bar.as_ref() != Some(&key) {
             let mut toolbar = WindowToolbar {
                 location: Some(ToolbarLocation {
@@ -190,16 +205,24 @@ impl PasswordsSurface {
                 }),
                 ..shell
             };
-            NavShell::push_window_actions(
-                &mut toolbar,
-                [ToolbarAction {
-                    id: NEW_ITEM.into(),
-                    icon: "plus".into(),
-                    name: crate::CATALOG.t("passwords-new-item"),
-                    enabled: true,
-                    ..ToolbarAction::default()
-                }],
-            );
+            let mut actions = vec![ToolbarAction::new(
+                NEW_ITEM,
+                "plus",
+                crate::CATALOG.t("passwords-new-item"),
+            )];
+            if let Some(item) = &key.2 {
+                actions.extend([
+                    ToolbarAction::new(COPY_SECRET, "copy", item.copy.clone()),
+                    ToolbarAction::new(EDIT_ITEM, "pencil", "Edit"),
+                    ToolbarAction::new(
+                        FAVORITE,
+                        "star",
+                        crate::pages::favorite_label(item.favorite),
+                    )
+                    .on(item.favorite),
+                ]);
+            }
+            NavShell::push_window_actions(&mut toolbar, actions);
             ui::window_toolbar::declare(Some(toolbar));
             self.declared_bar = Some(key);
         }
@@ -207,12 +230,20 @@ impl PasswordsSurface {
             if self.shell.window_toolbar_event(&event) {
                 continue;
             }
-            match event {
-                ToolbarEvent::Action { ref id } if id == NEW_ITEM => {
-                    self.requests.borrow_mut().push(Request::NewItem);
-                }
-                _ => {}
-            }
+            let request = match event {
+                ToolbarEvent::Action { ref id } => match id.as_str() {
+                    NEW_ITEM => Request::NewItem,
+                    COPY_SECRET => Request::CopySecret,
+                    EDIT_ITEM => Request::Edit,
+                    FAVORITE => match self.declared_bar.as_ref().and_then(|key| key.2.as_ref()) {
+                        Some(item) => Request::ToggleFavorite(item.id.clone()),
+                        None => continue,
+                    },
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            self.requests.borrow_mut().push(request);
         }
     }
 
@@ -341,11 +372,12 @@ impl PasswordsSurface {
                 &[("item", ui::i18n::ArgValue::Text(item))],
             ));
         }
-        if self.built_page != Some(page) {
-            self.built_page = Some(page);
+        let built = (page, self.header_in_bar);
+        if self.built_page != Some(built) {
+            self.built_page = Some(built);
             let content = {
                 let core = self.core.borrow();
-                crate::pages::content(&core, &self.core, &self.requests)
+                crate::pages::content(&core, &self.core, &self.requests, self.header_in_bar)
             };
             self.shell.set_content(content);
         }
@@ -388,6 +420,8 @@ impl PasswordsSurface {
                     front
                 });
         }
+        // The bar offers what can be done to the item now shown.
+        self.sync_window_toolbar();
     }
 
     /// Answer an effect invoked by the palette, an agent, a script or a

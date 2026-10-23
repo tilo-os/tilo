@@ -4,7 +4,6 @@ history-in-row 2 apps/maps/src/app.rs
 history-in-row 2 apps/typst-editor/src/chrome.rs
 nav-header-actions 1 apps/file-explorer/src/files_app/cloud_browse.rs
 nav-header-actions 1 apps/file-explorer/src/files_app/window_bar.rs
-nav-header-actions 1 apps/passwords/src/window.rs
 # A column header holding what the bar has no slot for keeps the shell's
 # own header row, until the bar can show it.
 nav-header-leading 1 apps/canvas/src/lib.rs
@@ -14,7 +13,6 @@ own-search 1 apps/browser/src/browser_widget/library.rs
 own-search 1 apps/browser/src/browser_widget/toolbar.rs
 own-search 1 apps/browser/src/daily_controls.rs
 own-search 1 apps/maps/src/offline_panel.rs
-own-search 1 apps/passwords/src/window.rs
 own-search 1 apps/terminal/src/view.rs
 own-search 2 apps/word-processor/src/find_bar.rs
 # The composer's formatting strip, inside the New message sheet over the mailbox.
