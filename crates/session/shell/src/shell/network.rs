@@ -4771,6 +4771,10 @@ impl ShellNetwork {
             open_invitations,
             other_devices,
         )
+        .or_else(|| {
+            self.hosts_other_members()
+                .then_some("a room hosted here with other members")
+        })
     }
 
     /// Tell the relays what the session has recorded, so they stay up while
@@ -6707,6 +6711,9 @@ impl ShellNetwork {
             if let Some(adoption) = adoption {
                 self.follow_list_off_loop(adoption);
             }
+            if changed {
+                self.enter_configured_host_rooms_off_loop(None);
+            }
         }
         let due = self
             .last_personal_workspaces_snapshot
@@ -6824,6 +6831,7 @@ impl ShellNetwork {
         // The rooms the list brings are entered at their hosts, and those it
         // let go released, as the list arrives.
         self.follow_list_off_loop(adoption);
+        self.enter_configured_host_rooms_off_loop(None);
         if answer {
             self.publish_personal_workspaces();
         }
@@ -7048,6 +7056,14 @@ impl ShellNetwork {
                 self.record_content_sources_changed();
                 self.handle_host_ready(ws, peer);
                 self.room_relay_ready();
+                // A configured host's session of the person's own topic is
+                // up: the rooms it holds for them are entered now.
+                if self
+                    .personal_continuity_user
+                    .is_some_and(|user| personal_continuity_topic_id(&user) == ws)
+                {
+                    self.enter_configured_host_rooms_off_loop(Some(peer));
+                }
             }
             NetEvent::PeerJoined { ws, peer, .. } => {
                 self.note_peer_joined();

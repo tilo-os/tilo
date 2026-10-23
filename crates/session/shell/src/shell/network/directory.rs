@@ -427,6 +427,15 @@ impl ShellNetwork {
         {
             return Err("the workspace did not finish moving to your host".into());
         }
+        // This device's host stops serving the room the relay governs now;
+        // what it kept of it stays on disk.
+        if let Some(host) = self.room_host() {
+            self.runtime_handle()?
+                .block_on(host.rooms().release(&room.to_string()))
+                .map_err(|error| {
+                    format!("this device still serves the moved workspace: {error}")
+                })?;
+        }
         tracing::info!(%room, "a workspace moved to its person's host to be made public");
         self.administered_room(moved.room)
             .filter(|held| !held.hosted_here())

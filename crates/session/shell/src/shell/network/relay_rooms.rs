@@ -44,8 +44,9 @@ use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
     CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom,
-    GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssuedInvitation,
-    MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, member_resource,
+    GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssuedInvitation, LIST_ROOMS,
+    MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RoomListing,
+    member_resource,
 };
 
 /// How long one invocation on a room's own session may take.
@@ -118,6 +119,9 @@ pub(super) enum PersonsHost {
     /// A home relay the person paired, on its session of their continuity
     /// workspace.
     Relay(RegisteredHomePeer),
+    /// A workspace host this session is configured with (a company node),
+    /// on the session it keeps with it.
+    Configured(iroh::EndpointId),
 }
 
 /// The device of `room`'s governor, when it is also the host `view`'s
@@ -401,6 +405,7 @@ impl ShellNetwork {
                 self.connect_home(home);
                 self.host_action(home.addr.id, user, action, arguments)
             }
+            PersonsHost::Configured(host) => self.host_action(*host, user, action, arguments),
             PersonsHost::Device { addr, device } => {
                 let (reply, answer) = std::sync::mpsc::sync_channel(1);
                 let invoke = invocation(
@@ -1025,6 +1030,53 @@ impl ShellNetwork {
         }
     }
 
+    /// Enter every room the configured workspace host `only` (each of them
+    /// when `None`) lists for this person and this device does not hold:
+    /// what a company node's session does when its host session comes up
+    /// and when the person's list changes, rather than looking again on a
+    /// timer. Blocks on the hosts: runs on the peer-sync worker.
+    pub(super) fn enter_configured_host_rooms(&self, only: Option<iroh::EndpointId>) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        let user = match identity.current_native_material(0) {
+            Ok((certificate, _)) => certificate.user_public_key,
+            Err(error) => {
+                tracing::debug!(%error, "host rooms: no device certificate");
+                return;
+            }
+        };
+        for host in super::configured_host_addrs()
+            .into_iter()
+            .map(|addr| addr.id)
+            .filter(|host| only.is_none_or(|only| only == *host))
+        {
+            let listed = self
+                .host_action(host, user, LIST_ROOMS, serde_json::Map::new())
+                .and_then(answer_of::<Vec<RoomListing>>);
+            let rooms = match listed {
+                Ok(rooms) => rooms,
+                Err(error) => {
+                    tracing::debug!(%error, "host rooms unavailable");
+                    continue;
+                }
+            };
+            for listing in rooms {
+                let Some(room) = RoomId::parse(&listing.room) else {
+                    continue;
+                };
+                if let Err(error) = self.enter_listed_room(
+                    &PersonsHost::Configured(host),
+                    user,
+                    room,
+                    &listing.name,
+                ) {
+                    tracing::warn!(%room, %error, "a room of this person's host was not entered");
+                }
+            }
+        }
+    }
+
     /// Where the host on `device`, which `user`'s list names, is asked for
     /// its own operations: this device, a home relay the person paired (at
     /// its service endpoint), or another of their devices (whose endpoint is
@@ -1157,7 +1209,6 @@ impl ShellNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_session::rooms::{LIST_ROOMS, RoomListing};
 
     #[test]
     #[serial_test::serial(process_env)]
