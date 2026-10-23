@@ -516,6 +516,29 @@ fn assist<'a, V>(
         .of(access, path)
 }
 
+/// What the accessibility settings found by search that their pane draws
+/// its own way are set to, as stored.
+pub(crate) mod values {
+    use super::AccessibilitySettings;
+    use crate::setting::{Follows, on_off};
+    use crate::settings_app::SettingsApp;
+
+    pub(crate) fn screen_reader(app: &SettingsApp, follows: &Follows) -> String {
+        on_off(
+            follows
+                .get::<AccessibilitySettings>(app.host())
+                .screen_reader,
+        )
+    }
+
+    pub(crate) fn dictation_language(app: &SettingsApp, follows: &Follows) -> String {
+        let language = follows
+            .get::<AccessibilitySettings>(app.host())
+            .dictation_language;
+        crate::i18n::t(&language.label_key())
+    }
+}
+
 pub(crate) fn high_contrast(cx: &PaneCx, appearance: &Followed<AppearancePrefs>) -> Item {
     cx.row(t("a11y-high-contrast"))
         .described(t("a11y-high-contrast-desc"))

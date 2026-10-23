@@ -64,6 +64,8 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DisplayArea> {
     app.areas().find()
 }
 
+pub(crate) mod values;
+
 /// What Displays changes: this device's outputs and their arrangement, its
 /// brightness, and the person's display comforts.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
@@ -910,6 +912,11 @@ impl DisplayArea {
             };
             Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    /// The model, where the displays were read; never reads them.
+    pub(crate) fn read(&self) -> Option<&Shared<DisplayModel>> {
+        self.model.get()
     }
 
     /// Take in background results, if the model exists.

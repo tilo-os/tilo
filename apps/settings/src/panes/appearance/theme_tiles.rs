@@ -162,7 +162,7 @@ impl ThemeTiles {
         }
     }
 
-    fn label_of(name: &str) -> String {
+    pub(super) fn label_of(name: &str) -> String {
         t(&format!(
             "settings-appearance-theme-{}",
             name.to_ascii_lowercase().replace(' ', "-")

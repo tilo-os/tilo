@@ -46,6 +46,33 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&UpdatesArea> {
     app.areas().find()
 }
 
+/// What the update settings found by search are set to, as the page last
+/// read the machine: nothing until it has.
+pub(crate) mod values {
+    use super::{UpdatesModel, area};
+    use crate::setting::{Follows, on_off};
+    use crate::settings_app::SettingsApp;
+
+    fn read<V>(app: &SettingsApp, read: impl FnOnce(&UpdatesModel) -> Option<V>) -> Option<V> {
+        let model = area(app)?.model.get()?;
+        let model = model.borrow();
+        read(&model)
+    }
+
+    pub(crate) fn automatic(app: &SettingsApp, _: &Follows) -> Option<String> {
+        read(app, |model| {
+            model
+                .timer_enabled
+                .is_some()
+                .then(|| on_off(model.prefs.auto))
+        })
+    }
+
+    pub(crate) fn metered(app: &SettingsApp, _: &Follows) -> Option<String> {
+        read(app, |model| model.allow_metered.map(on_off))
+    }
+}
+
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);

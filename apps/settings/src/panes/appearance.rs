@@ -584,6 +584,8 @@ impl AppearancePane {
     }
 }
 
+pub(crate) mod values;
+
 pub(crate) fn hide_top_bar(cx: &PaneCx, desktop: &Followed<DesktopControls>) -> Item {
     cx.row(t("settings-appearance-hide-top-bar"))
         .described(t("settings-appearance-hide-top-bar-desc"))

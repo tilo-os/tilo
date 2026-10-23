@@ -1119,6 +1119,8 @@ impl PowerPane {
     }
 }
 
+pub(crate) mod values;
+
 pub(crate) fn auto_suspend(cx: &PaneCx, prefs: &Followed<PowerPrefs>) -> Item {
     cx.row(t("power-suspend-idle"))
         .id("power.auto_suspend")

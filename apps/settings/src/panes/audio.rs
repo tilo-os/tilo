@@ -67,6 +67,8 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AudioArea> {
     app.areas().find()
 }
 
+pub(crate) mod values;
+
 /// How often the pane re-reads the `PipeWire` graph while it is open, so a
 /// device plugged in (a headset) or an application that just started playing
 /// appears without reopening Settings. Cheap enough for an actively-viewed
