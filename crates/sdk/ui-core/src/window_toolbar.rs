@@ -229,6 +229,11 @@ pub struct ToolbarLocation {
     /// launcher's Continue. `None`: the app cannot be opened at it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<String>,
+    /// The document the location names has changes not yet saved: the bar
+    /// says so after the label, in words, and tells assistive technology
+    /// the same. Every editor marks its unsaved document this one way.
+    #[serde(default)]
+    pub edited: bool,
 }
 
 /// One row of a location's picker.

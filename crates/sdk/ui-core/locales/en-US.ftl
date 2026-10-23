@@ -66,6 +66,7 @@ window-toolbar-go = Go
 window-toolbar-more = More actions
 window-toolbar-views = View
 window-toolbar-suggestions = Suggestions
+window-toolbar-edited = Edited
 window-toolbar-show-sidebar = Show sidebar
 window-toolbar-hide-sidebar = Hide sidebar
 window-toolbar-show-inspector = Show inspector
