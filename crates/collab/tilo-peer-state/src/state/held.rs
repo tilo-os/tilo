@@ -40,6 +40,13 @@ pub(super) struct Missed {
     /// Something else was missing, or too much to tell apart: any change
     /// that lands asks for a replay.
     anything: bool,
+    /// The earliest write of each author to each record that was let go
+    /// unapplied, by its sequence. The author's later writes to the record
+    /// wait for it: once a later one is applied, the earlier one never can
+    /// be, its sequence behind the author's. Forgotten once it is applied
+    /// or refused, never to make room: forgetting it would let a later
+    /// write overtake it.
+    behind: std::collections::BTreeMap<(Route, [u8; 32]), u64>,
 }
 
 impl Missed {
@@ -197,7 +204,7 @@ impl StatePeer {
         }
     }
     /// Note what `input`, let go unapplied, waited for.
-    fn remember_missed(&mut self, input: &DroppedInput) {
+    pub(super) fn remember_missed(&mut self, input: &DroppedInput) {
         if matches!(input.reason, DropReason::Refused(_)) {
             // Decided, not waiting: refused as any delivery of it would be.
             return;
@@ -206,6 +213,13 @@ impl StatePeer {
             app: input.app.clone(),
             record: input.record.clone(),
         };
+        if !input.app.is_empty() {
+            self.missed
+                .behind
+                .entry((route.clone(), input.author))
+                .and_modify(|sequence| *sequence = (*sequence).min(input.sequence))
+                .or_insert(input.sequence);
+        }
         match input.waiting_for {
             Some(MissingPrerequisite::Certificate) => {
                 self.missed.authors.insert(input.author);
@@ -229,8 +243,49 @@ impl StatePeer {
         {
             self.missed = Missed {
                 anything: true,
+                behind: std::mem::take(&mut self.missed.behind),
                 ..Missed::default()
             };
+        }
+    }
+    /// The sequence of `author`'s earlier write to `route` that was let go
+    /// unapplied and that its write `sequence` would overtake. One applied
+    /// since is forgotten.
+    pub(super) fn overtakes_let_go(
+        &mut self,
+        route: &Route,
+        author: [u8; 32],
+        sequence: u64,
+    ) -> Option<u64> {
+        let key = (route.clone(), author);
+        let earlier = *self.missed.behind.get(&key)?;
+        let applied = self
+            .core
+            .documents
+            .get(route)
+            .and_then(|document| {
+                document
+                    .channel
+                    .last_seq_per_author
+                    .get(&collab_types::Ed25519PublicKey::from_bytes(author))
+                    .copied()
+            })
+            .is_some_and(|last| last >= earlier);
+        if applied {
+            self.missed.behind.remove(&key);
+            return None;
+        }
+        (sequence > earlier).then_some(earlier)
+    }
+    /// Forget `author`'s write `written` (its record and sequence) as one
+    /// let go: the room refuses it, so nothing after it waits for it.
+    pub(super) fn forget_refused(&mut self, author: [u8; 32], written: Option<&(Route, u64)>) {
+        let Some((route, sequence)) = written else {
+            return;
+        };
+        let key = (route.clone(), author);
+        if self.missed.behind.get(&key) == Some(sequence) {
+            self.missed.behind.remove(&key);
         }
     }
     fn route_heads(&self, route: &Route) -> Option<Vec<automerge::ChangeHash>> {

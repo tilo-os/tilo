@@ -383,6 +383,25 @@ fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
 /// once one is ([`collab_types::Surfaces`]).
 pub const HELD_FOR_SURFACE: &str = "document change held: its app surface is not here yet";
 
+/// The record `message` writes and its sequence, if it is a document write.
+fn written_route(message: &NeighbourMsg) -> Option<(Route, u64)> {
+    match message {
+        NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
+        } => Some((
+            Route {
+                app: app_id.clone(),
+                record: record_id.clone(),
+            },
+            envelope.seq,
+        )),
+        _ => None,
+    }
+}
+
 /// The app surfaces this process decides received changes against
 /// ([`decide_with_surfaces`]).
 #[must_use]
@@ -1304,9 +1323,11 @@ impl StatePeer {
             return Ok(report);
         }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
+        let written = written_route(&message);
         let mut candidate = self.clone();
-        let mut report =
-            candidate.receive_with_context(source, message, now, retained_replay, true)?;
+        let mut report = candidate
+            .receive_with_context(source, message, now, retained_replay, true)
+            .inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
         let landed = report.summary.changed || report.summary.metadata_changed;
         report.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
@@ -1476,10 +1497,14 @@ impl StatePeer {
                 .map_err(err);
         }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now).map_err(err)?;
+        let written = written_route(&message);
         let mut candidate = self.clone();
         let mut outcome = candidate
             .receive_with_context(source, message, now, retained_replay, false)
-            .map_err(err)?;
+            .map_err(|error| {
+                self.forget_refused(source, written.as_ref());
+                err(error)
+            })?;
         let landed = outcome.summary.changed || outcome.summary.metadata_changed;
         outcome.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
@@ -1733,8 +1758,10 @@ impl StatePeer {
         retained_replay: bool,
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
-        let mut outcome =
-            self.admit_document(source, message, now, None, retained_replay, strict_report)?;
+        let written = written_route(&message);
+        let mut outcome = self
+            .admit_document(source, message, now, None, retained_replay, strict_report)
+            .inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
         if outcome.deferred || self.core.pending.is_empty() {
             return Ok(outcome);
         }
@@ -1848,6 +1875,35 @@ impl StatePeer {
                 InputDisposition::Duplicate(admitted),
                 ReceiveOutcome {
                     duplicate: true,
+                    ..Default::default()
+                },
+            ));
+        }
+        let route = Route {
+            app: app_id.clone(),
+            record: record_id.clone(),
+        };
+        if !local_app
+            && self
+                .overtakes_let_go(&route, source, envelope.seq)
+                .is_some()
+        {
+            // Let go too: the room's host retains it and replays it after
+            // the earlier write, in the order its author wrote them.
+            let waiting = MissingPrerequisite::EarlierWrite;
+            let input = DroppedInput {
+                author: source,
+                app: app_id,
+                record: record_id,
+                sequence: envelope.seq,
+                waiting_for: Some(waiting.clone()),
+                reason: crate::admission::DropReason::Superseded,
+            };
+            self.remember_missed(&input);
+            return Ok(AdmissionReport::new(
+                InputDisposition::RetryLater(waiting),
+                ReceiveOutcome {
+                    dropped: vec![input],
                     ..Default::default()
                 },
             ));

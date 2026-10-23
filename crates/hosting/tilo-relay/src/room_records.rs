@@ -184,6 +184,42 @@ impl RoomRecords {
         &self.signing_key
     }
 
+    /// [`Self::retained`] once every write the workspace's persistence
+    /// owner took before the call is durable: members' writes as well as
+    /// host commits, so a write the room's governor was handed is in it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::retained`], or the owner did not settle.
+    pub(crate) async fn retained_settled(
+        &self,
+        workspace_id: u64,
+    ) -> Result<Vec<RetainedBody>, String> {
+        let hosted = self.workspaces.lock().await;
+        let workspace = hosted.get(&workspace_id).cloned();
+        drop(hosted);
+        let workspace = workspace.ok_or("the workspace is not hosted here")?;
+        let owner = crate::persistence::handle(&workspace).await;
+        drop(workspace);
+        let done = owner
+            .submit_prepared_wait(
+                1,
+                async { Ok(()) },
+                // A fence: it retains nothing.
+                |state, ()| {
+                    state.retaining_only();
+                    Ok(())
+                },
+                |result| async { result },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        crate::persistence::receipt(done)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.retained(workspace_id).await
+    }
+
     /// Every retained document body of `workspace_id`, checkpoints before
     /// the deltas retained after them, including every host commit queued
     /// before the call.

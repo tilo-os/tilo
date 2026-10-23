@@ -106,6 +106,10 @@ pub enum MissingPrerequisite {
     /// The app surface the op names is not here yet: the op is decided
     /// once it is.
     AppSurface,
+    /// An earlier write of the same author to the same record was let go
+    /// unapplied: applied first, this one would leave that one behind for
+    /// good, its sequence overtaken.
+    EarlierWrite,
 }
 impl std::fmt::Display for MissingPrerequisite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -118,6 +122,7 @@ impl std::fmt::Display for MissingPrerequisite {
             Self::PersistedMls => "its record's encryption state",
             Self::ExactHistoricalEvidence => "exact evidence of its earlier admission",
             Self::AppSurface => "its app surface",
+            Self::EarlierWrite => "an earlier write of its author to its record",
         })
     }
 }

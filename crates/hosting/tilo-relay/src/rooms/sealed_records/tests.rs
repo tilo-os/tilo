@@ -623,6 +623,154 @@ async fn members_writes_the_node_took_in_survive_a_hard_stop() {
     relay.shutdown().await;
 }
 
+/// App surfaces as a relay has them while it fetches one from the registry:
+/// none until the fetch lands, then one that admits a sealed write.
+struct LateSurface(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+struct AnySurface;
+
+impl collab_types::ReceiptSurface for AnySurface {
+    fn kind(&self) -> &'static str {
+        ""
+    }
+    fn verb(&self, _: &str) -> Option<(tilo_action_policy::ActionKind, Option<String>)> {
+        None
+    }
+    fn editable(&self, _: &[tilo_actions::PathStep]) -> bool {
+        false
+    }
+    fn footprint(&self, _: &collab_types::ClaimedAction) -> Vec<collab_types::UnitPath> {
+        Vec::new()
+    }
+}
+
+impl collab_types::SurfaceSource for LateSurface {
+    fn surface(
+        &self,
+        _: &collab_types::Record<'_>,
+        _: Option<&str>,
+        _: Option<&[u8; 32]>,
+    ) -> Option<std::sync::Arc<dyn collab_types::ReceiptSurface>> {
+        self.0.load(std::sync::atomic::Ordering::SeqCst).then(|| {
+            std::sync::Arc::new(AnySurface) as std::sync::Arc<dyn collab_types::ReceiptSurface>
+        })
+    }
+}
+
+/// Members write while the app surface their writes name is still being
+/// fetched, as after a restart: the governor holds the writes, more than its
+/// held queue keeps, and lets the oldest go. Once the surface arrives the
+/// governor replays what the relay retains and takes in every write, those
+/// it let go included, without waiting for another write to land.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Relay::shutdown consumes the relay after the assertions"
+)]
+async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
+    const WRITES: usize = tilo_peer_state::MAX_HELD_INPUTS + 16;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Lounge").await.unwrap();
+    let (room, workspace_id) = (created.room, created.workspace_id);
+    let (member_key, member_cert) = member_device(&rooms, &room, (&key, &cert), 3).await;
+    rooms
+        .author_room_record(&room, &cert, (APP, RECORD), |doc| {
+            doc.put(ROOT, "title", "Welcome").map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap();
+    let mut member = SealingMember::join(&rooms, &room, (APP, RECORD), member_key.clone()).await;
+    // The member's page names a surface; the governor has not got it yet.
+    member.surface = Some([7; 32]);
+    let here = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    rooms
+        .room(&room)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .peer
+        .set_surfaces(collab_types::Surfaces::from_source(std::sync::Arc::new(
+            LateSurface(std::sync::Arc::clone(&here)),
+        )));
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&member_key.to_bytes()))
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind()
+        .await
+        .unwrap();
+    let client = crate::RelayClient::connect_to_pinned_host(
+        endpoint,
+        relay.node_addr(),
+        member_cert,
+        member_key.clone(),
+        tilo_user_identity::RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    client
+        .send(crate::Envelope::Subscribe { workspace_id })
+        .unwrap();
+    tilo_test_env::within("the member's subscription", async {
+        while !matches!(client.recv().await, Some(crate::Envelope::Ready { .. })) {}
+    })
+    .await;
+    let mut followed = rooms.record_writes();
+    for index in 0..WRITES {
+        let ((), message) = member.seal(&room, |doc| {
+            doc.put(ROOT, "title", format!("line {index}")).unwrap();
+            doc.commit_edit("fixture", "title");
+        });
+        let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
+        client
+            .send(crate::Envelope::Delta {
+                workspace_id,
+                author_device_public_key: member_key.verifying_key().to_bytes(),
+                authored_at_ns: tilo_clock::unix_now_ns(),
+                delta: crate::CoeditPayload::RetainedDelta {
+                    channel,
+                    body: postcard::to_stdvec(&message).unwrap(),
+                }
+                .encode()
+                .unwrap(),
+                signature: [0; 64],
+            })
+            .unwrap();
+    }
+    tilo_test_env::within("the governor follows every write", async {
+        let mut seen = 0;
+        while seen < WRITES {
+            if followed.recv().await.unwrap().record == RECORD {
+                seen += 1;
+            }
+        }
+    })
+    .await;
+    assert_eq!(
+        readable(&rooms, &room).await.as_deref(),
+        Some("Welcome"),
+        "every write waits for the surface"
+    );
+
+    here.store(true, std::sync::atomic::Ordering::SeqCst);
+    crate::surfaces::arrived();
+    let newest = format!("line {}", WRITES - 1);
+    tilo_test_env::within(
+        "the governor takes in every write once the surface is here",
+        async {
+            while readable(&rooms, &room).await.as_deref() != Some(newest.as_str()) {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        },
+    )
+    .await;
+    drop(rooms);
+    relay.shutdown().await;
+}
+
 /// A chat kept as a chain of parts starts each part with a member's sealed
 /// write, under keys the node stewards. The node takes in every part as it
 /// starts, however many there are, and reads each.
