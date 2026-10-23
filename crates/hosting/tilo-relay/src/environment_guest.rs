@@ -568,7 +568,9 @@ fn chown_tree(path: &Path, uid: u32) -> io::Result<()> {
 /// runtime.
 pub fn pty_guest(master: OwnedFd, lifetime: Option<UnixStream>) -> io::Result<Guest> {
     set_nonblocking(master.as_raw_fd())?;
-    let master = Arc::new(AsyncFd::new(master)?);
+    // SAFETY: `master` is moved into the AsyncFd and nothing else holds it,
+    // so the pty stays open until the AsyncFd deregisters it on drop.
+    let master = Arc::new(unsafe { AsyncFd::register(master) }?);
     Ok(Guest {
         output: Box::pin(PtyHalf(Arc::clone(&master))),
         input: Box::pin(PtyHalf(Arc::clone(&master))),

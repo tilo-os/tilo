@@ -142,7 +142,16 @@ impl PeerProcess {
     pub(super) async fn exited(&self) {
         let watch = |task: &Arc<std::os::fd::OwnedFd>| {
             task.try_clone().ok().and_then(|task| {
-                tokio::io::unix::AsyncFd::with_interest(task, tokio::io::Interest::READABLE).ok()
+                // SAFETY: `task` is a fresh duplicate of the pidfd, moved into
+                // the AsyncFd and held nowhere else, so it stays open until
+                // the AsyncFd deregisters it on drop.
+                unsafe {
+                    tokio::io::unix::AsyncFd::register_with_interest(
+                        task,
+                        tokio::io::Interest::READABLE,
+                    )
+                }
+                .ok()
             })
         };
         let task = watch(&self.task);
@@ -327,14 +336,20 @@ fn watch_death(
         .launcher
         .as_ref()
         .map(|task| {
-            tokio::io::unix::AsyncFd::new(PeerProcess {
+            let watched = PeerProcess {
                 task: Arc::clone(task),
                 executing: None,
                 launcher: None,
-            })
+            };
+            // SAFETY: `watched.task` is an `Arc<OwnedFd>`, and `as_raw_fd`
+            // returns that pidfd. The AsyncFd owns `watched` and so one strong
+            // reference, which keeps the pidfd open until it deregisters.
+            unsafe { tokio::io::unix::AsyncFd::register(watched) }.map_err(std::io::Error::from)
         })
         .transpose()?;
-    let process = tokio::io::unix::AsyncFd::new(process)?;
+    // SAFETY: as above. `process.task` is the `Arc<OwnedFd>` that
+    // `as_raw_fd` reports, kept open by the reference the AsyncFd owns.
+    let process = unsafe { tokio::io::unix::AsyncFd::register(process) }?;
     Ok(tokio::spawn(async move {
         // Death and monitor failure both revoke before the callback returns.
         tokio::select! {
