@@ -17,6 +17,7 @@ pub mod block_actions;
 pub mod block_edit;
 pub mod block_markdown;
 pub mod field;
+mod replace_text;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
