@@ -3008,12 +3008,21 @@ pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> O
 }
 
 /// Publish the compositor's Wayland socket name to
-/// `$XDG_RUNTIME_DIR/tilo-session/wayland-display`. Last writer wins — the
-/// file answers "what do I connect to *now*"; the printed stderr line stays
-/// authoritative for a specific compositor. Never fatal on failure. Returns
-/// the unlink guard so the file disappears with the process.
+/// `$XDG_RUNTIME_DIR/tilo-session/wayland-display`. The file belongs to the
+/// session that published it while that session runs: a second compositor
+/// in the same runtime directory (a headless one beside the desktop) leaves
+/// it alone, and its printed stderr line is how it is reached. Never fatal
+/// on failure. Returns the unlink guard so the file disappears with the
+/// process.
 fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop> {
     let path = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    if another_live_session_published(&path, socket_name) {
+        eprintln!(
+            "tilo compositor: {} names another running session; leaving it",
+            path.display()
+        );
+        return None;
+    }
     // 0700 when created: the test-control socket may share this directory.
     if let Some(dir) = path.parent()
         && let Err(e) = std::os::unix::fs::DirBuilderExt::mode(
@@ -3037,12 +3046,34 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
 }
 
-/// [`tilo_paths::login::WORKSPACE_ID_FILE`] beside the published Wayland display, written off
-/// this thread; `None` where the display has no place.
-fn published_room() -> Option<crate::compositor::published_room::PublishedRoom> {
-    let display = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+/// Whether the display file at `path` names a Wayland socket other than
+/// `ours` that a running compositor still answers on, beside it in the
+/// runtime directory.
+pub(crate) fn another_live_session_published(path: &Path, ours: &std::ffi::OsStr) -> bool {
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(named) = std::fs::read(path) else {
+        return false;
+    };
+    let named = std::ffi::OsStr::from_bytes(&named);
+    let bare = Path::new(named).file_name() == Some(named);
+    if named == ours || !bare {
+        return false;
+    }
+    path.parent()
+        .and_then(Path::parent)
+        .is_some_and(|runtime| UnixStream::connect(runtime.join(named)).is_ok())
+}
+
+/// [`tilo_paths::login::WORKSPACE_ID_FILE`] beside the Wayland display this
+/// compositor published, written off this thread; `None` where it published
+/// none, so the session that did keeps its own.
+fn published_room(
+    display: Option<&UnlinkOnDrop>,
+) -> Option<crate::compositor::published_room::PublishedRoom> {
     crate::compositor::published_room::PublishedRoom::at(
-        display.with_file_name(tilo_paths::login::WORKSPACE_ID_FILE),
+        display?
+            .0
+            .with_file_name(tilo_paths::login::WORKSPACE_ID_FILE),
     )
 }
 
@@ -10054,7 +10085,7 @@ pub fn run() {
         }
     });
     let chooser_attended = Arc::new(AtomicBool::new(false));
-    let mut published_room = published_room();
+    let mut published_room = published_room(display_file.as_ref());
     // Held for the session, like the chooser service that gives into it.
     let chosen_documents = mount_documents();
     let chooser_service = start_chooser_service(
@@ -19268,6 +19299,33 @@ mod tests {
     }
 
     // publishing the socket name for the nested dev loop
+
+    #[test]
+    fn a_second_compositor_leaves_the_display_file_of_a_running_session() {
+        let runtime = tempfile::tempdir().unwrap();
+        let display = session_display_path(Some(runtime.path().into())).unwrap();
+        std::fs::create_dir_all(display.parent().unwrap()).unwrap();
+        std::fs::write(&display, "wayland-1").unwrap();
+        let ours = std::ffi::OsStr::new("wayland-2");
+
+        let running =
+            std::os::unix::net::UnixListener::bind(runtime.path().join("wayland-1")).unwrap();
+        assert!(
+            another_live_session_published(&display, ours),
+            "the desktop on wayland-1 still runs: its file is its own"
+        );
+        assert!(
+            !another_live_session_published(&display, std::ffi::OsStr::new("wayland-1")),
+            "a file naming this compositor's own socket is its own"
+        );
+        drop(running);
+        assert!(
+            !another_live_session_published(&display, ours),
+            "a session that is gone leaves its file to be replaced"
+        );
+        std::fs::write(&display, "../wayland-1").unwrap();
+        assert!(!another_live_session_published(&display, ours));
+    }
 
     #[test]
     fn display_file_is_published_under_the_runtime_dir() {

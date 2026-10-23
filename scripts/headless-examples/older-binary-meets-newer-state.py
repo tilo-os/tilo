@@ -29,6 +29,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -92,6 +93,9 @@ def main():
     # A session that writes into the real ~/.config/tilo would be testing the
     # developer's desktop, not this.
     env["TILO_FS_ACL_PATH"] = str(OUT / "fs-capabilities.json")
+    # Its own runtime directory: the desktop this runs beside keeps its
+    # sockets and session files.
+    env["XDG_RUNTIME_DIR"] = tempfile.mkdtemp(prefix="tilo-rt-")
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
 
