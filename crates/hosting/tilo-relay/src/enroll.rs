@@ -1365,9 +1365,8 @@ fn verify_response(
     let response: IntroducedResponse = postcard::from_bytes(bytes)
         .context("enrollment response is not signed by the identity or its device")?;
     let issuer = &response.issuer;
-    if issuer.device_public_key != token.issuer_device_public_key
-        || issuer.user_public_key != token.user_public_key
-    {
+    let token_issuer = (token.issuer_device_public_key, token.user_public_key);
+    if (issuer.device_public_key, issuer.user_public_key) != token_issuer {
         bail!("enrollment response comes from another device than the token's");
     }
     verify_device_cert_at(issuer, token.issued_at_ns)
@@ -1834,13 +1833,14 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                 .and_then(|plaintext| verify_response(&plaintext, &token)) else {
                     continue;
                 };
-                if payload.nonce != token.nonce
-                    || payload.recipient_device_public_key != request.device_public_key
-                    || payload.relay_service_node_id != request.relay_service_node_id
-                    || payload.cert.device_public_key != request.device_public_key
-                    || payload.cert.user_public_key != token.user_public_key
-                    || payload.cert.capabilities != token.capabilities
-                {
+                let this_device = request.device_public_key;
+                let answers_this_request = payload.nonce == token.nonce
+                    && payload.relay_service_node_id == request.relay_service_node_id;
+                let addressed_to_this_device = payload.recipient_device_public_key == this_device
+                    && payload.cert.device_public_key == this_device;
+                let certifies_the_token = payload.cert.user_public_key == token.user_public_key
+                    && payload.cert.capabilities == token.capabilities;
+                if !(answers_this_request && addressed_to_this_device && certifies_the_token) {
                     continue;
                 }
                 verify_device_cert_at(&payload.cert, now_ns()?)
@@ -2273,24 +2273,19 @@ fn expected_pair(options: &ApprovalOptions<'_>) -> anyhow::Result<Option<([u8; 3
 /// certificate the person's key holders approved.
 fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<ApprovalIdentity> {
     let paths = IdentityPaths::under(options.identity_root);
-    let (root, user_public_key) = match options.approved {
-        Some(approved) => {
-            if options.kind != EnrollmentKind::PersonalDevice {
-                bail!("a home server is added from the device you set up first");
-            }
-            verify_device_cert(approved).context("the approved certificate does not verify")?;
-            if expected_pair(options)?
-                .is_some_and(|(device, _)| device != approved.device_public_key)
-            {
-                bail!("the approved certificate is for another device");
-            }
-            (None, approved.user_public_key)
+    let (root, user_public_key) = if let Some(approved) = options.approved {
+        if options.kind != EnrollmentKind::PersonalDevice {
+            bail!("a home server is added from the device you set up first");
         }
-        None => {
-            let root = load_approval_root(options.identity_root, options.identity_dir)?;
-            let user_public_key = root.public_key();
-            (Some(root), user_public_key)
+        verify_device_cert(approved).context("the approved certificate does not verify")?;
+        if expected_pair(options)?.is_some_and(|(device, _)| device != approved.device_public_key) {
+            bail!("the approved certificate is for another device");
         }
+        (None, approved.user_public_key)
+    } else {
+        let root = load_approval_root(options.identity_root, options.identity_dir)?;
+        let user_public_key = root.public_key();
+        (Some(root), user_public_key)
     };
     let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)?;
     let issuer_cert = tilo_user_identity::persist::read_device_cert(
@@ -3025,6 +3020,28 @@ fn pair_device_cli(
     result
 }
 
+/// `tilo-enroll pair`: join the person's home peers from this machine.
+fn pair_home_peer(
+    identity_root: &std::path::Path,
+    label: &str,
+    timeout: u64,
+    home_peer_output: &std::path::Path,
+) -> anyhow::Result<()> {
+    pair(
+        JoinOptions {
+            identity_root,
+            label,
+            timeout,
+            kind: EnrollmentKind::HomePeer,
+            home_peer_output: Some(home_peer_output),
+            identity_dir: None,
+            requester_lease: None,
+            port: NEARBY_PORT,
+        },
+        None,
+    )
+}
+
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Some(uid) = cli.person_uid {
@@ -3051,19 +3068,7 @@ fn run() -> anyhow::Result<()> {
             label,
             timeout,
             home_peer_output,
-        } => pair(
-            JoinOptions {
-                identity_root: &identity_root,
-                label: &label,
-                timeout,
-                kind: EnrollmentKind::HomePeer,
-                home_peer_output: Some(&home_peer_output),
-                identity_dir: None,
-                requester_lease: None,
-                port: NEARBY_PORT,
-            },
-            None,
-        ),
+        } => pair_home_peer(&identity_root, &label, timeout, &home_peer_output),
         Command::PairDevice {
             identity_root,
             identity_dir,
