@@ -3,10 +3,10 @@
 //! The relay itself runs no apps and links none: it carries
 //! [`Envelope::RemoteAction`](crate::Envelope::RemoteAction) frames between
 //! devices of a workspace without executing them. A process that embeds the
-//! relay and *does* host apps supplies an [`AppServingPlane`] to
-//! [`Relay::start_with_app_serving`](crate::Relay::start_with_app_serving);
-//! frames addressed to the relay's own device are then answered by it, and
-//! the host advertises [`ServiceCapabilities::app_serving`](crate::ServiceCapabilities::app_serving).
+//! relay and *does* host apps supplies an [`AppServingPlane`] to the host
+//! ([`HostConfig::apps`](crate::host::HostConfig::apps)); frames addressed
+//! to the host's own device are then answered by it, and a relay advertises
+//! its `app_serving` service.
 //! Without one, the capability stays off and such frames are refused as
 //! undeliverable — all but the governance of the rooms the relay governs,
 //! which it answers itself ([`crate::rooms::GovernedPlane`]).

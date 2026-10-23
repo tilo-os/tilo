@@ -30,6 +30,8 @@ mod applications;
 mod authority;
 mod collaboration;
 mod content;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures;
 pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, RoomContent};
 mod desktop_writes;
@@ -50,6 +52,8 @@ mod publisher;
 mod revocations;
 #[cfg(any(feature = "agents", feature = "web"))]
 pub(crate) mod sealed_records;
+#[cfg(all(any(test, feature = "test-support"), feature = "agents"))]
+pub use sealed_records::fixtures as sealed_fixtures;
 #[cfg(feature = "web")]
 mod spectator_keys;
 #[cfg(feature = "agents")]
@@ -759,7 +763,7 @@ struct RoomsInner {
     /// ([`layout_scope`]).
     layouts: layout_scope::Layouts,
     /// Whether the records its rooms hold in the clear are sealed: only once
-    /// the host's operator decided it ([`crate::reseal`]).
+    /// the host's operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]
     resealing: std::sync::atomic::AtomicBool,
 }

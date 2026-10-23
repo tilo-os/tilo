@@ -20,7 +20,7 @@ use super::{
     ADMIT, CANCEL_INVITATION, DECLINE, GovernedPlane, HostRoomActions, INVITATIONS, JOIN_REQUESTS,
 };
 use crate::app_serving::AppServingPlane as _;
-use crate::rooms::tests::{governor, guest_device, signed_pre_admission, view_read_relay};
+use crate::rooms::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::rooms::{PreAdmitRequest, Rooms, SetMemberRoleRequest};
 
 /// What a pending answer comes to, on this runtime.
@@ -170,14 +170,14 @@ const INVITE_FAMILY: [&str; 6] = [
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let (room, workspace, host) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
@@ -253,14 +253,14 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let (room, workspace, host) = governed(rooms).await;
 
     // The desktop's invitation: seconds take precedence over the hours an
@@ -314,14 +314,14 @@ async fn an_invitation_lasts_the_seconds_the_desktop_asked() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn invitations_run_through_the_rooms_own_methods() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let (room, workspace, host) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
 
@@ -437,14 +437,14 @@ async fn invitations_run_through_the_rooms_own_methods() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn roles_follow_the_room_and_destructive_governance_waits_for_the_person() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let (room, workspace, host) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
     let bo = admit(rooms, &room, &owner, 2).await;
@@ -586,14 +586,14 @@ async fn a_host_without_apps_answers_only_its_rooms_governance() {
     feature = "agents",
     expect(
         clippy::significant_drop_tightening,
-        reason = "Relay::shutdown consumes the relay after the assertions"
+        reason = "TestHost::shutdown consumes the host after the assertions"
     )
 )]
 async fn a_member_who_may_install_bots_asks_the_rooms_host_for_one_and_takes_it_back() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
-    let relay = view_read_relay(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms().unwrap();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
     let (room, workspace, host) = governed(rooms).await;
     let ada = admit(rooms, &room, &owner, 1).await;
     let standup = json!({ "entry": "so.tilo.bots.standup", "version": "1.2.0" });

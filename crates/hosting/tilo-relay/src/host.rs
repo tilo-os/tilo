@@ -399,9 +399,11 @@ fn host_handlers(
         ),
         (
             tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
-            Arc::new(crate::workspace_join::WorkspaceJoinProtocol::new(
-                rooms.join_service(),
-            )),
+            Arc::new(
+                tilo_relay_session::workspace_join::WorkspaceJoinProtocol::new(
+                    rooms.join_service(),
+                ),
+            ),
         ),
         (
             crate::rooms::ROOM_ADMIN_ALPN,
@@ -565,6 +567,19 @@ impl RoomHost {
     #[must_use]
     pub fn node_addr(&self) -> iroh_base::EndpointAddr {
         self.sessions.endpoint.addr()
+    }
+
+    /// The compactor of the workspaces hosted here.
+    #[cfg(test)]
+    pub(crate) const fn compactor(&self) -> &crate::compaction::Compactor {
+        &self.sessions.handler.compactor
+    }
+
+    /// The durable records of the rooms hosted here, for a service the
+    /// embedder runs beside them.
+    #[must_use]
+    pub fn room_records(&self) -> crate::room_records::RoomRecords {
+        self.sessions.room_records()
     }
 
     /// The certificate this host proves itself with.

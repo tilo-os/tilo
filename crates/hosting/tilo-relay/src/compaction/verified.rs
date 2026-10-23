@@ -54,7 +54,7 @@ pub(super) struct Signatures {
 }
 
 /// Tests read the desktop's frames, as a relay started with
-/// [`Relay::start`](crate::daemon::Relay::start) does.
+/// a relay does when it starts.
 #[cfg(test)]
 impl Default for Signatures {
     fn default() -> Self {
