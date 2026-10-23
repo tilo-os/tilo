@@ -1,0 +1,42 @@
+#!/usr/bin/bash
+# Keep the clock floor systemd starts from: the authenticated wall time, as
+# the modification time of /var/lib/systemd/timesync/clock.
+#
+# PID 1 advances the system clock to that timestamp right after switching to
+# the installed root (systemd's clock epoch, forward only), so a real-time
+# clock that comes up behind (the 83ED's PMIC counter restarted from zero on
+# one reboot and took the clock five weeks back) never starts the clock
+# before the last time this records. systemd-timesyncd would keep the file,
+# but chrony is the time authority and timesyncd is masked.
+#
+# Only time chrony has synchronised from the NTS-only source set counts (the
+# same gate image trust uses): an unsynchronised clock, or one an
+# unauthenticated source moved, must never become a floor, since a floor in
+# the future could not be undone by the network later. The floor never moves
+# back.
+set -euo pipefail
+
+FLOOR="${TILO_CLOCK_FLOOR:-/var/lib/systemd/timesync/clock}"
+TRUSTED_TIME="${TILO_CLOCK_FLOOR_TRUSTED_TIME:-/usr/libexec/tilo-image-trust-staged}"
+
+if ! now_ns="$("$TRUSTED_TIME" --trusted-time 2>/dev/null)"; then
+  echo 'tilo-clock-floor: the clock is not synchronised from authenticated time; the floor stays' >&2
+  exit 0
+fi
+case "$now_ns" in
+  ''|*[!0-9]*) echo "tilo-clock-floor: unexpected trusted time '$now_ns'" >&2; exit 1 ;;
+esac
+now=$((now_ns / 1000000000))
+
+if [ -e "$FLOOR" ] || [ -L "$FLOOR" ]; then
+  [ -f "$FLOOR" ] && [ ! -L "$FLOOR" ] \
+    || { echo "tilo-clock-floor: $FLOOR is not a regular file" >&2; exit 1; }
+  floor="$(stat -c %Y "$FLOOR")"
+  if [ "$floor" -ge "$now" ]; then
+    exit 0
+  fi
+else
+  mkdir -p -m 0755 "$(dirname "$FLOOR")"
+  : >"$FLOOR"
+fi
+touch -m -d "@$now" "$FLOOR"
