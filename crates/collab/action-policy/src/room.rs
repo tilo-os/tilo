@@ -342,27 +342,6 @@ impl RoomPolicy {
         }
     }
 
-    /// The answer task `task`'s own grant set gives for an action of `kind`
-    /// at `node`, or `None` when the task carries no grant set.
-    #[must_use]
-    pub fn task_answer(
-        &self,
-        task: &str,
-        node: &TreePath,
-        kind: ActionKind,
-        cx: &Context<'_>,
-    ) -> Option<Answer> {
-        let subject = Subject::Task(task.to_owned());
-        self.grants
-            .iter()
-            .any(|grant| grant.subject == subject)
-            .then(|| {
-                Authority::person(self.party_of(subject))
-                    .decide(node, kind, cx)
-                    .answer
-            })
-    }
-
     /// The room's grants naming a delegation subject (an agent, an app, a
     /// task), for bounding a person's authority.
     #[must_use]
@@ -449,20 +428,6 @@ impl RoomPolicy {
             }
         }
         Ok(())
-    }
-
-    /// Drop the grants that lapsed with their task
-    /// ([`Grant::lapsed_with_tasks`]). The ids dropped.
-    pub fn lapse_tasks(&mut self, open: impl Fn(&str) -> bool) -> Vec<GrantId> {
-        let mut lapsed = Vec::new();
-        self.grants.retain(|grant| {
-            let keep = !grant.lapsed_with_tasks(&open);
-            if !keep {
-                lapsed.push(grant.id.clone());
-            }
-            keep
-        });
-        lapsed
     }
 
     /// Drop the `Once` grants among `spent`: an action ran on them. Any other

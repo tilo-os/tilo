@@ -43,8 +43,10 @@ pub const AGENT_RUN: &str = "agent-run";
 /// native task stamps its steps with the task, so that is the run undo names.
 pub const TASK_RUN: &str = "task";
 
-/// Whether a group of this kind is a run that undo can name.
-fn names_a_run(kind: &str) -> bool {
+/// Whether a group of this kind is a run that undo can name: an agent's
+/// connection, or its run of a task.
+#[must_use]
+pub fn names_a_run(kind: &str) -> bool {
     kind == AGENT_RUN || kind == TASK_RUN
 }
 
@@ -65,7 +67,7 @@ impl Scope {
     pub fn of(context: Option<&ActionContext>, actor_hex: &str) -> Self {
         if let Some(group) = context
             .and_then(|context| context.group.as_ref())
-            .filter(|group| group.kind == AGENT_RUN)
+            .filter(|group| names_a_run(&group.kind))
         {
             return Self::Run(group.id.clone());
         }
@@ -88,10 +90,9 @@ impl Scope {
         let context = version.context.as_ref();
         let run = context
             .and_then(|context| context.group.as_ref())
-            .filter(|group| group.kind == AGENT_RUN);
+            .filter(|group| names_a_run(&group.kind));
         match self {
-            // A named run may be a task as well as an agent connection; the
-            // person's own scopes below still leave only agent runs out.
+            // The person's own scopes below leave every agent run out.
             Self::Run(id) => context
                 .and_then(|context| context.group.as_ref())
                 .is_some_and(|group| names_a_run(&group.kind) && &group.id == id),

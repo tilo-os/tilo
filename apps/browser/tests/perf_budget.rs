@@ -91,16 +91,20 @@ fn a_new_window_and_a_new_tab_open_while_the_engine_starts() {
         .set("XDG_CACHE_HOME", dir.path().join("cache"))
         .set("XDG_STATE_HOME", dir.path().join("state"));
 
-    // The profile's first window starts the engine host.
+    // The profile's first window starts the engine host. It does so without
+    // waiting on it, so the stand-in may not have run its first line yet.
     let (_first, first) = open_window();
-    assert_eq!(
+    let spawns = || {
         std::fs::read_to_string(dir.path().join("spawns"))
             .unwrap_or_default()
             .lines()
-            .count(),
-        1,
-        "the first window starts the engine host"
-    );
+            .count()
+    };
+    let started = Instant::now();
+    while spawns() == 0 && started.elapsed() < std::time::Duration::from_secs(20) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(spawns(), 1, "the first window starts the engine host");
     // Its time is mostly the process's one-time setup (the font database,
     // the first text renderer: 65-75 ms on the ARM builder) and swings with
     // the machine's load, so it is held only to what tells waiting on the

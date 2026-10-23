@@ -262,13 +262,41 @@ impl Rooms {
         if node.room_id() != Some(governed.room()) {
             return Err(CollaborationError::new("the node is not in this room"));
         }
+        let workspace_id = governed.workspace_id();
         let now = system_time(tilo_clock::unix_now_ns());
+        // The room's spectator person only watches: the relay takes no
+        // change from it anywhere. Its devices come and go with page loads
+        // and are on no roster, so they are answered as that person.
+        if self.watches_only(workspace_id, device).await {
+            return Ok(false);
+        }
         let member = governed
             .peer()
             .permissions(device.device_public_key, now)
             .map_err(CollaborationError::new)?;
         drop(governed);
         Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
+    }
+
+    /// Whether `device` is of the spectator person of the room hosted as
+    /// `workspace_id`.
+    async fn watches_only(&self, workspace_id: u64, device: &DeviceCert) -> bool {
+        let workspace = self
+            .inner
+            .host
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned();
+        match workspace {
+            Some(workspace) => workspace
+                .lock()
+                .await
+                .spectators
+                .is_some_and(|spectators| spectators.root == device.user_public_key),
+            None => false,
+        }
     }
 
     /// A page's change to who is in a room and with which role.

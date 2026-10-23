@@ -4250,7 +4250,11 @@ impl ChromeState {
     ) {
         self.quick_settings.do_not_disturb = policy.do_not_disturb;
         self.notification_policy = policy;
-        self.notification_policy_checked = Some(std::time::Instant::now());
+        // The test's policy stands for the chrome's life: the periodic
+        // reread of the settings file never comes due, so a slow test does
+        // not take back what it set (a test `set_dnd` is not written down).
+        self.notification_policy_checked =
+            std::time::Instant::now().checked_add(std::time::Duration::from_secs(24 * 3600));
     }
 
     pub fn set_session_locked(&mut self, locked: bool) {

@@ -10,7 +10,7 @@ use tilo_actions::{ActionContext, ActionKey, Described, Did, Scalar};
 use tilo_sort::CompactSort as _;
 
 use crate::ids::WorkspaceId;
-use crate::task::WorkspaceEffectReceipt;
+use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
 use crate::workspace::{UserId, WORKSPACE_GOVERNANCE_APP_ID};
 

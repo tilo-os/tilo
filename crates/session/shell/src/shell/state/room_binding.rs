@@ -51,7 +51,6 @@ fn holds_anything(left: &Workspace) -> bool {
     left.strips
         .iter()
         .any(|strip| !strip.window_groups.is_empty())
-        || !left.tasks.is_empty()
         || !left.effect_receipts.is_empty()
         || !left.shortcuts.is_empty()
         || !left.schedule_claims.is_empty()
@@ -187,7 +186,6 @@ impl WorkspaceTree {
             kept.sandbox = std::mem::take(&mut left.sandbox);
             kept.presets = std::mem::take(&mut left.presets);
             kept.default_apps = left.default_apps.clone();
-            kept.tasks = std::mem::take(&mut left.tasks);
             kept.effect_receipts = std::mem::take(&mut left.effect_receipts);
             kept.shortcuts = std::mem::take(&mut left.shortcuts);
             kept.schedule_claims = std::mem::take(&mut left.schedule_claims);

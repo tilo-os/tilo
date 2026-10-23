@@ -383,29 +383,3 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
         "detached rows disappear and the workspace's first write is not a change"
     );
 }
-
-#[test]
-fn workspace_activity_admitted_tasks_are_projected_read_only() {
-    let workspace = Workspace::new(WorkspaceId(9), "Design");
-    let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
-    let task: tilo_desktop_model::WorkspaceTask = serde_json::from_value(serde_json::json!({
-        "id":"real-task", "title":"Review actual admission", "description":"", "status":"queued", "route":"manual", "created_by":"author", "assigned_agent":null, "created_at":1, "updated_at":1
-    })).unwrap();
-    let tasks = doc
-        .put_object(ROOT, "tasks_v1", automerge::ObjType::Map)
-        .unwrap();
-    doc.put(tasks, "real-task", serde_json::to_vec(&task).unwrap())
-        .unwrap();
-    doc.commit();
-    let snapshot = ActivitySnapshot::new(
-        DesktopTree {
-            active: workspace.id,
-            workspaces: vec![workspace],
-            ..Default::default()
-        },
-        doc,
-    )
-    .unwrap();
-    assert_eq!(snapshot.active_workspace().unwrap().tasks, vec![task]);
-}

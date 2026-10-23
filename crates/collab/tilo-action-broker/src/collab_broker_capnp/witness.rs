@@ -261,7 +261,7 @@ impl CapnpBrokerState {
         if !requires_store_witness(app, &offered.action) {
             return Ok(None);
         }
-        let mut binding = run.native.clone().ok_or("native task binding absent")?;
+        let mut binding = run.native.clone();
         binding.revision = runtime_collab::native_task_revision(lease)
             .ok_or("invalid native lease")?
             .1;
@@ -269,7 +269,7 @@ impl CapnpBrokerState {
         self.authorize_task_action(
             run,
             &crate::services::NativeTaskActionRequirement {
-                binding: Some(binding.clone()),
+                binding: binding.clone(),
                 app: app.into(),
                 resource_kind: offered.resource_kind.clone(),
                 resource: offered.resource.clone(),
@@ -368,18 +368,6 @@ impl CapnpBrokerState {
         let (completer, pending) = tilo_actions::remote::pending();
         let state = Arc::clone(self);
         let request = request.clone();
-        // "Allow for this task" lets a session-delegated agent's run go on
-        // without asking again; it ends with the run.
-        let task = match caller.principal() {
-            tilo_actions::remote::CallerPrincipal::Agent(agent)
-                if question.actor.session_delegated =>
-            {
-                caller
-                    .execution_id()
-                    .map(|execution| (agent.clone(), execution))
-            }
-            _ => None,
-        };
         // The person answers in their own time; nothing here holds a
         // runtime while they decide.
         let spawned = std::thread::Builder::new()
@@ -392,16 +380,6 @@ impl CapnpBrokerState {
                     state.show_waiting(&question, &request, false);
                     completer.complete(Err(ActionHostError::NotPermitted));
                     return;
-                }
-                if answer == AppActionConsent::Session
-                    && let Some((agent, execution)) = &task
-                {
-                    super::allow_for_task(
-                        agent,
-                        *execution,
-                        (&question.request.room, &question.request.target_app),
-                        &question.request.person,
-                    );
                 }
                 completer.complete(
                     state

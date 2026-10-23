@@ -60,6 +60,8 @@ enum Command {
     Remove(String),
     Pin(String, bool),
     OpenAction(String),
+    /// Show an extension's settings page.
+    OpenSettings(String),
     ClosePanel,
 }
 
@@ -85,6 +87,8 @@ enum Outcome {
         refused: Option<String>,
         profile: Profile,
     },
+    /// An extension the daily check brought up to date.
+    Updated(extensions::Updated),
 }
 
 /// A change to the profile, made on the profile's worker.
@@ -102,7 +106,6 @@ struct Profile {
     infos: Vec<ExtensionInfo>,
     installed: Vec<Installed>,
     wanted: Vec<Wanted>,
-    unwanted: Vec<String>,
     /// Icons of extensions the read was told it did not know yet.
     icons: Vec<(String, Option<vello::peniko::ImageData>)>,
 }
@@ -131,11 +134,6 @@ fn read_profile(known: &HashSet<String>) -> Profile {
             })
         })
         .collect();
-    let unwanted = installed
-        .iter()
-        .filter(|extension| !extension.enabled)
-        .map(|extension| extension.id.clone())
-        .collect();
     let icons = installed
         .iter()
         .filter(|extension| !known.contains(&extension.id))
@@ -150,10 +148,13 @@ fn read_profile(known: &HashSet<String>) -> Profile {
         infos,
         installed,
         wanted,
-        unwanted,
         icons,
     }
 }
+
+/// How often the Web Store is asked for newer versions: an ad blocker's
+/// rules come with its updates.
+const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// What the anchored panel shows.
 enum Panel {
@@ -184,7 +185,53 @@ pub struct ExtensionController {
     panel: Option<Panel>,
     file_path: ui::LocalState<String>,
     chromium_version: String,
+    /// Extensions to turn on (`true`) or off through the manager extension.
+    switches: Vec<(String, bool)>,
+    /// What this session turned on or off, so each is asked once.
+    switched: HashMap<String, bool>,
+    /// The manager pages at work, and when each was opened.
+    switching: Vec<(SharedEngine, ui::time::Instant)>,
+    /// When the store was last asked for updates.
+    updated_at: Option<ui::time::Instant>,
+    /// Extensions an update left off until the person allows more access.
+    awaiting: Vec<String>,
 }
+
+/// The switches `installed` asks for that this session has not made yet,
+/// noting them as made: an extension is turned on or off once a session,
+/// and again each time the person changes it.
+fn switches_for(
+    installed: &[Installed],
+    switched: &mut HashMap<String, bool>,
+) -> Vec<(String, bool)> {
+    installed
+        .iter()
+        .filter(|extension| {
+            switched.insert(extension.id.clone(), extension.enabled) != Some(extension.enabled)
+        })
+        .map(|extension| (extension.id.clone(), extension.enabled))
+        .collect()
+}
+
+/// The manager page that makes `switches`.
+fn manager_url(manager: &str, switches: &[(String, bool)]) -> String {
+    let list = |on: bool| {
+        switches
+            .iter()
+            .filter(|(_, enabled)| *enabled == on)
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    format!(
+        "chrome-extension://{manager}/manage.html?on={}&off={}",
+        list(true),
+        list(false)
+    )
+}
+
+/// How long a manager page may take before it is let go.
+const SWITCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl ExtensionController {
     pub fn new(active: bool) -> Self {
@@ -203,6 +250,11 @@ impl ExtensionController {
             panel: None,
             file_path: ui::LocalState::new(String::new()),
             chromium_version: web_store::FALLBACK_CHROMIUM_VERSION.to_owned(),
+            switches: Vec::new(),
+            switched: HashMap::new(),
+            switching: Vec::new(),
+            updated_at: None,
+            awaiting: Vec::new(),
         }
     }
 
@@ -277,6 +329,18 @@ impl ExtensionController {
                         extensions::set_approved(&info, true).map_err(|error| error.to_string())
                     });
                 }
+                Outcome::Updated(extensions::Updated::Installed(info)) => {
+                    // The engine runs the new version once it loads it again.
+                    if let Some(id) = extensions::chrome_id(&info) {
+                        self.host.forget(&id);
+                    }
+                }
+                Outcome::Updated(extensions::Updated::AwaitsApproval(info)) => {
+                    if let Some(id) = extensions::chrome_id(&info) {
+                        self.host.forget(&id);
+                    }
+                    self.awaiting.push(info.name);
+                }
                 Outcome::Staged(Err(error)) | Outcome::Installed(Err(error)) => {
                     self.panel = Some(Panel::Message(format!(
                         "Could not add the extension: {error}"
@@ -291,9 +355,11 @@ impl ExtensionController {
             self.read_profile();
         }
         let now = ui::time::now();
+        self.check_for_updates(now);
         let shown = badges_shown(&self.installed, ui::window_toolbar::is_hosted());
         self.host.probe(&shown, now);
         self.host.flush(engine);
+        changed |= self.switch(engine, now);
         if let Some(Panel::Popup {
             engine: popup,
             size,
@@ -383,13 +449,84 @@ impl ExtensionController {
 
     /// Bring the engine and the window in line with a read of the profile.
     fn apply_profile(&mut self, profile: Profile) {
-        self.host
-            .reconcile(&profile.wanted, &profile.unwanted, ui::time::now());
+        self.host.reconcile(&profile.wanted, &[], ui::time::now());
+        // On and off through the manager, which keeps an extension's data:
+        // each once a session, so one Chromium remembers from an earlier
+        // run is in the state the person chose.
+        for (id, enabled) in switches_for(&profile.installed, &mut self.switched) {
+            if !enabled {
+                self.host.forget(&id);
+            }
+            self.switches.push((id, enabled));
+        }
         self.icons
             .retain(|id, _| profile.installed.iter().any(|e| &e.id == id));
         self.icons.extend(profile.icons);
         self.installed = profile.installed;
         self.infos = profile.infos;
+    }
+
+    /// Ask the Web Store for newer versions of its extensions, on a worker,
+    /// once a day.
+    fn check_for_updates(&mut self, now: ui::time::Instant) {
+        if self.busy
+            || self.infos.is_empty()
+            || self
+                .updated_at
+                .is_some_and(|at| now.saturating_duration_since(at) < UPDATE_INTERVAL)
+        {
+            return;
+        }
+        self.updated_at = Some(now);
+        let infos = self.infos.clone();
+        let version = self.chromium_version.clone();
+        let outcomes = self.outcomes.clone();
+        std::thread::spawn(move || {
+            let root = extensions::extensions_dir();
+            for info in infos {
+                match extensions::update_from_store(&info, &version, &root) {
+                    Ok(Some(updated)) => {
+                        if let Ok(mut queue) = outcomes.lock() {
+                            queue.push(Outcome::Updated(updated));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, extension = %info.name, "extension update failed");
+                    }
+                }
+            }
+        });
+    }
+
+    /// Open one manager page for the switches asked for, and let go of the
+    /// pages that are done. Returns whether anything changed.
+    fn switch(&mut self, engine: &SharedEngine, now: ui::time::Instant) -> bool {
+        let before = self.switching.len();
+        self.switching.retain(|(page, opened)| {
+            let done = page.drain_events().into_iter().any(|event| {
+                matches!(event, ui::webview::WebViewEvent::TitleChanged(title) if title.starts_with("done"))
+            });
+            !done && now.saturating_duration_since(*opened) < SWITCH_TIMEOUT
+        });
+        let mut changed = self.switching.len() != before;
+        if self.switches.is_empty() {
+            return changed;
+        }
+        let Some(manager) = extensions::manager_dir()
+            .as_deref()
+            .and_then(extensions::manager_id)
+        else {
+            return changed;
+        };
+        let url = manager_url(&manager, &self.switches);
+        if let Ok(page) = engine.create_tab() {
+            page.send(WebViewCommand::Navigate(url));
+            self.switching.push((page, now));
+            self.switches.clear();
+            changed = true;
+        }
+        changed
     }
 
     fn info_of(&self, id: &str) -> Option<&ExtensionInfo> {
@@ -443,7 +580,12 @@ impl ExtensionController {
                 }
             }
             Command::Cancel | Command::ClosePanel => self.panel = None,
-            Command::Enable(id) => self.set_enabled(&id, true),
+            Command::Enable(id) => {
+                if let Some(name) = self.info_of(&id).map(|info| info.name.clone()) {
+                    self.awaiting.retain(|waiting| *waiting != name);
+                }
+                self.set_enabled(&id, true);
+            }
             Command::Disable(id) => self.set_enabled(&id, false),
             Command::Remove(id) => {
                 if let Some(info) = self.info_of(&id).cloned() {
@@ -462,6 +604,7 @@ impl ExtensionController {
                 });
             }
             Command::OpenAction(id) => self.open_action(&id, engine),
+            Command::OpenSettings(id) => self.open_settings(&id, engine),
             // Busy: ignore a second fetch until the first settles.
             Command::Fetch(_) | Command::StageFile(_) => {}
         }
@@ -491,17 +634,51 @@ impl ExtensionController {
             self.panel = None;
             return;
         }
+        self.open_page(id.to_owned(), url, None, engine);
+    }
+
+    /// Show an extension's settings page, as large as the window allows up
+    /// to Chrome's largest panel: an ad blocker's lists need the room.
+    fn open_settings(&mut self, id: &str, engine: &SharedEngine) {
+        let Some(url) = self
+            .installed
+            .iter()
+            .find(|extension| extension.id == id)
+            .and_then(Installed::options_url)
+        else {
+            return;
+        };
+        self.open_page(format!("settings:{id}"), url, Some(POPUP_MAX), engine);
+    }
+
+    /// Open one of an extension's own pages in the panel, in a tab of its own.
+    fn open_page(
+        &mut self,
+        key: String,
+        url: String,
+        size: Option<(f32, f32)>,
+        engine: &SharedEngine,
+    ) {
         match engine.create_tab() {
-            Ok(popup) => {
-                popup.send(WebViewCommand::ReportDocumentSize(true));
-                popup.send(WebViewCommand::Navigate(url));
+            Ok(page) => {
+                page.send(WebViewCommand::ReportDocumentSize(true));
+                page.send(WebViewCommand::Navigate(url));
                 self.panel = Some(Panel::Popup {
-                    id: id.to_owned(),
-                    engine: popup,
-                    size: None,
+                    id: key,
+                    engine: page,
+                    size,
                 });
             }
             Err(error) => self.panel = Some(Panel::Message(error)),
+        }
+    }
+
+    /// The width an open extension page asks for, within `room`; `None`
+    /// when the panel shows no page. The panel is as wide as its page.
+    pub fn page_width(&self, room: f32) -> Option<f32> {
+        match &self.panel {
+            Some(Panel::Popup { size, .. }) => Some(size.unwrap_or(POPUP_SIZE).0.min(room)),
+            _ => None,
         }
     }
 
@@ -649,7 +826,7 @@ impl ExtensionController {
         };
         Some(match panel {
             Panel::Offer(package) => {
-                let content = Column::new()
+                let mut content = Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
                     .with_rhythm(ui::tokens::Rhythm::Sibling)
@@ -659,20 +836,27 @@ impl ExtensionController {
                     ))
                     .push(text(&format!("Version {}", package.info.version)))
                     .push(Box::new(
-                        Text::new(&format!("It can use: {}", package.permissions))
+                        Text::new(&CATALOG.t("browser-extension-can"))
+                            .with_role(ui::tokens::TextRole::Body),
+                    ));
+                // What it may do, one line each, as Chrome lists it.
+                for line in &package.permissions {
+                    content = content.push(Box::new(
+                        Text::new(line)
                             .with_role(ui::tokens::TextRole::Caption)
                             .dimmed(),
-                    ))
-                    .push(Box::new(
-                        Actions::new(
-                            Button::new("browser.extension.confirm", "Add extension")
-                                .on_effect(self.queue(Command::Confirm)),
-                        )
-                        .secondary(
-                            Button::new("browser.extension.cancel", "Cancel")
-                                .on_effect(self.queue(Command::Cancel)),
-                        ),
                     ));
+                }
+                let content = content.push(Box::new(
+                    Actions::new(
+                        Button::new("browser.extension.confirm", "Add extension")
+                            .on_effect(self.queue(Command::Confirm)),
+                    )
+                    .secondary(
+                        Button::new("browser.extension.cancel", "Cancel")
+                            .on_effect(self.queue(Command::Cancel)),
+                    ),
+                ));
                 (
                     Box::new(content),
                     vec![ADD_BUTTON.to_owned(), MENU_BUTTON.to_owned()],
@@ -739,7 +923,11 @@ impl ExtensionController {
         } else {
             "Off"
         };
-        let permissions = extensions::permission_summary(info).unwrap_or_else(|e| e.to_string());
+        // Its broadest access, the line Chrome lists first.
+        let permissions = extensions::permission_summary(info).map_or_else(
+            |e| e.to_string(),
+            |lines| lines.into_iter().next().unwrap_or_default(),
+        );
         let mut buttons = Vec::new();
         if info.manifest_version == 3 {
             let command = if extension.enabled {
@@ -757,6 +945,12 @@ impl ExtensionController {
                     },
                 )
                 .on_effect(self.queue(command)),
+            );
+        }
+        if extension.enabled && extension.options.is_some() {
+            buttons.push(
+                Button::new(&format!("browser.extension.settings.{id}"), "Settings")
+                    .on_effect(self.queue(Command::OpenSettings(id.clone()))),
             );
         }
         if extension.enabled && extension.action.is_some() {
@@ -835,21 +1029,26 @@ impl ExtensionController {
     pub fn notice(&self) -> Option<Element> {
         match &self.panel {
             Some(Panel::Message(message)) => Some(Box::new(Banner::info(message))),
-            _ => None,
+            _ => self.awaiting.first().map(|name| -> Element {
+                Box::new(Banner::info(CATALOG.t_args(
+                    "browser-extension-update-asks",
+                    &[("name", ui::i18n::ArgValue::Text(name.clone()))],
+                )))
+            }),
         }
     }
 }
 
 fn read_package_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
     use std::io::Read as _;
-    const LIMIT: u64 = 64 * 1024 * 1024;
+    const LIMIT: u64 = 256 * 1024 * 1024;
     let file = std::fs::File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut bytes = Vec::new();
     file.take(LIMIT + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
     if bytes.len() as u64 > LIMIT {
-        return Err("the file is larger than 64 MiB".into());
+        return Err("the file is larger than 256 MiB".into());
     }
     Ok(bytes)
 }
@@ -928,6 +1127,9 @@ mod tests {
         });
         controller.sync(&window, "");
         assert_eq!(shown(&controller), Some(POPUP_MAX));
+        // The panel is as wide as its page, within the window's room.
+        assert_eq!(controller.page_width(1200.0), Some(POPUP_MAX.0));
+        assert_eq!(controller.page_width(500.0), Some(500.0));
         // Its page called window.close(): the panel goes.
         page.push_event(ui::webview::WebViewEvent::TabClosed);
         assert!(controller.sync(&window, ""));
@@ -943,6 +1145,7 @@ mod tests {
             enabled: true,
             pinned,
             action: action.then(crate::extension_toolbar::ActionManifest::default),
+            options: None,
         };
         let installed = [
             extension("pinned", true, true),
@@ -951,5 +1154,49 @@ mod tests {
         ];
         assert_eq!(badges_shown(&installed, true), ["pinned", "listed"]);
         assert_eq!(badges_shown(&installed, false), ["pinned"]);
+    }
+
+    #[test]
+    fn turning_an_extension_off_keeps_it_installed_and_its_data() {
+        let extension = |id: &str, enabled: bool| Installed {
+            id: id.into(),
+            name: id.into(),
+            root: std::path::PathBuf::new(),
+            enabled,
+            pinned: false,
+            action: None,
+            options: None,
+        };
+        let mut switched = HashMap::new();
+        // At start each is put in the state the person chose, once.
+        let installed = [extension("blocker", true), extension("sleeper", false)];
+        assert_eq!(
+            switches_for(&installed, &mut switched),
+            [("blocker".to_owned(), true), ("sleeper".to_owned(), false)]
+        );
+        assert!(switches_for(&installed, &mut switched).is_empty());
+        // Turned off: switched off, never uninstalled.
+        let installed = [extension("blocker", false), extension("sleeper", false)];
+        assert_eq!(
+            switches_for(&installed, &mut switched),
+            [("blocker".to_owned(), false)]
+        );
+        assert_eq!(
+            manager_url(
+                "mgr",
+                &[("a".into(), true), ("b".into(), false), ("c".into(), false)]
+            ),
+            "chrome-extension://mgr/manage.html?on=a&off=b,c"
+        );
+        // The host is asked to uninstall nothing for it.
+        let mut controller = ExtensionController::new(true);
+        controller.host.reconcile(&[], &[], ui::time::now());
+        assert!(
+            controller
+                .host
+                .take_outbox()
+                .iter()
+                .all(|request| request.method != "Extensions.uninstall")
+        );
     }
 }

@@ -19,6 +19,7 @@ zeroize = { workspace = true, features = ["derive"] }
 uuid.workspace = true
 url.workspace = true
 base64.workspace = true
+tilo-agent-models = { path = "../../platform/tilo-agent-models" }
 # The settings section as a model, so an app edits it by path.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 

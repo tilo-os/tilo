@@ -199,6 +199,18 @@ pub struct SiteStatus {
     /// Chromium `base::Time` microseconds since 1601-01-01.
     pub expires: f64,
     pub permissions: Vec<(String, String)>,
+    /// The engine can put the site's permissions back to asking.
+    pub can_reset: bool,
+}
+
+/// A popup window a page opened, with the size it asked for (0 when it
+/// named none), in CSS pixels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Popup {
+    pub id: u32,
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -377,6 +389,13 @@ pub enum WebViewCommand {
     PermissionDecision {
         id: u32,
         allow: bool,
+    },
+    /// The person set a permission question aside (Escape, a click
+    /// elsewhere) without answering: the site may ask again, as when a
+    /// prompt in Chrome is dismissed. An engine that cannot tell this from
+    /// no takes it as no.
+    PermissionDismissed {
+        id: u32,
     },
     DownloadDecision {
         id: u32,
@@ -661,6 +680,36 @@ pub trait WebViewEngine: Send + Sync {
         Vec::new()
     }
 
+    /// Have the page's popup windows (`window.open` with a size: a sign-in,
+    /// a payment) opened as popups of this page, which can answer it,
+    /// rather than as tabs: [`Self::take_popups`] then lists them. An engine
+    /// that cannot goes on opening them as tabs.
+    fn accept_popups(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.accept_popups();
+        }
+    }
+
+    /// The popups the page opened since the last call.
+    fn take_popups(&self) -> Vec<Popup> {
+        self.wrapped()
+            .map(|engine| engine.take_popups())
+            .unwrap_or_default()
+    }
+
+    /// The engine of a popup [`Self::take_popups`] listed, to show it.
+    /// Dropping it closes the popup.
+    ///
+    /// # Errors
+    /// Returns an error when the popup is no longer open or this engine has
+    /// none.
+    fn adopt_popup(&self, popup: u32) -> Result<SharedEngine, String> {
+        match self.wrapped() {
+            Some(engine) => engine.adopt_popup(popup),
+            None => Err("This engine opens no popups".into()),
+        }
+    }
+
     /// Whether this backend accepts source rules instead of `WebKit` JSON.
     fn supports_native_filtering(&self) -> bool {
         false
@@ -721,6 +770,13 @@ pub trait WebViewEngine: Send + Sync {
     /// The engine this one wraps, for what only a backend can answer.
     fn wrapped(&self) -> Option<&SharedEngine> {
         None
+    }
+
+    /// The pointer shape the page last asked for where the pointer is (a
+    /// hand on a link, an I-beam on text); `None` for the default arrow, or
+    /// an engine that does not say.
+    fn cursor(&self) -> Option<winit::window::CursorIcon> {
+        self.wrapped().and_then(|engine| engine.cursor())
     }
 
     /// The page as a display list. An engine that has one is drawn from it

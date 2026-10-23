@@ -909,6 +909,9 @@ impl Room {
             }
             self.pump(workspace_id);
             if settled(self) {
+                // The session queues a change's events before the status
+                // that reports it: take what arrived since the pump above.
+                self.pump(workspace_id);
                 return;
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {

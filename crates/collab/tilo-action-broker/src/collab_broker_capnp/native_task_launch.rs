@@ -63,11 +63,7 @@ pub(super) struct NativeLaunch {
 
 impl NativeLaunch {
     fn binding(&self) -> Result<crate::services::NativeTaskBinding, String> {
-        let mut binding = self
-            .run
-            .native
-            .clone()
-            .ok_or("native launch binding absent")?;
+        let mut binding = self.run.native.clone();
         binding.revision = runtime_collab::native_task_revision(&self.lease)
             .ok_or("invalid native launch lease")?
             .1;
@@ -76,7 +72,7 @@ impl NativeLaunch {
 
     fn requirement(&self) -> Result<NativeTaskActionRequirement, String> {
         Ok(NativeTaskActionRequirement {
-            binding: Some(self.binding()?),
+            binding: self.binding()?,
             app: self.app.clone(),
             resource_kind: "applications.app".into(),
             resource: format!("app.{}", self.app),
@@ -116,7 +112,7 @@ impl NativeLaunch {
             state.authorize_task_action(
                 &self.run,
                 &NativeTaskActionRequirement {
-                    binding: Some(self.binding()?),
+                    binding: self.binding()?,
                     app: self.app.clone(),
                     resource_kind: retained.resource_kind.clone(),
                     resource: self.resource.clone(),
@@ -483,7 +479,7 @@ fn host_activation_key(
         .as_bytes()
         .first_chunk::<16>()
         .ok_or("launch digest invalid")?;
-    let binding = run.native.as_ref().ok_or("native launch binding absent")?;
+    let binding = &run.native;
     Ok(InvocationKey {
         room: run.cluster_id.clone(),
         host: state.invocation_host()?,
@@ -537,10 +533,10 @@ impl CapnpBrokerState {
         {
             return Err("host activation request changed or its outcome is uncertain".into());
         }
-        let mut binding = run.native.clone().ok_or("native launch binding absent")?;
+        let mut binding = run.native.clone();
         binding.revision = self.applied_task_revision(run)?;
         let requirement = NativeTaskActionRequirement {
-            binding: Some(binding.clone()),
+            binding: binding.clone(),
             app: app.into(),
             resource_kind: "applications.app".into(),
             resource: target.resource.into(),

@@ -66,10 +66,13 @@ pub(crate) fn scale(app: &SettingsApp, _: &Follows) -> Option<String> {
 
 pub(crate) fn resolution(app: &SettingsApp, _: &Follows) -> Option<String> {
     selected(app, |_, output, config| {
-        config
-            .mode
-            .or(output.current_mode)
-            .map(|mode| format!("{}, {}", resolution_label(mode), refresh_label(mode)))
+        config.mode.or(output.current_mode).map(resolution_label)
+    })
+}
+
+pub(crate) fn refresh_rate(app: &SettingsApp, _: &Follows) -> Option<String> {
+    selected(app, |_, output, config| {
+        config.mode.or(output.current_mode).map(refresh_label)
     })
 }
 

@@ -230,6 +230,21 @@ fn sweep_orphaned_private_entries(entries: impl Iterator<Item = PathBuf>) {
     }
 }
 
+/// One open Browser window of the profile: every tab is a window, and many
+/// are processes of their own, so "the Browser closes" is the last of them
+/// closing.
+pub use ui::storage::OpenWindow;
+
+/// Count a window among the profile's at `root`, which is made if it is not
+/// there yet: a first window opens before anything else writes to it.
+///
+/// # Errors
+/// Returns an error when the profile or its lock file cannot be made.
+pub fn open_window(root: &Path) -> std::io::Result<OpenWindow> {
+    std::fs::create_dir_all(root)?;
+    OpenWindow::open(root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

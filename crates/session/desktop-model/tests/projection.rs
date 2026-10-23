@@ -13,12 +13,12 @@ use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::projection::{
     EmptyStrips, Reader, changed_owned_entries, contents_of, declared_room, merge_room_contents,
-    project_owned_contents, project_room_records, project_workspace_shortcuts,
-    project_workspace_tasks, room_records_of, workspace_shortcuts_of, workspace_tasks_of,
+    project_owned_contents, project_room_records, project_workspace_shortcuts, room_records_of,
+    workspace_shortcuts_of,
 };
 use tilo_desktop_model::{
     AppKind, DesktopTree, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId, WorkspaceTask, WorkspaceTaskRoute, WorkspaceTaskStatus, compose_id,
+    Workspace, WorkspaceId, compose_id,
 };
 
 const ALICE: u16 = 0x0A11;
@@ -131,25 +131,9 @@ fn projection_round_trips_owned_contents_once_shared() {
         doc.put(&ROOT, "room", room().to_string()).unwrap();
         assert_eq!(declared_room(&doc), Some(room()));
     }
-    // Phase `tasks_and_record_references_round_trip`.
+    // Phase `record_references_round_trip`.
     {
         let mut doc = AutoCommit::new();
-        let task = WorkspaceTask {
-            id: "task-1".into(),
-            title: "Review".into(),
-            created_by: "ada".into(),
-            assigned_agent: None,
-            route: WorkspaceTaskRoute::Manual,
-            status: WorkspaceTaskStatus::Queued,
-            resource: None,
-            subject: None,
-            created_at: 1,
-            updated_at: 2,
-            audit: Vec::new(),
-        };
-        project_workspace_tasks(&mut doc, std::slice::from_ref(&task)).unwrap();
-        assert_eq!(workspace_tasks_of(&doc), vec![task]);
-
         let held = [("rec-1".to_string(), "note".to_string())]
             .into_iter()
             .collect();
@@ -279,62 +263,5 @@ fn shortcuts_merge_by_id_and_deletions_replicate() {
     assert_eq!(
         workspace_shortcuts_of(&bob),
         vec![shortcut("a", "A"), shortcut("b", "B")]
-    );
-}
-
-#[test]
-fn a_closed_task_takes_the_grants_given_for_it_out_of_the_room() {
-    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, RoomPolicy, Subject, TreePath};
-    use tilo_desktop_model::projection::{lapse_task_grants, project_room_policy, room_policy_of};
-    let task = |id: &str, status| WorkspaceTask {
-        id: id.into(),
-        title: id.into(),
-        created_by: "ada".into(),
-        assigned_agent: None,
-        route: WorkspaceTaskRoute::Manual,
-        status,
-        resource: None,
-        subject: None,
-        created_at: 1,
-        updated_at: 1,
-        audit: Vec::new(),
-    };
-    let for_task = |id: &str, task: &str| {
-        Grant::new(
-            id,
-            Subject::agent("helper"),
-            TreePath::room("r"),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-            Subject::person("ada"),
-        )
-        .with_lifetime(Lifetime::Task(task.into()))
-    };
-    let mut policy = RoomPolicy::new("r", "ada");
-    policy.grants.push(for_task("open-grant", "open"));
-    policy.grants.push(for_task("done-grant", "done"));
-    let mut doc = AutoCommit::new();
-    project_room_policy(&mut doc, &policy).unwrap();
-    project_workspace_tasks(
-        &mut doc,
-        &[
-            task("open", WorkspaceTaskStatus::InProgress),
-            task("done", WorkspaceTaskStatus::Done),
-        ],
-    )
-    .unwrap();
-
-    let lapsed = lapse_task_grants(&mut doc).unwrap();
-    assert_eq!(lapsed, vec![tilo_action_policy::GrantId::new("done-grant")]);
-    let held: Vec<String> = room_policy_of(&doc, "r")
-        .grants
-        .iter()
-        .map(|grant| grant.id.as_str().to_owned())
-        .collect();
-    assert!(held.contains(&"open-grant".to_owned()));
-    assert!(!held.contains(&"done-grant".to_owned()));
-    assert!(
-        lapse_task_grants(&mut doc).unwrap().is_empty(),
-        "a lapsed grant is gone from the room's grants, not merely skipped"
     );
 }

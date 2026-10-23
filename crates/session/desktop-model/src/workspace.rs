@@ -20,8 +20,8 @@ use crate::capability::Capability;
 use crate::collaborator::Collaborator;
 use crate::ids::{RoomId, WorkspaceId};
 use crate::layout::Strip;
+use crate::receipt::WorkspaceEffectReceipt;
 use crate::shared_surfaces::SharedSurfaces;
-use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(from = "StoredWorkspace")]
@@ -74,10 +74,6 @@ pub struct Workspace {
     /// mutation goes through the authority-checked methods below.
     #[serde(default)]
     pub default_apps: desktop_policy::WorkspaceDefaults,
-    /// Work shared by the room independently of any one chat thread or app.
-    /// Values are projected as a CRDT map keyed by task id.
-    #[serde(default)]
-    pub tasks: Vec<WorkspaceTask>,
     /// Consequential effects are activity, but never pretend to be edits to
     /// an app's collaborative document.
     #[serde(default, skip_serializing_if = "crate::history::omitted")]
@@ -131,8 +127,6 @@ struct StoredWorkspace {
     #[serde(default)]
     default_apps: desktop_policy::WorkspaceDefaults,
     #[serde(default)]
-    tasks: Vec<WorkspaceTask>,
-    #[serde(default)]
     effect_receipts: Vec<WorkspaceEffectReceipt>,
     #[serde(default)]
     shortcuts: Vec<tilo_automation::Shortcut>,
@@ -165,7 +159,6 @@ impl From<StoredWorkspace> for Workspace {
             sandbox: stored.sandbox,
             presets: stored.presets,
             default_apps: stored.default_apps,
-            tasks: stored.tasks,
             effect_receipts: stored.effect_receipts,
             shortcuts: stored.shortcuts,
             schedule_claims: stored.schedule_claims,
@@ -263,28 +256,6 @@ pub enum WorkspaceDefaultError {
 #[must_use]
 pub fn context_at(now: u64) -> Context<'static> {
     Context::at_secs(now).in_session(session_id())
-}
-
-/// The named task's answer, never an intersection of unrelated agent tasks.
-/// Native execution additionally requires its owner-minted exact run ceiling.
-/// `None` means no named task grant set; it is not execution authorization.
-#[must_use]
-pub fn task_bound(
-    policy: &RoomPolicy,
-    tasks: &[crate::WorkspaceTask],
-    (agent, named): (Option<&str>, Option<&str>),
-    (node, kind): (&TreePath, ActionKind),
-    cx: &Context<'_>,
-) -> Option<Answer> {
-    let task = named?;
-    if let Some(agent) = agent
-        && !tasks
-            .iter()
-            .any(|value| value.id == task && value.assigned_agent.as_deref() == Some(agent))
-    {
-        return Some(Answer::Deny);
-    }
-    policy.task_answer(task, node, kind, cx)
 }
 
 /// This process's session, which a grant given "until log out" names.
@@ -802,7 +773,7 @@ impl Workspace {
             let until = match grant.lifetime {
                 Lifetime::Until(ms) => Some(ms / 1000),
                 Lifetime::UntilRevoked => None,
-                Lifetime::Once | Lifetime::Task(_) | Lifetime::Session(_) => continue,
+                Lifetime::Once | Lifetime::Session(_) => continue,
             };
             let held = readers.entry(person.clone()).or_insert(until);
             *held = match (*held, until) {
@@ -1104,7 +1075,6 @@ impl Workspace {
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
@@ -1115,7 +1085,7 @@ impl Workspace {
 
     /// A copy holding what authority decisions read — identity, the room's
     /// policy, sandbox, presets, defaults — and none of the layout or
-    /// history: no strips, tasks, effect receipts, shortcuts, schedule
+    /// history: no strips, effect receipts, shortcuts, schedule
     /// claims or ownership-transfer records. For a caller that must not hold
     /// the tree while it asks [`Self::answer_at`] and its kin, so the copy
     /// costs the policy, not the workspace's past.
@@ -1135,7 +1105,6 @@ impl Workspace {
             sandbox,
             presets,
             default_apps,
-            tasks: _,
             effect_receipts: _,
             shortcuts: _,
             schedule_claims: _,
@@ -1155,7 +1124,6 @@ impl Workspace {
             sandbox: sandbox.clone(),
             presets: presets.clone(),
             default_apps: default_apps.clone(),
-            tasks: Vec::new(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
@@ -1217,7 +1185,6 @@ impl Default for Workspace {
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
             effect_receipts: Vec::new(),
             shortcuts: Vec::new(),
             schedule_claims: Vec::new(),
