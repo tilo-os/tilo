@@ -77,6 +77,13 @@ fn activate(app: &mut TestApp<SnippetsShell>, label: &str) {
     app.settle();
 }
 
+/// Press one of the library's actions in the window bar.
+fn press_bar(app: &mut TestApp<SnippetsShell>, id: &str) {
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+    app.settle();
+}
+
 /// The list's item for the snippet titled `title`: the node the list
 /// exports around the row, named by the row's language badge and title.
 fn list_item(app: &mut TestApp<SnippetsShell>, title: &str) -> ui::accesskit::NodeId {
@@ -164,8 +171,9 @@ fn sidebar_places_narrow_the_list() {
     let favorites = app.visible_count_for_test();
     assert!(favorites > 0 && favorites < all);
     assert_eq!(
-        app.titles.0, "Favorites",
-        "the list column is titled by its place"
+        app.core.borrow().selection_title(),
+        "Favorites",
+        "the window bar names the list by its place"
     );
     let core = app.core.borrow();
     assert!(
@@ -187,7 +195,7 @@ fn sidebar_places_narrow_the_list() {
 fn controls_submit_library_actions_as_one_undo_step_each() {
     let mut app = launched(&[snippet("Plain", "echo hi"), snippet("Templated", "")]);
     open_row(&mut app, "Plain");
-    activate(&mut app, "Favorite");
+    press_bar(&mut app, window_bar::FAVORITE);
     assert!(by_title(&app, "Plain").1.favorite);
     assert!(app.undo(), "the favorite is one undo step");
     assert!(!by_title(&app, "Plain").1.favorite);
@@ -199,7 +207,7 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
         "copying records a use"
     );
 
-    activate(&mut app, "New snippet");
+    press_bar(&mut app, window_bar::NEW_SNIPPET);
     assert_eq!(app.state().snippets.len(), 3);
     let (made, _) = by_title(&app, "Untitled snippet");
     assert_eq!(
@@ -207,10 +215,9 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
         Some(made.clone()),
         "the new snippet opens"
     );
-    // The new snippet is the one open, so its menu deletes it, once the
-    // person confirms what the host asks.
-    activate(&mut app, "More actions");
-    activate(&mut app, "Delete");
+    // The new snippet is the one open, so the bar's Delete deletes it, once
+    // the person confirms what the host asks.
+    press_bar(&mut app, window_bar::DELETE);
     assert_eq!(app.state().snippets.len(), 3, "deleting waits for consent");
     app.harness().type_text("CONFIRM");
     app.harness().key("Enter");
@@ -225,8 +232,8 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
     assert_eq!(app.state().snippets.len(), 3);
 }
 
-/// The language picker sets the chosen language; the overflow menu
-/// duplicates the open snippet and opens the copy.
+/// The language picker sets the chosen language; the window bar's
+/// Duplicate duplicates the open snippet and opens the copy.
 #[test]
 fn the_snippet_menus_set_the_language_and_duplicate() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
@@ -244,8 +251,7 @@ fn the_snippet_menus_set_the_language_and_duplicate() {
     app.settle();
     assert_eq!(by_title(&app, "Deploy").1.language, Language::Rust);
 
-    activate(&mut app, "More actions");
-    activate(&mut app, "Duplicate");
+    press_bar(&mut app, window_bar::DUPLICATE);
     let (copy_id, copy) = by_title(&app, "Deploy (copy)");
     assert_eq!(copy.body, "kubectl apply");
     assert_eq!(app.state().snippets.len(), 2);
@@ -269,8 +275,7 @@ fn duplicating_from_most_used_opens_the_copy_for_editing() {
         Selection::Smart(SmartFolder::MostUsed)
     );
     open_row(&mut app, "Deploy");
-    activate(&mut app, "More actions");
-    activate(&mut app, "Duplicate");
+    press_bar(&mut app, window_bar::DUPLICATE);
     let (copy_id, copy) = by_title(&app, "Deploy (copy)");
     assert_eq!(copy.uses.get(), 0);
     assert_eq!(
@@ -508,35 +513,26 @@ fn variable_dialog_is_semantic_and_local() {
     assert_eq!(doc.get_heads(), heads, "the dialog writes nothing");
 }
 
-/// Focusing the New button does not author a snippet; activating it does.
+/// The window bar offers New snippet without authoring one; pressing it
+/// creates one.
 #[test]
-fn focusing_new_snippet_does_not_activate_it() {
+fn showing_the_bars_new_snippet_authors_nothing_and_pressing_it_does() {
     let mut app = launched(&[snippet("Only", "")]);
-    let label = crate::tr("snippets-new");
-    let button = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .find(|(_, node)| {
-            node.label() == Some(label.as_str())
-                && node.supports_action(ui::accesskit::Action::Click)
-        })
-        .map(|(id, _)| id)
-        .expect("the New button");
-    app.harness()
-        .perform_a11y_action(button, &ui::a11y::Action::Focus)
-        .expect("the New button takes focus");
+    app.harness().present_in_window_bar();
     app.settle();
-    assert_eq!(
-        app.state().snippets.len(),
-        1,
-        "focusing a button authors nothing"
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert!(
+        bar.actions
+            .iter()
+            .any(|action| action.id == window_bar::NEW_SNIPPET),
+        "{bar:?}"
     );
-    activate(&mut app, &label);
+    assert_eq!(app.state().snippets.len(), 1, "the bar authors nothing");
+    press_bar(&mut app, window_bar::NEW_SNIPPET);
     assert_eq!(
         app.state().snippets.len(),
         2,
-        "activating it creates a snippet"
+        "pressing it creates a snippet"
     );
 }
 
@@ -620,8 +616,19 @@ fn the_content_column_lays_out_its_controls() {
     let (language, copy) = sizes(&app);
     assert_eq!(app.open_id_for_test(), Some(other));
     assert!(language.width() > language.height() && copy.width() > copy.height());
-    let targets = Framed::harness(&app).targets();
-    assert!(targets.contains_key("snippets.favorite") && targets.contains_key("snippets.more"));
+    let actions: Vec<String> = app
+        .window_toolbar()
+        .actions
+        .into_iter()
+        .map(|action| action.id)
+        .collect();
+    for id in [
+        window_bar::FAVORITE,
+        window_bar::DUPLICATE,
+        window_bar::DELETE,
+    ] {
+        assert!(actions.iter().any(|have| have == id), "{id} in {actions:?}");
+    }
 }
 
 fn has_control(app: &mut TestApp<SnippetsShell>, label: &str) -> bool {
@@ -645,11 +652,18 @@ fn captures_stage_the_starter_library_and_a_new_window_is_empty() {
     let mut detail = TestApp::<SnippetsShell>::capture(Some("detail")).unwrap();
     assert_eq!(detail.harness().inspection().viewport, [420, 760]);
     assert!(detail.state().snippets.len() >= 10);
-    assert!(has_control(&mut detail, "Back"), "the detail is pushed in");
-    detail.harness().click_named("nav-shell-back").unwrap();
+    let offers_back = || ui::window_toolbar::declared().is_some_and(|bar| !bar.leading.is_empty());
+    assert!(offers_back(), "the detail is pushed in, Back in the bar");
+    detail
+        .harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
     detail.settle();
     assert!(
-        !has_control(&mut detail, "Back"),
+        detail
+            .surface_mut::<SnippetsApp>()
+            .window_toolbar()
+            .leading
+            .is_empty(),
         "Back returns to the snippet list"
     );
 
@@ -966,7 +980,7 @@ fn a_guest_copies_a_snippet_without_being_asked() {
 }
 
 #[test]
-fn the_collapse_button_collapses_and_expands_the_sidebar() {
+fn the_window_bars_sidebar_toggle_collapses_and_expands_the_sidebar() {
     // Every motion reads as arrived: a frame that comes after the slide's
     // whole time (a busy device), where the collapse lands in one tick.
     let _arrived = ui::motion::testing::settled();
@@ -987,31 +1001,25 @@ fn the_collapse_button_collapses_and_expands_the_sidebar() {
         app.with_widget(|shell: &mut SnippetsApp| shell.sidebar_width_for_test())
             .unwrap()
     };
-    let press = |app: &mut TestApp<SnippetsShell>, name: &str| {
-        let at = app
-            .harness()
-            .controls()
-            .into_iter()
-            .find(|control| control.name.as_deref() == Some(name))
-            .and_then(|control| control.bounds)
-            .unwrap_or_else(|| panic!("the {name} control is placed"))
-            .center();
-        app.harness().click_at(at.x, at.y);
+    // The sidebar toggle is the window bar's.
+    let toggle = |app: &mut TestApp<SnippetsShell>| {
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
     };
     pump(&mut app);
     let open = width(&mut app);
     assert!(open > 0.0, "a wide window docks its sidebar");
-    press(&mut app, "Hide sidebar");
+    toggle(&mut app);
     pump(&mut app);
     assert!(
         width(&mut app) < 0.5,
-        "the button collapsed the sidebar on screen"
+        "the toggle collapsed the sidebar on screen"
     );
-    press(&mut app, "Show sidebar");
+    toggle(&mut app);
     pump(&mut app);
     assert!(
         (width(&mut app) - open).abs() < 0.5,
-        "the button expanded it again"
+        "the toggle expanded it again"
     );
 }
 
