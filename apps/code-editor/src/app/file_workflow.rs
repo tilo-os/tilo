@@ -1,6 +1,6 @@
 use super::{
     AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, PortalIntent, Project, Session,
-    TreeId, disk, explorer, source_filter,
+    TreeId, disk, source_filter,
 };
 
 impl CodeApp {
@@ -273,7 +273,7 @@ impl CodeApp {
                             buf.language = crate::model::Language::from_path(&name);
                             buf.mark_saved(text, Some(stamp));
                         }
-                        explorer::refresh(&mut self.sidebar, &self.session.project);
+                        self.explorer.show(&self.session.project);
                         self.invalidate_search_projection();
                         self.bound_node = None;
                         self.reset_language_server();
@@ -308,8 +308,8 @@ impl CodeApp {
                 self.session = Session::new(project);
                 self.adopt_presented();
                 self.invalidate_search_projection();
-                explorer::refresh(&mut self.sidebar, &self.session.project);
-                explorer::set_current(&mut self.sidebar, None);
+                self.explorer.show(&self.session.project);
+                self.explorer.set_current(None);
                 self.bound_node = None;
                 self.editor.unbind();
                 self.reset_language_server();
@@ -333,7 +333,7 @@ impl CodeApp {
     pub(super) fn open_disk_file(&mut self, path: &std::path::Path) -> Result<(), String> {
         let path = disk::canonical(path);
         if let Some(node) = self.session.project.reveal_path(&path) {
-            explorer::refresh(&mut self.sidebar, &self.session.project);
+            self.explorer.show(&self.session.project);
             self.open_node(node);
             return Ok(());
         }
@@ -342,7 +342,7 @@ impl CodeApp {
                 self.session = Session::new(project);
                 self.adopt_presented();
                 self.invalidate_search_projection();
-                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.explorer.show(&self.session.project);
                 self.bound_node = None;
                 self.reset_language_server();
                 self.open_node(node);

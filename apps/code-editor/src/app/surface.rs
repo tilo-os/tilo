@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
 
-use super::{AutoCommit, CodeApp, Command, PanelTab, Staging, TreeId, explorer};
+use super::{AutoCommit, CodeApp, Command, PanelTab, Staging, TreeId};
 use crate::actions;
 use crate::effects::CodeEditorEffect;
 use crate::project::Project;
@@ -70,7 +70,7 @@ impl CodeApp {
                             .and_then(|path| self.session.project.reveal_path(Path::new(path)))
                     })
                     .ok_or_else(|| "Code location no longer exists".to_string())?;
-                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.explorer.show(&self.session.project);
                 self.open_node(target);
                 self.pending_jump = Some((line, column));
                 if results {
@@ -364,7 +364,7 @@ impl CodeApp {
         if self.open_project_dir(root).is_ok() {
             let main = crate::disk::canonical(&root.join("src").join("main.rs"));
             if let Some(node) = self.session.project.reveal_path(&main) {
-                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.explorer.show(&self.session.project);
                 self.open_node(node);
             }
         }
@@ -385,7 +385,7 @@ impl CodeApp {
         {
             let path = crate::disk::canonical(&root.join(crate::sample_project::HARDWARE_FILE));
             if let Some(node) = self.session.project.reveal_path(&path) {
-                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.explorer.show(&self.session.project);
                 self.open_node(node);
             }
         }

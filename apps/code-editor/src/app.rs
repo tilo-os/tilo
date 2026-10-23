@@ -1,38 +1,34 @@
 //! Root widget for the code editor. Owns the [`Session`] (project + open
-//! buffers), the editor pane, the file-tree sidebar, the file header, the status
-//! model and the bottom panel — and coordinates the data flow between them.
+//! buffers), the editor pane, the file header, the status model and the bottom
+//! panel, and coordinates the data flow between them and the file tree in the
+//! shell's sidebar.
 //!
-//! Layout:
+//! Layout, in the shell's content column:
 //! ```text
-//! +----------+-------------------------------+
-//! | file     |  file header                      |
-//! | tree     +-------------------------------+
-//! | sidebar  |  find bar (when open)         |
-//! |          +-------------------------------+
-//! |          |  editor view                  |
-//! |          +-------------------------------+
-//! |          |  bottom panel (problems/term) |
-//! |          +-------------------------------+
-//! |          |  status bar                   |
-//! +----------+-------------------------------+
+//! +-------------------------------+
+//! |  file header                  |
+//! +-------------------------------+
+//! |  find bar (when open)         |
+//! +-------------------------------+
+//! |  editor view                  |
+//! +-------------------------------+
+//! |  bottom panel (problems/term) |
+//! +-------------------------------+
+//! |  status bar                   |
+//! +-------------------------------+
 //! ```
 //! The caret and diagnostics readout is a real row: the status bar reserves its
 //! band under the editor, so nothing is ever drawn over code. Searching the
 //! project and running a command belong to the platform search, which this root
 //! opens with Ctrl+P, Ctrl+Shift+P and Ctrl+Shift+F.
 //!
-//! ## Responsive sidebar
+//! ## The sidebar
 //!
-//! The file-tree sidebar is a toolkit [`SidebarDrawer`]: **docked** beside the
-//! editor when the window is wide, a floating drawer over it (behind a scrim)
-//! when it is narrow. The toolkit draws the sidebar toggle, at the top-leading
-//! corner of the sidebar and, when the sidebar is not docked open, at the
-//! leading edge of the file header. The scrim, Escape, or the toggle again
-//! dismiss the drawer.
-//!
-//! The editor is not a master-detail list, so there is no push navigation —
-//! the single primary sidebar simply docks or floats per the toolkit's
-//! breakpoint.
+//! The file tree is the shell's sidebar ([`ui::widget::NavShell`]): docked
+//! beside the editor when the window is wide, a drawer over it when it is
+//! narrow, with its toggle in the window's bar. The editor shows the project
+//! through an [`ExplorerFeed`] and reads the sidebar through its
+//! [`ui::widget::WindowBarLink`].
 
 mod continuity;
 
@@ -57,7 +53,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Effect as _;
-use ui::widget::{Button, EmptyState, FindBar, SidebarDrawer, SplitLayout, Text, Widget};
+use ui::widget::{Button, FindBar, Text, Widget, WindowBarLink};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -69,7 +65,7 @@ use crate::commands::Command;
 use crate::disk;
 use crate::doc::EditorDoc;
 use crate::editor_view::{EditorView, LspAsk};
-use crate::explorer::{self, Explorer, ExplorerEvent, ExplorerEvents};
+use crate::explorer::{ExplorerEvent, ExplorerEvents, ExplorerFeed};
 use crate::lint;
 use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
 use crate::search;
@@ -447,10 +443,12 @@ struct Opened {
 )]
 pub struct CodeApp {
     session: Session,
-    /// The project explorer (a toolkit `TreeView`); its activation and
-    /// expansion signals land in `explorer_events`.
-    sidebar: Explorer,
+    /// What the shell's sidebar lists: the project and the file on screen.
+    /// What the person does there lands in `explorer_events`.
+    explorer: ExplorerFeed,
     explorer_events: ExplorerEvents,
+    /// The shell around the editor: its sidebar, open or put away.
+    bar: Option<WindowBarLink>,
     /// The editor header's file name. A window shows one file; other files
     /// open beside it as desktop tabs, so there is no file header here.
     header: Text,
@@ -488,32 +486,13 @@ pub struct CodeApp {
     /// The file a New File command created, opened once its record arrives.
     pending_open: Option<String>,
 
-    /// The file-tree sidebar: docked when the window is wide, a floating
-    /// drawer when it is narrow.
-    drawer: SidebarDrawer,
-    /// Last known allocated width, cached so `build_layout` (which runs before
-    /// `apply_layout` has measured the window) can resolve docked vs. drawer
-    /// on the very first frame. Seeded wide so a fresh desktop window docks.
-    last_width: f64,
-    /// Where the sidebar toggle is drawn (the sidebar's header or the tab
-    /// strip's leading edge), and whether the pointer is over it.
-    /// The sidebar's no-project state, with its one "Open folder" action.
-    sidebar_empty: EmptyState,
-    /// The header row's height and the width the file header gives up to the
-    /// sidebar toggle, from the theme at layout time.
+    /// The header row's height, from the theme at layout time.
     header_h: f64,
-    toggle_slot_w: f64,
-    /// Whether the last layout gave the file header's leading slot to the
-    /// sidebar toggle. The drawer learns the window's width only when it is
-    /// drawn, so a layout made before that (a phone-width window's first)
-    /// put the search button where the toggle is painted.
-    laid_out_toggle_in_strip: bool,
     /// Last cursor position, since `MouseInput` carries no coordinates.
     last_cursor: Point,
     panel_visible: bool,
 
     rect: Rect,
-    sidebar_node: Option<NodeId>,
     header_node: Option<NodeId>,
     editor_header_node: Option<NodeId>,
     panel_toggle_node: Option<NodeId>,
@@ -894,9 +873,9 @@ impl CodeApp {
         reason = "one constructor listing every field of the editor once"
     )]
     fn from_session(session: Session, default: Option<TreeId>) -> Self {
-        let explorer_events = ExplorerEvents::default();
-        let mut sidebar = explorer::explorer(&session.project, &explorer_events);
-        explorer::set_current(&mut sidebar, default);
+        let explorer = ExplorerFeed::default();
+        explorer.show(&session.project);
+        explorer.set_current(default);
 
         let (header, header_label) = file_header(&session);
 
@@ -906,8 +885,9 @@ impl CodeApp {
 
         CodeApp {
             session,
-            sidebar,
-            explorer_events,
+            explorer,
+            explorer_events: ExplorerEvents::default(),
+            bar: None,
             header,
             header_label,
             editor: EditorView::new(),
@@ -923,22 +903,11 @@ impl CodeApp {
             demanded: Vec::new(),
             pending_command: None,
             pending_open: None,
-            drawer: SidebarDrawer::new(),
             search_button: ui::search::search_button(ui::search::SearchRequest::this_app()),
-            // Seed wide so the first frame of a desktop window (and `--shots`,
-            // 1280px) docks the sidebar; corrected from the real width once
-            // `apply_layout` measures the window.
-            last_width: f64::MAX,
-            sidebar_empty: EmptyState::new("No folder open")
-                .with_icon(ui::icons::Icon::FolderOpen)
-                .with_action("Open folder"),
             header_h: 0.0,
-            toggle_slot_w: 0.0,
-            laid_out_toggle_in_strip: false,
             last_cursor: Point::ZERO,
             panel_visible: false,
             rect: Rect::ZERO,
-            sidebar_node: None,
             header_node: None,
             editor_header_node: None,
             panel_toggle_node: None,
@@ -1008,11 +977,6 @@ impl CodeApp {
         }
     }
 
-    /// Whether there is a project to list: the root alone is no project.
-    fn has_project(&self) -> bool {
-        self.session.project.nodes.len() > 1
-    }
-
     /// The project root on disk, when a real directory is open.
     pub fn project_root(&self) -> Option<std::path::PathBuf> {
         self.session.project.root_path()
@@ -1035,82 +999,54 @@ impl CodeApp {
         &self.lsp_status
     }
 
-    /// Resolve docked vs. drawer from the allocated width. Uses the cached
-    /// `last_width` so the decision is stable across all five passes — in
-    /// particular `build_layout`, which runs before `apply_layout` has set
-    /// `self.rect` to the real window size.
-    fn sidebar_layout(&self) -> SplitLayout {
-        self.drawer.layout_for(self.last_width)
+    /// Stand in the shell: list the project in its sidebar through
+    /// `explorer`, hear the tree through `events`, and read the sidebar
+    /// through `bar`.
+    #[must_use]
+    pub(crate) fn in_shell(
+        mut self,
+        explorer: &ExplorerFeed,
+        events: &ExplorerEvents,
+        bar: WindowBarLink,
+    ) -> Self {
+        explorer.show(&self.session.project);
+        explorer.set_current(self.session.active_buffer().map(|buffer| buffer.node));
+        self.explorer = explorer.clone();
+        self.explorer_events = std::rc::Rc::clone(events);
+        self.bar = Some(bar);
+        self
     }
 
-    /// Seed the width the responsive layout resolves against, as the first
-    /// laid-out frame would, and settle the drawer to that layout's resting
-    /// state so tests read the layout without running frames.
-    #[cfg(test)]
-    pub(crate) fn set_width_hint(&mut self, width: f64) {
-        self.last_width = width;
-        self.drawer.resolve(Rect::new(0.0, 0.0, width, 1.0));
-        self.drawer.snap(self.drawer.is_open());
+    /// Show or hide the sidebar (Ctrl+B, the palette command), as the
+    /// window bar's toggle does.
+    fn toggle_sidebar(&self) {
+        if let Some(bar) = &self.bar {
+            bar.event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        }
     }
 
-    /// Whether the sidebar is currently resolved open (preference or default).
-    fn sidebar_open(&self) -> bool {
-        self.drawer.is_open()
-    }
-
-    /// Flip the sidebar open/closed (its toggle, Ctrl+B, the palette command).
-    fn toggle_sidebar(&mut self) {
-        self.drawer.toggle();
-    }
-
-    /// Snap the drawer to a final open/closed state with no animation — used by
-    /// the single-frame `--shots` renderer so a captured frame shows a settled
-    /// sidebar rather than one mid-slide.
     pub fn shots_snap_sidebar(&mut self, open: bool) {
-        self.drawer.snap(open);
+        if let Some(bar) = &self.bar {
+            bar.stage_sidebar(open);
+        }
     }
 
-    /// Whether the sidebar panel is on screen: docked with some width, or the
-    /// drawer open or still sliding.
-    fn sidebar_visible(&self) -> bool {
-        self.drawer.reveal() > 0.001
+    fn put_drawer_away(&self) {
+        if let Some(bar) = &self.bar {
+            bar.put_drawer_away();
+        }
     }
 
-    /// The sidebar panel's header row and the body under it, where the
-    /// explorer lives.
-    fn sidebar_header_and_body(&self, theme: &Theme) -> (Rect, Rect) {
-        let panel = self.drawer.sidebar_rect();
-        let header_h = f64::from(theme.tokens.metrics.header_height).min(panel.height());
-        (
-            Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + header_h),
-            Rect::new(panel.x0, panel.y0 + header_h, panel.x1, panel.y1),
-        )
-    }
-
-    /// The width the file header gives up to the sidebar toggle when the toggle
-    /// sits at the strip's leading edge: the toggle and a gap.
-    fn toggle_slot_width(theme: &Theme) -> f64 {
-        let inset = f64::from(theme.tokens.spacing.s3);
-        let side = f64::from(theme.tokens.metrics.min_pointer_target);
-        inset + side + f64::from(theme.tokens.spacing.s2)
-    }
-
-    /// Whether the toggle sits in the file header: whenever the sidebar panel
-    /// is not itself a docked column with a header to hold it.
-    fn toggle_in_tab_strip(&self) -> bool {
-        self.sidebar_layout() == SplitLayout::Overlay || self.drawer.reveal() <= 0.5
-    }
-
-    /// The window's header row, across the top of the editor: the drawer
-    /// lays its toggle out at the leading corner.
-    fn window_header_row(&mut self, theme: &Theme) -> Rect {
-        let area = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + self.header_h,
-        );
-        self.drawer.header(area, theme).toggle
+    /// The shell's sidebar toggle in the window's bar, and what the person
+    /// did there.
+    fn run_window_toolbar(&self) {
+        let Some(bar) = &self.bar else {
+            return;
+        };
+        for event in ui::window_toolbar::take_events() {
+            bar.event(&event);
+        }
+        ui::window_toolbar::declare(Some(bar.slots()));
     }
 
     /// Apply `action` to `doc` now, through the framework's door: within the
@@ -1460,7 +1396,7 @@ impl CodeApp {
             }
         }
         self.session.project.order_collaborative_children(&ordering);
-        explorer::refresh(&mut self.sidebar, &self.session.project);
+        self.explorer.show(&self.session.project);
     }
 
     fn buffer_key(&self, node: TreeId) -> String {
@@ -1870,7 +1806,7 @@ impl CodeApp {
         }
         self.seed_buffer(node);
         self.invalidate_search_projection();
-        explorer::set_current(&mut self.sidebar, Some(node));
+        self.explorer.set_current(Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
         self.refresh_header();
     }
@@ -1898,18 +1834,16 @@ impl CodeApp {
                     .get(id)
                     .is_some_and(crate::model::TreeNode::is_folder)
                 {
-                    // Echoes back as `Expand` through the tree's own
-                    // `on_expand`, which is where the folder is read.
-                    self.sidebar.toggle_expand(explorer::node_key(id));
+                    let open = !self.session.project.get(id).is_some_and(|node| {
+                        matches!(node.kind, NodeKind::Folder { expanded: true, .. })
+                    });
+                    self.apply_tree_event(ExplorerEvent::Expand(id, open));
                     return;
                 }
                 self.open_node(id);
-                // As a drawer, opening a file dismisses it so the user lands on
-                // the freshly-opened buffer (single-pane feel). Docked, the
-                // sidebar stays pinned.
-                if self.sidebar_layout() == SplitLayout::Overlay {
-                    self.drawer.close();
-                }
+                // The file lands on screen: a drawer over it goes away, a
+                // docked sidebar stays.
+                self.put_drawer_away();
             }
             ExplorerEvent::Expand(id, open) => {
                 // Reading the folder's children happens here, on first
@@ -1927,8 +1861,9 @@ impl CodeApp {
                 }
                 self.session.project.set_folder_expanded(id, open);
                 self.invalidate_search_projection();
-                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.explorer.show(&self.session.project);
             }
+            ExplorerEvent::OpenFolder => self.request_open_folder(),
         }
     }
 
@@ -1954,7 +1889,7 @@ impl CodeApp {
             self.session.close_file(node);
             self.invalidate_search_projection();
             self.bound_node = None;
-            explorer::set_current(&mut self.sidebar, None);
+            self.explorer.set_current(None);
             self.refresh_header();
         }
         if let Some(next) = then_open {
@@ -2118,6 +2053,7 @@ impl CodeApp {
     /// through so a chosen palette command that mutates the document (New file)
     /// can dispatch its action.
     fn drain_child_events(&mut self) {
+        self.run_window_toolbar();
         self.drain_explorer_events();
         // Closing a tab of the dock closes the dock; choosing the Terminal
         // tab starts the shell it shows.
@@ -2383,37 +2319,6 @@ impl CodeApp {
     // ---- build_layout helpers (split out of `Widget::build_layout`, which
     // assembles their results into the content row and outer column) ----
 
-    /// Lay out the sidebar node: docked (a real column, eased by the drawer's
-    /// reveal) or a drawer (collapsed to zero width — it paints off-flow,
-    /// sliding in over the content; see `draw`).
-    fn build_sidebar(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.drawer.scale_for(theme);
-        let layout = self.sidebar_layout();
-        let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
-        let docked_w = match layout {
-            SplitLayout::Docked => self.drawer.resolved_docked_width() * self.drawer.reveal(),
-            SplitLayout::Overlay => 0.0,
-        };
-        let _ = taffy.set_style(
-            sidebar_node,
-            Style {
-                size: Size {
-                    width: Dimension::length(docked_w as f32),
-                    height: Dimension::percent(1.0),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            },
-        );
-        self.sidebar_node = Some(sidebar_node);
-        sidebar_node
-    }
-
     /// Lay out the editor column: file header and panel toggle, find bar, editor,
     /// (when visible) the bottom panel, and the status bar, stacked into one
     /// flex column.
@@ -2435,16 +2340,10 @@ impl CodeApp {
     ) -> NodeId {
         let spacing = &theme.tokens.spacing;
         self.header_h = f64::from(theme.tokens.metrics.header_height);
-        self.toggle_slot_w = Self::toggle_slot_width(theme);
 
         let header_node = self.header.build_layout(taffy, theme, node_map);
-        self.laid_out_toggle_in_strip = self.toggle_in_tab_strip();
         if let Ok(existing) = taffy.style(header_node).cloned() {
-            let inset = if self.laid_out_toggle_in_strip {
-                self.toggle_slot_w
-            } else {
-                f64::from(spacing.s6)
-            };
+            let inset = f64::from(spacing.s6);
             let _ = taffy.set_style(
                 header_node,
                 Style {
@@ -2598,15 +2497,6 @@ impl CodeApp {
         editor_col
     }
 
-    /// What the sidebar column holds: the explorer, or the no-project state.
-    fn sidebar_child(&self) -> &dyn Widget {
-        if self.has_project() {
-            &self.sidebar
-        } else {
-            &self.sidebar_empty
-        }
-    }
-
     // ---- handle_event helpers (split out of `Widget::handle_event`, which
     // dispatches to them in the same order they used to run inline) ----
 
@@ -2615,22 +2505,6 @@ impl CodeApp {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
-    }
-
-    /// The drawer's own parts: its toggle, the show/hide shortcut, Escape
-    /// and a press on the scrim of an open floating drawer. Returns `true`
-    /// when the drawer took the event.
-    fn handle_sidebar_chrome(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        self.drawer.resolve(self.rect);
-        if self.drawer.handle_event(event, ctx) {
-            *ctx.handled = true;
-            return true;
-        }
-        false
     }
 
     /// Global shortcuts: Ctrl/Cmd+P and Ctrl/Cmd+Shift+P (the platform
@@ -2769,51 +2643,8 @@ impl CodeApp {
         )
     }
 
-    /// Route the event to the sidebar (when it is on screen), header, bottom
-    /// panel, and editor, plus the drawer's own click-capture.
-    ///
-    /// Sidebar routing depends on the layout:
-    ///  * Docked: route whenever the column has width (reveal > 0); the tree
-    ///    hit-tests against the rect `place_at` gave it.
-    ///  * Drawer: route only while it is open.
-    fn route_to_children(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-        overlay: bool,
-    ) {
-        if self.sidebar_visible()
-            && let Some(n) = self.sidebar_node
-        {
-            if self.has_project() {
-                self.sidebar
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-            } else {
-                // The no-project state offers to open one.
-                self.sidebar_empty
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-                if self.sidebar_empty.take_action() {
-                    self.request_open_folder();
-                }
-            }
-        }
-
-        // While the drawer is open, it captures pointer presses over its area
-        // so clicks don't leak to the content behind it (the tree only
-        // self-marks `handled` on a row hit — empty rows would otherwise fall
-        // through). The scrim outside it was already handled above.
-        if overlay
-            && self.sidebar_open()
-            && let WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } = event
-            && self.drawer.sidebar_contains(self.last_cursor)
-        {
-            *ctx.handled = true;
-        }
-
+    /// Route the event to the header, bottom panel and editor.
+    fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // A press in the editor takes keyboard focus off the find bar, whose
         // keys the editor would otherwise lose.
         if let WindowEvent::MouseInput {
@@ -3015,6 +2846,7 @@ impl Widget for CodeApp {
         self.continue_staging(state);
         self.refresh_search_entries(state);
         self.editor.sync(state, path);
+        self.run_window_toolbar();
         self.restore_pending_continuation(state);
 
         // A jump queued by a search hit or a cross-file definition lands once
@@ -3107,19 +2939,10 @@ impl Widget for CodeApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // --- Sidebar ---
-        //
-        // Docked (wide): the sidebar occupies a real column, its width eased by
-        // the drawer's reveal so it collapses/expands smoothly and the editor
-        // is inset by exactly that much. Drawer (narrow): the column collapses
-        // to zero so the content spans the full width — the sidebar is instead
-        // painted off-flow, sliding in over the content (see `draw`).
-        let sidebar_node = self.build_sidebar(taffy, theme, node_map);
-
         // --- Editor column: file header + editor + (optional) bottom panel ---
         let editor_col = self.build_editor_column(taffy, theme, node_map);
 
-        // --- Content row: sidebar + editor column ---
+        // --- Content row: the editor column ---
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a node with a fixed Style and freshly-created children cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
@@ -3137,7 +2960,7 @@ impl Widget for CodeApp {
                     flex_basis: Dimension::length(0.0),
                     ..Default::default()
                 },
-                &[sidebar_node, editor_col],
+                &[editor_col],
             )
             .unwrap();
         self.content_node = Some(content_node);
@@ -3156,18 +2979,8 @@ impl Widget for CodeApp {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let new_origin = self.rect.origin();
 
-        // Cache the real measured width so `sidebar_layout()` is consistent
-        // across passes (it's read in `build_layout`, before this runs), and
-        // let the drawer adopt the new mode's geometry (wide => docked open,
-        // narrow => drawer closed) before the next draw.
-        self.last_width = self.rect.width();
-        self.drawer.resolve(self.rect);
-
         if let Some(content_node) = self.content_node {
             let content_origin = ui::widget::layout_rect(taffy, content_node, new_origin).origin();
-            if let Some(n) = self.sidebar_node {
-                self.sidebar.apply_layout(taffy, n, content_origin);
-            }
             // Editor column origin within the content row.
             if let Some(col) = self.editor_col_node {
                 let col_origin = ui::widget::layout_rect(taffy, col, content_origin).origin();
@@ -3208,30 +3021,9 @@ impl Widget for CodeApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The framework painted the window ground; each region below stands on
-        // its own tier. Advance the drawer's easing (frame-rate independent)
-        // before computing geometry, so the slide and scrim fade animate while
-        // the host keeps redrawing (`needs_animation_frame`).
-        self.drawer.scale_for(theme);
-        self.drawer.resolve(self.rect);
-        self.drawer.tick(theme);
-        let layout = self.sidebar_layout();
-        self.window_header_row(theme);
-
-        if layout == SplitLayout::Docked && self.sidebar_visible() {
-            self.draw_sidebar(scene, transform, text_renderer, theme, presence);
-        }
+        // The framework painted the window ground; each region stands on its
+        // own tier.
         self.draw_content(scene, transform, text_renderer, theme, presence);
-        if layout == SplitLayout::Overlay && self.sidebar_visible() {
-            // The drawer floats over the content.
-            self.draw_sidebar(scene, transform, text_renderer, theme, presence);
-        }
-        if self.toggle_in_tab_strip() {
-            // With no docked sidebar column to hold it the toggle leads the
-            // file header.
-            self.drawer
-                .paint_toggle(scene, transform, text_renderer, theme);
-        }
 
         // The embedded terminal renders its live grid over the panel's content
         // region whenever the Terminal dock tab is showing.
@@ -3273,10 +3065,6 @@ impl Widget for CodeApp {
                 &mut ctx.state,
                 ctx.handled,
             );
-            return;
-        }
-
-        if self.handle_sidebar_chrome(event, ctx) {
             return;
         }
 
@@ -3334,8 +3122,7 @@ impl Widget for CodeApp {
         }
 
         // Route to child widgets.
-        let overlay = self.sidebar_layout() == SplitLayout::Overlay;
-        self.route_to_children(event, ctx, overlay);
+        self.route_to_children(event, ctx);
 
         // If the editor asked for a language-server action (Ctrl+Space, F1,
         // F12), issue it now with the caret position.
@@ -3356,20 +3143,6 @@ impl Widget for CodeApp {
 
     fn name(&self) -> &'static str {
         "CodeApp"
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        if target == "sidebar-toggle" && matches!(action, ui::a11y::Action::Activate) {
-            self.toggle_sidebar();
-            return true;
-        }
-        false
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -3409,8 +3182,6 @@ impl Widget for CodeApp {
                     }),
             );
         }
-        // The sidebar toggle is painted by the toolkit, so it is published here.
-        children.extend(self.drawer.toggle_accessibility());
         let analysis = self.lsp_status.label();
         if !analysis.is_empty() {
             children.push(
@@ -3436,12 +3207,7 @@ impl Widget for CodeApp {
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![
-            self.sidebar_child(),
-            &self.header,
-            &self.search_button,
-            &self.panel_toggle,
-        ];
+        let mut out: Vec<&dyn Widget> = vec![&self.header, &self.search_button, &self.panel_toggle];
         if self.find_open {
             out.push(&self.find);
         }
@@ -3453,13 +3219,7 @@ impl Widget for CodeApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let has_project = self.has_project();
         let mut out: Vec<&mut (dyn Widget + '_)> = vec![
-            if has_project {
-                &mut self.sidebar
-            } else {
-                &mut self.sidebar_empty
-            },
             &mut self.header,
             &mut self.search_button,
             &mut self.panel_toggle,
@@ -3483,9 +3243,9 @@ impl Widget for CodeApp {
     }
 
     /// A capture waits while a scenario is still staging, a project search
-    /// is still streaming its hits, or the sidebar is still sliding.
+    /// is still streaming its hits.
     fn has_pending_visual_work(&self) -> bool {
-        self.staging.is_some() || self.search_job.is_some() || self.drawer.is_animating()
+        self.staging.is_some() || self.search_job.is_some()
     }
 
     fn get_rect(&self) -> Rect {
@@ -3493,23 +3253,20 @@ impl Widget for CodeApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.sidebar.needs_redraw()
-            || self.header.needs_redraw()
+        self.header.needs_redraw()
             || self.search_button.needs_redraw()
             || self.panel_toggle.needs_redraw()
             || self.editor.needs_redraw()
             || self.panel.needs_redraw()
             || self.find.needs_redraw()
             || self.question().is_some()
-            || self.drawer.is_animating()
             // A live terminal repaints continuously while visible.
             || self.terminal_visible()
     }
 
-    /// Advance the explorer and drain the retained terminal before settlement.
+    /// Advance the editor and drain the retained terminal before settlement.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = self.sidebar.update(state, path);
-        changed |= self.editor.update(state, path);
+        let mut changed = self.editor.update(state, path);
         if let Some(terminal) = self.terminal.as_mut() {
             changed |= terminal.widget_mut().update(state, path);
         }
@@ -3517,19 +3274,16 @@ impl Widget for CodeApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the event loop pumping frames while the sidebar drawer is
-        // mid-transition (so the slide + scrim fade play out) OR while a live
-        // terminal is visible — its PTY is drained during update, which the
-        // App repeats while an animation frame is requested.
+        // Keep the event loop pumping frames while a live terminal is
+        // visible: its PTY is drained during update, which the App repeats
+        // while an animation frame is requested.
         //
         // A running search or an in-flight file picker also needs frames: both
         // deliver over a channel drained in `sync`, so without a frame their
         // results would sit unread until the user happened to move the mouse.
         // A language server that is still working needs them too, so the
         // indexing readout actually advances.
-        self.drawer.is_animating()
-            || self.sidebar.needs_animation_frame()
-            || self.panel.needs_animation_frame()
+        self.panel.needs_animation_frame()
             || self.header.needs_animation_frame()
             || self.terminal_visible()
             || self.search_job.is_some()
@@ -3538,17 +3292,10 @@ impl Widget for CodeApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // While the drawer eases in DOCKED mode the sidebar column's width is
-        // taffy-driven (set from `reveal` in `build_layout`), so the tree must
-        // be rebuilt each animating frame to widen/collapse smoothly. A
-        // floating drawer computes its geometry in `draw` and needs no rebuild.
         std::mem::take(&mut self.structure_dirty)
-            || self.sidebar_layout() == SplitLayout::Docked && self.drawer.is_animating()
-            || self.toggle_in_tab_strip() != self.laid_out_toggle_in_strip
     }
 
     fn mark_drawn(&mut self) {
-        self.sidebar.mark_drawn();
         self.header.mark_drawn();
         self.search_button.mark_drawn();
         self.panel_toggle.mark_drawn();
