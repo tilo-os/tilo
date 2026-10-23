@@ -4163,6 +4163,15 @@ impl Widget for TabBar {
         {
             return Some(tip);
         }
+        // A window of one tab with slots shows that tab as its icon alone:
+        // the icon names the tab, as its accessible node does.
+        if self.active_toolbar().is_some()
+            && let [tab] = self.tabs.as_slice()
+            && let Some(&icon) = self.tab_rects.first()
+            && icon.contains(point)
+        {
+            return Some((icon, tab.title.clone()));
+        }
         if !self.window_controls {
             return None;
         }
@@ -8848,6 +8857,11 @@ mod tests {
             Some(lookup("host-window-close"))
         );
         assert_eq!(tip(&b, location), None, "the location is no button");
+        assert_eq!(
+            tip(&b, b.tab_rects[0]),
+            Some("DuckDuckGo".to_owned()),
+            "the tab shown as its icon alone is named"
+        );
 
         // The menu lists the actions the row has no room for and runs one.
         b.set_popup_area(Rect::new(0.0, 0.0, 900.0, 700.0));
