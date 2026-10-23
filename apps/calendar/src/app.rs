@@ -4835,6 +4835,9 @@ impl CalendarApp {
                 Ok(Effected::Pending)
             }
             CalendarEffect::ExportIcs => self.export_ics(cx),
+            CalendarEffect::ExportIcsContent { event } => {
+                crate::content_export::ics(&cx.live().get(), event).map(Effected::value)
+            }
             CalendarEffect::ImportIcs => Ok(Self::import_ics(cx)),
             CalendarEffect::ContactAttendees { event_id } => {
                 self.open_contact_attendees(&event_id)?;
