@@ -3247,7 +3247,6 @@ presence-someone = Someone
 app-list-app-name = Apps
 app-list-gone-title = App not found
 app-list-gone-body = It's no longer in your apps.
-app-list-part-of-system = { $name } comes with the system and stays.
 app-list-no-home = Your home folder can't be found.
 app-list-no-app-tool = Tilo apps can't be uninstalled on this computer.
 app-list-invalid-flatpak = That isn't a Flatpak this computer can uninstall.

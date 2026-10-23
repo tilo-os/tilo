@@ -17,11 +17,15 @@
 //! - a Flatpak in the person's installation is uninstalled, and its data
 //!   (`~/.var/app/<id>`) moves to the Trash unless the person keeps it;
 //! - a downloaded program's file moves to the Trash and its entry goes;
+//! - a Flatpak of the device's installation is uninstalled the same way
+//!   when the person administers the device (Flatpak's system helper asks
+//!   polkit); otherwise it is taken off their apps;
 //! - a Tilo app the person added is removed; its documents are workspace
 //!   data and nothing here touches them;
-//! - a part of the system can only be taken off the person's apps: a
-//!   `Hidden` entry in their own applications directory hides it, and an
-//!   entry file of their own moves to the Trash first.
+//! - a part of the system (a menu entry, a Tilo app the image ships) can
+//!   only be taken off the person's apps: a `Hidden` entry of its id in
+//!   their own applications directory hides it, and an entry file of their
+//!   own moves to the Trash first.
 //!
 //! Nothing here deletes anything of the person's; what leaves goes to the
 //! Trash. Every function that touches the disk runs on a worker.
@@ -50,9 +54,11 @@ pub enum AppSource {
     /// A Tilo package. `added` when it is in the person's own store and
     /// the system image ships no copy of it.
     Tilo { added: bool },
-    /// A Flatpak: `app_id` is what `flatpak` takes; `user` when it is in the
-    /// person's own installation, which they may change.
-    Flatpak { app_id: String, user: bool },
+    /// A Flatpak: `app_id` is what `flatpak` takes.
+    Flatpak {
+        app_id: String,
+        installation: FlatpakInstallation,
+    },
     /// A program the person downloaded: an `AppImage`, or a program from a
     /// tarball or a loose binary. `entry` is the file the app list holds it
     /// by, which Tilo wrote.
@@ -63,17 +69,39 @@ pub enum AppSource {
     System,
 }
 
+/// Which installation a Flatpak is in, and whether the person may change it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlatpakInstallation {
+    /// The person's own.
+    Person,
+    /// The device's; `administrator` when the person administers the device.
+    Device { administrator: bool },
+}
+
 impl AppSource {
     /// What uninstalling an app from here does.
     #[must_use]
     pub fn removal(&self) -> AppRemoval {
         match self {
             Self::Tilo { added: true } | Self::Downloaded { .. } => AppRemoval::Uninstall,
-            Self::Tilo { added: false } => AppRemoval::None,
-            Self::Flatpak { user: true, .. } => AppRemoval::UninstallWithData,
-            Self::Flatpak { user: false, .. } | Self::PersonEntry { .. } | Self::System => {
-                AppRemoval::RemoveFromApps
+            Self::Flatpak {
+                installation:
+                    FlatpakInstallation::Person
+                    | FlatpakInstallation::Device {
+                        administrator: true,
+                    },
+                ..
+            } => AppRemoval::UninstallWithData,
+            Self::Tilo { added: false }
+            | Self::Flatpak {
+                installation:
+                    FlatpakInstallation::Device {
+                        administrator: false,
+                    },
+                ..
             }
+            | Self::PersonEntry { .. }
+            | Self::System => AppRemoval::RemoveFromApps,
         }
     }
 }
@@ -169,6 +197,15 @@ pub struct HostEntry {
     pub downloaded: Option<PathBuf>,
 }
 
+/// What the list knows of the person: whether they administer the device,
+/// and the ids they took off their apps (`Hidden` entries of their own,
+/// [`desktop_entry::Scan::hidden`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Person {
+    pub administrator: bool,
+    pub removed_from_apps: Vec<String>,
+}
+
 /// Where the person's own things are, which tells their apps from the
 /// system's.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,11 +227,17 @@ impl Places {
         self.data_home.join("applications")
     }
 
-    fn source_of(&self, entry: &HostEntry) -> AppSource {
+    fn source_of(&self, entry: &HostEntry, person: &Person) -> AppSource {
         if let Some(app_id) = &entry.flatpak {
             return AppSource::Flatpak {
                 app_id: app_id.clone(),
-                user: entry.path.starts_with(self.data_home.join("flatpak")),
+                installation: if entry.path.starts_with(self.data_home.join("flatpak")) {
+                    FlatpakInstallation::Person
+                } else {
+                    FlatpakInstallation::Device {
+                        administrator: person.administrator,
+                    }
+                },
             };
         }
         if let Some(program) = &entry.downloaded {
@@ -212,16 +255,23 @@ impl Places {
     }
 }
 
-/// The list, sorted by name: every Tilo app, then every desktop entry no
-/// Tilo package answers for. Pure, so what each kind becomes is assertable.
+/// The list, sorted by name: every Tilo app the person has not taken off
+/// their apps, then every desktop entry no Tilo package answers for. Pure,
+/// so what each kind becomes is assertable.
 #[must_use]
-pub fn project(tilo: &[TiloApp], host: &[HostEntry], places: &Places) -> Vec<AppListItem> {
+pub fn project(
+    tilo: &[TiloApp],
+    host: &[HostEntry],
+    places: &Places,
+    person: &Person,
+) -> Vec<AppListItem> {
     let packages: std::collections::HashSet<String> = tilo
         .iter()
         .map(|app| app.package_id.to_ascii_lowercase())
         .collect();
     let mut items: Vec<AppListItem> = tilo
         .iter()
+        .filter(|app| !person.removed_from_apps.contains(&app.package_id))
         .map(|app| AppListItem {
             id: app.package_id.clone(),
             name: app.name.clone(),
@@ -239,7 +289,7 @@ pub fn project(tilo: &[TiloApp], host: &[HostEntry], places: &Places) -> Vec<App
                     name: entry.name.clone(),
                     icon: None,
                     size: None,
-                    source: places.source_of(entry),
+                    source: places.source_of(entry, person),
                 }),
         )
         .collect();
@@ -398,7 +448,11 @@ fn read() -> (Generation, Vec<AppListItem>, Vec<Option<PathBuf>>) {
     let Some(places) = Places::of_session() else {
         return (generation, Vec::new(), Vec::new());
     };
-    let mut items = project(&tilo, &host, &places);
+    let person = Person {
+        administrator: os_actions::users::administers_this_device(),
+        removed_from_apps: scan.hidden.clone(),
+    };
+    let mut items = project(&tilo, &host, &places, &person);
     let mut measures = Vec::with_capacity(items.len());
     for item in &mut items {
         let entry = scan.find(&item.id);
@@ -559,12 +613,6 @@ pub fn drain_notices() -> Vec<Notification> {
 ///
 /// When the worker cannot start, or the app cannot be removed at all.
 pub fn uninstall(item: AppListItem, remove_data: bool) -> Result<(), String> {
-    if item.removal() == AppRemoval::None {
-        return Err(t_args(
-            "app-list-part-of-system",
-            &[("name", item.name.as_str().into())],
-        ));
-    }
     let taking_off = item.removal() == AppRemoval::RemoveFromApps;
     on_worker(item, taking_off, move |item, places| {
         run(item, remove_data, places)
@@ -707,8 +755,19 @@ pub fn plan(
             vec![Step::App(to_args(&["remove", "--", &item.id]))],
             Outcome::Uninstalled,
         )),
-        AppSource::Flatpak { app_id, user: true } => {
-            let commands = app_catalogue::flathub::uninstall_commands(app_id)
+        AppSource::Flatpak {
+            app_id,
+            installation:
+                installation @ (FlatpakInstallation::Person
+                | FlatpakInstallation::Device {
+                    administrator: true,
+                }),
+        } => {
+            let installation = match installation {
+                FlatpakInstallation::Person => app_catalogue::flathub::Installation::User,
+                FlatpakInstallation::Device { .. } => app_catalogue::flathub::Installation::System,
+            };
+            let commands = app_catalogue::flathub::uninstall_commands(app_id, installation)
                 .map_err(|_| t("app-list-invalid-flatpak"))?;
             let mut steps: Vec<Step> = commands
                 .into_iter()
@@ -741,7 +800,15 @@ pub fn plan(
             // it can be put back.
             Ok((vec![Step::Trash(path.clone())], Outcome::RemovedFromApps))
         }
-        AppSource::Flatpak { user: false, .. } | AppSource::System => {
+        AppSource::Flatpak {
+            installation:
+                FlatpakInstallation::Device {
+                    administrator: false,
+                },
+            ..
+        }
+        | AppSource::System
+        | AppSource::Tilo { added: false } => {
             if item.id.is_empty() || item.id.contains(['/', '\\']) || item.id.starts_with('.') {
                 return Err(t("app-list-invalid-entry"));
             }
@@ -756,10 +823,6 @@ pub fn plan(
                 Outcome::RemovedFromApps,
             ))
         }
-        AppSource::Tilo { added: false } => Err(t_args(
-            "app-list-part-of-system",
-            &[("name", item.name.as_str().into())],
-        )),
     }
 }
 

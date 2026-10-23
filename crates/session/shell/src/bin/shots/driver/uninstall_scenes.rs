@@ -2,7 +2,7 @@
 //! hosts it. The apps are made up: a capture never reads the machine's.
 use std::path::PathBuf;
 
-use shell::shell::app_list::{AppListItem, AppSource};
+use shell::shell::app_list::{AppListItem, AppSource, FlatpakInstallation};
 
 use super::ShellDriver;
 
@@ -15,7 +15,7 @@ impl ShellDriver {
                 "Chess",
                 AppSource::Flatpak {
                     app_id: "org.gnome.Chess".into(),
-                    user: true,
+                    installation: FlatpakInstallation::Person,
                 },
             ),
             "app-uninstall-downloaded" => (
@@ -29,6 +29,19 @@ impl ShellDriver {
                 },
             ),
             "app-uninstall-system" => ("org.gnome.TextEditor", "Text Editor", AppSource::System),
+            "app-uninstall-system-tilo" => {
+                ("so.tilo.notes", "Notes", AppSource::Tilo { added: false })
+            }
+            "app-uninstall-device-flatpak" => (
+                "org.gnome.Maps",
+                "Maps",
+                AppSource::Flatpak {
+                    app_id: "org.gnome.Maps".into(),
+                    installation: FlatpakInstallation::Device {
+                        administrator: true,
+                    },
+                },
+            ),
             _ => ("so.tilo.notes", "Notes", AppSource::Tilo { added: true }),
         };
         let _ = self.paint_settled();

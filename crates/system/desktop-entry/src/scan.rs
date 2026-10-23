@@ -70,6 +70,8 @@ pub struct Scan {
     /// The directories that were searched, in precedence order. Kept so a cache can stat them
     /// for changes and a diagnostic can print them.
     pub dirs: Vec<PathBuf>,
+    /// The IDs a `Hidden=true` entry removed, sorted: what the person took off their apps.
+    pub hidden: Vec<String>,
 }
 
 impl Scan {
@@ -200,10 +202,12 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
             .then_with(|| a.id.cmp(&b.id))
     });
 
+    tombstoned.sort();
     Scan {
         entries,
         stats,
         dirs: dirs.to_vec(),
+        hidden: tombstoned,
     }
 }
 
@@ -384,13 +388,19 @@ mod tests {
                 "x.desktop",
                 "[Desktop Entry]\nType=Application\nName=X\nExec=/bin/true\nHidden=true\n",
             );
+            write(
+                user.path(),
+                "so.tilo.notes.desktop",
+                "[Desktop Entry]\nType=Application\nName=Notes\nHidden=true\n",
+            );
             write(system.path(), "x.desktop", &app("X"));
             let scan = scan_dirs(
                 &[user.path().to_path_buf(), system.path().to_path_buf()],
                 &tilo(),
             );
             assert!(scan.entries.is_empty(), "{:?}", scan.entries);
-            assert_eq!(scan.stats.tombstoned, 1);
+            assert_eq!(scan.stats.tombstoned, 2);
+            assert_eq!(scan.hidden, ["so.tilo.notes", "x"]);
         }
         // Phase `a_missing_directory_is_not_an_error`.
         {
