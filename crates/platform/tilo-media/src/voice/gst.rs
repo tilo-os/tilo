@@ -181,20 +181,27 @@ impl VoiceAudio {
         let source = element("pipewiresrc")?;
         configure_pipewire(&source, serial, remote_fd.as_fd())?;
         source.set_property("do-timestamp", true);
-        self.start_capture_element_bound(&source, still_current, Some(remote_fd))
+        self.start_capture_element_bound(
+            &source,
+            still_current,
+            Some(CAPTURE_STARTUP_TIMEOUT),
+            Some(remote_fd),
+        )
     }
+    /// A software capture: like [`Self::from_output`], no startup deadline.
     #[cfg(test)]
     fn start_capture_element(
         &mut self,
         source: &gst::Element,
         still_current: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<(), AudioError> {
-        self.start_capture_element_bound(source, still_current, None)
+        self.start_capture_element_bound(source, still_current, None, None)
     }
     fn start_capture_element_bound(
         &mut self,
         source: &gst::Element,
         still_current: Arc<dyn Fn() -> bool + Send + Sync>,
+        startup_deadline: Option<Duration>,
         remote_fd: Option<OwnedFd>,
     ) -> Result<(), AudioError> {
         if self.closed {
@@ -252,7 +259,7 @@ impl VoiceAudio {
         self.stop_capture();
         let pipeline = DevicePipeline::start(
             pipeline,
-            Some(CAPTURE_STARTUP_TIMEOUT),
+            startup_deadline,
             remote_fd,
             Some(still_current.clone()),
             true,
@@ -301,10 +308,7 @@ impl VoiceAudio {
             self.stop_capture();
             return Err(error);
         }
-        if !capture.pipeline.ready()
-            && now.saturating_duration_since(capture.pipeline.started_at())
-                >= CAPTURE_STARTUP_TIMEOUT
-        {
+        if capture.pipeline.startup_expired(now) {
             self.stop_capture();
             return Err(AudioError::DeviceLost);
         }
@@ -1025,8 +1029,12 @@ mod tests {
         let (fd, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
         let (done, completed) = std::sync::mpsc::channel();
         let caller = std::thread::spawn(move || {
-            let result =
-                audio.start_capture_element_bound(&source, Arc::new(|| true), Some(fd.into()));
+            let result = audio.start_capture_element_bound(
+                &source,
+                Arc::new(|| true),
+                None,
+                Some(fd.into()),
+            );
             done.send((audio, result)).unwrap();
         });
         wait_for_gate(&gate);
@@ -1269,8 +1277,14 @@ mod tests {
             .build();
         source.set_caps(Some(&raw_caps()));
         let observed = source.clone();
+        let (fd, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
         audio
-            .start_capture_element(&source.upcast(), Arc::new(|| true))
+            .start_capture_element_bound(
+                &source.upcast(),
+                Arc::new(|| true),
+                Some(CAPTURE_STARTUP_TIMEOUT),
+                Some(fd.into()),
+            )
             .unwrap();
         let worker = audio.capture_stop_handle().unwrap();
         assert!(
