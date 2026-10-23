@@ -557,7 +557,27 @@ fn frame(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) {
     let presence = PresenceCtx::empty();
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    draw_settled(app, &mut scene, &mut tr, &theme, &presence);
+}
+
+/// Draw frames until the reader shows its chapter fully laid out, as a
+/// window does while the layout worker's results wake it.
+fn draw_settled(
+    app: &mut BooksApp,
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+) {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        scene.reset();
+        app.draw(scene, Affine::IDENTITY, tr, theme, presence);
+        if app.view != View::Reader || !app.layout_pending() || ui::time::now() > deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 /// Centre of the topmost recorded hit whose action matches `pred`.
@@ -661,7 +681,7 @@ fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Sce
     );
     let mut tr = TextRenderer::with_font_catalog(&catalog).expect("checked-in font catalog");
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    draw_settled(app, &mut scene, &mut tr, &theme, &presence);
     scene
 }
 
@@ -1946,11 +1966,14 @@ fn type_popover_values_edit_and_persist() {
         .expect("settings popover exposes the Justified composition choice");
         assert!(click(&mut app, &mut doc, justified), "choice is clickable");
 
-        assert!(
-            app.layout.is_none(),
-            "composition changes invalidate layout"
-        );
         assert_eq!(app.settings.composition, CompositionStyle::Book);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(
+            app.layout
+                .as_ref()
+                .is_some_and(|layout| layout.key.composition),
+            "composition changes lay the chapter out justified"
+        );
         assert_eq!(
             TestLibrary::read_settings(&doc).composition,
             CompositionStyle::Book,

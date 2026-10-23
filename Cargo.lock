@@ -3830,6 +3830,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-content",
+ "tilo-cpu-raster",
  "tilo-document",
  "tilo-files",
  "tilo-net",

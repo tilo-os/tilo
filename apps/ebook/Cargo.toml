@@ -71,6 +71,8 @@ image = { workspace = true, features = ["png"] }
 serial_test.workspace = true
 # Temporary directories for on-disk library-discovery tests.
 tempfile.workspace = true
+# The scroll tests look at frames' pixels as the CPU renderer draws them.
+tilo-cpu-raster = { path = "../../crates/sdk/tilo-cpu-raster" }
 
 [lints]
 workspace = true
