@@ -115,6 +115,19 @@ impl AppCatalogue {
             .map(|definition| definition.app_id)
     }
 
+    /// What `doc`, a record of `app_id`, is called when its app names it
+    /// (a document's first heading): `None` for a name that is only the
+    /// resource's label. Run in a confined worker for a record not opened
+    /// ([`crate::worker::ConfinedTitles`]), as it reads untrusted bytes.
+    #[must_use]
+    pub fn resource_title(&self, app_id: &str, doc: &automerge::AutoCommit) -> Option<String> {
+        let kind = self.kind(app_id)?;
+        let state = kind.read(doc).ok()?;
+        let name = kind.name(state.as_ref());
+        let name = name.trim();
+        (!name.is_empty() && name != kind.label()).then(|| name.to_owned())
+    }
+
     /// The resource type `app_id`'s records hold.
     fn kind(&self, app_id: &str) -> Option<ResourceKind> {
         let definition = self.get(app_id)?;

@@ -98,6 +98,12 @@ tilo-automerge-isolate = { path = "../../doc/tilo-automerge-isolate" }
 # The content records reference: lent to a record's view, held in memory in
 # its worker, carried between the two by hash.
 tilo-content = { version = "0.1.0", path = "../../system/content" }
+# Pictures shown to a planning model: sent base64-encoded, and decoded and
+# shrunk only in a confined worker (`worker::shrink_picture`).
+base64.workspace = true
+# A room's content store is kept under the room's id.
+uuid.workspace = true
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [target.'cfg(unix)'.dependencies]
 # The worker's confinement: detach, resource limits and, on macOS, Seatbelt.

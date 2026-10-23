@@ -3,7 +3,12 @@
 //! These are provider hints, not permissions, latency guarantees or price
 //! estimates. No preset is selected by default. Explicit settings override
 //! presets; unsupported settings may be refused by the configured provider.
-//! No preset duplicates requests or falls back to a more expensive tier.
+//! No preset duplicates requests or falls back to a more expensive tier:
+//! a call is sent again only after [`HEDGE_ENV`] says how long to wait.
+//!
+//! Besides provider hints, a profile says whether a finished task is
+//! checked against its request ([`CHECK_WORK_ENV`]): small models skip or
+//! get wrong a part of a long request most often, so their presets check.
 
 /// Select `fastest`, `balanced` or `cheapest` for a host-side planner.
 pub const PRESET_ENV: &str = "TILO_AGENT_PRESET";
@@ -13,6 +18,12 @@ pub const MODEL_CLASS_ENV: &str = "TILO_AGENT_MODEL_CLASS";
 pub const SERVICE_TIER_ENV: &str = "TILO_AGENT_SERVICE_TIER";
 /// Override a preset's reasoning effort.
 pub const REASONING_EFFORT_ENV: &str = "TILO_AGENT_REASONING_EFFORT";
+/// Turn the check of a finished task against its request on (`on`, `1`)
+/// or off (anything else), whatever the preset says.
+pub const CHECK_WORK_ENV: &str = "TILO_AGENT_CHECK_WORK";
+/// Send a planning call again when it has not answered within this many
+/// milliseconds, taking whichever answers first; `0` or unset never does.
+pub const HEDGE_ENV: &str = "TILO_AGENT_HEDGE_MS";
 
 /// A coarse model-family hint, overridable for provider aliases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,11 +91,17 @@ impl Goal {
     }
 }
 
-/// Provider request hints only; neither field changes agent authority.
+/// Provider request hints, whether finished work is checked and when a
+/// slow call is sent again; none of them changes agent authority.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Profile {
     service_tier: Option<String>,
     reasoning_effort: Option<String>,
+    /// Whether a task's result is checked against its request once its
+    /// steps ran: one more planning turn, which fixes what is missing.
+    check_work: bool,
+    /// After how long a call is sent again ([`HEDGE_ENV`]); `None` never.
+    hedge_after: Option<std::time::Duration>,
 }
 
 impl Profile {
@@ -111,7 +128,34 @@ impl Profile {
                 &["none", "minimal", "low", "medium", "high", "xhigh"],
             );
         }
+        if let Some(check) = explicit(CHECK_WORK_ENV) {
+            profile.check_work = matches!(
+                check.trim().to_ascii_lowercase().as_str(),
+                "1" | "on" | "true" | "yes"
+            );
+        }
+        if let Some(hedge) = explicit(HEDGE_ENV) {
+            // `0` or anything not a number (`off`) leaves calls unhedged.
+            profile.hedge_after = hedge
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|ms| *ms > 0)
+                .map(std::time::Duration::from_millis);
+        }
         profile
+    }
+
+    /// Whether a finished task is checked against its request.
+    #[must_use]
+    pub const fn checks_work(&self) -> bool {
+        self.check_work
+    }
+
+    /// After how long a planning call is sent again, if ever.
+    #[must_use]
+    pub const fn hedge_after(&self) -> Option<std::time::Duration> {
+        self.hedge_after
     }
 
     /// The class/goal policy. Very large models request Flex for every goal;
@@ -126,6 +170,12 @@ impl Profile {
         Self {
             service_tier: tier.map(str::to_owned),
             reasoning_effort: Some("low".to_owned()),
+            // A small model skips or gets wrong a part of a long request
+            // most often. The check is one or two more planning turns on
+            // the task's critical path (a medium model's run took three
+            // times as long), so larger models skip it unless asked.
+            check_work: class == ModelClass::Small,
+            hedge_after: None,
         }
     }
 
@@ -182,6 +232,8 @@ mod tests {
                 };
                 assert_eq!(profile.service_tier.as_deref(), tier);
                 assert_eq!(profile.reasoning_effort.as_deref(), Some("low"));
+                assert_eq!(profile.checks_work(), class == ModelClass::Small);
+                assert_eq!(profile.hedge_after(), None, "no preset hedges");
             }
         }
     }
@@ -225,5 +277,36 @@ mod tests {
             Profile::resolve("mini", &|_| Some("invalid".into())),
             Profile::default()
         );
+    }
+
+    #[test]
+    fn the_work_check_and_hedging_are_switched_outright() {
+        let small = |name: &str| match name {
+            PRESET_ENV => Some("fastest".into()),
+            _ => None,
+        };
+        assert!(Profile::resolve("gpt-mini", &small).checks_work());
+        let off = Profile::resolve("gpt-mini", &|name| match name {
+            PRESET_ENV => Some("fastest".into()),
+            CHECK_WORK_ENV => Some("off".into()),
+            _ => None,
+        });
+        assert!(!off.checks_work());
+        let on = Profile::resolve("local-alias", &|name| match name {
+            CHECK_WORK_ENV => Some(" ON ".into()),
+            HEDGE_ENV => Some("3500".into()),
+            _ => None,
+        });
+        assert!(on.checks_work());
+        assert_eq!(
+            on.hedge_after(),
+            Some(std::time::Duration::from_millis(3_500))
+        );
+        for unhedged in ["0", "off", ""] {
+            let profile = Profile::resolve("local-alias", &|name| {
+                (name == HEDGE_ENV).then(|| unhedged.to_owned())
+            });
+            assert_eq!(profile.hedge_after(), None, "{unhedged:?}");
+        }
     }
 }

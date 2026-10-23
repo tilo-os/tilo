@@ -143,3 +143,42 @@ impl ConfinedViews {
         })?)
     }
 }
+
+/// What existing documents are called, read in one confined app worker
+/// started on the first question and kept for the next.
+#[derive(Default)]
+pub(crate) struct ConfinedTitles {
+    process: Option<Process>,
+}
+
+impl ConfinedTitles {
+    /// What `doc`, a document of `app_id`, is called:
+    /// [`crate::AppCatalogue::resource_title`].
+    ///
+    /// # Errors
+    ///
+    /// The worker did not start or confine itself, or could not be asked.
+    pub(crate) fn title(&mut self, app_id: &str, doc: Vec<u8>) -> Result<Option<String>, String> {
+        let process = match &mut self.process {
+            Some(process) => process,
+            None => self.process.insert(Process::start(Mode::Views)?),
+        };
+        let reply = process.call(&Request::Title {
+            app_id: app_id.to_owned(),
+            doc,
+        });
+        match reply {
+            Ok(Reply::Title(title)) => Ok(title),
+            Ok(Reply::Failed(reason)) => Err(reason),
+            Ok(_) => {
+                self.process = None;
+                Err("the app worker answered out of turn".into())
+            }
+            Err(reason) => {
+                // A worker that stopped answering is started again next time.
+                self.process = None;
+                Err(reason)
+            }
+        }
+    }
+}

@@ -32,14 +32,16 @@
 //! opening a record fails, naming the missing line.
 
 mod confine;
+mod picture;
 mod process;
 pub(crate) mod proto;
 mod read;
 mod replica;
 mod serve;
 
+pub(crate) use picture::shrink_picture;
 pub use proto::ProbeReport;
-pub(crate) use read::{ConfinedRead, ConfinedViews};
+pub(crate) use read::{ConfinedRead, ConfinedTitles, ConfinedViews};
 pub use replica::ConfinedReplica;
 
 /// The first argument of a worker. It is also the name of the test
