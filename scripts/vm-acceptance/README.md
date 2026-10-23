@@ -54,78 +54,64 @@ shell exit handling and app-workload prerequisites without starting a VM.
 
 ## Run it in CI
 
-`.forgejo/workflows/vm-acceptance.yml` (Dev / VM acceptance) runs the suite on a
-`runner-disk-100g` runner, whose KVM the dev disk and legacy guest boots already use, so
-a run needs no laptop memory:
+t's `vm-acceptance` check (`tools/ci/vm-acceptance.sh`) runs the suite in a micro-VM with
+KVM on a `disk-100g` x86-64 node, so a run needs no laptop memory:
 
 ```bash
-fgj workflow run vm-acceptance.yml -r main                       # every check on main
-fgj workflow run vm-acceptance.yml -r main -f ref=my-branch -f only=window -f gl=off
+t test vm-acceptance                                          # the checks your tree's changes select
+t dispatch vm-acceptance --ref main                           # every check on main
+t dispatch vm-acceptance --ref my-branch --input only=window --input gl=off
+t outputs vm-acceptance                                       # the report
 ```
 
-`fgj -f` splits values on commas, so a list (`only=B06,A13`, `swap=shell,app:notes`,
-`outputs`) goes through the forge's "Run workflow" form or its dispatch API instead.
+A working tree's run checks only what its changes reach (`ci_select.py`): the checks of the
+changed check modules (and of the modules importing from them), just `provenance` when only
+this README or unit tests changed, and every check when anything else in this directory or
+`tools/ci/vm-acceptance.sh` changed. A dispatched run, and `vm-acceptance-perf`, run every
+check unless `only` names some.
 
-It also runs nightly on main, and on pull requests that change this directory: with only
-the checks of the changed check modules (and of the modules importing from them), just
-`provenance` when only this README or unit tests changed, and every check when anything
-else changed (`ci_select.py`).
+The disk is the tree's own dev image: the check needs `os-dev-image-x86_64`, which t builds
+from the same tree (and takes from its cache when the image's inputs are unchanged), and
+installs it with `os/dev/build-image.sh` as Release / Dev VM disk installs a dev image. The
+script writes the provenance record itself, so P01 reads the tree's commit.
 
-The base disk is what CI published for the newest main commit at or before `ref`: its
-dev disk (`tilo-vm-disk/main-<sha7>-ci`) when a lane published one, else its dev image
-(`tilo-vm:main-<sha7>-ci-x86_64`, pushed by Build / OS dev for main commits), installed
-with `os/dev/build-image.sh` exactly as Release / Dev VM disk installs it. The workflow
-writes the provenance record itself.
+`swap` (default `none`) exercises the swap path on top: run.py `--swap` runs `tilo device
+swap <component> --builder host` from a copy of the tree (`--swap-from`) after the slot is
+up, session components and apps into the run's slot, VM-wide ones into `vm`; `all` swaps
+every userspace component in `os/components.toml`, or name a list (`--input
+swap=shell,app:notes`). P01 then reads `base <commit> + <components> swapped from <ref>`
+and fails unless every requested swap is the layer its slot runs.
 
-`ref`'s own code reaches the VM the way it does on a laptop: after the slot is up, run.py
-`--swap` runs `tilo device swap <component> --builder host` from a worktree of `ref`
-(`--swap-from`), session components and apps into the run's slot, VM-wide ones into `vm`.
-`swap=default` is `shell` plus every `app:<dir>` the ref changed: a branch's own diff
-from main, or for a main commit what changed since the base (nothing when `ref` is the
-base commit), `all` every userspace component in
-`os/components.toml`, `none` nothing, or a list. The job runs in the CI builder image (the
-dev image's Fedora, with the runner's sccache), so swapped binaries link against the
-libraries the VM has. P01 then reads `base <commit> + <components> swapped from <ref>` and
-fails unless every requested swap is the layer its slot runs; the report's header lists
-the swaps. A base more than 20 commits behind `ref` gets a warning at the top of the
-summary: everything not swapped is the base's code.
-
-A change to the shared app runtime (anything in the `apps+runtime` assembly: `ui-core`,
-`tilo-app`, the platform crates every app links) is tested from its branch with
-`prebuilt_cohort=true` and `swap=apps+runtime`; a standalone `app:<dir>` swap is refused
-because an app needs the exact runtime it was built with, and the host builder does not
-assemble the paired cohort:
+`vm-acceptance-cohort` installs the commit's launcher, install, shell and apps+runtime as
+prebuilt signed layers through verified `swap-artifact` (`docs/layer-artifacts.md`), the
+route for a change to the shared app runtime (a standalone `app:<dir>` swap is refused
+because an app needs the exact runtime it was built with):
 
 ```sh
-echo '{"ref":"main","inputs":{"ref":"<branch>","swap":"apps+runtime",
-       "prebuilt_cohort":"true","only":"P01,A15"}}' |
-  fgj api --hostname code.tilo.so -X POST repos/tilo/tilo/actions/workflows/vm-acceptance.yml/dispatches
+t dispatch vm-acceptance-cohort --ref <branch> --input only=P01,A15
 ```
 
-(`fgj actions workflow run -f only=P01,A15` splits the value at its comma and sends
-`only=P01`; the API body does not.) The outer `ref` picks the workflow, the checks and the
-artifact consumer (main, or a branch that changes them); `inputs.ref` is the code under test. P01 then reads `+ launcher, install, shell,
-apps+runtime swapped from <branch>`, and each swap entry names the consumer that
-installed it. The ref's own `tilo-vm` packs the layers, so it needs `layer-pack`.
+Its needs do the handoff (`tools/ci/vm-cohort.sh`): `vm-cohort-x86_64` packs the full layer
+streams with the tree's own `tilo-vm` (`layer_artifacts.py produce`), and
+`vm-cohort-verifier-x86_64` builds the `tilo-vm` that verifies and imports them from main's
+head, fetched from the forge, and checks the handoff with main's `layer_artifacts.py`: the
+code under test never verifies its own artifacts. The receipt names an exact clean commit,
+so the producer refuses a working tree with uncommitted changes. The handoff's identity (the
+source commit, the builder image t.toml pins, a random handoff number standing for the
+workflow run, and the receipt's SHA256) travels in the producer's outputs, which t hands
+only to the checks that need that result; the consumer checks them, the architecture and the
+component completeness before the VM is created, and verifies and imports through the normal
+signed cohort path. Any artifact error fails without a build fallback; slot readback and P01
+still describe the installed layers, and each swap entry names the consumer that installed
+it.
 
-The existing native CI identity builds full signed layers with the maintained packer, including
-matching launcher, install and shell prerequisites. Pinned same-run artifact
-actions transfer only layers, inventories and the v1 manifest. Its expected SHA256
-comes from the producer step output; the consumer checks source, immutable builder,
-workflow API run ID/attempt, architecture and component completeness before VM
-creation. The CLI verifies and imports through the normal signed cohort path.
-The acceptance user needs no remote builder credentials. Any artifact error fails
-without a build fallback; slot readback and P01 still describe installed layers.
-The default workflow and local host/remote swap behavior remain available when
-artifact mode is absent.
-
-The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the job installs
+The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the script installs
 libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks), and runs `run.py` as an
-unprivileged user (root cannot hand passt its socket in a session). The runners have no
-GPU, so `gl=auto` creates the VM without virgl and the report records the software
-renderer; frame-timing checks gated to real display hardware report that. The report
-(`report.md`, `report.json`, shots, frame traces) is the run's artifact, `report.md` its
-job summary, and the job fails unless every check passes.
+unprivileged user (root cannot hand passt its socket in a session). The nodes have no GPU,
+so `gl=auto` creates the VM without virgl and the report records the software renderer;
+frame-timing checks gated to real display hardware report that. The report (`report.md`,
+`report.json`, shots, frame traces) is the check's output, and the check fails unless every
+check passes.
 
 
 ### Agent door (M01-M04) and input fidelity (I01-I07)
@@ -302,8 +288,9 @@ An image whose `tilo-enroll` predates `certify --home-peer-service` leaves R09 u
 ### Performance records
 
 `run.py --records FILE` writes one record per KPI (`tools/perf/record.py`) from what the
-checks measured, whether they passed or not; the CI run's `perf` job compares them with
-the store (docs/measurements/performance.md) and publishes the nightly run's.
+checks measured, whether they passed or not; t's `vm-acceptance-perf` compares them with
+the store (docs/measurements/performance.md) and publishes them where the run holds the
+store's token.
 
 | KPI | Unit | Check | What |
 |---|---|---|---|
