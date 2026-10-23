@@ -52,81 +52,71 @@ fn near(a: f64, b: f64, why: &str) {
     assert!((a - b).abs() < 0.5, "{why}: {a} vs {b}");
 }
 
+/// The theme's commands, in the window bar's order.
+const COMMANDS: [&str; 5] = [
+    "theme-apply",
+    "theme-export",
+    "theme-duplicate",
+    "theme-reset",
+    "theme-delete",
+];
+
+fn bar(app: &mut TestApp<App>) -> ui::window_toolbar::WindowToolbar {
+    app.settle();
+    ui::window_toolbar::declared().unwrap_or_else(|| panic!("the window declares its slots"))
+}
+
 #[test]
 fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
     // The narrowest window that keeps the theme list docked beside the editor.
     let width = 600.0;
     let mut app = frame("editor", (600, 2400), 1.0);
-    let toggle = rect(&mut app, "nav-shell-sidebar");
-    assert!(toggle.width() > 0.0 && toggle.height() > 0.0);
     let preview = rect(&mut app, "theme-preview");
     let gutter = f64::from(app.harness().theme().tokens.spacing.s4);
     assert!(
         preview.x0 >= gutter && preview.x1 <= width - gutter,
         "preview {preview:?} retains content gutters"
     );
-    assert!(
-        preview.y0 >= toggle.y1,
-        "content starts below shared chrome"
-    );
 
-    let action_ids = [
-        "theme-apply",
-        "theme-export",
-        "theme-duplicate",
-        "theme-reset",
-        "theme-delete",
-    ];
-    let actions: Vec<_> = action_ids.iter().map(|id| rect(&mut app, id)).collect();
-    for (i, action) in actions.iter().enumerate() {
-        assert!(
-            action.width() > 0.0 && action.x0 >= 0.0 && action.x1 <= width,
-            "{} remains inside the window: {action:?}",
-            action_ids[i]
-        );
-        near(
-            action.height(),
-            actions[0].height(),
-            "actions share control height",
-        );
-        for other in &actions[i + 1..] {
-            assert!(
-                disjoint(*action, *other),
-                "actions overlap: {action:?} / {other:?}"
-            );
-        }
-    }
-    assert!(
-        actions.iter().any(|r| r.y0 > actions[0].y0),
-        "narrow action row wraps instead of clipping"
+    let toolbar = bar(&mut app);
+    let ids: Vec<&str> = toolbar
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert_eq!(ids, COMMANDS, "the theme's commands are the bar's");
+    assert_eq!(
+        toolbar.location.map(|location| location.label).as_deref(),
+        Some("Ember"),
+        "the bar names the theme"
     );
+    for id in COMMANDS {
+        assert!(
+            !app.harness().targets().contains_key(id),
+            "the editor draws no {id} of its own"
+        );
+    }
+
     let dropdowns = named(&mut app, "Dropdown");
     assert!(
         !dropdowns.is_empty(),
         "production choices are shared dropdowns"
     );
+    let height = dropdowns[0].height();
     for dropdown in dropdowns {
         assert!(dropdown.width() > 0.0);
-        near(
-            dropdown.height(),
-            actions[0].height(),
-            "choices and actions share control height",
-        );
+        near(dropdown.height(), height, "choices share control height");
     }
+    assert!(
+        toolbar.sidebar.is_some(),
+        "the bar holds the sidebar toggle"
+    );
     app.harness()
-        .expect(&SemanticExpectation::named("nav-shell-sidebar").enabled(true))
-        .unwrap();
-    app.harness().click_named("nav-shell-sidebar").unwrap();
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+    app.settle();
     app.harness()
         .expect(&SemanticExpectation::named("themes-nav").enabled(true))
         .unwrap();
-    let shown = rect(&mut app, "nav-shell-sidebar");
-    near(toggle.x0, shown.x0, "sidebar control keeps its slot");
-    near(
-        toggle.width(),
-        shown.width(),
-        "sidebar control keeps its size",
-    );
 }
 
 #[test]
@@ -179,41 +169,23 @@ fn gallery_cards_wrap_to_available_width_with_measured_gaps() {
 fn large_text_reflows_controls_and_the_form_without_covering_chrome() {
     let mut one = frame("editor", (480, 4000), 1.0);
     // At double text the list no longer fits beside the editor: the editor
-    // is a screen of its own, its Back the shared control it must not cover.
+    // is a screen of its own, with Back in the window bar.
     let mut two = frame("editor", (480, 4000), 2.0);
-    let toggle = rect(&mut two, "nav-shell-back");
+    assert!(
+        !bar(&mut two).leading.is_empty(),
+        "Back is the window bar's"
+    );
     let preview = rect(&mut two, "theme-preview");
     assert!(
-        preview.y0 >= toggle.y1,
-        "preview remains below scaled shared chrome"
+        preview.y0 >= 0.0 && preview.x0 >= 0.0 && preview.x1 <= 480.0,
+        "preview stays inside the window: {preview:?}"
     );
-    let ids = [
-        "theme-apply",
-        "theme-export",
-        "theme-duplicate",
-        "theme-reset",
-        "theme-delete",
-    ];
-    let actions: Vec<_> = ids.iter().map(|id| rect(&mut two, id)).collect();
-    for (i, action) in actions.iter().enumerate() {
-        assert!(
-            disjoint(toggle, *action),
-            "action must not cover the Back control"
-        );
-        assert!(action.x0 >= 0.0 && action.x1 <= 480.0);
-        assert!(
-            action.height() > rect(&mut one, ids[i]).height(),
-            "large type increases its real control height"
-        );
-        for other in &actions[i + 1..] {
-            assert!(disjoint(*action, *other));
-        }
-    }
     let name = rect(&mut two, "theme-name");
     assert!(
-        name.y0 >= actions.iter().map(|r| r.y1).fold(0.0, f64::max),
-        "form starts below wrapped actions"
+        name.height() > rect(&mut one, "theme-name").height(),
+        "large type increases the field's real height"
     );
+    assert!(name.y0 >= preview.y1, "the form starts below the preview");
     let one_form = named(&mut one, "Form");
     let two_form = named(&mut two, "Form");
     assert_eq!(one_form.len(), 1, "the production editor hosts one form");
