@@ -52,6 +52,28 @@ const CHANNEL_VIDEOS: &str = "EgZ2aWRlb3PyBgQKAjoA";
 /// Player answers kept for playback (stream URLs last hours).
 const KEPT_STREAMS: usize = 16;
 
+/// `YouTube` answered the player request but would not play the video,
+/// in its own words (such as "Sign in to confirm you're not a bot"): no
+/// other source is likely to do better, and the person should hear why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "YouTube refused: {}", self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// What `YouTube` said when it refused to play, if the error is that.
+#[must_use]
+pub fn refusal(error: &anyhow::Error) -> Option<String> {
+    error
+        .downcast_ref::<Refused>()
+        .map(|refused| refused.0.clone())
+}
+
 /// A client `YouTube` knows, as the request names it.
 #[derive(Clone, Copy, Debug)]
 enum Caller {
@@ -173,6 +195,9 @@ impl InnerTube {
             return Ok(stream);
         }
         let player = self.player(id).await?;
+        if let Some(reason) = parse::refusal(&player) {
+            return Err(Refused(reason).into());
+        }
         parse::stream(&player).map_err(|reason| anyhow::anyhow!("{id}: {reason}"))
     }
 
@@ -390,7 +415,11 @@ mod client_tests {
             include_str!("fixtures/player-bot-check.json").to_string(),
         )]);
         let error = block(reader(&base).stream("n61ULEU7CO0")).expect_err("a bot check");
-        assert!(format!("{error:#}").contains("LOGIN_REQUIRED"), "{error:#}");
+        assert_eq!(
+            refusal(&error).as_deref(),
+            Some("Sign in to confirm you\u{2019}re not a bot"),
+            "{error:#}"
+        );
     }
 
     #[test]

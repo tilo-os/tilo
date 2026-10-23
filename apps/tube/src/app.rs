@@ -1625,6 +1625,12 @@ impl TubeApp {
             Action::TogglePlay => {
                 let _ = self.perform(TubeEffect::TogglePlayback);
             }
+            Action::RetryPlayback => {
+                // Forget the attempt, so the page asks for the stream anew.
+                self.model.unplayable = None;
+                self.playing_id = None;
+                self.ensure_playback();
+            }
             Action::SkipSegment(to) => {
                 // Manual skip button for a Show-mode segment: jump the model +
                 // engine playhead to the segment end and confirm with a toast.
@@ -2044,11 +2050,11 @@ impl TubeApp {
                         changed = true;
                     }
                 }
-                Update::Unplayable { video } => {
+                Update::Unplayable { video, said } => {
                     // Only the page still open on it says so.
                     if matches!(&self.model.route, Route::Watch(id) if *id == video) {
                         self.model.playing = false;
-                        self.model.push_notice(t("tube-notice-unplayable"));
+                        self.model.unplayable = Some(crate::model::Unplayable { video, said });
                         changed = true;
                     }
                 }
@@ -3315,8 +3321,8 @@ mod tests {
             );
             assert_eq!(app.model.feed_error, None);
         }
-        // Case `a_video_no_source_plays_says_so_on_its_page`: only the
-        // page still open on it.
+        // Case `a_video_youtube_refuses_says_why_on_its_page_and_tries_again`:
+        // only the page still open on it, in YouTube's own words.
         {
             let mut app = TubeApp::new().online();
             let video = String::from("vid_donut");
@@ -3325,17 +3331,27 @@ mod tests {
             results
                 .send(Update::Unplayable {
                     video: "another".into(),
+                    said: None,
                 })
                 .unwrap();
             app.pump();
-            assert!(app.model.notices.is_empty(), "{:?}", app.model.notices);
-            results.send(Update::Unplayable { video }).unwrap();
+            assert_eq!(app.model.unplayable(&video), None);
+            let bot_check = "Sign in to confirm you're not a bot";
+            results
+                .send(Update::Unplayable {
+                    video: video.clone(),
+                    said: Some(bot_check.into()),
+                })
+                .unwrap();
             assert!(app.pump());
             assert_eq!(
-                app.model.notices.first().map(String::as_str),
-                Some(t("tube-notice-unplayable").as_str())
+                app.model.unplayable(&video).and_then(|u| u.said.as_deref()),
+                Some(bot_check)
             );
             assert!(!app.model.playing);
+            app.apply(Action::RetryPlayback);
+            assert_eq!(app.model.unplayable(&video), None, "the page asks anew");
+            assert_eq!(app.playing_id.as_deref(), Some(video.as_str()));
         }
         {
             let mut app = TubeApp::new().online();
