@@ -1808,6 +1808,10 @@ suite = "os/tests/installed-admin-actions.sh"
 reason = "runs inside a booted guest as its device admin, after first login; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
+suite = "os/tests/live-update-check.sh"
+reason = "runs inside a booted dev VM as root and stages an update; t's os-acceptance-<arch> runs it"
+
+[[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"
 reason = "runs inside a booted guest's graphical session, partly as root; t's os-acceptance-<arch> runs it"
 
