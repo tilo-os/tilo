@@ -179,14 +179,18 @@ impl<'a> Author<'a> {
         let Self::Bot {
             bot_name,
             appearance: Some(appearance),
+            linked,
             ..
         } = *self
         else {
             return self.shown_name().to_owned();
         };
+        // A persona linked to a member shows that member's own name: the
+        // one it looks like is the one it is.
         if !members
             .iter()
             .any(|member| looks_alike(member, &appearance.name))
+            || linked.is_some_and(|person| looks_alike(person, &appearance.name))
         {
             return appearance.name.clone();
         }
@@ -367,6 +371,7 @@ mod tests {
             Some(Persona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
+                linked: None,
             }),
         )
         .unwrap()
@@ -438,6 +443,20 @@ mod tests {
         assert_eq!(
             bridge(Some(&bare)).label(&["Alice"]),
             "alice · Discord Bridge"
+        );
+        // Linked to the member it looks like, it is that member.
+        let linked = |person| Author::Bot {
+            bot_name: "Discord Bridge",
+            installed_by: "Ada",
+            appearance: Some(&alice),
+            linked: Some(person),
+            image: None,
+        };
+        assert_eq!(linked("Alice").label(&["Alice"]), "alice");
+        assert_eq!(
+            linked("Bo").label(&["Alice", "Bo"]),
+            "alice · Discord",
+            "a persona linked to one member still may not look like another"
         );
         assert!(looks_alike("paypal", "pаypаl"));
         assert!(!looks_alike("alice", "bob"));

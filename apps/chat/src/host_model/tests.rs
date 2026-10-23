@@ -317,12 +317,38 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
         persona: Some(tilo_actions::Persona {
             service: "discord".into(),
             account: "3001".into(),
+            linked: None,
         }),
     });
     assert_eq!(app.message_author_name(&message), "Discord bridge");
     let label = app.model_message_label(&message);
     assert!(label.starts_with("Dana (via Discord): "), "{label}");
     assert!(!label.contains("Someone"), "{label}");
+
+    // A member named alike: an unlinked persona says where it is from, one
+    // linked to that member is them.
+    app.users.push(crate::model::User {
+        id: "u_dana".into(),
+        name: "Dana".into(),
+        initials: "D".into(),
+        color_idx: 0,
+        status: crate::model::Presence::Online,
+        is_agent: false,
+    });
+    let label = app.model_message_label(&message);
+    assert!(
+        label.starts_with("Dana · Discord (via Discord): "),
+        "{label}"
+    );
+    if let Some(persona) = message
+        .appearance
+        .as_mut()
+        .and_then(|appearance| appearance.persona.as_mut())
+    {
+        persona.linked = Some("u_dana".into());
+    }
+    let label = app.model_message_label(&message);
+    assert!(label.starts_with("Dana (via Discord): "), "{label}");
 }
 
 #[test]

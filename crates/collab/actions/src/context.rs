@@ -1324,6 +1324,7 @@ mod tests {
             Some(crate::Persona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
+                linked: None,
             }),
         )
         .unwrap();
