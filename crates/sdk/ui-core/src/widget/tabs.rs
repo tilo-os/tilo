@@ -402,6 +402,12 @@ pub struct TabBar {
     /// of the ×; hovering swaps the × back, so the tab never stops being
     /// closable. Sidecar for the same reason as the two above.
     pub(crate) modified_ids: HashSet<u64>,
+    /// Tabs that opened beside the person without taking their view (an
+    /// agent's, an app's open nobody pressed for) and wait for them to look:
+    /// the pill carries a keyline in the person's colour where a focused
+    /// pill carries its focus keyline. Sidecar for the same reason as the
+    /// three above.
+    attention_ids: HashSet<u64>,
     /// Tabs someone else holds ([`TabHolder`]), by id. Sidecar for the same
     /// reason as the three above.
     held_ids: HashMap<u64, TabHolder>,
@@ -584,6 +590,7 @@ impl TabBar {
             pinned_ids: HashSet::new(),
             accent_ids: HashMap::new(),
             modified_ids: HashSet::new(),
+            attention_ids: HashSet::new(),
             held_ids: HashMap::new(),
             desktop_control: status_chips::DesktopControlChip::default(),
             resist: None,
@@ -1276,6 +1283,33 @@ impl TabBar {
                 vello::peniko::Fill::NonZero,
                 pill_transform,
                 theme.tokens.colors.text_primary,
+                None,
+                &keyline,
+            );
+        } else if self.attention_ids.contains(&t.id) {
+            // A window that opened beside the person and waits for them: the
+            // focus keyline's place, in their colour (the live chip's fill,
+            // as an unread count is), so it reads as "new here", not as
+            // input focus. A window of one tab carries it under its title,
+            // as most windows opened aside are. It goes when they look at
+            // the window.
+            let inset = f64::from(theme.tokens.spacing.s2);
+            let keyline = RoundedRect::from_rect(
+                Rect::new(
+                    r.x0 + inset,
+                    r.y1 - FOCUS_KEYLINE_LIFT - FOCUS_KEYLINE_PX,
+                    (r.x1 - inset).max(r.x0 + inset),
+                    r.y1 - FOCUS_KEYLINE_LIFT,
+                ),
+                FOCUS_KEYLINE_PX / 2.0,
+            );
+            let live = crate::widget::chip::ChipStyle::Live
+                .colors(theme, theme.tokens.colors.surfaces.content, false, false)
+                .fill;
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                pill_transform,
+                live,
                 None,
                 &keyline,
             );
@@ -2669,6 +2703,23 @@ impl TabBar {
     pub fn accent(&self, id: u64) -> Option<vello::peniko::Color> {
         self.accent_ids.get(&id).copied()
     }
+    /// The tabs that opened beside the person and wait for them to look
+    /// ([`Self::wants_attention`]). Returns whether the set changed, so the
+    /// caller repaints only then.
+    pub fn set_attention(&mut self, ids: impl IntoIterator<Item = u64>) -> bool {
+        let ids: HashSet<u64> = ids.into_iter().collect();
+        if ids == self.attention_ids {
+            return false;
+        }
+        self.attention_ids = ids;
+        true
+    }
+
+    /// Whether tab `id` opened beside the person and waits for them to look.
+    pub fn wants_attention(&self, id: u64) -> bool {
+        self.attention_ids.contains(&id)
+    }
+
     /// Mark `id` as holding unsaved changes, or clear the mark.
     pub fn set_modified(&mut self, id: u64, modified: bool) {
         if modified {
@@ -4361,6 +4412,9 @@ impl Widget for TabBar {
                         node
                     }
                     Some(mark) => node.with_description(mark.description()),
+                    None if self.attention_ids.contains(&t.id) => node.with_description(
+                        crate::i18n::I18nManager::lookup_plain("tab-opened-beside-you"),
+                    ),
                     None => node,
                 }
             })

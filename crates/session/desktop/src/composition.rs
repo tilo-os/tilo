@@ -275,14 +275,21 @@ impl DesktopSurface {
                 let groups = display_ordered(&tree.outputs, strip)
                     .into_iter()
                     .map(|g| {
-                        build_group(
+                        let mut group = build_group(
                             g,
                             workspace.room(),
                             records,
                             resolver,
                             &mut failures,
                             &wake_sink,
-                        )
+                        );
+                        group.set_tab_attention(
+                            g.tabs
+                                .iter()
+                                .map(|tab| tab.id)
+                                .filter(|id| tree.attention.contains(id)),
+                        );
+                        group
                     })
                     .collect();
                 let mut row = GroupRow::new(groups).with_leading_inset(chrome.leading_inset);
@@ -1064,6 +1071,13 @@ impl DesktopSurface {
                 if live.active_tab_id() != group.active_tab {
                     changed |= live.set_active_tab(group.active_tab);
                 }
+                changed |= live.set_tab_attention(
+                    group
+                        .tabs
+                        .iter()
+                        .map(|tab| tab.id)
+                        .filter(|id| tree.attention.contains(id)),
+                );
             }
             // Closing visuals retain their strip slots while the live groups follow
             // canonical order. Reordering only live groups would move a closing

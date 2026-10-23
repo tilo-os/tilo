@@ -30,6 +30,7 @@ use ui::widget::GroupRow;
 
 use super::driver::ShellDriver;
 
+mod attention;
 mod file_chooser;
 mod launcher;
 mod window_search;
@@ -324,6 +325,18 @@ pub enum Action {
     OpenWindow {
         app_id: &'static str,
         surface_id: u64,
+    },
+    /// The person goes to the window of client surface `surface_id`, as
+    /// choosing it in search does.
+    FocusSurface(u64),
+    /// [`Action::OpenWindow`] for a window nobody pressed for, an agent's or
+    /// a background open: placed beside the first window of strip `strip`
+    /// (the view that actor works in) without taking the person's view, as
+    /// the broker places such an open.
+    OpenWindowAside {
+        app_id: &'static str,
+        surface_id: u64,
+        strip: usize,
     },
     /// Activate an app whose window has not mapped yet: the production
     /// launch holds its place with the opening card from this frame.
@@ -1292,20 +1305,35 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
         }
         _ => {}
     }
-    if let Action::OpenWindow { app_id, surface_id } = action {
-        let app_id = *app_id;
-        let surface_id = *surface_id;
+    if let Action::FocusSurface(surface) = action {
+        attention::focus_surface(driver, *surface);
+        return;
+    }
+    let (app_id, surface_id, aside) = match action {
+        Action::OpenWindow { app_id, surface_id } => (*app_id, *surface_id, None),
+        Action::OpenWindowAside {
+            app_id,
+            surface_id,
+            strip,
+        } => (*app_id, *surface_id, Some(*strip)),
+        _ => return,
+    };
+    {
         driver.with_chrome(|st: &mut ChromeState| {
             {
-                // Exactly what opening an app does: decide where the
-                // window goes now, against the layout the user is
-                // looking at, and leave it as a note for the adoption.
                 let tree = st.tree();
-                shell::shell::placement::note_placement_for_launch(
-                    app_id,
-                    &tree,
-                    st.strip_viewport(),
-                );
+                match aside {
+                    // Exactly what opening an app does: decide where the
+                    // window goes now, against the layout the user is
+                    // looking at, and leave it as a note for the adoption.
+                    None => shell::shell::placement::note_placement_for_launch(
+                        app_id,
+                        &tree,
+                        st.strip_viewport(),
+                    ),
+                    // An actor's open: beside the view it works in.
+                    Some(strip) => attention::place_aside(app_id, &tree, strip),
+                }
             }
             {
                 let mut tree = st.tree_mut();
@@ -3779,6 +3807,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("07-closed"),
             ],
         },
+        attention::attention_mark(),
         Scenario {
             name: "strip_deck",
             description: "Four strips, each a full-height screen: the first fills the work \

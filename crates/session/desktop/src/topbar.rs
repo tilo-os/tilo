@@ -208,6 +208,7 @@ struct CacheFingerprint {
     rect_px: (i64, i64, u64, u64),
     presence: TopBarPresence,
     workspace_name: String,
+    other_workspace_waiting: bool,
     /// The strip the bar names after the workspace pill, if any.
     strip_name: Option<String>,
     collaborator_initials: Vec<char>,
@@ -580,6 +581,10 @@ pub struct TopBarChrome {
     workspace_name: String,
     workspace_index: usize,
     workspace_total: usize,
+    /// Another workspace holds a window that opened beside the person and
+    /// waits for them ([`DesktopTree::attention`]): the workspace name
+    /// carries the attention dot, the way into the menu that lists it.
+    other_workspace_waiting: bool,
     /// Most of the bar is stable across frames, so caching cuts the
     /// draw budget at rest by an order of magnitude.
     cached: Scene,
@@ -926,6 +931,7 @@ impl TopBarChrome {
             variant: BarVariant::Full,
             placement: None,
             workspace_name: String::new(),
+            other_workspace_waiting: false,
             workspace_index: 0,
             workspace_total: 1,
             cached: Scene::new(),
@@ -1011,6 +1017,7 @@ impl TopBarChrome {
             rect_px: (x0, y0, w, h),
             presence: self.presence(),
             workspace_name: self.workspace_name.clone(),
+            other_workspace_waiting: self.other_workspace_waiting,
             strip_name: self.strip_name().map(str::to_owned),
             collaborator_initials: self.collaborator_initials.clone(),
             collaborator_names: self.collaborator_names.clone(),
@@ -1373,6 +1380,10 @@ impl TopBarChrome {
             );
         self.workspace_index = idx;
         self.workspace_name = name;
+        self.other_workspace_waiting = tree
+            .workspaces
+            .iter()
+            .any(|w| w.id != tree.active && tree.workspace_wants_attention(w));
         // Presence is workspace-scoped. The legacy tree-level cache can
         // contain people active elsewhere and must not leak them into this bar.
         let roster: &[tilo_desktop_model::Collaborator] =
@@ -2189,6 +2200,19 @@ impl TopBarChrome {
         let ground = colors.surfaces.base;
         let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
         face.paint(&mut ctx, ws_pill_outer, ground);
+        if self.other_workspace_waiting {
+            // A window waits in another workspace: the attention dot on
+            // the name's top trailing corner, as a badge sits on what it
+            // is about.
+            let dot = f64::from(tokens.spacing.s2);
+            let at = Rect::new(
+                ws_pill_outer.x1 - dot,
+                ws_pill_outer.y0,
+                ws_pill_outer.x1,
+                ws_pill_outer.y0 + dot,
+            );
+            ui::widget::BadgeFace::dot(at).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
+        }
         let chevron_x = x + f64::from(ws_w) + f64::from(tokens.metrics.icon_label_gap);
         self.ws_chevron_rect = Rect::new(
             chevron_x,
@@ -4794,6 +4818,46 @@ mod tests {
     use tilo_desktop_model::{
         DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
     };
+
+    // A window opened aside in another workspace puts the attention dot on
+    // the top bar's workspace name; one in the workspace on screen does not.
+    #[test]
+    fn the_workspace_name_carries_the_dot_while_another_workspace_holds_a_waiting_window() {
+        let mut tree = DesktopTree::default();
+        let here = Workspace::new(WorkspaceId(1), "Here");
+        let mut there = Workspace::new(WorkspaceId(2), "There");
+        let mut strip = Strip::new(tilo_desktop_model::StripId(20), "Agent");
+        strip.window_groups.push(WindowGroup {
+            id: 21,
+            tabs: vec![Tab {
+                id: 22,
+                title: "Report".into(),
+                tile: TileContent::Stub {
+                    kind: tilo_desktop_model::AppKind::Other("Report".into()),
+                    label: "Report".into(),
+                },
+            }],
+            active_tab: 22,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+        there.strips.push(strip);
+        tree.active = here.id;
+        tree.workspaces = vec![here, there];
+        let mut bar = TopBarChrome::from_tree(&tree);
+        bar.sync_from_tree(&tree);
+        assert!(!bar.other_workspace_waiting, "nothing waits");
+        tree.attention.insert(22);
+        bar.sync_from_tree(&tree);
+        assert!(bar.other_workspace_waiting, "a window waits in There");
+        tree.active = WorkspaceId(2);
+        bar.sync_from_tree(&tree);
+        assert!(
+            !bar.other_workspace_waiting,
+            "on screen, the strip and the tab carry it instead"
+        );
+    }
 
     #[test]
     fn compact_workspace_identity_outranks_redundant_position() {

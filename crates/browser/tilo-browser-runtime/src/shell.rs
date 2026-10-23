@@ -897,6 +897,7 @@ impl BrowserShell {
                     key: format!("{WORKSPACE_KEY}{}", workspace.id.0),
                     name: workspace.name.clone(),
                     current: workspace.id == tree.active,
+                    attention: tree.workspace_wants_attention(workspace),
                 })
                 .collect::<Vec<WorkspaceChoice>>()
         });
@@ -909,6 +910,7 @@ impl BrowserShell {
                     key: format!("{HOST_KEY}{}", action.id),
                     name: action.label.clone().unwrap_or_else(|| action.title.clone()),
                     current: false,
+                    attention: false,
                 }),
         );
         WorkspaceMenuModel {

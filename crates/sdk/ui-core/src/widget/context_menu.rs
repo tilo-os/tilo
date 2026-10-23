@@ -56,6 +56,11 @@ pub enum MenuItem {
         /// `Some` makes the row open a nested menu (with a chevron) instead
         /// of running `action`.
         submenu: Option<Vec<MenuItem>>,
+        /// `Some` puts the attention dot ([`crate::widget::BadgeFace::dot`])
+        /// at the row's trailing edge: something there waits for the person
+        /// (a window that opened beside them). The text is what the dot
+        /// says to someone who cannot see it.
+        dot: Option<String>,
     },
     Separator,
     /// A line of secondary text about the rows around it ("Hosted by
@@ -90,6 +95,7 @@ impl MenuItem {
             shortcut: None,
             detail: None,
             submenu: None,
+            dot: None,
         }
     }
 
@@ -147,6 +153,24 @@ impl MenuItem {
             *item_icon = Some(icon);
         }
         self
+    }
+
+    /// Put the attention dot at the row's trailing edge, saying `meaning`
+    /// to assistive technology: something there waits for the person.
+    #[must_use]
+    pub fn with_dot(mut self, meaning: impl Into<String>) -> Self {
+        if let MenuItem::Action { dot, .. } = &mut self {
+            *dot = Some(meaning.into());
+        }
+        self
+    }
+
+    /// The attention dot's meaning, when the row carries one.
+    pub fn dot(&self) -> Option<&str> {
+        match self {
+            MenuItem::Action { dot, .. } => dot.as_deref(),
+            _ => None,
+        }
     }
 
     /// Show the keyboard shortcut that runs the same command at the row's
@@ -619,6 +643,9 @@ impl ContextMenu {
             }
             if item.submenu_items().is_some() {
                 trailing = trailing.max(f64::from(theme.tokens.metrics.icon_sm));
+            }
+            if item.dot().is_some() {
+                trailing = trailing.max(f64::from(theme.tokens.spacing.s2));
             }
         }
         // The shortcut column stands `s6` clear of the longest label.
@@ -1319,6 +1346,7 @@ impl ContextMenu {
                     destructive,
                     enabled,
                     submenu,
+                    dot,
                     ..
                 } => {
                     // The row Enter / a click would activate, painted as every
@@ -1421,6 +1449,13 @@ impl ContextMenu {
                             ink,
                             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                         );
+                    } else if dot.is_some() {
+                        let size = f64::from(theme.tokens.spacing.s2);
+                        crate::widget::BadgeFace::dot(Rect::from_origin_size(
+                            (trailing_x1 - size, y + (row_height - size) / 2.0),
+                            (size, size),
+                        ))
+                        .paint(scene, transform, text_renderer, theme);
                     } else if let Some(text) = item.trailing_text(self.platform) {
                         let (w, _) = text_renderer.measure_style(&text, None, &style);
                         let dim = if armed {
@@ -1879,6 +1914,9 @@ impl Widget for ContextMenu {
                     });
                 if let Some(trailing) = item.trailing_text(self.platform) {
                     node.description = Some(trailing);
+                }
+                if let Some(meaning) = item.dot() {
+                    node.description = Some(meaning.to_owned());
                 }
                 if let Some((_, menu)) = open_here
                     && let Some(nested) = Widget::accessibility(menu.as_ref())

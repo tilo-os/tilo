@@ -93,6 +93,7 @@ topbar-face-agent = { $name }, Agent
 topbar-faces-more = { $count } weitere
 workspace-menu-hosted-by = Gehostet von { $host }
 workspace-menu-rename = Arbeitsbereich umbenennen
+workspace-menu-window-waiting = Hier wurde ein Fenster geöffnet und wartet auf dich
 workspace-menu-overview = Übersicht
 workspace-menu-new-strip = Neue Leiste
 profile-card = Dein Profil

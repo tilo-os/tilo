@@ -2440,6 +2440,13 @@ impl WindowGroup {
         self.bar.set_external_drag_hover(cursor);
     }
 
+    /// The tabs of this window that opened beside the person and wait for
+    /// them to look ([`crate::widget::TabBar::set_attention`]). Returns
+    /// whether that changed.
+    pub fn set_tab_attention(&mut self, ids: impl IntoIterator<Item = u64>) -> bool {
+        self.bar.set_attention(ids)
+    }
+
     #[cfg(test)]
     pub(crate) fn bar_mut(&mut self) -> &mut crate::widget::TabBar {
         &mut self.bar

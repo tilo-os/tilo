@@ -94,6 +94,7 @@ pub fn bring_forward(
     tree.desktop.active = workspace;
     tree.desktop.active_strip.insert(workspace, strip);
     tree.desktop.set_active_group(strip, group);
+    tree.desktop.attention.remove(&tab);
     tree.brought_forward = Some(BroughtForward {
         serial: BROUGHT_FORWARD_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         workspace,
@@ -750,9 +751,12 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
             .map_or(strip.window_groups.len(), |i| i.saturating_add(1)),
     };
     strip.window_groups.insert(insert_at, group);
-    // Someone else's view: the person stays where they are. A new window
-    // the person opened is where they go next.
-    if !matches!(placement, Placement::Beside(_)) {
+    // Someone else's view: the person stays where they are, and the window
+    // carries the attention mark until they look at it. A new window the
+    // person opened is where they go next.
+    if matches!(placement, Placement::Beside(_)) {
+        tree.desktop.attention.insert(tab_id);
+    } else {
         bring_forward(tree, ws_id, strip_id, group_id, tab_id);
     }
     tab_id

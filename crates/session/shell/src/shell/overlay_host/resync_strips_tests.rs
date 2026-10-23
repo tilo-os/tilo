@@ -1757,3 +1757,110 @@ fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
     drop(state);
     assert_eq!(shown, Some(opened), "the new window is the focused one");
 }
+
+// A window that opens aside, for an agent or a background open, never takes
+// the person's view; it gets an attention indicator instead: a mark on its
+// tab and a dot on the strip that holds it, until the person looks at it.
+#[test]
+fn a_window_opened_aside_is_marked_until_the_person_looks_at_it() {
+    let theme = Theme::dark();
+    let (mut tree, first_strip, first_group) = one_group_seed();
+    let other_strip = StripId::new();
+    tree.desktop.workspaces[0].strips.push(Strip {
+        id: other_strip,
+        name: "Agent".into(),
+        window_groups: vec![make_stub_group(301, "Notes")],
+    });
+    tree.seed_doc_from_cache();
+    let workspace = tree.desktop.workspaces[0].id;
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let frame = |host: &mut ShellOverlayHost| {
+        let _ = ui::widget::Widget::take_structure_dirty(host);
+        layout_close_fixture(host, &theme);
+        host.tick_scroll_active_into_view_for_tests();
+        let _ = ui::widget::Widget::take_structure_dirty(host);
+        layout_close_fixture(host, &theme);
+    };
+    frame(&mut host);
+
+    // An agent's window opens beside the view it works in, on the other
+    // strip.
+    let opened = {
+        let state = chrome.borrow();
+        let mut tree = state.tree_mut();
+        crate::shell::tab_binding::place_tab(
+            &mut tree,
+            Tab {
+                id: 302,
+                title: "Report".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: "Report".into(),
+                },
+            },
+            crate::shell::tab_binding::Placement::Beside(301),
+        )
+    };
+    chrome.borrow_mut().bump();
+    frame(&mut host);
+    let marked = |host: &mut ShellOverlayHost| {
+        host.group_row_mut_for_tests(other_strip)
+            .expect("the other strip's row")
+            .groups
+            .iter_mut()
+            .find(|group| group.tabs().iter().any(|tab| tab.id == opened))
+            .expect("the opened window's group")
+            .bar_mut_for_tests()
+            .wants_attention(opened)
+    };
+    let strip_dot = |host: &mut ShellOverlayHost| {
+        let _ = host.refresh_strip_switcher_model();
+        host.strip_switcher_for_tests()
+            .model()
+            .strips
+            .iter()
+            .find(|strip| strip.id == other_strip)
+            .is_some_and(|strip| strip.attention)
+    };
+    let stayed = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        (
+            tree.desktop.active_strip.get(&workspace).copied(),
+            tree.desktop.active_group_for(first_strip),
+        )
+    };
+    let marked_while_waiting = marked(&mut host);
+    let dot_while_waiting = strip_dot(&mut host);
+
+    // The person goes to it.
+    let group = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        tree.desktop.workspaces[0]
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .find(|group| group.tabs.iter().any(|tab| tab.id == opened))
+            .map(|group| group.id)
+            .expect("the opened window's group")
+    };
+    chrome
+        .borrow_mut()
+        .focus_tab(workspace, other_strip, group, opened);
+    frame(&mut host);
+    let marked_after = marked(&mut host);
+    let dot_after = strip_dot(&mut host);
+    let waiting_after = chrome.borrow().tree().desktop.attention.contains(&opened);
+
+    assert_eq!(
+        stayed,
+        (Some(first_strip), Some(first_group)),
+        "the person stays where they were"
+    );
+    assert!(marked_while_waiting, "its tab carries the attention mark");
+    assert!(dot_while_waiting, "its strip carries the attention dot");
+    assert!(!waiting_after, "looking at it is what clears it");
+    assert!(!marked_after, "the tab's mark goes");
+    assert!(!dot_after, "and the strip's dot");
+}

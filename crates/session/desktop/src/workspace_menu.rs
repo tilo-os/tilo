@@ -28,6 +28,9 @@ pub struct WorkspaceChoice {
     /// The workspace shown now: listed with a check, choosing it does
     /// nothing.
     pub current: bool,
+    /// A window in it opened beside the person and waits for them to look:
+    /// the row carries the attention dot.
+    pub attention: bool,
 }
 
 /// A command the host offers about workspaces (join one, leave this one, a
@@ -85,8 +88,12 @@ impl WorkspaceMenu {
     fn rows(model: &WorkspaceMenuModel) -> Vec<(MenuItem, Option<WorkspaceMenuChoice>)> {
         let mut rows: Vec<(MenuItem, Option<WorkspaceMenuChoice>)> = Vec::new();
         for workspace in &model.workspaces {
+            let mut item = MenuItem::selection(&workspace.name).with_checked(workspace.current);
+            if workspace.attention {
+                item = item.with_dot(t("workspace-menu-window-waiting"));
+            }
             rows.push((
-                MenuItem::selection(&workspace.name).with_checked(workspace.current),
+                item,
                 (!workspace.current).then(|| WorkspaceMenuChoice::Switch(workspace.key.clone())),
             ));
         }
@@ -268,11 +275,13 @@ mod tests {
                     key: "1".into(),
                     name: "Lounge".into(),
                     current: true,
+                    attention: false,
                 },
                 WorkspaceChoice {
                     key: "2".into(),
                     name: "Home".into(),
                     current: false,
+                    attention: false,
                 },
             ],
             host: Some("tilo.coffee".into()),

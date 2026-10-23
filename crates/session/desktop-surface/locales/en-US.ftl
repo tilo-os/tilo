@@ -81,6 +81,7 @@ topbar-face-agent = { $name }, agent
 topbar-faces-more = { $count } more
 workspace-menu-hosted-by = Hosted by { $host }
 workspace-menu-rename = Rename workspace
+workspace-menu-window-waiting = A window opened here and waits for you
 workspace-menu-overview = Overview
 workspace-menu-new-strip = New strip
 profile-card = Your profile

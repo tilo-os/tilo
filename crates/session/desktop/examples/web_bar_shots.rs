@@ -253,11 +253,13 @@ fn workspace_model() -> WorkspaceMenuModel {
                 key: "1".into(),
                 name: "Lounge".into(),
                 current: true,
+                attention: false,
             },
             WorkspaceChoice {
                 key: "host:home".into(),
                 name: "Home".into(),
                 current: false,
+                attention: false,
             },
         ],
         host: Some("tilo.coffee".into()),

@@ -124,6 +124,9 @@ pub struct StripEntry {
     pub renamable: bool,
     /// It may go: empty, not the workspace's last, and this machine's.
     pub removable: bool,
+    /// A window on it opened beside the person and waits for them to look
+    /// ([`DesktopTree::attention`]): its label carries the attention dot.
+    pub attention: bool,
 }
 
 /// What the switcher shows: the active workspace's strips.
@@ -182,6 +185,7 @@ impl SwitcherModel {
                     .map(|(_, person)| person.clone())
                     .collect(),
                 renamable: may_rename(strip.id),
+                attention: desktop.strip_wants_attention(strip),
             })
             .collect();
         let focused = desktop
@@ -1071,9 +1075,15 @@ impl StripSwitcher {
                 .get(i)
                 .and_then(|s| faces_width(s.people.len()))
                 .map_or(0.0, |w| w + INNER_GAP);
+            let dot = if self.model.strips.get(i).is_some_and(|s| s.attention) {
+                f64::from(cx.theme.tokens.spacing.s2) + INNER_GAP
+            } else {
+                0.0
+            };
             widths.push((
                 Row::Strip(i),
-                (f64::from(w) + LABEL_PAD_X * 2.0 + faces + self.remove_room(i)).min(LABEL_MAX_W),
+                (f64::from(w) + LABEL_PAD_X * 2.0 + faces + dot + self.remove_room(i))
+                    .min(LABEL_MAX_W),
             ));
         }
         let style = label_style(cx.theme, false);
@@ -1181,11 +1191,19 @@ impl StripSwitcher {
                     return;
                 };
                 let x_end = draw_people(cx, &strip.people, inner.x1, rect.center().y);
-                let text_x1 = if strip.people.is_empty() {
+                let mut text_x1 = if strip.people.is_empty() {
                     x_end
                 } else {
                     x_end - INNER_GAP
                 };
+                if strip.attention {
+                    // A window here opened beside the person and waits for
+                    // them: the attention dot, after the name.
+                    let dot = f64::from(cx.theme.tokens.spacing.s2);
+                    let at = Rect::new(text_x1 - dot, rect.y0, text_x1, rect.y1);
+                    ui::widget::BadgeFace::dot(at).paint(cx.scene, cx.transform, cx.text, cx.theme);
+                    text_x1 = at.x0 - INNER_GAP;
+                }
                 if hover && let Some(mark) = self.remove_rect(i) {
                     let ink = if self.hover == Some(Target::Remove(i)) {
                         colors.text_primary
@@ -1298,13 +1316,34 @@ impl StripSwitcher {
                 Some(focus) => ribbon.segment_rect_at(i, focus),
                 None => ribbon.segment_rect(i),
             };
-            let (Some(person), Some(seg)) = (strip.people.first(), seg) else {
+            let Some(seg) = seg else {
                 continue;
             };
             let rect = Rect::from_center_size(
                 Point::new(seg.x0 - REST_FACE_GAP - REST_FACE / 2.0, seg.center().y),
                 (REST_FACE, REST_FACE),
             );
+            let Some(person) = strip.people.first() else {
+                if strip.attention {
+                    // Nobody else here, but a window that opened beside the
+                    // person waits on this strip: its dot in the gutter.
+                    paint.scene.push_layer(
+                        Fill::NonZero,
+                        BlendMode::default(),
+                        alpha,
+                        paint.transform,
+                        &rect,
+                    );
+                    ui::widget::BadgeFace::dot(rect).paint(
+                        paint.scene,
+                        paint.transform,
+                        paint.text,
+                        paint.theme,
+                    );
+                    paint.scene.pop_layer();
+                }
+                continue;
+            };
             paint.scene.push_layer(
                 Fill::NonZero,
                 BlendMode::default(),
@@ -1558,6 +1597,7 @@ mod tests {
                     people: Vec::new(),
                     renamable: true,
                     removable: false,
+                    attention: false,
                 })
                 .collect(),
             focused: 0,

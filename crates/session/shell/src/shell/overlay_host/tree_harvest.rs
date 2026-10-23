@@ -1106,6 +1106,7 @@ impl ShellOverlayHost {
         // Already done this frame when `update` ran; the paths that lay out
         // without it (the shots driver, tests) follow the request here.
         self.follow_brought_forward();
+        self.clear_attention_once_looked_at();
         let reveal = self.brought_forward_reveal.take();
         let st = chrome.borrow();
         let tree = st.tree();
@@ -1114,6 +1115,28 @@ impl ShellOverlayHost {
                 surface.reveal_on_next_layout(strip);
             }
             surface.sync_navigation(&tree.desktop);
+        }
+    }
+
+    /// The person is in a window that opened beside them and waited for
+    /// them ([`crate::shell::state::DesktopTree::attention`]): they have
+    /// looked at it, so its mark and the dots leading to it go.
+    fn clear_attention_once_looked_at(&self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let looked_at = {
+            let st = chrome.borrow();
+            if st.tree().desktop.attention.is_empty() {
+                return;
+            }
+            st.active_tab_id()
+                .filter(|tab| st.tree().desktop.attention.contains(tab))
+        };
+        if let Some(tab) = looked_at {
+            let mut st = chrome.borrow_mut();
+            st.tree_mut().desktop.attention.remove(&tab);
+            st.bump();
         }
     }
 

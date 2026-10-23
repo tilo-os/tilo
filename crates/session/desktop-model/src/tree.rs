@@ -5,12 +5,12 @@
 //! documents, persistence targets and admission records belong to the host
 //! and wrap this value.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
 use crate::collaborator::Collaborator;
-use crate::ids::{GroupId, RoomId, StripId, WorkspaceId};
+use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
 use crate::partition::OutputPartition;
 use crate::serde_ids::deserialize_id_map;
 use crate::workspace::Workspace;
@@ -70,6 +70,12 @@ pub struct DesktopTree {
     /// needed when one process holds two trees (e.g. two simulated peers).
     #[serde(skip, default)]
     pub peer_salt_override: Option<u16>,
+    /// Windows that opened beside the person without taking their view (an
+    /// agent's, an app's open nobody pressed for), until the person looks
+    /// at one: its tab carries the attention mark, and the strip and
+    /// workspace holding it a dot. Local to this device and this session.
+    #[serde(skip, default)]
+    pub attention: BTreeSet<TabId>,
 }
 
 impl Default for DesktopTree {
@@ -87,6 +93,7 @@ impl Default for DesktopTree {
             room_records_held: HashMap::new(),
             room_records_inbound: Vec::new(),
             peer_salt_override: None,
+            attention: BTreeSet::new(),
         }
     }
 }
@@ -116,6 +123,27 @@ impl DesktopTree {
     /// which bumps the chrome revision when it moves.
     pub fn room_epoch(&self) -> u64 {
         self.room_epoch
+    }
+
+    /// Whether a window of `strip` opened beside the person and still waits
+    /// for them to look at it ([`Self::attention`]).
+    #[must_use]
+    pub fn strip_wants_attention(&self, strip: &crate::layout::Strip) -> bool {
+        !self.attention.is_empty()
+            && strip
+                .window_groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .any(|tab| self.attention.contains(&tab.id))
+    }
+
+    /// [`Self::strip_wants_attention`] for any strip of `workspace`.
+    #[must_use]
+    pub fn workspace_wants_attention(&self, workspace: &Workspace) -> bool {
+        workspace
+            .strips
+            .iter()
+            .any(|strip| self.strip_wants_attention(strip))
     }
 
     pub fn active_workspace(&self) -> Option<&Workspace> {

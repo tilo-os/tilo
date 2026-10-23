@@ -277,6 +277,7 @@ impl ShellOverlayHost {
                         key: workspace.id.0.to_string(),
                         name: workspace.name.clone(),
                         current: workspace.id == tree.desktop.active,
+                        attention: tree.desktop.workspace_wants_attention(workspace),
                     })
                     .collect::<Vec<_>>(),
                 active_room,
