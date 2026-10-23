@@ -264,6 +264,7 @@ word-processor-document-body = { $op ->
    *[other] Edited the text
 }
 word-processor-append-paragraph = Added a paragraph
+word-processor-replace-text = Replaced { $find } with { $replace }
 word-processor-insert-table = Inserted a table of { $rows } by { $columns }
 word-processor-add-row = Added a row to a table
 word-processor-add-column = Added a column to a table
