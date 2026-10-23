@@ -28,7 +28,7 @@ D2 = 2
 
 [apps.chat]
 D1 = 1
-D2 = 7
+D2 = 6
 
 [apps.code-editor]
 D1 = 1
