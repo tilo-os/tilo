@@ -4646,10 +4646,19 @@ impl Widget for GroupRow {
         // Children beyond the viewport are still walked and shifted into
         // screen-space by the pan; still hit-testable since
         // `gap_index_for` uses each group's stored post-shift `Rect`.
+        // Its height is the band it is given, never its windows' content: a
+        // window's page scrolls inside it. With the automatic minimum, a
+        // page's content height reached the row through each window (an
+        // app's height there is a cross size, which its content sets), so a
+        // long document raised every window in the strip past the screen.
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
+            },
+            min_size: Size {
+                width: Dimension::auto(),
+                height: Dimension::length(0.0),
             },
             flex_grow: 1.0,
             ..run_style(row_display)
