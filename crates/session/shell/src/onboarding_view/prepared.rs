@@ -12,13 +12,13 @@ use zeroize::{Zeroize, Zeroizing};
 impl OnboardingView {
     pub(super) fn load_prepared_setup(&mut self, identity_dir: &Path) {
         #[cfg(target_os = "linux")]
-        if let Some(home) = crate::onboarding_prepared::session_home()
+        if let Some(home) = self.session.home.clone()
             && crate::onboarding_peer::Peer::pending_at(&home)
         {
             self.load_peer_setup(&home, identity_dir);
             return;
         }
-        if let Some(home) = crate::onboarding_prepared::session_home()
+        if let Some(home) = self.session.home.clone()
             && crate::onboarding_prepared::pending_at(&home)
         {
             self.prepared_pending = true;
@@ -46,14 +46,21 @@ impl OnboardingView {
     #[cfg(target_os = "linux")]
     fn load_peer_setup(&mut self, home: &Path, identity_dir: &Path) {
         let active = runtime_identity::resolve_active_identity(identity_dir);
-        match crate::onboarding_peer::Peer::open(home, identity_dir) {
+        let Some(system) = self.session.identity.clone() else {
+            return;
+        };
+        match crate::onboarding_peer::Peer::open_at(home, &system.root, identity_dir) {
             Ok(Some(peer)) => {
                 self.peer = Some(peer);
                 self.prepared_pending = true;
             }
             Ok(None) if active.is_none() => {
-                let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
-                match crate::onboarding_peer::Peer::join(home, identity_dir, &label) {
+                match crate::onboarding_peer::Peer::join(
+                    home,
+                    &system.root,
+                    identity_dir,
+                    &self.session.device_label,
+                ) {
                     Ok(Some(peer)) => {
                         self.peer = Some(peer);
                         self.prepared_pending = true;
@@ -245,7 +252,7 @@ impl OnboardingView {
             .and_then(|v| v.to_str())
             .ok_or(())?;
         runtime_identity::set_active_identity(directory, runtime_id).map_err(|_| ())?;
-        let paths = crate::firstboot::collaboration_identity_paths();
+        let paths = self.session.identity_paths().ok_or(())?;
         if imported.device_label.is_empty() {
             crate::firstboot::ensure_collaboration_identity(directory, &paths)
         } else {
@@ -256,12 +263,9 @@ impl OnboardingView {
             )
         }
         .map_err(|_| ())?;
-        crate::device_fleet::DeviceFleetStore::at(
-            directory,
-            crate::firstboot::collaboration_identity_paths(),
-        )
-        .register_current_device(&profile.id)
-        .map_err(|_| ())?;
+        crate::device_fleet::DeviceFleetStore::at(directory, paths)
+            .register_current_device(&profile.id)
+            .map_err(|_| ())?;
         Ok((
             MintedIdentity {
                 fingerprint: profile.id,
@@ -281,7 +285,7 @@ impl OnboardingView {
         declaration: crate::onboarding_prepared::BrowserDeclaration,
     ) {
         crate::shell::launcher::set_browser_continuity(None);
-        self.browser = crate::onboarding_prepared::session_home().and_then(|home| {
+        self.browser = self.session.home.clone().and_then(|home| {
             self.identity_dir.clone().and_then(|identity| {
                 crate::onboarding_browser::Pending::open(home, identity, declaration).ok()
             })
@@ -299,7 +303,7 @@ impl OnboardingView {
     fn start_prepared_import(&mut self) {
         self.prepared_secret_queued = false;
         let result = (|| {
-            let home = crate::onboarding_prepared::session_home().ok_or(())?;
+            let home = self.session.home.clone().ok_or(())?;
             let pending = crate::onboarding_prepared::Pending::open(&home).map_err(|_| ())?;
             let password = typed_passphrase(&self.connect_passphrase)?;
             let directory = self.identity_dir.clone().ok_or(())?;
@@ -336,7 +340,7 @@ impl OnboardingView {
         prepared_password: Option<([u8; 32], Zeroizing<Vec<u8>>)>,
     ) {
         if let Some(declaration) = portable_home {
-            self.portable_home = crate::onboarding_prepared::session_home().and_then(|home| {
+            self.portable_home = self.session.home.clone().and_then(|home| {
                 self.identity_dir.clone().and_then(|directory| {
                     crate::onboarding_portable_home::Pending::open(home, directory, declaration)
                         .ok()
@@ -357,17 +361,16 @@ impl OnboardingView {
             }
         }
         if let Some(declaration) = portable_applications {
-            self.portable_applications =
-                crate::onboarding_prepared::session_home().and_then(|home| {
-                    self.identity_dir.clone().and_then(|directory| {
-                        crate::onboarding_portable_applications::Pending::open(
-                            home,
-                            directory,
-                            declaration,
-                        )
-                        .ok()
-                    })
-                });
+            self.portable_applications = self.session.home.clone().and_then(|home| {
+                self.identity_dir.clone().and_then(|directory| {
+                    crate::onboarding_portable_applications::Pending::open(
+                        home,
+                        directory,
+                        declaration,
+                    )
+                    .ok()
+                })
+            });
             if let (Some(applications), Some((digest, password))) = (
                 self.portable_applications.as_mut(),
                 prepared_password.as_ref(),
@@ -417,10 +420,11 @@ impl OnboardingView {
         if active.is_none() {
             return;
         }
-        let Some(home) = crate::onboarding_prepared::session_home() else {
+        let (Some(home), Some(system)) = (self.session.home.clone(), self.session.identity.clone())
+        else {
             return;
         };
-        match crate::onboarding_peer::Peer::open(&home, &directory) {
+        match crate::onboarding_peer::Peer::open_at(&home, &system.root, &directory) {
             Ok(Some(peer)) => {
                 self.peer_attempted = true;
                 self.peer = Some(peer);
@@ -451,7 +455,7 @@ impl OnboardingView {
         match peer.poll() {
             Some(Ok(received)) => {
                 let result = (|| {
-                    let home = crate::onboarding_prepared::session_home().ok_or(())?;
+                    let home = self.session.home.clone().ok_or(())?;
                     let pending =
                         crate::onboarding_prepared::Pending::open(&home).map_err(|_| ())?;
                     let directory = self.identity_dir.clone().ok_or(())?;
@@ -495,7 +499,7 @@ impl OnboardingView {
         if self.prepared_worker.is_some() || self.prepared_review.is_some() || self.peer.is_some() {
             return;
         }
-        let Some(home) = crate::onboarding_prepared::session_home() else {
+        let Some(home) = self.session.home.clone() else {
             return;
         };
         if !crate::onboarding_prepared::pending_at(&home) {
