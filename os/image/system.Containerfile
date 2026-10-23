@@ -218,6 +218,9 @@ COPY \
     os/usr/lib/systemd/system/tilo-flatpak-defaults.service \
     os/usr/lib/systemd/system/tilo-cache-gc.service \
     os/usr/lib/systemd/system/tilo-cache-gc.timer \
+    os/usr/lib/systemd/system/tilo-cache-gc-pressure.service \
+    os/usr/lib/systemd/system/tilo-cache-gc-pressure.timer \
+    os/usr/lib/systemd/system/tilo-os-image-gc.service \
     os/usr/lib/systemd/system/tilo-sandbox-view.service \
     os/usr/lib/systemd/system/tilo-sandbox-view.path \
     os/usr/lib/systemd/system/tilo-sandbox-view-retire@.service \
@@ -711,7 +714,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     # Fedora's remote-add starts with tilo-flatpak-defaults, off the greeter's path; enabled
     # on its own, multi-user.target and so graphical.target would wait for it.
     systemctl disable flatpak-add-fedora-repos.service && \
-    systemctl enable tilo-cache-gc.timer && \
+    systemctl enable tilo-cache-gc.timer tilo-cache-gc-pressure.timer && \
     systemctl --global enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-app-update.timer && \
     systemctl --global enable tilo-public-content-refresh.timer && \

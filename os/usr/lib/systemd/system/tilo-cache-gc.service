@@ -1,5 +1,8 @@
 [Unit]
 Description=Remove unused Flatpak runtimes and the stale developer image copy
+# The OS image data no deployment uses is collected daily too, in its own unit:
+# bootc needs the physical root and the ESP, which this unit cannot write.
+Wants=tilo-os-image-gc.service
 Documentation=man:flatpak-uninstall(1)
 ConditionKernelCommandLine=!tilo.install
 ConditionKernelCommandLine=!tilo.mode=repair
@@ -9,7 +12,7 @@ After=local-fs.target
 Type=oneshot
 # Policy: /etc/tilo/cache-gc.toml. The record `tilo os status` reads goes to
 # /var/lib/tilo-cache-gc/record.json.
-ExecStart=/usr/bin/tilo os clean
+ExecStart=/usr/bin/tilo os clean --only caches
 StateDirectory=tilo-cache-gc
 StateDirectoryMode=0755
 # Background work: it yields to the session.
