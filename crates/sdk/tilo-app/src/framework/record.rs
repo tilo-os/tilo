@@ -545,6 +545,10 @@ impl<'a> Records<'a> {
     where
         T: Resource<State = T> + Fields + SettingsSchema,
     {
+        // A setting that means nothing on this device is not published.
+        if !T::available_on(ui_core::storage::DeviceClass::current()) {
+            return self;
+        }
         if let Some(sections) = &mut self.sections {
             let settings = ui_core::storage::Settings::<T>::for_app(sections.app_id)
                 .in_document(sections.document.clone());

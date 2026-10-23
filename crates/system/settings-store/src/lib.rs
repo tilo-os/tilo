@@ -92,6 +92,7 @@ pub mod continuity_privacy;
 pub mod day_schedule;
 pub mod desk_widgets;
 pub mod desktop_control;
+pub mod device_class;
 pub mod device_displays;
 pub mod dictation;
 pub mod display_control;
@@ -125,6 +126,7 @@ pub mod system_sounds;
 pub mod watch;
 
 pub use accessibility::Labelled;
+pub use device_class::DeviceClass;
 pub use key::{Key, SectionWrite};
 pub use section_digest::SectionDigest;
 pub use session::{SessionPaths, SessionSettings};

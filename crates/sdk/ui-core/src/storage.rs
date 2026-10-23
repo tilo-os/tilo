@@ -36,7 +36,7 @@ use tilo_lock::MutexRecover as _;
 /// where an in-process app runs, may not: there an app reads and lists on a
 /// worker and shows the result on a later frame.
 pub use durable_store::waiting;
-pub use settings_store::{ChangeOrigin, InvokingAction};
+pub use settings_store::{ChangeOrigin, DeviceClass, InvokingAction};
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
 
@@ -154,6 +154,25 @@ impl Scope {
 /// ```
 pub trait SettingsSchema: Serialize + DeserializeOwned + Default + 'static {
     const SCOPE: Scope;
+
+    /// What a person who changed nothing has on a `device`: [`Default`]
+    /// everywhere, unless the setting costs what one class of device should
+    /// not spend unasked (a copy kept on the device, work in the
+    /// background).
+    #[must_use]
+    fn defaults_on(device: DeviceClass) -> Self {
+        let _ = device;
+        Self::default()
+    }
+
+    /// Whether the setting means anything on a `device`: one whose effect a
+    /// class of device cannot have (a copy kept on a device that keeps
+    /// none) is not offered there, neither shown nor published.
+    #[must_use]
+    fn available_on(device: DeviceClass) -> bool {
+        let _ = device;
+        true
+    }
 }
 
 /// Which settings document a host gives its apps.
@@ -489,6 +508,9 @@ pub fn flush_settings_writes() {
 pub struct Settings<T> {
     app_id: String,
     document: SettingsDocument,
+    /// The class of device whose defaults unset keys read as; the
+    /// installed one ([`DeviceClass::current`]) unless pinned.
+    device: Option<DeviceClass>,
     schema: PhantomData<fn() -> T>,
 }
 
@@ -497,6 +519,7 @@ impl<T> Clone for Settings<T> {
         Self {
             app_id: self.app_id.clone(),
             document: self.document.clone(),
+            device: self.device,
             schema: PhantomData,
         }
     }
@@ -508,6 +531,7 @@ impl<T> std::fmt::Debug for Settings<T> {
             .field("app_id", &self.app_id)
             .field("type", &std::any::type_name::<T>())
             .field("document", &self.document)
+            .field("device", &self.device)
             .finish()
     }
 }
@@ -519,6 +543,7 @@ impl<T: SettingsSchema> Settings<T> {
         Self {
             app_id: app_id.to_owned(),
             document: SettingsDocument::Session,
+            device: None,
             schema: PhantomData,
         }
     }
@@ -547,6 +572,21 @@ impl<T: SettingsSchema> Settings<T> {
         self.in_document(SettingsDocument::File(path.into()))
     }
 
+    /// The same settings read with `device`'s defaults, whatever device
+    /// the process runs on.
+    #[must_use]
+    pub fn on_device(mut self, device: DeviceClass) -> Self {
+        self.device = Some(device);
+        self
+    }
+
+    /// Whether these settings mean anything on the device they are read on
+    /// ([`SettingsSchema::available_on`]).
+    #[must_use]
+    pub fn available(&self) -> bool {
+        T::available_on(self.device.unwrap_or_else(DeviceClass::current))
+    }
+
     /// How far these settings travel.
     #[must_use]
     pub const fn scope(&self) -> Scope {
@@ -573,7 +613,10 @@ impl<T: SettingsSchema> Settings<T> {
     /// The current value.
     #[must_use]
     pub fn get(&self) -> T {
-        decode(self.stored())
+        decode(
+            self.stored(),
+            self.device.unwrap_or_else(DeviceClass::current),
+        )
     }
 
     /// Store `value`. Keys of the section that `T` does not name are kept.
@@ -642,13 +685,14 @@ impl<T: SettingsSchema> Settings<T> {
     }
 }
 
-/// Decode `stored` over `T`'s defaults one key at a time, so a key that
+/// Decode `stored` over `T`'s defaults on `device` one key at a time, so a key that
 /// does not decode (an older shape, a hand edit) reads as its default
 /// instead of discarding every other key.
-fn decode<T: SettingsSchema>(stored: Map<String, Value>) -> T {
-    let defaults = serde_json::to_value(T::default());
+fn decode<T: SettingsSchema>(stored: Map<String, Value>, device: DeviceClass) -> T {
+    let defaults = serde_json::to_value(T::defaults_on(device));
     let decodes = |value: &Value| serde_json::from_value::<T>(value.clone()).is_ok();
-    serde_json::from_value(decoded(defaults.ok(), stored, &decodes)).unwrap_or_default()
+    serde_json::from_value(decoded(defaults.ok(), stored, &decodes))
+        .unwrap_or_else(|_| T::defaults_on(device))
 }
 
 /// The object [`decode`] reads: `stored` over `defaults`, keeping each
@@ -1112,6 +1156,57 @@ mod tests {
                 interval_ms: 1500
             }
         );
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct Copies {
+        keep: bool,
+    }
+
+    impl SettingsSchema for Copies {
+        const SCOPE: Scope = Scope::DeviceLocal;
+
+        fn defaults_on(device: DeviceClass) -> Self {
+            Self {
+                keep: device == DeviceClass::Native,
+            }
+        }
+
+        fn available_on(device: DeviceClass) -> bool {
+            device == DeviceClass::Native
+        }
+    }
+
+    #[test]
+    fn a_setting_nobody_changed_reads_as_the_default_of_the_device_it_is_read_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let on = |device| {
+            Settings::<Copies>::for_app("so.tilo.example")
+                .in_file(&file)
+                .on_device(device)
+        };
+        assert!(on(DeviceClass::Native).get().keep);
+        assert!(!on(DeviceClass::Web).get().keep);
+        assert!(on(DeviceClass::Native).available());
+        assert!(!on(DeviceClass::Web).available());
+        assert!(
+            Settings::<Prefs>::for_app("so.tilo.example")
+                .on_device(DeviceClass::Web)
+                .available(),
+            "a setting is available everywhere unless it says otherwise"
+        );
+
+        // Choosing the default stores nothing, so the choice keeps following
+        // the device; choosing otherwise is the person's on every device.
+        on(DeviceClass::Native).set(&Copies { keep: true }).unwrap();
+        assert!(!settings_at(&file).contains_key("app_device_local"));
+        on(DeviceClass::Native)
+            .set(&Copies { keep: false })
+            .unwrap();
+        assert!(!on(DeviceClass::Native).get().keep);
+        on(DeviceClass::Web).set(&Copies { keep: true }).unwrap();
+        assert!(on(DeviceClass::Web).get().keep);
     }
 
     #[test]
