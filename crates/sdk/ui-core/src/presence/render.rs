@@ -1,4 +1,5 @@
 use super::PresenceCtx;
+use super::caret_tag::{CaretTag, LabeledCaret};
 use crate::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
@@ -190,14 +191,38 @@ impl PresenceCtx {
         name: &str,
         caret_rect: Rect,
     ) {
+        self.draw_peer_caret_labeled_in(
+            scene,
+            theme,
+            text_renderer,
+            transform,
+            user,
+            name,
+            LabeledCaret::new(caret_rect),
+        );
+    }
+
+    /// [`Self::draw_peer_caret_labeled`] for text with content above its
+    /// first line (a note's title and dates over its body): a chip that
+    /// would rise above [`LabeledCaret::top`] hangs below the caret instead,
+    /// so a caret on the first line never covers what is above the text.
+    pub fn draw_peer_caret_labeled_in(
+        &self,
+        scene: &mut Scene,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        transform: Affine,
+        user: &UserId,
+        name: &str,
+        caret: LabeledCaret,
+    ) {
+        let caret_rect = caret.rect;
         let color = color_for(self, user, theme);
         scene.fill(Fill::NonZero, transform, color, None, &caret_rect);
 
         let is_agent = self.is_agent(user);
         let (chip_w, chip_h) = peer_pill_size_for(text_renderer, theme, name, is_agent);
-        let cx = caret_rect.x0;
-        let cy = caret_rect.y0 - chip_h - 2.0;
-        let chip_rect = Rect::new(cx, cy, cx + chip_w, cy + chip_h);
+        let chip_rect = caret.chip_rect(chip_w, chip_h);
         draw_peer_pill_kind(
             scene,
             transform,
@@ -208,6 +233,10 @@ impl PresenceCtx {
             color,
             is_agent,
         );
+        self.note_caret_tag(CaretTag {
+            label: name.to_owned(),
+            at: transform * Point::new(caret_rect.x0, caret_rect.center().y),
+        });
     }
 
     /// Outline `rect` in the peer's colour — "this peer has *this object*

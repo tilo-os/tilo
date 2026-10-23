@@ -11567,16 +11567,25 @@ impl BlockEditor {
             );
         }
         if let Some(list) = ctx.presence.carets.get(&key) {
+            // What sits above the editor (a note's title and dates) is not
+            // the editor's to cover: a chip on the first line hangs below.
+            let top = self
+                .blocks
+                .first()
+                .map_or(brect.y0, |first| first.line.get_rect().y0);
             for (user, byte_pos) in list {
                 let name = ctx.presence.display_name(user);
-                ctx.presence.draw_peer_caret_labeled(
+                ctx.presence.draw_peer_caret_labeled_in(
                     ctx.scene,
                     ctx.theme,
                     ctx.text_renderer,
                     ctx.transform,
                     user,
                     &name,
-                    line.caret_rect(ctx.theme, *byte_pos),
+                    crate::presence::LabeledCaret::within(
+                        line.caret_rect(ctx.theme, *byte_pos),
+                        top,
+                    ),
                 );
             }
         }

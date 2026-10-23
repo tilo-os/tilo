@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
 pub mod capability;
+mod caret_tag;
 mod chat;
 mod faces;
 mod geom;
@@ -13,6 +14,9 @@ mod labels;
 mod layer;
 mod placed;
 mod render;
+pub use caret_tag::{
+    CARET_POINTER_TAG_REACH, CaretTag, LabeledCaret, hide_names_beside_caret_tags,
+};
 pub use chat::{
     CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,
     ReactionFloat, single_emoji,
@@ -624,6 +628,10 @@ pub struct PresenceCtx {
     /// `Cell` so containers (Scrollable) can scope-push a tighter inner
     /// viewport without needing `&mut PresenceCtx` everywhere.
     pub viewport: std::cell::Cell<Option<vello::kurbo::Rect>>,
+    /// Where this frame painted each peer's caret name tag, in scene
+    /// coordinates, so the pointer layer drawn after the windows can leave
+    /// out a second tag with the same name right beside it.
+    caret_tags: std::cell::RefCell<Vec<CaretTag>>,
     /// The authority the subtree being drawn holds, scoped by whoever hands
     /// it one (a host, a bound component) through [`Self::with_permissions`]
     /// and read by gated widgets through [`Self::permits`]. `None` gates
@@ -711,6 +719,22 @@ impl PresenceCtx {
     /// The authority of the subtree being drawn, if anyone scoped one.
     pub fn permission_context(&self) -> Option<crate::permissions::PermissionContext> {
         self.permissions.borrow().clone()
+    }
+
+    /// Forget the caret name tags painted so far: a host calls it before a
+    /// frame that draws every window again.
+    pub fn clear_caret_tags(&self) {
+        self.caret_tags.borrow_mut().clear();
+    }
+
+    /// The caret name tags painted since [`Self::clear_caret_tags`], in
+    /// scene coordinates.
+    pub fn caret_tags(&self) -> Vec<CaretTag> {
+        self.caret_tags.borrow().clone()
+    }
+
+    pub(crate) fn note_caret_tag(&self, tag: CaretTag) {
+        self.caret_tags.borrow_mut().push(tag);
     }
 }
 
