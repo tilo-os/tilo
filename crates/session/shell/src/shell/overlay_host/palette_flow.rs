@@ -45,10 +45,23 @@ impl Choice {
     }
 }
 
-/// The step that asks for `param` of the action titled `title`. Declared
+/// The step that asks for `param` of the action titled `title`. What the
+/// value picks from the workspace (who, where, which grant) is listed as
+/// `picks` finds it there, and a set of declared values as each set; declared
 /// values are rows to pick from; a switch is On or Off; a number steps with
-/// the arrows inside its schema's bounds; a secret is masked.
-pub(super) fn step_for(param: &ActionParam, title: &str) -> Step {
+/// the arrows inside its schema's bounds; a secret is masked. Nothing is
+/// typed in its encoding.
+pub(super) fn step_for(
+    param: &ActionParam,
+    title: &str,
+    picks: &dyn Fn(tilo_actions::Pick) -> Vec<Choice>,
+) -> Step {
+    if let Some(pick) = param.pick() {
+        return Step::Choices(picks(pick));
+    }
+    if let Some(sets) = sets_of(param) {
+        return Step::Choices(sets);
+    }
     if !param.choices.is_empty() || param.has_labelled_choices() {
         // A choice reads as its label: an identity by its name, never by its
         // fingerprint.
@@ -114,6 +127,62 @@ pub(super) fn step_for(param: &ActionParam, title: &str) -> Step {
         prefill,
         kind,
     })
+}
+
+/// The values a list of declared values (`items` with an `enum`) can take,
+/// each set in the declared order and read by its values' labels: every
+/// non-empty set of a few values, else each value alone and all of them.
+fn sets_of(param: &ActionParam) -> Option<Vec<Choice>> {
+    const MAX_SET_VALUES: usize = 4;
+    if param.ty != ParamType::Array {
+        return None;
+    }
+    let items = param.schema.as_deref()?.get("items")?;
+    let values: Vec<&str> = items
+        .get("enum")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    let label = |value: &str| {
+        items
+            .get(tilo_actions::CHOICE_LABELS_ANNOTATION)
+            .and_then(|labels| labels.get(value))
+            .and_then(Value::as_str)
+            .unwrap_or(value)
+            .to_owned()
+    };
+    let sets: Vec<Vec<&str>> = if values.len() <= MAX_SET_VALUES {
+        (1..1_usize << values.len())
+            .map(|mask| {
+                values
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| mask & (1 << index) != 0)
+                    .map(|(_, value)| *value)
+                    .collect()
+            })
+            .collect()
+    } else {
+        values
+            .iter()
+            .map(|value| vec![*value])
+            .chain(std::iter::once(values.clone()))
+            .collect()
+    };
+    Some(
+        sets.into_iter()
+            .map(|set| {
+                Choice::plain(
+                    Value::Array(set.iter().map(|value| Value::from(*value)).collect()),
+                    set.iter()
+                        .map(|value| label(value))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// `text` as the JSON value a `ty` parameter binds from. Numbers may carry
@@ -347,9 +416,13 @@ impl SecondaryAction {
 mod tests {
     use super::*;
 
+    fn no_picks(_: tilo_actions::Pick) -> Vec<Choice> {
+        Vec::new()
+    }
+
     fn rows_of(params: &[ActionParam]) -> Vec<String> {
         let id = params.iter().find(|param| param.name == "id").unwrap();
-        match step_for(id, "Use identity in this workspace") {
+        match step_for(id, "Use identity in this workspace", &no_picks) {
             Step::Choices(rows) => rows.into_iter().map(|row| row.label).collect(),
             Step::Field(_) => Vec::new(),
         }
@@ -362,7 +435,7 @@ mod tests {
         let params =
             identity_select_params(&[(alice.clone(), "Alice".into()), (bob.clone(), "Bob".into())]);
         let id = params.iter().find(|param| param.name == "id").unwrap();
-        let Step::Choices(rows) = step_for(id, "Use identity in this workspace") else {
+        let Step::Choices(rows) = step_for(id, "Use identity in this workspace", &no_picks) else {
             panic!("the identity is picked from a list, never typed");
         };
         assert_eq!(
@@ -390,7 +463,7 @@ mod tests {
         // only when the device has no identity.
         let none = identity_select_params(&[]);
         let id = none.iter().find(|param| param.name == "id").unwrap();
-        let Step::Choices(rows) = step_for(id, "Use identity in this workspace") else {
+        let Step::Choices(rows) = step_for(id, "Use identity in this workspace", &no_picks) else {
             panic!("with none connected it is still a list, never a field for a fingerprint");
         };
         assert_eq!(
@@ -414,20 +487,62 @@ mod tests {
     }
 
     #[test]
+    fn who_where_and_which_grant_are_picked_from_the_workspace_never_typed() {
+        let subject = ActionParam::required("subject", ParamType::Object, "Who")
+            .picking(tilo_actions::Pick::Subject);
+        let ada = Choice {
+            value: serde_json::json!({ "person": "ada" }),
+            label: "Ada".into(),
+            person: Some("ada".into()),
+        };
+        let picks = |pick| {
+            assert_eq!(pick, tilo_actions::Pick::Subject);
+            vec![ada.clone()]
+        };
+        let Step::Choices(rows) = step_for(&subject, "Grant", &picks) else {
+            panic!("a subject is picked from the workspace's people");
+        };
+        assert_eq!(rows, [ada]);
+
+        let kinds = ActionParam::required("kinds", ParamType::Array, "Which kinds").with_schema(
+            serde_json::json!({
+                "type": "array",
+                "items": {
+                    "enum": ["read", "undoable", "outside"],
+                    "choice_labels": { "read": "reading" },
+                },
+            }),
+        );
+        let Step::Choices(rows) = step_for(&kinds, "Grant", &no_picks) else {
+            panic!("a set of declared values is picked as a set");
+        };
+        assert_eq!(rows.len(), 7, "every non-empty set");
+        assert_eq!(rows[0].value, serde_json::json!(["read"]));
+        assert_eq!(rows[0].label, "reading");
+        assert_eq!(
+            rows[6].value,
+            serde_json::json!(["read", "undoable", "outside"])
+        );
+        assert_eq!(rows[6].label, "reading, undoable, outside");
+    }
+
+    #[test]
     fn each_parameter_type_gets_its_own_step() {
         let choices = ActionParam::required("minutes", ParamType::Integer, "Minutes")
             .with_choices(["0", "5", "10"]);
-        let Step::Choices(rows) = step_for(&choices, "Lock after") else {
+        let Step::Choices(rows) = step_for(&choices, "Lock after", &no_picks) else {
             panic!("declared values are rows");
         };
         assert_eq!(rows[1], Choice::plain(Value::from(5), "5".to_string()));
 
         let switch = ActionParam::required("enabled", ParamType::Boolean, "On or off");
-        assert!(matches!(step_for(&switch, "Wi-Fi"), Step::Choices(rows) if rows.len() == 2));
+        assert!(
+            matches!(step_for(&switch, "Wi-Fi", &no_picks), Step::Choices(rows) if rows.len() == 2)
+        );
 
         let percent = ActionParam::required("percent", ParamType::Integer, "Percent")
             .with_schema(serde_json::json!({"minimum": 0, "maximum": 100, "default": 40}));
-        let Step::Field(spec) = step_for(&percent, "Volume") else {
+        let Step::Field(spec) = step_for(&percent, "Volume", &no_picks) else {
             panic!("a number is a field");
         };
         assert_eq!(spec.prompt, "Volume");
@@ -442,7 +557,7 @@ mod tests {
         );
 
         let secret = ActionParam::required("secret", ParamType::Secret, "Password");
-        let Step::Field(spec) = step_for(&secret, "Unlock") else {
+        let Step::Field(spec) = step_for(&secret, "Unlock", &no_picks) else {
             panic!("a secret is a field");
         };
         assert_eq!(spec.kind, ArgumentKind::Secret);

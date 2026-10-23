@@ -549,9 +549,10 @@ impl ShellOverlayHost {
 }
 
 /// This machine's applications, and the active room's resources by the
-/// titles their apps publish, as workspace settings name them.
-struct SettingsDirectory {
-    room: String,
+/// titles their apps publish, as workspace settings and the palette name
+/// them.
+pub(super) struct SettingsDirectory {
+    pub(super) room: String,
 }
 
 impl tilo_desktop::workspace_settings::AppDirectory for SettingsDirectory {
@@ -565,6 +566,10 @@ impl tilo_desktop::workspace_settings::AppDirectory for SettingsDirectory {
 
     fn resource_label(&self, address: &str) -> Option<String> {
         crate::shell::search::app_content_index::session().title(&self.room, address)
+    }
+
+    fn resources(&self) -> Vec<(String, String)> {
+        crate::shell::search::app_content_index::session().resources(&self.room)
     }
 }
 
