@@ -358,6 +358,9 @@ pub struct CalendarApp {
     hits: Vec<(Rect, Action)>,
     last_mouse: Point,
     status: Option<String>,
+    /// The status as first shown and when: a status leaves on its own once
+    /// it has been up for a notice's lifetime ([`Self::expire_status`]).
+    status_shown: Option<(String, ui::time::Instant)>,
     /// The status toast's close button as last painted.
     status_close: Rect,
     /// A just-created blank event is a provisional draft until the user edits
@@ -532,6 +535,7 @@ impl CalendarApp {
             hits: Vec::new(),
             last_mouse: Point::ZERO,
             status: None,
+            status_shown: None,
             status_close: Rect::ZERO,
             fresh_draft: None,
             dirty: true,
@@ -3938,6 +3942,7 @@ impl Widget for CalendarApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
+        self.expire_status();
         self.adopt_person_accounts();
         if !self.seeded {
             // Whatever the document holds is now authoritative for the UI.
@@ -4453,6 +4458,7 @@ impl Widget for CalendarApp {
         if self.pinned_now.is_some() {
             return None;
         }
+        let status = self.status_deadline();
         let now = self.now();
         let now_line = matches!(self.view, View::Week | View::Day)
             && self.timeline_days().contains(&self.today);
@@ -4461,7 +4467,11 @@ impl Widget for CalendarApp {
         } else {
             3600 - u64::from(now.minute()) * 60 - u64::from(now.second())
         };
-        ui::time::now().checked_add(std::time::Duration::from_secs(seconds.max(1)))
+        let minute = ui::time::now().checked_add(std::time::Duration::from_secs(seconds.max(1)));
+        match (status, minute) {
+            (Some(status), Some(minute)) => Some(status.min(minute)),
+            (status, minute) => status.or(minute),
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
