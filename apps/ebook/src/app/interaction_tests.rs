@@ -5242,3 +5242,87 @@ fn a_failed_open_leaves_on_its_own() {
     assert_eq!(app.load_error.as_deref(), None);
     assert_eq!(app.next_wake_deadline(), None, "nothing left to wake for");
 }
+
+/// "Opening x.epub" follows the import: it stays for as long as the import
+/// runs, however long that is, and goes with it.
+#[test]
+fn opening_a_book_shows_until_the_import_ends() {
+    use std::path::PathBuf;
+    use ui::time::testing::with_monotonic_time;
+    use ui::widget::toast::{NOTICE_LIFETIME, Transient};
+    let mut app = BooksApp::new(crate::resource::library_dispatcher_for_test(), false);
+    app.toast_area = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let start = ui::time::now();
+    let at = |seconds: u64| start + Duration::from_secs(seconds);
+    with_monotonic_time(start, || {
+        app.import_loading = Some(LoadingImport {
+            generation: 1,
+            path: PathBuf::from("/home/reader/Books/x.epub"),
+            kind: ImportKind::Open,
+            expected_book_id: None,
+            card: Transient::showing_progress(()),
+        });
+    });
+    let painted = |app: &mut BooksApp| {
+        let theme = ui::theme::Theme::default();
+        let (mut scene, mut text) = (vello::Scene::new(), TextRenderer::new());
+        app.draw_load_toast(&mut PaintCtx::new(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            &mut text,
+            &theme,
+        ));
+        !scene.encoding().is_empty()
+    };
+    for second in [3, 6, 9] {
+        with_monotonic_time(at(second), || {
+            app.expire_load_toast();
+            assert!(painted(&mut app), "still opening at {second}s");
+        });
+    }
+    assert_eq!(
+        app.next_wake_deadline(),
+        Some(at(9) + NOTICE_LIFETIME),
+        "the app wakes to look at the import again"
+    );
+    app.import_loading = None;
+    with_monotonic_time(at(10), || {
+        assert!(!painted(&mut app), "the import ended");
+    });
+    assert_eq!(app.next_wake_deadline(), None);
+}
+
+/// The empty library says why the last open failed for as long as that
+/// stands, past the failure toast's time, until another import starts.
+#[test]
+fn the_empty_library_keeps_saying_why_an_open_failed() {
+    use std::path::PathBuf;
+    use ui::time::testing::with_monotonic_time;
+    use ui::widget::toast::NOTICE_LIFETIME;
+    let mut app = BooksApp::new(crate::resource::library_dispatcher_for_test(), false);
+    let start = ui::time::now();
+    let failure = "Couldn’t open x.epub: not a book";
+    with_monotonic_time(start, || {
+        app.settle_import_failure(failure.into(), "ebook.open_failed");
+    });
+    with_monotonic_time(start + NOTICE_LIFETIME * 3, || {
+        app.expire_load_toast();
+        assert_eq!(app.load_error.as_deref(), None, "the toast has gone");
+        assert_eq!(
+            app.open_failure.as_deref(),
+            Some(failure),
+            "the state stays"
+        );
+    });
+    app.load_error.dismiss();
+    assert_eq!(
+        app.open_failure.as_deref(),
+        Some(failure),
+        "closing the toast leaves the cause standing"
+    );
+    assert!(
+        app.begin_import(PathBuf::from("/home/reader/Books/y.epub"), ImportKind::Open)
+            .is_ok()
+    );
+    assert_eq!(app.open_failure, None, "another import clears it");
+}

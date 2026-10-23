@@ -681,8 +681,12 @@ impl CalendarApp {
     /// Deterministic transport-state presentation for visual regression shots.
     pub fn shots_set_sync_state(&mut self, state: &str) {
         self.syncing = state == "syncing";
+        if self.syncing {
+            self.status.show_progress("Syncing calendars…".into());
+            self.dirty = true;
+            return;
+        }
         self.status.show(match state {
-            "syncing" => "Syncing calendars…".into(),
             "offline" => "Offline. Changes sync when you reconnect.".into(),
             "conflict" => {
                 "1 change also changed on the server; your version is safe and still queued".into()
@@ -857,7 +861,7 @@ impl CalendarApp {
         }));
         self.sync_rx = Some(rx);
         self.syncing = true;
-        self.status.show("Syncing…".into());
+        self.status.show_progress("Syncing…".into());
         self.dirty = true;
     }
 
@@ -3873,6 +3877,7 @@ impl Widget for CalendarApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
+        self.status.keep_while(self.syncing);
         self.status.expire();
         self.adopt_person_accounts();
         if !self.seeded {
