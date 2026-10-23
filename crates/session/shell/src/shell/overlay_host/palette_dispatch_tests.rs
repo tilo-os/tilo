@@ -1569,22 +1569,16 @@ fn peer_sync_and_invite_manager_enable_idempotently_and_fail_closed() {
 }
 
 /// The invite composer, the policy and the issuer give one answer: a member
-/// holding a delegated `Invite` grant in a room another person governs is not
-/// offered a composer the issuer would refuse, and the issuer refuses with the
-/// policy's reason; without the grant both refuse for lack of permission.
+/// without the `Invite` grant is not offered a composer, and the issuer
+/// refuses with the policy's reason.
 #[test]
-fn delegated_inviter_follows_the_capability_policy() {
+fn an_inviter_without_the_grant_is_refused_by_composer_and_issuer_alike() {
     use crate::shell::invite_policy::{InviteRefusal, InviteRoute, active_invite_route};
-    use crate::shell::state::{PeerOrigin, RoomAuthority};
 
     let mut tree = WorkspaceTree::default();
     let local = tree.create_hosted_workspace("Joined room").0;
     tree.desktop.active = local;
     let room = tree.room_of(local).expect("room");
-    tree.room_authority.insert(
-        room,
-        RoomAuthority::Peer(PeerOrigin::peer(&iroh::SecretKey::generate().public())),
-    );
     tree.desktop
         .workspaces
         .iter_mut()
@@ -1614,33 +1608,6 @@ fn delegated_inviter_follows_the_capability_policy() {
     assert_eq!(
         issue().expect_err("and the issuer refuses her"),
         refused.refusal().expect("a refusal has a reason"),
-    );
-
-    crate::shell::invite_policy::tests::grant_invite(
-        handle
-            .write()
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == local)
-            .expect("workspace"),
-        &carol,
-    );
-
-    assert_eq!(
-        route(),
-        InviteRoute::ViaGovernor,
-        "the grant lets Carol invite, but only the governing device signs invitations"
-    );
-    assert!(
-        !host.may_invite_here(),
-        "the composer is not offered where the issuer cannot issue"
-    );
-    assert_eq!(
-        issue().expect_err("the issuer sends Carol to the owner"),
-        InviteRoute::ViaGovernor
-            .refusal()
-            .expect("a refusal has a reason"),
     );
 }
 

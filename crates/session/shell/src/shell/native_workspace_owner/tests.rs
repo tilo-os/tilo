@@ -841,7 +841,6 @@ fn native_enrollment_target_slot_publishes_new_room_only_with_actual_owner_barri
         .unwrap();
     let disk = persist::load_tree_from(&path).unwrap();
     assert_eq!(disk.room_of(local), Some(room));
-    assert!(disk.requires_native_owner(room));
 }
 #[test]
 fn native_enrollment_target_slot_reassignment_rejects_late_complete_and_keeps_proof() {
@@ -959,7 +958,6 @@ fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
     let owner = open(tree.clone()).unwrap();
     let (intent, _, _, _, now) = raw_fixture();
     let room = intent.room();
-    assert!(!tree.read().requires_native_owner(room));
     assert!(
         with_failure(Checkpoint::AfterPublish, || owner.prepare_enrollment_into(
             &intent,
@@ -972,7 +970,6 @@ fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
         owner.contains_room(room),
         "possibly published pending intent cannot revert to legacy"
     );
-    assert!(tree.read().requires_native_owner(room));
     assert!(owner.with_current(room, |_| Ok(())).is_err());
     assert!(
         owner.pending_enrollment(room).is_err(),
@@ -1002,7 +999,6 @@ fn native_reopen_refuses_each_partial_acknowledged_descriptor_pair() {
             open(tree.clone()).is_err(),
             "partial {removed} cannot reset an acknowledged floor or skip descriptor validation"
         );
-        assert!(tree.read().requires_native_owner(room));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 }

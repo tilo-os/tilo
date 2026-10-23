@@ -143,7 +143,7 @@ impl ShellNetwork {
             tracing::debug!(%room, %error, "a join into a room let go was over already");
         }
         let tree = self.tree.clone();
-        crate::shell::native_workspace_owner::release_workspace_room(&tree, room).map(drop)
+        crate::shell::native_workspace_owner::release_workspace_room(&tree, room)
     }
 
     /// The host of `room`, a room this device holds, stopped admitting this

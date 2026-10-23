@@ -30,10 +30,6 @@ struct Room {
     /// The changes this session published that the governor has not
     /// admitted yet, oldest first ([`plan`]).
     pending: Vec<Vec<u8>>,
-    /// The admitted room document's heads when a room whose layout is
-    /// personal was last looked at: while they hold, there is nothing of
-    /// this device's to take out of it.
-    personal_heads: Option<Vec<automerge::ChangeHash>>,
 }
 
 /// What a look at a room last found nothing to do for. The outcome is a
@@ -119,9 +115,7 @@ impl ShellNetwork {
     /// workspace's layout in `tree`. When another device governs `room`,
     /// that is this session's own legacy tabs ([`own_legacy_windows`]),
     /// published for the governor to admit; the governor places the rest.
-    /// When this device governs `room` itself, it is every window it owns,
-    /// admitted here. Nothing at all in a room
-    /// whose layout is personal. Cheap when nothing changed: while neither those
+    /// Nothing at all in a room whose layout is personal. Cheap when nothing changed: while neither those
     /// windows nor the admitted room document moved since a look found
     /// nothing to publish, the document is not copied. Call every tick.
     pub fn publish_hosted_legacy_windows(
@@ -147,26 +141,22 @@ impl ShellNetwork {
         let Some(owner) = self.opened_native_owner() else {
             return;
         };
-        let (governed_here, personal) = owner
+        let personal = owner
             .with_current(room, |view| {
-                Ok((
-                    view.governed_here(),
-                    view.peer().governance().room_layout().is_personal(),
-                ))
+                Ok(view.peer().governance().room_layout().is_personal())
             })
-            .unwrap_or((false, false));
-        if !governed_here && !self.governed_elsewhere_by(&owner, room) {
+            .unwrap_or(false);
+        if !self.governed_elsewhere_by(&owner, room) {
             return;
         }
         // A room whose layout is personal takes no member's windows: none is
         // published into it, and nothing published before is sent again.
-        // Its governor removes what it took in of them while it shared them:
-        // when that is this device, its own too.
+        // Its governor removes what it took in of them while it shared them.
         if personal {
-            self.keep_out_of_personal_room(owner, room, governed_here, tree, now);
+            self.keep_out_of_personal_room(room);
             return;
         }
-        let (salt, windows) = windows_to_publish(&tree.read(), room, governed_here);
+        let (salt, windows) = windows_to_publish(&tree.read(), room);
         if salt == 0 {
             return;
         }
@@ -202,13 +192,7 @@ impl ShellNetwork {
             state.pending = pending;
         }
         match planned {
-            Ok(Some(Plan::Claim)) if governed_here => {
-                tracing::warn!(%room, salt, "this device's namespace is not registered in the room it governs");
-            }
             Ok(Some(Plan::Claim)) => self.claim_namespace(room, salt, now),
-            Ok(Some(Plan::Publish(changes))) if governed_here => {
-                self.admit_own_topology(owner, room, changes, now);
-            }
             Ok(Some(Plan::Publish(changes))) => self.send_topology(room, changes, now),
             Ok(None) => {}
             Err(error) => tracing::debug!(%room, %error, "hosted legacy windows not published"),
@@ -216,75 +200,12 @@ impl ShellNetwork {
     }
 
     /// Publish nothing into `room`, whose layout is personal, and forget what
-    /// was waiting to be: when this device governs it, take its own windows
-    /// out of it too, once per change of the room's document.
-    fn keep_out_of_personal_room(
-        &self,
-        owner: crate::shell::native_workspace_owner::NativeWorkspaceOwner,
-        room: RoomId,
-        governed_here: bool,
-        tree: &crate::shell::state::WorkspaceTreeHandle,
-        now: Instant,
-    ) {
-        use automerge::transaction::Transactable;
-        let heads = owner
-            .with_current(room, |view| {
-                Ok(view.peer().admitted_room().map(Transactable::base_heads))
-            })
-            .ok()
-            .flatten();
-        let looked = self.hosted_topology.rooms.lock().is_ok_and(|mut rooms| {
+    /// was waiting to be.
+    fn keep_out_of_personal_room(&self, room: RoomId) {
+        if let Ok(mut rooms) = self.hosted_topology.rooms.lock() {
             let state = rooms.entry(room).or_default();
             state.pending.clear();
             state.settled = None;
-            let looked = heads.is_some() && state.personal_heads == heads;
-            state.personal_heads = heads;
-            looked
-        });
-        if governed_here && !looked {
-            let salt = tree.read().local_salt();
-            self.take_own_windows_out(owner, room, salt, now);
-        }
-    }
-
-    /// Take every window this device put into `room`, which it governs and
-    /// whose layout is personal, out of the room's document: its windows
-    /// stay on this device. Nothing is done when there are none.
-    fn take_own_windows_out(
-        &self,
-        owner: crate::shell::native_workspace_owner::NativeWorkspaceOwner,
-        room: RoomId,
-        salt: u16,
-        now: Instant,
-    ) {
-        if salt == 0 {
-            return;
-        }
-        let changes = owner.with_current(room, |view| {
-            let mut doc = view
-                .peer()
-                .admitted_room()
-                .ok_or("room governance missing")?
-                .clone();
-            let heads = doc.get_heads();
-            doc.set_actor(automerge::ActorId::from(
-                view.device().device_public_key.to_vec(),
-            ));
-            let dropped = tilo_desktop_model::projection::drop_contents_except(&mut doc, &|id| {
-                tilo_desktop_model::peer_salt_of(id) != salt
-            });
-            doc.commit();
-            Ok((dropped > 0).then(|| {
-                doc.get_changes(&heads)
-                    .iter()
-                    .map(|change| change.raw_bytes().to_vec())
-                    .collect::<Vec<_>>()
-            }))
-        });
-        match changes {
-            Ok(Some(changes)) => self.admit_own_topology(owner, room, changes, now),
-            Ok(None) => {}
-            Err(error) => tracing::debug!(%room, %error, "own windows not taken out"),
         }
     }
 
@@ -353,26 +274,6 @@ impl ShellNetwork {
         true
     }
 
-    /// Admit this device's own layout `changes` into `room`, which it
-    /// governs, off the frame loop: admission publishes the room durably.
-    fn admit_own_topology(
-        &self,
-        owner: crate::shell::native_workspace_owner::NativeWorkspaceOwner,
-        room: RoomId,
-        changes: Vec<Vec<u8>>,
-        now: Instant,
-    ) {
-        if !self.due_to_send(room, now) {
-            return;
-        }
-        match self.runtime.as_ref() {
-            Some(runtime) => {
-                runtime.spawn_blocking(move || admit_own_topology(&owner, room, changes));
-            }
-            None => admit_own_topology(&owner, room, changes),
-        }
-    }
-
     fn send_topology(&self, room: RoomId, changes: Vec<Vec<u8>>, now: Instant) {
         if !self.due_to_send(room, now) {
             return;
@@ -389,40 +290,11 @@ impl ShellNetwork {
     }
 }
 
-/// Admit this device's own layout changes into a room it governs: they are
-/// its governor's, so they land as the governor's own room changes.
-fn admit_own_topology(
-    owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
-    room: RoomId,
-    changes: Vec<Vec<u8>>,
-) {
-    let device = match owner.with_current(room, |view| Ok(view.device().device_public_key)) {
-        Ok(device) => device,
-        Err(error) => {
-            tracing::debug!(%room, %error, "own layout not admitted");
-            return;
-        }
-    };
-    if let Err(error) = owner.receive(
-        room,
-        tilo_peer_state::TransportOrigin::RelayDelta(device),
-        crate::network::NeighbourMsg::SyncResp {
-            changes,
-            room: room.to_string(),
-        },
-        std::time::SystemTime::now(),
-    ) {
-        tracing::warn!(%room, %error, "own layout refused by the room this device governs");
-    }
-}
-
-/// This session's salt, and the windows it keeps in `room`'s document: when
-/// it governs the room, every window it owns; else its own legacy tabs
-/// ([`own_legacy_windows`]).
+/// This session's salt, and the windows it keeps in `room`'s document: its
+/// own legacy tabs ([`own_legacy_windows`]).
 fn windows_to_publish(
     tree: &crate::shell::state::WorkspaceTree,
     room: RoomId,
-    governed_here: bool,
 ) -> (u16, Vec<Strip>) {
     let salt = tree.local_salt();
     let windows = tree
@@ -430,13 +302,7 @@ fn windows_to_publish(
         .workspaces
         .iter()
         .find(|workspace| workspace.room() == room)
-        .map(|workspace| {
-            if governed_here {
-                workspace.strips.clone()
-            } else {
-                own_legacy_windows(&workspace.strips, salt)
-            }
-        })
+        .map(|workspace| own_legacy_windows(&workspace.strips, salt))
         .unwrap_or_default();
     (salt, windows)
 }
@@ -689,194 +555,6 @@ mod tests {
             crate::network::input_firewall::MAX_REMOTE_TEXT_BYTES,
             "a relay forwards no text this session's firewall refuses"
         );
-    }
-
-    /// A room this device governs takes every window this device opens into
-    /// its layout, admitted here, an unconfined program's too (its members
-    /// view it as a stream): no other device places them. Once the room's
-    /// layout is personal no window is in it at all.
-    #[test]
-    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
-    fn a_room_this_device_governs_takes_every_window_it_opens_until_its_layout_is_personal() {
-        use crate::shell::state::{StripId, WorkspaceTree};
-        use ed25519_dalek::SigningKey;
-        let directory = tempfile::tempdir().unwrap();
-        let salt = 0x0042;
-        let own = |counter: u64| (u64::from(salt) << 48) | counter;
-        let mut tree = WorkspaceTree::bootstrap_default();
-        tree.set_peer_salt(salt);
-        tree.persist_path = Some(directory.path().join("state.json"));
-        let workspace = tree.desktop.active;
-        let placeholder = TileContent::AppPlaceholder {
-            kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
-            label: "Notes".into(),
-        };
-        let foreign = TileContent::Foreign {
-            app_id: "org.chromium.Chromium".into(),
-            surface_id: 7,
-        };
-        let room = {
-            let ws = tree
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|ws| ws.id == workspace)
-                .unwrap();
-            ws.strips = vec![Strip {
-                id: StripId(own(1)),
-                name: "Workspace".into(),
-                window_groups: vec![WindowGroup {
-                    id: own(2),
-                    tabs: vec![tab(own(3), placeholder), tab(own(4), foreign)],
-                    active_tab: own(3),
-                    width: WindowWidth::Normal,
-                    maximized: false,
-                    focus_history: Vec::new(),
-                }],
-            }];
-            ws.room()
-        };
-        let tree = tree.shared();
-        let owner = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();
-        let key = SigningKey::from_bytes(&[71; 32]);
-        let device = tilo_joined_room::testing::certificate(
-            &SigningKey::from_bytes(&[72; 32]),
-            &key,
-            "Desktop",
-        );
-        let seed = tilo_peer_state::workspace_seed(
-            &room.to_string(),
-            &device,
-            std::slice::from_ref(&device),
-            "Garden",
-            salt,
-        )
-        .unwrap();
-        owner
-            .create_governed(
-                room,
-                workspace.raw(),
-                &device,
-                &key,
-                seed,
-                std::time::SystemTime::now(),
-            )
-            .unwrap();
-        assert!(tree.read().requires_native_owner(room));
-
-        let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
-        network.publish_hosted_legacy_windows(room, &tree);
-        let tabs: Vec<u64> = owner
-            .with_current(room, |view| {
-                let contents = tilo_desktop_model::projection::contents_of(
-                    view.peer().admitted_room().ok_or("no room")?,
-                );
-                Ok(contents
-                    .iter()
-                    .flat_map(|strip| &strip.groups)
-                    .flat_map(|group| &group.tabs)
-                    .map(|tab| tab.id)
-                    .collect())
-            })
-            .unwrap();
-        assert_eq!(tabs, [own(3), own(4)], "both windows are in the room");
-        let shown: Vec<u64> = tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|ws| ws.room() == room)
-            .unwrap()
-            .strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.id)
-            .collect();
-        assert_eq!(
-            shown,
-            [own(3), own(4)],
-            "and still shown here, as they were"
-        );
-
-        let changes = owner
-            .with_current(room, |view| {
-                let mut doc = view.peer().admitted_room().ok_or("no room")?.clone();
-                let heads = doc.get_heads();
-                doc.set_actor(automerge::ActorId::from(device.device_public_key.to_vec()));
-                automerge::transaction::Transactable::put(
-                    &mut doc,
-                    automerge::ROOT,
-                    tilo_desktop_model::projection::ROOM_LAYOUT_KEY,
-                    tilo_desktop_model::projection::RoomLayout::Personal.id(),
-                )
-                .map_err(|error| error.to_string())?;
-                doc.commit();
-                Ok(doc
-                    .get_changes(&heads)
-                    .iter()
-                    .map(|change| change.raw_bytes().to_vec())
-                    .collect::<Vec<_>>())
-            })
-            .unwrap();
-        owner
-            .receive(
-                room,
-                tilo_peer_state::TransportOrigin::RelayDelta(device.device_public_key),
-                crate::network::NeighbourMsg::SyncResp {
-                    changes,
-                    room: room.to_string(),
-                },
-                std::time::SystemTime::now(),
-            )
-            .unwrap();
-        tree.write()
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|ws| ws.room() == room)
-            .unwrap()
-            .strips[0]
-            .window_groups[0]
-            .tabs
-            .push(tab(
-                own(5),
-                TileContent::AppPlaceholder {
-                    kind: crate::shell::state::AppKind::Other("so.tilo.canvas".into()),
-                    label: "Canvas".into(),
-                },
-            ));
-        let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
-        network.publish_hosted_legacy_windows(room, &tree);
-        let tabs: Vec<u64> = owner
-            .with_current(room, |view| {
-                Ok(tilo_desktop_model::projection::contents_of(
-                    view.peer().admitted_room().ok_or("no room")?,
-                )
-                .iter()
-                .flat_map(|strip| &strip.groups)
-                .flat_map(|group| &group.tabs)
-                .map(|tab| tab.id)
-                .collect())
-            })
-            .unwrap();
-        assert!(
-            tabs.is_empty(),
-            "a personal room holds none of this device's windows: {tabs:?}"
-        );
-        let shown = tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|ws| ws.room() == room)
-            .unwrap()
-            .strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .count();
-        assert_eq!(shown, 3, "all three stay on this device");
     }
 
     #[test]

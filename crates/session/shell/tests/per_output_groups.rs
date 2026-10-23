@@ -31,8 +31,8 @@ use shell::compositor::backend::{
 };
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::state::{
-    AppKind, GroupId, PeerOrigin, RoomId, Strip, StripId, Tab, TileContent, WindowGroup,
-    WindowWidth, Workspace, WorkspaceId, WorkspaceTree, compose_id,
+    AppKind, GroupId, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+    Workspace, WorkspaceId, WorkspaceTree, compose_id,
 };
 use ui::widget::Widget as _;
 use vello::kurbo::{Point, Rect};
@@ -829,9 +829,7 @@ fn the_partition_is_never_replicated() {
         !tree.desktop.outputs.home.is_empty(),
         "there is a partition to leak"
     );
-    let room = RoomId::parse(ROOM).expect("room");
     tree.seed_doc_from_cache();
-    tree.sync_room_doc(room);
     let forbidden = [
         "outputs",
         "home",
@@ -842,91 +840,30 @@ fn the_partition_is_never_replicated() {
     ];
     let mut desktop_keys = BTreeSet::new();
     keys(&tree.doc, &ROOT, &mut desktop_keys);
-    let mut room_keys = BTreeSet::new();
-    keys(
-        tree.room_docs.get(&room).expect("the room was projected"),
-        &ROOT,
-        &mut room_keys,
-    );
     drop(tree);
     drop(chrome);
     assert!(
         desktop_keys.contains("window_groups"),
         "the desktop document carries the strip's windows: {desktop_keys:?}"
     );
-    assert!(
-        room_keys.contains(&format!("{:016x}", ON_PRIMARY[0])),
-        "the room document carries the strip's windows: {room_keys:?}"
-    );
-    for (name, found) in [("desktop", &desktop_keys), ("room", &room_keys)] {
-        for key in forbidden {
-            assert!(
-                !found.contains(key),
-                "the {name} document carries `{key}`: {found:?}"
-            );
-        }
-    }
-}
-
-/// A collaborator's device holding the same room, fed whatever this device
-/// publishes for it.
-struct Collaborator {
-    tree: WorkspaceTree,
-    room: RoomId,
-}
-
-impl Collaborator {
-    fn of(desk: &Desk) -> Self {
-        let room = RoomId::parse(ROOM).expect("room");
-        let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(SALT.wrapping_add(1));
-        tree.join_room("Joined", room).expect("joins the room");
-        assert!(tree.pin_room_authority(room, PeerOrigin::peer_id("docked-laptop")));
-        let mut collaborator = Self { tree, room };
-        collaborator.receive(desk);
-        collaborator
-    }
-
-    /// Take in everything `desk` publishes for the room now, after
-    /// mirroring its cache into its documents the way any later edit does.
-    fn receive(&mut self, desk: &Desk) {
-        let changes = {
-            let chrome = desk.fb.chrome();
-            let mut tree = chrome.tree_mut();
-            tree.seed_doc_from_cache();
-            tree.export_room_changes_since(self.room, &[])
-                .expect("the room is published")
-        };
-        self.tree
-            .apply_room_changes(self.room, &changes, &PeerOrigin::peer_id("docked-laptop"))
-            .expect("the room's changes apply");
-    }
-
-    fn strip_order(&self) -> Vec<GroupId> {
-        self.tree
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|w| &w.strips)
-            .find(|s| s.id == STRIP)
-            .map(|s| s.window_groups.iter().map(|g| g.id).collect())
-            .unwrap_or_default()
+    for key in forbidden {
+        assert!(
+            !desktop_keys.contains(key),
+            "the desktop document carries `{key}`: {desktop_keys:?}"
+        );
     }
 }
 
 #[test]
-fn display_changes_never_reorder_a_collaborators_strip() {
+fn display_changes_never_reorder_the_rooms_strip() {
     let shared: Vec<GroupId> = ON_PRIMARY.iter().chain(ON_SECOND.iter()).copied().collect();
     for fixture in ["docked-laptop", "vertical-stack"] {
         let mut desk = Desk::fixture(fixture);
-        let mut collaborator = Collaborator::of(&desk);
-        assert_eq!(collaborator.strip_order(), shared, "{fixture}: in sync");
+        assert_eq!(desk.strip_order(), shared, "{fixture}: in order");
 
         // Unplugged: the monitor's groups join the panel.
         desk.focus(ON_PRIMARY[0]);
         desk.unplug_all_but_primary();
-        collaborator.receive(&desk);
-        assert_eq!(collaborator.strip_order(), shared, "{fixture}: unplug");
         assert_eq!(desk.strip_order(), shared, "{fixture}: unplug");
 
         desk.replug();
@@ -935,12 +872,6 @@ fn display_changes_never_reorder_a_collaborators_strip() {
         let chord = ModifiersState::SUPER | ModifiersState::CONTROL | ModifiersState::SHIFT;
         desk.press(NamedKey::ArrowRight, chord);
         assert_eq!(desk.display_of(ON_PRIMARY[2]), Some(1), "{fixture}: moved");
-        collaborator.receive(&desk);
-        assert_eq!(
-            collaborator.strip_order(),
-            shared,
-            "{fixture}: move to display"
-        );
         assert_eq!(desk.strip_order(), shared, "{fixture}: move to display");
     }
 }
