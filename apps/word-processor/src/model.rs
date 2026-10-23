@@ -111,14 +111,24 @@ impl Document {
 
     /// Replace the body.
     ///
-    /// The whole body written again from Markdown (headings, lists, pipe
-    /// tables): a line holding a paragraph's text keeps that paragraph.
+    /// The whole body written again from Markdown: headings, lists, pipe
+    /// tables, emphasis and links. Pictures are placed with place-image.
     #[action(answers, audience = "agents")]
     pub fn replace_body(
         &mut self,
         #[param("The whole new body as Markdown")] markdown: String,
     ) -> Result<(), Refusal> {
-        self.body.perform(RichTextAction::SyncBody { markdown });
+        let (action, inputs) = tilo_document::action::stage_import(
+            tilo_document::action::ImportFormat::Markdown,
+            markdown.as_bytes(),
+        )
+        .map_err(Refusal::new)?;
+        if !inputs.is_empty() {
+            return Err(Refusal::new(
+                "a picture is not written into the Markdown: place it with place-image",
+            ));
+        }
+        self.body.perform(action);
         Ok(())
     }
 

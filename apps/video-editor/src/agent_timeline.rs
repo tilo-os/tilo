@@ -119,13 +119,17 @@ impl Project {
     }
 
     /// The track `named`, by id or name, which must carry `kind`; with no
-    /// name, the first unlocked track of `kind`, made when there is none.
+    /// name, the lowest unlocked track of `kind` (V1: the cut, under the
+    /// titles and overlays on the tracks above it), made when there is none.
     fn lane_for(&mut self, named: Option<&str>, kind: TrackKind) -> Result<TrackId, Refusal> {
         let Some(named) = named.map(str::trim).filter(|named| !named.is_empty()) else {
-            if let Some(track) = self.placement_track(kind, None) {
-                return Ok(track);
-            }
-            return Ok(self.new_lane(kind));
+            let lowest = self
+                .tracks
+                .iter()
+                .filter(|track| track.kind == kind && !track.locked)
+                .min_by_key(|track| track.index)
+                .map(|track| track.id);
+            return Ok(lowest.unwrap_or_else(|| self.new_lane(kind)));
         };
         let track = named
             .parse::<Uuid>()

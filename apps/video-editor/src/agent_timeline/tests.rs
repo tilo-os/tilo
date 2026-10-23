@@ -186,6 +186,24 @@ fn a_source_named_in_the_bin_is_placed_after_the_last_clip_of_its_kind() {
 }
 
 #[test]
+fn footage_named_on_no_track_goes_on_v1_under_the_titles_above_it() {
+    let mut app = editor(&Project::new("cut"));
+    import(&mut app, &png(640, 360), "logo.png").unwrap();
+    call(&mut app, "add-clip", json!({ "media": "logo.png" })).unwrap();
+    call(&mut app, "add-track", json!({ "kind": "Video" })).unwrap();
+    let placed = call(
+        &mut app,
+        "add-clip",
+        json!({ "media": "logo.png", "at": 10.0 }),
+    )
+    .unwrap();
+    assert_eq!(
+        placed["placed"]["track"], "V1",
+        "the cut stays on V1 though V2 is the top track"
+    );
+}
+
+#[test]
 fn placing_refuses_unknown_sources_taken_spans_and_windows_past_the_source() {
     let mut app = editor(&Project::new("cut"));
     import(&mut app, &wav(4), "voice.wav").unwrap();
