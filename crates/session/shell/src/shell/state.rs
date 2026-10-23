@@ -34,9 +34,8 @@ pub use tilo_desktop_model::{
     PEER_ID_SALT_SHIFT, PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, PresetMutationError,
     RoomId, SharedSurfaces, Strip, StripId, Tab, TabId, TabRef, TileContent, UserId,
     WORKSPACE_GOVERNANCE_APP_ID, WindowGroup, WindowWidth, Workspace, WorkspaceDefaultError,
-    WorkspaceEffectReceipt, WorkspaceId, WorkspaceTask, WorkspaceTaskAuditEvent,
-    WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus, compose_id, counter_of,
-    peer_salt_of, role_from_id, role_id,
+    WorkspaceEffectReceipt, WorkspaceId, compose_id, counter_of, peer_salt_of, role_from_id,
+    role_id,
 };
 pub use tilo_desktop_model::{
     DesktopTree, Display, DropTarget, OutputPartition, STATE_SCHEMA_VERSION, TabMove,

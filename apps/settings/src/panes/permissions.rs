@@ -764,7 +764,7 @@ fn expiry_label(e: Expiry) -> &'static str {
 fn lifetime_label(lifetime: &Lifetime) -> &'static str {
     match lifetime {
         Lifetime::UntilRevoked => "Always",
-        Lifetime::Until(_) | Lifetime::Task(_) => "Temporary",
+        Lifetime::Until(_) => "Temporary",
         Lifetime::Session(_) => "Until log out",
         Lifetime::Once => "Once",
     }

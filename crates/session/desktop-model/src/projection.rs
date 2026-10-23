@@ -19,7 +19,7 @@ use tilo_sort::CompactSort as _;
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId, counter_of, peer_salt_of};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
-use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
+use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
 use crate::workspace::Workspace;
@@ -40,8 +40,6 @@ pub const ROOM_DESKTOP_COUNTER_KEY: &str = "desktop_counter_v1";
 /// kept while empty (`1`), unlike an ordinary strip, which is published only
 /// while it holds windows.
 pub const STRIP_RETAINED_EMPTY_KEY: &str = "retained_empty_v1";
-/// Key a room document stores its durable tasks under.
-pub const ROOM_TASKS_KEY: &str = "tasks_v1";
 /// Key a room document stores its effect receipts under.
 pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
 /// Key a room document stores its saved shortcuts under.
@@ -224,65 +222,6 @@ pub(crate) fn tab_entries(doc: &AutoCommit) -> Vec<(u64, u64, u64, automerge::Ob
         }
     }
     out
-}
-
-/// Project durable tasks as independently mergeable values. Task ids are
-/// stable, so two collaborators creating work concurrently add two map
-/// keys instead of racing over a positional list.
-///
-/// # Errors
-///
-/// The document's error when a map this projection needs cannot be
-/// created.
-pub fn project_workspace_tasks(
-    doc: &mut AutoCommit,
-    tasks: &[WorkspaceTask],
-) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-
-    let tasks_id = match doc.get(&ROOT, ROOM_TASKS_KEY).ok().flatten() {
-        Some((_, id)) => id,
-        None if tasks.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, ROOM_TASKS_KEY, ObjType::Map)?,
-    };
-    for task in tasks {
-        let Ok(blob) = serde_json::to_vec(task) else {
-            continue;
-        };
-        let unchanged = matches!(
-            doc.get(&tasks_id, task.id.as_str()).ok().flatten(),
-            Some((Value::Scalar(value), _))
-                if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
-        );
-        if !unchanged {
-            let _ = doc.put(&tasks_id, task.id.as_str(), ScalarValue::Bytes(blob));
-        }
-    }
-    Ok(())
-}
-
-pub fn workspace_tasks_of(doc: &AutoCommit) -> Vec<WorkspaceTask> {
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-    let Some((_, tasks_id)) = doc.get(&ROOT, ROOM_TASKS_KEY).ok().flatten() else {
-        return Vec::new();
-    };
-    let mut tasks = Vec::new();
-    for key in doc.keys(&tasks_id) {
-        if let Some((Value::Scalar(value), _)) = doc.get(&tasks_id, key.as_str()).ok().flatten()
-            && let ScalarValue::Bytes(blob) = value.as_ref()
-            && let Ok(task) = serde_json::from_slice::<WorkspaceTask>(blob)
-        {
-            tasks.push(task);
-        }
-    }
-    tasks.compact_sort_by(|left, right| {
-        right
-            .updated_at
-            .cmp(&left.updated_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    tasks
 }
 
 /// Project a workspace's shortcuts as one map value per shortcut id, so two
@@ -479,59 +418,6 @@ pub fn project_room_policy(
 
 /// The authority a room document records for `room`. Values that do not
 /// decode are skipped; grants on another room's nodes are dropped.
-/// The grant sets of the open tasks `doc` holds: every grant naming a task
-/// as its subject, while that task is open.
-#[must_use]
-pub fn task_grants_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Grant> {
-    let open = open_task_ids(doc);
-    blob_map_of(doc, ROOM_GRANTS_KEY)
-        .into_iter()
-        .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
-        .filter(|grant| matches!(&grant.subject, tilo_action_policy::Subject::Task(task) if open.contains(task)))
-        .collect()
-}
-
-/// Remove from `doc`'s grants every one that lapsed with its task
-/// ([`tilo_action_policy::Grant::lapsed_with_tasks`]), so every reader of the
-/// room's grants, the relay's included, stops honouring it. The ids removed.
-///
-/// # Errors
-///
-/// The document's error when the map cannot be written.
-pub fn lapse_task_grants(
-    doc: &mut AutoCommit,
-) -> Result<Vec<tilo_action_policy::GrantId>, automerge::AutomergeError> {
-    use automerge::{ROOT, ReadDoc, transaction::Transactable};
-
-    let open = open_task_ids(doc);
-    let lapsed: Vec<(String, tilo_action_policy::GrantId)> = blob_map_of(doc, ROOM_GRANTS_KEY)
-        .into_iter()
-        .filter(|(_, grant): &(String, tilo_action_policy::Grant)| {
-            grant.lapsed_with_tasks(|task| open.contains(task))
-        })
-        .map(|(name, grant)| (name, grant.id))
-        .collect();
-    if let Some((_, map)) = doc.get(&ROOT, ROOM_GRANTS_KEY)?
-        && !lapsed.is_empty()
-    {
-        for (name, _) in &lapsed {
-            doc.delete(&map, name.as_str())?;
-        }
-    }
-    Ok(lapsed.into_iter().map(|(_, id)| id).collect())
-}
-
-/// The ids of the tasks `doc` holds that are still open: a grant given for
-/// a task ([`tilo_action_policy::Lifetime::Task`]) lives while it is one.
-#[must_use]
-pub fn open_task_ids(doc: &AutoCommit) -> std::collections::HashSet<String> {
-    workspace_tasks_of(doc)
-        .into_iter()
-        .filter(|task| !task.status.is_finished())
-        .map(|task| task.id)
-        .collect()
-}
-
 pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomPolicy {
     use automerge::{ROOT, ReadDoc};
 
@@ -544,12 +430,10 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomP
     let joined = blob_map_of(doc, ROOM_MEMBERS_JOINED_KEY)
         .into_iter()
         .collect();
-    let open = open_task_ids(doc);
     let grants = blob_map_of(doc, ROOM_GRANTS_KEY)
         .into_iter()
         .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
         .filter(|grant| grant.node.room_id() == Some(room))
-        .filter(|grant| !grant.lapsed_with_tasks(|task| open.contains(task)))
         .collect();
     tilo_action_policy::RoomPolicy {
         room: room.to_owned(),

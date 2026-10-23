@@ -101,7 +101,8 @@ end itself, through the tracker's actions above, as children of its run.
 
 Each of the agent's actions, the tracker's included, is admitted as the agent
 acting for the run's approver: bounded by the approver's live grants, the
-agent's grants and the issue's own grant set, with every message to the run
+agent's grants and the issue's own grant set (the room's grants naming the
+issue, [permissions.md](permissions.md) §4), with every message to the run
 read first. An action that asks first waits for the person's answer on the
 issue, and a confirmation admits only the arguments asked about, when the
 draft the person saw is the one those arguments render.

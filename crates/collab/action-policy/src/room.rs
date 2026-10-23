@@ -451,20 +451,6 @@ impl RoomPolicy {
         Ok(())
     }
 
-    /// Drop the grants that lapsed with their task
-    /// ([`Grant::lapsed_with_tasks`]). The ids dropped.
-    pub fn lapse_tasks(&mut self, open: impl Fn(&str) -> bool) -> Vec<GrantId> {
-        let mut lapsed = Vec::new();
-        self.grants.retain(|grant| {
-            let keep = !grant.lapsed_with_tasks(&open);
-            if !keep {
-                lapsed.push(grant.id.clone());
-            }
-            keep
-        });
-        lapsed
-    }
-
     /// Drop the `Once` grants among `spent`: an action ran on them. Any other
     /// grant named stays. Returns whether anything was dropped.
     pub fn spend(&mut self, spent: &[GrantId]) -> bool {

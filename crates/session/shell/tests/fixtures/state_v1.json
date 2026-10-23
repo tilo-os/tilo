@@ -402,20 +402,6 @@
         "policy": {},
         "user_choices": {}
       },
-      "tasks": [
-        {
-          "id": "task-1",
-          "title": "Review",
-          "created_by": "owner-key",
-          "assigned_agent": null,
-          "route": "manual",
-          "status": "queued",
-          "resource": null,
-          "created_at": 10,
-          "updated_at": 20,
-          "audit": []
-        }
-      ],
       "effect_receipts": [],
       "shortcuts": [
         {
@@ -766,7 +752,6 @@
         "policy": {},
         "user_choices": {}
       },
-      "tasks": [],
       "effect_receipts": [],
       "shortcuts": [],
       "schedule_claims": [],

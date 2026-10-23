@@ -207,7 +207,6 @@ pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
             tilo_desktop_model::projection::ROOM_NAME_KEY,
             &workspace.name,
         );
-        let _ = tilo_desktop_model::projection::project_workspace_tasks(&mut doc, &workspace.tasks);
         // A salt whose windows all closed still sweeps them away.
         let now = salts(workspace);
         for &salt in now.union(&projected) {
@@ -461,29 +460,6 @@ mod tests {
         tree.workspaces[0].strips[0].window_groups[0].active_tab = second_id;
         assert!(!record(&mut log, &stored(&tree), "Ada", 2_000));
         assert_eq!(log.get_changes(&[]).len(), 1);
-    }
-
-    #[test]
-    fn retained_history_preserves_tasks_when_the_browser_opens_the_shared_pane() {
-        let (mut log, mut tree) = log();
-        let task = tilo_desktop_model::WorkspaceTask {
-            id: "task:review".into(),
-            title: "Review changes".into(),
-            created_by: "Ada".into(),
-            assigned_agent: None,
-            route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
-            status: tilo_desktop_model::WorkspaceTaskStatus::Queued,
-            resource: None,
-            subject: None,
-            created_at: 4_000,
-            updated_at: 4_000,
-            audit: Vec::new(),
-        };
-        tree.workspaces[0].tasks.push(task.clone());
-        assert!(record(&mut log, &stored(&tree), "Ada", 4_000));
-        let history = room_history(log, tree.workspaces[0].room());
-        let snapshot = ActivitySnapshot::new(tree, history.doc).unwrap();
-        assert_eq!(snapshot.active_workspace().unwrap().tasks, vec![task]);
     }
 
     #[test]
