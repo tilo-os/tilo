@@ -1128,19 +1128,34 @@ impl VideoEditorApp {
                     self.export.estimate_label(&self.project),
                 ))
                 .with_key(0),
-            AccessNode::new(Role::Button)
-                .with_name("Start export")
-                .with_key(1)
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .disabled(!self.export_is_offered()),
-                ),
-            AccessNode::new(Role::Button)
-                .with_name("Close export")
-                .with_key(2)
-                .with_state(AccessState::new().focusable(true)),
         ];
+        // The same actions the card paints: while a render runs, only its
+        // Cancel; otherwise Export and Close.
+        if self.export_running() {
+            kids.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Cancel export")
+                    .with_key(2)
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        } else {
+            kids.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Start export")
+                    .with_key(1)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .disabled(!self.export_is_offered()),
+                    ),
+            );
+            kids.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Close export")
+                    .with_key(2)
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         if let ExportStatus::Rendering { progress } = self.export_status {
             kids.push(
                 AccessNode::new(Role::ProgressBar)
@@ -1891,17 +1906,24 @@ impl VideoEditorApp {
             // press worked anyway. The undo path above already refuses
             // properly; this now matches it.
             (1, Action::Activate) => {
-                if self.export_is_offered() {
+                if self.export_is_offered() && !self.export_running() {
                     self.request_export();
                     true
                 } else {
                     false
                 }
             }
-            // Closing is safe now that the render reports from the chip and
-            // its own live region whether or not this dialog is up.
+            // While a render runs this is its Cancel, as the card paints it.
+            // Otherwise it closes, which is safe: the render reports from its
+            // own live region whether or not this dialog is up.
             (2, Action::Activate) => {
-                self.presentation.export_open = false;
+                if self.export_running() {
+                    if let Some(job) = self.export_job.as_ref() {
+                        job.cancel();
+                    }
+                } else {
+                    self.presentation.export_open = false;
+                }
                 true
             }
             (_, Action::Focus) => true,
