@@ -40,15 +40,24 @@ fn authenticated_startup() -> tilo_desktop::feedback::transport::Startup {
 #[test]
 fn authenticated_startup_binds_only_its_profile_person_and_mounts_private_review() {
     let root = tempfile::tempdir().unwrap();
-    let mut wrong = InProcessApps::at(&root.path().join("wrong"), "another-person").unwrap();
+    let mut wrong = InProcessApps::at(
+        &root.path().join("wrong"),
+        &root.path().join("wrong").join("person"),
+        "another-person",
+    )
+    .unwrap();
     let reporter = authenticated_startup().reporter().clone();
     assert!(matches!(
         wrong.install_feedback_startup(&reporter, authenticated_startup()),
         Err(LaunchError::BindingMismatch)
     ));
     assert!(wrong.feedback.is_none());
-    let mut apps =
-        InProcessApps::at(&root.path().join("reporter"), &hex::encode([12; 32])).unwrap();
+    let mut apps = InProcessApps::at(
+        &root.path().join("reporter"),
+        &root.path().join("reporter").join("person"),
+        &hex::encode([12; 32]),
+    )
+    .unwrap();
     let wrong_device = tilo_actions::remote::Caller::authenticated(
         [12; 32],
         ed25519_dalek::SigningKey::from_bytes(&[43; 32])
@@ -274,7 +283,7 @@ fn screenshot(include: bool) -> serde_json::Value {
 fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_receipt() {
     let root = tempfile::tempdir().unwrap();
     let profile = root.path().join("profile");
-    let mut apps = InProcessApps::at(&profile, AUTHOR).unwrap();
+    let mut apps = InProcessApps::at(&profile, &profile.join("person"), AUTHOR).unwrap();
     let owner = destination_owner(&mut apps);
     apps.install_feedback(
         owner.borrow().destination.clone(),
@@ -329,7 +338,7 @@ fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_re
     drop(frame);
     drop(inputs);
 
-    let mut restored = InProcessApps::at(&profile, AUTHOR).unwrap();
+    let mut restored = InProcessApps::at(&profile, &profile.join("person"), AUTHOR).unwrap();
     restored
         .install_feedback(
             owner.borrow().destination.clone(),
@@ -392,7 +401,7 @@ fn assert_canonical_report(owner: &DestinationOwner, submission: &Submission) {
 #[test]
 fn unconfigured_native_feedback_cannot_review_send_or_create_shared_drafts() {
     let root = tempfile::tempdir().unwrap();
-    let apps = InProcessApps::at(root.path(), AUTHOR).unwrap();
+    let apps = InProcessApps::at(root.path(), &root.path().join("person"), AUTHOR).unwrap();
     let inputs =
         crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(root.path(), apps)
             .unwrap();
@@ -421,7 +430,12 @@ fn feedback_opened_from_a_window_is_about_its_app_and_attaches_it_only_with_cons
     use crate::shell::window_actions::{Destination as Place, open_hosted};
     use tilo_desktop::feedback::{Focused, composer_tab, focused};
     let root = tempfile::tempdir().unwrap();
-    let mut apps = InProcessApps::at(&root.path().join("profile"), AUTHOR).unwrap();
+    let mut apps = InProcessApps::at(
+        &root.path().join("profile"),
+        &root.path().join("profile").join("person"),
+        AUTHOR,
+    )
+    .unwrap();
     let owner = destination_owner(&mut apps);
     owner.borrow_mut().offline = false;
     apps.install_feedback(
@@ -551,7 +565,12 @@ fn assert_sent_about_notes(sends: &[Submission]) {
 fn the_desktop_drives_the_private_composer_through_its_device_local_actions() {
     use crate::shell::window_actions::{Destination as Place, open_hosted};
     let root = tempfile::tempdir().unwrap();
-    let mut apps = InProcessApps::at(&root.path().join("profile"), AUTHOR).unwrap();
+    let mut apps = InProcessApps::at(
+        &root.path().join("profile"),
+        &root.path().join("profile").join("person"),
+        AUTHOR,
+    )
+    .unwrap();
     let owner = destination_owner(&mut apps);
     apps.install_feedback(
         owner.borrow().destination.clone(),

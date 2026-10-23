@@ -29,7 +29,7 @@ impl Peer {
         let source = source(&rig, &lifecycle, &socket);
         let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
             &rig.root.path().join("native-apps"),
-            Some(rig.root.path().join("native-apps").join("person")),
+            &rig.root.path().join("native-apps").join("person"),
             &rig.owner.principal,
             socket,
         )
@@ -247,7 +247,7 @@ impl Peer {
         drop(apps);
         let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
             &rig.root.path().join("native-apps"),
-            Some(rig.root.path().join("native-apps").join("person")),
+            &rig.root.path().join("native-apps").join("person"),
             &rig.owner.principal,
             rig.root.path().join("native-first.sock"),
         )

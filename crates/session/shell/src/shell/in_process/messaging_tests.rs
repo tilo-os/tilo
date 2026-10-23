@@ -145,10 +145,21 @@ impl Rig {
         }
     }
     fn apps(&self) -> super::super::InProcessApps {
+        self.apps_on(&self.owner.device)
+    }
+    fn apps_on(&self, device: &str) -> super::super::InProcessApps {
         super::super::InProcessApps::new(
             Rc::new(durable_store::MemoryStore::new()),
-            &self.owner.device,
+            device,
             &self.owner.principal,
+            crate::shell::settings_records::Holder::held(
+                (
+                    self.root.path().join("person"),
+                    self.owner.principal.clone(),
+                ),
+                &self.root.path().join("apps"),
+            )
+            .unwrap(),
         )
     }
     fn admission_live(&self) -> bool {
@@ -386,11 +397,7 @@ fn native_startup_existing_grant_owns_real_streams_mounts_and_rechecks_revocatio
 fn native_startup_wrong_profile_and_retired_admission_refuse_before_assembly() {
     let rig = Rig::new();
     rig.grant(AccessDecision::AllowForSession);
-    let mut apps = super::super::InProcessApps::new(
-        Rc::new(durable_store::MemoryStore::new()),
-        "other-sdk-device",
-        &rig.owner.principal,
-    );
+    let mut apps = rig.apps_on("other-sdk-device");
     assert!(
         apps.start_signal_account(rig.startup(), |_| panic!(
             "wrong profile must not contact a daemon"
@@ -893,11 +900,7 @@ fn native_whatsapp_registration_refuses_signal_owner_and_other_profile() {
         }),
     };
     assert!(rig.apps().prepare_whatsapp_account(startup).is_err());
-    let mut apps = super::super::InProcessApps::new(
-        Rc::new(durable_store::MemoryStore::new()),
-        "other-sdk-profile",
-        &rig.owner.principal,
-    );
+    let mut apps = rig.apps_on("other-sdk-profile");
     assert!(
         apps.prepare_whatsapp_account(rig.whatsapp_startup())
             .is_err()

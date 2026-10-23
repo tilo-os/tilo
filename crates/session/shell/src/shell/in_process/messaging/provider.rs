@@ -260,8 +260,6 @@ impl super::super::InProcessApps {
     ) -> Result<Vec<(String, accounts::person::PersonAccount)>, SendError> {
         let service = service.to_owned();
         self.person_records
-            .as_ref()
-            .ok_or(SendError::Unavailable)?
             .read::<accounts::person::PersonAccounts, _>(move |state| {
                 state
                     .accounts

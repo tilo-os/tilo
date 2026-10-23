@@ -1801,9 +1801,12 @@ mod tests {
         profile: &std::path::Path,
         files: &std::path::Path,
     ) -> ui::headless::FrameHarness {
-        let mut apps =
-            crate::shell::in_process::InProcessApps::at(&profile.join("profile"), "fixture-person")
-                .unwrap();
+        let mut apps = crate::shell::in_process::InProcessApps::at(
+            &profile.join("profile"),
+            &profile.join("profile").join("person"),
+            "fixture-person",
+        )
+        .unwrap();
         let startup = file_explorer::StartupInputs {
             initial_dir: files.to_path_buf(),
             workspace_roots: Vec::new(),

@@ -1136,12 +1136,17 @@ mod files_clipboard_tests {
     fn mounted_apps(profile: &Path, author: &str) -> InProcessApps {
         let apps_root = profile.join("apps");
         if std::env::var_os("TILO_CLIPBOARD_TEST_DEFER_DOC_SAVE").is_none() {
-            return InProcessApps::at(&apps_root, author).unwrap();
+            return InProcessApps::at(&apps_root, &apps_root.join("person"), author).unwrap();
         }
         // Keep the real native store and its acknowledgements. Only this crash
         // child's write schedule differs: Paste is explicitly flushed before Undo.
         std::fs::create_dir_all(&apps_root).unwrap();
         let native = ui::application::NativeProfile::open(&apps_root, None).unwrap();
+        let person = crate::shell::settings_records::Holder::held(
+            (apps_root.join("person"), author.to_owned()),
+            &apps_root,
+        )
+        .unwrap();
         InProcessApps::new(
             Rc::new(app_state::FsStore::with_debounce(
                 apps_root,
@@ -1149,6 +1154,7 @@ mod files_clipboard_tests {
             )),
             native.device_id(),
             author,
+            person,
         )
     }
 

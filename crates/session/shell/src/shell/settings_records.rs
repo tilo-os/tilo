@@ -23,7 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use accounts::person::PersonAccounts;
-use tilo_actions::{ActionAddress, ActionDescriptor, ActionInvoker, RiskLevel};
+use tilo_actions::remote::Pending;
+use tilo_actions::{ActionAddress, ActionDescriptor, ActionInvoker, Resource, RiskLevel};
 use tilo_app::framework::SettingsRecords;
 use tilo_contact_directory::ContactDirectory;
 use tilo_resource::SharedRecord;
@@ -35,7 +36,7 @@ use crate::shell::search::action_api::ActionError;
 type Job = Box<dyn FnOnce(&SettingsRecords) + Send>;
 
 /// The directory of the person's records, and the person.
-type HeldFor = (Option<PathBuf>, String);
+type HeldFor = (PathBuf, String);
 
 const UNAVAILABLE: &str = "the person's records are unavailable";
 
@@ -43,7 +44,8 @@ const UNAVAILABLE: &str = "the person's records are unavailable";
 /// accounts and contacts — held on the thread that shows the session's
 /// apps, which open them there: one copy in the process. The records are
 /// single-threaded; what another thread (the broker's) asks of them runs
-/// when the holding thread next pumps them ([`pump`]). Clones share them.
+/// when the holding thread next pumps them ([`pump`]), and their actions
+/// are published for it to read without waiting. Clones share them.
 #[derive(Clone)]
 pub(crate) struct Holder(Arc<Port>);
 
@@ -54,6 +56,17 @@ struct Port {
     /// Whether they need pumping: work was sent, or the broker sent
     /// something for them.
     pending: AtomicBool,
+    /// The sections' actions, as the holding thread last published them.
+    actions: Mutex<Arc<Actions>>,
+}
+
+/// The sections' actions at one version of the settings and of the
+/// language they are worded in.
+#[derive(Default)]
+struct Actions {
+    at: Option<Described>,
+    resources: Vec<Resource>,
+    descriptors: Vec<ActionDescriptor>,
 }
 
 impl Port {
@@ -63,6 +76,10 @@ impl Port {
         if let Some(wake) = wake {
             wake();
         }
+    }
+
+    fn published(&self) -> Arc<Actions> {
+        Arc::clone(&self.actions.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
 
@@ -76,15 +93,18 @@ pub(crate) fn wake_with(wake: crate::session_runtime::Wake) {
     *WAKE.lock().unwrap_or_else(PoisonError::into_inner) = Some(wake);
 }
 
-/// Run what other threads asked of the session's records and keep them in
-/// step with the person's other devices: on the thread holding them, each
-/// time it is woken.
+/// Run what other threads asked of the session's records, keep them in
+/// step with the person's other devices and publish their actions: on the
+/// thread holding them, each time it is woken, locked or not.
 pub(crate) fn pump() {
     if let Ok(holder) = Holder::session()
         && let Some(held) = holder.here()
-        && holder.0.pending.swap(false, Ordering::AcqRel)
     {
-        held.pump();
+        if holder.0.pending.swap(false, Ordering::AcqRel) {
+            held.pump();
+        } else {
+            held.publish();
+        }
     }
 }
 
@@ -93,8 +113,8 @@ struct Held {
     port: Arc<Port>,
     records: SettingsRecords,
     /// Where they are kept, which the apps shown on this thread open the
-    /// person's records of other apps in; `None` without a directory.
-    person: Option<PersonRecords>,
+    /// person's records of other apps in.
+    person: PersonRecords,
     jobs: mpsc::Receiver<Job>,
     /// Their routes to the person's other devices, when they have a room.
     routes: RefCell<Option<ui::app::record_routes::RecordRouteParticipant>>,
@@ -112,6 +132,27 @@ impl Held {
         {
             routes.pump(&self.records.history_owners());
         }
+        self.publish();
+    }
+
+    /// Publish the sections' actions, when the settings or the language
+    /// changed since they last were.
+    fn publish(&self) {
+        let at = described_at();
+        if self.port.published().at == Some(at) {
+            return;
+        }
+        let resources = self.records.resources();
+        let descriptors = tilo_actions::door::survey(&resources);
+        *self
+            .port
+            .actions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(Actions {
+            at: Some(at),
+            resources,
+            descriptors,
+        });
     }
 }
 
@@ -126,23 +167,27 @@ static HOLDER: Mutex<Option<Holder>> = Mutex::new(None);
 
 impl Holder {
     /// The person's records as the session keeps them, held on this thread.
-    pub(crate) fn of(person: &str) -> Self {
-        Self::held((person_dir(), person.to_owned()), &session_apps())
+    pub(crate) fn of(person: &str) -> Result<Self, String> {
+        let dir = person_dir().ok_or(UNAVAILABLE)?;
+        Self::held((dir, person.to_owned()), &session_apps())
     }
 
     /// The person's records in `dir`, held for `person` on this thread —
     /// opened here unless it holds them already, taking in once what the
     /// session kept of them under `former` — and the session's from now on.
-    pub(crate) fn held(held_for: HeldFor, former: &Path) -> Self {
+    pub(crate) fn held(held_for: HeldFor, former: &Path) -> Result<Self, String> {
         let here = HELD.with(|held| {
             held.borrow()
                 .iter()
                 .find(|held| held.port.held_for == held_for)
                 .map(|held| Self(Arc::clone(&held.port)))
         });
-        let holder = here.unwrap_or_else(|| hold(held_for, former));
+        let holder = match here {
+            Some(holder) => holder,
+            None => hold(held_for, former)?,
+        };
         *HOLDER.lock().unwrap_or_else(PoisonError::into_inner) = Some(holder.clone());
-        holder
+        Ok(holder)
     }
 
     /// The session's holder, once the thread showing its apps holds the
@@ -165,37 +210,48 @@ impl Holder {
         })
     }
 
-    /// Run `work` on the person's records, where they are held.
-    pub(crate) fn run<T: Send + 'static>(
+    /// Run `work` on the person's records, on the thread holding them.
+    pub(crate) fn run<T>(&self, work: impl FnOnce(&SettingsRecords) -> T) -> Result<T, String> {
+        let held = self.here().ok_or(UNAVAILABLE)?;
+        let answer = work(&held.records);
+        held.pump();
+        Ok(answer)
+    }
+
+    /// Run `work` on the person's records from any thread: at once on the
+    /// thread holding them, else when it next pumps them, never waiting on
+    /// it. Abandoned when they are held no more.
+    fn ask<T: Send + 'static>(
         &self,
         work: impl FnOnce(&SettingsRecords) -> T + Send + 'static,
-    ) -> Result<T, String> {
+    ) -> Pending<T> {
         if let Some(held) = self.here() {
             let answer = work(&held.records);
             held.pump();
-            return Ok(answer);
+            return Pending::ready(answer);
         }
-        let (answer, answered) = mpsc::channel();
-        self.0
+        let (answer, answered) = tilo_actions::remote::pending();
+        if self
+            .0
             .jobs
-            .send(Box::new(move |records| {
-                let _ = answer.send(work(records));
-            }))
-            .map_err(|_| UNAVAILABLE)?;
-        self.0.wake();
-        answered.recv().map_err(|_| UNAVAILABLE.to_owned())
+            .send(Box::new(move |records| answer.complete(work(records))))
+            .is_ok()
+        {
+            self.0.wake();
+        }
+        answered
     }
 
     /// Where the records are kept, on the thread holding them: the apps it
     /// shows open the person's records of other apps there.
-    pub(crate) fn person_records(&self) -> Option<PersonRecords> {
-        self.here()?.person.clone()
+    pub(crate) fn person_records(&self) -> Result<PersonRecords, String> {
+        Ok(self.here().ok_or(UNAVAILABLE)?.person.clone())
     }
 
     /// Read the person's shared record `P`.
-    pub(crate) fn read<P: SharedRecord, T: Send + 'static>(
+    pub(crate) fn read<P: SharedRecord, T>(
         &self,
-        read: impl FnOnce(&P::State) -> T + Send + 'static,
+        read: impl FnOnce(&P::State) -> T,
     ) -> Result<T, String> {
         self.run(|records| {
             records
@@ -211,7 +267,7 @@ impl Holder {
     pub(crate) fn change_accounts(
         &self,
         invoke: tilo_resource::Invoke<PersonAccounts>,
-        admitted: impl FnOnce() -> Result<(), String> + Send + 'static,
+        admitted: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
         self.run(move |records| {
             let record = records.shared::<PersonAccounts>().ok_or(UNAVAILABLE)?;
@@ -225,18 +281,8 @@ impl Holder {
 
 /// Run `work` on the person's settings sections, held on this thread: the
 /// session's loop, where the palette asks.
-fn with_records<T: Send + 'static>(
-    work: impl FnOnce(&SettingsRecords) -> T + Send + 'static,
-) -> Result<T, String> {
-    Holder::of(&crate::shell::state::local_user_id()).run(work)
-}
-
-/// Run `work` on the person's settings sections where the session holds
-/// them, for the broker on its own thread.
-fn broker_records<T: Send + 'static>(
-    work: impl FnOnce(&SettingsRecords) -> T + Send + 'static,
-) -> Result<T, String> {
-    Holder::session()?.run(work)
+fn with_records<T>(work: impl FnOnce(&SettingsRecords) -> T) -> Result<T, String> {
+    Holder::of(&crate::shell::state::local_user_id())?.run(work)
 }
 
 /// Where Settings keeps the person's records on this device, which the
@@ -256,15 +302,13 @@ pub(crate) fn session_apps() -> PathBuf {
 /// Hold the person's records for `person`, in `dir`, on this thread, kept
 /// in step with the person's other devices over their routes. What the
 /// session kept of them under `former` is taken in first.
-fn hold((dir, person): HeldFor, former: &Path) -> Holder {
-    if let Some(dir) = &dir {
-        for taken in [
-            take_in::<PersonAccounts>(former, dir, &person),
-            take_in::<ContactDirectory>(former, dir, &person),
-        ] {
-            if let Err(error) = taken {
-                tracing::warn!(%error, "the person's records kept by the session were not taken in");
-            }
+fn hold((dir, person): HeldFor, former: &Path) -> Result<Holder, String> {
+    for taken in [
+        take_in::<PersonAccounts>(former, &dir, &person),
+        take_in::<ContactDirectory>(former, &dir, &person),
+    ] {
+        if let Err(error) = taken {
+            tracing::warn!(%error, "the person's records kept by the session were not taken in");
         }
     }
     let (jobs, asked) = mpsc::channel();
@@ -272,11 +316,12 @@ fn hold((dir, person): HeldFor, former: &Path) -> Holder {
         held_for: (dir.clone(), person.clone()),
         jobs,
         pending: AtomicBool::new(false),
+        actions: Mutex::default(),
     });
     // Without a root identity there is no person room: the records are
     // this device's alone.
     let room = collab_types::person_room_of(&person);
-    let (records, person) = open(dir.as_deref(), person);
+    let (records, person) = open(&dir, person)?;
     // Held from the start, so what the person's other devices change
     // reaches them.
     drop(records.shared::<PersonAccounts>());
@@ -305,8 +350,9 @@ fn hold((dir, person): HeldFor, former: &Path) -> Holder {
         jobs: asked,
         routes: RefCell::new(routes),
     });
+    held.publish();
     HELD.with(|here| here.borrow_mut().push(held));
-    Holder(port)
+    Ok(Holder(port))
 }
 
 /// Take into the person's records in `dir` their shared record `P` the
@@ -360,41 +406,27 @@ fn take_in<P: SharedRecord>(former: &Path, dir: &Path, person: &str) -> Result<b
 
 /// The person's settings sections, kept in their records in `dir` as
 /// Settings' window keeps them, so each change is a step of theirs they
-/// undo and redo, with those records; without records, as stored.
-fn open(dir: Option<&Path>, person: String) -> (SettingsRecords, Option<PersonRecords>) {
-    let records = dir.and_then(|dir| {
-        std::fs::create_dir_all(dir)
-            .map_err(
-                |error| tracing::warn!(%error, "the person's settings records are unavailable"),
-            )
-            .ok()?;
-        let mut owners = ui::record::RecordOwners::with_store(Rc::new(app_state::FsStore::new(
-            dir.to_path_buf(),
-        )));
-        PersonRecords::open(
-            &mut owners,
+/// undo and redo, with those records.
+fn open(dir: &Path, person: String) -> Result<(SettingsRecords, PersonRecords), String> {
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    let mut owners =
+        ui::record::RecordOwners::with_store(Rc::new(app_state::FsStore::new(dir.to_path_buf())));
+    let records = PersonRecords::open(
+        &mut owners,
+        settings_sections::APP_ID,
+        ui::permissions::UserId(person),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok((
+        SettingsRecords::of_person(
             settings_sections::APP_ID,
-            ui::permissions::UserId(person),
-        )
-        .map_err(|error| tracing::warn!(%error, "the person's settings records are unavailable"))
-        .ok()
-    });
-    match records {
-        Some(records) => (
-            SettingsRecords::of_person(
-                settings_sections::APP_ID,
-                settings_sections::APP_TITLE,
-                &[settings_sections::declare],
-                records.clone(),
-                this_device(),
-            ),
-            Some(records),
+            settings_sections::APP_TITLE,
+            &[settings_sections::declare],
+            records.clone(),
+            this_device(),
         ),
-        None => (
-            SettingsRecords::new(settings_sections::APP_ID, settings_sections::declare),
-            None,
-        ),
-    }
+        records,
+    ))
 }
 
 /// This device, as the session's apps know it: a section kept per device
@@ -533,15 +565,12 @@ pub(crate) fn change(
 
 /// This session's door to the person's settings, for the broker.
 pub(crate) fn broker_door() -> Arc<dyn tilo_action_broker::services::HostStepServices> {
-    Arc::new(BrokerDoor::default())
+    Arc::new(BrokerDoor)
 }
 
-/// What the broker offers: every section's actions, described once per
-/// version of the settings and of the language they are worded in.
-#[derive(Default)]
-struct BrokerDoor {
-    described: Mutex<Option<(Described, Vec<ActionDescriptor>)>>,
-}
+/// What the broker offers: every section's actions, as the session last
+/// published them, and changes run where the settings are held.
+struct BrokerDoor;
 
 type Described = (ui::storage::SettingsRevision, u64);
 
@@ -550,6 +579,11 @@ fn described_at() -> Described {
         ui::storage::SettingsDocument::Session.revision(),
         ui::i18n::I18nManager::revision(),
     )
+}
+
+/// The sections' actions as last published, once the session holds them.
+fn published() -> Option<Arc<Actions>> {
+    Some(Holder::session().ok()?.0.published())
 }
 
 /// The typed arguments an argument slot carries.
@@ -568,23 +602,7 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
     }
 
     fn descriptors(&self) -> Vec<ActionDescriptor> {
-        let at = described_at();
-        let mut described = self
-            .described
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((when, descriptors)) = described.as_ref()
-            && *when == at
-        {
-            return descriptors.clone();
-        }
-        let Ok(descriptors) =
-            broker_records(|records| tilo_actions::door::survey(&records.resources()))
-        else {
-            return Vec::new();
-        };
-        *described = Some((at, descriptors.clone()));
-        descriptors
+        published().map_or_else(Vec::new, |actions| actions.descriptors.clone())
     }
 
     fn invocation(
@@ -592,44 +610,46 @@ impl tilo_action_broker::services::HostStepServices for BrokerDoor {
         address: &ActionAddress,
         argument: Option<&str>,
     ) -> Option<ActionDescriptor> {
-        let (address, argument) = (address.clone(), argument.map(str::to_owned));
-        broker_records(move |records| {
-            let resources = records.resources();
-            let spec = tilo_actions::door::resolve(&resources, &address)?;
-            let argument = argument.as_deref();
-            let need = spec.need_for(arguments_of(argument).as_ref(), argument);
-            let mut descriptor = tilo_actions::door::survey(&resources)
-                .into_iter()
-                .find(|descriptor| descriptor.address == address)?;
-            descriptor.contract.kind = need.kind;
-            if need.privileged {
-                descriptor.contract.risk = RiskLevel::Privileged;
-            }
-            Some(descriptor)
-        })
-        .ok()
-        .flatten()
+        let actions = published()?;
+        let spec = tilo_actions::door::resolve(&actions.resources, address)?;
+        let need = spec.need_for(arguments_of(argument).as_ref(), argument);
+        let mut descriptor = actions
+            .descriptors
+            .iter()
+            .find(|descriptor| &descriptor.address == address)?
+            .clone();
+        descriptor.contract.kind = need.kind;
+        if need.privileged {
+            descriptor.contract.risk = RiskLevel::Privileged;
+        }
+        Some(descriptor)
     }
 
     fn start(
         &self,
         request: &tilo_action_broker::services::HostStepRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<tilo_action_broker::services::HostStepOutcome>, String>
-    {
+    ) -> Result<Pending<tilo_action_broker::services::HostStepOutcome>, String> {
         let arguments = arguments_of(request.argument).ok_or("the change carries no arguments")?;
         // The broker admitted it, its confirmation included.
         let (address, actor) = (request.address.clone(), request.actor.id().to_owned());
-        let output = broker_records(move |records| {
-            records.invoke(
-                &address,
-                &arguments,
-                true,
-                &ActionInvoker::actor(actor),
-                None,
-            )
-        })?
-        .map_err(|error| error.to_string())?;
-        Ok(tilo_actions::remote::Pending::ready(Ok(output)))
+        Ok(Holder::session()?.ask(move |records| {
+            records
+                .invoke(
+                    &address,
+                    &arguments,
+                    true,
+                    &ActionInvoker::actor(actor),
+                    None,
+                )
+                .map_err(|error| {
+                    Box::new(tilo_actions::ActionFailure {
+                        code: "settings_refused".into(),
+                        message: error.to_string(),
+                        details: None,
+                        retryable: false,
+                    })
+                })
+        }))
     }
 }
 
@@ -676,7 +696,7 @@ mod tests {
     #[serial_test::serial]
     fn with_settings_closed_an_agent_weakens_the_lock_only_with_the_persons_answer() {
         let _home = tilo_test_env::TestHome::new().unwrap();
-        let _held = super::Holder::of(&crate::shell::state::local_user_id());
+        let _held = super::Holder::of(&crate::shell::state::local_user_id()).unwrap();
         let paths = settings_store::SessionPaths::configured().unwrap();
         let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
         let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
@@ -737,7 +757,14 @@ mod tests {
             "the session offers the lock's field edit"
         );
 
-        invoke(&lock_after(1, None)).expect("locking sooner asks nothing");
+        // The broker asks from its own thread, never waiting on the one
+        // holding the settings: the change runs when that one next pumps.
+        let before = settings_store::power::LOCK_MINUTES.get();
+        std::thread::scope(|scope| scope.spawn(|| invoke(&lock_after(1, None))).join())
+            .unwrap()
+            .expect("locking sooner asks nothing");
+        assert_eq!(settings_store::power::LOCK_MINUTES.get(), before);
+        super::pump();
         assert_eq!(settings_store::power::LOCK_MINUTES.get(), 1);
         for minutes in [10, 0] {
             for confirmation in [None, Some(Confirmation::Confirmed)] {
