@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 hex.workspace = true
+# The composefs image's fs-verity digest (FS_IOC_MEASURE_VERITY).
+libc.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 # utimensat without following a symlink, umask, geteuid and uname without FFI.
 rustix = { workspace = true, features = ["fs", "process", "system", "std"] }
