@@ -20,6 +20,12 @@ use tilo_action_broker::services::{
 /// How long the app is left alone before and while it is measured.
 const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 const WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+/// Opens the reader may still make over [`WINDOW`]: it confirms its read
+/// with one Open every 30 s, however idle (ui-core's `AWAIT_KEEPALIVE`, the
+/// bound on how long a wedged owner goes unnoticed), and where that falls
+/// depends on when the app mounted, not on the window. The 200 ms polling
+/// this test guards against makes 25 in the same window.
+const KEEPALIVE_OPENS_IN_WINDOW: usize = 1;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_idle_shared_document_asks_its_owner_nothing() {
@@ -222,6 +228,7 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
     );
     tokio::time::sleep(SETTLE).await;
     let (captures, checks) = counter.sample();
+    let handed = counter.handed();
     let announcements = tilo_identity_host::policy_change::epoch();
     // The test process's own threads, sampled from /proc over the window:
     // the apps' collaboration shovels and the broker are among them.
@@ -232,6 +239,7 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
     .unwrap()
     .expect("sample the test process's threads");
     let (captures_after, checks_after) = counter.sample();
+    let handed_after = counter.handed();
     let announcements_seen = tilo_identity_host::policy_change::epoch().wrapping_sub(announcements);
     let idle_captures = captures_after.saturating_sub(captures);
     let idle_checks = checks_after.saturating_sub(checks);
@@ -262,9 +270,13 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
         thread("ui-collab-shove"),
         broker_wakeups,
     );
-    assert_eq!(
-        idle_captures, 0,
+    assert!(
+        idle_captures <= KEEPALIVE_OPENS_IN_WINDOW,
         "an idle shared document was captured {idle_captures} times in {WINDOW:?} ({idle_checks} cheap checks): is its reader polling again?"
+    );
+    assert_eq!(
+        handed_after, handed,
+        "an idle reader was handed (whole, changes) reads of a document nobody edited"
     );
     assert!(
         mounted.code.app.collaboration_is_connected(),
