@@ -7719,6 +7719,16 @@ fn end_unresponsive_process(pid: u32, start_time: Option<u64>) {
 }
 
 impl State {
+    /// The group of the client in its own full screen
+    /// (`xdg_toplevel.set_fullscreen`). A presenter view the compositor
+    /// placed is not a full screen of the person's.
+    pub fn client_fullscreen_group(&self) -> Option<u64> {
+        self.fullscreen_target
+            .as_ref()
+            .filter(|target| target.pinned_output.is_none())
+            .and(self.fullscreen_group)
+    }
+
     /// End full screen once the person is taken to another window: one
     /// they opened (from an app, search, a notification or a link) or went
     /// to, in the same strip, on another strip or in another workspace
