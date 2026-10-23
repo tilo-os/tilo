@@ -800,7 +800,9 @@ files = [
 # or copies any of it.
 
 # The dev-VM guest daemon. It is not a service: `tilo-vm` runs
-# `ssh <vm> tilo-vmd rpc` per call, hence the PATH link.
+# `ssh <vm> tilo-vmd rpc` per call, hence the PATH link. The link names the
+# daemon itself, not `tilo`: swapping it is how an older image gets the
+# daemon it needs, and such an image's `tilo` runs no programs by name.
 [[component]]
 name = "vmd"
 kind = "userspace"
@@ -811,7 +813,7 @@ bins = ["tilo-vmd"]
 layer = "dev-tools"
 files = [
   { from = "tilo-vmd", to = "/usr/libexec/tilo/tilo-vmd", mode = "0755" },
-  { link = "tilo", to = "/usr/bin/tilo-vmd" },
+  { link = "../libexec/tilo/tilo-vmd", to = "/usr/bin/tilo-vmd" },
 ]
 
 # tilo-vmd's requests over the peer network, for a device beyond the LAN
