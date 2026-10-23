@@ -3663,8 +3663,8 @@ relay_cpus = ""
 # ---------------------------------------------------------------------------
 # Checks for nodes with KVM, a privileged VM or 100 GB of disk.
 
-# The OS image's acceptance scenarios in tilo-vm (scripts/vm-acceptance), on a
-# privileged x86-64 node with KVM: this tree's own dev image (os-dev-image-x86_64)
+# The OS image's acceptance scenarios in tilo-vm (scripts/vm-acceptance), in a
+# micro-VM on an x86-64 node with KVM: this tree's own dev image (os-dev-image-x86_64)
 # installed to a disk and booted in a libvirt guest (tools/ci/vm-acceptance.sh).
 # `t dispatch vm-acceptance --input only=input --input swap=all` runs a selection;
 # `t test vm-acceptance` the checks a working tree's changes select; `t outputs
@@ -3677,7 +3677,7 @@ relay_cpus = ""
 name = "vm-acceptance"
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 requirement = { cores = 8, memory = "16GiB" }
-privileged = true
+isolation = "vm"
 git = true
 writable_sources = true
 run = "bash tools/ci/vm-acceptance.sh"
@@ -3706,7 +3706,7 @@ gl = "auto"
 name = "vm-acceptance-cohort"
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 requirement = { cores = 8, memory = "16GiB" }
-privileged = true
+isolation = "vm"
 git = true
 writable_sources = true
 run = "bash tools/ci/vm-acceptance.sh cohort"
