@@ -19,7 +19,7 @@ in=${2:-}
 [[ -e /dev/kvm ]] || die 'no /dev/kvm'
 
 dnf install -y --setopt=install_weak_deps=False podman qemu-system-aarch64-core dracut \
-  python3 binutils >/dev/null
+  python3 binutils zstd >/dev/null
 podman=(podman --cgroup-manager=cgroupfs --events-backend=file)
 work=$scratch/board-capture
 rm -rf "$work"
@@ -35,6 +35,8 @@ done
 kver=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["devicetree"].split("/")[4])' \
   "$work/root/usr/lib/tilo/hardware-profile.json")
 "${podman[@]}" cp "$container:/usr/lib/modules/$kver/config" "$work/config"
+# The PMIC power-on/reset reason logging (os/kernel/patches/0022) lives in the qcom-pon module.
+"${podman[@]}" cp "$container:/usr/lib/modules/$kver/kernel/drivers/power/reset/qcom-pon.ko.zst" "$work/"
 "${podman[@]}" rm "$container" >/dev/null
 
 problems=()
@@ -46,6 +48,9 @@ for option in CONFIG_PSTORE=y CONFIG_PSTORE_RAM=y CONFIG_PSTORE_CONSOLE=y CONFIG
     || problems+=("kernel $kver lacks $option")
 done
 printf 'kernel %s: %s\n' "$kver" "$(grep -E '^CONFIG_(PSTORE|DETECT_HUNG_TASK|HARDLOCKUP_DETECTOR_BUDDY|ARM_SBSA_WATCHDOG)[A-Z_]*=' "$work/config" | tr '\n' ' ')"
+
+zstd -dcq "$work/qcom-pon.ko.zst" | grep -qa '0x%04x+0x%02x: unreadable (%d)' \
+  || problems+=("qcom-pon does not log the PMIC's power-on and reset reasons")
 
 shopt -s nullglob
 ukis=("$work"/root/boot/EFI/Linux/*.efi)
