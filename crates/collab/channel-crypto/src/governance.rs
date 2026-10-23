@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use collab_types::inbound::OpAdmission;
 use collab_types::{
     Admission, Ed25519PublicKey, EncryptionMetadata, MlsGovernanceAction, MlsGovernanceContext,
     MlsGovernanceFrameV1,
@@ -59,6 +60,31 @@ impl ChannelGate {
         channel: collab_types::ChannelId,
     ) -> bool {
         !self.encryption_required || encryption.is_some_and(|metadata| metadata.channel == channel)
+    }
+}
+
+/// The verdict on an op for `channel` from the gates that govern it there,
+/// one implementation for every endpoint that decides: a sealed op is sealed
+/// because the channel requires it, and cleartext is refused by any gate
+/// that refuses it. Otherwise cleartext is admitted once the endpoint knows
+/// the channel's whole governance state (`governance_known`), where no gate
+/// means the channel is not encrypted; until then there is no verdict and
+/// the op waits.
+pub fn admission(
+    gates: impl IntoIterator<Item = ChannelGate>,
+    governance_known: bool,
+    channel: collab_types::ChannelId,
+    encryption: Option<&EncryptionMetadata>,
+) -> OpAdmission {
+    if encryption.is_some() {
+        return OpAdmission::EncryptionRequired;
+    }
+    if !gates.into_iter().all(|gate| gate.accepts(None, channel)) {
+        OpAdmission::EncryptionRequired
+    } else if governance_known {
+        OpAdmission::CleartextAdmitted
+    } else {
+        OpAdmission::Unstated
     }
 }
 
@@ -693,5 +719,41 @@ mod gate_tests {
         assert!(!gate.accepts_history(None, channel));
         let other = EncryptionMetadata::content_key(3, ChannelId::new(), ContentRetention::Delta);
         assert!(!gate.accepts_history(Some(&other), channel));
+    }
+
+    #[test]
+    fn cleartext_waits_until_governance_is_known_unless_a_gate_refuses_it() {
+        use collab_types::inbound::OpAdmission;
+        let channel = ChannelId::new();
+        let open = ChannelGate::default();
+        let required = ChannelGate {
+            encryption_required: true,
+            head_epoch: None,
+        };
+        assert_eq!(
+            super::admission([], false, channel, None),
+            OpAdmission::Unstated
+        );
+        assert_eq!(
+            super::admission([open], false, channel, None),
+            OpAdmission::Unstated
+        );
+        assert_eq!(
+            super::admission([required], false, channel, None),
+            OpAdmission::EncryptionRequired
+        );
+        assert_eq!(
+            super::admission([], true, channel, None),
+            OpAdmission::CleartextAdmitted
+        );
+        assert_eq!(
+            super::admission([open, required], true, channel, None),
+            OpAdmission::EncryptionRequired
+        );
+        let sealed = EncryptionMetadata::content_key(1, channel, ContentRetention::Delta);
+        assert_eq!(
+            super::admission([], false, channel, Some(&sealed)),
+            OpAdmission::EncryptionRequired
+        );
     }
 }

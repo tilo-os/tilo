@@ -2610,17 +2610,7 @@ pub struct OpEvent {
     pub admission: OpAdmission,
 }
 
-/// The broker's verdict for one op on its channel: the broker alone decides
-/// whether cleartext is admitted there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpAdmission {
-    /// A broker that predates the verdict said nothing.
-    Unstated,
-    /// The channel admits cleartext for this op.
-    CleartextAdmitted,
-    /// The channel requires this op sealed.
-    EncryptionRequired,
-}
+pub use collab_types::inbound::OpAdmission;
 
 #[cfg(feature = "client")]
 impl From<collab_capnp::OpAdmission> for OpAdmission {
