@@ -77,10 +77,7 @@ pub(super) fn render() -> String {
     // Copy under the lock, symbolize/format only after releasing it.
     let mut entries = TRACE.lock().entries;
     entries.sort_unstable_by_key(|entry| entry.sequence);
-    let mut out = format!(
-        "wake trace (missed {} contended records):\n",
-        MISSED.load(Ordering::Relaxed)
-    );
+    let mut out = String::from("wake trace:\n");
     for entry in entries.iter().filter(|entry| entry.sequence != 0) {
         let _ = writeln!(
             out,
@@ -88,6 +85,13 @@ pub(super) fn render() -> String {
             entry.sequence, entry.micros, entry.event, entry.detail
         );
     }
+    // Last, where a log's tail still shows it: a record missing from the
+    // sequence above may be one of these.
+    let _ = writeln!(
+        out,
+        "(missed {} contended records)",
+        MISSED.load(Ordering::Relaxed)
+    );
     out
 }
 

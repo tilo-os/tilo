@@ -953,8 +953,23 @@ fn spawn_monitor(liveness: PathBuf, watch: Arc<Watch>) -> std::thread::JoinHandl
                     }
                 }
                 match answer {
-                    Ok(Answer::Alive { latency_ms, .. }) => {
+                    Ok(Answer::Alive {
+                        latency_ms,
+                        halfway,
+                        ..
+                    }) => {
                         watch.beats.fetch_add(1, Ordering::Relaxed);
+                        // Back within the budget, but asleep at its middle:
+                        // note where, as slow work is noted.
+                        if let Some(thread) = halfway
+                            && let Ok(mut jank) = watch.jank.lock()
+                        {
+                            jank.push(format!(
+                                "main loop took {latency_ms:.0} ms to acknowledge, idle at the \
+                                 middle of the budget in state {} waiting in {}:\n{}",
+                                thread.state, thread.wait, thread.backtrace
+                            ));
+                        }
                         let micros =
                             u64::try_from(Duration::from_secs_f64(latency_ms / 1000.0).as_micros())
                                 .unwrap_or(u64::MAX);
