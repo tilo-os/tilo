@@ -522,6 +522,20 @@ impl Client {
     /// Returns an error when the session is not live, publication is muted, the
     /// frame is stale, or the group cannot accept it.
     pub fn try_send(&self, frame: CapturedOpus) -> Result<(), ClientError> {
+        self.try_send_sealed(frame, |_, payload| Some(payload))
+    }
+    /// [`Self::try_send`], with the frame's payload replaced by what `seal`
+    /// makes of it once its sequence number is known.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::try_send`]; [`ClientError::Invalid`] when `seal` makes
+    /// nothing, or more than an object holds.
+    pub fn try_send_sealed(
+        &self,
+        frame: CapturedOpus,
+        seal: impl FnOnce(u64, Vec<u8>) -> Option<Vec<u8>>,
+    ) -> Result<(), ClientError> {
         self.shared.check()?;
         let now = Instant::now();
         let mut state = self.shared.state.lock_recover();
@@ -546,11 +560,12 @@ impl Client {
         let next = sequence.checked_add(1).ok_or(ClientError::Capacity)?;
         let timestamp = moq_net::Timestamp::from_scale(frame.timestamp_48k, 48_000)
             .map_err(|_| ClientError::Invalid)?;
+        let payload = seal(sequence, frame.payload).ok_or(ClientError::Invalid)?;
         let bytes = VoiceObject {
             sequence,
             timestamp: frame.timestamp_48k,
             duration: frame.duration_samples,
-            payload: frame.payload,
+            payload,
         }
         .encode()
         .map_err(|_| ClientError::Invalid)?;
