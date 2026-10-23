@@ -159,10 +159,24 @@ impl Adopted {
         }
         let met: HashSet<Identity> = self.walked.iter().copied().collect();
         let mut extents = Vec::new();
+        // A widget listed twice (by two parents, or by a parent that also
+        // routes to it another way) is walked twice: harmless to this check,
+        // but a sign its owners disagree about who lays it out. Zero-sized
+        // widgets share addresses legitimately, so only sized ones count.
+        let mut seen = HashSet::new();
+        let mut twice = Vec::new();
         walk(roots, &mut |widget| {
             let start = identity(widget).0;
-            extents.push((start, start + std::mem::size_of_val(widget)));
+            let size = std::mem::size_of_val(widget);
+            extents.push((start, start + size));
+            if size > 0 && !seen.insert(identity(widget)) {
+                twice.push(widget.name().to_owned());
+            }
         });
+        debug_assert!(
+            twice.is_empty(),
+            "listed more than once by for_each_layout_child: {twice:?}"
+        );
         let covered = |&(_, (start, _), size): &(*mut (dyn Widget + 'static), Identity, usize)| {
             extents
                 .iter()

@@ -85,6 +85,8 @@ mod large_document_transfer;
 #[cfg(unix)]
 #[path = "large_frame_reassembly.rs"]
 mod large_frame_reassembly;
+#[path = "layout_walk_lists_each_child_once.rs"]
+mod layout_walk_lists_each_child_once;
 #[path = "link_popover_renders.rs"]
 mod link_popover_renders;
 #[cfg(unix)]
