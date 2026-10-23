@@ -3137,10 +3137,9 @@ fn open_link(url: &str) {
 }
 
 fn message_read(message: &Message) -> serde_json::Value {
-    let person = |addr: &crate::model::Addr| match &addr.name {
-        Some(name) if !name.trim().is_empty() => format!("{name} <{}>", addr.email),
-        _ => addr.email.clone(),
-    };
+    // Written as a recipient field takes it, so an agent replying with
+    // what it read reaches the same people.
+    let person = crate::model::Addr::rfc5322;
     serde_json::json!({
         "from": person(&message.from),
         "to": message.to.iter().map(person).collect::<Vec<_>>(),
