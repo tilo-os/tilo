@@ -41,22 +41,38 @@ const MAX_EDGE: u32 = 512;
 /// ones beside it.
 const MAX_ICON_UNITS: u32 = 1 << 19;
 
+enum Job {
+    Observe(ObservedWindow),
+    /// Hand `reply` to [`downloaded_apps::settle_after`] once every window
+    /// queued before it went on, so it answers after their looks ran.
+    Settle(mpsc::Sender<()>),
+}
+
 /// A window named itself. Called on the compositor's loop: it only queues
 /// the window for the worker.
 pub fn observe_window(window: ObservedWindow) {
-    let _ = worker().lock_recover().send(window);
+    let _ = worker().lock_recover().send(Job::Observe(window));
 }
 
-fn worker() -> &'static Mutex<mpsc::Sender<ObservedWindow>> {
-    static WORKER: OnceLock<Mutex<mpsc::Sender<ObservedWindow>>> = OnceLock::new();
+/// Answer `reply` once every window queued here before this call, and the
+/// downloaded-apps look each one went on to, has run.
+pub(crate) fn settle(reply: mpsc::Sender<()>) {
+    let _ = worker().lock_recover().send(Job::Settle(reply));
+}
+
+fn worker() -> &'static Mutex<mpsc::Sender<Job>> {
+    static WORKER: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
     WORKER.get_or_init(|| {
-        let (send, windows) = mpsc::channel::<ObservedWindow>();
+        let (send, jobs) = mpsc::channel::<Job>();
         let spawned = std::thread::Builder::new()
             .name("tilo-x11-windows".into())
             .spawn(move || {
                 let mut servers = Servers::default();
-                while let Ok(window) = windows.recv() {
-                    run(window, &mut servers);
+                while let Ok(job) = jobs.recv() {
+                    match job {
+                        Job::Observe(window) => run(window, &mut servers),
+                        Job::Settle(reply) => downloaded_apps::settle_after(reply),
+                    }
                 }
             });
         if let Err(error) = spawned {
