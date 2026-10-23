@@ -30,6 +30,10 @@
 //! - `survey.json`: the operations each app's fresh record publishes;
 //!   `survey_final.json`: what each record offers at the end.
 //!
+//! An action the room's owner ran (`"as": "owner"` in the log: a
+//! scenario's setup no agent's grant reaches) is applied as the owner, its
+//! change merged into the record the agents' actions are applied to.
+//!
 //! `TILO_REPLAY_ORDER=ended` applies the actions in the order they ended
 //! instead of the order they started.
 //!
@@ -111,6 +115,10 @@ struct Logged {
     resources: Option<Vec<String>>,
     #[serde(default)]
     value: Option<Value>,
+    /// `owner` for a step the room's owner ran (a scenario's setup the
+    /// agents' grants do not reach); an agent's otherwise.
+    #[serde(default, rename = "as")]
+    actor: Option<String>,
 }
 
 /// One record the run worked in, held again for the replay.
@@ -615,6 +623,53 @@ fn argument_match(replica: &ConfinedReplica, rewritten: &str, ids: &IdMap) -> Op
     twins.next().is_none().then(|| twin.to_owned())
 }
 
+/// Run `address` as the room's owner on the record `held` holds, as the
+/// run's owner did through the host's room actions: on an owner's copy of
+/// the record as it stands, whose change is then merged into `held`, as the
+/// host publishes an owner's change to the room. The answer, and whether the
+/// record changed.
+fn as_owner(
+    catalogue: &AppCatalogue,
+    store: &ContentStore,
+    held: &ConfinedReplica,
+    address: &ActionAddress,
+    arguments: &Map<String, Value>,
+) -> Result<(tilo_actions::ActionOutput, bool), String> {
+    let bytes = held
+        .read(|doc| doc.clone().save())
+        .ok_or("the record is not held")?;
+    let owner = ConfinedReplica::open(
+        catalogue,
+        held.app_id(),
+        ROOM,
+        "owner",
+        &ReplicaActor::Owner,
+        Seed::Existing {
+            record: held.record_id().clone(),
+            changes: vec![bytes],
+        },
+    )
+    .map_err(|error| error.to_string())?
+    .lending(store.clone());
+    let output = owner
+        .invoke(address, arguments, true)
+        .map_err(|error| error.to_string())?;
+    let mut changed = false;
+    if let Some(mutation) = owner.take_mutation().map_err(|error| error.to_string())? {
+        held.apply(&mutation).map_err(|error| error.to_string())?;
+        changed = true;
+    }
+    for (record, mutation) in owner
+        .take_record_mutations()
+        .map_err(|error| error.to_string())?
+    {
+        held.apply_record(&record, &mutation)
+            .map_err(|error| error.to_string())?;
+        changed = true;
+    }
+    Ok((output, changed))
+}
+
 /// Whether `part` is a minted id (a UUID).
 fn is_id(part: &str) -> bool {
     part.len() == 36
@@ -813,8 +868,21 @@ fn campaign_replay() {
             }
         }
         let address = ActionAddress::new(resource.clone(), action.action.clone());
-        let outcome = record.replica.invoke(&address, &arguments, true);
-        let changed = matches!(record.replica.take_mutation(), Ok(Some(_)));
+        let (outcome, changed) = if action.actor.as_deref() == Some("owner") {
+            match as_owner(&catalogue, &store, &record.replica, &address, &arguments) {
+                Ok((output, changed)) => (Ok(output), changed),
+                Err(error) => (Err(error), false),
+            }
+        } else {
+            let outcome = record
+                .replica
+                .invoke(&address, &arguments, true)
+                .map_err(|error| error.to_string());
+            (
+                outcome,
+                matches!(record.replica.take_mutation(), Ok(Some(_))),
+            )
+        };
         let mut event = json!({
             "seq": seq,
             "resource": resource,
@@ -858,7 +926,6 @@ fn campaign_replay() {
                 event["value"] = output.value.unwrap_or(Value::Null);
             }
             Err(error) => {
-                let error = error.to_string();
                 regressions.push(json!({
                     "seq": seq,
                     "agent": action.agent,
