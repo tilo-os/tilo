@@ -5,8 +5,9 @@
 # and when that can go; `tilo os clean` runs the cleanup now.
 #
 # Nothing in use is ever removed: Flatpak keeps every runtime an installed app
-# needs, an upgrade holds the developer image copy's lock, and a test run holds
-# its fixture cache's lock.
+# needs, an upgrade holds the developer image copy's lock, a test run holds
+# its fixture cache's lock, and an OS update holds the image collection off
+# until it is done.
 
 # Flatpak runtimes no installed app uses (what `flatpak uninstall --unused`
 # removes). A reinstalled app downloads its runtime again.
@@ -25,6 +26,13 @@
 [test_caches]
 # remove = true
 # unused_days = 14
+
+# OS image data no deployment uses: what bootc's composefs repository still
+# holds of an update that was cancelled half-way or of a generation an update
+# superseded. The running, staged and rollback deployments always stay. Runs
+# after every update, daily, and while the disk is low on space.
+[os_images]
+# remove = true
 
 # While the disk has less free space than this, anything above that is not in
 # use goes at once, however recently it was used.

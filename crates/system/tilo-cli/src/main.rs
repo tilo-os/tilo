@@ -273,9 +273,17 @@ enum DeviceCmd {
                       is removed. This also runs every day.\n\n\
                       What is kept is set in /etc/tilo/cache-gc.toml; ~/.config/tilo/cache-gc.toml \
                       replaces it for your own caches.",
-        after_help = "Examples:\n  tilo device clean        Clean your own caches now\n  sudo tilo device clean   Clean the system's caches now"
+        after_help = "Examples:\n  tilo device clean        Clean your own caches now\n  sudo tilo device clean   Clean the system's caches and unused OS image data now"
     )]
-    Clean,
+    Clean {
+        /// Clean only this part of the system (the units that run each part pass it).
+        #[arg(long, value_enum, hide = true)]
+        only: Option<CleanPart>,
+        /// Clean nothing; exit 0 when the disk is below the policy's free-space floor and 1
+        /// otherwise (the disk-pressure unit's condition).
+        #[arg(long, hide = true)]
+        check_low_space: bool,
+    },
     /// Check that the desktop draws with this device's graphics chip.
     #[command(
         after_help = "Examples:\n  tilo device health --gpu\n  tilo device health --gpu --json\n\nExits 1 when the graphics chip is there but the desktop or an app isn't using it."
@@ -579,10 +587,19 @@ fn main() -> ExitCode {
     }
 }
 
+/// One part of the root cleanup.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum CleanPart {
+    /// Flatpak runtimes and the developer image copy.
+    Caches,
+    /// OS image data no deployment uses.
+    OsImages,
+}
+
 /// One `device` command: the system's own need Tilo OS; health and cleaning
 /// work wherever a person runs them.
 fn run_system_command(cmd: DeviceCmd) -> Result<ExitCode> {
-    if !matches!(cmd, DeviceCmd::Health { .. } | DeviceCmd::Clean) {
+    if !matches!(cmd, DeviceCmd::Health { .. } | DeviceCmd::Clean { .. }) {
         require_system_provider()?;
     }
     run_system(cmd)
@@ -814,29 +831,61 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         DeviceCmd::Health { gpu: _, json } => health::run_gpu(json),
-        DeviceCmd::Clean => clean(),
+        DeviceCmd::Clean {
+            only,
+            check_low_space,
+        } => {
+            if check_low_space {
+                return Ok(if cleanup::system_low_on_space()? {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                });
+            }
+            clean(only)
+        }
     }
 }
 
-/// The root run cleans the system's caches; a person's run cleans their own.
-fn clean() -> Result<ExitCode> {
+/// The root run cleans the system's caches and the OS image data no deployment uses, or
+/// the one part `only` names; a person's run cleans their own.
+fn clean(only: Option<CleanPart>) -> Result<ExitCode> {
     let now = std::time::SystemTime::now();
-    let (title, record) = if is_root() {
-        ("Disk cleanup", cleanup::run_system()?)
+    let mut failed = false;
+    if is_root() {
+        let parts = match only {
+            None => vec![cleanup::Scope::Caches, cleanup::Scope::OsImages],
+            Some(CleanPart::Caches) => vec![cleanup::Scope::Caches],
+            Some(CleanPart::OsImages) => vec![cleanup::Scope::OsImages],
+        };
+        for scope in parts {
+            let record = cleanup::run_system(scope)?;
+            print!(
+                "{}",
+                cleanup::render(scope_title(scope), Some(&record), now)
+            );
+            failed |= !record.failed.is_empty();
+        }
     } else {
-        ("Test caches", cleanup::run_user()?)
-    };
-    print!("{}", cleanup::render(title, Some(&record), now));
-    if !is_root() {
+        let record = cleanup::run_user()?;
+        print!("{}", cleanup::render("Test caches", Some(&record), now));
         println!(
             "System caches are cleaned daily by tilo-cache-gc.timer; `sudo tilo os clean` cleans them now."
         );
+        failed = !record.failed.is_empty();
     }
-    Ok(if record.failed.is_empty() {
-        ExitCode::SUCCESS
-    } else {
+    Ok(if failed {
         ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     })
+}
+
+fn scope_title(scope: cleanup::Scope) -> &'static str {
+    match scope {
+        cleanup::Scope::Caches => "Disk cleanup",
+        cleanup::Scope::OsImages => "OS image cleanup",
+    }
 }
 
 /// What the last cleanup runs freed and kept, after the deployments.
@@ -847,6 +896,13 @@ fn print_cleanup_status() {
         "\n{}",
         cleanup::render("Disk cleanup", system.as_ref(), now)
     );
+    // Only on a machine that collected OS image data at least once: elsewhere there is none.
+    if let Some(images) = cleanup::read_record(std::path::Path::new(cleanup::OS_IMAGE_RECORD)) {
+        print!(
+            "{}",
+            cleanup::render("OS image cleanup", Some(&images), now)
+        );
+    }
     // A person's own run, once it has run at least once: on most machines nobody runs tests.
     if let Some(user) = cleanup::user_record().and_then(|path| cleanup::read_record(&path)) {
         print!("{}", cleanup::render("Test caches", Some(&user), now));
@@ -1468,6 +1524,41 @@ mod tests {
                 } if to == "main-1a2b3c4"
             ));
         }
+    }
+
+    #[test]
+    fn the_cleanup_units_command_lines_parse() {
+        // tilo-cache-gc.service, tilo-os-image-gc.service, and the disk-pressure condition.
+        let caches = Cli::try_parse_from(["tilo", "os", "clean", "--only", "caches"]).unwrap();
+        assert!(matches!(
+            caches.cmd,
+            Cmd::Device {
+                cmd: DeviceCmd::Clean {
+                    only: Some(CleanPart::Caches),
+                    check_low_space: false
+                }
+            }
+        ));
+        let images = Cli::try_parse_from(["tilo", "os", "clean", "--only", "os-images"]).unwrap();
+        assert!(matches!(
+            images.cmd,
+            Cmd::Device {
+                cmd: DeviceCmd::Clean {
+                    only: Some(CleanPart::OsImages),
+                    ..
+                }
+            }
+        ));
+        let pressure = Cli::try_parse_from(["tilo", "os", "clean", "--check-low-space"]).unwrap();
+        assert!(matches!(
+            pressure.cmd,
+            Cmd::Device {
+                cmd: DeviceCmd::Clean {
+                    only: None,
+                    check_low_space: true
+                }
+            }
+        ));
     }
 
     #[test]
