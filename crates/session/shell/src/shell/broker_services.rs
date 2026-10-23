@@ -35,7 +35,7 @@ use tilo_action_broker::services::{
     ShortcutLibraryServices, WorkspaceAuthority, WorkspaceControlServices,
     WorkspaceGovernanceRequest, WorkspaceGovernanceServices,
 };
-pub(crate) use tracker_runs::{FollowedRun, NativeTrackerRuns, TrackerView};
+pub(crate) use tracker_runs::{FollowedRun, NativeTrackerRuns};
 
 /// The same state.json owner used by canonical enrollment and ingress. Network
 /// availability never supplies or removes this durable admission boundary.
