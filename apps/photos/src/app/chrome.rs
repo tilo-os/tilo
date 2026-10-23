@@ -326,11 +326,13 @@ impl PhotosApp {
                 return self.selection_commands();
             }
             LibraryDestination::Timeline => self.timeline_commands(&mut commands),
+            // While an album is being made, New album is the editor open.
+            LibraryDestination::Albums if self.album_editor => {}
             LibraryDestination::Albums => {
                 commands.push(Command::icon(
                     Hit::NewAlbum,
                     tr("photos-new-album"),
-                    Icon::FolderPlus,
+                    Icon::GalleryVerticalEnd,
                 ));
             }
             // With no located photos there is no map to list or zoom; the
@@ -403,11 +405,11 @@ impl PhotosApp {
                 tr("photos-edit-album"),
                 Icon::Pencil,
             ));
-        } else {
+        } else if !self.album_editor {
             commands.push(Command::icon(
                 Hit::NewAlbum,
                 tr("photos-new-album"),
-                Icon::FolderPlus,
+                Icon::GalleryVerticalEnd,
             ));
         }
     }
@@ -820,7 +822,14 @@ impl PhotosApp {
             panel.x1 - inset,
             (footer.y0 - inset).max(header.y1 + inset),
         );
-        ui::widget::toolbar::paint_band(scene, transform, &local, header);
+        ui::widget::paint_rule(
+            scene,
+            transform,
+            &local,
+            header,
+            ui::widget::RuleEdge::Bottom,
+            Some(theme.region(ui::surface::Region::Inspector)),
+        );
         let mut ctx = PaintCtx::new(scene, transform, text, &local);
         let style = local.text(ui::TextRole::Heading);
         let shown =

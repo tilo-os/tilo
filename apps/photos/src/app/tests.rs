@@ -1186,9 +1186,20 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         crate::test_doc::set_library(&mut doc, &library);
         app.show_library();
         sync(&mut app, &mut doc);
+        let new_album = bar_command(&app, &tr("photos-new-album")).expect("New album is offered");
+        if let Some(open) = bar_command(&app, &tr("photos-open")) {
+            assert_ne!(
+                open.icon, new_album.icon,
+                "Open and New album look different"
+            );
+        }
         app.begin_new_album();
         sync(&mut app, &mut doc);
         assert!(app.album_editor);
+        assert!(
+            bar_command(&app, &tr("photos-new-album")).is_none(),
+            "while an album is being made, its editor stands for New album"
+        );
         app.sync_inspector();
         assert!(
             app.chrome.inspector.is_open(),

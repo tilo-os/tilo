@@ -28,9 +28,8 @@ toolbar-band 1 apps/ebook/src/app.rs
 toolbar-band 1 apps/typst-editor/src/app.rs
 # The browser's address row; the hairline under it is the page's edge.
 toolbar-band 1 apps/browser/src/browser_widget.rs
-# Not toolbar rows, only the band's hairline borrowed: Photos' side panel's
-# heading and Writer's ruler. Each wants a divider of its own instead.
-toolbar-band 1 apps/photos/src/app/chrome.rs
+# Not a toolbar row, only the band's hairline borrowed: Writer's ruler wants
+# a divider of its own instead.
 toolbar-band 1 apps/word-processor/src/ruler.rs
 window-header 1 apps/maps/src/app.rs
 window-header 1 apps/typst-editor/src/app.rs
