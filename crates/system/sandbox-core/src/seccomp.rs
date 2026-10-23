@@ -494,6 +494,27 @@ pub fn parser_program() -> Result<BpfProgram, SeccompError> {
     deny_list_program(rules)
 }
 
+/// [`parser_program`], allowing `socketpair`: for a helper whose media
+/// framework wakes its own threads through a connected pair (every
+/// `GStreamer` bus and clock makes one). A pair has no address and reaches
+/// nothing outside the process; `socket`, `connect` and `bind` stay refused,
+/// so no endpoint can be made.
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] if the rules or their compilation fail.
+#[cfg(target_os = "linux")]
+pub fn parser_program_with_socket_pairs() -> Result<BpfProgram, SeccompError> {
+    let mut rules = baseline_rules(SeccompProfile::TiloDefault, SyscallGrants::default())?;
+    for nr in PARSER_DENIES
+        .iter()
+        .filter(|nr| **nr != libc::SYS_socketpair)
+    {
+        rules.insert(*nr, Vec::new());
+    }
+    deny_list_program(rules)
+}
+
 /// Syscalls that address another process by number: with one shared uid,
 /// two confined drivers could otherwise signal each other.
 #[cfg(target_os = "linux")]
@@ -1346,6 +1367,52 @@ mod tests {
                 "10 = a socket was created, 11 = exec was allowed, 12 = the filter would not install"
             );
         }
+    }
+
+    /// A media helper's filter lets it make a connected pair, which its
+    /// framework's buses wake through, and still no socket that could be
+    /// bound or connected.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn parser_program_with_socket_pairs_allows_pairs_and_no_socket() {
+        let program = parser_program_with_socket_pairs().expect("compile filter");
+        // SAFETY: the child installs a filter, invokes raw syscalls with inert
+        // arguments, and exits without returning into the test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            if seccompiler::apply_filter(&program).is_err() {
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(12) };
+            }
+            let mut pair = [-1_i32; 2];
+            // SAFETY: socketpair(2) writes two descriptors into `pair`.
+            let rc =
+                unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pair.as_mut_ptr()) };
+            if rc != 0 {
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(13) };
+            }
+            for family in [libc::AF_UNIX, libc::AF_INET, libc::AF_INET6] {
+                // SAFETY: socket(2) with constant arguments.
+                let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+                if fd != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(10) };
+                }
+            }
+            // SAFETY: `_exit` does not unwind.
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0;
+        // SAFETY: waiting on our own child.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "10 = a socket was created, 12 = the filter would not install, 13 = no pair"
+        );
     }
 
     /// A foreign driver may signal only itself and create no socket.
