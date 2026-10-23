@@ -10,6 +10,12 @@ Each file runs as discover runs it (`-s DIR -p FILE`): DIR is the top of the imp
 file is imported as a module of that name, so a test passes or fails here as it does there.
 Files share nothing but the machine: a test that needs a scratch directory makes its own.
 
+At the end each file is reported as libtest reports a test, which t reads (docs/t.md): a file
+that passed as `test <file> ... ok`, each test that failed in one as `test <file>::<test id> ...
+FAILED` with the file's output under it, and a file that failed without naming a test (it
+crashed, or did not import) as `test <file> ... FAILED`. t then compares each failing test with
+main's, so a test that fails on main too passes and one more failing is refused.
+
 Usage: run_unit_tests.py [--jobs N] DIR [DIR ...]
 """
 from __future__ import annotations
@@ -27,6 +33,9 @@ PATTERN = "test_*.py"
 # The tests mostly wait, so more of them run at once than there are cores to give them.
 DEFAULT_JOBS = 16
 RAN = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
+# unittest's header of a failed test: `FAIL: test_x (module.Class.test_x)`, before Python 3.11
+# `FAIL: test_x (module.Class)`.
+FAILED = re.compile(r"^(?:FAIL|ERROR|UNEXPECTED SUCCESS): (\S+) \(([^)\s]+)\)", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -60,6 +69,40 @@ def run(path: Path) -> Result:
     return Result(path, done.returncode == 0, time.monotonic() - start, tests, done.stdout)
 
 
+def failed_tests(output: str) -> dict[str, str]:
+    """The tests a file's unittest output says failed, by id in order, each with its report: its
+    header and traceback, without unittest's rules of dashes (t ends a test's output at one)."""
+    found: dict[str, str] = {}
+    matches = list(FAILED.finditer(output))
+    for index, match in enumerate(matches):
+        name, where = match[1], match[2]
+        test = where if where.endswith("." + name) else f"{where}.{name}"
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(output)
+        block = [line for line in output[match.start():end].splitlines()
+                 if line.strip("-=") or not line.strip()]
+        found.setdefault(test, "\n".join(block).strip())
+    return found
+
+
+def report(results: list[Result]) -> str:
+    """Each file and failed test in libtest's form (see the module's docstring)."""
+    lines, sections = [""], []
+    for result in sorted(results, key=lambda r: str(r.path)):
+        if result.ok:
+            lines.append(f"test {result.path} ... ok")
+            continue
+        tests = failed_tests(result.output)
+        named = {f"{result.path}::{test}": text for test, text in tests.items()} or {
+            str(result.path): "\n".join(line for line in result.output.splitlines() if line.strip("-=") or not line.strip())}
+        for name, text in named.items():
+            lines.append(f"test {name} ... FAILED")
+            sections += [f"---- {name} stdout ----", text.rstrip(), ""]
+    passed = sum(1 for r in results if r.ok)
+    failed = len(lines) - 1 - passed
+    return "\n".join([*lines, "", "failures:", "", *sections,
+                      f"test result: {'FAILED' if failed else 'ok'}. {passed} passed; {failed} failed", ""])
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
@@ -82,6 +125,7 @@ def main(argv: list[str]) -> int:
                 print(f"\n---- {result.path} failed after {result.seconds:.1f}s:\n{result.output.rstrip()}\n", flush=True)
 
     failed = sorted(str(r.path) for r in results if not r.ok)
+    print(report(results), flush=True)
     print("\nSlowest files:")
     for result in sorted(results, key=lambda r: r.seconds, reverse=True)[:10]:
         print(f"  {result.seconds:7.1f}s  {result.path}")

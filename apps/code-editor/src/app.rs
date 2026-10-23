@@ -39,6 +39,7 @@ use ui::widget::{AppModel, ModelPath};
 
 mod chrome;
 mod dialogs;
+mod disk_work;
 mod file_workflow;
 mod find_workflow;
 mod format_workflow;
@@ -564,6 +565,8 @@ pub struct CodeApp {
     /// Languages whose server failed to start, so we report the failure once
     /// and do not respawn a missing binary on every frame.
     lsp_failed: std::collections::HashSet<crate::model::Language>,
+    /// A language server is being launched on a background thread.
+    lsp_launching: bool,
 
     /// The toolkit's find bar over the active buffer, and the matches the
     /// editor answered it with. The bar is a band above the editor while
@@ -618,6 +621,10 @@ pub struct CodeApp {
     /// The answer owed to the effect that is opening or saving a file, given
     /// once the picker or the write settles.
     file_reply: Option<ui::framework::EffectReply>,
+    /// Disk work under way where the window must not wait for it.
+    disk_work: disk_work::DiskWork,
+    /// Whether the shown file is being looked at for changes on disk.
+    staleness_looking: bool,
     /// A save an effect asked for, written on the next sync, where the
     /// buffer's text is.
     pending_save: Option<(TreeId, Option<std::path::PathBuf>)>,
@@ -931,6 +938,7 @@ impl CodeApp {
             diagnostics_buffer_reads: 0,
             lsp_status: LspStatus::None,
             lsp_failed: std::collections::HashSet::new(),
+            lsp_launching: false,
             find: FindBar::new().with_replace(),
             find_open: false,
             find_node: None,
@@ -958,6 +966,8 @@ impl CodeApp {
             laid_out: (false, PanelTab::Problems, false),
             structure_dirty: false,
             file_reply: None,
+            disk_work: disk_work::DiskWork::default(),
+            staleness_looking: false,
             pending_save: None,
             formatting: None,
             formatted: None,
@@ -1188,43 +1198,6 @@ impl CodeApp {
             tracing::warn!(%error, "open files not read");
         }
         self.reopen_phase_micros.demand = started.elapsed().as_micros();
-    }
-
-    /// Read a disk-backed file into its buffer the first time this session
-    /// opens it. The document may already hold text for it — a collaborator's
-    /// or a previous session's unsaved edits, which are not ours to discard —
-    /// so the seed only creates text that is missing; the file's bytes and
-    /// stamp become the comparison a save is checked against either way.
-    ///
-    /// A read failure closes the tab again: a file that opened as a silently
-    /// empty buffer would be written back empty by the next Ctrl+S.
-    fn seed_buffer(&mut self, node: TreeId) {
-        let Some(buffer) = self.session.buffer_of(node) else {
-            return;
-        };
-        if buffer.stamp.is_some() || self.session.project.disk_path_of(node).is_none() {
-            return;
-        }
-        let name = buffer.name.clone();
-        match self.session.project.file_seed(node) {
-            Ok((text, stamp)) => {
-                // The text itself is recorded by the next settlement
-                // ([`Self::record_missing_text`]), as the person's own edit.
-                let path = self.session.project.disk_path_of(node);
-                if let Some(buffer) = self.session.buffer_of_mut(node) {
-                    buffer.path = path;
-                    buffer.mark_saved(text, stamp);
-                }
-            }
-            Err(error) => {
-                if self.session.buffer_of(node).is_some() {
-                    self.session.close_file(node);
-                    self.invalidate_search_projection();
-                }
-                self.note(format!("Could not open {name}: {error}"), true);
-                self.bound_node = None;
-            }
-        }
     }
 
     /// Record the files and folders the editor read from disk since it last
@@ -1851,14 +1824,12 @@ impl CodeApp {
                 // expansion, rather than when the project was opened — one
                 // directory level at a time is what makes opening a large
                 // repository instant.
-                if open && let Err(e) = self.session.project.load_children(id) {
-                    let name = self
-                        .session
-                        .project
-                        .get(id)
-                        .map(|n| n.name.clone())
-                        .unwrap_or_default();
-                    self.note(format!("Could not read {name}: {e}"), true);
+                if open && let Some(folder) = self.session.project.folder_to_read(id) {
+                    self.on_disk(
+                        "code-read-folder",
+                        move || crate::model::read_folder(&folder),
+                        move |app, listing| app.read_folder(id, listing),
+                    );
                 }
                 self.session.project.set_folder_expanded(id, open);
                 self.invalidate_search_projection();
@@ -1910,13 +1881,16 @@ impl CodeApp {
                     .buffer_of(prompt.node)
                     .is_some_and(|b| b.path.is_some());
                 if has_path {
-                    // Save synchronously; close only if it actually landed. A
+                    // Close only once the save landed. A
                     // save that hits a disk conflict leaves the tab open so the
                     // conflict prompt (now showing) gets answered first.
                     let snapshot = doc.clone();
-                    if self.save_buffer(&snapshot, prompt.node, false) {
-                        self.close_node(prompt.node, prompt.then_open);
-                    }
+                    self.save_buffer_then(
+                        &snapshot,
+                        prompt.node,
+                        false,
+                        file_workflow::AfterSave::Close(prompt.then_open),
+                    );
                 } else {
                     // No file yet: the destination has to be chosen first. The
                     // Save As runs async through the portal, so the tab stays
@@ -2067,10 +2041,14 @@ impl CodeApp {
         }
         if let Some(index) = self.panel.take_search_jump()
             && let Some(hit) = self.search_hits.get(index).cloned()
-            && let Some(node) = self.session.project.reveal_path(&hit.path)
         {
-            self.open_node(node);
-            self.pending_jump = Some((hit.line.saturating_sub(1), hit.col));
+            self.reveal_on_disk(hit.path.clone(), move |app, node| {
+                if let Some(node) = node {
+                    app.explorer.show(&app.session.project);
+                    app.open_node(node);
+                    app.pending_jump = Some((hit.line.saturating_sub(1), hit.col));
+                }
+            });
         }
         // Choosing a problem takes the caret to where it was reported.
         if let Some((line, col)) = self.panel.take_jump()
@@ -2916,6 +2894,7 @@ impl Widget for CodeApp {
         if let Some(hook) = self.test_hook.take() {
             hook(self, state);
         }
+        self.apply_disk_work(state);
         if let Some(command) = self.pending_command.take() {
             self.apply_command(command, state);
         }

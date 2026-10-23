@@ -194,7 +194,11 @@ impl RichTextSource for Hosted {
     }
 
     fn revision(&self) -> Option<u64> {
-        self.live.as_ref().map(Live::revision)
+        // What the editor draws from moves with what the state says and with
+        // what it read of the document.
+        self.live
+            .as_ref()
+            .map(|live| live.revision().wrapping_add(live.loads()))
     }
 
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {

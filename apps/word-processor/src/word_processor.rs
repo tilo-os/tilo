@@ -140,6 +140,40 @@ pub struct WordProcessor {
     /// undo steps. Without one (a view that was never attached) nothing is
     /// written.
     dispatch: Option<ui::framework::Dispatcher<crate::framework::Document>>,
+    /// The body's order as the window's kept state holds it, in step with
+    /// the document, while a motion runs: finding a block's neighbours then
+    /// costs `O(log n)` instead of listing the body.
+    kept_body: Option<std::rc::Rc<tilo_document::BodyOrder>>,
+}
+
+/// The active region's blocks in order: the kept body order, or the region
+/// listed.
+enum Order<'a> {
+    Kept(&'a tilo_document::BodyOrder),
+    Listed(Vec<String>),
+}
+
+impl Order<'_> {
+    fn position(&self, id: &str) -> Option<usize> {
+        match self {
+            Self::Kept(body) => body.position(id),
+            Self::Listed(ids) => ids.iter().position(|b| b == id),
+        }
+    }
+
+    fn id_at(&self, index: usize) -> Option<&str> {
+        match self {
+            Self::Kept(body) => body.id_at(index),
+            Self::Listed(ids) => ids.get(index).map(String::as_str),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Kept(body) => body.len(),
+            Self::Listed(ids) => ids.len(),
+        }
+    }
 }
 
 impl Default for WordProcessor {
@@ -162,6 +196,7 @@ impl WordProcessor {
             edit_core: EditCore::new(),
             content: tilo_content::ContentStore::memory(),
             dispatch: None,
+            kept_body: None,
         }
     }
 
@@ -607,20 +642,50 @@ impl WordProcessor {
     /// `(table id, Vec<(cell_id, row, col)>)` for the table the caret is in.
     fn caret_table(&self, state: &AutoCommit) -> Option<(String, BlockSpans)> {
         let containers = self.containers.as_ref()?;
-        let snap = tilo_doc::model::materialize(state, containers);
-        let cur = snap.blocks.iter().find(|b| b.id == self.caret.block)?;
+        let at = |id: &str| {
+            tilo_doc::model::materialize_blocks(state, containers, &[id.to_owned()]).pop()
+        };
+        let cur = at(&self.caret.block)?;
         let tid = cur.str_attr("table")?.to_owned();
         let int = |b: &tilo_doc::snapshot::BlockView, k: &str| {
             b.int_attr(k)
                 .filter(|n| *n >= 0)
                 .map_or(0, num::usize_of_i64)
         };
-        let cells = snap
+        let in_table = |b: &tilo_doc::snapshot::BlockView| {
+            b.kind == "cell" && b.str_attr("table") == Some(tid.as_str())
+        };
+        let order = self.order(state);
+        let cells = match (&order, order.position(&self.caret.block)) {
+            // A table is a run of consecutive cells: read outward from the
+            // caret's cell to the run's ends.
+            (Order::Kept(_), Some(pos)) => {
+                let mut run = std::collections::VecDeque::from([cur]);
+                for i in (0..pos).rev() {
+                    match order.id_at(i).and_then(at) {
+                        Some(b) if in_table(&b) => run.push_front(b),
+                        _ => break,
+                    }
+                }
+                for i in pos + 1..order.len() {
+                    match order.id_at(i).and_then(at) {
+                        Some(b) if in_table(&b) => run.push_back(b),
+                        _ => break,
+                    }
+                }
+                run.iter()
+                    .map(|b| (b.id.clone(), int(b, "row"), int(b, "col")))
+                    .collect()
+            }
+            _ => ui::tilo_resource::profiling::measure("word_processor.region_listed", || {
+                tilo_doc::model::materialize(state, containers)
+            })
             .blocks
             .iter()
-            .filter(|b| b.kind == "cell" && b.str_attr("table") == Some(tid.as_str()))
+            .filter(|b| in_table(b))
             .map(|b| (b.id.clone(), int(b, "row"), int(b, "col")))
-            .collect();
+            .collect(),
+        };
         Some((tid, cells))
     }
 
@@ -799,7 +864,28 @@ impl WordProcessor {
         let Some(c) = self.containers.as_ref() else {
             return vec![];
         };
+        let _phase = ui::tilo_resource::profiling::Phase::start("word_processor.region_listed");
         tilo_doc::model::region_blocks_in_order(state, c, self.region)
+    }
+
+    fn order(&self, state: &AutoCommit) -> Order<'_> {
+        match (&self.kept_body, self.region) {
+            (Some(body), Region::Body) => Order::Kept(body),
+            _ => Order::Listed(self.region_blocks_in_order(state)),
+        }
+    }
+
+    /// Run `motion` with `body` as the body's order; `body` must be in step
+    /// with `state`.
+    pub(crate) fn with_kept_body<T>(
+        &mut self,
+        body: Option<std::rc::Rc<tilo_document::BodyOrder>>,
+        motion: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.kept_body = body;
+        let out = motion(self);
+        self.kept_body = None;
+        out
     }
 
     /// Text of a block in the **active region** (body uses the body reader;
@@ -966,10 +1052,10 @@ impl WordProcessor {
             self.sync_state_from_edit_core(&text);
             return;
         }
-        let blocks = self.ordered_blocks(state);
-        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block)
+        let order = self.order(state);
+        if let Some(pos) = order.position(&self.caret.block)
             && pos > 0
-            && let Some(prev) = blocks.get(pos - 1).cloned()
+            && let Some(prev) = order.id_at(pos - 1).map(str::to_owned)
         {
             let len = self.block_len(state, &prev);
             self.caret = Caret {
@@ -993,10 +1079,9 @@ impl WordProcessor {
             self.sync_state_from_edit_core(&text);
             return;
         }
-        let blocks = self.ordered_blocks(state);
-        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block)
-            && pos + 1 < blocks.len()
-            && let Some(next) = blocks.get(pos + 1).cloned()
+        let order = self.order(state);
+        if let Some(pos) = order.position(&self.caret.block)
+            && let Some(next) = order.id_at(pos + 1).map(str::to_owned)
         {
             self.caret = Caret {
                 block: next,
@@ -1035,13 +1120,13 @@ impl WordProcessor {
 
     /// Move the caret up/down by `delta` blocks (block-granular Up/Down).
     pub fn move_block_relative(&mut self, state: &AutoCommit, delta: i32) {
-        let blocks = self.ordered_blocks(state);
-        if blocks.is_empty() {
+        let order = self.order(state);
+        if order.len() == 0 {
             return;
         }
-        if let Some(pos) = blocks.iter().position(|b| b == &self.caret.block) {
+        if let Some(pos) = order.position(&self.caret.block) {
             let new = num::usize_of_i32(
-                (num::i32_of_usize(pos) + delta).clamp(0, num::i32_of_usize(blocks.len()) - 1),
+                (num::i32_of_usize(pos) + delta).clamp(0, num::i32_of_usize(order.len()) - 1),
             );
             self.move_to_block(state, new);
         }
@@ -1051,12 +1136,12 @@ impl WordProcessor {
     /// column where possible. Used by Up/Down once layout is available; here it
     /// is the block-granular fallback.
     pub fn move_to_block(&mut self, state: &AutoCommit, index: usize) {
-        let blocks = self.ordered_blocks(state);
-        if blocks.is_empty() {
+        let order = self.order(state);
+        if order.len() == 0 {
             return;
         }
-        let i = index.min(blocks.len() - 1);
-        let Some(block) = blocks.get(i).cloned() else {
+        let i = index.min(order.len() - 1);
+        let Some(block) = order.id_at(i).map(str::to_owned) else {
             return;
         };
         let len = self.block_len(state, &block);

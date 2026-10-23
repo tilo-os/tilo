@@ -1398,38 +1398,15 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         |path| quote!(#path(state)),
     );
     // The record's own fields that hold resources (`#[model(resource)]`),
-    // then its derived places.
-    let derived = options.children.as_ref().map_or_else(
-        || quote!(#krate::child::record_nested_children::<Self>()),
-        |path| {
-            quote! {{
-                let mut children = #krate::child::record_nested_children::<Self>();
-                children.extend(#path(state).iter().map(#krate::Derived::<Self>::publish));
-                children
-            }}
-        },
-    );
-    let derived_child = options.children.as_ref().map_or_else(
-        || quote!(),
-        |path| {
-            quote! {
-                if let ::core::option::Option::Some(found) =
-                    #krate::Derived::<Self>::find(&#path(state), id)
-                {
-                    return ::core::option::Option::Some(found);
-                }
-            }
-        },
+    // then its derived places, published again only when they changed.
+    let published = options.children.as_ref().map_or_else(
+        || quote!(#krate::derived::published::<Self>(::std::vec::Vec::new())),
+        |path| quote!(#krate::derived::published::<Self>(#path(state))),
     );
     let derived_child = quote! {
-        if let ::core::option::Option::Some(found) =
-            #krate::child::record_nested_children::<Self>()
-                .into_iter()
-                .find(|child| child.id.as_str() == id)
-        {
+        if let ::core::option::Option::Some(found) = (#published).find(id) {
             return ::core::option::Option::Some(found);
         }
-        #derived_child
     };
     // Items are published when an item verb or effect is offered on them
     // or they carry a label; addressed one by one beyond the page.
@@ -1444,34 +1421,35 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
     // The declarations offered on items are known from which collections
     // hold items, so the record's own actions publish without a child per
     // item ([`Resource::children_offer_bound`]).
-    let offer_bound = if item_actions.is_empty() {
-        quote!()
-    } else {
-        quote! {
-            fn children_offer_bound(state: &Self) -> ::std::vec::Vec<&'static str> {
-                let others: ::std::vec::Vec<#krate::__private::Resource> = #derived;
-                #krate::items::offered_on_items::<Self>(
-                    &others,
-                    &<Self as #krate::Fields>::item_collection_sizes(state),
-                    &[#(#item_actions),*],
-                    &|action| #krate::__private::holds_nested_items(&Self::__RECORD, state, action),
-                )
-            }
+    let offer_bound = quote! {
+        fn children_offer_bound(state: &Self) -> ::std::vec::Vec<&'static str> {
+            #krate::items::offered_on_items::<Self>(
+                &[],
+                &#published,
+                &<Self as #krate::Fields>::item_collection_sizes(state),
+                &[#(#item_actions),*],
+                &|action| #krate::__private::holds_nested_items(&Self::__RECORD, state, action),
+            )
         }
     };
     // The same parts as `children`, apart, so the framework can keep the
-    // item children it built for an earlier version.
+    // derived and item children it built for an earlier version.
     let children_parts = quote! {
         fn children_parts(state: &Self) -> #krate::items::ChildrenParts {
             #krate::items::ChildrenParts {
-                others: #derived,
+                others: ::std::vec::Vec::new(),
+                kept: ::std::rc::Rc::clone((#published).resources()),
                 items: <Self as #krate::Fields>::item_collections(state),
                 item_actions: ::std::vec![#(#item_actions),*],
             }
         }
     };
     let children = quote! {{
-        let mut children: ::std::vec::Vec<#krate::__private::Resource> = #derived;
+        let mut children: ::std::vec::Vec<#krate::__private::Resource> = (#published)
+            .resources()
+            .iter()
+            .map(|child| ::core::clone::Clone::clone(&**child))
+            .collect();
         children.extend(#krate::items::item_children::<Self>(
             &<Self as #krate::Fields>::item_collections(state),
             &[#(#item_actions),*],

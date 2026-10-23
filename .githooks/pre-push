@@ -4,11 +4,12 @@
 # CI on main runs everything else on every commit and tells whoever broke it. The gate runs
 # (tools/ci/pre_push.py): rustfmt of the changed Rust files, the policy steps, generated-file and
 # manifest checks whose inputs the change touches, the diff gates (`changes`) and clippy of the
-# packages it changes. No tests, VM checks, images, suites or dependents. A check that is red on
-# main where the push branched off is skipped, and said so. Failures that main has too pass; a
-# failure the change causes refuses the push, and one t can fix is fixed for you to commit
-# (never amended). A change that passed and was rebased onto a newer main as the same patch
-# passes again without a run. Pushes to other branches run nothing.
+# packages it changes. No tests, VM checks, images, suites or dependents. A check red on main
+# runs too: t compares its failures with main's where the push branched off, lints and policy
+# problems one finding at a time, so what main has too passes and a finding the change adds
+# refuses the push; one t can fix is fixed for you to commit (never amended). A change that
+# passed and was rebased onto a newer main as the same patch passes again without a run. Pushes
+# to other branches run nothing.
 set -euo pipefail
 note() { printf 'pre-push: %s\n' "$*" >&2; }
 
@@ -70,13 +71,10 @@ out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 started=$SECONDS
 
-# What the commit touches (`t scope`: the default checks of the packages whose files it changes
-# and of the command checks whose inputs it changes) and what fails on main, side by side.
-t main -C "$top" --json >"$out/main.json" 2>/dev/null &
-board=$!
+# What the commit touches: the default checks of the packages whose files it changes and of the
+# command checks whose inputs it changes.
 scoped=1
 t scope -C "$top" --rev "$pushed" --json >"$out/scope.json" 2>"$out/scope.err" || scoped=0
-wait "$board" || : >"$out/main.json"
 if [ "$scoped" = 0 ]; then
   note "t can't tell what $short touches, so only fmt-changed and changes run:"
   sed 's/^/    /' "$out/scope.err" >&2
@@ -85,13 +83,11 @@ fi
 base=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("base", ""))' "$out/scope.json" 2>/dev/null || true)
 git diff --name-only "${base:-$pushed^}" "$pushed" -- >"$out/changed" 2>/dev/null || : >"$out/changed"
 
-# Of those, what a push runs (tools/ci/pre_push.py says why), and what is red on main already.
-python3 -I "$top/tools/ci/pre_push.py" select --scope "$out/scope.json" --main "$out/main.json" \
-  --changed "$out/changed" >"$out/plan.json"
+# Of those, what a push runs (tools/ci/pre_push.py says why). What is red on main runs as well:
+# t compares it with main's, finding by finding where it can.
+python3 -I "$top/tools/ci/pre_push.py" select --scope "$out/scope.json" --changed "$out/changed" >"$out/plan.json"
 plan() { python3 -I -c 'import json, sys; print(" ".join(json.load(open(sys.argv[1]))[sys.argv[2]]))' "$out/plan.json" "$1"; }
 read -r -a gate <<<"$(plan run)"
-red=$(plan red)
-[ -z "$red" ] || note "skipped, red on main at ${base:0:10} already (t main): $red"
 
 # The opt-in checks the change touches, which a push doesn't run (`t suggest`, of the working
 # tree: it has no --rev, so only when the pushed commit is HEAD).
@@ -139,13 +135,18 @@ show_run() {
   if [ -n "$run" ]; then t show "$run" >&2 || true; else cat "$out/stderr" >&2; fi
 }
 
+# Every check the run did not pass, and why: a refusal names each one, whatever its outcome, and
+# a pass names what fails on main too, and whether it was compared finding by finding.
+python3 -I "$top/tools/ci/pre_push.py" unpassed --run "$out/run.jsonl" "${gate[@]}" >"$out/unpassed"
 case $status in
   0) gate_passed; note "t passed $short in ${took}s ($what)"; exit 0 ;;
-  3) gate_passed; note "t passed $short in ${took}s ($what): what fails also fails on main (t main)"; exit 0 ;;
+  3)
+    gate_passed
+    note "t passed $short in ${took}s ($what): what fails, fails on main too (t main):"
+    sed 's/^/    /' "$out/unpassed" >&2
+    exit 0
+    ;;
 esac
-
-# Every check the run did not pass, and why: a refusal names each one, whatever its outcome.
-python3 -I "$top/tools/ci/pre_push.py" unpassed --run "$out/run.jsonl" "${gate[@]}" >"$out/unpassed"
 refused() {
   note "refused: $short in ${took}s ($what${run:+, $run}): $*"
   if [ -s "$out/unpassed" ]; then

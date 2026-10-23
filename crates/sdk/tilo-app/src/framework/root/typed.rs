@@ -72,6 +72,9 @@ pub(crate) trait TypedRoot {
     /// The live state's revision.
     fn revision(&self) -> u64;
 
+    /// [`Live::loads`] of the live state.
+    fn loads(&self) -> u64;
+
     /// The live state.
     fn state(&self) -> Rc<dyn Any>;
 
@@ -118,6 +121,17 @@ pub(crate) trait TypedRoot {
 
     /// [`tilo_resource::publish_head`] of `state` at `id`, labelled `label`.
     fn head(&self, id: &str, label: &str, state: &dyn Any) -> tilo_actions::Resource;
+
+    /// [`tilo_resource::head_inputs`] of `state`.
+    fn head_inputs(&self, state: &dyn Any) -> Option<tilo_resource::HeadInputs>;
+
+    /// [`tilo_resource::publish_head_of`] `inputs` at `id`, labelled `label`.
+    fn head_of(
+        &self,
+        id: &str,
+        label: &str,
+        inputs: &tilo_resource::HeadInputs,
+    ) -> tilo_actions::Resource;
 
     /// Whether this exact child belongs to the declared document projection.
     fn document_child(&self, state: &dyn Any, id: &str) -> bool;
@@ -266,6 +280,10 @@ impl<R: Resource> TypedRoot for Typed<R> {
         self.live.revision()
     }
 
+    fn loads(&self) -> u64 {
+        self.live.loads()
+    }
+
     fn state(&self) -> Rc<dyn Any> {
         self.live.get()
     }
@@ -333,6 +351,19 @@ impl<R: Resource> TypedRoot for Typed<R> {
         }
     }
 
+    fn head_inputs(&self, state: &dyn Any) -> Option<tilo_resource::HeadInputs> {
+        state_of::<R>(state).map(tilo_resource::head_inputs::<R>)
+    }
+
+    fn head_of(
+        &self,
+        id: &str,
+        label: &str,
+        inputs: &tilo_resource::HeadInputs,
+    ) -> tilo_actions::Resource {
+        tilo_resource::publish_head_of::<R>(id, label, inputs)
+    }
+
     fn document_child(&self, state: &dyn Any, id: &str) -> bool {
         state_of::<R>(state).is_some_and(|state| R::document_child(state, id))
     }
@@ -342,6 +373,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
             Some(state) => R::children_parts(state),
             None => ChildrenParts {
                 others: Vec::new(),
+                kept: Rc::default(),
                 items: Vec::new(),
                 item_actions: Vec::new(),
             },

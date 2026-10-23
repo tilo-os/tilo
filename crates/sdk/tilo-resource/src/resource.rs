@@ -249,6 +249,7 @@ pub trait Resource: Sized + 'static {
     fn children_parts(state: &Self::State) -> crate::items::ChildrenParts {
         crate::items::ChildrenParts {
             others: Self::children(state),
+            kept: std::rc::Rc::default(),
             items: Vec::new(),
             item_actions: Vec::new(),
         }
@@ -2539,15 +2540,63 @@ pub fn publish_head<R: Resource>(
     label: &str,
     state: &R::State,
 ) -> tilo_actions::Resource {
-    let offered = R::children_offer_bound(state);
-    let own = Own {
-        availability: Some(&|action| R::availability(state, action)),
+    publish_head_of::<R>(id, label, &head_inputs::<R>(state))
+}
+
+/// What [`publish_head`] reads of a state. Two states with equal inputs
+/// publish the same head, so a publisher holding the head of one keeps it
+/// for the other.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeadInputs {
+    epoch: u64,
+    offered: Vec<&'static str>,
+    availability: Vec<tilo_actions::Availability>,
+    views: Vec<tilo_actions::ResourceViewSpec>,
+    now: Vec<(String, String)>,
+}
+
+/// [`HeadInputs`] of `state`: what its head is published from, read
+/// without publishing a child or an action.
+#[must_use]
+pub fn head_inputs<R: Resource>(state: &R::State) -> HeadInputs {
+    let declarations = vocabulary::<R>().declarations();
+    HeadInputs {
+        epoch: type_epoch(),
+        offered: R::children_offer_bound(state),
+        availability: declarations
+            .iter()
+            .map(|decl| R::availability(state, decl.id))
+            .collect(),
         views: R::views(state),
-        local_operations: R::local_operations(),
         now: weakening_now::<R>(state),
+    }
+}
+
+/// [`publish_head`] of a state whose inputs are `inputs`.
+#[must_use]
+pub fn publish_head_of<R: Resource>(
+    id: &str,
+    label: &str,
+    inputs: &HeadInputs,
+) -> tilo_actions::Resource {
+    let vocabulary = vocabulary::<R>();
+    let declarations = vocabulary.declarations();
+    let availability = |action: &str| {
+        declarations
+            .iter()
+            .position(|decl| decl.id == action)
+            .and_then(|at| inputs.availability.get(at))
+            .cloned()
+            .unwrap_or_default()
     };
-    publish_own(vocabulary::<R>(), id, label, own, &|decl| {
-        offered.contains(&decl.id)
+    let own = Own {
+        availability: Some(&availability),
+        views: inputs.views.clone(),
+        local_operations: R::local_operations(),
+        now: inputs.now.clone(),
+    };
+    publish_own(vocabulary, id, label, own, &|decl| {
+        inputs.offered.contains(&decl.id)
     })
 }
 

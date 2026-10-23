@@ -59,10 +59,15 @@ pub struct Held<P: Resource> {
     live: Live<P>,
     sync: Sync<P>,
     apply: Apply<P>,
-    /// The last publication, at the record's and the locale's revision it
-    /// was built at: published again only when either moved.
-    published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
+    /// The last publication, at the record's revision and loads and the
+    /// locale's revision it was built at: published again only when one
+    /// moved.
+    published: RefCell<Option<(Published, tilo_actions::Resource)>>,
 }
+
+/// The record's revision and loads ([`Live::loads`]), and the locale's
+/// revision.
+type Published = (u64, u64, u64);
 
 impl<P: Resource> Held<P> {
     pub(crate) fn new(
@@ -127,7 +132,11 @@ impl<P: Resource> Held<P> {
     /// role in the room; nothing to change where it is read only.
     pub(crate) fn publish(&self) -> tilo_actions::Resource {
         self.sync();
-        let revision = (self.live.revision(), ui_core::i18n::I18nManager::revision());
+        let revision = (
+            self.live.revision(),
+            self.live.loads(),
+            ui_core::i18n::I18nManager::revision(),
+        );
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision
         {

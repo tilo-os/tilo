@@ -131,12 +131,7 @@ impl CodeApp {
                 self.save_buffer(doc, node, false);
             }
             AfterFormat::SaveEffect(target) => {
-                let saved = self.save_to(doc, node, target);
-                self.finish_file_effect(if saved {
-                    Ok(())
-                } else {
-                    Err("file could not be saved".into())
-                });
+                self.save_to(doc, node, target, super::file_workflow::AfterSave::Effect);
             }
         }
     }

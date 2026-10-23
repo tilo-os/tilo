@@ -8,7 +8,12 @@
 //! than an edit of the text — a table, a review decision, a comment — is a
 //! verb of the document.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
+
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use tilo_doc::snapshot::BlockView;
 use tilo_document::action::{TableEdit, TocTarget};
 use tilo_document::{ClipBlock, RichText, RichTextAction, RichTextState, TextAnchor};
 use ui::tilo_resource::{
@@ -441,33 +446,45 @@ impl Document {
     }
 
     /// The objects inside the document people act on: its tables, images
-    /// and tracked changes, each with the operations it offers.
-    fn objects(&self) -> Vec<Derived<Self>> {
+    /// and tracked changes, each with the operations it offers. The very
+    /// ones of the last call while what they are made of is the same, so a
+    /// keystroke in a paragraph or reading more of a long document lists
+    /// nothing again.
+    fn objects(&self) -> Rc<[Derived<Self>]> {
         let Some(state) = self.body.state() else {
-            return Vec::new();
+            return Rc::default();
         };
+        OBJECTS.with_borrow_mut(|kept| kept.get_or_insert_with(Objects::default).follow(state))
+    }
+
+    /// The document's tables, each with its cells, then its images.
+    fn tables_and_images(state: &RichTextState) -> Vec<Derived<Self>> {
         let mut objects = Vec::new();
+        let mut tables: Vec<(&str, Vec<&Rc<BlockView>>)> = Vec::new();
+        let mut table_at: HashMap<&str, usize> = HashMap::new();
         let cells = state.featured("cell");
-        let mut tables: Vec<String> = Vec::new();
         for cell in &cells {
-            if let Some(table) = attr_str(cell, "table")
-                && !tables.iter().any(|known| known == table)
-            {
-                tables.push(table.to_owned());
+            if let Some(table) = attr_str(cell, "table") {
+                let at = *table_at.entry(table).or_insert_with(|| {
+                    tables.push((table, Vec::new()));
+                    tables.len() - 1
+                });
+                if let Some((_, cells)) = tables.get_mut(at) {
+                    cells.push(cell);
+                }
             }
         }
-        for table in tables.into_iter().take(MAX_OBJECTS) {
+        for (table, cells) in tables.into_iter().take(MAX_OBJECTS) {
             let mut node = Derived::new("Table")
                 .of_kind("table")
                 .identified(format!("table:{table}"))
-                .with(Self::ADD_ROW.bind(document::AddRow::paths().table, table.clone()))
-                .with(Self::ADD_COLUMN.bind(document::AddColumn::paths().table, table.clone()))
-                .with(Self::DELETE_TABLE.bind(document::DeleteTable::paths().table, table.clone()));
+                .with(Self::ADD_ROW.bind(document::AddRow::paths().table, table.to_owned()))
+                .with(Self::ADD_COLUMN.bind(document::AddColumn::paths().table, table.to_owned()))
+                .with(
+                    Self::DELETE_TABLE.bind(document::DeleteTable::paths().table, table.to_owned()),
+                );
             // Each cell goes to its text, and deletes its row or column.
-            for cell in cells
-                .iter()
-                .filter(|cell| attr_str(cell, "table") == Some(table.as_str()))
-            {
+            for cell in cells {
                 let (row, column) = (attr_index(cell, "row"), attr_index(cell, "col"));
                 node = node.with_child(
                     Derived::new(format!(
@@ -479,12 +496,12 @@ impl Document {
                     .identified(format!("cell:{}", cell.id))
                     .with(
                         Self::DELETE_ROW
-                            .bind(document::DeleteRow::paths().table, table.clone())
+                            .bind(document::DeleteRow::paths().table, table.to_owned())
                             .and(document::DeleteRow::paths().row, row),
                     )
                     .with(
                         Self::DELETE_COLUMN
-                            .bind(document::DeleteColumn::paths().table, table.clone())
+                            .bind(document::DeleteColumn::paths().table, table.to_owned())
                             .and(document::DeleteColumn::paths().column, column),
                     )
                     .with_effect(&crate::effects::WordProcessorEffect::GoTo {
@@ -507,13 +524,20 @@ impl Document {
                     ),
             );
         }
-        objects.extend(Self::paragraph_places(state));
-        for change in state.changes().iter().take(MAX_OBJECTS) {
-            let label = match change.kind {
-                tilo_doc::snapshot::ChangeKind::Ins => "Insertion",
-                tilo_doc::snapshot::ChangeKind::Del => "Deletion",
-            };
-            objects.push(
+        objects
+    }
+
+    /// The tracked changes, each to accept or reject.
+    fn tracked_changes(state: &RichTextState) -> Vec<Derived<Self>> {
+        state
+            .changes()
+            .iter()
+            .take(MAX_OBJECTS)
+            .map(|change| {
+                let label = match change.kind {
+                    tilo_doc::snapshot::ChangeKind::Ins => "Insertion",
+                    tilo_doc::snapshot::ChangeKind::Del => "Deletion",
+                };
                 Derived::new(label)
                     .of_kind("change")
                     .identified(format!("change:{}", change.id))
@@ -524,25 +548,19 @@ impl Document {
                     .with(
                         Self::REJECT_CHANGE
                             .bind(document::RejectChange::paths().change, change.id.clone()),
-                    ),
-            );
-        }
-        objects
+                    )
+            })
+            .collect()
     }
 
     /// The first paragraphs and headings, by their first words: the places
     /// an edit is told to act at (`at: {"item": <paragraph>}`). Headings are
     /// always read; a paragraph once it has been loaded.
-    fn paragraph_places(state: &tilo_document::RichTextState) -> Vec<Derived<Self>> {
-        let headings = state.featured("heading");
+    fn paragraph_places(state: &RichTextState) -> Vec<Derived<Self>> {
         state
             .body()
             .ids(0..PLACED_PARAGRAPHS)
-            .filter_map(|id| {
-                state
-                    .block(id)
-                    .or_else(|| headings.iter().find(|heading| heading.id == id))
-            })
+            .filter_map(|id| placed_block(state, id))
             .filter(|block| matches!(block.kind.as_str(), "paragraph" | "heading" | "list_item"))
             .filter(|block| !block.text.trim().is_empty())
             .map(|block| {
@@ -589,6 +607,103 @@ impl Document {
 
 /// Objects of each kind a published document lists, in document order.
 const MAX_OBJECTS: usize = 64;
+
+thread_local! {
+    static OBJECTS: RefCell<Option<Objects>> = const { RefCell::new(None) };
+}
+
+/// The objects [`Document::objects`] listed last, in their parts, and what
+/// each part was made of: the tables and images of the featured blocks in
+/// paragraph order, the places of the first paragraphs as read, the tracked
+/// changes. Held weakly, so the state still changes them in place.
+struct Objects {
+    featured: Weak<HashMap<String, Rc<BlockView>>>,
+    body: Weak<tilo_document::BodyOrder>,
+    tables_and_images: Vec<Derived<Document>>,
+    placed: Vec<Option<Weak<BlockView>>>,
+    places: Vec<Derived<Document>>,
+    changes: Weak<Vec<tilo_doc::snapshot::ChangeView>>,
+    tracked_changes: Vec<Derived<Document>>,
+    listed: Option<Rc<[Derived<Document>]>>,
+}
+
+impl Default for Objects {
+    fn default() -> Self {
+        Self {
+            featured: Weak::new(),
+            body: Weak::new(),
+            tables_and_images: Vec::new(),
+            placed: Vec::new(),
+            places: Vec::new(),
+            changes: Weak::new(),
+            tracked_changes: Vec::new(),
+            listed: None,
+        }
+    }
+}
+
+impl Objects {
+    /// The objects of `state`, listing again only the parts whose making
+    /// moved.
+    fn follow(&mut self, state: &RichTextState) -> Rc<[Derived<Document>]> {
+        let same_body = Weak::as_ptr(&self.body) == Rc::as_ptr(state.body());
+        let mut moved = self.listed.is_none();
+        if !same_body || Weak::as_ptr(&self.featured) != Rc::as_ptr(state.featured_blocks()) {
+            self.featured = Rc::downgrade(state.featured_blocks());
+            self.tables_and_images = Document::tables_and_images(state);
+            moved = true;
+        }
+        let placed: Vec<Option<&Rc<BlockView>>> = state
+            .body()
+            .ids(0..PLACED_PARAGRAPHS)
+            .map(|id| state.block(id))
+            .collect();
+        let same_placed = same_body
+            && placed.len() == self.placed.len()
+            && placed
+                .iter()
+                .zip(&self.placed)
+                .all(|(now, was)| now.map(Rc::as_ptr) == was.as_ref().map(Weak::as_ptr));
+        if !same_placed {
+            self.placed = placed
+                .into_iter()
+                .map(|block| block.map(Rc::downgrade))
+                .collect();
+            self.places = Document::paragraph_places(state);
+            moved = true;
+        }
+        self.body = Rc::downgrade(state.body());
+        if Weak::as_ptr(&self.changes) != Rc::as_ptr(state.changes()) {
+            self.changes = Rc::downgrade(state.changes());
+            self.tracked_changes = Document::tracked_changes(state);
+            moved = true;
+        }
+        match &self.listed {
+            Some(objects) if !moved => Rc::clone(objects),
+            _ => {
+                let objects: Rc<[Derived<Document>]> = self
+                    .tables_and_images
+                    .iter()
+                    .chain(&self.places)
+                    .chain(&self.tracked_changes)
+                    .cloned()
+                    .collect();
+                self.listed = Some(Rc::clone(&objects));
+                objects
+            }
+        }
+    }
+}
+
+/// The paragraph `id` as read, or the heading: what a place is made of.
+fn placed_block<'a>(state: &'a RichTextState, id: &str) -> Option<&'a Rc<BlockView>> {
+    state.block(id).or_else(|| {
+        state
+            .featured_blocks()
+            .get(id)
+            .filter(|block| block.kind == "heading")
+    })
+}
 
 fn attr_str<'a>(block: &'a tilo_doc::snapshot::BlockView, key: &str) -> Option<&'a str> {
     block.str_attr(key)
