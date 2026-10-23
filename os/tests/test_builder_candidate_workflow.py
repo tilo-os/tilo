@@ -94,6 +94,11 @@ class BuilderCandidates(unittest.TestCase):
             uname = bin_dir / 'uname'
             uname.write_text('#!/bin/sh\nprintf "%s\\n" "$PLATFORM"\n')
             uname.chmod(0o755)
+            # The wrapper builds a helper binary for this package before testing it; building is
+            # not what is checked here, and the check runs where nothing builds.
+            cargo = bin_dir / 'cargo'
+            cargo.write_text('#!/bin/sh\nexit 0\n')
+            cargo.chmod(0o755)
             for platform, override in ((platform, override)
                                        for platform in ('Linux', 'Darwin', 'FreeBSD')
                                        for override in (None, '', '/custom/verified-browser')):
