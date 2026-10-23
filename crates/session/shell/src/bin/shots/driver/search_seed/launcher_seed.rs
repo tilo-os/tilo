@@ -7,7 +7,7 @@ use super::super::ShellDriver;
 impl ShellDriver {
     /// The demo's invented people gone from every workspace: a device with
     /// nobody else on it yet.
-    pub fn seed_launcher_fresh_for_shots(&mut self) {
+    pub fn seed_launcher_fresh_for_shots(&self) {
         let handle = self.chrome_handle();
         let st = handle.borrow();
         let mut tree = st.tree_mut();
@@ -52,7 +52,9 @@ impl ShellDriver {
                     person.active_tab = first_tab;
                 }
             }
-            (home.room().to_string(), research)
+            let home_room = home.room().to_string();
+            drop(tree);
+            (home_room, research)
         };
         self.with_chrome(|st| {
             st.push_notification_full(
@@ -85,7 +87,7 @@ impl ShellDriver {
                     0,
                     title,
                     Some(key),
-                    Duration::from_secs(minutes_ago * 60),
+                    Duration::from_secs(minutes_ago.saturating_mul(60)),
                 );
             }
         };

@@ -337,16 +337,16 @@ fn a_peers_room_batch_merges_off_the_loop() {
     };
     const LAPTOP: u16 = 0x1A97;
     const BOARD: u16 = 0xB0A2;
-    let root = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32])
+    let identity = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32])
         .verifying_key()
         .to_bytes();
-    let person = crate::shell::state::person_id_of(root).unwrap();
+    let person = crate::shell::state::person_id_of(identity).unwrap();
     let laptop_key = iroh::SecretKey::from_bytes(&[0x42; 32]);
     let room = RoomId::new();
 
     let mut laptop = WorkspaceTree::default();
     laptop.set_salt_override(LAPTOP);
-    laptop.local_person = Some(root);
+    laptop.local_person = Some(identity);
     let id = WorkspaceId(tilo_desktop_model::compose_id(LAPTOP, 1));
     let mut workspace = Workspace::in_room(id, room, "Research");
     workspace.set_owner(person.clone());
@@ -375,10 +375,10 @@ fn a_peers_room_batch_merges_off_the_loop() {
 
     let mut board = WorkspaceTree::default();
     board.set_salt_override(BOARD);
-    board.local_person = Some(root);
+    board.local_person = Some(identity);
     board
         .authenticated_persons
-        .insert(PeerOrigin::peer(&laptop_key.public()), root);
+        .insert(PeerOrigin::peer(&laptop_key.public()), identity);
     assert!(board.adopt_personal_room(room, "Research", &person, None));
     let tree = board.shared();
     let (net, _commands) = super::shell_network_for_test(tree.clone(), 0xB0A2);
@@ -422,5 +422,6 @@ fn a_peers_room_batch_merges_off_the_loop() {
             .is_ok()
     );
     finished.recv().unwrap();
+    drop(net);
     assert!(holds_tab(&tree, tab), "the batch landed from the worker");
 }

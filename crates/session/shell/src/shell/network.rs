@@ -7047,14 +7047,14 @@ impl ShellNetwork {
     fn tick_with(&self, admission: Admission, steps: &mut TurnSteps) {
         self.remote_action_replies.expire(std::time::Instant::now());
         steps.time("network/reachability", || {
-            self.note_session_reachability(false)
+            self.note_session_reachability(false);
         });
         // Local room changes go out the tick they land; the periodic pull
         // repairs whatever a peer missed.
         steps.time("network/room-push", || self.push_room_changes());
         steps.time("network/periodic-sync", || self.kick_periodic_sync());
         steps.time("network/personal-workspaces", || {
-            self.reconcile_personal_workspaces()
+            self.reconcile_personal_workspaces();
         });
         steps.time("network/home-peers", || {
             self.refresh_home_peer_hosts_periodically();

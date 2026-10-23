@@ -100,6 +100,10 @@ fn percentile(sorted: &[Duration], fraction: f64) -> Duration {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial_test::serial]
 #[ignore = "measurement; run with --ignored --nocapture"]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "every session runs to the end of the measurement, which closes each"
+)]
 async fn network_pump_under_load() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     home.env().set(
@@ -162,8 +166,8 @@ async fn network_pump_under_load() {
                 samples.push(elapsed);
                 for (name, took) in steps {
                     let phase = phases.entry(name).or_default();
-                    phase.0 += 1;
-                    phase.1 += took;
+                    phase.0 = phase.0.saturating_add(1);
+                    phase.1 = phase.1.saturating_add(took);
                     phase.2 = phase.2.max(took);
                 }
             }

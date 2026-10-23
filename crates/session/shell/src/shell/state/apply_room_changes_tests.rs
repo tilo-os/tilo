@@ -346,7 +346,7 @@ fn a_batch_admitted_off_the_tree_installs_on_what_the_room_gained_meanwhile() {
     host.sync_room_doc(room);
     let renamed = host.room_heads(room);
     assert!(
-        host.install_room_batch(basis, admitted, &edit, &from_editor)
+        host.install_room_batch(&basis, admitted, &edit, &from_editor)
             .expect("the batch parses")
     );
     assert!(
@@ -388,7 +388,7 @@ fn a_batch_admitted_off_the_tree_installs_on_what_the_room_gained_meanwhile() {
         .insert(from_editor.clone(), [0x55; 32]);
     assert!(
         !host
-            .install_room_batch(basis, admitted, &again, &from_editor)
+            .install_room_batch(&basis, admitted, &again, &from_editor)
             .expect("the batch parses")
     );
     assert_eq!(host.room_heads(room), held, "nothing of it is stored");
