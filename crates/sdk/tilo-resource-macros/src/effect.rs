@@ -706,16 +706,17 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
     } else {
         quote!(_arguments)
     };
+    let row_count = decls.len();
     Ok(quote! {
         impl #krate::Effect for #name {
             const OPERATION: &'static str = #operation;
 
             fn declarations() -> ::std::vec::Vec<#krate::effect::EffectDecl> {
-                #krate::effect::EffectDecl::of_rows(Self::__EFFECT_ROWS)
+                #krate::effect::EffectDecl::of_rows(Self::__effect_rows())
             }
 
             fn declaration(id: &str) -> ::core::option::Option<#krate::effect::EffectDecl> {
-                #krate::effect::EffectDecl::find_row(Self::__EFFECT_ROWS, id)
+                #krate::effect::EffectDecl::find_row(Self::__effect_rows(), id)
             }
 
             fn id(&self) -> &'static str {
@@ -748,10 +749,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         impl #name {
             #(#consts)*
 
-            /// Every effect's declaration as a constant, read by one
-            /// function for every vocabulary.
+            /// Every effect's declaration, read by one function for every
+            /// vocabulary. A `static` rather than a `const`, so the table has
+            /// one address and is never built at a use site: a large app's
+            /// rows outgrow what may sit on the stack.
             #[doc(hidden)]
-            pub const __EFFECT_ROWS: &'static [#krate::effect::EffectRow] = &[#(#decls),*];
+            pub fn __effect_rows() -> &'static [#krate::effect::EffectRow] {
+                static ROWS: [#krate::effect::EffectRow; #row_count] = [#(#decls),*];
+                &ROWS
+            }
         }
     })
 }
