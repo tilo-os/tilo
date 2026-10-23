@@ -136,7 +136,7 @@ fn until_done(agent: &mut AgentParticipant, control: &AgentControl) {
 async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let host = start_host(
         &root,
         &host_device,

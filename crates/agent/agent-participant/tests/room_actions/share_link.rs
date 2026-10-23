@@ -21,7 +21,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let writer_device = enrol(&author, "writer", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start_browser(&owner, &host, state.path(), Some("https://entry.example")).await;
     let room = hosted.relay.rooms().unwrap().create("Links").await.unwrap();
     admit_person(

@@ -62,7 +62,7 @@ async fn a_member_links_their_discord_account_through_the_host() {
     );
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
     let guest_device = enrol(&guest, "guest-browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let rooms = hosted.relay.rooms().unwrap();
     let room = rooms.create("Bridged room").await.unwrap();
@@ -203,7 +203,7 @@ async fn the_hosts_room_actions_read_what_the_governor_commits() {
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let owner_device = enrol(&owner, "owner-browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let hosted = start(&owner, &host, state.path()).await;
     let rooms = hosted.relay.rooms().unwrap();
     let room = rooms.create("Bridged room").await.unwrap();
