@@ -246,8 +246,6 @@ pub(super) enum Hit {
     NewSlide,
     DuplicateSlide,
     DeleteSlide,
-    Present,
-    Overview,
     OpenSlide(usize),
     Insert(ElementKind),
     SelectSlide(usize),
@@ -270,12 +268,6 @@ pub(super) enum Hit {
     /// Make the deck light or dark.
     SetLook(DeckLook),
     EditNotes,
-    /// Toggle the collapsible slide rail (narrow-window hamburger).
-    ToggleRail,
-    /// Toggle the collapsible inspector (narrow-window properties flap).
-    ToggleInspector,
-    /// Toggle the toolbar's insert-tool overflow ("More") menu.
-    ToggleToolbarMenu,
     OpenLayoutMenu,
 }
 
@@ -357,9 +349,6 @@ pub struct SlidesApp {
     sel: Option<Id>,
     editing_text: bool,
     editing_notes: bool,
-    /// Inline deck-title rename in progress (toolbar title clicked). Typing
-    /// splices into the CRDT title; Enter/Esc/clicking away commits.
-    editing_title: bool,
     /// Transient state and input policy for a running talk.
     presentation: Presentation,
     /// Local routing policy selected from the presentation resource actions.
@@ -456,9 +445,6 @@ pub struct SlidesApp {
     rail_scroll: f64,
     /// Vertical scroll offset (px) of the slide-sorter overview grid.
     overview: OverviewGrid,
-    /// Responsive insert toolbar. Owns overflow state, layout, drawing, and
-    /// pointer policy; document actions returned by it are applied here.
-    toolbar_menu_open: bool,
     layout_picker: Dropdown,
     demo_open_rail: bool,
     demo_open_inspector: bool,
@@ -472,10 +458,6 @@ pub struct SlidesApp {
     /// and paints its bar, and the wheel over the panel scrolls it. Without
     /// this a 2× inspector in a short window simply ran past the viewport.
     inspector_scroll: Scrollable,
-    /// Tooltip for the control under the pointer, refreshed on every pointer
-    /// move. Cached because [`Widget::tooltip`] hands out a borrow and the
-    /// text is a fluent lookup, not a `'static` literal.
-    tooltip_text: Option<String>,
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
     io_toast: Notice,
@@ -494,10 +476,6 @@ pub struct SlidesApp {
     /// popover over the inspector when the user picks a custom fill.
     fill_picker: ColorPicker,
     fill_picker_open: bool,
-    /// Inline deck-title editor — the shared single-line [`ui::widget::TextInput`]
-    /// (full selection: double-click word, Shift+Arrow, drag, Ctrl+A/C/X/V). Live
-    /// while [`Self::editing_title`]; its edits diff-splice into the CRDT title.
-    title_input: TextInput,
     /// The current slide's speaker notes, each edit a field edit of the
     /// slide's notes. The shared editor owns multiline layout, selection,
     /// clipboard, scrolling and IME; `editing_notes` only owns the
@@ -565,7 +543,6 @@ impl SlidesApp {
             sel: None,
             editing_text: false,
             editing_notes: false,
-            editing_title: false,
             presentation: Presentation::default(),
             presentation_target: ui::fullscreen::FullscreenTarget::Largest,
             help_overlay: HelpOverlay::default(),
@@ -591,13 +568,11 @@ impl SlidesApp {
             content,
             rail_scroll: 0.0,
             overview: OverviewGrid::new(),
-            toolbar_menu_open: false,
             layout_picker: Self::new_layout_picker(),
             demo_open_rail: false,
             demo_open_inspector: false,
             chrome_metrics: ChromeMetrics::fallback(),
             inspector_scroll: Scrollable::new_vertical().always_visible(),
-            tooltip_text: None,
             io_toast: Notice::default(),
             ctx_menu: ContextMenu::new(),
             ctx_hits: Vec::new(),
@@ -609,10 +584,6 @@ impl SlidesApp {
             fill_picker: ColorPicker::new(Theme::default().tokens.colors.text_primary),
             fill_picker_open: false,
             fill_picker_needs_init: false,
-            title_input: TextInput::local()
-                .with_kind(ui::widget::TextInputKind::Name)
-                .with_plain_chrome()
-                .with_id("slides-title"),
             notes_preview: TextInput::local()
                 .multiline(true)
                 .with_text_role(ui::TextRole::Body)
@@ -699,14 +670,6 @@ impl SlidesApp {
     /// drag in progress.
     fn stage_content(&mut self, shot: &str) {
         match shot {
-            // The inline deck-title rename in progress, with a live
-            // selection in the title field.
-            "rename" => {
-                self.cur_slide = 1;
-                self.begin_title_edit();
-                self.title_input.set_selection(0, 9);
-                self.bootstrapped = true;
-            }
             // The speaker-notes editor focused, its caret shown.
             "notes_edit" => {
                 self.cur_slide = 1;
@@ -718,13 +681,6 @@ impl SlidesApp {
             // deck theme pill readable at the default width.
             "slide_props" => {
                 self.cur_slide = 1;
-                self.sel = None;
-                self.bootstrapped = true;
-            }
-            // The toolbar overflow ("More") menu, opened: every insert tool
-            // stays reachable even when the bar can't show them all.
-            "toolbar_menu" => {
-                self.open_tools_menu();
                 self.sel = None;
                 self.bootstrapped = true;
             }
@@ -1217,28 +1173,12 @@ impl SlidesApp {
     }
 
     fn apply_hit(&mut self, hit: Hit) {
-        // Any action other than toggling the overflow menu itself dismisses it
-        // (picking a tool from it, or any other toolbar action).
-        if !matches!(hit, Hit::ToggleToolbarMenu) {
-            self.toolbar_menu_open = false;
-            self.ctx_menu.close();
-        }
+        self.ctx_menu.close();
         match hit {
-            Hit::ToggleToolbarMenu => self.open_tools_menu(),
             Hit::OpenLayoutMenu => self.open_layout_picker(),
             Hit::NewSlide => self.new_slide(),
             Hit::DuplicateSlide => self.duplicate_slide(),
             Hit::DeleteSlide => self.delete_slide(),
-            Hit::Present => self.enter_present(),
-            Hit::Overview => {
-                self.mode = if self.mode == Mode::Overview {
-                    Mode::Edit
-                } else {
-                    Mode::Overview
-                };
-                self.editing_text = false;
-                self.editing_notes = false;
-            }
             Hit::OpenSlide(i) => {
                 self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
                 self.sel = None;
@@ -1302,8 +1242,6 @@ impl SlidesApp {
                 self.submit(&actions::set_deck_look_action(look));
             }
             Hit::EditNotes => self.begin_notes_edit(),
-            Hit::ToggleRail => self.toggle_rail_flap(),
-            Hit::ToggleInspector => self.toggle_inspector_flap(),
         }
     }
 
@@ -1802,29 +1740,6 @@ impl SlidesApp {
         self.mode == Mode::Present
     }
 
-    /// Start renaming the deck title inline via the shared [`TextInput`] (caret
-    /// at the end, ready for full selection editing).
-    fn begin_title_edit(&mut self) {
-        self.editing_title = true;
-        self.editing_text = false;
-        self.editing_notes = false;
-        self.sel = None;
-        self.title_input.set_text(&self.deck.title);
-        // `set_text` clamps but doesn't advance the caret, so park it at the end.
-        self.title_input.set_cursor_pos(self.deck.title.len());
-        Widget::set_focus(&mut self.title_input, true);
-    }
-
-    /// Commit the inline title rename: flush any pending edit to the CRDT and
-    /// blur the field.
-    fn commit_title_edit(&mut self) {
-        if let Some(t) = self.title_input.take_dirty() {
-            self.submit(&crate::actions::set_deck_title_action(t));
-        }
-        self.editing_title = false;
-        Widget::set_focus(&mut self.title_input, false);
-    }
-
     /// Show the current slide's speaker notes in the notes editor, edited
     /// through the deck's dispatcher as that slide's notes. Moving to
     /// another slide rebinds it; otherwise a collaborator's edit folds in
@@ -1870,72 +1785,6 @@ impl SlidesApp {
     fn end_notes_edit(&mut self) {
         self.editing_notes = false;
         Widget::set_focus(self.notes.control_mut(), false);
-    }
-
-    /// The rect the inline title editor occupies in the toolbar.
-    fn title_input_rect(&self, chrome: &Chrome) -> Rect {
-        let m = &self.chrome_metrics;
-        let pad = m.field_pad;
-        let x1 = chrome
-            .buttons
-            .iter()
-            .filter(|b| b.rect.y0 < chrome.toolbar.y1 && b.rect.x0 > chrome.title_pos.x)
-            .map(|b| b.rect.x0 - m.s2)
-            .fold(chrome.toolbar.x1 - m.s3, f64::min);
-        Rect::new(
-            chrome.title_pos.x - pad,
-            chrome.title_rect.y0,
-            x1.max(chrome.title_pos.x + m.target),
-            chrome.title_rect.y1,
-        )
-    }
-
-    /// Route an event to the inline title [`TextInput`] while renaming. Returns
-    /// `true` if the event was consumed. Enter / Esc commit; a press outside the
-    /// field commits and falls through so the click still acts.
-    fn route_title_edit(&mut self, routed: &mut RoutedEvent<'_, '_>) -> bool {
-        if !self.editing_title {
-            return false;
-        }
-        let chrome = self.compute_chrome();
-        let rect = self.title_input_rect(&chrome);
-        self.title_input.apply_layout_external(rect);
-
-        match routed.event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(
-                    position.x / routed.scale_factor,
-                    position.y / routed.scale_factor,
-                );
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                self.commit_title_edit();
-                return true;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if !rect.inflate(4.0, 8.0).contains(self.last_mouse) => {
-                // Click away commits, then falls through so the click still acts.
-                self.commit_title_edit();
-                return false;
-            }
-            _ => {}
-        }
-        let mut h = false;
-        self.title_input
-            .handle_event(routed.event, &mut routed.event_ctx(&mut h));
-        // The rename is one edit, submitted when it is committed.
-        true
     }
 
     /// Route the inspector notes box through its notes editor, whose every
@@ -2165,22 +2014,6 @@ impl SlidesApp {
         }
     }
 
-    /// Draw the inline title [`TextInput`] over the toolbar while renaming.
-    fn draw_title_input(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        chrome: &Chrome,
-    ) {
-        let _ = theme;
-        let rect = self.title_input_rect(chrome);
-        self.title_input.apply_layout_external(rect);
-        self.title_input.draw(scene, t, tr, theme, presence);
-    }
-
     pub(super) fn draw_notes(
         &mut self,
         scene: &mut Scene,
@@ -2239,20 +2072,6 @@ impl SlidesApp {
                 presence: None,
             },
         );
-        let (buttons, title, title_max) = self.overview_header();
-        let style = theme.text(ui::TextRole::Heading);
-        let shown = tr.elide_to_width_style(&self.deck.title, title_max as f32, &style);
-        tr.draw_style(
-            scene,
-            &shown,
-            theme.tokens.colors.text_primary,
-            t * Affine::translate((title.x, title.y)),
-            None,
-            &style,
-        );
-        for button in &buttons {
-            self.draw_button(scene, t, tr, theme, &palette, button);
-        }
     }
 }
 
@@ -2301,8 +2120,6 @@ impl SlidesApp {
             Hit::NewSlide => "slides.control.new-slide".into(),
             Hit::DuplicateSlide => "slides.control.duplicate-slide".into(),
             Hit::DeleteSlide => "slides.control.delete-slide".into(),
-            Hit::Present => "slides.control.present".into(),
-            Hit::Overview => "slides.control.overview".into(),
             Hit::OpenSlide(index) | Hit::SelectSlide(index) => {
                 self.deck.slides.get(*index).map_or_else(
                     || format!("slides.slide-index:{index}"),
@@ -2329,10 +2146,7 @@ impl SlidesApp {
             Hit::SetPalette(palette) => format!("slides.control.palette:{}", palette.as_str()),
             Hit::SetLook(look) => format!("slides.control.look:{}", look.as_str()),
             Hit::EditNotes => "slides.control.edit-notes".into(),
-            Hit::ToggleRail => "slides.control.toggle-slides".into(),
-            Hit::ToggleInspector => "slides.control.toggle-properties".into(),
             Hit::OpenLayoutMenu => "slides.control.layout-menu".into(),
-            Hit::ToggleToolbarMenu => "slides.control.more-tools".into(),
         }
     }
 
@@ -2358,16 +2172,6 @@ impl SlidesApp {
                 Role::Button,
                 tr("slides-a11y-delete-slide"),
                 AccessState::new().disabled(self.deck.slides.len() <= 1),
-            ),
-            Hit::Present => (
-                Role::Button,
-                tr("slides-a11y-start-presentation"),
-                AccessState::new(),
-            ),
-            Hit::Overview => (
-                Role::ToggleButton,
-                tr("slides-a11y-slide-overview"),
-                AccessState::new().checked(self.mode == Mode::Overview),
             ),
             Hit::OpenSlide(index) | Hit::SelectSlide(index) => (
                 Role::Button,
@@ -2494,39 +2298,8 @@ impl SlidesApp {
                 tr("slides-a11y-edit-notes"),
                 AccessState::new(),
             ),
-            Hit::ToggleRail => (
-                Role::ToggleButton,
-                tr("slides-a11y-slides-panel"),
-                AccessState::new().checked(self.rail_open()),
-            ),
-            Hit::ToggleInspector => (
-                Role::ToggleButton,
-                tr("slides-a11y-properties-panel"),
-                AccessState::new().checked(self.inspector_open()),
-            ),
             Hit::OpenLayoutMenu => (Role::Button, tr("slides-a11y-layout"), AccessState::new()),
-            Hit::ToggleToolbarMenu => (
-                Role::Button,
-                tr("slides-a11y-more-tools"),
-                AccessState::new().expanded(self.toolbar_menu_open),
-            ),
         }
-    }
-
-    fn tooltip_at(&self, point: Point) -> Option<String> {
-        let chrome = self.compute_chrome();
-        chrome
-            .buttons
-            .iter()
-            .chain(chrome.overflow.iter())
-            .find(|button| button.rect.contains(point))
-            .and_then(|button| match button.hit {
-                Hit::ToggleRail => Some(tr("slides-tip-toggle-slides")),
-                Hit::ToggleInspector => Some(tr("slides-tip-toggle-properties")),
-                Hit::Overview => Some(tr("slides-tip-overview")),
-                Hit::ToggleToolbarMenu => Some(tr("slides-tip-more-tools")),
-                _ => None,
-            })
     }
 }
 
@@ -2738,16 +2511,6 @@ impl Widget for SlidesApp {
                     presence,
                     &chrome,
                 );
-                if self.editing_title {
-                    self.draw_title_input(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        presence,
-                        &chrome,
-                    );
-                }
             }
             Mode::Overview => self.draw_overview(scene, transform, text_renderer, theme),
             Mode::Present => self.draw_present(scene, transform, text_renderer, theme),
@@ -2872,11 +2635,6 @@ impl Widget for SlidesApp {
         }
         // While a context menu is open it is modal: every other event goes to it.
         if self.route_layout_picker(&mut routed) || self.route_context_menu(&mut routed) {
-            *ctx.handled = true;
-            return;
-        }
-        // The inline title editor owns input while renaming.
-        if self.route_title_edit(&mut routed) {
             *ctx.handled = true;
             return;
         }
@@ -3037,7 +2795,6 @@ impl Widget for SlidesApp {
         let controls = chrome
             .buttons
             .iter()
-            .chain(chrome.overflow.iter())
             .filter(|button| self.rect.contains(button.rect.center()))
             .filter_map(|button| {
                 let target = self.semantic_target(&button.hit);
@@ -3209,7 +2966,6 @@ impl Widget for SlidesApp {
         let hit = chrome
             .buttons
             .iter()
-            .chain(chrome.overflow.iter())
             .find(|button| self.semantic_target(&button.hit) == target)
             .map(|button| button.hit.clone());
         if let Some(hit) = hit {
@@ -3251,10 +3007,13 @@ impl Widget for SlidesApp {
         }
     }
 
-    /// The edit that typing or a toolbar left for after the event: the
-    /// formatting a keystroke closed, a mark the toolbar set on the
-    /// selection. The words' editor writes it now, in this frame.
+    /// What the person did in the window's bar runs, and the bar's slots
+    /// follow the editor. Then the edit that typing or a toolbar left for
+    /// after the event: the formatting a keystroke closed, a mark the
+    /// toolbar set on the selection. The words' editor writes it now, in
+    /// this frame.
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        self.run_window_toolbar();
         if self.editing_text
             && let Some(editor) = self.text_editor.as_mut()
         {
@@ -3273,10 +3032,6 @@ impl Widget for SlidesApp {
             .into_iter()
             .chain(self.io_toast.deadline())
             .min()
-    }
-
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip_text.as_deref()
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -3345,6 +3100,16 @@ impl SlidesApp {
                 self.enter_present();
             }
             SlidesEffect::EndPresentation => self.exit_present(),
+            SlidesEffect::ShowSlideList { shown } => {
+                if self.rail_open() != shown {
+                    self.toggle_rail_flap();
+                }
+            }
+            SlidesEffect::ShowProperties { shown } => {
+                if self.inspector_open() != shown {
+                    self.toggle_inspector_flap();
+                }
+            }
             SlidesEffect::OpenSlide { slide } => {
                 let idx = self.slide_index(&slide)?;
                 self.mode = Mode::Edit;
@@ -3453,7 +3218,6 @@ impl SlidesApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
-                self.tooltip_text = self.tooltip_at(p);
                 if self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open() {
                     // Feed the shared rail's reorder controller / menu hover; the
                     // gap + hover track the cursor. (The rail's list geometry is
@@ -3834,10 +3598,10 @@ impl SlidesApp {
         self.on_press_editor(p, handled);
     }
 
-    /// `on_press` in `Mode::Edit`: the shared rail's own context menu and the
-    /// toolbar overflow menu are modal while open (handled first, ahead of
-    /// all other chrome); otherwise buttons, the title, the overlay scrim,
-    /// the thumbnail rail and the canvas are tried in pointer-priority order.
+    /// `on_press` in `Mode::Edit`: the shared rail's own context menu is
+    /// modal while open (handled first, ahead of all other chrome);
+    /// otherwise buttons, the overlay scrim, the thumbnail rail and the
+    /// canvas are tried in pointer-priority order.
     fn on_press_editor(&mut self, p: Point, handled: &mut bool) {
         let chrome = self.compute_chrome();
 
@@ -3845,13 +3609,7 @@ impl SlidesApp {
             return;
         }
 
-        // A click anywhere but the title itself commits an in-flight rename.
-        if self.editing_title && !chrome.title_rect.contains(p) {
-            self.editing_title = false;
-        }
-
-        // Buttons first (the hamburger toggle lives here, so it wins over the
-        // scrim dismissal below).
+        // Buttons first, ahead of the scrim dismissal below.
         for b in &chrome.buttons {
             if b.rect.contains(p) {
                 let hit = b.hit.clone();
@@ -3859,13 +3617,6 @@ impl SlidesApp {
                 *handled = true;
                 return;
             }
-        }
-        // Deck title → inline rename (the title sits between the hamburger and
-        // the centre tool group, so it never overlaps a button).
-        if chrome.title_rect.contains(p) {
-            self.begin_title_edit();
-            *handled = true;
-            return;
         }
         // Scrim dismissal: with an overlay flap open, a click in the dimmed body
         // (outside both panels) closes whichever flap is open — like tapping the
@@ -3914,10 +3665,9 @@ impl SlidesApp {
         }
     }
 
-    /// The two modal-while-open menus a press can land on: the shared rail's
-    /// own context menu, and the toolbar overflow dropdown. Returns `true`
-    /// (and sets `*handled` as appropriate) when the press was consumed by
-    /// either, so [`Self::on_press_editor`] should stop.
+    /// The modal-while-open menu a press can land on: the shared rail's own
+    /// context menu. Returns `true` (and sets `*handled`) when the press was
+    /// consumed by it, so [`Self::on_press_editor`] should stop.
     fn on_press_editor_menus(&mut self, _chrome: &Chrome, p: Point, handled: &mut bool) -> bool {
         // The shared rail's own context menu is modal while open: the press
         // picks one of its rows or dismisses it, ahead of all other chrome.
@@ -4433,7 +4183,7 @@ impl SlidesApp {
 
         // The help overlay owns every key while visible. It can be opened from
         // any non-text context; active editors reserve `?` for typing.
-        let allow_help = !self.editing_text && !self.editing_notes && !self.editing_title;
+        let allow_help = !self.editing_text && !self.editing_notes;
         if self.help_overlay.on_key(key, allow_help) {
             *handled = true;
             return;
@@ -4472,11 +4222,11 @@ impl SlidesApp {
             return;
         }
 
-        // Text editing intercepts most keys. Speaker notes and title rename are
-        // consumed earlier by their shared `TextInput`s; they reach here only
-        // for shortcuts the fields intentionally leave to the toolkit (notably
+        // Text editing intercepts most keys. Speaker notes are consumed
+        // earlier by their shared `TextInput`; they reach here only for
+        // shortcuts the field intentionally leaves to the toolkit (notably
         // global undo/redo).
-        if self.editing_text || self.editing_notes || self.editing_title {
+        if self.editing_text || self.editing_notes {
             self.on_key_editing_text(key, handled);
             return;
         }
@@ -4548,14 +4298,12 @@ impl SlidesApp {
         }
     }
 
-    /// Keys the focused text (a text box, the speaker notes, the deck-title
-    /// rename) left alone: Escape ends editing; everything else (global
+    /// Keys the focused text (a text box, the speaker notes) left alone: Escape ends editing; everything else (global
     /// undo and redo) falls through to the toolkit.
     fn on_key_editing_text(&mut self, key: &Key, handled: &mut bool) {
         if matches!(key, Key::Named(NamedKey::Escape)) {
             self.end_text_edit();
             self.editing_notes = false;
-            self.editing_title = false;
             *handled = true;
         }
     }
@@ -4789,33 +4537,12 @@ impl SlidesApp {
     }
 }
 
-impl SlidesApp {
-    fn open_tools_menu(&mut self) {
-        let chrome = self.compute_chrome();
-        let Some(more) = chrome
-            .buttons
-            .iter()
-            .find(|b| matches!(b.hit, Hit::ToggleToolbarMenu))
-            .map(|b| b.rect)
-        else {
-            return;
-        };
-        let rows: Vec<_> = chrome
-            .overflow
-            .iter()
-            .filter_map(|button| match &button.kind {
-                ButtonKind::Tool { label, .. } => Some(Some((label.clone(), button.hit.clone()))),
-                _ => None,
-            })
-            .collect();
-        self.open_menu_at(Point::new(more.x0, more.y1), &rows);
-        self.toolbar_menu_open = true;
-    }
-}
-
 mod editor_chrome;
 mod text_box;
-use editor_chrome::{ButtonKind, Chrome, ChromeMetrics};
+mod window_bar;
+#[cfg(test)]
+use editor_chrome::ButtonKind;
+use editor_chrome::{Chrome, ChromeMetrics};
 use text_box::{TextBoxEditor, WORDS_ACCESS_KEY, listed, mark_covers};
 
 impl SlidesApp {
@@ -4937,51 +4664,5 @@ impl SlidesApp {
             self.apply_hit(Hit::SetLayout(*layout));
         }
         true
-    }
-}
-
-impl SlidesApp {
-    fn overview_header(&self) -> (Vec<editor_chrome::UiButton>, Point, f64) {
-        let m = &self.chrome_metrics;
-        let header = self.overview.header(self.rect);
-        let control_y = header.y0 + (header.height() - m.control_h) / 2.0;
-        let present_label = tr("slides-present");
-        let present_w = m.width(
-            &present_label,
-            editor_chrome::Measure::Button { icon: true },
-        );
-        let present = Rect::new(
-            header.x1 - m.s6 - present_w,
-            control_y,
-            header.x1 - m.s6,
-            control_y + m.control_h,
-        );
-        let toggle = self.chip(header, present.x0 - m.s2 - m.target);
-        let buttons = vec![
-            editor_chrome::UiButton {
-                rect: toggle,
-                kind: ButtonKind::Icon {
-                    icon: Icon::LayoutGrid,
-                    name: tr("slides-a11y-slide-overview"),
-                    active: true,
-                },
-                hit: Hit::Overview,
-            },
-            editor_chrome::UiButton {
-                rect: present,
-                kind: ButtonKind::Command {
-                    label: present_label,
-                    icon: Some(Icon::Play),
-                    role: ui::widget::ButtonRole::Primary,
-                },
-                hit: Hit::Present,
-            },
-        ];
-        let title = Point::new(
-            header.x0 + m.s6,
-            header.y0 + (header.height() - m.lh_heading) / 2.0,
-        );
-        let title_max = (toggle.x0 - m.s4 - title.x).max(0.0);
-        (buttons, title, title_max)
     }
 }
