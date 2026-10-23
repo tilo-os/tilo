@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use collab_types::DocumentMutation;
+use collab_types::inbound::{InboundHold, OpKey};
 use tilo_relay_client::{CoeditPayload, DeviceSigner};
 use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
@@ -44,7 +45,8 @@ const PING_INTERVAL: Duration = Duration::from_secs(15);
 const RENEW_AHEAD: Duration = Duration::from_secs(60);
 /// How often overdue channel access requests are sent again.
 const CHANNEL_TICK: Duration = Duration::from_secs(1);
-/// Sealed documents held per route while this device waits for its keys.
+/// Documents held per route while this device waits for its keys; past it
+/// the oldest is owed by the host's replay of the record.
 const MAX_HELD_DOCUMENTS: usize = 4096;
 /// Consecutive refusals with no reason (an iroh host closing the handshake)
 /// after which the host is taken to no longer admit this device rather than
@@ -700,6 +702,7 @@ impl PeerHandle {
             opened: BTreeMap::new(),
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
+            owed_replays: BTreeMap::new(),
             held_live: crate::held_live::HeldLive::new(),
             held_outbound: saved.held.into_iter().collect(),
             reassembly: Reassembly::default(),
@@ -1202,7 +1205,9 @@ struct Task {
     refused: (u64, String),
     /// Sealed documents that arrived before this device held their keys,
     /// with their authenticated authors.
-    held_inbound: BTreeMap<DocumentRoute, VecDeque<HeldFrame>>,
+    held_inbound: BTreeMap<DocumentRoute, InboundHold<HeldFrame>>,
+    /// Records the host is replaying for documents a full hold let go of.
+    owed_replays: BTreeMap<[u8; 32], DocumentRoute>,
     /// Live frames waiting for their record's keys.
     held_live: crate::held_live::HeldLive,
     /// Frames published on an encrypted route before this device held its
@@ -2522,7 +2527,21 @@ impl Task {
     }
 
     /// The host sent everything it holds of a record this page opened.
-    fn record_opened(&self, workspace_id: u64, channel: [u8; 32], frames: u32) {
+    fn record_opened(&mut self, workspace_id: u64, channel: [u8; 32], frames: u32) {
+        if let Some(route) = self.owed_replays.remove(&channel) {
+            let artifact =
+                collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
+            let given_up = self
+                .held_inbound
+                .get_mut(&route)
+                .map(|held| held.give_up_owed(artifact))
+                .unwrap_or_default();
+            for owed in given_up {
+                let error = format!("the host's replay has no document {owed}");
+                self.refused = (self.refused.0.saturating_add(1), error.clone());
+                self.emit(&PeerEvent::DocumentRejected(error));
+            }
+        }
         if let Some((_, route)) = self.opened_records.get(&channel) {
             self.emit(&PeerEvent::RecordOpened {
                 workspace_id,
@@ -2554,6 +2573,7 @@ impl Task {
                     status.rooms.insert(workspace_id, true);
                 });
                 self.emit(&PeerEvent::Ready { workspace_id });
+                self.decide_held(workspace_id);
             }
             Envelope::NotAuthorised { reason, .. } => {
                 self.fail("permission-required", reason);
@@ -2714,29 +2734,119 @@ impl Task {
                     let changes = self.channels.open(&route, now);
                     self.absorb(changes);
                 }
-                let awaiting_keys = envelope.encryption.is_some_and(|metadata| {
-                    self.ciphers
+                let waits = match envelope.encryption {
+                    Some(metadata) => self
+                        .ciphers
                         .get(&route)
-                        .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch))
-                });
-                if awaiting_keys {
+                        .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch)),
+                    None => match self
+                        .channels
+                        .admission(
+                            &route,
+                            (
+                                self.governance_known(&route),
+                                self.ciphers.contains_key(&route),
+                            ),
+                            None,
+                        )
+                        .admits_cleartext()
+                    {
+                        Some(true) => false,
+                        Some(false) => {
+                            let error = "cleartext on a channel that requires it sealed";
+                            self.refused = (self.refused.0.saturating_add(1), error.to_owned());
+                            self.emit(&PeerEvent::DocumentRejected(error.to_owned()));
+                            return;
+                        }
+                        None => true,
+                    },
+                };
+                if waits {
                     if self.config.watching {
                         self.watched.want(route.clone());
                     }
-                    let held = self.held_inbound.entry(route.clone()).or_default();
-                    if held.len() >= MAX_HELD_DOCUMENTS {
-                        held.pop_front();
-                    }
-                    held.push_back((body, author));
-                    let count = held.len();
-                    self.update(|status| {
-                        status.routes.entry(route).or_default().awaiting_keys = count;
-                    });
+                    let key = OpKey::of(&envelope);
+                    self.hold_document(route, key, body, author);
                     return;
                 }
                 self.open_document(&body, author);
             }
             _ => {}
+        }
+    }
+
+    /// Whether the host answered `Ready` for `route`'s room: it sent the
+    /// governance it holds first, so the page's mirror of its channels is
+    /// what the room decided.
+    fn governance_known(&self, route: &DocumentRoute) -> bool {
+        route.workspace_id().is_ok_and(|workspace_id| {
+            lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true)
+        })
+    }
+
+    /// Decide again the documents held for the routes of `workspace_id`,
+    /// now that its governance is known: cleartext its channels admit
+    /// opens, cleartext they require sealed is refused, the rest waits on.
+    fn decide_held(&mut self, workspace_id: u64) {
+        let routes: Vec<DocumentRoute> = self
+            .held_inbound
+            .keys()
+            .filter(|route| route.workspace_id().ok() == Some(workspace_id))
+            .cloned()
+            .collect();
+        for route in routes {
+            let held = self
+                .held_inbound
+                .get_mut(&route)
+                .map(InboundHold::take)
+                .unwrap_or_default();
+            self.update(|status| {
+                if let Some(status) = status.routes.get_mut(&route) {
+                    status.awaiting_keys = 0;
+                }
+            });
+            for (_, (body, author)) in held {
+                self.inbound_body(body, author);
+            }
+        }
+    }
+
+    /// Hold a document until its route's keys change, its room's governance
+    /// is known, or the host's replay supplies it.
+    fn hold_document(&mut self, route: DocumentRoute, key: OpKey, body: Vec<u8>, author: [u8; 32]) {
+        let held = self
+            .held_inbound
+            .entry(route.clone())
+            .or_insert_with(|| InboundHold::new(MAX_HELD_DOCUMENTS));
+        held.hold(key, (body, author));
+        let count = held.len();
+        self.update(|status| {
+            status.routes.entry(route).or_default().awaiting_keys = count;
+        });
+    }
+
+    /// Ask the host to replay the records whose full holds let documents
+    /// go, now that `route` can open them.
+    fn replay_owed(&mut self, route: &DocumentRoute, client: Option<&Link>) {
+        let owed = self
+            .held_inbound
+            .get(route)
+            .is_some_and(|held| !held.owed_pages().is_empty());
+        let (Some(client), Ok(workspace_id)) = (client, route.workspace_id()) else {
+            return;
+        };
+        if !owed {
+            return;
+        }
+        let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
+        if client
+            .send(Envelope::OpenRecord {
+                workspace_id,
+                channel,
+            })
+            .is_ok()
+        {
+            self.owed_replays.insert(channel, route.clone());
         }
     }
 
@@ -2756,6 +2866,9 @@ impl Task {
                     .or_default();
                 *opened = opened.saturating_add(1);
                 let route = document.route.clone();
+                if let Some(held) = self.held_inbound.get_mut(&route) {
+                    held.settle(&OpKey::of(&document.envelope));
+                }
                 let entries = document.entries().to_vec();
                 self.emit(&PeerEvent::Document(Box::new(document)));
                 for entry in &entries {
@@ -2849,14 +2962,20 @@ impl Task {
                 self.ciphers
                     .insert(route.clone(), Box::new(crate::channels::KeysCipher(keys)));
                 self.release_live(&route, client);
-                for (body, author) in self.held_inbound.remove(&route).unwrap_or_default() {
-                    self.open_document(&body, author);
-                }
+                let held = self
+                    .held_inbound
+                    .get_mut(&route)
+                    .map(InboundHold::take)
+                    .unwrap_or_default();
                 self.update(|status| {
                     if let Some(status) = status.routes.get_mut(&route) {
                         status.awaiting_keys = 0;
                     }
                 });
+                for (_, (body, author)) in held {
+                    self.inbound_body(body, author);
+                }
+                self.replay_owed(&route, client);
                 if let Some(frames) = self.held_outbound.remove(&route) {
                     delivered &= self.publish(route, frames, client).await;
                 }

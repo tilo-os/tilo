@@ -16971,6 +16971,7 @@ dependencies = [
  "tempfile",
  "test-http",
  "thiserror 2.0.21",
+ "tilo-action-broker",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",

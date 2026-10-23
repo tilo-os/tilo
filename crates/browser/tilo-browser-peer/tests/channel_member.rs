@@ -349,6 +349,44 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     )
     .await;
     assert_eq!(opened.last().unwrap(), "under the new epoch");
+
+    let mut clear = SignedOp::new_unsigned(
+        DocumentMutation::Incremental(b"in the clear".to_vec())
+            .encode()
+            .unwrap(),
+        artifact,
+        Ed25519PublicKey::from_bytes(laptop_device),
+        document_attestation_id(&route.app_id, &route.cluster_id, &route.record),
+        OpKind::Change,
+        std::time::SystemTime::now(),
+        4,
+    );
+    collab_types::sign_op(&mut clear, &laptop.key).unwrap();
+    publish(
+        &session,
+        &NeighbourMsg::AppDocument {
+            peer: neighbour_wire::peer_handle(&laptop_device),
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            record_id: route.record.clone(),
+            envelope: Box::new(clear),
+        },
+    );
+    let refused = wait_for("cleartext on the sealed channel to be refused", || {
+        let mut refused = None;
+        for event in events.drain() {
+            match event {
+                PeerEvent::DocumentRejected(reason) => refused = Some(reason),
+                PeerEvent::Document(document) => {
+                    panic!("cleartext opened: {:?}", document.mutation());
+                }
+                _ => {}
+            }
+        }
+        async move { refused }
+    })
+    .await;
+    assert_eq!(refused, "cleartext on a channel that requires it sealed");
     peer.close();
     host.relay.shutdown().await;
 }
