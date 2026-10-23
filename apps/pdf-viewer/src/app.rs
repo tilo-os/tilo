@@ -553,6 +553,11 @@ pub struct PdfApp {
     markup_style: model::MarkupStyle,
     sidebar_tab: SidebarTab,
     show_sidebar: bool,
+    /// The review panel's place beside the pages: the shared trailing
+    /// inspector, so it follows the theme, shrinks before the pages fall
+    /// under their minimum, and a person can drag its edge to resize it.
+    /// `show_sidebar` stays the open state; the drawer lays it out.
+    review: ui::widget::SidebarDrawer,
     /// Thumbnail rail: independently resizable + collapsible, persisted in
     /// view state so it survives across the session.
     show_rail: bool,
@@ -1135,6 +1140,7 @@ impl PdfApp {
             swatch: Swatch::Yellow,
             sidebar_tab: SidebarTab::Comments,
             show_sidebar: true,
+            review: Self::review_drawer(),
             show_rail: true,
             // A preview rail, not a text sidebar: 168 px at 1.5× UI scale.
             rail_w: 112.0,
@@ -1783,21 +1789,37 @@ impl PdfApp {
         self.doc.page_h
     }
 
+    fn review_drawer() -> ui::widget::SidebarDrawer {
+        let m = ui::tokens::Metrics::BASE;
+        ui::widget::SidebarDrawer::new()
+            .right()
+            .docked_width(f64::from(m.inspector_width))
+            .overlay_width(f64::from(m.inspector_width))
+            .content_min_width(f64::from(m.detail_min_width))
+    }
+
+    /// The strip the review panel docks in: below the toolbar, beside the
+    /// page rail. The rail's width counts even while it is hidden, so
+    /// hiding the rail never changes whether the panels dock.
+    fn review_outer(&self) -> Rect {
+        let r = self.rect;
+        let top = r.y0 + f64::from(self.layout_theme.tokens.metrics.header_height);
+        let (rail_min, rail_max) = self.rail_width_range();
+        let x0 = (r.x0 + self.rail_w.clamp(rail_min, rail_max)).min(r.x1);
+        Rect::new(x0, top.min(r.y1), r.x1, r.y1)
+    }
+
     /// Snap panel open/closed state to the current window width. On a wide
     /// window the panels dock and reserve space; on a narrow one they collapse
     /// to closed overlays. Only the *transition* forces state, so the user's
     /// explicit toggles within a size class are respected.
     fn reconcile_overlay(&mut self) {
         // The panels dock while the page canvas keeps its minimum width
-        // beside both of them; below that they float over the canvas.
-        let m = &self.layout_theme.tokens.metrics;
-        // Metrics already include UI scale. Only the text-sized review panel
-        // grows again with accessibility type; a PDF keeps its own geometry.
-        let (rail_min, rail_max) = self.rail_width_range();
-        let docked = self.rail_w.clamp(rail_min, rail_max)
-            + f64::from(m.inspector_width) * f64::from(self.layout_theme.text_growth())
-            + f64::from(m.detail_min_width);
-        let overlay = self.rect.width() < docked;
+        // beside the rail and the review panel at its narrowest; below that
+        // they float over the canvas.
+        let outer = self.review_outer();
+        self.review.resolve(outer);
+        let overlay = self.review.is_overlay();
         self.overlay_mode = overlay;
         if self.prev_overlay != Some(overlay) {
             // A screenshot that stages the review panel keeps it on screen,
@@ -1813,24 +1835,22 @@ impl PdfApp {
         }
     }
 
-    /// The sidebar's drawn width — narrower on cramped overlay windows so it
-    /// always leaves a strip of canvas to tap on to dismiss it.
+    /// The sidebar's drawn width: docked, the shared inspector's (theme,
+    /// window and the person's resize); floating, narrower on cramped
+    /// windows so it always leaves a strip of canvas to tap on to dismiss it.
     fn sidebar_width(&self) -> f64 {
         if !self.show_sidebar {
             return 0.0;
         }
-        // A docked review rail gets a modest width increase with enlarged
-        // type. This preserves real line length and tab labels instead of
-        // forcing every comment into a tall, hard-to-scan single word column.
         let theme = &self.layout_theme;
         let m = &theme.tokens.metrics;
-        let preferred = f64::from(m.inspector_width) * f64::from(theme.text_growth());
         if self.overlay_mode {
+            let preferred = f64::from(m.inspector_width) * f64::from(theme.text_growth());
             preferred
                 .min(self.rect.width() - f64::from(m.header_height))
                 .max(f64::from(m.sidebar_min_width))
         } else {
-            preferred
+            self.review.sidebar_rect().width()
         }
     }
 
@@ -1845,6 +1865,8 @@ impl PdfApp {
         // No reserved bottom strip: the page-info bubble floats over the canvas
         // (see `draw_page_bubble`), so the content spans to the window bottom.
         let mid_bottom = r.y1;
+        self.review.snap(self.show_sidebar);
+        self.review.resolve(self.review_outer());
         let rail_w = self.rail_width();
         let sidebar_w = self.sidebar_width();
         self.rail_rect = Rect::new(r.x0, mid_top, r.x0 + rail_w, mid_bottom);
@@ -4595,6 +4617,7 @@ impl Widget for PdfApp {
         self.viewport =
             std::mem::take(&mut self.viewport).with_padding(f64::from(theme.tokens.spacing.s3));
         self.layout_theme = theme.clone();
+        self.review.scale_for(theme);
         if let Some(Editing {
             input: EditInput::Rich(field),
             ..
@@ -4670,6 +4693,9 @@ impl Widget for PdfApp {
                 *ctx.handled = true;
                 return;
             }
+        }
+        if self.route_review_resize(event, ctx) {
+            return;
         }
         self.on_event(
             event,
@@ -4804,6 +4830,9 @@ impl Widget for PdfApp {
                 .with_bounds(layout.toggle_sidebar)
                 .with_state(focusable().checked(self.show_sidebar)),
         ];
+        if !self.overlay_mode {
+            controls.extend(self.review.resize_accessibility());
+        }
         controls.extend(self.history.accessibility(self.history_rect()));
         // Commands that went to the More menu keep their nodes (zero bounds)
         // and actions; the More button, and its menu while open, come from
@@ -5121,6 +5150,9 @@ impl Widget for PdfApp {
             self.dirty = true;
             return true;
         }
+        if self.perform_review_resize(target, action) {
+            return true;
+        }
         let (state, path) = ui::doc::document(state, path);
         if target.starts_with("context-menu:item:") {
             let Some(menu) = self.context_menu.as_mut() else {
@@ -5422,6 +5454,9 @@ impl Widget for PdfApp {
         if self.on_rail_grip(point) {
             return Some(winit::window::CursorIcon::ColResize);
         }
+        if let Some(cursor) = self.review_resize_cursor(point) {
+            return Some(cursor);
+        }
         self.link_under(point)
             .map(|_| winit::window::CursorIcon::Pointer)
     }
@@ -5450,6 +5485,7 @@ impl Widget for PdfApp {
             || self.drag.is_some()
             || self.pan.is_some()
             || self.rail_drag.is_some()
+            || self.review.is_resizing()
     }
 
     /// See [`PdfApp::scroll_damage`].

@@ -336,6 +336,64 @@ impl PdfApp {
         self.has_document && self.toolbar_layout().zoom.contains(p)
     }
 
+    /// A drag on the docked review panel's leading edge, or a key on its
+    /// focused divider, resizes it through the shared inspector; dragged
+    /// under its minimum it closes. Returns whether the divider took the
+    /// event.
+    pub(crate) fn route_review_resize(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        if self.overlay_mode && !self.review.is_resizing() {
+            return false;
+        }
+        let was_resizing = self.review.is_resizing();
+        let taken = self.review.handle_event(event, ctx);
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) && !self.review.is_resizing()
+        {
+            // A press anywhere else hands the keys back to the pages.
+            self.review.set_resize_focused(false);
+        }
+        if self.review.take_resize_redraw() {
+            self.dirty = true;
+        }
+        if taken || was_resizing || self.review.is_resizing() {
+            self.show_sidebar = self.review.is_open();
+            self.reflow();
+        }
+        taken
+    }
+
+    /// Resize the review panel from its divider's semantic node.
+    pub(crate) fn perform_review_resize(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+    ) -> bool {
+        if self.overlay_mode || !self.review.perform_resize_action(target, action) {
+            return false;
+        }
+        self.show_sidebar = self.review.is_open();
+        self.reflow();
+        true
+    }
+
+    /// The resize cursor over the docked review panel's divider.
+    pub(crate) fn review_resize_cursor(&self, p: Point) -> Option<winit::window::CursorIcon> {
+        if self.overlay_mode {
+            None
+        } else {
+            self.review.resize_cursor(p)
+        }
+    }
+
     /// Whether `p` is over the page rail's resize grip: its trailing edge.
     fn on_rail_grip(&self, p: Point) -> bool {
         let rail = self.rail_rect;
@@ -2905,5 +2963,61 @@ mod event_tests {
                 .iter()
                 .any(|annotation| annotation.id == note_id)
         );
+    }
+
+    #[test]
+    fn the_review_panel_gives_way_to_the_pages_and_its_edge_resizes_it() {
+        fn has_door(node: &ui::a11y::AccessNode) -> bool {
+            node.action_target.as_deref() == Some("inspector-resize")
+                || node.children.iter().any(has_door)
+        }
+        let mut rig = Rig::new();
+        let m = rig.app.layout_theme.tokens.metrics;
+        let lay_out = |app: &mut PdfApp, width: f64| {
+            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+            app.reconcile_overlay();
+            app.recompute_regions();
+        };
+
+        lay_out(&mut rig.app, 1280.0);
+        assert!(!rig.app.overlay_mode && rig.app.show_sidebar);
+        assert!((rig.app.sidebar_rect.width() - f64::from(m.inspector_width)).abs() < 0.01);
+
+        // Narrower, the panel shrinks before the pages lose their minimum,
+        // and still docks.
+        let (rail_min, rail_max) = rig.app.rail_width_range();
+        let rail = rig.app.rail_w.clamp(rail_min, rail_max);
+        let tight = rail + f64::from(m.sidebar_min_width) + f64::from(m.detail_min_width) + 40.0;
+        lay_out(&mut rig.app, tight);
+        assert!(!rig.app.overlay_mode, "the panel docks at its narrowest");
+        let panel = rig.app.sidebar_rect.width();
+        assert!(panel < f64::from(m.inspector_width) && panel >= f64::from(m.sidebar_min_width));
+        assert!(rig.app.canvas_rect.width() >= f64::from(m.detail_min_width) - 0.5);
+
+        // Dragging the panel's leading edge widens it.
+        lay_out(&mut rig.app, 1280.0);
+        let edge = rig.app.sidebar_rect.x0;
+        let y = rig.app.sidebar_rect.center().y;
+        let door = ui::widget::Widget::accessibility(&rig.app).is_some_and(|tree| has_door(&tree));
+        assert!(door, "the divider has a semantic door");
+        rig.move_to((edge, y));
+        rig.press();
+        rig.move_to((edge - 40.0, y));
+        rig.move_to((edge - 80.0, y));
+        rig.release();
+        let widened = rig.app.sidebar_rect.width();
+        assert!(
+            (widened - f64::from(m.inspector_width) - 80.0).abs() < 1.0,
+            "the panel follows the drag: {widened}"
+        );
+        assert!((rig.app.canvas_rect.x1 - rig.app.sidebar_rect.x0).abs() < 0.01);
+
+        // Dragged under its minimum it closes.
+        let edge = rig.app.sidebar_rect.x0;
+        rig.move_to((edge, y));
+        rig.press();
+        rig.move_to((1270.0, y));
+        rig.release();
+        assert!(!rig.app.show_sidebar, "dragged shut, the panel closes");
     }
 }
