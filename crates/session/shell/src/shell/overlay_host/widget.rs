@@ -9,8 +9,12 @@ use super::*;
 
 impl Widget for ShellOverlayHost {
     fn has_pending_visual_work(&self) -> bool {
-        let mut pending =
-            self.palette_visible && (self.search_indexes_settling || crate::app_icons::resolving());
+        // Artwork that arrived since the rows were built is owed to them
+        // as much as artwork still on its way.
+        let mut pending = self.palette_visible
+            && (self.search_indexes_settling
+                || crate::app_icons::resolving()
+                || crate::app_icons::artwork_generation() != self.search_artwork);
         self.for_each_child(&mut |child| pending |= child.has_pending_visual_work());
         pending
     }

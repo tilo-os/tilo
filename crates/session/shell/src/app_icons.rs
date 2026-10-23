@@ -156,6 +156,23 @@ struct Known {
     pixels: HashMap<(String, u32), Slot<Option<ImageData>>>,
 }
 
+impl Known {
+    /// Whether anything asked for is still being found or decoded.
+    fn resolving(&self) -> bool {
+        self.names
+            .values()
+            .any(|slot| matches!(slot, Slot::Pending))
+            || self
+                .probes
+                .values()
+                .any(|slot| matches!(slot, Slot::Pending))
+            || self
+                .pixels
+                .values()
+                .any(|slot| matches!(slot, Slot::Pending))
+    }
+}
+
 type Job = Box<dyn FnOnce(&Resolver) + Send>;
 
 /// Finds and decodes application artwork on a thread of its own.
@@ -243,15 +260,23 @@ impl Resolver {
     /// it gives the loop something new to paint.
     fn answer(&self, generation: u64, artwork: bool, record: impl FnOnce(&mut Known)) {
         let mut known = self.known();
-        if known.generation != generation {
-            // The scan changed meanwhile: a later ask resolves anew.
-            return;
+        // When the scan changed meanwhile the answer is stale and dropped:
+        // whoever asked must ask again under the new scan, so it counts as
+        // new artwork, which has rows rebuilt and their pictures asked for.
+        let current = known.generation == generation;
+        if current {
+            record(&mut known);
         }
-        record(&mut known);
+        let settled = !known.resolving();
         drop(known);
+        let artwork = artwork || !current;
         if artwork {
             self.artwork.fetch_add(1, Ordering::AcqRel);
             self.arrived.store(true, Ordering::Release);
+        }
+        // New artwork is something to paint; the last answer, even one
+        // without artwork, ends what a still capture waits for.
+        if artwork || settled {
             let wake = self.wake.lock_recover().clone();
             if let Some(wake) = wake {
                 wake();
@@ -362,19 +387,7 @@ impl Resolver {
 
     /// Whether anything asked for is still being found or decoded.
     fn resolving(&self) -> bool {
-        let known = self.known();
-        known
-            .names
-            .values()
-            .any(|slot| matches!(slot, Slot::Pending))
-            || known
-                .probes
-                .values()
-                .any(|slot| matches!(slot, Slot::Pending))
-            || known
-                .pixels
-                .values()
-                .any(|slot| matches!(slot, Slot::Pending))
+        self.known().resolving()
     }
 
     /// Wait until everything queued so far has been answered.
@@ -399,8 +412,6 @@ pub fn set_wake(wake: crate::session_runtime::Wake) {
     *resolver().wake.lock_recover() = Some(wake);
 }
 
-/// Whether artwork the chrome asked for has arrived since the last call:
-/// the chrome built without it should be built again.
 /// Moves each time artwork arrives: rows built before it hold no picture
 /// for it, and are built again when this changes.
 pub fn artwork_generation() -> u64 {
@@ -412,6 +423,8 @@ pub fn resolving() -> bool {
     resolver().resolving()
 }
 
+/// Whether artwork the chrome asked for has arrived since the last call:
+/// the chrome built without it should be built again.
 pub fn take_arrived() -> bool {
     resolver().arrived.swap(false, Ordering::AcqRel)
 }
@@ -636,6 +649,10 @@ mod tests {
         assert!(resolver.artwork.load(Ordering::Acquire) > before);
 
         let found = resolver.artwork.load(Ordering::Acquire);
+        let woken = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&woken);
+        *resolver.wake.lock().unwrap() =
+            Some(Arc::new(move || flag.store(true, Ordering::Release)));
         assert!(resolver.themed("org.example.Missing").is_none());
         resolver.settle();
         assert_eq!(
@@ -643,6 +660,49 @@ mod tests {
             found,
             "an icon no theme has brings nothing new to paint"
         );
+        assert!(!resolver.resolving());
+        assert!(
+            woken.load(Ordering::Acquire),
+            "the last answer wakes the loop, so what waits on it stops waiting"
+        );
+    }
+
+    /// An answer worked out under a scan that has since changed is dropped,
+    /// so whoever asked is told to ask again, and the second ask finds it.
+    #[test]
+    fn an_answer_the_scan_outdated_has_the_asker_ask_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let exports = dir.path().join("icons");
+        png(&exports.join("hicolor/16x16/apps/org.example.App.png"), 16);
+        let lookup = Arc::new(IconLookup::new(
+            IconSearchPath {
+                bases: vec![exports],
+                pixmaps: Vec::new(),
+            },
+            "Adwaita",
+        ));
+        let scan = Arc::new(AtomicU64::new(1));
+        let generation = Arc::clone(&scan);
+        let resolver = Resolver::new(
+            move || Arc::clone(&lookup),
+            move || generation.load(Ordering::Acquire),
+        );
+        let (release, held) = mpsc::channel::<()>();
+        resolver.submit(Box::new(move |_| {
+            let _ = held.recv();
+        }));
+        assert!(resolver.themed("org.example.App").is_none());
+        let before = resolver.artwork.load(Ordering::Acquire);
+        scan.store(2, Ordering::Release);
+        release.send(()).unwrap();
+        resolver.settle();
+        assert!(
+            resolver.artwork.load(Ordering::Acquire) > before,
+            "the dropped answer has rows built again"
+        );
+        assert!(resolver.themed("org.example.App").is_none());
+        resolver.settle();
+        assert!(resolver.themed("org.example.App").is_some());
     }
 
     /// The compositor's loop asks for icons while it builds its chrome. A
