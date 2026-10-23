@@ -17,6 +17,7 @@
 //! | `/certify/wait` | request digest `[u8; 32]` | `CertifyReply` (long-poll) |
 //! | `/session` | [`Hello`] | [`SessionChallenge`]; `403` [`SessionRefusal`] |
 //! | `/session/finish` | [`SessionFinish`] | [`SessionGrant`]; `403` [`SessionRefusal`] |
+//! | `/session/end` ([`SESSION_END_PATH`]) | the session token, lowercase hex text | `204` |
 //! | `/send` | `Vec<Envelope>` | `204` |
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
@@ -61,6 +62,11 @@
 //! the handshake carry the session token in
 //! [`SESSION_HEADER`] (lowercase hex). A `401` means the session is gone:
 //! the device runs the handshake again, resubscribes and resends its outbox.
+//!
+//! `/session/end` takes its token as the body instead, so a page that is
+//! going away can say so with `navigator.sendBeacon`, which sends no
+//! headers of its own: the host ends that session at once rather than when
+//! its polls stop, and the people in the room stop counting the page.
 
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +77,8 @@ use crate::auth::{HelloAck, HelloAck2};
 pub const API_PREFIX: &str = "/peer/v1";
 /// Header carrying the session token.
 pub const SESSION_HEADER: &str = "x-tilo-session";
+/// Where a page ends its session as it leaves, the token its body.
+pub const SESSION_END_PATH: &str = "/session/end";
 /// Header carrying the install token of a host awaiting its certificate.
 pub const INSTALL_TOKEN_HEADER: &str = "x-tilo-install-token";
 /// The route that installs a waiting host's certificate.

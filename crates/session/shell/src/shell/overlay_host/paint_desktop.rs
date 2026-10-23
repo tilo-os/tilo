@@ -395,6 +395,7 @@ impl ShellOverlayHost {
                 // Native presence has no spectator role yet.
                 watching: 0,
                 waved: &self.self_presence.waved_recently(std::time::Instant::now()),
+                spectating: false,
             },
             self.last_cursor,
         );

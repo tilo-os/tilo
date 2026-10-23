@@ -617,7 +617,16 @@ impl Desktop {
         } else {
             HashMap::new()
         };
-        self.handle.set_holders(holders)
+        // Someone the room lets only look (its spectator) opens nothing in
+        // it, so no window offers them a new tab.
+        let opens = !in_room
+            || self
+                .shared
+                .standing
+                .role()
+                .is_none_or(|role| role.includes(tilo_action_policy::Role::Editor));
+        let opened = self.handle.set_opens(opens);
+        self.handle.set_holders(holders) | opened
     }
 }
 

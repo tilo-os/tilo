@@ -132,6 +132,8 @@ pub struct SwitcherModel {
     pub strips: Vec<StripEntry>,
     /// Index into `strips` of the strip with focus.
     pub focused: usize,
+    /// It offers a new strip: the person may add one to the workspace.
+    pub can_add: bool,
 }
 
 impl SwitcherModel {
@@ -187,7 +189,11 @@ impl SwitcherModel {
             .get(&workspace.id)
             .and_then(|id| strips.iter().position(|strip| strip.id == *id))
             .unwrap_or(0);
-        Self { strips, focused }
+        Self {
+            strips,
+            focused,
+            can_add: true,
+        }
     }
 
     /// The name a strip shows: its own, or "Strip N" while it has none.
@@ -341,14 +347,16 @@ impl Layout {
             rows.push((Row::Strip(i), Rect::new(label.x0, hit.y0, edge, hit.y1)));
             bottom = hit.y1;
         }
-        let w = width(Row::NewStrip).min(LABEL_MAX_W);
-        let y0 = bottom + NEW_GAP;
-        let label = Rect::new(x1 - w, y0, x1, y0 + LABEL_H);
-        labels.push((Row::NewStrip, label));
-        rows.push((
-            Row::NewStrip,
-            Rect::new(label.x0, bottom, edge, label.y1 + NEW_GAP),
-        ));
+        if model.can_add {
+            let w = width(Row::NewStrip).min(LABEL_MAX_W);
+            let y0 = bottom + NEW_GAP;
+            let label = Rect::new(x1 - w, y0, x1, y0 + LABEL_H);
+            labels.push((Row::NewStrip, label));
+            rows.push((
+                Row::NewStrip,
+                Rect::new(label.x0, bottom, edge, label.y1 + NEW_GAP),
+            ));
+        }
         let bounds = rows
             .iter()
             .map(|(_, r)| *r)
@@ -894,7 +902,7 @@ impl StripSwitcher {
     fn rows_in_order(&self) -> Vec<Row> {
         (0..self.model.strips.len())
             .map(Row::Strip)
-            .chain([Row::NewStrip])
+            .chain(self.model.can_add.then_some(Row::NewStrip))
             .collect()
     }
 
@@ -1378,7 +1386,7 @@ impl StripSwitcher {
                 Some(self.remove(index(i)?))
             }
             _ => match rest {
-                "new-strip" => {
+                "new-strip" if self.model.can_add => {
                     self.naming = None;
                     Some(self.activate(Row::NewStrip))
                 }
@@ -1553,6 +1561,7 @@ mod tests {
                 })
                 .collect(),
             focused: 0,
+            can_add: true,
         }
     }
 
@@ -1685,6 +1694,21 @@ mod tests {
             !names.iter().any(|n| n.contains("orkspace")),
             "no workspaces here: {names:?}"
         );
+    }
+
+    /// Someone the workspace does not let add a strip (a spectator, a
+    /// public room's visitor) is offered none.
+    #[test]
+    fn whoever_may_not_add_a_strip_is_offered_none() {
+        let (mut s, _) = switcher(&["Lounge", "Research"]);
+        s.set_model(SwitcherModel {
+            can_add: false,
+            ..model(&["Lounge", "Research"])
+        });
+        s.open_at(Instant::now(), false);
+        let rows: Vec<Row> = s.layout().labels.iter().map(|(row, _)| *row).collect();
+        assert_eq!(rows, [Row::Strip(0), Row::Strip(1)]);
+        assert_eq!(s.rows_in_order(), rows);
     }
 
     #[test]

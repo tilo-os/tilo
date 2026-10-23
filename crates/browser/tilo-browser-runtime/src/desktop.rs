@@ -248,6 +248,9 @@ pub(crate) struct Shared {
     /// desktop's): its windows and desks are the person's own, sent to
     /// nobody, and the room's later layout no longer replaces them.
     pub own_layout: Rc<Cell<bool>>,
+    /// The page only watches the room, as its spectator: nobody there sees
+    /// this desktop's person, so it offers nothing about how they are seen.
+    pub watching: Rc<Cell<bool>>,
     /// The room's members as its governance lists them, once heard: what
     /// someone no longer among them made is released, anyone's here to
     /// close ([`tilo_desktop_model::ownership::released`]).

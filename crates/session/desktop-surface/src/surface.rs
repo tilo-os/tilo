@@ -106,6 +106,9 @@ struct Shared {
     /// Whoever holds each window someone else opened, by tab
     /// ([`DesktopHandle::set_holders`]).
     holders: HashMap<TabId, ui::widget::TabHolder>,
+    /// Its person opens windows and tabs here ([`DesktopHandle::set_opens`]):
+    /// the windows offer a new tab.
+    opens: bool,
     /// Bumped on every tree change, so a host republishes navigation only
     /// when something moved.
     revision: u64,
@@ -294,6 +297,16 @@ impl DesktopHandle {
     /// window behaves as it always does. Applied to the windows on screen
     /// in the next update pass, and to every window built after. Whether
     /// that changed anything.
+    /// Whether this desktop's person opens windows and tabs here: someone
+    /// the room lets only look (a spectator) is offered no new tab. Whether
+    /// that changed anything.
+    pub fn set_opens(&self, opens: bool) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let changed = shared.opens != opens;
+        shared.opens = opens;
+        changed
+    }
+
     pub fn set_holders(&self, holders: HashMap<TabId, ui::widget::TabHolder>) -> bool {
         let mut shared = self.shared.borrow_mut();
         if shared.holders == holders {
@@ -686,6 +699,7 @@ impl DesktopSurface {
         let shared = Rc::new(RefCell::new(Shared {
             tree,
             holders: HashMap::new(),
+            opens: true,
             revision: 1,
             queue: Vec::new(),
             activity_author: None,
@@ -752,6 +766,7 @@ impl DesktopSurface {
         for row in self.rows.values_mut() {
             for group in &mut row.groups {
                 let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
+                changed |= group.set_new_tab(shared.opens);
                 for tab in tabs {
                     changed |= group.set_tab_holder(tab, shared.holders.get(&tab).cloned());
                 }

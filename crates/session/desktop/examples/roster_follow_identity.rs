@@ -62,6 +62,7 @@ fn paint_here(
             expanded_id,
             watching,
             waved: &[],
+            spectating: false,
         },
         None,
     );

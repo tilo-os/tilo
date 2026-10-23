@@ -1019,6 +1019,14 @@ impl TabBar {
         self
     }
 
+    /// Offer the new-tab control, or take it away (for someone who opens
+    /// nothing here). `true` when that changed what the bar offers.
+    pub fn set_new_tab(&mut self, on: bool) -> bool {
+        let changed = self.new_tab != on;
+        self.new_tab = on;
+        changed
+    }
+
     /// Mark what tab `id`'s content is doing, or clear the mark.
     pub fn set_mark(&mut self, id: u64, mark: Option<TabMark>) {
         if mark == Some(TabMark::Busy) {
@@ -2820,6 +2828,7 @@ impl TabBar {
             if self.controls.hit(self.last_cursor) == Some(control) {
                 let active = self.active_id;
                 match control {
+                    super::window_controls::WindowControl::Close if self.is_held(active) => {}
                     super::window_controls::WindowControl::Close => {
                         let _ = self.start_closing(active);
                     }
@@ -3824,8 +3833,14 @@ impl Widget for TabBar {
                 self.tabbed_changed_at = Some(crate::time::now());
             }
             let history = self.history.contains_key(&self.active_id);
-            self.controls =
-                super::window_controls::WindowControls::lay_out(self.tab_row(), history);
+            let controls = super::window_controls::WindowControls::lay_out(self.tab_row(), history);
+            // Someone else's window, or one its person only watches, is not
+            // theirs to close: the bar offers what the policy allows.
+            self.controls = if self.held_ids.contains_key(&self.active_id) {
+                controls.without_close()
+            } else {
+                controls
+            };
         } else {
             self.controls = super::window_controls::WindowControls::default();
         }
@@ -4278,7 +4293,10 @@ impl Widget for TabBar {
                 // that can't see it gets it as a description instead.
                 // `AccessState` has no flag for this and inventing one would
                 // ripple through every widget.
-                let node = if self.pinned_ids.contains(&t.id) || !self.closable {
+                let node = if self.pinned_ids.contains(&t.id)
+                    || !self.closable
+                    || self.held_ids.contains_key(&t.id)
+                {
                     node
                 } else {
                     node.with_children(vec![
@@ -4399,23 +4417,25 @@ impl Widget for TabBar {
                 WINDOW_MAXIMIZE_TARGET,
                 self.controls.maximize,
             ));
-            tab_children.push(button(
-                Role::Button,
-                crate::i18n::I18nManager::lookup_plain("host-window-close"),
-                WINDOW_CLOSE_TARGET,
-                self.controls.close,
-            ));
+            // A window not this person's to close offers no close here
+            // either.
+            let closes = self.controls.close.area() > 0.0;
+            if closes {
+                tab_children.push(button(
+                    Role::Button,
+                    crate::i18n::I18nManager::lookup_plain("host-window-close"),
+                    WINDOW_CLOSE_TARGET,
+                    self.controls.close,
+                ));
+            }
             // The active tab's slots, before the window's controls in
             // reading order.
             let slots = self.toolbar_row.accessibility();
             if !slots.is_empty() {
-                let at = tab_children.len().saturating_sub(
-                    if self.history.contains_key(&self.active_id) {
-                        3
-                    } else {
-                        2
-                    },
-                );
+                let controls = 1
+                    + usize::from(closes)
+                    + usize::from(self.history.contains_key(&self.active_id));
+                let at = tab_children.len().saturating_sub(controls);
                 for (offset, slot) in slots.into_iter().enumerate() {
                     tab_children.insert(at + offset, slot);
                 }
@@ -4451,6 +4471,7 @@ impl Widget for TabBar {
         if self.window_controls {
             let active = self.active_id;
             match target {
+                WINDOW_CLOSE_TARGET if self.is_held(active) => return false,
                 WINDOW_CLOSE_TARGET => return self.start_closing(active),
                 WINDOW_MAXIMIZE_TARGET => {
                     self.pending_max = Some(active);
@@ -4464,7 +4485,10 @@ impl Widget for TabBar {
             .strip_prefix("tab-close:")
             .and_then(|value| value.parse::<u64>().ok())
         {
-            return self.closable && !self.pinned_ids.contains(&id) && self.start_closing(id);
+            return self.closable
+                && !self.pinned_ids.contains(&id)
+                && !self.is_held(id)
+                && self.start_closing(id);
         }
         if let Some(id) = target
             .strip_prefix("tab-search:")
@@ -8588,6 +8612,52 @@ mod tests {
             ElementState::Pressed,
         ));
         Dispatch::new().layout(&taffy, node).send(b, &event).handled
+    }
+
+    /// A window someone else holds, or its person only watches, offers no
+    /// close among its controls, to the pointer or to assistive technology,
+    /// and keeps the rest.
+    #[test]
+    fn a_held_window_offers_no_close() {
+        let _settled = crate::motion::testing::settled();
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
+        b.set_window_controls(true);
+        b.set_holder(
+            1,
+            Some(TabHolder {
+                name: "Lounge".into(),
+                rgb: (1, 2, 3),
+            }),
+        );
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let controls = *b.window_controls();
+        assert!(controls.close.area() <= 0.0);
+        assert!(controls.maximize.area() > 0.0);
+        let node = Widget::accessibility(&b).expect("the bar is described");
+        fn targets(node: &crate::a11y::AccessNode, into: &mut Vec<String>) {
+            into.extend(node.action_target.clone());
+            for child in &node.children {
+                targets(child, into);
+            }
+        }
+        let mut all = Vec::new();
+        targets(&node, &mut all);
+        assert!(all.iter().any(|t| t == WINDOW_MAXIMIZE_TARGET), "{all:?}");
+        assert!(!all.iter().any(|t| t == WINDOW_CLOSE_TARGET), "{all:?}");
+        assert!(!all.iter().any(|t| t == "tab-close:1"), "{all:?}");
+        // Someone who opens nothing here is offered no new tab either.
+        assert!(all.iter().any(|t| t == "tab-new"), "{all:?}");
+        assert!(b.set_new_tab(false));
+        let mut all = Vec::new();
+        targets(&Widget::accessibility(&b).expect("described"), &mut all);
+        assert!(!all.iter().any(|t| t == "tab-new"), "{all:?}");
+        b.set_holder(1, None);
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        assert!(
+            b.window_controls().close.area() > 0.0,
+            "its own window closes"
+        );
     }
 
     /// A pointer sent to the centre of a window control's accessibility

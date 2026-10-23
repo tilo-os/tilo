@@ -1320,6 +1320,19 @@ async fn route(
                 Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
             })
         }
+        // A page leaving says so in a beacon, its token the body (no
+        // header rides a beacon): its session ends now, not when its polls
+        // stop. Whoever holds a token may end it, as by going quiet.
+        tilo_relay_protocol::web::SESSION_END_PATH => {
+            if let Some(token) = std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| hex::decode(text.trim()).ok())
+                .and_then(|token| <[u8; 32]>::try_from(token).ok())
+            {
+                web.sessions.end(&token);
+            }
+            Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
+        }
         "/send" => {
             let session = authed()?;
             let envelopes = decode(&bytes)?;

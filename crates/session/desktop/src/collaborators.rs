@@ -174,6 +174,9 @@ pub struct CollaboratorsModel<'a> {
     /// Whom this person waved at a moment ago, by roster id: their row
     /// shows the wave sent.
     pub waved: &'a [String],
+    /// This person only watches, as the workspace's spectator: counted
+    /// among the watching, never among who is here.
+    pub spectating: bool,
 }
 
 /// Direction of a transient attachment relative to one roster row.
@@ -322,9 +325,15 @@ fn doing_line(row: &RosterRow) -> Option<String> {
 /// The panel's header line: who is here besides this person, counted as
 /// the list is (the others, never this person, who is the "you" of the
 /// words; "2 here" over one row read as someone missing), and who is
-/// watching without joining.
-fn here_line(others: usize, watching: usize) -> String {
-    if watching > 0 {
+/// watching without joining. A spectator reads who is here and that they
+/// watch among the others watching.
+fn here_line(others: usize, watching: usize, spectating: bool) -> String {
+    if spectating {
+        t_args(
+            "people-panel-here-spectating",
+            &[("count", others.into()), ("watching", watching.into())],
+        )
+    } else if watching > 0 {
         t_args(
             "people-panel-here-watching",
             &[("count", others.into()), ("watching", watching.into())],
@@ -745,6 +754,7 @@ impl CollaboratorsOverlay {
                 .filter(|row| !row.invited && !row.own_device)
                 .count(),
             model.watching,
+            model.spectating,
         );
         ui::widget::TextStackFace::new(model.workspace)
             .secondary(&here_text)
@@ -2035,6 +2045,7 @@ mod tests {
                 expanded_id: expanded,
                 watching: 0,
                 waved: &[],
+                spectating: false,
             },
             None,
         );
@@ -2064,6 +2075,7 @@ mod tests {
                 expanded_id: None,
                 watching: 0,
                 waved: &waved,
+                spectating: false,
             },
             None,
         );
@@ -2219,6 +2231,7 @@ mod tests {
             expanded_id: None,
             watching: 0,
             waved: &[],
+            spectating: false,
         };
         assert_eq!(
             model.relationship_for("ada"),
@@ -2335,10 +2348,14 @@ mod tests {
     #[test]
     fn the_header_counts_the_people_listed() {
         ui::i18n::I18nManager::init("en-US");
-        assert_eq!(here_line(0, 0), "Just you");
-        assert_eq!(here_line(1, 0), "You and 1 other");
-        assert_eq!(here_line(3, 0), "You and 3 others");
-        assert_eq!(here_line(1, 2), "You and 1 other, 2 watching");
+        assert_eq!(here_line(0, 0, false), "Just you");
+        assert_eq!(here_line(1, 0, false), "You and 1 other");
+        assert_eq!(here_line(3, 0, false), "You and 3 others");
+        assert_eq!(here_line(1, 2, false), "You and 1 other, 2 watching");
+        assert_eq!(
+            here_line(1, 1, true),
+            "1 person here, 1 watching, you among them"
+        );
     }
 
     /// Only you: the roster says nobody else is here, and still offers

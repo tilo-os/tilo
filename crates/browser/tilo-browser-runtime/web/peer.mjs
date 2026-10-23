@@ -37,6 +37,8 @@ import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {decodableCodecs} from './legacy-windows.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './root-identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
+/** Where a leaving page ends its host session, the token its body (tilo-relay-protocol's `SESSION_END_PATH`). */
+const SESSION_END_PATH = '/peer/v1/session/end';
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
@@ -1040,10 +1042,18 @@ async function connect({
 
   // Leaving the page leaves the room's live plane at once: closing its
   // sessions withdraws this page's announcement, so everyone else takes its
-  // pointer and face down now, not when the link times out. A page kept to
-  // come back to (`persisted`) is frozen, not gone.
+  // pointer and face down now, not when the link times out. Its host
+  // session ends with it, by beacon (the one request a leaving page still
+  // sends), so the room stops counting the page now too, not once its polls
+  // are missed. A page kept to come back to (`persisted`) is frozen, not
+  // gone.
   const page = typeof globalThis.addEventListener === 'function' ? globalThis : null;
-  const leavePage = event => { if (!event?.persisted) stopLive(); };
+  const leavePage = event => {
+    if (event?.persisted) return;
+    stopLive();
+    const token = disposed ? undefined : peer?.sessionToken?.();
+    if (token) globalThis.navigator?.sendBeacon?.(new URL(SESSION_END_PATH, origin).href, token);
+  };
   page?.addEventListener('pagehide', leavePage);
 
   let disposal;
@@ -1092,8 +1102,9 @@ async function connect({
       try { return peer?.workspaceName?.() ?? undefined; } catch { return undefined; }
     },
     setDisplayName: name => rename(name),
-    /** Issue an invitation to the room (`membership.mjs`): resolves to its text. */
-    createInvitation: options => membership.createInvitation(options),
+    /** Issue an invitation to the room (`membership.mjs`): resolves to its
+     * text. A watching page has none to give: it is not in the room. */
+    ...(watching ? {} : {createInvitation: options => membership.createInvitation(options)}),
     /** The room's members, waiting people and invitations, for its owner
      * (`membership.mjs`): `list()`, `admit`, `decline`, `setRole`,
      * `remove`, `cancelInvitation`. */

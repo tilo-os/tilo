@@ -121,6 +121,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
           refreshes: 0,
           snapshot: () => JSON.stringify({phase: peer.phase, deviceId: 'dd', outgoingPending: 0, health: {version: 1, admission: {phase: peer.admission, pendingPrerequisites: peer.admission === 'ready' ? 0 : 1}}}),
           subscribe: listener => listeners.push(listener),
+          sessionToken: () => 'ce'.repeat(32),
           joinRoom: room => { peer.room = room; },
           liveGrant: async (room, ...agent) => {
             calls.grants++;
@@ -842,10 +843,13 @@ test("a person's presence colour is the runtime's for who they are, whatever the
   await peer.dispose();
 });
 
-test('leaving the page leaves the live plane at once, so others take its pointer down', async () => {
+test('leaving the page leaves the live plane and its host session at once, so others take it down', async () => {
   const page = new EventTarget();
   globalThis.addEventListener = page.addEventListener.bind(page);
   globalThis.removeEventListener = page.removeEventListener.bind(page);
+  const navigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const beacons = [];
+  Object.defineProperty(globalThis, 'navigator', {configurable: true, value: {sendBeacon: (url, body) => { beacons.push([url, body]); return true; }}});
   try {
     const runtime = fakeRuntime();
     const liveCarriers = fakeCarriers();
@@ -856,14 +860,19 @@ test('leaving the page leaves the live plane at once, so others take its pointer
     page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: true}));
     await tick();
     assert.equal(peer.live.state, 'live', 'a page kept to come back to stays');
+    assert.deepEqual(beacons, [], 'and keeps its host session');
     page.dispatchEvent(Object.assign(new Event('pagehide'), {persisted: false}));
     await tick();
     assert.equal(peer.live.state, 'closed');
     assert.ok(closed, 'its session closed, withdrawing its announcement');
+    assert.deepEqual(beacons, [['https://host.example:8443/peer/v1/session/end', 'ce'.repeat(32)]],
+      'the host hears the page went, its session token the body');
     await peer.dispose();
   } finally {
     delete globalThis.addEventListener;
     delete globalThis.removeEventListener;
+    if (navigator) Object.defineProperty(globalThis, 'navigator', navigator);
+    else delete globalThis.navigator;
   }
 });
 
