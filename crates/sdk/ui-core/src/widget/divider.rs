@@ -10,6 +10,10 @@
 //! inside a raised or overlay surface names that surface with
 //! [`Divider::on`], which derives the colour so the line stays visible on
 //! the dark preset; [`Divider::with_color`] is the explicit override.
+//!
+//! A surface painted by hand, with no widget laid out for its rule (a
+//! heading's foot, a side panel's edge), paints the same rule with
+//! [`paint_rule`] along an edge of its rect.
 
 use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
@@ -100,6 +104,53 @@ impl Divider {
                 .map_or(theme.border_standard, crate::surface::edge_on)
         })
     }
+}
+
+/// The edge of a rect a [`paint_rule`] runs along.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuleEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+/// Paint the rule a [`Divider`] draws along `edge` of `rect`, inside it, for
+/// a surface painted by hand. `surface` is the ground it stands on when that
+/// is not `surfaces.base` (as [`Divider::on`]).
+pub fn paint_rule(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    rect: Rect,
+    edge: RuleEdge,
+    surface: Option<vello::peniko::Color>,
+) {
+    let divider = match edge {
+        RuleEdge::Top | RuleEdge::Bottom => Divider::horizontal(),
+        RuleEdge::Left | RuleEdge::Right => Divider::vertical(),
+    };
+    let divider = match surface {
+        Some(surface) => divider.on(surface),
+        None => divider,
+    };
+    let px = f64::from(divider.thickness);
+    let line = match edge {
+        RuleEdge::Top => Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + px),
+        RuleEdge::Bottom => Rect::new(rect.x0, rect.y1 - px, rect.x1, rect.y1),
+        RuleEdge::Left => Rect::new(rect.x0, rect.y0, rect.x0 + px, rect.y1),
+        RuleEdge::Right => Rect::new(rect.x1 - px, rect.y0, rect.x1, rect.y1),
+    };
+    if line.width() <= 0.0 || line.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        divider.rule_color(theme),
+        None,
+        &line,
+    );
 }
 
 impl Widget for Divider {
@@ -289,5 +340,40 @@ mod tests {
         rule_color_follows_with_color_then_on_then_default();
         on_surface_still_emits_exactly_one_fill();
         draw_emits_a_fill();
+    }
+
+    #[test]
+    fn a_hand_painted_surface_paints_the_dividers_rule_along_one_edge() {
+        let theme = Theme::dark();
+        let fills = |rect: Rect, edge: RuleEdge| {
+            let mut scene = Scene::new();
+            paint_rule(&mut scene, Affine::IDENTITY, &theme, rect, edge, None);
+            scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count()
+        };
+        let band = Rect::new(0.0, 0.0, 300.0, 40.0);
+        for edge in [
+            RuleEdge::Top,
+            RuleEdge::Bottom,
+            RuleEdge::Left,
+            RuleEdge::Right,
+        ] {
+            assert_eq!(fills(band, edge), 1, "one rule along {edge:?}");
+        }
+        assert_eq!(
+            fills(Rect::new(0.0, 0.0, 0.0, 40.0), RuleEdge::Bottom),
+            0,
+            "an empty rect has no edge to rule"
+        );
+        let raised = theme.tokens.colors.surfaces.raised;
+        assert_eq!(
+            Divider::horizontal().on(raised).rule_color(&theme),
+            crate::surface::edge_on(raised),
+            "a rule on a surface takes that surface's edge, as the widget's does"
+        );
     }
 }
