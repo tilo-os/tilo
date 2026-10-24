@@ -719,6 +719,10 @@ mod tests {
             initialized["result"]["serverInfo"].is_object(),
             "{initialized}"
         );
+        // The room's governor takes the admission the answer asked for.
+        handle
+            .write()
+            .govern_requests_here_for_test(&"shell-fixture".to_owned());
         let members: Vec<_> = handle.read().desktop.workspaces[0]
             .agent_members()
             .into_iter()
