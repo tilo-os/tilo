@@ -71,6 +71,11 @@ title = "Network: adding a VPN"
 scenario = "network-vpn-add"
 
 [[situation]]
+name = "network-vpn-devices"
+title = "Network: your devices as a VPN"
+scenario = "network-vpn-devices"
+
+[[situation]]
 name = "network-mobile"
 title = "Network: with a modem"
 scenario = "network-mobile"

@@ -1413,6 +1413,25 @@ net-notice-enterprise-connecting = Connecting to the work or school network…
 net-notice-enterprise-connected = Enterprise Wi-Fi connected.
 
 ## VPN
+net-device-vpn-through = Through { $device }
+net-device-vpn-unnamed = your other device
+net-device-vpn-reconnecting = Reconnecting…
+net-device-vpn-blocking = Reconnecting. Nothing goes out until it is back.
+net-device-vpn-not-yours = It does not count this device as yours.
+net-device-vpn-exit-off = It is not shared as a VPN right now.
+net-device-vpn-full = It has no room for another device right now.
+net-device-vpn-not-installed = The part that routes traffic is not installed here.
+net-device-vpn-setup = The route could not be set up.
+net-device-vpn-no-home = Its home network is out of reach from here.
+net-device-vpn-exit = This device as a VPN
+net-device-vpn-share = Let my other devices use this device as a VPN
+net-device-vpn-share-caption = Their traffic goes out through this device's connection.
+net-device-vpn-using = Using this device as a VPN
+net-device-vpn-stop = Stop
+net-device-vpn-stopped = { $device } no longer uses this device as a VPN.
+net-device-vpn-unavailable = Your devices as a VPN are not available here.
+net-device-vpn-unknown = That device is not one of yours here.
+net-device-vpn-cannot-share = This device cannot be a VPN for your others.
 net-vpn-none = No VPN on this device yet.
 net-vpn-off = Off
 net-vpn-unread = Unreadable
