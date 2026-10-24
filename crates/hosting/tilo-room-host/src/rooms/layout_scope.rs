@@ -324,8 +324,13 @@ impl Rooms {
     /// shared layout: in a room whose layout is personal a member's change
     /// to the room's topology or shared desktop is refused, and a desktop
     /// write anywhere is decided by what it does to what others made
-    /// ([`Self::decide_desktop_write`]). Anything else, and the relay's own
-    /// writes, pass untouched.
+    /// ([`Self::decide_desktop_write`]). Anything else passes untouched.
+    ///
+    /// Every write a door decides came over a session, so it is a member's:
+    /// the relay commits its own writes to the room without a door. A
+    /// session that presents this relay's own certificate (the device the
+    /// relay runs on, as a member, or what it relays for members) is decided
+    /// as that device's, like any other member's.
     ///
     /// # Errors
     /// Why the room refuses it.
@@ -335,9 +340,6 @@ impl Rooms {
         author: [u8; 32],
         body: &[u8],
     ) -> Result<(), String> {
-        if author == self.inner.host.cert.device_public_key {
-            return Ok(());
-        }
         let Some(write) = layout_write(room, body) else {
             return Ok(());
         };
@@ -350,13 +352,12 @@ impl Rooms {
         }
     }
 
-    /// Whether the governor of `room` takes in `author`'s retained write
-    /// `message` when it replays what the relay retains: never a member's
-    /// shared desktop write in a room whose layout is personal.
+    /// Whether the governor of `room` takes in the retained write `message` when it replays what the relay retains: never a shared
+    /// desktop write in a room whose layout is personal, whichever device
+    /// wrote it.
     pub(super) fn recalls(
         &self,
         room: &GovernedRoom,
-        author: [u8; 32],
         message: &neighbour_wire::NeighbourMsg,
     ) -> bool {
         let neighbour_wire::NeighbourMsg::AppDocument {
@@ -365,9 +366,7 @@ impl Rooms {
         else {
             return true;
         };
-        author == self.inner.host.cert.device_public_key
-            || !is_desktop(app_id, record_id)
-            || !self.is_public(room.room())
+        !is_desktop(app_id, record_id) || !self.is_public(room.room())
     }
 }
 

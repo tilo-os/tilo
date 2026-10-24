@@ -100,6 +100,11 @@ pub struct Workspace {
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
     #[serde(default)]
     pub shared_surfaces: SharedSurfaces,
+    /// The fields a stored workspace holds that this one does not read (the
+    /// shell engine's tasks among them), kept exactly as they were: saving
+    /// the workspace again leaves them in place, and nothing is migrated.
+    #[serde(flatten)]
+    pub retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A workspace as stored: its policy names the room it was stored for, or is
@@ -134,11 +139,18 @@ struct StoredWorkspace {
     schedule_claims: Vec<tilo_automation::ScheduleClaim>,
     #[serde(default)]
     shared_surfaces: SharedSurfaces,
+    #[serde(flatten)]
+    retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 impl From<StoredWorkspace> for Workspace {
     fn from(stored: StoredWorkspace) -> Self {
         let room = stored.room;
+        // What this workspace writes but never reads back is its own, not
+        // retired.
+        let mut retired_fields = stored.retired_fields;
+        retired_fields.remove("collaborators");
+        retired_fields.remove("bots");
         let policy = match stored.policy {
             Some(mut policy) => {
                 policy.rehome(room.to_string());
@@ -164,6 +176,7 @@ impl From<StoredWorkspace> for Workspace {
             schedule_claims: stored.schedule_claims,
             bots: Vec::new(),
             shared_surfaces: stored.shared_surfaces,
+            retired_fields,
         }
     }
 }
@@ -1080,6 +1093,7 @@ impl Workspace {
             schedule_claims: Vec::new(),
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
+            retired_fields: serde_json::Map::new(),
         }
     }
 
@@ -1110,6 +1124,7 @@ impl Workspace {
             schedule_claims: _,
             bots,
             shared_surfaces,
+            retired_fields: _,
         } = self;
         Self {
             id: *id,
@@ -1129,6 +1144,7 @@ impl Workspace {
             schedule_claims: Vec::new(),
             bots: bots.clone(),
             shared_surfaces: shared_surfaces.clone(),
+            retired_fields: serde_json::Map::new(),
         }
     }
 
@@ -1190,6 +1206,7 @@ impl Default for Workspace {
             schedule_claims: Vec::new(),
             bots: Vec::new(),
             shared_surfaces: SharedSurfaces::default(),
+            retired_fields: serde_json::Map::new(),
         }
     }
 }
