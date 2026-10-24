@@ -190,10 +190,10 @@ pub(super) struct Runtime {
     /// and changed only with the tree held, so a snapshot and the install
     /// are ordered by the tree's lock.
     in_flight: Mutex<Option<InFlight>>,
-    /// Run before each state-file write of this writer, on whichever thread
-    /// makes it; see [`test_seam::hold_writes`].
+    /// Runs each state-file write of this writer, on whichever thread makes
+    /// it; see [`test_seam::wrap_writes`].
     #[cfg(test)]
-    before_write: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    around_write: Mutex<Option<test_seam::AroundWrite>>,
 }
 /// See [`Runtime::in_flight`].
 #[derive(Default)]
@@ -217,7 +217,7 @@ impl Default for Runtime {
             action_authority: Arc::default(),
             in_flight: Mutex::new(None),
             #[cfg(test)]
-            before_write: Mutex::new(None),
+            around_write: Mutex::new(None),
         }
     }
 }
@@ -482,19 +482,29 @@ impl NativeStateRuntime {
                 "stale native authority snapshot refused",
             )));
         }
+        let replace = || {
+            tilo_files::native::atomic::replace(
+                path,
+                &encoded.bytes,
+                tilo_files::native::atomic::Privacy::OwnerOnly,
+            )
+        };
         #[cfg(test)]
-        {
+        let replaced = {
             test_seam::before_write();
-            let held = self.0.before_write.lock().clone();
-            if let Some(hook) = held {
-                hook();
+            let around = self.0.around_write.lock().clone();
+            match around {
+                Some(around) => {
+                    let mut replaced = None;
+                    around(&mut || replaced = Some(replace()));
+                    replaced.expect("a test's write wrapper runs the write")
+                }
+                None => replace(),
             }
-        }
-        match tilo_files::native::atomic::replace(
-            path,
-            &encoded.bytes,
-            tilo_files::native::atomic::Privacy::OwnerOnly,
-        ) {
+        };
+        #[cfg(not(test))]
+        let replaced = replace();
+        match replaced {
             Ok(()) => Ok(Publication::Written),
             Err(error) => {
                 if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {
@@ -792,6 +802,21 @@ pub(crate) mod test_seam {
         });
     }
 
+    /// Runs one state-file write, given as the closure it calls.
+    pub(crate) type AroundWrite = std::sync::Arc<dyn Fn(&mut dyn FnMut()) + Send + Sync>;
+
+    /// Run every state-file write `runtime` makes through `around`, on
+    /// whichever thread makes it, until the returned guard is dropped.
+    /// `around` must call the write it is given exactly once; a scope it
+    /// opens around that call (a storage failure) covers the write.
+    pub(crate) fn wrap_writes(
+        runtime: &super::NativeStateRuntime,
+        around: impl Fn(&mut dyn FnMut()) + Send + Sync + 'static,
+    ) -> HeldWrites {
+        *runtime.0.around_write.lock() = Some(std::sync::Arc::new(around));
+        HeldWrites(runtime.clone())
+    }
+
     /// Call `hook` before every state-file write `runtime` makes, on any
     /// thread, until the returned guard is dropped: a disk whose syncs take
     /// as long as `hook` does.
@@ -799,15 +824,17 @@ pub(crate) mod test_seam {
         runtime: &super::NativeStateRuntime,
         hook: impl Fn() + Send + Sync + 'static,
     ) -> HeldWrites {
-        *runtime.0.before_write.lock() = Some(std::sync::Arc::new(hook));
-        HeldWrites(runtime.clone())
+        wrap_writes(runtime, move |write| {
+            hook();
+            write();
+        })
     }
 
     /// Lets the writer's state-file writes go at full speed again when dropped.
     pub(crate) struct HeldWrites(super::NativeStateRuntime);
     impl Drop for HeldWrites {
         fn drop(&mut self) {
-            self.0.0.before_write.lock().take();
+            self.0.0.around_write.lock().take();
         }
     }
 
