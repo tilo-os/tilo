@@ -540,3 +540,58 @@ fn a_room_hosted_here_is_governed_through_the_hosts_in_process_caller() {
     );
     drop(first);
 }
+
+/// A rename made on a desktop of a room its own host holds, with the relays
+/// down and nobody else to reach, is the host's room governance action,
+/// asked through its in-process caller: the room's admitted document here
+/// carries the new name, and nothing waits.
+#[test]
+#[serial_test::serial]
+fn a_rename_of_a_room_hosted_here_applies_with_the_relays_down() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = SigningKey::from_bytes(&[50; 32]);
+    home.env().set("TILO_USER_ID", person_of(&root));
+
+    let mut tree = WorkspaceTree::default();
+    let (_, room) = tree.create_hosted_workspace("Home");
+    tree.persist_path = Some(dir.path().join("workspaces.json"));
+    let tree = tree.shared();
+    let device = device_reaching(
+        tree.clone(),
+        dir.path(),
+        &root,
+        DeviceCapabilities::primary(),
+        Reach::LoopbackHoldingRelays,
+    );
+    let name_of = |tree: &WorkspaceTreeHandle| {
+        tree.read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .map(|workspace| workspace.name.clone())
+    };
+    until("the workspace to be hosted here", || {
+        device.tick();
+        tree.read().native_authority.holds(room).then_some(())
+    });
+
+    tree.write().request_governance(
+        room,
+        GovernanceRequest::Command(
+            tilo_desktop_model::commands::DesktopCommand::RenameWorkspace {
+                name: "Design".into(),
+            },
+        ),
+    );
+    until("the rename to reach the room's document here", || {
+        device.tick();
+        (name_of(&tree).as_deref() == Some("Design")).then_some(())
+    });
+    assert!(
+        tree.read().governance_requests.is_empty(),
+        "the rename still waits for a governor"
+    );
+    drop(device);
+}
