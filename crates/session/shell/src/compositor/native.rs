@@ -4496,7 +4496,7 @@ type SnapshotOutcome = std::sync::Arc<std::sync::Mutex<Option<Result<(), String>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DisplayRequest {
     Blank,
-    WakeFault(crate::compositor::backend::drm::wake_check::WakeStage),
+    WakeFault(crate::compositor::backend::WakeStage),
 }
 
 struct TestControlCtx {
@@ -6555,22 +6555,8 @@ fn dispatch_control_command(
             (test_control::Response::Ok { frame: 0 }, Vec::new())
         }
         test_control::Command::DisplayWakeFault { stage } => {
-            match crate::compositor::backend::drm::wake_check::WakeStage::parse(&stage) {
-                Some(wake_stage) => {
-                    ctx.display_requests
-                        .push(DisplayRequest::WakeFault(wake_stage));
-                    (test_control::Response::Ok { frame: 0 }, Vec::new())
-                }
-                None => (
-                    test_control::Response::Err {
-                        code: "parse_error".into(),
-                        message: format!(
-                            "no wake stage {stage:?}: one of commit, link, crtc, backlight"
-                        ),
-                    },
-                    Vec::new(),
-                ),
-            }
+            ctx.display_requests.push(DisplayRequest::WakeFault(stage));
+            (test_control::Response::Ok { frame: 0 }, Vec::new())
         }
         cmd => {
             let state = FrameBuilderControlState {
@@ -15052,7 +15038,7 @@ pub fn run() {
                     apply_session_transitions!(session.blank_now(Instant::now()));
                 }
                 DisplayRequest::WakeFault(wake_stage) => {
-                    if let Err(error) = backend.inject_wake_fault(wake_stage.name()) {
+                    if let Err(error) = backend.inject_wake_fault(wake_stage) {
                         eprintln!("tilo compositor: test control: wake fault refused: {error}");
                     }
                 }

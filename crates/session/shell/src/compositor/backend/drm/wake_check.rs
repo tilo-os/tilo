@@ -19,37 +19,7 @@
 
 use std::time::Instant;
 
-/// One stage of lighting an output.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WakeStage {
-    /// The driver took the commit that lights the CRTC.
-    Commit,
-    /// A vblank followed the modeset: the link to the display is up.
-    Link,
-    /// The CRTC reads back active, showing a mode.
-    Crtc,
-    /// The built-in panel's backlight is unblanked.
-    Backlight,
-}
-
-impl WakeStage {
-    /// Its name in the flight record and the test-control fault.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Commit => "commit",
-            Self::Link => "link",
-            Self::Crtc => "crtc",
-            Self::Backlight => "backlight",
-        }
-    }
-
-    /// The stage `name` names ([`Self::name`]).
-    pub fn parse(name: &str) -> Option<Self> {
-        [Self::Commit, Self::Link, Self::Crtc, Self::Backlight]
-            .into_iter()
-            .find(|stage| stage.name() == name)
-    }
-}
+pub use crate::compositor::backend::WakeStage;
 
 /// What the kernel holds for an output once it was lit, read back after the
 /// wake rather than assumed from the commit.
@@ -323,15 +293,16 @@ mod tests {
     }
 
     #[test]
-    fn stage_names_round_trip() {
+    fn a_fault_names_a_stage_as_the_flight_record_does() {
         for stage in [
             WakeStage::Commit,
             WakeStage::Link,
             WakeStage::Crtc,
             WakeStage::Backlight,
         ] {
-            assert_eq!(WakeStage::parse(stage.name()), Some(stage));
+            let named = serde_json::Value::from(stage.name());
+            assert_eq!(serde_json::from_value::<WakeStage>(named).ok(), Some(stage));
         }
-        assert_eq!(WakeStage::parse("vblank"), None);
+        assert!(serde_json::from_value::<WakeStage>("vblank".into()).is_err());
     }
 }
