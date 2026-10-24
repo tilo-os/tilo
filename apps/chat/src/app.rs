@@ -4,8 +4,8 @@
 //! users / messages / drafts), the per-peer view state (active channel,
 //! open thread, call state, composer caret), and one real
 //! [`ui::widget::VideoPlayer`] used as the host call tile. It does its own
-//! manual layout: the four regions (channel sidebar, channel header,
-//! message timeline, composer) plus floating layers
+//! manual layout: the conversation (timeline and composer) beside the
+//! shell's channel sidebar, plus floating layers
 //! (thread panel, emoji picker, edit-history popover, call huddle /
 //! expanded overlay) are computed from `self.rect` each frame, and every
 //! clickable area is recorded into `self.hits` for the next event.
@@ -35,7 +35,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Collaborative, ContextMenu as SharedContextMenu, Continuable, FloatingSurfaceProvider,
-    MenuItem, SearchField, SidebarDrawer, TextInput, VideoPlayer,
+    MenuItem, NavFeed, SearchField, SidebarDrawer, VideoPlayer, WindowBarLink,
 };
 
 use crate::call::CallState;
@@ -132,13 +132,11 @@ pub(crate) enum MenuTarget {
     Category(Id),
     /// One of your own messages — the action menu offers Edit.
     Message(Id),
-    /// The sidebar's background and its "+" — create affordances.
+    /// The room itself: what can be made in it.
     Room,
 }
 
-/// The structural actions reachable from a context menu. A left-swipe on a
-/// channel row resolves to the channel menu's `Delete`, so the gesture and the
-/// menu can never drift (swipe⇔menu parity).
+/// The structural actions reachable from a context menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MenuAction {
     Rename,
@@ -215,8 +213,8 @@ impl MenuAction {
             MenuAction::Delete,
         ]
     }
-    /// Menu items for the room: the sidebar header's "+" and its
-    /// background.
+    /// Menu items for the room: the window bar's Create, and a right click
+    /// in the conversation.
     pub fn for_room() -> [MenuAction; 2] {
         [MenuAction::NewChannelHere, MenuAction::NewCategory]
     }
@@ -229,11 +227,6 @@ impl MenuAction {
             MenuAction::ToggleCollapse,
             MenuAction::Delete,
         ]
-    }
-    /// The action a swipe-left on a channel row resolves to: the channel
-    /// menu's destructive action.
-    pub fn channel_swipe_left() -> MenuAction {
-        MenuAction::Delete
     }
     /// Menu items for one of your own messages.
     pub fn for_message() -> [MenuAction; 5] {
@@ -256,15 +249,6 @@ impl MenuAction {
             MenuAction::DeleteMessage,
         ]
     }
-}
-
-/// An in-progress swipe on a channel row (mirrors the context-menu primary
-/// action on release).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RowSwipe {
-    pub channel_index: usize,
-    pub origin: Point,
-    pub current: Point,
 }
 
 /// The bounded worker's result. File I/O and header sniffing happen before
@@ -307,12 +291,6 @@ pub(crate) struct AgentConversationDrag {
     pub(crate) origin: Point,
 }
 
-impl RowSwipe {
-    pub fn dx(&self) -> f64 {
-        (self.origin.x - self.current.x).max(0.0)
-    }
-}
-
 /// Everything the user can click. Recorded during `draw`, resolved on the
 /// next mouse-press.
 #[derive(Clone, Debug)]
@@ -322,18 +300,12 @@ pub(crate) enum Hit {
     DirectPerson(String),
     AgentWindow,
     AgentDragHandle,
-    /// A voice-channel member chip in the sidebar — clicking joins the call.
-    VoiceChannel(Id),
-    /// Toggle a category's collapsed state.
-    CategoryToggle(Id),
-    /// The "+" create-channel button on a category header.
+    /// Make a channel in a category.
     AddChannel {
         category: Id,
     },
-    /// The "+" create-category button in the sidebar header.
+    /// Make a channel or a category: what can be made in the room.
     AddCategory,
-    /// Focus/place the caret in the inline structural rename field.
-    FocusRename,
     Reaction {
         msg: Id,
         emoji: String,
@@ -396,8 +368,6 @@ pub(crate) enum Hit {
     CallScreen,
     CallExpand,
     CallLeave,
-    /// Toggle the left flap (the channel sidebar).
-    ToggleLeftFlap,
     /// Toggle the right flap (members / thread).
     ToggleRightFlap,
     /// Show or hide the open channel's pinned messages in the detail drawer.
@@ -414,15 +384,12 @@ impl Hit {
             Self::DirectPerson(key) => format!("chat.person:{key}"),
             Self::AgentWindow => "chat.agent-window".into(),
             Self::AgentDragHandle => "chat.agent-drag".into(),
-            Self::VoiceChannel(id) => format!("chat.voice-channel:{id}"),
-            Self::CategoryToggle(id) => format!("chat.category-toggle:{id}"),
             Self::AddChannel { category } => format!("chat.add-channel:{category}"),
             Self::AddCategory => "chat.add-category".into(),
             Self::TogglePins => "chat.pins".into(),
             Self::RevealMessage(id) => format!("chat.reveal-message:{id}"),
             Self::FocusMain => "chat.composer".into(),
             Self::FocusThread => "chat.thread-composer".into(),
-            Self::FocusRename => "chat.rename".into(),
             Self::FocusEdit => "chat.message-edit".into(),
             Self::HostModel(command) => format!("chat.model.{command}"),
             Self::Send => "chat.send".into(),
@@ -438,7 +405,6 @@ impl Hit {
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
             Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
             Self::OpenResource(id) => format!("chat.open-resource:{id}"),
-            Self::ToggleLeftFlap => "chat.toggle-navigation".into(),
             Self::ToggleRightFlap => "chat.toggle-details".into(),
             Self::OpenThread(id) => format!("chat.open-thread:{id}"),
             Self::CloseThread => "chat.close-thread".into(),
@@ -586,11 +552,6 @@ pub struct ChatApp {
     /// The picker's query; empty shows the selected group.
     pub(crate) emoji_search: SearchField,
     pub(crate) emoji_group: usize,
-    /// How far the channel tree is scrolled from its top, the rect it
-    /// scrolls in, and its whole height as last painted.
-    pub(crate) nav_scroll: f64,
-    pub(crate) nav_viewport: Rect,
-    pub(crate) nav_content_h: f64,
     /// How far the picker grid is scrolled, and the rect it scrolls in.
     pub(crate) emoji_scroll: f64,
     pub(crate) emoji_grid: Rect,
@@ -629,11 +590,9 @@ pub struct ChatApp {
 
     // Structure editing.
     pub(crate) menu: Option<ContextMenu>,
-    /// Channel/category currently being renamed. The shared single-line input
-    /// owns the transient working name; structural CRDT policy stays here.
-    pub(crate) rename: Option<MenuTarget>,
-    pub(crate) rename_input: TextInput,
-    pub(crate) swipe: Option<RowSwipe>,
+    /// The channel or category whose name a menu asked to change, until
+    /// the event that asked hands the sidebar the keyboard.
+    pub(crate) sidebar_rename: Option<String>,
 
     // Call state.
     pub(crate) call: CallState,
@@ -661,8 +620,13 @@ pub struct ChatApp {
     /// Opens the platform search when the header's search button is used.
     pub(crate) search_opener: ui::search::SearchOpener,
 
-    // Responsive flaps.
-    pub(crate) left_flap: SidebarDrawer,
+    /// The shell's sidebar: the channels this window shows in it and what
+    /// the person does there ([`crate::sidebar`]).
+    pub(crate) places: NavFeed,
+    /// The shell's own controls in the window bar, and its sidebar's
+    /// state; `None` outside a shell (a floated conversation, a test).
+    pub(crate) bar: Option<WindowBarLink>,
+    /// The detail drawer: people, pins, or the open thread.
     pub(crate) right_flap: SidebarDrawer,
     /// The chrome metrics of the last painted theme.
     pub(crate) chrome: Chrome,
@@ -1012,9 +976,6 @@ impl ChatApp {
             // window-bar: picker, type-ahead in the emoji popover
             emoji_search: SearchField::new().with_placeholder(&crate::i18n::t("chat-emoji-search")),
             emoji_group: 0,
-            nav_scroll: 0.0,
-            nav_viewport: Rect::ZERO,
-            nav_content_h: 0.0,
             emoji_scroll: 0.0,
             emoji_grid: Rect::ZERO,
             emoji_recents: emoji::Recents::default(),
@@ -1036,9 +997,7 @@ impl ChatApp {
             attachment_picker_result_tx,
             attachment_picker_result_rx,
             menu: None,
-            rename: None,
-            rename_input: Self::new_rename_input(),
-            swipe: None,
+            sidebar_rename: None,
             call: CallState::default(),
             native_voice: crate::local_voice::LocalVoice::default(),
             resource_navigation: crate::shared_resources::Navigation::default(),
@@ -1052,7 +1011,8 @@ impl ChatApp {
             pending_floating: None,
             floating_surface_bounds: Rect::ZERO,
             search_opener: ui::search::SearchOpener::new(),
-            left_flap: Self::navigation_drawer(),
+            places: NavFeed::new(),
+            bar: None,
             right_flap: Self::detail_drawer(),
             chrome: Chrome::default(),
             layout_text_scale: 1.0,
@@ -1550,6 +1510,11 @@ impl ChatApp {
     /// collaboration states are explicit so a capture does not teach a
     /// floating call as Chat's resting state.
     pub(crate) fn stage_scenario(&mut self, scenario: &str) {
+        if let Some(bar) = (self.bar.as_ref()).filter(|_| !matches!(scenario, "" | "channels")) {
+            // A capture is of the conversation, on a window that shows one
+            // column at a time too.
+            bar.stage_pane(ui::widget::NavPane::Content);
+        }
         if scenario != "starter" {
             self.active_channel = "c_crit".into();
             // The demo conversation is read by its own person: what they
@@ -1573,9 +1538,12 @@ impl ChatApp {
     pub(crate) fn stage_view(&mut self, scenario: &str) {
         match scenario {
             "narrow" => {
-                // Overlay-collapsed conversation: both flaps closed, no thread,
-                // no floating call — the clean single-column reading state.
-                self.left_flap.snap(false);
+                // Overlay-collapsed conversation: both drawers closed, no
+                // thread, no floating call — the clean single-column reading
+                // state.
+                if let Some(bar) = &self.bar {
+                    bar.stage_sidebar(false);
+                }
                 self.right_flap.snap(false);
                 self.thread_open = None;
                 self.call = CallState::default();
@@ -1968,7 +1936,7 @@ impl ChatApp {
         self.call.placement.confirm_desktop_adoption();
 
         if scenario == "floating-call-hover" {
-            self.call_hovered = Some(Hit::CallLeave);
+            self.call_hovered = Some(Hit::CallCamera);
         }
 
         if let Some(permille) = scenario
@@ -2096,6 +2064,42 @@ impl ChatApp {
     /// them on leave, and anything downstream that only ever learned would go
     /// on offering a departed participant in the `@` picker and painting their
     /// colour behind a mention.
+    /// Take this frame's room: who is here and in which call, their names
+    /// and colours, and the authority the window acts under. Whether any of
+    /// it changed, so the channels show it (also while the conversation is
+    /// put away and not drawn). In a call they show who speaks, which moves
+    /// every frame.
+    fn take_room(&mut self) -> bool {
+        let before = (
+            self.room_voice.clone(),
+            self.room_names.clone(),
+            self.room_colors.clone(),
+            self.person_contacts.clone(),
+        );
+        let permissions = ui::presence::frame::frame(PresenceCtx::permission_context).flatten();
+        let perms_changed = permissions.is_some_and(|permissions| {
+            let changed = self.perms.context() != &permissions;
+            self.perms = ChatPermissions::from_context(permissions);
+            changed
+        });
+        if let Some(capture) = self.capture_agent_presence.clone() {
+            self.adopt_room(&capture);
+        } else if ui::presence::frame::frame(|presence| self.adopt_room(presence)).is_none() {
+            return perms_changed;
+        }
+        let after = (
+            &self.room_voice,
+            &self.room_names,
+            &self.room_colors,
+            &self.person_contacts,
+        );
+        let changed = perms_changed || (&before.0, &before.1, &before.2, &before.3) != after;
+        if changed || self.call.active {
+            self.show_sidebar();
+        }
+        changed
+    }
+
     pub fn adopt_room(&mut self, presence: &PresenceCtx) {
         self.person_contacts = ui::person_chat::contacts();
         self.adopt_own_participant(presence);
@@ -2238,7 +2242,6 @@ impl ChatApp {
         view.active_channel.clone_from(&parent.active_channel);
         view.conversation_surface = true;
         view.thread_open = None;
-        view.left_flap.snap(false);
         view.right_flap.snap(false);
         view.external_services = parent.external_services;
         if let Some(dispatcher) = parent.dispatch.clone() {
@@ -2667,10 +2670,6 @@ impl ChatApp {
             .collect()
     }
 
-    pub(crate) fn category(&self, id: &str) -> Option<&crate::model::Category> {
-        self.categories.iter().find(|c| c.id == id)
-    }
-
     /// Cached voice members of `channel` (empty when nobody is connected).
     pub(crate) fn voice_in(&self, channel: &str) -> &[crate::model::VoiceMember] {
         self.voice_members
@@ -2688,12 +2687,6 @@ impl ChatApp {
             .collect();
         v.sort_by_key(|c| c.order);
         v
-    }
-
-    /// A single-line local field for channel/category names. The host commits
-    /// the trimmed value through the target-specific CRDT action on submit.
-    fn new_rename_input() -> TextInput {
-        TextInput::local().with_enter_submits(true)
     }
 
     /// The composer for the surface the user is typing in.
@@ -2715,10 +2708,7 @@ impl ChatApp {
     /// when no inline editor / rename is capturing input. Idempotent; called
     /// from `reload` and after any focus change.
     pub(crate) fn set_composer_focus(&mut self) {
-        let editing = self.editing.is_some()
-            || self.rename.is_some()
-            || self.channel_sheet.is_some()
-            || !self.host_focused;
+        let editing = self.editing.is_some() || self.channel_sheet.is_some() || !self.host_focused;
         // Without an open channel the main composer has nowhere to send, so
         // it takes no keys.
         let has_target = self.channel(&self.active_channel).is_some();
@@ -2728,10 +2718,6 @@ impl ChatApp {
         self.composer_thread.set_focus(thread);
         self.edit_input
             .set_focus(self.host_focused && self.editing.is_some());
-        ui::Widget::set_focus(
-            &mut self.rename_input,
-            self.host_focused && self.rename.is_some(),
-        );
     }
 
     /// Presence scope of the composer of a channel or thread, so the others
@@ -2788,7 +2774,6 @@ impl ChatApp {
     ) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
         if !self.host_focused
             || self.editing.is_some()
-            || self.rename.is_some()
             || !self.can_participate()
             || self.direct_person.is_some()
         {
@@ -2828,17 +2813,6 @@ impl ChatApp {
                 self.edit_input.value(),
                 self.edit_input.selection(),
             )),
-            Hit::FocusRename => {
-                let field = &self.rename_input;
-                let (anchor, focus) = field
-                    .selection_anchor_focus_public()
-                    .unwrap_or_else(|| (field.cursor_pos(), field.cursor_pos()));
-                Some((
-                    ui::Widget::is_focused(field),
-                    field.value().to_owned(),
-                    (anchor, focus),
-                ))
-            }
             _ => None,
         }
     }
@@ -3277,21 +3251,11 @@ impl ChatApp {
 
     // --- window geometry ---------------------------------------------------
     //
-    // Two drawers frame the conversation: the navigation drawer (the
-    // room's channel list) at the leading edge, and the detail
-    // drawer (people, or the open thread) at the trailing edge. The toolkit's
-    // `SidebarDrawer` decides, from the window width, whether each docks
-    // beside the conversation or floats over it behind a scrim, eases the
-    // reveal and remembers the person's show/hide choice per size class.
-
-    /// The leading navigation drawer: the room's channel list, at the
-    /// shell's sidebar metrics. One room is one place, so there is no rail
-    /// of other places beside it. It docks while the conversation keeps
-    /// a reading column's minimum; below that the channel list and the
-    /// conversation take turns filling the window.
-    fn navigation_drawer() -> SidebarDrawer {
-        SidebarDrawer::new().content_kind(ui::widget::ContentKind::Reading)
-    }
+    // The shell keeps the room's channels in its sidebar (`resource.rs`);
+    // this window is the conversation beside them, and the detail drawer
+    // (people, or the open thread) at its trailing edge. The toolkit's
+    // `SidebarDrawer` decides, from the width, whether that drawer docks
+    // beside the conversation or floats over it behind a scrim.
 
     /// The trailing detail drawer, summoned on demand. It docks while the
     /// conversation beside it keeps its minimum width.
@@ -3305,33 +3269,22 @@ impl ChatApp {
             .breakpoint(f64::from(m.content_min_width + m.inspector_width))
     }
 
-    /// True when the navigation drawer shows (docked, or revealed floating).
-    pub(crate) fn left_flap_open(&self) -> bool {
-        self.left_flap.is_open()
+    /// True when the shell's sidebar, the channels, shows.
+    pub(crate) fn sidebar_open(&self) -> bool {
+        self.bar
+            .as_ref()
+            .is_some_and(WindowBarLink::is_sidebar_open)
     }
     /// True when the detail drawer (people / thread) shows.
     pub(crate) fn right_flap_open(&self) -> bool {
         self.right_flap.is_open()
-    }
-    /// The navigation drawer floats over the conversation (narrow window).
-    pub(crate) fn left_overlay(&self) -> bool {
-        self.left_flap.is_overlay()
     }
     /// The detail drawer floats over the conversation.
     pub(crate) fn right_overlay(&self) -> bool {
         self.right_flap.is_overlay()
     }
 
-    /// The navigation drawer's panel: the channel list.
-    pub(crate) fn nav_rect(&self) -> Rect {
-        self.left_flap.sidebar_rect()
-    }
-    /// The channel list: the whole drawer, its title and its toggle being
-    /// the window bar's.
-    pub(crate) fn sidebar_rect(&self) -> Rect {
-        self.left_flap.list_rect()
-    }
-    /// The conversation column: what the docked drawers leave.
+    /// The conversation column: what the docked detail drawer leaves.
     pub(crate) fn content_rect(&self) -> Rect {
         let content = self.right_flap.content_rect();
         if content.width() > 0.0 {
@@ -3432,21 +3385,20 @@ impl ChatApp {
         self.right_overlay() && self.thread_open.is_some() && self.right_flap_open()
     }
 
-    /// Resolve both drawers against the current window: docked or floating,
-    /// and the rects they leave the conversation. Cheap and deterministic, so
-    /// the event path calls it too. Returns true while either drawer slides.
+    /// Resolve the detail drawer against the window: docked or floating, and
+    /// the rect it leaves the conversation. Cheap and deterministic, so the
+    /// event path calls it too. Returns true while it slides.
     pub(crate) fn reconcile_flaps(&mut self) -> bool {
         if self.rect.width() < 1.0 {
             return false;
         }
-        let content = self.left_flap.resolve(self.rect);
-        self.resolve_detail_drawer(content);
-        self.flap_animating = self.left_flap.is_animating() || self.right_flap.is_animating();
+        self.resolve_detail_drawer(self.rect);
+        self.flap_animating = self.right_flap.is_animating();
         self.flap_animating
     }
 
-    /// Resolve the detail drawer against `content`, the conversation the
-    /// navigation drawer leaves. Floating over the conversation, pins and
+    /// Resolve the detail drawer against `content`, the conversation.
+    /// Floating over the conversation, pins and
     /// people end above the composer (and so does the scrim that dismisses
     /// them), so its emoji and Send stay in reach; a thread is a page of its
     /// own there and takes the whole window.
@@ -3464,20 +3416,17 @@ impl ChatApp {
         }
     }
 
-    /// Adopt `theme`'s metrics and advance both drawers' reveals for this
-    /// frame (once per paint).
+    /// Adopt `theme`'s metrics and advance the detail drawer's reveal for
+    /// this frame (once per paint).
     pub(crate) fn advance_flaps(&mut self, theme: &Theme) {
         self.chrome = Chrome::of(theme);
-        self.left_flap.scale_for(theme);
         self.right_flap.scale_for(theme);
         if !self.reconcile_flaps() && self.rect.width() < 1.0 {
             return;
         }
-        self.left_flap.tick(theme);
-        let content = self.left_flap.content_rect();
-        self.resolve_detail_drawer(content);
+        self.resolve_detail_drawer(self.rect);
         self.right_flap.tick(theme);
-        self.flap_animating = self.left_flap.is_animating() || self.right_flap.is_animating();
+        self.flap_animating = self.right_flap.is_animating();
     }
 
     /// A context menu over `target` whose rows say what they do to it.
@@ -3508,7 +3457,16 @@ impl ChatApp {
             MenuAction::Rename => "Rename category".to_owned(),
             other => other.label().to_owned(),
         };
-        ContextMenu::labelled(target, anchor, items, self.rect, label)
+        ContextMenu::labelled(target, anchor, items, self.menu_bounds(), label)
+    }
+
+    /// Where a menu may open: the conversation, and the sidebar beside it
+    /// whose rows a menu also opens from.
+    fn menu_bounds(&self) -> Rect {
+        self.places
+            .list_rect()
+            .filter(|list| list.width() > 0.0 && self.sidebar_open())
+            .map_or(self.rect, |list| list.union(self.rect))
     }
 
     /// Keep the active channel and thread pointing at something that exists
@@ -3617,32 +3575,6 @@ impl ChatApp {
         hits.iter()
             .filter_map(|(rect, hit)| {
                 let (name, role, selected) = match hit {
-                    Hit::Channel(id) | Hit::VoiceChannel(id) => {
-                        let channel = self.channel(id)?;
-                        let unread = if channel.unread == 0 {
-                            String::new()
-                        } else {
-                            format!(", {} unread", channel.unread)
-                        };
-                        // Who is in a voice channel's call is drawn under
-                        // it as rows of their own; say it with the channel.
-                        let people: Vec<String> = self
-                            .voice_people(id)
-                            .iter()
-                            .map(|person| self.user_name(person))
-                            .collect();
-                        let with = if people.is_empty() {
-                            String::new()
-                        } else {
-                            format!(", with {}", people.join(", "))
-                        };
-                        (
-                            format!("{}{unread}{with}", channel.kind.label(&channel.name)),
-                            Role::ListItem,
-                            channel.id == self.active_channel,
-                        )
-                    }
-                    Hit::DirectPerson(key) => (self.person_display_name(key), Role::Button, false),
                     Hit::AgentWindow => (
                         if self.conversation_surface {
                             crate::i18n::t("chat-agent-return")
@@ -3652,19 +3584,6 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
-                    Hit::CategoryToggle(id) => {
-                        let category = self.categories.iter().find(|category| category.id == *id);
-                        let name = category.map_or("category", |category| category.name.as_str());
-                        let collapsed = category.is_some_and(|category| category.collapsed);
-                        (
-                            format!("{} {name}", if collapsed { "Expand" } else { "Collapse" }),
-                            Role::ToggleButton,
-                            !collapsed,
-                        )
-                    }
-                    Hit::AddChannel { .. } => ("Add channel".into(), Role::Button, false),
-                    Hit::AddCategory => ("Create channel or category".into(), Role::Button, false),
-                    Hit::FocusRename => ("Rename field".into(), Role::TextInput, false),
                     Hit::FocusEdit => ("Edit message".into(), Role::MultilineTextInput, false),
                     Hit::FocusMain => ("Message composer".into(), Role::MultilineTextInput, false),
                     Hit::FocusThread => (
@@ -3734,9 +3653,6 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
-                    Hit::ToggleLeftFlap => {
-                        ("Show conversation navigation".into(), Role::Button, false)
-                    }
                     Hit::ToggleRightFlap => ("Show people or thread".into(), Role::Button, false),
                     Hit::TogglePins => {
                         ("Pinned messages".into(), Role::ToggleButton, self.pins_open)
@@ -3869,8 +3785,7 @@ impl ChatApp {
             rect.contains(point)
                 && matches!(
                     hit,
-                    Hit::ToggleLeftFlap
-                        | Hit::ToggleRightFlap
+                    Hit::ToggleRightFlap
                         | Hit::TogglePins
                         | Hit::CallMute
                         | Hit::Attach
@@ -4074,6 +3989,7 @@ impl Widget for ChatApp {
         // take writes now.
         self.flush_staged_parts();
         self.apply_window_toolbar(edits);
+        self.take_sidebar_events(edits);
     }
 
     ui::provides!(
@@ -4149,7 +4065,6 @@ impl Widget for ChatApp {
     fn set_focus(&mut self, focused: bool) {
         self.host_focused = focused;
         if !focused {
-            self.left_flap.set_resize_focused(false);
             self.right_flap.set_resize_focused(false);
         }
         self.canonical_dirty = true;
@@ -4178,9 +4093,7 @@ impl Widget for ChatApp {
         if !self.host_focused {
             return None;
         }
-        if self.rename.is_some() {
-            self.rename_input.ime_cursor_rect()
-        } else if self.editing.is_some() {
+        if self.editing.is_some() {
             self.edit_input.ime_cursor_rect()
         } else {
             self.focused_composer().ime_cursor_rect()
@@ -4382,22 +4295,6 @@ impl Widget for ChatApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Adopt the OS-provided permission context so channel participation and
-        // file-embed hydration are gated by the real grant policy (the
-        // compositor scopes each app's context around its draw every frame).
-        if let Some(permissions) = presence.permission_context() {
-            self.perms = ChatPermissions::from_context(permissions);
-        }
-        // Adopt the room's answer for who everybody is. Names and colours are
-        // the room's to give: they arrive on the collaboration context stream
-        // and land in the presence store, and this is the one door an app has
-        // onto that store. Taken first so the same frame that learns a name
-        // paints it.
-        if let Some(capture) = self.capture_agent_presence.clone() {
-            self.adopt_room(&capture);
-        } else {
-            self.adopt_room(presence);
-        }
         // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
         self.advance_flaps(theme);
@@ -4564,9 +4461,9 @@ impl Widget for ChatApp {
         // Embedded inputs request focus with a temporary layout node. Map
         // that actual request to Chat's retained keyboard/IME owner.
         let was_handled = *ctx.handled;
-        // The navigation drawer takes its toggle, its show/hide shortcut,
-        // Escape and a press on its scrim, unless a popover over the
-        // conversation is open and dismisses first.
+        // The detail drawer takes its show/hide shortcut, Escape and a press
+        // on its scrim, unless a popover over the conversation is open and
+        // dismisses first.
         if self.menu.is_none()
             && self.channel_sheet.is_none()
             && !self.attach_open
@@ -4575,14 +4472,13 @@ impl Widget for ChatApp {
             && !self.thread_is_page()
         {
             self.reconcile_flaps();
-            if self.left_flap.handle_event(event, ctx) || self.right_flap.handle_event(event, ctx) {
+            if self.right_flap.handle_event(event, ctx) {
                 *ctx.handled = true;
                 self.canonical_dirty = true;
                 return;
             }
         }
-        self.canonical_dirty |=
-            self.left_flap.take_resize_redraw() | self.right_flap.take_resize_redraw();
+        self.canonical_dirty |= self.right_flap.take_resize_redraw();
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -4590,7 +4486,6 @@ impl Widget for ChatApp {
                 ..
             }
         ) {
-            self.left_flap.set_resize_focused(false);
             self.right_flap.set_resize_focused(false);
         }
         let requested = self.dispatch_event(
@@ -4609,6 +4504,11 @@ impl Widget for ChatApp {
         if !was_handled && requested && ctx.focus_target.is_none() {
             *ctx.focus_target = Some(ctx.node_id);
         }
+        // A menu's Rename names the row in the sidebar, which takes the
+        // keyboard for it.
+        if let Some(place) = self.sidebar_rename.take() {
+            self.places.begin_rename(&place, ctx.focus_target);
+        }
     }
 
     /// Chat's painted controls and elided header text take their tooltips
@@ -4619,9 +4519,7 @@ impl Widget for ChatApp {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.left_flap
-            .resize_cursor(point)
-            .or_else(|| self.right_flap.resize_cursor(point))
+        self.right_flap.resize_cursor(point)
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -4660,7 +4558,6 @@ impl Widget for ChatApp {
 
         let conversation = self.conversation_accessibility();
         let mut children: Vec<AccessNode> = controls;
-        children.extend(self.left_flap.resize_accessibility());
         children.extend(self.right_flap.resize_accessibility());
         if let Some(peer) = &self.direct_person {
             children.push(
@@ -4733,14 +4630,10 @@ impl Widget for ChatApp {
             .map(|(rect, ..)| *rect)
             .or_else(|| {
                 let offset = index.checked_sub(self.semantic_hits().len())?;
-                [
-                    self.left_flap.resize_accessibility(),
-                    self.right_flap.resize_accessibility(),
-                ]
-                .into_iter()
-                .flatten()
-                .nth(offset)
-                .and_then(|node| node.bounds.map(ui::a11y::AccessBounds::to_rect))
+                self.right_flap
+                    .resize_accessibility()
+                    .filter(|_| offset == 0)
+                    .and_then(|node| node.bounds.map(ui::a11y::AccessBounds::to_rect))
             })
     }
 
@@ -4750,19 +4643,15 @@ impl Widget for ChatApp {
         };
         if *index >= self.semantic_hits().len() {
             let offset = index.saturating_sub(self.semantic_hits().len());
-            let target = [
-                self.left_flap.resize_accessibility(),
-                self.right_flap.resize_accessibility(),
-            ]
-            .into_iter()
-            .flatten()
-            .nth(offset)
-            .and_then(|node| node.action_target);
+            let target = self
+                .right_flap
+                .resize_accessibility()
+                .filter(|_| offset == 0)
+                .and_then(|node| node.action_target);
             return target.is_some_and(|target| {
                 self.perform_drawer_resize(&target, &ui::a11y::Action::Focus)
             });
         }
-        self.left_flap.set_resize_focused(false);
         self.right_flap.set_resize_focused(false);
         self.keyboard_target = Some(*index);
         true
@@ -4799,10 +4688,7 @@ impl Widget for ChatApp {
         // focus goes through the same focus route as a click, values remain a
         // local draft until Send/Save, and selections stay inside the toolkit
         // editor rather than becoming a second text model.
-        if matches!(
-            hit,
-            Hit::FocusMain | Hit::FocusThread | Hit::FocusRename | Hit::FocusEdit
-        ) {
+        if matches!(hit, Hit::FocusMain | Hit::FocusThread | Hit::FocusEdit) {
             return self.perform_editor_semantic_action(hit, action, state, path);
         }
         if !matches!(
@@ -4858,9 +4744,10 @@ impl Widget for ChatApp {
     /// no longer pins a core.
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         let model_changed = self.pump_model();
+        let room_changed = self.take_room();
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present) || model_changed
+        std::mem::take(&mut self.read_on_present) || model_changed || room_changed
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -4884,8 +4771,7 @@ impl Widget for ChatApp {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.left_flap.is_resizing()
-            || self.right_flap.is_resizing()
+        self.right_flap.is_resizing()
             || self.call.placement.is_dragging()
             || self.agent_conversation_drag.is_some()
             || (self.thread_open.is_some() && self.thread_scroll.wants_pointer_capture())
@@ -4957,15 +4843,6 @@ impl ChatApp {
                         return false;
                     }
                 }
-                Hit::FocusRename => {
-                    if self.rename.is_none() {
-                        return false;
-                    }
-                    if !ui::Widget::perform_action(&mut self.rename_input, action, &[], state, path)
-                    {
-                        return false;
-                    }
-                }
                 Hit::FocusEdit => {
                     if self.editing.is_none() {
                         return false;
@@ -5030,11 +4907,9 @@ impl ChatApp {
 
     fn perform_drawer_resize(&mut self, target: &str, action: &ui::a11y::Action) -> bool {
         if matches!(action, ui::a11y::Action::Focus) {
-            self.left_flap.set_resize_focused(false);
             self.right_flap.set_resize_focused(false);
         }
-        let handled = self.left_flap.perform_resize_action(target, action)
-            || self.right_flap.perform_resize_action(target, action);
+        let handled = self.right_flap.perform_resize_action(target, action);
         if handled {
             self.keyboard_target = None;
             self.reconcile_flaps();
@@ -5138,10 +5013,8 @@ impl ChatApp {
         self.draw_huddle_fg(scene, transform, text_renderer, theme, hits);
     }
 
-    /// The two drawers over (or beside) the conversation: the detail drawer
-    /// (the open thread, or the workspace's people), the navigation drawer
-    /// (the channel list), each over its scrim when it floats, and the
-    /// sidebar toggle.
+    /// The detail drawer over (or beside) the conversation: the open thread,
+    /// the pins or the workspace's people, over its scrim when it floats.
     fn draw_drawers(
         &mut self,
         parts: &mut PaintParts,
@@ -5185,30 +5058,10 @@ impl ChatApp {
                 }
             }
         }
-
-        // The navigation drawer: the room's channel list.
-        // Painting it says again where its list scrolls.
-        self.nav_viewport = Rect::ZERO;
-        // A thread pushed over a narrow window is the whole page.
         if self.thread_is_page() {
             return;
         }
-        let scrim = self.left_flap.scrim_rect();
-        if scrim.width() > 0.5 {
-            ChatApp::push_hit(hits, scrim, Hit::Dismiss);
-        }
-        let nav = self.nav_rect();
-        let shown = self.left_flap_open() || self.left_flap.reveal() > 0.001;
-        if shown && nav.width() > 0.5 && nav.x1 > self.rect.x0 {
-            parts.draw(scene, "chat-nav", nav, |scene| {
-                crate::paint::push_clip(scene, tf, nav);
-                let local = self.left_flap.paint_panel(scene, tf, theme);
-                self.draw_sidebar(scene, tf, tr, &local, presence, hits);
-                scene.pop_layer();
-            });
-        }
         parts.draw(scene, "chat-dividers", self.rect, |scene| {
-            self.left_flap.paint_resize(scene, tf, theme);
             self.right_flap.paint_resize(scene, tf, theme);
         });
     }
