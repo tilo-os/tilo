@@ -76,7 +76,7 @@ impl PeerGovernanceMut<'_> {
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
-        edit(&mut *doc).map_err(err)?;
+        edit(&mut doc).map_err(err)?;
         doc.commit();
         if doc.get_heads() == before {
             return Ok(false);
@@ -87,26 +87,36 @@ impl PeerGovernanceMut<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{SigningKey, StatePeer, SystemTime};
+    use super::super::{NeighbourMsg, SigningKey, StatePeer, SystemTime, TransportOrigin};
+    use automerge::{ROOT, ScalarValue, transaction::Transactable as _};
+    use tilo_desktop_model::projection::{ROOM_NAME_KEY, ROOM_PRESETS_KEY};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
     const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
 
-    fn governor() -> (DeviceCert, SigningKey, StatePeer) {
+    /// A device of the person whose root is `[11; 32]`.
+    fn device(seed: u8) -> (DeviceCert, SigningKey) {
         let root = SigningKey::from_bytes(&[11; 32]);
-        let device = SigningKey::from_bytes(&[12; 32]);
+        let device = SigningKey::from_bytes(&[seed; 32]);
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),
-            device_label: "governor".into(),
+            device_label: format!("device {seed}"),
             capabilities: DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
         sign_device_cert(&mut cert, &root).unwrap();
+        (cert, device)
+    }
+
+    /// The room as its governor, the owner's device `[12; 32]`, holds it;
+    /// the owner's other device `[13; 32]` is on its roster.
+    fn governor() -> (DeviceCert, SigningKey, StatePeer) {
+        let (cert, device) = device(12);
         let now = SystemTime::now();
-        let roster = vec![cert.clone()];
+        let roster = vec![cert.clone(), self::device(13).0];
         let mut peer = StatePeer::new(
             ROOM,
             cert.clone(),
@@ -170,5 +180,66 @@ mod tests {
                 .put_governed_sandbox(&[], &other, SystemTime::now())
                 .is_err()
         );
+    }
+
+    /// A change `key` makes to the room: `field` set to `value`, delivered
+    /// as that device's.
+    fn write(
+        peer: &mut StatePeer,
+        key: &SigningKey,
+        field: &str,
+        value: ScalarValue,
+    ) -> Result<(), String> {
+        let mut doc = peer.admitted_room().unwrap().clone();
+        let before = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        doc.put(ROOT, field, value).unwrap();
+        doc.commit();
+        let changes = doc
+            .get_changes(&before)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        peer.receive_from(
+            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp {
+                room: ROOM.into(),
+                changes,
+            },
+            SystemTime::now(),
+        )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn a_member_cannot_rename_the_room_or_rewrite_its_grant_sets() {
+        let (_, key, mut peer) = governor();
+        let (_, other) = device(13);
+        // The owner's other device writes the room as a member: what is
+        // not governed is taken.
+        write(
+            &mut peer,
+            &other,
+            "scratch",
+            ScalarValue::Str("mine".into()),
+        )
+        .unwrap();
+        for field in [ROOM_NAME_KEY, ROOM_PRESETS_KEY] {
+            assert!(
+                write(&mut peer, &other, field, ScalarValue::Str("Mine".into())).is_err(),
+                "{field} is the governor's"
+            );
+        }
+        assert_eq!(peer.governance().room_name().as_deref(), Some("Room"));
+        write(
+            &mut peer,
+            &key,
+            ROOM_NAME_KEY,
+            ScalarValue::Str("Ours".into()),
+        )
+        .unwrap();
+        assert_eq!(peer.governance().room_name().as_deref(), Some("Ours"));
     }
 }
