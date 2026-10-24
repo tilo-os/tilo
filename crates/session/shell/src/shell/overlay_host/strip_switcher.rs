@@ -105,24 +105,7 @@ impl super::ShellOverlayHost {
     /// whether the labels need a repaint.
     pub(super) fn refresh_strip_switcher_model(&mut self) -> bool {
         let now = ui::time::now();
-        let mut dirty = false;
-        if let Some(chrome) = self.chrome.clone() {
-            let state = chrome.borrow();
-            if self.strip_switcher_revision != Some(state.revision) {
-                self.strip_switcher_revision = Some(state.revision);
-                let local_user = state.active_local_user();
-                let own = state.local_user_id.clone();
-                let tree = state.tree();
-                let model = SwitcherModel::of(&tree.desktop, &local_user, &own, |strip| {
-                    tree.may_rename_strip(strip)
-                });
-                drop(tree);
-                drop(state);
-                dirty |= self.strip_navigator.is_open()
-                    && self.strip_navigator.switcher().model() != &model;
-                self.strip_navigator.set_model(model);
-            }
-        }
+        let mut dirty = self.rebuild_strip_switcher_model();
         let frame = self.strip_frame();
         let rename = self
             .chrome
@@ -148,6 +131,31 @@ impl super::ShellOverlayHost {
         if dirty {
             self.publish_strip_switcher_open();
         }
+        dirty
+    }
+
+    /// Rebuild the switcher's model when the chrome changed since it was
+    /// last built. Returns whether open labels need a repaint.
+    fn rebuild_strip_switcher_model(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let state = chrome.borrow();
+        if self.strip_switcher_revision == Some(state.revision) {
+            return false;
+        }
+        self.strip_switcher_revision = Some(state.revision);
+        let local_user = state.active_local_user();
+        let own = state.local_user_id.clone();
+        let tree = state.tree();
+        let model = SwitcherModel::of(&tree.desktop, &local_user, &own, |strip| {
+            tree.may_rename_strip(strip)
+        });
+        drop(tree);
+        drop(state);
+        let dirty =
+            self.strip_navigator.is_open() && self.strip_navigator.switcher().model() != &model;
+        self.strip_navigator.set_model(model);
         dirty
     }
 
@@ -243,6 +251,9 @@ impl super::ShellOverlayHost {
     /// a rail segment, once nothing over them took it. Returns whether it
     /// was theirs.
     pub(super) fn press_strip_ribbon_or_rail(&mut self, p: Point) -> bool {
+        // The labels open on what the chrome holds now, not on the model of
+        // the last frame.
+        self.rebuild_strip_switcher_model();
         let frame = self.strip_frame();
         if self
             .strip_navigator
