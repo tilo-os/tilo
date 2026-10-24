@@ -2,11 +2,11 @@
 //! governs. The founder's root certifies two devices on the node: the relay
 //! (a node that hosts, governs and stewards her rooms) and the session (a
 //! plain device of hers, with its own key). Her browser creates the company
-//! workspace on the relay and writes a sealed record. The person's workspace
-//! list names the workspace with the node as its host; the session enters it
-//! there as the list brings it, joins it, gets the record's channel keys from
-//! the relay's steward and reads the record; a record its app writes reaches
-//! the browser the same way. The relay keeps ciphertext only.
+//! workspace on the relay and writes a sealed record. The session asks its
+//! configured host for the rooms it holds for her and enters the workspace
+//! there, joins it, gets the record's channel keys from the relay's steward
+//! and reads the record; a record its app writes reaches the browser the same
+//! way. The relay keeps ciphertext only.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -134,25 +134,6 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         "TILO_COLLAB_HOST",
         serde_json::to_string(&relay_addr).unwrap(),
     );
-    // The node is Ada's paired home server: her list's entries hosted there
-    // are entered at its service endpoint.
-    let registry = dir.path().join("home-peers.json");
-    std::fs::write(
-        &registry,
-        serde_json::to_vec(&serde_json::json!([{
-            "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-            "device_node_id": hex::encode(node.device_public_key),
-            "relay_service_node_id": hex::encode(relay_addr.id.as_bytes()),
-            "label": "Acme node",
-            "user_public_key": hex::encode(root.verifying_key().to_bytes()),
-            "relay_workspace_ids": [super::personal_continuity_topic_id(
-                &root.verifying_key().to_bytes()
-            )],
-        }]))
-        .unwrap(),
-    )
-    .unwrap();
-    home.env().set("TILO_HOME_PEERS_PATH", &registry);
 
     // The company workspace is on the node, with the browser in it, and the
     // browser writes the plan.
@@ -240,20 +221,12 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     )
     .unwrap();
 
-    // Ada's list brings the workspace, hosted on the node: the session
-    // enters it there, through the host's own `tilo.host` action on its
-    // continuity workspace, and the host answers the invitation it redeems.
+    // Its host session is up: the session asks the node, once, for the
+    // rooms it holds for Ada and enters this one there, through the host's
+    // own `tilo.host` actions on its continuity workspace, and the host
+    // answers the invitation it redeems.
     let room = RoomId::parse(&acme.room).unwrap();
-    let listed = || crate::shell::personal_workspaces::Adoption {
-        changed: false,
-        enter: vec![crate::shell::personal_workspaces::ToEnter {
-            room,
-            name: "Acme".into(),
-            host: node.device_public_key,
-        }],
-        release: Vec::new(),
-    };
-    net.follow_list(listed());
+    net.enter_configured_host_rooms(None);
     // Its workspace is made as the join starts; the room is held once the
     // replica installs into it.
     until("the session to hold the company workspace", || {
@@ -277,7 +250,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         !tree.read().commits_native_documents(room),
         "its records are sealed channels the apps open, not committed documents"
     );
-    net.follow_list(listed());
+    net.enter_configured_host_rooms(None);
     assert_eq!(
         tree.read()
             .desktop

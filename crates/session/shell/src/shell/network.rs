@@ -956,6 +956,10 @@ const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2
 /// room, an open invitation, another device) still needs its relays up.
 /// Local work over a few maps; a parked compositor does not tick at all.
 const SESSION_REACH_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
+/// The longest an invitation issued by this device's host waits for a home
+/// relay to name in it, when the relays were not already running: about
+/// what a net report and a relay handshake take.
+const INVITE_RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long after a room changed, here or by a peer's batch, a shell asks
 /// its rooms for anything it is missing. Local changes are pushed the tick
 /// they land ([`ShellNetwork::push_room_changes`]); this pull, made once a
@@ -5057,6 +5061,16 @@ impl ShellNetwork {
                 let held = self
                     .administered_room(ws.room())
                     .ok_or("this workspace's host is not reachable yet; try again in a moment")?;
+                if held.hosted_here() {
+                    // The invitee dials this device's host, so the
+                    // invitation names its home relay: from behind a NAT a
+                    // direct address alone may not reach it. The composer
+                    // started the relays when it opened; an invitation
+                    // issued straight away waits a moment for one, and
+                    // names direct addresses if none comes.
+                    self.reachability.wake("an invitation was issued");
+                    let _ = self.reachability.relay_addr_within(INVITE_RELAY_WAIT);
+                }
                 self.issue_relay_invitation(&held, &terms)
             }
             InviteRoute::ViaGovernor | InviteRoute::Refused(_) => {

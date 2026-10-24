@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::shell::network::shell_network_for_test;
-use crate::shell::network::tests::personal_continuity_network_for_test;
+use crate::shell::network::tests::personal_workspaces_network_for_test;
 use crate::shell::state::{Workspace, WorkspaceTree};
 
 fn tree_with(rooms: &[(&str, RoomId)]) -> WorkspaceTree {
@@ -105,13 +105,20 @@ fn a_room_another_device_hosts_is_entered_at_that_devices_host() {
     let other = ed25519_dalek::SigningKey::from_bytes(&[0xB0; 32])
         .verifying_key()
         .to_bytes();
-    let user = root.verifying_key().to_bytes();
     let dir = tempfile::tempdir().expect("temp");
     let peers = dir.path().join("home-peers.json");
     std::fs::write(&peers, b"[]").expect("registry");
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_HOME_PEERS_PATH", &peers);
-    let (network, mut commands) = personal_continuity_network_for_test(user);
+    // A device keeping its workspaces on disk, as every session does: its
+    // native owner opens beside them.
+    let mut tree = WorkspaceTree::default();
+    tree.persist_path = Some(dir.path().join("state.json"));
+    let (network, mut commands) = personal_workspaces_network_for_test(
+        &root,
+        &iroh::SecretKey::from_bytes(&[0x52; 32]),
+        tree,
+    );
     let plans = RoomId::new();
     // The other device's host, answering what reaches it. The list is
     // followed on this thread, which holds the environment it reads.

@@ -195,10 +195,11 @@ fn person_of(root: &SigningKey) -> String {
     }
 }
 
-/// A desktop alone with its own room, its relays held back, mints an invite
-/// at once, as an agent's `invitation.issue` or the palette's `/invite` does:
-/// the token names the home relay the invite started, so an invitee behind
-/// a NAT reaches the inviter without waiting for address lookup.
+/// A desktop hosting its own room, its relays held back, has its host issue
+/// an invitation at once, as an agent's `invitation.issue` or the palette's
+/// `/invite` does: hosting a room only this device holds keeps the relays
+/// down, and the invitation names the home relay the invite started, so an
+/// invitee behind a NAT reaches the host without waiting for address lookup.
 #[test]
 #[serial_test::serial]
 fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
@@ -215,6 +216,9 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
     let room = tree.room_of(workspace).unwrap();
     tree.adopt_ownerless_workspaces(&crate::shell::state::local_user_id_for_room(&room));
     tree.desktop.active = workspace;
+    // A new workspace waits to be placed on this device's host.
+    tree.persist_path = Some(home.state().join("workspaces.json"));
+    tree.pending_placements.insert(room);
 
     let relay_runtime = tokio::runtime::Runtime::new().unwrap();
     let (_relay, relays) =
@@ -229,18 +233,38 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
     )
     .unwrap();
     until("the desktop to listen", || net.dial_addr());
+    until("the workspace to be hosted here", || {
+        net.tick();
+        net.administered_room(room)
+    });
     assert!(
         net.reachability.is_dormant(),
-        "a desktop alone with its own room started its relays"
+        "a desktop hosting a room only it holds started its relays"
     );
 
     let token = net.issue_invite(workspace, 3600).unwrap();
-    let invite = crate::network::invite::validate_invite_token(&token).unwrap();
+    let invitation = tilo_peer_state::join::decode_and_verify_invitation_text(
+        &token,
+        None,
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    let named: Vec<_> = invitation
+        .grant()
+        .transport
+        .iter()
+        .map(|hint| {
+            let (host, _) =
+                tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(hint)
+                    .unwrap();
+            host.endpoint_addr.relay_urls().cloned().collect::<Vec<_>>()
+        })
+        .collect();
     assert_eq!(
-        invite.owner_addr.relay_urls().collect::<Vec<_>>(),
-        relays.urls::<Vec<_>>().iter().collect::<Vec<_>>(),
-        "the invite names no home relay: {:?}",
-        invite.owner_addr
+        named,
+        vec![relays.urls::<Vec<_>>()],
+        "the invitation names no home relay"
     );
     assert!(
         !net.reachability.is_dormant(),
