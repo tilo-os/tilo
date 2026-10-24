@@ -563,8 +563,8 @@ fn the_boot_unlock_command_speaks_the_contracts_exit_codes() {
     f.throttle();
     let device = f.luks_image();
     let (_, key) = f.enrolled_admin(&device, "123456");
-    let keys_dir = f.scratch.path().join("keys");
-    std::fs::create_dir(&keys_dir).unwrap();
+    // Not there yet, as in an initrd before anything else wrote a key.
+    let keys_dir = f.scratch.path().join("run/cryptsetup-keys.d");
     let secret_file = f.scratch.path().join("secret");
     let handoff = format!("tilo-signin-test-cli-{}", std::process::id());
     let run = |device: &Path, secret: &[u8]| {
