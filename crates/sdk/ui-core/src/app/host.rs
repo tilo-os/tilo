@@ -29,6 +29,8 @@ fn draw_frame_content(
     scale_factor: f32,
     t_draw_start: Option<crate::time::Instant>,
 ) -> DrawnFrame {
+    // Every motion this frame reads is read at this instant or later.
+    let motions_at = crate::motion::frame_now();
     app.restore_physical_configuration();
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
     app.refresh_control_action_availability();
@@ -261,6 +263,7 @@ fn draw_frame_content(
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
     }
     let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
+    crate::motion::frame_drawn(motions_at);
     DrawnFrame {
         transform,
         window_rect,

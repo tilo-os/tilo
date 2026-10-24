@@ -14406,11 +14406,6 @@ pub fn run() {
                         .with_hdr_layers(frame_builder.take_hdr_layers())
                         .with_backdrop(frame_builder.take_backdrop())
                 };
-                // Without this a window group's width spring stepped once and
-                // stopped: its once-per-drawn-frame token returns only when
-                // content is marked drawn, which this loop never does, and
-                // the group asked for animation frames forever.
-                frame_builder.frame_presented();
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
                 // backend splits this combined scene per scanout afterwards.
@@ -14845,7 +14840,7 @@ pub fn run() {
             // asynchronous one dates it when it retires that serial. A lost
             // render thread queued nothing.
             if !async_present || submitted_serial.is_some() {
-                let holding = frame_builder.host().workspace_switch_holding();
+                let holding = frame_builder.host().workspace_switch_owed();
                 if let Some(switch) = frame_builder
                     .host_mut()
                     .workspace_switch_latency_mut()
@@ -21241,7 +21236,7 @@ fn apply_shell_gesture(
             if switched {
                 frame_builder
                     .host_mut()
-                    .start_workspace_switch_frames(ui::tokens::MotionSource::Gesture);
+                    .start_workspace_switch(ui::tokens::MotionSource::Gesture);
             }
         }
         GestureAction::ShowOverview => {
