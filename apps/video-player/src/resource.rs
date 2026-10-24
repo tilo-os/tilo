@@ -317,6 +317,41 @@ mod tests {
         }
     }
 
+    /// Deleting a playlist runs at once, since Undo takes it back: the host
+    /// asks nothing, and one Undo brings the playlist back with its videos.
+    #[test]
+    fn deleting_a_playlist_runs_at_once_and_one_undo_brings_it_back() {
+        let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
+        app.invoke(Library::CREATE_PLAYLIST.with("Trip")).unwrap();
+        let trip = app.state().playlists.ids().next().unwrap().clone();
+        for (media_ref, title) in [("clip-1", "Harbour"), ("clip-2", "Lighthouse")] {
+            app.invoke(Library::ADD_TO_PLAYLIST.with(library::AddToPlaylist {
+                playlist: trip.clone(),
+                media_ref: media_ref.into(),
+                title: title.into(),
+            }))
+            .unwrap();
+        }
+
+        app.invoke(Library::DELETE_PLAYLIST.with(trip.clone()))
+            .expect("an undoable delete asks nothing");
+        assert!(app.asking().is_none(), "the host asks nothing");
+        assert!(app.state().playlists.is_empty(), "the delete lands at once");
+        assert!(app.state().items.is_empty(), "its videos went with it");
+
+        assert!(app.undo(), "the delete is one undo step");
+        let state = app.state();
+        assert_eq!(state.playlists.get(&trip).unwrap().name, "Trip");
+        assert_eq!(
+            state
+                .items_of(&trip)
+                .map(|(_, item)| item.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Harbour", "Lighthouse"],
+            "Undo brings its videos back too"
+        );
+    }
+
     #[test]
     fn everyone_with_the_video_open_watches_it_together() {
         let sample = std::path::Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
