@@ -2769,3 +2769,31 @@ fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
         );
     }
 }
+
+/// A narrow window can open on the sidebar alone, with the content behind
+/// it never painted: the library's places reach the sidebar from a sync.
+#[test]
+fn the_places_reach_the_sidebar_without_a_paint() {
+    let mut app = test_app();
+    let mut doc = crate::test_doc::new_doc();
+    let mut library = crate::model::PhotoLibrary::default();
+    library.add_photo(LibraryPhoto::from_image(OpenImage::fixture(
+        "/photos/one.png",
+        20,
+        10,
+    )));
+    crate::test_doc::set_library(&mut doc, &library);
+    sync(&mut app, &mut doc);
+    let (sections, _) = app
+        .chrome
+        .places
+        .shown()
+        .expect("a sync alone shows the places");
+    assert!(
+        sections
+            .iter()
+            .flat_map(|section| &section.items)
+            .any(|item| item.id == "photos:library:timeline"),
+        "the Timeline is a row"
+    );
+}

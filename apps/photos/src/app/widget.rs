@@ -484,6 +484,10 @@ impl Widget for PhotosApp {
         self.refresh_chrome_text(doc);
         self.refresh_empty_state(doc);
         self.publish_notice();
+        // A narrow window can show the sidebar as its only screen, and the
+        // shell paints no content behind it: the places come from the
+        // library here, not only from a paint.
+        self.show_places();
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {

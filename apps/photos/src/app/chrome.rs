@@ -713,7 +713,7 @@ impl PhotosApp {
 
     /// Hand the shell's sidebar the library's destinations; the albums
     /// nest under Albums, each by its cover.
-    fn show_places(&self) {
+    pub(super) fn show_places(&self) {
         let entries = self.nav_entries();
         let selected = entries
             .iter()
