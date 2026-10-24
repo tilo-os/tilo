@@ -1045,7 +1045,6 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         let frames = vec![
             InboundPresence {
                 peer: 0x11,
-                user: "bob".into(),
                 key: key.clone(),
                 point: (100.0, 100.0),
                 ts: 0,
@@ -1053,7 +1052,6 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
             },
             InboundPresence {
                 peer: 0x22,
-                user: "dana".into(),
                 key,
                 point: (400.0, 300.0),
                 ts: 0,
@@ -1062,8 +1060,8 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         ];
 
         // Names are a governance fact written by the room's authority via
-        // `apply_room_changes`; the frame-announced names are deliberately not
-        // consulted, so the bar below proves names came from the room, not the wire.
+        // `apply_room_changes`; a frame carries no name the network hands on,
+        // so the bar below proves names came from the room, not the wire.
         let room_says = |_: &str| {
             std::collections::BTreeMap::from([
                 (0x11u64, "bob".to_string()),
