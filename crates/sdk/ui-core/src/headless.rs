@@ -9932,12 +9932,15 @@ fn collect_targets(
         out.entry(bare).or_insert_with(|| w.get_rect());
     }
     if let Some(id) = w.test_id() {
-        // A widget whose own node names narrower bounds (an empty state's
-        // button inside its panel) is operated where it says it is, as
-        // assistive technology would.
+        // A widget addressed by a control it holds (an empty state's button
+        // inside its panel), or whose own node names narrower bounds, is
+        // operated where that control is, as assistive technology would.
         let rect = w
             .accessibility()
-            .and_then(|node| node.bounds)
+            .and_then(|node| {
+                let node = crate::a11y::with_synthetic_bounds(node, w);
+                control_bounds(&node, id).or(node.bounds)
+            })
             .map(crate::a11y::AccessBounds::to_rect)
             .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0)
             .unwrap_or_else(|| w.get_rect());
@@ -9947,6 +9950,17 @@ fn collect_targets(
     for child in w.children() {
         collect_targets(child, &path, &mut child_counts, out);
     }
+}
+
+/// Where the control `id` names sits in `node`'s tree, if one of its nodes
+/// is that control.
+fn control_bounds(node: &crate::a11y::AccessNode, id: &str) -> Option<crate::a11y::AccessBounds> {
+    if node.action_target.as_deref() == Some(id) && node.bounds.is_some() {
+        return node.bounds;
+    }
+    node.children
+        .iter()
+        .find_map(|child| control_bounds(child, id))
 }
 
 struct RetainedNamedTarget {
