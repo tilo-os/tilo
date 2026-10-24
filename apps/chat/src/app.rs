@@ -4581,7 +4581,8 @@ impl Widget for ChatApp {
         }
         children.push(conversation);
         // The call panel's count is painted in its title bar: read where it
-        // is drawn, and no stop for the keyboard.
+        // is drawn, and no stop for the keyboard. Its status (what is
+        // wrong, else how it is connected) is read with it.
         if self.call.active
             && let Some((title_bar, _)) = self
                 .hits
@@ -4591,6 +4592,7 @@ impl Widget for ChatApp {
             children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.call_count_label())
+                    .with_description(self.call_status_label())
                     .with_bounds(*title_bar)
                     .with_hashed_key(("call-count", &self.call.channel)),
             );
