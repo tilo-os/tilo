@@ -79,7 +79,7 @@ impl Session {
         let told = match outcome {
             Ok(outcome) => {
                 self.chooser
-                    .mark(tilo_model_gateway::TraceEvent::ActionSettled, index);
+                    .mark(tilo_model_client::TraceEvent::ActionSettled, index);
                 state.completed += 1;
                 *state.done_apps.entry(offer.app).or_default() += 1;
                 let told = format!(

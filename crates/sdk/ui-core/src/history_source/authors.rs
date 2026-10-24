@@ -870,18 +870,11 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn the_local_identity_is_read_from_firstboot_json_or_left_unknown() {
-        // phase: local_identity_is_read_from_the_firstboot_json_shape
-        // An on-disk identity file is read and turned into an author.
-        //
-        // The record is minted by the writer `shell::firstboot` calls. This schema
-        // is declared twice on purpose
-        // (`tilo_identity_ceremony::IdentityRecord` serialises it,
-        // `runtime_identity` re-declares it rather than depending on `ui`), so
-        // so the fixture checks that the reader accepts the writer's output.
         {
             let (bytes, public_key) = firstboot_identity_bytes("Quinten", [0, 255, 0]);
 
-            let id = runtime_identity::load_from_bytes(&bytes).expect("firstboot shape parses");
+            let id =
+                runtime_identity_host::load_from_bytes(&bytes).expect("firstboot shape parses");
             assert_eq!(id.display_name(), "Quinten");
             assert_eq!(id.avatar_color(), [0, 255, 0]);
             assert_eq!(
@@ -911,11 +904,6 @@ mod tests {
             assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
             assert_eq!(author.identity_short.len(), SHORT_LEN);
         }
-        // phase: a_freshly_provisioned_identity_renders_as_unknown_rather_than_blank
-        // First boot writes an empty display name and neutral grey — the user
-        // names and colours themselves later. That record must still load, and
-        // must render as the unknown-participant label rather than as a
-        // blank row.
         {
             let (bytes, public_key) = firstboot_identity_bytes("", [128, 128, 128]);
 

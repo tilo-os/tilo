@@ -304,7 +304,6 @@ dependencies = [
  "hex",
  "runtime-collab",
  "runtime-dylib",
- "runtime-identity",
  "runtime-portal",
  "serde",
  "serde_json",
@@ -314,7 +313,8 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automation",
- "tilo-model-gateway",
+ "tilo-identity-client",
+ "tilo-model-client",
  "tilo-test-env",
  "tilo-user-identity",
  "tracing",
@@ -1779,7 +1779,7 @@ dependencies = [
  "tilo-app",
  "tilo-content",
  "tilo-files",
- "tilo-model-gateway",
+ "tilo-model-client",
  "tilo-paint-engine",
  "tilo-subject",
  "tilo-test-env",
@@ -2050,7 +2050,7 @@ dependencies = [
  "tilo-document",
  "tilo-emoji-engine",
  "tilo-files",
- "tilo-model-gateway",
+ "tilo-model-client",
  "tilo-paths",
  "tilo-reference",
  "tilo-rich-text",
@@ -6270,9 +6270,9 @@ dependencies = [
  "hex",
  "runtime-collab",
  "runtime-dylib",
- "runtime-fs",
- "runtime-identity",
  "runtime-portal",
+ "tilo-fs-client",
+ "tilo-identity-client",
  "workspace-hack",
 ]
 
@@ -7086,7 +7086,6 @@ dependencies = [
  "libc",
  "reqwest 0.13.4",
  "runtime-dylib",
- "runtime-fs",
  "runtime-identity",
  "rusqlite",
  "rustix 1.1.4",
@@ -7105,6 +7104,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-files",
  "tilo-fs",
+ "tilo-fs-client",
  "tilo-fuse-engine",
  "tilo-handoff",
  "tilo-identity-host",
@@ -13476,7 +13476,6 @@ dependencies = [
  "os-actions",
  "registry-types",
  "roxmltree 0.21.1",
- "runtime-fs",
  "runtime-identity",
  "settings-store",
  "tilo-actions",
@@ -13487,9 +13486,10 @@ dependencies = [
  "tilo-doc-codecs",
  "tilo-document",
  "tilo-files",
+ "tilo-fs-client",
  "tilo-media",
  "tilo-mime",
- "tilo-model-gateway",
+ "tilo-model-client",
  "tilo-relay-protocol",
  "tilo-rich-text",
  "tilo-thumbnail",
@@ -13519,6 +13519,7 @@ dependencies = [
  "tempfile",
  "tilo-advisory-lock",
  "tilo-files",
+ "tilo-fs-client",
  "tilo-paths",
  "tilo-test-env",
  "tokio",
@@ -13564,6 +13565,7 @@ dependencies = [
  "threshold-identity",
  "tilo-advisory-lock",
  "tilo-files",
+ "tilo-identity-client",
  "tilo-paths",
  "tilo-seal",
  "tilo-secrets",
@@ -14501,7 +14503,6 @@ dependencies = [
  "package-store",
  "quick-xml 0.41.0",
  "runtime-dylib",
- "runtime-fs",
  "serde",
  "serde_json",
  "settings-core",
@@ -14519,6 +14520,7 @@ dependencies = [
  "tilo-clock",
  "tilo-desktop-entry",
  "tilo-fs",
+ "tilo-fs-client",
  "tilo-keyboard-map",
  "tilo-media",
  "tilo-oauth",
@@ -14553,8 +14555,6 @@ dependencies = [
  "provider-settings-ui",
  "quick-xml 0.41.0",
  "rcgen",
- "runtime-fs",
- "runtime-identity",
  "runtime-portal",
  "rustls",
  "serde",
@@ -14576,6 +14576,8 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-files",
  "tilo-fs",
+ "tilo-fs-client",
+ "tilo-identity-client",
  "tilo-keyboard-map",
  "tilo-locale",
  "tilo-media",
@@ -14612,8 +14614,6 @@ dependencies = [
  "hex",
  "os-actions",
  "provider-settings-ui",
- "runtime-fs",
- "runtime-identity",
  "runtime-portal",
  "rustls",
  "serde",
@@ -14628,6 +14628,8 @@ dependencies = [
  "tilo-clock",
  "tilo-dav",
  "tilo-files",
+ "tilo-fs-client",
+ "tilo-identity-client",
  "tilo-locale",
  "tilo-net",
  "tilo-ntfs-mount",
@@ -16534,6 +16536,7 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-files",
+ "tilo-identity-client",
  "tilo-identity-host",
  "tilo-joined-room",
  "tilo-lock",
@@ -17213,7 +17216,7 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-files",
  "tilo-lock",
- "tilo-model-gateway",
+ "tilo-model-client",
  "tilo-paths",
  "tilo-reference",
  "tilo-relay-protocol",
@@ -17343,9 +17346,9 @@ name = "tilo-cli-kit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "runtime-fs",
  "runtime-portal",
  "tempfile",
+ "tilo-fs-client",
  "tilo-paths",
  "tilo-test-env",
  "workspace-hack",
@@ -17388,9 +17391,9 @@ dependencies = [
  "cap-std",
  "chrono",
  "host-fs",
- "runtime-fs",
  "serde",
  "serde_json",
+ "tilo-fs-client",
  "uuid",
  "workspace-hack",
 ]
@@ -17464,8 +17467,8 @@ dependencies = [
 name = "tilo-content-device"
 version = "0.1.0"
 dependencies = [
- "runtime-fs",
  "tilo-content",
+ "tilo-fs-client",
  "tracing",
  "workspace-hack",
 ]
@@ -18133,6 +18136,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-fs-client"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "capnp",
+ "capnp-rpc",
+ "fs-protocol",
+ "libc",
+ "postcard",
+ "runtime-portal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-advisory-lock",
+ "tilo-paths",
+ "tilo-test-env",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-fuse-engine"
 version = "0.1.0"
 dependencies = [
@@ -18246,7 +18273,7 @@ dependencies = [
  "tilo-location",
  "tilo-lock",
  "tilo-media",
- "tilo-model-gateway",
+ "tilo-model-client",
  "tilo-net",
  "tilo-notify",
  "tilo-rt",
@@ -18286,7 +18313,6 @@ dependencies = [
  "hmac 0.13.0",
  "postcard",
  "rand_core 0.10.0",
- "runtime-identity",
  "rustls",
  "serde",
  "serde_bytes",
@@ -18298,12 +18324,32 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-clock",
  "tilo-files",
+ "tilo-identity-client",
  "tilo-lock",
  "tilo-net",
  "tilo-seal",
  "tilo-test-env",
  "wire-frame",
  "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-identity-client"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "libc",
+ "postcard",
+ "runtime-portal",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "tilo-test-env",
+ "tokio",
+ "wire-frame",
  "zeroize",
 ]
 
@@ -18680,6 +18726,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-model-client"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-net",
+ "tilo-rt",
+ "tilo-test-env",
+ "tokio",
+ "wire-frame",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-model-gateway"
 version = "0.1.0"
 dependencies = [
@@ -18705,10 +18770,10 @@ dependencies = [
  "settings-store",
  "sha2 0.11.0",
  "tempfile",
- "thiserror 2.0.21",
  "tilo-clock",
  "tilo-files",
  "tilo-lock",
+ "tilo-model-client",
  "tilo-net",
  "tilo-rt",
  "tilo-segment",
@@ -20100,7 +20165,7 @@ dependencies = [
  "image",
  "sha2 0.11.0",
  "thiserror 2.0.21",
- "tilo-model-gateway",
+ "tilo-model-client",
  "tilo-segment",
  "workspace-hack",
 ]
@@ -20306,6 +20371,7 @@ dependencies = [
  "tilo-host",
  "tilo-host-search",
  "tilo-identity-ceremony",
+ "tilo-identity-client",
  "tilo-image-codec",
  "tilo-lock",
  "tilo-media",
@@ -20502,7 +20568,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.21",
- "tilo-model-gateway",
+ "tilo-model-client",
  "workspace-hack",
 ]
 

@@ -3005,7 +3005,7 @@ trait SdkCertifiedIdentity: Send + Sync {
     ) -> Result<[u8; 64], runtime_portal::NotAvailable>;
 }
 
-impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
+impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIdentity> {
     fn channel_keys(
         &self,
         workspace_id: &str,
@@ -3014,7 +3014,7 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
         known_generation: u64,
     ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
         runtime_identity::BrokerSigningIdentity::channel_keys(
-            self,
+            self.as_ref(),
             workspace_id,
             app_id,
             record_id,
@@ -3031,7 +3031,10 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
         &self,
         workspace_id: &str,
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        runtime_identity::BrokerSigningIdentity::sign_collaboration_join(self, workspace_id)
+        runtime_identity::BrokerSigningIdentity::sign_collaboration_join(
+            self.as_ref(),
+            workspace_id,
+        )
     }
     fn sign_collaboration_op(
         &self,
@@ -3041,7 +3044,7 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
         unsigned_op: &[u8],
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
         runtime_identity::BrokerSigningIdentity::sign_collaboration_op(
-            self,
+            self.as_ref(),
             workspace_id,
             app_id,
             record_id,
@@ -3050,51 +3053,9 @@ impl SdkCertifiedIdentity for runtime_identity::BrokerSigningIdentity {
     }
 }
 
-#[cfg(unix)]
-impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
-    fn channel_keys(
-        &self,
-        workspace_id: &str,
-        app_id: &str,
-        record_id: &str,
-        known_generation: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        runtime_identity::SigningIdentity::channel_keys(
-            self,
-            workspace_id,
-            app_id,
-            record_id,
-            known_generation,
-        )
-    }
-    fn device_certificate(&self) -> Option<&[u8]> {
-        runtime_identity::SigningIdentity::device_certificate(self)
-    }
-    fn signing_public_key(&self) -> [u8; 32] {
-        runtime_identity::SigningIdentity::signing_public_key(self)
-    }
-    fn sign_collaboration_join(
-        &self,
-        workspace_id: &str,
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        runtime_identity::SigningIdentity::sign_collaboration_join(self, workspace_id)
-    }
-    fn sign_collaboration_op(
-        &self,
-        workspace_id: &str,
-        app_id: &str,
-        record_id: &str,
-        unsigned_op: &[u8],
-    ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        runtime_identity::SigningIdentity::sign_collaboration_op(
-            self,
-            workspace_id,
-            app_id,
-            record_id,
-            unsigned_op,
-        )
-    }
-}
+#[cfg(all(test, unix))]
+#[path = "broker_identity_tests.rs"]
+mod identity_host_fixture;
 
 #[cfg_attr(
     not(unix),
@@ -9295,6 +9256,99 @@ mod tests {
             remaining = &remaining[4 + len..];
         }
         requests
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
+        use runtime_identity::wire::{FRAMING, Request, Response};
+        use std::os::fd::AsFd as _;
+
+        let cluster_id = Uuid::new_v4();
+        let workspace = cluster_id.to_string();
+        let (app, mut host) = std::os::unix::net::UnixStream::pair().unwrap();
+        let expected_workspace = workspace.clone();
+        let worker = thread::spawn(move || {
+            assert!(matches!(
+                FRAMING.read_value::<_, Request>(&mut host).unwrap(),
+                Some(Request::Metadata)
+            ));
+            FRAMING
+                .write_value(
+                    &mut host,
+                    &Response::Metadata {
+                        display_name: "Ada".into(),
+                        avatar_color: [1, 2, 3],
+                        group_public_key: [4; 32],
+                        signing_public_key: [5; 32],
+                        device_certificate: Some(b"fixture".to_vec()),
+                        threshold: 1,
+                        total_shares: 1,
+                        share_index: 1,
+                    },
+                )
+                .unwrap();
+            assert!(matches!(
+                FRAMING.read_value::<_, Request>(&mut host).unwrap(),
+                Some(Request::CollaborationJoin { workspace_id }) if workspace_id == expected_workspace
+            ));
+            FRAMING
+                .write_value(&mut host, &Response::Signature(vec![7; 64]))
+                .unwrap();
+            assert!(matches!(
+                FRAMING.read_value::<_, Request>(&mut host).unwrap(),
+                Some(Request::ChannelKeys { workspace_id, app_id, record_id, known_generation })
+                    if workspace_id == expected_workspace && app_id == "notes"
+                        && record_id == "page" && known_generation == 3
+            ));
+            FRAMING
+                .write_value(
+                    &mut host,
+                    &Response::ChannelKeys {
+                        access: runtime_identity::wire::ChannelAccess::Removed,
+                        generation: 4,
+                        keys: Vec::new(),
+                    },
+                )
+                .unwrap();
+            assert!(matches!(
+                FRAMING.read_value::<_, Request>(&mut host).unwrap(),
+                Some(Request::CollaborationOp { workspace_id, app_id, record_id, unsigned_op })
+                    if workspace_id == expected_workspace && app_id == "notes"
+                        && record_id == "page" && unsigned_op == b"operation"
+            ));
+            FRAMING
+                .write_value(&mut host, &Response::Denied("role revoked".into()))
+                .unwrap();
+        });
+        let identity = runtime_identity::inherited::connect_service(app.as_fd()).unwrap();
+        let joined = sdk_join_identity_from(identity, cluster_id).unwrap();
+        assert_eq!(joined.participant_kind, "person");
+        let presentation = runtime_collab::CertifiedJoinIdentity::decode(&joined.presentation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(presentation.workspace_id, workspace);
+        assert_eq!(presentation.device_certificate, b"fixture");
+        assert_eq!(presentation.proof, [7; 64]);
+        let SdkDocumentSigner::Certified(signer) = joined.signer else {
+            panic!("an inherited identity must retain its broker signer");
+        };
+        assert_eq!(signer.device_certificate(), Some(b"fixture".as_slice()));
+        assert_eq!(signer.signing_public_key(), [5; 32]);
+        let keys = signer.channel_keys(&workspace, "notes", "page", 3).unwrap();
+        assert_eq!(keys.access, runtime_identity::wire::ChannelAccess::Removed);
+        assert_eq!(keys.generation, 4);
+        let error = signer
+            .sign_collaboration_op(&workspace, "notes", "page", b"operation")
+            .unwrap_err();
+        match error {
+            runtime_portal::NotAvailable::ConnectionFailed(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert_eq!(error.to_string(), "role revoked");
+            }
+            other => panic!("expected the broker refusal, got {other}"),
+        }
+        worker.join().unwrap();
     }
 
     #[test]

@@ -15,6 +15,22 @@
 # Output lands in dist/rpm/build/RPMS/<native-rpm-architecture>/.
 set -euo pipefail
 
+run_cargo=1
+for argument in "$@"; do
+    case "$argument" in
+        --no-cargo) run_cargo=0 ;;
+        -h|--help)
+            printf '%s\n' \
+                'Usage: dist/rpm/build-rpm.sh [--no-cargo]' \
+                'Build the Tilo session and matched app collection, then package RPMs.' \
+                '--no-cargo uses existing session binaries; stale app collection builds may still run.' \
+                'Output: dist/rpm/build/RPMS/<native-rpm-architecture>/ (or TILO_PACKAGE_OUT).' \
+                'Compilation uses Cargo on PATH; rpmbuild uses the host or configured build container.'
+            exit 0 ;;
+        *) printf 'Unexpected argument: %s\nUse --help for usage.\n' "$argument" >&2; exit 2 ;;
+    esac
+done
+
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 out=${TILO_PACKAGE_OUT:-$repo_root/dist/rpm/build}
 name=tilo-session
@@ -25,9 +41,6 @@ release=${TILO_RPM_RELEASE:-1}
 
 # Reject stale exception paths before spending time compiling the native payload.
 python3 "$repo_root/dist/rpm/test-rpmlint-config.py"
-
-run_cargo=1
-[[ ${1:-} == --no-cargo ]] && run_cargo=0
 
 say() { printf '\n== %s\n' "$*"; }
 # Asked before each long step, so a host that cannot package learns it first.

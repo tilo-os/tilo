@@ -97,8 +97,8 @@ inputs = ["t.toml", ".forgejo/workflows/**", "Cargo.toml", "**/Cargo.toml", "Car
 [[step]]
 name = "developer-docs"
 label = "Developer docs pages and links"
-run = "python3 tools/docs/developer_docs.py check"
-inputs = ["docs/**", "**/*.md"]
+run = "python3 -m unittest tools/tests/test_developer_docs.py tools/tests/test_development_book.py tools/tests/test_development_tool_help.py && python3 tools/docs/developer_docs.py check && python3 tools/docs/check_development_book.py"
+inputs = ["docs/**", "**/*.md", "**/Cargo.toml", "tools/docs/**", "tools/tests/test_developer_docs.py", "tools/tests/test_development_book.py", "tools/tests/test_development_tool_help.py", "tools/dev/install-git-hooks.py", "scripts/test-local.sh", "dist/rpm/build-rpm.sh", "crates/session/shell/build-macos.sh"]
 
 [[step]]
 name = "suites"

@@ -74,15 +74,7 @@ pub enum FsOperation {
         directory: bool,
     },
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum ItemState {
-    Completed,
-    Failed,
-    Cancelled,
-    CopiedSourceRetained,
-    RecoveryRequired,
-    OutcomeUnknown,
-}
+pub use tilo_fs_client::directory_types::ItemState;
 #[derive(Debug)]
 pub struct ItemOutcome {
     pub item: usize,
@@ -1229,7 +1221,7 @@ fn candidate(name: &EntryName, attempt: usize) -> Result<EntryName, FsError> {
     let mut result = bytes.get(..split).ok_or(FsError::InvalidName)?.to_vec();
     result.extend_from_slice(format!(" {}", attempt.saturating_add(1)).as_bytes());
     result.extend_from_slice(bytes.get(split..).ok_or(FsError::InvalidName)?);
-    EntryName::new(OsString::from_vec(result))
+    EntryName::new(OsString::from_vec(result)).map_err(FsError::from)
 }
 fn attempts(ctx: &Context<'_>, policy: ConflictPolicy) -> usize {
     let limit = if policy == ConflictPolicy::Fail {
