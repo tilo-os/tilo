@@ -125,6 +125,13 @@ mod storage;
 mod throttle;
 #[cfg(target_arch = "wasm32")]
 mod video_pictures;
+// When graphics start-up is said to stall: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser draws; the host runs its tests")
+)]
+mod first_frame;
 // Plain arithmetic on canvas sizes: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(
