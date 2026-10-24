@@ -440,6 +440,10 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        if self.dismiss_permission_prompt() {
+            *handled = true;
+            return true;
+        }
         if self.layers.dismiss_topmost() {
             *handled = true;
             return true;
