@@ -41,6 +41,7 @@ exclude = [
     "vendor/atspi-proxies",
     "vendor/rustypipe",
     "vendor/miracast",
+    "vendor/davey",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -729,6 +730,10 @@ mdns-sd = "=0.20.3"
 # Miracast (Wi-Fi Display) source for tilo-projector: Tilo's own standalone
 # crate, kept in vendor/miracast until it is published (see its PROVENANCE.md).
 miracast = { path = "vendor/miracast", default-features = false }
+# Discord's DAVE end-to-end encryption for the Discord connector's voice:
+# davey 0.1.5 moved to the openmls generation the workspace builds (see
+# vendor/davey/TILO-PATCH.md).
+davey = { path = "vendor/davey" }
 # FFT for acoustic calibration: deconvolving a recorded sweep into the
 # speaker's impulse response and reading its magnitude response.
 rustfft = "6.2"
