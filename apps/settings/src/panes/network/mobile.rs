@@ -1530,7 +1530,7 @@ fn metered_shown(policy: MeteredPolicy) -> String {
         .unwrap_or_default()
 }
 
-/// Network types in words: "5G, 4G, 3G and 2G", with the preferred one.
+/// Network types in words: "2G to 5G, 5G preferred".
 fn modes_shown(modes: NetworkModes) -> String {
     let generations: Vec<String> = modes
         .generations()
@@ -1543,7 +1543,20 @@ fn modes_shown(modes: NetworkModes) -> String {
             "net-mobile-network-only",
             &[("network", only.as_str().into())],
         ),
-        many => many.join(" / "),
+        [fastest, .., slowest]
+            if modes.generations().windows(2).all(
+                |pair| matches!(pair, [faster, slower] if *faster == slower.saturating_add(1)),
+            ) =>
+        {
+            t_args(
+                "net-mobile-network-range",
+                &[
+                    ("fastest", fastest.as_str().into()),
+                    ("slowest", slowest.as_str().into()),
+                ],
+            )
+        }
+        many => many.join(", "),
     };
     match modes.preferred_generation() {
         Some(preferred) if modes.generations().len() > 1 => t_args(
@@ -1751,7 +1764,7 @@ impl MobileModel {
             situation(modem, self.data_on()),
         );
         if !details.is_empty() {
-            status = status.secondary(details.join(" · "));
+            status = status.secondary(details.join(", "));
         }
         if let Some(meter) = modem
             .signal
@@ -1916,7 +1929,7 @@ impl MobileModel {
                     format!("settings.network.mobile.sim:{}", sim.path),
                     sim.label(),
                 )
-                .secondary(details.join(" · "));
+                .secondary(details.join(", "));
                 if sim.active {
                     entry = entry.value(t("net-mobile-in-use"));
                 } else {
@@ -1936,7 +1949,7 @@ impl MobileModel {
         } else if let Some(sim) = modem.active_sim() {
             items.push(value_row(
                 &t("net-sim"),
-                &format!("{} · {}", sim.label(), kind(sim)),
+                &format!("{}, {}", sim.label(), kind(sim)),
             ));
         }
         if let Some(number) = modem.numbers.first() {
@@ -1978,7 +1991,11 @@ impl MobileModel {
                 &[(&self.pin, "network.mobile.pin", t("net-sim-pin"))],
                 (
                     "settings.network.mobile.pin-lock.confirm",
-                    t("net-mobile-confirm"),
+                    t(if on {
+                        "net-mobile-pin-lock-turn-on"
+                    } else {
+                        "net-mobile-pin-lock-turn-off"
+                    }),
                     MobileEffect::SetSimPinLock {
                         sim: None,
                         on,
