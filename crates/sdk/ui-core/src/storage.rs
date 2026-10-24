@@ -25,7 +25,6 @@
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -176,7 +175,7 @@ pub trait SettingsSchema: Serialize + DeserializeOwned + Default + 'static {
 }
 
 /// Which settings document a host gives its apps.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SettingsDocument {
     /// The person's session document: the one the host installed
     /// (`settings_store::install_source`), else the local `settings.json`.
@@ -186,9 +185,24 @@ pub enum SettingsDocument {
     File(PathBuf),
 }
 
-/// Bumped by every write through this module, so a reader in the same
-/// process sees a write even within one file-time tick.
-static WRITES: AtomicU64 = AtomicU64::new(0);
+/// How many writes through this module each document has taken, so a
+/// reader in the same process sees a write to its document even within one
+/// file-time tick, and is not sent to read it again by another document's.
+static WRITES: std::sync::Mutex<std::collections::BTreeMap<SettingsDocument, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn writes() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<SettingsDocument, u64>> {
+    WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Count a write to `document` ([`WRITES`]).
+fn note_write(document: &SettingsDocument) {
+    let mut writes = writes();
+    let count = writes.entry(document.clone()).or_default();
+    *count = count.wrapping_add(1);
+}
 
 /// One version of a settings document, for readers that follow it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,7 +323,7 @@ impl SettingsDocument {
                 (Self::File(path), _) => settings_store::update_section_at(path, name, values),
             }
         };
-        WRITES.fetch_add(1, Ordering::AcqRel);
+        note_write(self);
         written
     }
 
@@ -321,7 +335,7 @@ impl SettingsDocument {
                 Self::Session => settings_store::stamp(),
                 Self::File(path) => settings_store::stamp_at(path),
             },
-            writes: WRITES.load(Ordering::Acquire),
+            writes: writes().get(self).copied().unwrap_or_default(),
         }
     }
 }
@@ -479,7 +493,11 @@ fn store_pending(only: Option<&SettingsDocument>) {
         }
         queue.retired = queue.retired.wrapping_add(1);
         queue.writing = false;
-        WRITES.fetch_add(1, Ordering::AcqRel);
+        for (at, change) in batch.iter().enumerate() {
+            if !batch[..at].iter().any(|c| c.document == change.document) {
+                note_write(&change.document);
+            }
+        }
         if failed && let Some(wake) = queue.wake.take() {
             wake.wake();
         }
@@ -1235,9 +1253,15 @@ mod tests {
             stored(),
             Some(serde_json::json!({"confirm": true, "interval_ms": 900}))
         );
-        // Setting what is already there writes nothing.
+        // Setting what is already there writes nothing, and a write to
+        // another document is not a change of this one.
         let revision = prefs.revision();
         prefs.set(&prefs.get()).unwrap();
+        let elsewhere = dir.path().join("other.json");
+        Settings::<Prefs>::for_app("so.tilo.example")
+            .in_file(&elsewhere)
+            .update(|prefs| prefs.interval_ms = 700)
+            .unwrap();
         assert_eq!(prefs.revision(), revision);
     }
 
