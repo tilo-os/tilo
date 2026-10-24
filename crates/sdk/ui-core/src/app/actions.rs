@@ -664,6 +664,10 @@ impl App {
                 resources.push(edit);
             }
         }
+        // Every window zooms: an agent or script asked to make it larger
+        // reaches the zoom the keys do.
+        #[cfg(feature = "native")]
+        resources.extend(self.zoom_resource());
         resources
     }
 
@@ -766,6 +770,10 @@ impl App {
         let mut operation_handlers = crate::widget::resource_operation_handlers(&*self.root_widget);
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         operation_handlers.insert(history_actions::OPERATION.to_string());
+        #[cfg(feature = "native")]
+        if self.accessibility.zoom.in_window() {
+            operation_handlers.insert(crate::host_chrome::zoom::ZOOM_OPERATION.to_string());
+        }
         // Bound components have already been validated against their own registries
         // by publication_resources. Only legacy resources use the host registry.
         let unbound_resources = resources
@@ -2813,6 +2821,10 @@ impl App {
         if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
             resources.extend(self.edit_resource_for(address));
         }
+        #[cfg(feature = "native")]
+        if address.resource == crate::host_chrome::zoom::ZOOM_RESOURCE {
+            resources.extend(self.zoom_resource());
+        }
         let (typed_arguments, resource, resolved) = Self::resolve_resource_invocation(
             &resources,
             address,
@@ -2979,6 +2991,14 @@ impl App {
                 );
             }
             let operation_invocation = invocation.unwrap_or_default();
+            #[cfg(feature = "native")]
+            if encoded.type_id == crate::host_chrome::zoom::ZOOM_OPERATION {
+                self.execute_zoom_operation(&encoded)
+                    .map_err(tilo_actions::DoorError::Failed)?;
+                return Ok(crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ));
+            }
             if encoded.type_id == history_actions::OPERATION {
                 let result = self
                     .invoke_history_action(&encoded, actor)
