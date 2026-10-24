@@ -2420,6 +2420,7 @@ fn paint_slots(
             LocationLift {
                 hovered: interaction.is_some_and(|i| i.hover == Some(Slot::ViewsMenu)),
                 pressed: open || interaction.is_some_and(|i| i.pressed == Some(Slot::ViewsMenu)),
+                focused: false,
             },
         );
     }
@@ -2460,6 +2461,7 @@ fn paint_slots(
         pressed: interaction.is_some_and(|i| {
             i.pressed == Some(Slot::Location) || i.menu_open == Some(Slot::Location)
         }),
+        focused: false,
     };
     paint_location(
         scene,
@@ -2477,6 +2479,8 @@ pub(crate) struct LocationLift {
     pub(crate) hovered: bool,
     /// Pressed, or its menu is open.
     pub(crate) pressed: bool,
+    /// Holds keyboard focus with the ring shown.
+    pub(crate) focused: bool,
 }
 
 /// The location at rest: its icon, then its label, elided at the end. An
@@ -2619,7 +2623,8 @@ pub(crate) fn paint_picker(
         .role(crate::widget::ButtonRole::Plain)
         .control_size(crate::widget::ControlSize::Small)
         .hovered(lift.hovered)
-        .pressed(lift.pressed);
+        .pressed(lift.pressed)
+        .focused(lift.focused);
     crate::widget::Button::paint(scene, transform, tr, theme, &face);
     let y = rect.center().y - label.height / 2.0;
     label.paint(
