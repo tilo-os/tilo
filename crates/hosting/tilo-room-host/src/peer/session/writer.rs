@@ -69,6 +69,9 @@ pub(super) struct SessionWriter<'s, W> {
     raw_turn: bool,
     /// What the last turn wrote, for the slow-write log.
     wrote: &'static str,
+    /// Once the session ends, how many more turns write what was queued
+    /// then, before the stream is finished.
+    ending: Option<usize>,
     /// This connection's halves of its presence and delta slot coding:
     /// they see every batch and coded delta this writer writes, in order.
     coding: SessionCoding,
@@ -98,13 +101,33 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             deferred_frame: None,
             raw_turn: false,
             wrote: "",
+            ending: None,
             coding: SessionCoding::default(),
         }
     }
 
-    /// Write until a write fails; the session ends the writer otherwise.
-    pub(super) async fn run(mut self, cx: SessionLoop<'_, '_>) -> Result<(), PeerError> {
+    /// Write until a write fails, or until `ending` says the session ends:
+    /// then what was queued when it ended is written and the stream
+    /// finished, so a refusal queued for the peer (a removal's
+    /// `NotAuthorised`) reaches it before the close. A write in progress is
+    /// always completed; what is queued after the end is not written.
+    pub(super) async fn run(
+        mut self,
+        cx: SessionLoop<'_, '_>,
+        mut ending: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), PeerError> {
         loop {
+            // Read the end's value: `changed` in `await_ready` only wakes
+            // this loop, and marks the change seen.
+            if self.ending.is_none()
+                && (*ending.borrow_and_update() || ending.has_changed().is_err())
+            {
+                self.ending = Some(self.queued());
+            }
+            if self.ending == Some(0) {
+                self.write.shutdown().await?;
+                return Ok(());
+            }
             let started = std::time::Instant::now();
             let turn = self.write_ready(cx).await?;
             let held = started.elapsed();
@@ -115,12 +138,32 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
                     "a write held the session writer"
                 );
             }
-            if let WriterTurn::Idle { live } = turn {
-                // None of the queues was ready. Await readiness without starting
-                // a write in a cancellable select branch.
-                self.await_ready(live, cx).await?;
+            match (turn, self.ending.as_mut()) {
+                (WriterTurn::Wrote, Some(left)) => *left = left.saturating_sub(1),
+                (WriterTurn::Idle { .. }, Some(left)) => *left = 0,
+                (WriterTurn::Wrote, None) => {}
+                // None of the queues was ready. Await readiness without
+                // starting a write in a cancellable select branch.
+                (WriterTurn::Idle { live }, None) => {
+                    self.await_ready(live, cx, &mut ending).await?;
+                }
             }
         }
+    }
+
+    /// How many frames wait to be written: each takes at most one turn.
+    fn queued(&self) -> usize {
+        [
+            self.rx.len(),
+            self.state_rx.len(),
+            self.reply_rx.len(),
+            self.private_rx.len(),
+            usize::from(self.active.is_some()),
+            usize::from(self.deferred_state.is_some()),
+            usize::from(self.deferred_frame.is_some()),
+        ]
+        .into_iter()
+        .fold(0, usize::saturating_add)
     }
 
     /// Write the next frame whose queue is ready, in fairness order.
@@ -248,7 +291,13 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
     /// Wait until a queue is ready. Only a private frame is written here,
     /// and it is written after its branch was chosen, so no write starts
     /// inside a branch the select could cancel.
-    async fn await_ready(&mut self, live: bool, cx: SessionLoop<'_, '_>) -> Result<(), PeerError> {
+    /// The session ending (`ending` changing) is ready too.
+    async fn await_ready(
+        &mut self,
+        live: bool,
+        cx: SessionLoop<'_, '_>,
+        ending: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), PeerError> {
         tokio::select! {
             biased;
             batch = self.reply_rx.recv() => { self.active = batch; }
@@ -262,6 +311,8 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
                 self.deferred_frame = frame;
             }
             () = self.presence.ready(), if live => {}
+            // Seen by the next turn, which counts what is queued.
+            _ = ending.changed() => {}
         }
         Ok(())
     }
