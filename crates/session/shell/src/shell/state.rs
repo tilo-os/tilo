@@ -713,7 +713,8 @@ pub fn session_handle(peer: u64) -> String {
 
 /// A change to a room's governance made at this device, for the room's
 /// governor to decide ([`WorkspaceTree::request_governance`]).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GovernanceRequest {
     /// A change to the room's members, roles or grants.
     Policy(tilo_action_policy::Change),
@@ -781,10 +782,12 @@ pub struct WorkspaceTree {
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub pending_placements: BTreeSet<RoomId>,
     /// Changes to rooms' governance made at this device
-    /// ([`Self::request_governance`]), waiting for the network to take each
-    /// to its room's governor. A room's governance changes only there, and
-    /// reaches this tree as the projection of its admitted document.
-    #[serde(skip)]
+    /// ([`Self::request_governance`]), waiting to be taken to each room's
+    /// governor. A room's governance changes only there, and reaches this
+    /// tree as the projection of its admitted document. Persisted, so a
+    /// change made while its governor is out of reach, or just before a
+    /// restart, is still asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub governance_requests: Vec<(RoomId, GovernanceRequest)>,
     /// Strips a person made here, waiting for their room's next projection
     /// to publish them kept while empty: a made strip reaches the others at
@@ -2634,6 +2637,18 @@ impl WorkspaceTree {
     /// room's admitted document carries it.
     pub fn request_governance(&mut self, room: RoomId, request: GovernanceRequest) {
         self.governance_requests.push((room, request));
+        self.queue_save();
+    }
+
+    /// Put back `requests`, taken but not yet asked because their governor
+    /// was out of reach, ahead of any made since: asked in the order made.
+    pub fn requeue_governance(&mut self, requests: Vec<(RoomId, GovernanceRequest)>) {
+        if requests.is_empty() {
+            return;
+        }
+        let newer = std::mem::replace(&mut self.governance_requests, requests);
+        self.governance_requests.extend(newer);
+        self.queue_save();
     }
 
     /// Take back the sandbox capability `id` of `workspace_id` as `revoker`:
@@ -2959,7 +2974,11 @@ impl WorkspaceTree {
 
     /// The governance changes made here, taken in the order they were made.
     pub fn take_governance_requests(&mut self) -> Vec<(RoomId, GovernanceRequest)> {
-        std::mem::take(&mut self.governance_requests)
+        let taken = std::mem::take(&mut self.governance_requests);
+        if !taken.is_empty() {
+            self.queue_save();
+        }
+        taken
     }
 
     /// The rooms of workspaces made here that wait to be created on a host,
