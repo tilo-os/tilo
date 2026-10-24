@@ -3075,7 +3075,7 @@ pub use image::{Image, ImageDecodeError, ImageFit};
 mod image_crop;
 pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
-pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep};
+pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep, paint_held_readout};
 mod text_input;
 pub use text_input::{
     AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
@@ -3359,6 +3359,8 @@ pub use media_transport::{
     MediaTransport, TransportActions, TransportArt, TransportEvent, TransportFeed, TransportRepeat,
     TransportState,
 };
+pub mod now_playing;
+pub use now_playing::{Scrub, Song, SongFace};
 pub mod drop_zone;
 pub use drop_zone::{DropZone, DropZoneFace};
 pub mod file_open;

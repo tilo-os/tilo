@@ -538,6 +538,8 @@ pub enum Action {
     /// A player in another workspace and three people here, for the desk
     /// widgets.
     SeedDesk,
+    /// Quick Settings open on its root page.
+    OpenQuickSettings,
     /// A key reached the focused window.
     DeskTyping,
     /// Super alone: tapped, held, released.
@@ -927,6 +929,9 @@ fn apply_motion_cue(driver: &mut ShellDriver, cue: &MotionCue) {
 fn apply_desk(driver: &mut ShellDriver, action: &Action) {
     match action {
         Action::SeedDesk => driver.seed_desk_for_shots(),
+        Action::OpenQuickSettings => {
+            driver.with_chrome(ShellDriver::seed_laptop_quick_settings);
+        }
         Action::DeskTyping => driver.desk_typing_for_shots(),
         Action::Super(gesture) => driver.super_gesture_for_shots(*gesture),
         Action::SetTextCaret(caret) => driver.set_text_caret_for_shots(*caret),
@@ -2681,6 +2686,19 @@ fn build_scenarios() -> Vec<Scenario> {
                 ),
                 Action::Relayout,
                 Action::Snapshot("12-tour-start"),
+            ],
+        },
+        Scenario {
+            name: "now_playing_cards",
+            description: "What plays, as Quick Settings and the lock screen show it.",
+            actions: vec![
+                Action::Step(film::Step::NowPlaying),
+                Action::OpenQuickSettings,
+                Action::Wait(30),
+                Action::Relayout,
+                Action::Snapshot("01-quick-settings"),
+                Action::SetLockVisual(super::driver::LockVisualState::NowPlaying),
+                Action::Snapshot("02-lock-screen"),
             ],
         },
         Scenario {

@@ -54,6 +54,7 @@ impl ShellOverlayHost {
             source: self.input_source,
             now,
         });
+        self.follow_now_playing_side(flags.quick_settings, theme);
     }
 
     /// Reconcile Quick Settings' retained widget with the authoritative
@@ -131,11 +132,14 @@ impl ShellOverlayHost {
             // would bound the damage but not the shadow, which then stayed
             // on screen outside it once the panel moved on.
             let panel_reach = quick_settings_settled_bounds(qs_rect, theme, Affine::IDENTITY);
+            // The card on each side it stands on while it changes sides.
             let reach = self
                 .now_playing_view()
-                .and_then(|view| self.now_playing_rect(&view))
-                .map_or(panel_reach, |card| {
-                    panel_reach.union(quick_settings_settled_bounds(card, theme, Affine::IDENTITY))
+                .map(|view| self.now_playing_drawn(&view))
+                .unwrap_or_default()
+                .into_iter()
+                .fold(panel_reach, |reach, (card, _)| {
+                    reach.union(quick_settings_settled_bounds(card, theme, Affine::IDENTITY))
                 });
             let mut card_rect = None;
             pose.paint(scene, transform, reach, |scene, qs_xform| {

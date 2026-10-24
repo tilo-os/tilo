@@ -32,6 +32,7 @@ use taffy::prelude::NodeId;
 mod desktop_control;
 mod downloaded_scene;
 mod invite_scenes;
+mod now_playing_fixture;
 mod scene_catalogue;
 mod search_seed;
 mod two_groups_scene;
@@ -93,6 +94,8 @@ pub enum LockVisualState {
     Verifying,
     Error,
     Notifications,
+    /// The compact now-playing card under the credential panel.
+    NowPlaying,
 }
 
 impl ShellDriver {
@@ -624,6 +627,7 @@ impl ShellDriver {
                 self.fb.scene_size(),
                 None,
             );
+            let lock_player = now_playing_fixture::shots_player();
             let view = match state {
                 LockVisualState::Default => shell::compositor::lock_screen::LockView {
                     clock: "12:34",
@@ -653,6 +657,12 @@ impl ShellDriver {
                     clock: "12:34",
                     date: "Monday, 7 September",
                     notification_count: 3,
+                    ..Default::default()
+                },
+                LockVisualState::NowPlaying => shell::compositor::lock_screen::LockView {
+                    clock: "12:34",
+                    date: "Monday, 7 September",
+                    now_playing: Some(&lock_player),
                     ..Default::default()
                 },
             };
@@ -1299,8 +1309,12 @@ impl ShellDriver {
     /// this one, and three people here, one with a status line they wrote,
     /// one whose machine generated theirs, one with none, each on a window.
     pub fn seed_desk_for_shots(&mut self) {
+        use shell::shell::now_playing::FixturePlayers;
         use shell::shell::state::Collaborator;
-        self.seed_now_playing_for_shots();
+        let mut player = now_playing_fixture::shots_player();
+        player.artwork = None;
+        self.host_mut()
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
         let handle = self.chrome_handle();
         let room = {
             let st = handle.borrow();
@@ -1350,28 +1364,13 @@ impl ShellDriver {
         }
     }
 
-    /// A music player playing, as the now-playing card reads it.
+    /// A song playing with its cover, for the now-playing cards.
     pub fn seed_now_playing_for_shots(&mut self) {
-        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
-        let player = PlayerSnapshot {
-            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
-            identity: "Spotify".to_string(),
-            status: PlaybackStatus::Playing,
-            title: Some("Teardrop".to_string()),
-            artist: Some("Massive Attack".to_string()),
-            artwork: None,
-            track_id: Some("/org/tilo/shots/track/1".to_string()),
-            length_us: Some(330_000_000),
-            position_us: 94_000_000,
-            can_play: true,
-            can_pause: true,
-            can_seek: true,
-            can_go_next: true,
-            can_go_previous: true,
-            observed_at: Instant::now(),
-        };
+        use shell::shell::now_playing::FixturePlayers;
         self.host_mut()
-            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![
+                now_playing_fixture::shots_player(),
+            ])));
     }
 
     /// Three people and an agent here, as the live shell folds them: Ada

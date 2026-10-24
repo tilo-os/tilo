@@ -6,19 +6,29 @@
 //! reuses [`transport_rects`] and [`paint_transport`] for its compact card,
 //! which carries transport only: no player switching and no output changes
 //! while the session is locked.
+//!
+//! The song, the seek bar and the transport are the toolkit's player
+//! pieces, the ones Music's own player is made of: the song cross-fades
+//! when it changes ([`ui::widget::SongFace`]), the seek bar follows the
+//! pointer or a finger with the time under it ([`ui::widget::Scrub`]), and
+//! the transport is the media transport face.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, Slider, SliderFace};
+use ui::widget::{
+    Button, ButtonFace, Scrub, Slider, SliderFace, SongFace, TransportControl, TransportFace,
+    paint_held_readout,
+};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect};
 
 use crate::shell::now_playing::{
-    NowPlayingView, OutputKind, PlaybackStatus, PlayerCommand, PlayerSnapshot, format_time, tr,
+    Artwork, NowPlayingView, OutputKind, PlaybackStatus, PlayerCommand, PlayerSnapshot,
+    format_time, tr,
 };
 use tilo_desktop::drill_in::{
     CONTROL_INSET, GLYPH, PANEL_PAD, RELATED_GAP, ROW_HEIGHT, SIBLING_GAP, TARGET,
@@ -75,13 +85,15 @@ impl Transport {
         })
     }
 
+    /// The media transport control this is, as `player` stands.
     #[must_use]
-    pub fn icon(self, player: &PlayerSnapshot) -> ui::icons::Icon {
+    pub fn control(self, player: &PlayerSnapshot) -> TransportControl {
         match self {
-            Self::Previous => ui::icons::Icon::SkipBack,
-            Self::Next => ui::icons::Icon::SkipForward,
-            Self::PlayPause if player.status == PlaybackStatus::Playing => ui::icons::Icon::Pause,
-            Self::PlayPause => ui::icons::Icon::Play,
+            Self::Previous => TransportControl::Previous,
+            Self::Next => TransportControl::Next,
+            Self::PlayPause => TransportControl::PlayPause {
+                playing: player.status == PlaybackStatus::Playing,
+            },
         }
     }
 }
@@ -108,14 +120,13 @@ pub fn transport_rects(row: Rect, scale: f64) -> [(Transport, Rect); 3] {
     ]
 }
 
-/// Paint the transport buttons with the shared `Button` face: play/pause is
-/// the primary action, previous and next are ghost buttons, and a control the
-/// player does not offer is disabled rather than hidden so the row keeps its
-/// shape.
+/// Paint the transport with the media transport face Music's player uses:
+/// play/pause the one round prominent control, previous and next plain, and
+/// a control the player does not offer disabled rather than hidden so the
+/// row keeps its shape.
 pub fn paint_transport(
     scene: &mut Scene,
     transform: Affine,
-    text: &mut TextRenderer,
     theme: &Theme,
     rects: &[(Transport, Rect); 3],
     player: &PlayerSnapshot,
@@ -123,101 +134,43 @@ pub fn paint_transport(
     focused: Option<Transport>,
 ) {
     for (transport, rect) in rects {
-        let label = transport.label(player);
         let enabled = transport.enabled(player);
-        let mut face = ButtonFace::new(*rect, "")
-            .icon(transport.icon(player))
-            .hovered(enabled && cursor.is_some_and(|p| rect.contains(p)))
-            .focused(focused == Some(*transport))
-            .disabled(!enabled)
-            .accessible_name(&label);
-        face = if *transport == Transport::PlayPause {
-            face.role(ButtonRole::Primary)
-        } else {
-            face.role(ButtonRole::Plain)
-        };
-        Button::paint(scene, transform, text, theme, &face);
+        // The face is a square: the play circle is inscribed in it.
+        let side = rect.width().min(rect.height());
+        let face = TransportFace::new(
+            Rect::from_center_size(rect.center(), (side, side)),
+            transport.control(player),
+        )
+        .hovered(enabled && cursor.is_some_and(|p| rect.contains(p)))
+        .focused(focused == Some(*transport))
+        .disabled(!enabled);
+        TransportFace::paint(scene, transform, theme, &face);
     }
 }
 
-/// Paint `player`'s artwork into `rect`, or its application monogram on the
-/// control floor when the player offers no local artwork.
-pub fn paint_artwork(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
+/// Paint `player`'s song, at rest, with its cover in `art` and its lines in
+/// `lines` set in `styles` (title, caption): for a surface that paints from
+/// scratch and keeps no motion of its own (the lock screen, the desk).
+pub fn paint_song_at_rest(
+    ctx: &mut PaintCtx<'_>,
     player: &PlayerSnapshot,
-    image: Option<&vello::peniko::ImageData>,
+    art: Rect,
+    lines: Option<(
+        Rect,
+        &ui::text_render::TextStyle,
+        &ui::text_render::TextStyle,
+    )>,
 ) {
-    let radius = control_radius(theme, rect);
-    let shape = RoundedRect::from_rect(rect, radius);
-    if let (Some(image), Some(art)) = (image, player.artwork.as_ref()) {
-        let scale = (rect.width() / f64::from(art.width.max(1)))
-            .max(rect.height() / f64::from(art.height.max(1)));
-        let drawn = (f64::from(art.width) * scale, f64::from(art.height) * scale);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &shape,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform
-                .pre_translate(
-                    (
-                        rect.center().x - drawn.0 / 2.0,
-                        rect.center().y - drawn.1 / 2.0,
-                    )
-                        .into(),
-                )
-                .pre_scale(scale),
-            &vello::peniko::ImageBrush::new(image.clone()),
-            None,
-            &Rect::new(0.0, 0.0, f64::from(art.width), f64::from(art.height)),
-        );
-        scene.pop_layer();
-        return;
+    let image = player.artwork.as_ref().map(Artwork::image);
+    // A compact card names the song and who it is by, not the app too.
+    let mut song = player.song(image);
+    song.detail.clear();
+    let face = SongFace::showing(&song);
+    let now = ui::time::now();
+    face.paint_art(ctx, art, control_radius(ctx.theme, art), now);
+    if let Some((rect, title, caption)) = lines {
+        face.paint_lines(ctx, rect, Some((title, caption)), now);
     }
-    ui::surface::card(
-        scene,
-        transform,
-        rect,
-        radius,
-        theme.tokens.colors.lift(0.6),
-    );
-    let monogram = player.monogram();
-    if monogram.is_empty() {
-        let glyph = GLYPH.min(rect.height());
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::from_center_size(rect.center(), (glyph, glyph)),
-            ui::icons::Icon::Music,
-            theme.tokens.colors.text_dim,
-            1.5,
-        );
-        return;
-    }
-    let style = theme.text(TextRole::Heading);
-    let (w, h) = text.measure_style(&monogram, None, &style);
-    text.draw_style(
-        scene,
-        &monogram,
-        theme.tokens.colors.text_primary,
-        transform.pre_translate(
-            (
-                rect.center().x - f64::from(w) / 2.0,
-                rect.center().y - f64::from(h) / 2.0,
-            )
-                .into(),
-        ),
-        None,
-        &style,
-    );
 }
 
 /// Every interactive region of the full card.
@@ -266,6 +219,10 @@ pub struct NowPlayingCard {
     /// The last artwork handed to vello, keyed by its pixel buffer, so an
     /// unchanged cover is not re-uploaded every frame.
     image: Option<(usize, vello::peniko::ImageData)>,
+    /// The song shown, cross-fading to the next.
+    song: SongFace,
+    /// The seek bar's knob while the pointer or a finger holds it.
+    scrub: Scrub,
 }
 
 impl NowPlayingCard {
@@ -495,6 +452,8 @@ impl NowPlayingCard {
             picker: self.picker,
             text_scale: self.text_scale,
             image: None,
+            song: SongFace::new(),
+            scrub: self.scrub,
         }
     }
 
@@ -508,10 +467,43 @@ impl NowPlayingCard {
         self.focus.is_some()
     }
 
-    /// Closing the popover forgets focus and folds any picker away.
+    /// Closing the popover forgets focus, folds any picker away and lets go
+    /// of the seek bar without seeking.
     pub fn reset(&mut self) {
         self.focus = None;
         self.picker = None;
+        self.scrub.cancel();
+    }
+
+    /// Whether the pointer or a finger holds the seek bar.
+    #[must_use]
+    pub fn scrubbing(&self) -> bool {
+        self.scrub.held().is_some()
+    }
+
+    /// The seek bar's face showing `value`, as it is painted and hit.
+    fn seek_slider(&self, view: &NowPlayingView, value: f64) -> Option<SliderFace> {
+        self.seek_face(view)
+            .map(|face| SliderFace::new(face, value))
+    }
+
+    /// The held seek bar follows `point`.
+    pub fn drag(&mut self, view: &NowPlayingView, point: Point) -> CardAction {
+        let Some(face) = self.seek_slider(view, 0.0) else {
+            return CardAction::None;
+        };
+        match self.scrub.drag(&face, point) {
+            Some(_) => CardAction::Redraw,
+            None => CardAction::None,
+        }
+    }
+
+    /// Let go of the seek bar: the player seeks where it was let go, once.
+    pub fn release(&mut self, view: &NowPlayingView) -> CardAction {
+        match self.scrub.release() {
+            Some(fraction) => Self::command(view, view.seek_command(fraction)),
+            None => CardAction::None,
+        }
     }
 
     #[must_use]
@@ -529,18 +521,19 @@ impl NowPlayingCard {
             .map(|(target, _)| target)
     }
 
-    /// A pointer press. Clicking the seek bar jumps to that point.
+    /// A press by the pointer or a finger. On the seek bar the knob jumps
+    /// to that point and follows the hand ([`Self::drag`]) until it is let
+    /// go ([`Self::release`]), which seeks.
     pub fn click(&mut self, view: &NowPlayingView, point: Point) -> CardAction {
         let Some(target) = self.target_at(view, point) else {
             return CardAction::None;
         };
         if target == CardTarget::Seek {
-            let Some(face) = self.seek_face(view) else {
+            let Some(face) = self.seek_slider(view, 0.0) else {
                 return CardAction::None;
             };
-            let track = SliderFace::new(face, 0.0).track_rect();
-            let fraction = ((point.x - track.x0) / track.width().max(1.0)).clamp(0.0, 1.0);
-            return Self::command(view, view.seek_command(fraction));
+            self.scrub.press(&face, point);
+            return CardAction::Redraw;
         }
         self.activate(view, target)
     }
@@ -749,11 +742,7 @@ impl NowPlayingCard {
         {
             return Some(image.clone());
         }
-        let image = ui::raster::rgba8(
-            vello::peniko::Blob::new(art.rgba.clone()),
-            art.width,
-            art.height,
-        );
+        let image = art.image();
         self.image = Some((identity, image.clone()));
         Some(image)
     }
@@ -778,76 +767,46 @@ impl NowPlayingCard {
         let player = view.player().clone();
         let image = self.artwork_image(&player);
         let art = self.art_rect();
-        paint_artwork(scene, transform, text, theme, art, &player, image.as_ref());
+        let now = ui::time::now();
+        self.song.show(&player.song(image), theme.motion(), now);
 
-        // Title, artist, application: one measured block on the header's
-        // centre line, elided to the room beside the artwork.
+        // Title, artist, application: one block on the header's centre
+        // line, elided to the room beside the artwork.
         let header = self.header_rect();
         let text_x = art.x1 + CONTROL_INSET;
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "card widths are bounded by the output; f32 is the shaping precision"
-        )]
-        let width = (header.x1 - text_x).max(1.0) as f32;
-        let title_style = theme.text(TextRole::Caption);
+        let title_style = theme
+            .text(TextRole::Caption)
+            .with_weight(TextWeight::Semibold);
         let caption_style = theme.text(TextRole::Caption);
-        let title = text.elide_to_width_style(
-            player.headline(),
-            width,
-            &title_style.clone().with_weight(TextWeight::Semibold),
-        );
-        let subline = player
-            .subline()
-            .map(|subline| text.elide_to_width_style(subline, width, &caption_style));
-        let app = (player.subline() != Some(player.identity.as_str())
-            && player.headline() != player.identity)
-            .then(|| text.elide_to_width_style(&player.identity, width, &caption_style));
-        let (_, title_h) = text.measure_style(
-            &title,
-            None,
-            &title_style.clone().with_weight(TextWeight::Semibold),
-        );
-        let caption_h = f64::from(text.measure_style("Ag", None, &caption_style).1);
-        let lines = [subline.is_some(), app.is_some()]
-            .into_iter()
-            .filter(|line| *line)
-            .count();
-        let block = f64::from(title_h) + caption_h * f64::from(u32::try_from(lines).unwrap_or(0));
-        let mut y = centred_text_top(header, block);
-        text.draw_style(
-            scene,
-            &title,
-            colors.text_primary,
-            transform.pre_translate((text_x, y).into()),
-            None,
-            &title_style.with_weight(TextWeight::Semibold),
-        );
-        y += f64::from(title_h);
-        for line in [subline, app].into_iter().flatten() {
-            text.draw_style(
-                scene,
-                &line,
-                colors.text_dim,
-                transform.pre_translate((text_x, y).into()),
-                None,
-                &caption_style,
+        {
+            let ctx = &mut PaintCtx::new(scene, transform, text, theme);
+            self.song
+                .paint_art(ctx, art, control_radius(theme, art), now);
+            self.song.paint_lines(
+                ctx,
+                Rect::new(text_x, header.y0, header.x1, header.y1),
+                Some((&title_style, &caption_style)),
+                now,
             );
-            y += caption_h;
         }
 
         if let (Some(band), Some(face), Some(progress)) =
             (self.seek_rect(view), self.seek_face(view), view.progress())
         {
-            let elapsed = format_time(player.position_at(view.now));
-            let remaining = format!(
-                "-{}",
-                format_time(
-                    player
-                        .length_us
-                        .unwrap_or(0)
-                        .saturating_sub(player.position_at(view.now))
-                )
-            );
+            let length = player.length_us.unwrap_or(0);
+            let shown = self.scrub.shown(progress);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_precision_loss,
+                reason = "a position within the track, in whole microseconds"
+            )]
+            let at = |fraction: f64| (fraction * length as f64).round() as i64;
+            // The elapsed time follows the held knob: where the seek lands.
+            let elapsed = match self.scrub.held() {
+                Some(held) => format_time(at(held)),
+                None => format_time(player.position_at(view.now)),
+            };
+            let remaining = format_time(length);
             let (_, time_h) = text.measure_style(&elapsed, None, &caption_style);
             let time_y = centred_text_top(band, f64::from(time_h));
             text.draw_style(
@@ -868,15 +827,15 @@ impl NowPlayingCard {
                 &caption_style,
             );
             let seekable = player.seekable();
-            Slider::paint(
-                scene,
-                transform,
-                theme,
-                &SliderFace::new(face, progress)
-                    .hovered(seekable && cursor.is_some_and(|p| face.contains(p)))
-                    .focused(self.focus == Some(CardTarget::Seek))
-                    .disabled(!seekable),
-            );
+            let slider = SliderFace::new(face, shown)
+                .hovered(seekable && cursor.is_some_and(|p| face.contains(p)))
+                .dragging(self.scrub.held().is_some())
+                .focused(self.focus == Some(CardTarget::Seek))
+                .disabled(!seekable);
+            Slider::paint(scene, transform, theme, &slider);
+            if self.scrub.held().is_some() {
+                paint_held_readout(scene, transform, text, theme, &slider, &elapsed);
+            }
         }
 
         if let (Some(band), Some(speakers)) = (self.speakers_rect(view), &view.speakers) {
@@ -906,9 +865,7 @@ impl NowPlayingCard {
             Some(CardTarget::Transport(transport)) => Some(transport),
             _ => None,
         };
-        paint_transport(
-            scene, transform, text, theme, &rects, &player, cursor, focused,
-        );
+        paint_transport(scene, transform, theme, &rects, &player, cursor, focused);
         for (target, rect, icon) in [
             (
                 CardTarget::Players,
@@ -1194,10 +1151,9 @@ mod tests {
         let mut card = laid_out(&view);
         let face = card.seek_face(&view).expect("seek bar");
         let track = SliderFace::new(face, 0.0).track_rect();
-        let action = card.click(
-            &view,
-            Point::new(track.x0 + track.width() * 0.25, face.center().y),
-        );
+        let at = Point::new(track.x0 + track.width() * 0.25, face.center().y);
+        assert_eq!(card.click(&view, at), CardAction::Redraw);
+        let action = card.release(&view);
         assert_eq!(
             action,
             CardAction::Command {
@@ -1207,6 +1163,49 @@ mod tests {
                     position_us: 50_000_000,
                 },
             }
+        );
+    }
+
+    #[test]
+    fn the_seek_bar_follows_the_hand_and_seeks_once_where_it_is_let_go() {
+        let source = FakeSource {
+            players: vec![player("music", "Music", PlaybackStatus::Paused)],
+            ..FakeSource::default()
+        };
+        let view = view_from(&source, Vec::new());
+        let mut card = laid_out(&view);
+        let face = card.seek_face(&view).expect("seek bar");
+        let track = SliderFace::new(face, 0.0).track_rect();
+        let at = |fraction: f64| Point::new(track.x0 + track.width() * fraction, face.center().y);
+        assert_eq!(card.click(&view, at(0.1)), CardAction::Redraw);
+        assert!(card.scrubbing());
+        assert_eq!(card.drag(&view, at(0.9)), CardAction::Redraw);
+        assert_eq!(
+            card.drag(&view, at(0.5)),
+            CardAction::Redraw,
+            "the knob follows the hand, nothing is sent while it is held"
+        );
+        assert_eq!(
+            card.release(&view),
+            CardAction::Command {
+                bus_name: "org.mpris.MediaPlayer2.music".into(),
+                command: PlayerCommand::SetPosition {
+                    track_id: "/org/tilo/track/1".into(),
+                    position_us: 100_000_000,
+                },
+            },
+            "it seeks where it was let go"
+        );
+        assert!(!card.scrubbing());
+        assert_eq!(card.release(&view), CardAction::None, "once");
+        assert_eq!(card.drag(&view, at(0.2)), CardAction::None);
+
+        card.click(&view, at(0.3));
+        card.reset();
+        assert_eq!(
+            card.release(&view),
+            CardAction::None,
+            "closing the popover lets go without seeking"
         );
     }
 

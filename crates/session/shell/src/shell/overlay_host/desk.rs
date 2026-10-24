@@ -48,7 +48,7 @@ use crate::shell::desk_widgets::{
 };
 use crate::shell::input_policy::SuperGesture;
 use crate::shell::now_playing::{NowPlayingView, PlaybackStatus, PlayerSnapshot};
-use crate::shell::quick_settings::now_playing::{NowPlayingCard, paint_artwork};
+use crate::shell::quick_settings::now_playing::{NowPlayingCard, paint_song_at_rest};
 
 /// How strongly the Super surface dims what is behind it, as a share of
 /// the theme's modal scrim: the background stays mostly visible.
@@ -1191,7 +1191,12 @@ fn paint_music_glance(
         Point::new(rect.x0 + 6.0 + 14.0, rect.center().y),
         (28.0, 28.0),
     );
-    paint_artwork(scene, transform, text, theme, art, player, None);
+    paint_song_at_rest(
+        &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+        player,
+        art,
+        None,
+    );
     let glyph = Rect::from_center_size(Point::new(rect.x1 - 20.0, rect.center().y), (14.0, 14.0));
     let icon = if player.status == PlaybackStatus::Playing {
         ui::icons::Icon::Pause
