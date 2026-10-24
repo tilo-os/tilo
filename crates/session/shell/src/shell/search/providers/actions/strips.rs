@@ -258,4 +258,65 @@ mod tests {
         );
         assert_eq!(count(), 1);
     }
+
+    /// The strip an agent is given is made as every strip is, through the
+    /// room's document, so a window moved onto it lands there instead of
+    /// being refused; it takes no focus of its own.
+    #[test]
+    fn an_agents_new_strip_is_in_the_document_and_takes_a_moved_window() {
+        use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth};
+        let chrome = chrome_with_room();
+        let main = chrome.borrow_mut().create_strip("Main").expect("a strip");
+        let group = 7001;
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let workspace = tree.desktop.active_workspace_mut().expect("a workspace");
+            workspace.strips[0].window_groups.push(WindowGroup {
+                id: group,
+                tabs: vec![Tab {
+                    id: 7002,
+                    title: "Notes".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Test".into()),
+                        label: "Notes".into(),
+                    },
+                    app_title: None,
+                }],
+                active_tab: 7002,
+                width: WindowWidth::Fraction(500),
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+            tree.seed_doc_from_cache();
+        }
+        let focused = chrome.borrow().focused_strip_id();
+        assert_eq!(focused, Some(main));
+        let agent = chrome
+            .borrow_mut()
+            .agent_strip(None, |_| true, "Agent a")
+            .expect("a strip for the agent");
+        assert_ne!(agent, main);
+        assert_eq!(
+            chrome.borrow().focused_strip_id(),
+            focused,
+            "focus stays where it was"
+        );
+        let moved = chrome.borrow().tree_mut().commit_command(
+            &tilo_desktop_model::commands::DesktopCommand::MoveGroup {
+                group,
+                strip: agent.raw(),
+                before: None,
+            },
+        );
+        assert_eq!(moved, Ok(true), "the window lands on the agent's strip");
+        let landed = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == agent))
+            .map(|strip| strip.window_groups.iter().map(|g| g.id).collect::<Vec<_>>());
+        assert_eq!(landed, Some(vec![group]));
+    }
 }

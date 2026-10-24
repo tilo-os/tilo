@@ -67,6 +67,10 @@ same door. Actions come in two forms:
   and `tab.move:<group>:<tab>:<workspace>`: the same operation on a named
   group, so an agent rearranges a desk without taking anyone's focus.
 
+A relative action that rearranges the desk answers once the overlay host has
+run it: a move past the edge, a second maximize or a second restore reports
+that nothing changed instead of a success.
+
 Chords are the rebindable defaults in `settings_store::hardware::ShortcutConfig`
 unless marked fixed.
 
@@ -101,6 +105,7 @@ and Shift+F10 keys continue to reach the app's resource menu.
 |---|---|---|---|---|
 | One slot left / right, walking across a display seam | `group.move-left` / `-right` | Super+Shift+← / → | drag the tab-bar ground into a gap | today within a display |
 | To the strip above / below | `group.move-to-strip-previous` / `-next` | Shift+Ctrl+Super+↑ / ↓ | drag onto another strip | today, except the drag |
+| To a strip chosen by name | `group.move-to-strip` (`strip`) | — | the window menu's Move to strip | today |
 | To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Super+Shift+PageUp / PageDown | — | planned; one tab today via `tab.move-to-workspace` |
 | To the neighbouring display | `group.move-to-display-previous` / `-next` | Alt+Super+Shift+← / → | drag onto the other display | today on Super+Ctrl+Shift+← / → |
 
@@ -112,13 +117,14 @@ each tab through the window-transfer consent sheet exactly where
 
 | Operation | Relative action | Keyboard | Touch and pointer | Status |
 |---|---|---|---|---|
-| Maximize, restore | `group.maximize` (toggle), `group.restore` | Super+↑ maximizes, Super+↓ restores (on any strip); Super+M toggles | double-click or double-tap the tab-bar ground; frame button | today; the maximize animation planned |
+| Maximize, restore | `group.maximize`, `group.restore` | Super+↑ maximizes, Super+↓ restores (on any strip); Super+M toggles | double-click or double-tap the tab-bar ground; frame button | today; the maximize animation planned |
 | Full screen / restore | `group.fullscreen` | Super+F | — | today |
 | Narrower / wider, 5 % steps | `group.narrower` / `-wider` | Super+- / = | drag either edge ([Resizing a window](#resizing-a-window)) | steps and edge drags today |
 | Previous / next tab | `tab.previous` / `-next` | Super+Ctrl+Shift+Tab / Super+Ctrl+Tab (Ctrl+Shift+Tab / Ctrl+Tab where the app leaves them unhandled) | click a tab | today |
 | Tab into the neighbouring group | `tab.move-to-group-previous` / `-next` | Super+[ / ] | drag the tab onto the group | today |
 | Tab into a new group | `tab.move-to-new-group` | Super+Shift+Enter | drag the tab into a gap | today |
 | New tab, close, reopen, duplicate | `tab.new.terminal.here`, `tab.close`, `tab.reopen`, `tab.duplicate` | Super+T, Super+W, Super+Shift+T, Super+D | `+` and × in the tab strip | today |
+| Close the whole group, every tab at once | `group.close` | — | the window menu's Close window | today; `tab.reopen` brings it back whole |
 
 **Maximize** makes the group fill its display's work area. The top bar and the
 strip ribbon stay, because they say where you are; the group's title,
