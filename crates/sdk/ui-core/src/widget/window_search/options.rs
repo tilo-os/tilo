@@ -27,7 +27,7 @@ use crate::widget::{
 use super::tr;
 
 /// One choice in the panel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Choice {
     MatchCase,
     WholeWord,
@@ -131,6 +131,8 @@ pub(super) struct OptionsPanel {
     pub(super) replace_field: SearchField,
     replace_rect: Rect,
     hover: Option<Choice>,
+    /// The option boxes, filling as a click checks them.
+    faces: crate::widget::FaceMotions,
 }
 
 impl OptionsPanel {
@@ -150,6 +152,7 @@ impl OptionsPanel {
                 .with_id("window-search-replacement"),
             replace_rect: Rect::ZERO,
             hover: None,
+            faces: crate::widget::FaceMotions::default(),
         }
     }
 
@@ -305,8 +308,15 @@ impl OptionsPanel {
     }
 
     /// Whether it is moving (arriving or leaving).
+    /// Its painted switches ask the motion clock for their own frames.
     pub(super) fn is_moving(&self) -> bool {
         self.appearing.is_moving()
+    }
+
+    /// Whether it must be painted again: moving, or a switch not yet
+    /// painted at rest.
+    pub(super) fn needs_redraw(&self) -> bool {
+        self.is_moving() || self.faces.needs_redraw(crate::motion::frame_now())
     }
 
     /// Whether anything of it is drawn.
@@ -336,6 +346,7 @@ impl OptionsPanel {
             choices: &self.choices,
             hover: self.hover,
             shown,
+            faces: &self.faces,
         };
         let replace_rect = self.replace_rect;
         let field = &mut self.replace_field;
@@ -364,6 +375,7 @@ struct ChoicesFace<'a> {
     choices: &'a [(Choice, Rect)],
     hover: Option<Choice>,
     shown: Shown,
+    faces: &'a crate::widget::FaceMotions,
 }
 
 /// Paint the panel's choices: the toggles as checkbox rows, Text / Hex as
@@ -379,6 +391,7 @@ fn paint_choices(
         choices,
         hover,
         shown: Shown { options, matches },
+        faces,
     } = *face;
     let modes: Vec<(Choice, Rect)> = choices
         .iter()
@@ -423,7 +436,13 @@ fn paint_choices(
                     box_x + crate::widget::checkbox::BOX_EDGE,
                     rect.center().y + crate::widget::checkbox::BOX_EDGE / 2.0,
                 );
-                let face = CheckboxFace::new(check, choice.on(options) == Some(true));
+                let on = choice.on(options) == Some(true);
+                let face = CheckboxFace::new(check, on).pose(faces.check(
+                    choice,
+                    on,
+                    crate::widget::CheckGlyph::Check,
+                    theme.motion(),
+                ));
                 Checkbox::paint(scene, transform, theme, &face);
                 let label = choice.label();
                 let (_, lh) = text.measure_style(&label, None, &style);

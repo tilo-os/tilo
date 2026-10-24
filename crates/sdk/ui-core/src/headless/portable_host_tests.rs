@@ -986,15 +986,19 @@ fn a_frame_whose_layout_does_not_settle_is_skipped_and_the_next_paints() {
         matches!(error, crate::widget::WidgetLayoutError::DidNotSettle { .. }),
         "{error}"
     );
+    // The next frame the harness runs itself, as input's, fails too: it is
+    // skipped, and its report kept for a host whose log is not `tracing`'s.
+    frame.relayout();
     let report = frame
-        .skip_frame(&error)
+        .take_skip_report()
         .expect("the first failure is reported");
     assert!(report.contains("did not settle"), "{report}");
-    let again = frame.recompose().expect_err("it still does not settle");
+    assert_eq!(frame.take_skip_report(), None, "it is handed over once");
+    // The host skipping its own frame at once after is not reported again.
     assert_eq!(
-        frame.skip_frame(&again),
+        frame.skip_frame(&error),
         None,
-        "a failure on the next frame is not reported again at once"
+        "a failure right after is not reported again"
     );
 
     frame

@@ -351,7 +351,7 @@ const RUNTIME_NAMES_BUDGET: usize = 64;
 /// A test that binds a socket in [`tempfile::tempdir`] inherits the length of
 /// `$TMPDIR`, which on macOS (`/var/folders/…/T/`) and on CI runners' per-job
 /// scratch directories leaves too little of the 104 bytes macOS allows. This
-/// is `$TMPDIR` when that leaves room for [`RUNTIME_NAMES_BUDGET`] bytes of
+/// is `$TMPDIR` when that leaves room for `RUNTIME_NAMES_BUDGET` bytes of
 /// names below it, else `/tmp`, where the directory's random name and mode
 /// keep it private like any other temporary directory.
 ///

@@ -452,7 +452,7 @@ CARGO_CHECKS: dict[str, dict] = {
         "inputs": ["os/tests/tilo-session-lifecycle.sh", "os/usr/libexec/tilo-session",
                    "os/usr/lib/systemd/user/**", "os/usr/share/tilo/selinux/tilo-base.cil",
                    "os/usr/share/wayland-sessions/**", "os/dev-image/usr/lib/systemd/user/**",
-                   "os/Containerfile", "dist/session/**", ".forgejo/workflows/build-image.yml",
+                   "os/Containerfile", "dist/session/**",
                    "tools/desktop-isolation.sh", "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
     },
     # The credential vault's wasm build linted, and its storage probe example built
@@ -545,7 +545,8 @@ def resolution_manifests(packages: dict[str, dict], names: set[str]) -> list[str
 
 def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
     """One `app-size/<app>-<arch>` check per app of the default collection, and one
-    `runtime-size-<arch>`: none runs by default; an agent names the one its change concerns."""
+    `runtime-size-<arch>`. `app-size` runs on main, for the apps a commit changes; the others run
+    when an agent names the one its change concerns."""
     module = app_release_module()
     catalog = module.app_catalog(ROOT)
     apps = module.resolve_collection("default", catalog, module.config(ROOT / "dist/apps/app-collections.toml"))
@@ -583,6 +584,11 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
             memory = "10GiB" if name.startswith("app-size/") else "16GiB"
             lines += [f'requirement = {{ cores = 8, memory = "{memory}" }}', f"needs = [{json.dumps(shared)}]"]
         lines += ["timeout_secs = 5400", 'cost = "heavy"', "default = false"]
+        if shared is None:
+            # Kept built for main's newest head when t has room, so the push gate's size check of
+            # an app a commit changes (tools/ci/pre_push.py, aarch64) and one named for a working
+            # tree compile only that app.
+            lines.append('on = ["idle"]')
         return "\n".join(lines) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
 
     shared = [check(f"thin-runtime-{arch}", f"bash tools/apps/t-release.sh thin-runtime {arch}",

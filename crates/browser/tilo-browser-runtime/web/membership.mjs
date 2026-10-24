@@ -54,6 +54,11 @@ const waiting = value => ({
   role: pageRole(value.role),
   requestedAtMs: Math.floor(value.requested_at_ns / 1e6),
 });
+const listed = value => ({
+  requestId: hex(value.request_id),
+  contact: value.contact,
+  addedAtMs: Math.floor(value.added_at_ns / 1e6),
+});
 const invitation = value => ({
   inviteId: hex(value.invite_id),
   role: pageRole(value.role),
@@ -169,6 +174,16 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
     /** Turn a waiting person away. */
     async decline(requestIdHex) {
       expect(await ask({Decline: {room, request_id: bytesOf(requestIdHex)}}), 'Requests');
+    },
+    /** The addresses left at the room's door without an invitation, oldest
+     * first: `{requestId, contact, addedAtMs}` each, nobody to admit but an
+     * address to send an invitation to. For whoever may invite. */
+    async waitList() {
+      return expect(await ask({WaitList: {room}}), 'WaitList').map(listed);
+    },
+    /** Take an address off the wait list (`requestId` from `waitList`). */
+    async unlist(requestIdHex) {
+      expect(await ask({Unlist: {room, request_id: bytesOf(requestIdHex)}}), 'WaitList');
     },
     /** Change a member's role. */
     async setRole(userPublicKey, role) {

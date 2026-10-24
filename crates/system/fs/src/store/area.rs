@@ -99,6 +99,24 @@ impl Retention {
     pub const fn evictable(self) -> bool {
         matches!(self, Self::Cached | Self::Fetchable)
     }
+
+    /// This retention once the entry is kept offline: only what the budget
+    /// could take changes. [`Self::LocalOnly`] stays, so a pin going away
+    /// later never makes content only this device holds evictable.
+    #[must_use]
+    pub const fn kept_offline(self) -> Self {
+        if self.evictable() { Self::Pinned } else { self }
+    }
+
+    /// This retention once no pin keeps the entry offline: a pinned copy is
+    /// a cached one again.
+    #[must_use]
+    pub const fn released(self) -> Self {
+        match self {
+            Self::Pinned => Self::Cached,
+            other => other,
+        }
+    }
 }
 
 /// Where one chunk's bytes are.
@@ -532,7 +550,9 @@ impl FileArea {
             let mut state = self.lock();
             state.entries.get_mut(key).map(|entry| {
                 let same = entry.size == size;
-                let stricter = same && retention > entry.retention;
+                // Only what the budget could take is held back; nothing
+                // asked for here makes an entry evictable.
+                let stricter = same && entry.retention.evictable() && !retention.evictable();
                 if stricter {
                     entry.retention = retention;
                 }
@@ -678,7 +698,7 @@ impl FileArea {
     /// Records `ranges` of `key` (bytes already written to its file) as
     /// resident. They are readable at once. The record reaches disk after
     /// the file's data has been synced: with `durable` now, otherwise once
-    /// [`SYNC_BATCH`] bytes have accumulated or the entry is complete, so a
+    /// `SYNC_BATCH` bytes have accumulated or the entry is complete, so a
     /// recorded range is never one whose bytes a crash could lose.
     pub fn mark_resident(
         &self,
@@ -831,6 +851,58 @@ impl FileArea {
             }
         };
         if changed { self.persist(key) } else { Ok(()) }
+    }
+
+    /// Keeps `key` offline ([`Retention::kept_offline`]), or stops keeping
+    /// it ([`Retention::released`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the change cannot be recorded.
+    pub fn keep_offline(&self, key: &AreaKey, keep: bool) -> io::Result<()> {
+        let Some(current) = self.lock().entries.get(key).map(|entry| entry.retention) else {
+            return Ok(());
+        };
+        let wanted = if keep {
+            current.kept_offline()
+        } else {
+            current.released()
+        };
+        self.set_retention(key, wanted)
+    }
+
+    /// Keeps exactly the entries in `kept` offline: an evictable one among
+    /// them is pinned, and a pinned entry outside them (unpinned since, an
+    /// earlier version of a pinned file, a deleted file) is released to the
+    /// budget. Entries only this device holds are never touched. Returns
+    /// how many entries changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a change cannot be recorded.
+    pub fn keep_offline_only(&self, kept: &HashSet<AreaKey>) -> io::Result<usize> {
+        let changed: Vec<AreaKey> = {
+            let mut state = self.lock();
+            state
+                .entries
+                .iter_mut()
+                .filter_map(|(key, entry)| {
+                    let wanted = if kept.contains(key) {
+                        entry.retention.kept_offline()
+                    } else {
+                        entry.retention.released()
+                    };
+                    (wanted != entry.retention).then(|| {
+                        entry.retention = wanted;
+                        *key
+                    })
+                })
+                .collect()
+        };
+        for key in &changed {
+            self.persist(key)?;
+        }
+        Ok(changed.len())
     }
 
     /// Makes `key` a complete entry holding the first `len` bytes of

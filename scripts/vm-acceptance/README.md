@@ -159,7 +159,7 @@ window adapter` line from the session log. A machine without a hardware render n
 cannot show a CPU fallback, so a plain software VM leaves R05 unobservable; `--gl` boots
 virgl, where a degraded health report, a window on a `type=Cpu` adapter or a reported CPU
 fallback fails it. `gpu_check.py` is the same judgement for gates that boot an installed
-image without tilo-vm (the installed-desktop gate in `build-image.yml`):
+image without tilo-vm (the installed-desktop gate of t's `os-acceptance-{arch}` check):
 
 ```bash
 ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/gpu_check.py --probe)" \
@@ -176,8 +176,8 @@ frame takes longer than its budget: 1 s, or 600 ms for small single-view apps
 (`acceptance/app_startup.py`), and 1 s for opening History. A launch whose window
 adapter is a CPU rasterizer (llvmpipe in a VM without a GPU) compiles vello's shaders and
 renders on the CPU, so it is held to the VM checks' software budget, 3 s, instead. The
-judgement prints every `APP-STARTUP` line it read, with all its phases. The installed-desktop gate in
-`build-image.yml` runs it after its app checks, having typed a ~2000-character note on the
+judgement prints every `APP-STARTUP` line it read, with all its phases. The installed-desktop gate of
+`os-acceptance-{arch}` runs it after its app checks, having typed a ~2000-character note on the
 real keyboard and reopened Notes on it (`reopen-history`), so a note with thousands of
 changes in its history is part of every judged run. Under TCG it reports without judging.
 
@@ -188,7 +188,7 @@ changes in its history is part of every judged run. Under TCG it reports without
 
 ### Installed-desktop gates (R06, R07, R08, A15, A16)
 
-The checks `build-image.yml` runs on an installed image, which per-push dev builds skip,
+The checks `os-acceptance-{arch}` runs on an installed image, which per-push dev builds skip,
 run here on every full run instead, on the dev disk under KVM:
 
 - R06 runs the boot gate (`os/tests/boot_performance_gate.sh`, sent from the checkout in
@@ -250,7 +250,7 @@ run here on every full run instead, on the dev disk under KVM:
   predates `monotonic_us` leaves the first frame untimed, and R08 unobservable.
 
 The greeter keystroke check (`os/dev/greeter-acceptance.py`) needs QEMU's monitor, which
-a `tilo-vm` VM does not expose, so it stays in `build-image.yml`.
+a `tilo-vm` VM does not expose, so it stays in `os-acceptance-{arch}`.
 
 ### An idle shared workspace (R09)
 

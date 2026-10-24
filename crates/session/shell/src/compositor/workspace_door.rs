@@ -108,7 +108,7 @@ pub(crate) fn attribute(pid: u32) -> Option<Attribution> {
     let records = ush::terminal_sessions::dir(std::env::var_os("XDG_RUNTIME_DIR"));
     let desktop = {
         let pid = std::process::id();
-        let (_, start) = crate::shell::launcher::proc_stat(pid)?;
+        let (_, start) = crate::shell::host_runtime::proc_stat(pid)?;
         Holder { pid, start }
     };
     attribute_with(
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn a_program_in_a_terminal_tab_the_desktop_shows_belongs_to_that_tab() {
         let me = std::process::id();
-        let (_, start) = crate::shell::launcher::proc_stat(me).expect("own stat");
+        let (_, start) = crate::shell::host_runtime::proc_stat(me).expect("own stat");
         let as_desktop = Holder { pid: me, start };
         let typed = Typed::in_a_session_asked_by(me);
         let attribution = attribute_with(

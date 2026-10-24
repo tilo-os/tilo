@@ -1022,10 +1022,11 @@ impl ComposeWindow {
         }
     }
 
-    /// Seed the window to pass a message on: the subject and the forwarded
-    /// message as the body, with no recipient yet.
-    pub fn open_forward(&mut self, subject: &str, quoted: &str) {
+    /// Seed the window to pass a message on: the subject, the forwarded
+    /// message as the body and its `files` attached, with no recipient yet.
+    pub fn open_forward(&mut self, subject: &str, quoted: &str, files: &[DraftAttachment]) {
         self.open_reply("", subject, quoted);
+        self.attachments = crate::attachment_store::bounded(files);
         self.heading = "Forward";
     }
 

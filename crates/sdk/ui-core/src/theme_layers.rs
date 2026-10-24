@@ -259,7 +259,7 @@ impl AccessibilityLayer {
     /// Structural check. A failure means this layer is not applied.
     ///
     /// Schema versions outside
-    /// [`ACCESSIBILITY_SCHEMA_MIN`]..=[`ACCESSIBILITY_SCHEMA_VERSION`]
+    /// `ACCESSIBILITY_SCHEMA_MIN`..=`ACCESSIBILITY_SCHEMA_VERSION`
     /// are rejected, as is a non-finite scale. A finite scale outside the
     /// usable band is clamped by [`Self::materialize`], not rejected.
     pub fn validate(&self) -> Result<(), &'static str> {

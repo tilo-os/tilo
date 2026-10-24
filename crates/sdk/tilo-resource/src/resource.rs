@@ -914,7 +914,18 @@ fn field_edit_spec(vocabulary: &'static Vocabulary, now: Vec<(String, String)>) 
 /// one way ([`Trust::Weakens`](crate::Trust::Weakens)) outside any item:
 /// whether a change of one weakens depends on them.
 fn weakening_now<R: Resource>(state: &R::State) -> Vec<(String, String)> {
-    let Some(shape) = R::shape() else {
+    weakening_in(R::shape(), &|| R::state_json(state))
+}
+
+/// [`weakening_now`] of the resource whose stored layout is `shape` and
+/// whose state's JSON `json` reads. Not generic, so it is compiled once
+/// rather than for every resource type.
+#[inline(never)]
+fn weakening_in(
+    shape: Option<crate::Shape>,
+    json: &dyn Fn() -> Option<serde_json::Value>,
+) -> Vec<(String, String)> {
+    let Some(shape) = shape else {
         return Vec::new();
     };
     let fields: Vec<String> = shape
@@ -928,7 +939,7 @@ fn weakening_now<R: Resource>(state: &R::State) -> Vec<(String, String)> {
     if fields.is_empty() {
         return Vec::new();
     }
-    let Some(json) = R::state_json(state) else {
+    let Some(json) = json() else {
         return Vec::new();
     };
     fields

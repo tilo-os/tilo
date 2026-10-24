@@ -790,15 +790,33 @@ fn track_id_from_resource(address: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
+/// One song joining or leaving a queue, at its position there. A queue can
+/// hold the same song twice side by side, so only the edit itself says which
+/// of the two moved, and with it which one a shuffled order has already
+/// played.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueueEdit {
+    /// A song joined at this position, to be heard after the songs still to
+    /// come.
+    Added(usize),
+    /// A song joined at this position, right after the current one, to be
+    /// heard next.
+    PutNext(usize),
+    /// The song at this position left.
+    Removed(usize),
+}
+
 /// The playback `effect` leads to from `playback` on this device, for the
-/// transport and queue effects that only change it; `None` for any other
-/// effect. `known` says whether a track can be played here.
+/// transport and queue effects that only change it, with the queue edit it
+/// made; `None` for any other effect. `known` says whether a track can be
+/// played here.
 pub(crate) fn next_playback(
     effect: &MusicEffect,
     playback: &crate::model::Playback,
     known: &dyn Fn(&str) -> bool,
-) -> Option<Result<crate::model::Playback, String>> {
+) -> Option<Result<(crate::model::Playback, Option<QueueEdit>), String>> {
     let mut next = playback.clone();
+    let mut edit = None;
     let known_track = |address: &str| {
         let track = track_id_from_resource(address)
             .ok_or_else(|| "track must be a music.track resource".to_string())?;
@@ -860,6 +878,7 @@ pub(crate) fn next_playback(
         }
         MusicEffect::AddToQueue { track } => {
             if known(track) {
+                edit = Some(QueueEdit::Added(next.queue.len()));
                 next.queue.push(track.clone());
                 Ok(())
             } else {
@@ -879,21 +898,26 @@ pub(crate) fn next_playback(
             } else {
                 let at = (next.queue_index + 1).min(next.queue.len());
                 next.queue.insert(at, track.clone());
+                edit = Some(QueueEdit::PutNext(at));
             }
             Ok(())
         }
-        MusicEffect::QueueAdd { track } => known_track(track).map(|track| next.queue.push(track)),
-        MusicEffect::QueueRemove { track } => {
-            known_track(track).and_then(|track| remove_from_queue(&mut next, &track))
-        }
+        MusicEffect::QueueAdd { track } => known_track(track).map(|track| {
+            edit = Some(QueueEdit::Added(next.queue.len()));
+            next.queue.push(track);
+        }),
+        MusicEffect::QueueRemove { track } => known_track(track)
+            .and_then(|track| remove_from_queue(&mut next, &track))
+            .map(|index| edit = Some(QueueEdit::Removed(index))),
         _ => return None,
     };
-    Some(result.map(|()| next))
+    Some(result.map(|()| (next, edit)))
 }
 
-/// Take `track`'s first occurrence out of `playback`'s queue; removing the
-/// current one moves on to what follows it, or stops at the end.
-fn remove_from_queue(playback: &mut crate::model::Playback, track: &str) -> Result<(), String> {
+/// Take `track`'s first occurrence out of `playback`'s queue, answering
+/// where it was; removing the current one moves on to what follows it, or
+/// stops at the end.
+fn remove_from_queue(playback: &mut crate::model::Playback, track: &str) -> Result<usize, String> {
     let index = playback
         .queue
         .iter()
@@ -913,7 +937,7 @@ fn remove_from_queue(playback: &mut crate::model::Playback, track: &str) -> Resu
         }
         playback.position_ms = 0;
     }
-    Ok(())
+    Ok(index)
 }
 
 fn open_queue() -> ActionSpec {

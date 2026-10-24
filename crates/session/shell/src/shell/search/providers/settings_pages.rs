@@ -15,7 +15,7 @@
 //! section's field edit, the edit its switch in Settings and in Settings'
 //! own search makes. A setting the palette changes to a typed value (a
 //! timer, the display scale, the keyboard layout) says its value and takes
-//! the new one ([`values`]). This is the one settings search: every row
+//! the new one (`values`). This is the one settings search: every row
 //! comes from the index.
 
 mod values;

@@ -1,8 +1,9 @@
 //! Mobile — the modem's data connection and its SIMs, under Network.
 //!
-//! The section exists only on a device with a modem: `ModemManager` lists
-//! one, or `NetworkManager` or the kernel does while `ModemManager` cannot
-//! be asked. It shows and changes mobile data, the operator, technology and
+//! It exists only on a device with a modem: `ModemManager` lists one, or
+//! `NetworkManager` or the kernel does while `ModemManager` cannot be
+//! asked. The first page shows its card next to Wi-Fi; the card opens the
+//! modem's page, one of the Network pane's, which shows and changes mobile data, the operator, technology and
 //! signal, roaming, the APN, the preferred network types, the data used
 //! this period, metering, and the SIMs: their state, the PIN and the PUK
 //! after a lockout, the PIN lock, and which SIM is in use where a modem has
@@ -11,8 +12,9 @@
 //! As the rest of Network, every read and change runs off the UI thread
 //! through a [`MobileService`] (the device's `ModemManager` and
 //! `NetworkManager`, or a scripted modem in a capture or test), and every
-//! setting is a [`MobileEffect`]. PINs and PUKs live in process-local
-//! buffers that are zeroed once used; they never reach a document.
+//! setting is a [`MobileEffect`]. PINs and PUKs are asked with the
+//! window's password prompt ([`codes`]) and handed to the change in zeroed
+//! buffers; they are never drawn and never reach a document.
 
 use std::cell::OnceCell;
 use std::rc::Rc;
@@ -29,8 +31,10 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected};
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{self, ActionRef};
-use ui::widget::{Button, ButtonRole, ListRow, Row, Spacer, TextInput, TextInputKind, Widget};
-use zeroize::{Zeroize, Zeroizing};
+use ui::widget::{
+    Button, ButtonRole, ListRow, Row, SignalLevel, Spacer, TextInput, TextInputKind, Widget,
+};
+use zeroize::Zeroizing;
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::PaneCx;
@@ -60,18 +64,6 @@ crate::area::pane_area! {
 /// The window's [`MobileArea`].
 pub fn area(app: &SettingsApp) -> Option<&MobileArea> {
     app.areas().find()
-}
-
-/// Network with its Mobile section under it: the mount point of the
-/// section in the Network page.
-pub(crate) fn with_mobile(network: El, mobile: El) -> El {
-    Box::new(
-        ui::widget::Column::new()
-            .with_no_padding()
-            .with_rhythm(ui::tokens::Rhythm::Group)
-            .push(network)
-            .push(mobile),
-    )
 }
 
 /// How often the open section reads the modem again: signal and operator
@@ -136,7 +128,7 @@ pub enum MobileEffect {
     /// Start counting the data used again from now.
     #[effect(label = "Reset data used")]
     ResetDataUsage,
-    /// Unlock a SIM with its PIN; what is omitted is what the PIN field holds.
+    /// Unlock a SIM with its PIN; without it, the PIN is asked for.
     #[effect(job, label = "Unlock SIM")]
     UnlockSim {
         #[param("The SIM, as listed; the locked one when omitted")]
@@ -145,7 +137,7 @@ pub enum MobileEffect {
         pin: Option<String>,
     },
     /// Unlock a SIM blocked after too many wrong PINs with its PUK, choosing
-    /// a new PIN; what is omitted is what the fields hold.
+    /// a new PIN; without both, they are asked for.
     #[effect(job, label = "Unblock SIM")]
     UnblockSim {
         #[param("The SIM, as listed; the blocked one when omitted")]
@@ -156,7 +148,7 @@ pub enum MobileEffect {
         pin: Option<String>,
     },
     /// Ask for the SIM's PIN when the device starts, or stop asking; without
-    /// a PIN the field to type it opens.
+    /// the PIN, it is asked for.
     #[effect(job, label = "SIM PIN lock")]
     SetSimPinLock {
         #[param("The SIM, as listed; the one in use when omitted")]
@@ -165,7 +157,7 @@ pub enum MobileEffect {
         #[param(secret, "The SIM's PIN")]
         pin: Option<String>,
     },
-    /// Change the SIM's PIN; what is omitted is what the fields hold.
+    /// Change the SIM's PIN; without both PINs, they are asked for.
     #[effect(job, label = "Change SIM PIN")]
     ChangeSimPin {
         #[param("The SIM, as listed; the one in use when omitted")]
@@ -181,13 +173,10 @@ pub enum MobileEffect {
         #[param("The SIM, as listed")]
         sim: String,
     },
-    /// Open or close the fields to change the SIM's PIN.
-    #[effect(view, label = "Change PIN…")]
-    ShowSimPinChange,
     /// Open or close the APN editor.
     #[effect(view, label = "Edit APN…")]
     ShowApnEditor,
-    /// Close the open SIM or APN fields, forgetting what was typed.
+    /// Close the APN editor, forgetting what was typed.
     #[effect(view, label = "Cancel")]
     CancelMobileForm,
 }
@@ -269,7 +258,10 @@ impl MobileArea {
                 MobileModel::of_device(self.cx.clone())
             } else {
                 let sample = self.cx.scene().and_then(|scene| scene.mobile);
-                MobileModel::loaded_from(self.cx.clone(), Arc::new(ScriptedModem::new(sample)))
+                let mut model =
+                    MobileModel::loaded_from(self.cx.clone(), Arc::new(ScriptedModem::new(sample)));
+                model.stage(sample);
+                model
             };
             Rc::new(std::cell::RefCell::new(model))
         })
@@ -324,7 +316,6 @@ impl MobileArea {
                     MobileEffect::SET_SIM_PIN_LOCK.id,
                     MobileEffect::CHANGE_SIM_PIN.id,
                     MobileEffect::USE_SIM.id,
-                    MobileEffect::SHOW_SIM_PIN_CHANGE.id,
                     MobileEffect::SHOW_APN_EDITOR.id,
                 ] {
                     unavailable(id, "no_modem", &t("net-no-modem"));
@@ -869,24 +860,8 @@ pub(crate) enum Landed {
     Changed(MobileChange, Result<(), ModemError>),
 }
 
-/// Which code was typed wrong, to say so under its field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Code {
-    Pin,
-    Puk,
-}
-
-/// The SIM fields open under the SIM.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SimForm {
-    /// The current and the new PIN.
-    ChangePin,
-    /// The PIN, to start or stop asking for it at power-on.
-    PinLock(bool),
-}
-
 /// The Mobile section's model: the modems and the data connection as last
-/// read, the fields open, and what is running.
+/// read, the code asked for, and what is running.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent facts: read yet, listed, switched on, editor open, changed"
@@ -909,13 +884,10 @@ pub struct MobileModel {
     usage: MobileDataUsage,
     in_flight: usize,
     notice: Option<String>,
-    /// The code typed wrong last, said under its field.
-    wrong: Option<Code>,
-    /// The PIN field (and the current PIN when changing it).
-    pin: Arc<Mutex<String>>,
-    puk: Arc<Mutex<String>>,
-    new_pin: Arc<Mutex<String>>,
-    sim_form: Option<SimForm>,
+    /// The SIM code the password prompt asks for.
+    asking: Option<codes::Asking>,
+    /// Changes a prompt's answer started; they land here when done.
+    jobs: Vec<crate::channel::Receiver<Landed>>,
     apn_open: bool,
     apn_automatic: LocalState<bool>,
     apn_text: LocalState<String>,
@@ -923,41 +895,6 @@ pub struct MobileModel {
     /// [`READ_EVERY`] while the section is shown.
     read_at: Option<ui::time::Instant>,
     changed: bool,
-}
-
-impl Drop for MobileModel {
-    fn drop(&mut self) {
-        for buffer in [&self.pin, &self.puk, &self.new_pin] {
-            if let Ok(mut secret) = buffer.lock() {
-                secret.zeroize();
-            }
-        }
-    }
-}
-
-/// Take what `buffer` holds, zeroing it.
-fn take_secret(buffer: &Mutex<String>) -> Zeroizing<String> {
-    buffer.lock().map_or_else(
-        |_| Zeroizing::new(String::new()),
-        |mut value| Zeroizing::new(std::mem::take(&mut *value)),
-    )
-}
-
-fn clear_secret(buffer: &Mutex<String>) {
-    if let Ok(mut value) = buffer.lock() {
-        value.zeroize();
-    }
-}
-
-/// A code an action was given, or what its field holds.
-fn code(given: Option<String>, field: &Mutex<String>) -> Zeroizing<String> {
-    match given {
-        Some(given) => {
-            clear_secret(field);
-            Zeroizing::new(given)
-        }
-        None => take_secret(field),
-    }
 }
 
 impl MobileModel {
@@ -992,16 +929,32 @@ impl MobileModel {
             usage,
             in_flight: 0,
             notice: None,
-            wrong: None,
-            pin: Arc::new(Mutex::new(String::new())),
-            puk: Arc::new(Mutex::new(String::new())),
-            new_pin: Arc::new(Mutex::new(String::new())),
-            sim_form: None,
+            asking: None,
+            jobs: Vec::new(),
             apn_open: false,
             apn_automatic: LocalState::new(true),
             apn_text: LocalState::new(String::new()),
             read_at: None,
             changed: false,
+        }
+    }
+
+    /// Where a capture of `sample` stands: abroad on the modem's page, and
+    /// a locked SIM's page with the prompt asking for its code.
+    fn stage(&mut self, sample: Option<MobileSample>) {
+        let Some(sample) = sample.filter(|sample| *sample != MobileSample::Registered) else {
+            return;
+        };
+        self.cx.pages().open(
+            crate::categories::Category::Network,
+            super::PAGE_MOBILE,
+            t("net-mobile"),
+        );
+        let modem = self.modem().cloned();
+        match sample {
+            MobileSample::Locked => self.ask_unlock(None, modem.as_ref()),
+            MobileSample::Puk => self.ask_unblock(None, modem.as_ref()),
+            MobileSample::Registered | MobileSample::Roaming => {}
         }
     }
 
@@ -1091,6 +1044,7 @@ impl MobileModel {
         self.boot = snapshot.boot;
         self.count_usage();
         self.loaded = true;
+        self.follow_lock();
     }
 
     /// Count the traffic just read toward the period, and keep the count.
@@ -1255,13 +1209,21 @@ impl MobileModel {
                 Begun::Done
             }
             MobileEffect::UnlockSim { sim, pin } => {
-                let pin = code(pin, &self.pin);
+                let Some(pin) = pin.map(Zeroizing::new) else {
+                    self.require_modem()?;
+                    self.ask_unlock(sim, self.modem().cloned().as_ref());
+                    return Ok(Begun::Done);
+                };
                 let (_, sim) = self.sim(sim.as_deref(), |modem| modem.lock == SimLock::Pin)?;
                 self.change(MobileChange::Modem(ModemChange::SendPin { sim, pin }))
             }
             MobileEffect::UnblockSim { sim, puk, pin } => {
-                let puk = code(puk, &self.puk);
-                let new_pin = code(pin, &self.new_pin);
+                let (Some(puk), Some(new_pin)) = (puk.map(Zeroizing::new), pin.map(Zeroizing::new))
+                else {
+                    self.require_modem()?;
+                    self.ask_unblock(sim, self.modem().cloned().as_ref());
+                    return Ok(Begun::Done);
+                };
                 let (_, sim) = self.sim(sim.as_deref(), |modem| modem.lock == SimLock::Puk)?;
                 self.change(MobileChange::Modem(ModemChange::SendPuk {
                     sim,
@@ -1270,16 +1232,12 @@ impl MobileModel {
                 }))
             }
             MobileEffect::SetSimPinLock { sim, on, pin } => {
-                let given = pin.is_some();
-                let pin = code(pin, &self.pin);
-                if pin.is_empty() && !given {
-                    // The PIN is asked for in place before anything is sent.
-                    self.sim_form = Some(SimForm::PinLock(on));
-                    self.wrong = None;
+                let Some(pin) = pin.map(Zeroizing::new) else {
+                    self.require_modem()?;
+                    self.ask_pin_lock(sim, on, self.modem().cloned().as_ref());
                     return Ok(Begun::Done);
-                }
+                };
                 let (_, sim) = self.sim(sim.as_deref(), ModemInfo::usable)?;
-                self.sim_form = None;
                 self.change(MobileChange::Modem(ModemChange::SetPinLock {
                     sim,
                     pin,
@@ -1291,10 +1249,14 @@ impl MobileModel {
                 old_pin,
                 new_pin,
             } => {
-                let old_pin = code(old_pin, &self.pin);
-                let new_pin = code(new_pin, &self.new_pin);
+                let (Some(old_pin), Some(new_pin)) =
+                    (old_pin.map(Zeroizing::new), new_pin.map(Zeroizing::new))
+                else {
+                    self.require_modem()?;
+                    self.ask_change_pin(sim);
+                    return Ok(Begun::Done);
+                };
                 let (_, sim) = self.sim(sim.as_deref(), ModemInfo::usable)?;
-                self.sim_form = None;
                 self.change(MobileChange::Modem(ModemChange::ChangePin {
                     sim,
                     old_pin,
@@ -1312,12 +1274,6 @@ impl MobileModel {
                     .ok_or_else(|| t("net-mobile-single-slot"))?;
                 self.change(MobileChange::Modem(ModemChange::UseSlot { modem, slot }))
             }
-            MobileEffect::ShowSimPinChange => {
-                self.sim_form =
-                    (self.sim_form != Some(SimForm::ChangePin)).then_some(SimForm::ChangePin);
-                self.forget_codes();
-                Begun::Done
-            }
             MobileEffect::ShowApnEditor => {
                 self.apn_open = !self.apn_open;
                 if self.apn_open {
@@ -1333,19 +1289,10 @@ impl MobileModel {
                 Begun::Done
             }
             MobileEffect::CancelMobileForm => {
-                self.sim_form = None;
                 self.apn_open = false;
-                self.forget_codes();
                 Begun::Done
             }
         })
-    }
-
-    fn forget_codes(&mut self) {
-        self.wrong = None;
-        for buffer in [&self.pin, &self.puk, &self.new_pin] {
-            clear_secret(buffer);
-        }
     }
 
     fn store_usage(&mut self, usage: MobileDataUsage) -> Result<(), String> {
@@ -1366,6 +1313,7 @@ impl MobileModel {
             Landed::Changed(change, result) => {
                 self.in_flight = self.in_flight.saturating_sub(1);
                 let reported = self.report(&change, result);
+                self.settle_codes(&reported);
                 if self.in_flight == 0 {
                     self.start_snapshot();
                 }
@@ -1374,27 +1322,16 @@ impl MobileModel {
         }
     }
 
-    /// Say how `change` went. A wrong code is said under its field; the
-    /// read that follows every change puts back what the device holds.
+    /// Say how `change` went. A wrong code is said in the prompt that asked
+    /// for it; the read that follows every change puts back what the device
+    /// holds.
     fn report(
         &mut self,
         change: &MobileChange,
         result: Result<(), ModemError>,
     ) -> Result<(), String> {
-        let code = match change {
-            MobileChange::Modem(ModemChange::SendPuk { .. }) => Some(Code::Puk),
-            MobileChange::Modem(
-                ModemChange::SendPin { .. }
-                | ModemChange::SetPinLock { .. }
-                | ModemChange::ChangePin { .. },
-            ) => Some(Code::Pin),
-            _ => None,
-        };
         match result {
             Ok(()) => {
-                if code.is_some() {
-                    self.forget_codes();
-                }
                 self.notice = match change {
                     MobileChange::Modem(
                         ModemChange::SendPin { .. } | ModemChange::SendPuk { .. },
@@ -1408,9 +1345,8 @@ impl MobileModel {
             }
             Err(ModemError::WrongCode) => {
                 warn!(target: "tilo::settings", op = ?change, "a SIM code was refused");
-                self.wrong = code.or(Some(Code::Pin));
-                Err(t(match self.wrong {
-                    Some(Code::Puk) => "net-mobile-wrong-puk",
+                Err(t(match change {
+                    MobileChange::Modem(ModemChange::SendPuk { .. }) => "net-mobile-wrong-puk",
                     _ => "net-mobile-wrong-pin",
                 }))
             }
@@ -1426,8 +1362,48 @@ impl MobileModel {
         }
     }
 
-    /// Take in a read that arrived, and read again when due.
+    /// Run `work`, which a prompt's answer started, on a worker; it lands
+    /// in [`Self::poll_background`].
+    fn start_job(&mut self, work: Box<dyn FnOnce() -> Landed + Send>) {
+        let (sender, receiver) = crate::channel::channel();
+        let wake = ui::WakeHandle::new();
+        let started = crate::device_read::thread(
+            "settings-mobile-code",
+            Box::new(move || {
+                if sender.send(work()).is_ok() {
+                    wake.wake();
+                }
+            }),
+        );
+        match started {
+            Ok(()) => self.jobs.push(receiver),
+            Err(error) => {
+                self.in_flight = self.in_flight.saturating_sub(1);
+                let said = t_args(
+                    "net-mobile-change-err",
+                    &[("error", error.to_string().into())],
+                );
+                self.settle_codes(&Err(said));
+            }
+        }
+        self.changed = true;
+    }
+
+    /// Take in what arrived: a read, and changes a prompt started.
     fn poll_background(&mut self) {
+        let mut landed = Vec::new();
+        self.jobs.retain(|job| match job.try_recv() {
+            Ok(work) => {
+                landed.push(work);
+                false
+            }
+            Err(crate::channel::TryRecvError::Empty) => true,
+            Err(crate::channel::TryRecvError::Disconnected) => false,
+        });
+        for work in landed {
+            // What went wrong is said in the prompt and the section.
+            let _ = self.land(work);
+        }
         if let Some(receiver) = &self.snapshot {
             match receiver.try_recv() {
                 Ok(snapshot) => {
@@ -1570,14 +1546,15 @@ fn modes_shown(modes: NetworkModes) -> String {
     }
 }
 
-/// Signal quality in words, at the same steps as Wi-Fi's.
-fn signal_words(percent: u8) -> String {
-    t(match percent {
-        0 => "net-signal-unknown",
-        1..=25 => "net-signal-weak",
-        26..=50 => "net-signal-fair",
-        51..=75 => "net-signal-good",
-        _ => "net-signal-strong",
+/// The shared signal meter's level for `percent`, at the same steps as
+/// Wi-Fi's.
+const fn signal_level(percent: u8) -> SignalLevel {
+    SignalLevel::from_bars(match percent {
+        0 => 0,
+        1..=25 => 1,
+        26..=50 => 2,
+        51..=75 => 3,
+        _ => 4,
     })
 }
 
@@ -1610,12 +1587,6 @@ fn situation(modem: &ModemInfo, data_on: bool) -> String {
     }
 }
 
-/// The shared signal meter's stand-in: the level in words, which the
-/// status line says. One place, so the meter replaces it whole.
-fn signal_meter(_percent: u8) -> Option<El> {
-    None
-}
-
 impl MobileModel {
     fn button(&self, id: &str, label: &str, effect: MobileEffect) -> Button {
         self.cx.bind_invocation(Button::new(id, label), effect)
@@ -1630,127 +1601,55 @@ impl MobileModel {
         ))
     }
 
-    /// A masked digits field over `buffer`, which never leaves this process.
-    fn code_field(buffer: &Arc<Mutex<String>>, id: &str, label: &str) -> Item {
-        field_row(
-            label,
-            Box::new(
-                TextInput::local()
-                    .with_id(id)
-                    .with_kind(TextInputKind::Pin)
-                    .with_char_filter(|c| c.is_ascii_digit())
-                    .with_external_buffer(Arc::clone(buffer))
-                    .with_secret(true)
-                    .with_accessible_name(label.to_owned())
-                    .with_placeholder(label.to_owned()),
-            ),
-        )
-    }
-
-    /// The SIM code entry: its explanation, the code fields, what went
-    /// wrong, and the buttons. Every SIM code is asked here, so the shared
-    /// secret prompt replaces this one function.
-    fn code_entry(
-        &self,
-        explain: &str,
-        fields: &[(&Arc<Mutex<String>>, &str, String)],
-        submit: (&str, String, MobileEffect),
-        cancel: bool,
-    ) -> Vec<Item> {
-        let mut items = vec![note(explain)];
-        for (buffer, id, label) in fields {
-            items.push(Self::code_field(buffer, id, label));
-        }
-        if let Some(wrong) = self.wrong {
-            items.push(row(error_caption(&t(match wrong {
-                Code::Pin => "net-mobile-wrong-pin",
-                Code::Puk => "net-mobile-wrong-puk",
-            }))));
-        }
-        let (id, label, effect) = submit;
-        let mut buttons = vec![
-            self.button(id, &label, effect)
-                .role(ButtonRole::Primary)
-                .with_enabled(self.in_flight == 0),
-        ];
-        if cancel {
-            buttons.push(self.button(
-                "settings.network.mobile.cancel",
-                &t("net-mobile-cancel"),
-                MobileEffect::CancelMobileForm,
-            ));
-        }
-        items.push(Self::buttons(buttons));
-        items
-    }
-
-    /// The fields a locked SIM asks for: its PIN, or after too many wrong
-    /// PINs its PUK and a new PIN.
+    /// What a locked SIM needs: its PIN, or after too many wrong PINs its
+    /// PUK and a new PIN, which the password prompt asks for.
     fn unlock_rows(&self, modem: &ModemInfo) -> Vec<Item> {
         let tries = |left: Option<u32>| {
             left.map(|left| t_args("net-mobile-tries-left", &[("count", left.into())]))
                 .unwrap_or_default()
         };
-        match modem.lock {
-            SimLock::Pin => self.code_entry(
-                format!(
-                    "{} {}",
-                    t("net-mobile-pin-explain"),
-                    tries(modem.retries.pin)
-                )
-                .trim(),
-                &[(&self.pin, "network.mobile.pin", t("net-sim-pin"))],
-                (
-                    "settings.network.mobile.unlock",
-                    t("net-unlock-sim"),
-                    MobileEffect::UnlockSim {
-                        sim: None,
-                        pin: None,
-                    },
-                ),
-                false,
+        let (explain, left, id, label, effect) = match modem.lock {
+            SimLock::Pin => (
+                "net-mobile-pin-explain",
+                modem.retries.pin,
+                "settings.network.mobile.unlock",
+                "net-unlock-sim-ask",
+                MobileEffect::UnlockSim {
+                    sim: None,
+                    pin: None,
+                },
             ),
-            SimLock::Puk => self.code_entry(
-                format!(
-                    "{} {}",
-                    t("net-mobile-puk-explain"),
-                    tries(modem.retries.puk)
-                )
-                .trim(),
-                &[
-                    (&self.puk, "network.mobile.puk", t("net-mobile-puk")),
-                    (
-                        &self.new_pin,
-                        "network.mobile.new-pin",
-                        t("net-mobile-new-pin"),
-                    ),
-                ],
-                (
-                    "settings.network.mobile.unblock",
-                    t("net-mobile-unblock"),
-                    MobileEffect::UnblockSim {
-                        sim: None,
-                        puk: None,
-                        pin: None,
-                    },
-                ),
-                false,
+            SimLock::Puk => (
+                "net-mobile-puk-explain",
+                modem.retries.puk,
+                "settings.network.mobile.unblock",
+                "net-mobile-unblock-ask",
+                MobileEffect::UnblockSim {
+                    sim: None,
+                    puk: None,
+                    pin: None,
+                },
             ),
-            SimLock::Other => vec![note(&t("net-mobile-carrier-locked-explain"))],
-            SimLock::None => Vec::new(),
-        }
+            SimLock::Other => return vec![note(&t("net-mobile-carrier-locked-explain"))],
+            SimLock::None => return Vec::new(),
+        };
+        vec![
+            note(format!("{} {}", t(explain), tries(left)).trim()),
+            Self::buttons(vec![
+                self.button(id, &t(label), effect)
+                    .role(ButtonRole::Primary)
+                    .with_enabled(self.in_flight == 0),
+            ]),
+        ]
     }
 
-    /// The status line: operator or situation, with technology, signal and
-    /// roaming.
-    fn status_row(&self, modem: &ModemInfo) -> Item {
+    /// The status line: operator or situation, led by the signal meter,
+    /// with technology and roaming.
+    fn status_row(&self, modem: &ModemInfo) -> ListRow {
         let mut details: Vec<String> = Vec::new();
         if modem.usable() {
             if let Some(technology) = modem.technology {
                 details.push(technology.name().to_owned());
-            }
-            if let Some(signal) = modem.signal {
-                details.push(signal_words(signal));
             }
             if modem.registration == Registration::Roaming {
                 details.push(t("net-mobile-roaming"));
@@ -1766,14 +1665,10 @@ impl MobileModel {
         if !details.is_empty() {
             status = status.secondary(details.join(", "));
         }
-        if let Some(meter) = modem
-            .signal
-            .filter(|_| modem.usable())
-            .and_then(signal_meter)
-        {
-            status = status.trailing(meter);
+        if let Some(signal) = modem.signal.filter(|_| modem.usable()) {
+            status = status.signal(signal_level(signal));
         }
-        row(Box::new(status))
+        status
     }
 
     /// Roaming, metering, network types, APN and the data used.
@@ -1961,12 +1856,13 @@ impl MobileModel {
         items
     }
 
-    /// The PIN lock and changing the PIN, with the fields either opens.
+    /// The PIN lock and changing the PIN; the password prompt asks for the
+    /// codes either needs.
     fn pin_rows(&self, modem: &ModemInfo) -> Vec<Item> {
         let mut items = Vec::new();
         if let Some(enabled) = modem.pin_enabled {
-            let asking = match self.sim_form {
-                Some(SimForm::PinLock(on)) => on,
+            let shown = match self.asked() {
+                Some(codes::CodeAsk::PinLock { on, .. }) => *on,
                 _ => enabled,
             };
             items.push(
@@ -1975,70 +1871,71 @@ impl MobileModel {
                     .id("network.mobile.pin-lock")
                     .described(t("net-mobile-pin-lock-caption"))
                     .toggle_effect(
-                        &LocalState::new(asking),
+                        &LocalState::new(shown),
                         effect(MobileEffect::SET_SIM_PIN_LOCK)
                             .map(|on: bool| (None::<String>, on, None::<String>)),
                     ),
             );
         }
-        match self.sim_form {
-            Some(SimForm::PinLock(on)) => items.extend(self.code_entry(
-                &t(if on {
-                    "net-mobile-pin-lock-on-explain"
-                } else {
-                    "net-mobile-pin-lock-off-explain"
-                }),
-                &[(&self.pin, "network.mobile.pin", t("net-sim-pin"))],
-                (
-                    "settings.network.mobile.pin-lock.confirm",
-                    t(if on {
-                        "net-mobile-pin-lock-turn-on"
-                    } else {
-                        "net-mobile-pin-lock-turn-off"
-                    }),
-                    MobileEffect::SetSimPinLock {
-                        sim: None,
-                        on,
-                        pin: None,
-                    },
-                ),
-                true,
-            )),
-            Some(SimForm::ChangePin) => items.extend(self.code_entry(
-                &t("net-mobile-change-pin-explain"),
-                &[
-                    (&self.pin, "network.mobile.pin", t("net-mobile-current-pin")),
-                    (
-                        &self.new_pin,
-                        "network.mobile.new-pin",
-                        t("net-mobile-new-pin"),
-                    ),
-                ],
-                (
-                    "settings.network.mobile.change-pin.confirm",
-                    t("net-mobile-change-pin"),
+        if modem.pin_enabled == Some(true) {
+            items.push(Self::buttons(vec![
+                self.button(
+                    "settings.network.mobile.change-pin",
+                    &t("net-mobile-change-pin-open"),
                     MobileEffect::ChangeSimPin {
                         sim: None,
                         old_pin: None,
                         new_pin: None,
                     },
-                ),
-                true,
-            )),
-            None if modem.pin_enabled == Some(true) => {
-                items.push(Self::buttons(vec![self.button(
-                    "settings.network.mobile.change-pin",
-                    &t("net-mobile-change-pin-open"),
-                    MobileEffect::ShowSimPinChange,
-                )]));
-            }
-            None => {}
+                )
+                .with_enabled(self.in_flight == 0),
+            ]));
         }
         items
     }
 
-    /// The sections: Mobile data with its switch and settings, then SIM.
-    fn sections(&self) -> Vec<SettingsSection> {
+    /// The mobile data switch, which a modem that cannot connect holds off.
+    fn data_switch(&self, modem: &ModemInfo) -> El {
+        Box::new(
+            self.cx.bind(
+                ui::widget::Toggle::from_state(&LocalState::new(self.data_on()))
+                    .with_id("network.mobile")
+                    .with_enabled(modem.usable()),
+                effect(MobileEffect::SET_MOBILE_BROADBAND),
+            ),
+        )
+    }
+
+    /// The first page's Mobile card, next to Wi-Fi: the data switch, how
+    /// the modem stands (its row opens the modem's page), and what a
+    /// locked SIM needs. Nothing without a modem.
+    pub(crate) fn card(&self) -> Vec<SettingsSection> {
+        if !self.loaded || !self.present() {
+            return Vec::new();
+        }
+        let Some(modem) = self.modem() else {
+            return self.page_sections();
+        };
+        let mut status = self.status_row(modem).disclosure();
+        status = match self.cx.invocation_binding(super::NetworkEffect::ShowMobile) {
+            Some(binding) => status.on_action(binding),
+            None => status.with_enabled(false),
+        };
+        let mut items = vec![row(Box::new(status))];
+        items.extend(self.unlock_rows(modem));
+        if let Some(notice) = &self.notice {
+            items.push(note(notice));
+        }
+        vec![section_with(
+            &t("net-mobile"),
+            self.data_switch(modem),
+            rows(items),
+        )]
+    }
+
+    /// The modem's page: Mobile data with its switch and settings, then
+    /// the SIM.
+    pub(crate) fn page_sections(&self) -> Vec<SettingsSection> {
         if !self.loaded || !self.present() {
             return Vec::new();
         }
@@ -2056,13 +1953,7 @@ impl MobileModel {
                 )))]),
             )];
         };
-        let switch = self.cx.bind(
-            ui::widget::Toggle::from_state(&LocalState::new(self.data_on()))
-                .with_id("network.mobile")
-                .with_enabled(modem.usable()),
-            effect(MobileEffect::SET_MOBILE_BROADBAND),
-        );
-        let mut data = vec![self.status_row(modem)];
+        let mut data = vec![row(Box::new(self.status_row(modem)))];
         data.extend(self.unlock_rows(modem));
         if let Some(notice) = &self.notice {
             data.push(note(notice));
@@ -2076,7 +1967,11 @@ impl MobileModel {
         if modem.usable() {
             data.extend(self.data_rows(modem));
         }
-        let mut sections = vec![section_with(&t("net-mobile"), Box::new(switch), rows(data))];
+        let mut sections = vec![section_with(
+            &t("net-mobile"),
+            self.data_switch(modem),
+            rows(data),
+        )];
         let sims = self.sim_rows(modem);
         if !sims.is_empty() {
             sections.push(section(&t("net-mobile-sim-title"), rows(sims)));
@@ -2087,11 +1982,12 @@ impl MobileModel {
 
 impl PaneModel for MobileModel {
     fn compose(&self) -> Box<dyn Widget> {
-        page(self.sections())
+        page(self.page_sections())
     }
 
     fn poll(&mut self) -> bool {
         self.poll_background();
+        self.poll_codes();
         self.read_when_due(ui::time::now());
         std::mem::take(&mut self.changed)
     }
@@ -2107,5 +2003,6 @@ impl PaneModel for MobileModel {
     }
 }
 
+mod codes;
 #[cfg(test)]
 mod tests;

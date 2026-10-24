@@ -161,9 +161,10 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         let (content_bottom, panel_bottom) = panel(&mut app, |panel| {
             (panel.editor().content_bottom(), panel.get_rect().y1)
         });
+        let gutter = f64::from(Theme::dark().tokens.spacing.rhythm.group);
         assert!(
-            content_bottom <= panel_bottom - 44.0,
-            "the final row must remain above the save status, not underneath it"
+            content_bottom <= panel_bottom - gutter + 1.0,
+            "the final row keeps one gutter above the window's foot: {content_bottom} of {panel_bottom}"
         );
 
         // Scroll back up past the top: clamps at 0.
@@ -186,24 +187,13 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
             app.harness()
                 .relayout_themed((1000, 1000), Theme::dark().with_text_scale(scale))
                 .unwrap();
-            let mut renderer = crate::component_support::renderer();
-            renderer.set_text_scale(scale);
-            let (_, pill_height) = ui::status_bubble::pill_size(
-                "Saved",
-                &mut renderer,
-                &Theme::dark().with_text_scale(scale),
-                0.0,
-            );
             let window_bottom = surface(&mut app, |notes| notes.get_rect().y1);
-            let pill_top = window_bottom
-                - f64::from(Theme::dark().with_text_scale(scale).tokens.spacing.s4)
-                - pill_height;
             let content_bottom = panel(&mut app, |panel| panel.editor().content_bottom());
-            let gap = pill_top - content_bottom;
+            let gap = window_bottom - content_bottom;
             let theme = Theme::dark().with_text_scale(scale);
             assert!(
                 (gap - f64::from(theme.tokens.spacing.rhythm.group)).abs() <= 1.0,
-                "at {scale}x, last row ends at {content_bottom} of {pill_top}: {gap}px is not one gutter"
+                "at {scale}x, last row ends at {content_bottom} of {window_bottom}: {gap}px is not one gutter"
             );
         }
     }
@@ -445,11 +435,7 @@ fn enter_at_the_end_of_a_long_note_keeps_the_caret_clear_of_the_bottom() {
     };
     dispatch(&mut app, &key(winit::keyboard::NamedKey::End));
     app.harness().relayout_at((1000, 400)).unwrap();
-    let mut renderer = crate::component_support::renderer();
-    let (_, pill_height) = ui::status_bubble::pill_size("Saved", &mut renderer, &theme, 0.0);
-    let margin = f64::from(theme.tokens.spacing.s4)
-        + pill_height
-        + f64::from(theme.tokens.spacing.rhythm.group);
+    let margin = f64::from(theme.tokens.spacing.rhythm.group);
     let blocks = last + 1;
     for press in 1..=8 {
         dispatch(&mut app, &key(winit::keyboard::NamedKey::Enter));

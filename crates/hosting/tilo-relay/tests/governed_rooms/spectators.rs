@@ -247,6 +247,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     doc.put(ROOT, "topic", "welcome").unwrap();
     doc.commit_edit("fixture", "topic");
     let welcome = alice_peer
+        .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
         .unwrap();
     publish(&alice_session, &welcome);

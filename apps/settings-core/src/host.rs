@@ -99,6 +99,10 @@ pub struct PaneCx {
     scene: Option<Rc<crate::scenarios::CaptureScene>>,
     /// The radios this device has; never read when it reaches no device.
     radios: crate::radios::Radios,
+    /// The pages the panes drilled into, shared with the window.
+    pages: crate::pages::PanePages,
+    /// The password prompt the window shows for the panes.
+    secrets: crate::secrets::SecretAsks,
     pub provider_admin: ui::models::ProviderAdministration,
     /// The person's accounts with the services the room is connected to,
     /// when the host lent them.
@@ -153,9 +157,31 @@ impl PaneCx {
             mode: RunMode::Capture,
             scene: None,
             radios: crate::radios::Radios::unread(),
+            pages: crate::pages::PanePages::new(),
+            secrets: crate::secrets::SecretAsks::new(),
             provider_admin: ui::models::ProviderAdministration::default(),
             linked: ui::linked_accounts::LinkedAccounts::default(),
         }
+    }
+
+    /// This context keeping its pages in `pages`: the window hands every
+    /// context it attaches the one trail its header shows.
+    #[must_use]
+    pub fn with_pages(mut self, pages: crate::pages::PanePages) -> Self {
+        self.pages = pages;
+        self
+    }
+
+    /// The pages the panes drilled into ([`crate::pages`]).
+    #[must_use]
+    pub fn pages(&self) -> &crate::pages::PanePages {
+        &self.pages
+    }
+
+    /// The password prompt the window shows ([`crate::secrets`]).
+    #[must_use]
+    pub fn secrets(&self) -> &crate::secrets::SecretAsks {
+        &self.secrets
     }
 
     /// This pane reaching `linked` for the person's linked accounts.
@@ -212,6 +238,8 @@ impl PaneCx {
             provider_admin,
             linked,
             radios: crate::radios::Radios::unread(),
+            pages: crate::pages::PanePages::new(),
+            secrets: crate::secrets::SecretAsks::new(),
         };
         if attached.reaches_devices() {
             attached.radios = crate::radios::Radios::of_device();
@@ -424,6 +452,22 @@ impl PaneCx {
             Ok(args)
         })
         .ok()
+    }
+
+    /// `control`, invoking `effect` with each committed value on `row`,
+    /// which offers it: a setting of one item (a saved network's priority)
+    /// on that item's page. Unavailable where the row does not offer it.
+    #[must_use]
+    pub fn bind_on_row<I: 'static, C: ActionControl<I>>(
+        &self,
+        row: &ui::tilo_actions::Resource,
+        control: C,
+        effect: impl Binds<SettingsEffect, I>,
+    ) -> C {
+        match self.row_binding(row, effect) {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
     }
 
     /// The binding of one fully specified `effect` that `row` offers, for a

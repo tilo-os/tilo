@@ -159,6 +159,8 @@ pub struct TubeApp {
     /// `None` on the hermetic offline path, where every image lookup returns
     /// `None` and the procedural gradient/initials fallback shows.
     images: Option<ui::ImageStore>,
+    /// When the videos the screens wait for were first waited for.
+    waiting: screens::Waiting,
 
     /// End (seconds) of the show-mode `SponsorBlock` segment the playhead is
     /// currently inside, if any. The on-video "Skip" overlay is shown for it.
@@ -238,6 +240,7 @@ impl TubeApp {
             player: Rc::new(RefCell::new(VideoPlayer::new())),
             player_video: None,
             images: None,
+            waiting: screens::Waiting::default(),
             show_skip_end: None,
             mpris_started: false,
             nav: ui::NavStack::new(Route::Home),
@@ -344,6 +347,21 @@ impl TubeApp {
             TubeEffect::TogglePlayback => {
                 self.player.borrow_mut().toggle_play();
                 self.model.playing = self.player.borrow().is_playing();
+            }
+            TubeEffect::Seek { seconds } => {
+                let duration = self
+                    .current_duration()
+                    .ok_or("Open a video to seek in it")?;
+                if !seconds.is_finite() || seconds < 0.0 {
+                    return Err("Say a moment from the start of the video, in seconds".into());
+                }
+                self.seek_to(seconds.min(duration));
+            }
+            TubeEffect::SkipSegment => {
+                let end = self
+                    .current_show_skip_end()
+                    .ok_or("No segment to skip is playing")?;
+                self.skip_to(end);
             }
             TubeEffect::Share { video } => {
                 tracing::debug!(target: "tube::share", %video, at = ?ui::time::now(), "share effect entered");
@@ -1050,11 +1068,19 @@ impl TubeApp {
             bus: &self.bus,
             imgs: crate::images::Imgs(self.images.as_ref()),
             content_width: self.content_width(theme),
+            waiting: &self.waiting,
         }
     }
 
     /// The current screen, ready for the shell's content column.
     fn build_screen(&self, theme: &Theme) -> Box<dyn Widget> {
+        self.waiting.begin_build();
+        let screen = self.build_route(theme);
+        self.waiting.end_build();
+        screen
+    }
+
+    fn build_route(&self, theme: &Theme) -> Box<dyn Widget> {
         let ui = self.ui(theme);
         let content = match &self.model.route {
             Route::Home => screens::home(ui),
@@ -1436,19 +1462,20 @@ impl TubeApp {
     /// `None` off the watch route, when `SponsorBlock` is off, or when no show-mode
     /// segment contains the playhead.
     fn current_show_skip_end(&self) -> Option<f64> {
-        if !self.model.settings.sponsorblock_enabled {
-            return None;
-        }
-        let Route::Watch(id) = &self.model.route else {
-            return None;
-        };
-        let v = self.model.video(id)?;
-        v.sponsor
-            .iter()
-            .find(|s| {
-                self.model.settings.should_show_skip(s.category) && s.contains(self.model.playhead)
-            })
-            .map(|s| s.end)
+        self.model.show_skip_end()
+    }
+
+    /// Move the open video to `at` seconds, within it: the model and the
+    /// engine, then what playback does there (skip a segment set to skip,
+    /// move on at the end).
+    fn seek_to(&mut self, at: f64) {
+        self.model.playhead = at;
+        // Seek the real stream (no-op when no source is loaded yet).
+        self.player
+            .borrow_mut()
+            .seek_to_ms((self.model.playhead * 1000.0) as u64);
+        self.apply_auto_skip();
+        self.maybe_autoplay_next();
     }
 
     /// Skip a segment by hand: jump the model and engine playhead to `to` and
@@ -1631,13 +1658,7 @@ impl TubeApp {
             }
             Action::Seek(frac) => {
                 if let Some(d) = self.current_duration() {
-                    self.model.playhead = (frac * d).clamp(0.0, d);
-                    // Seek the real stream (no-op when no source is loaded yet).
-                    self.player
-                        .borrow_mut()
-                        .seek_to_ms((self.model.playhead * 1000.0) as u64);
-                    self.apply_auto_skip();
-                    self.maybe_autoplay_next();
+                    self.seek_to((frac * d).clamp(0.0, d));
                 }
             }
             Action::TogglePlay => {
@@ -1648,17 +1669,6 @@ impl TubeApp {
                 self.model.unplayable = None;
                 self.playing_id = None;
                 self.ensure_playback();
-            }
-            Action::SkipSegment(to) => {
-                // Manual skip button for a Show-mode segment: jump the model +
-                // engine playhead to the segment end and confirm with a toast.
-                if let Some(d) = self.current_duration() {
-                    let to = to.clamp(0.0, d);
-                    self.model.playhead = to;
-                    self.player.borrow_mut().seek_to_ms((to * 1000.0) as u64);
-                    self.model
-                        .push_notice(format!("Skipped to {}", crate::util::clock(to)));
-                }
             }
             Action::SubmitSearch => {
                 let q = self.search_query.get();
@@ -2957,7 +2967,7 @@ mod tests {
                 app.model.playhead, 1500.0,
                 "playhead untouched by auto-skip"
             );
-            app.apply(Action::SkipSegment(1570.0));
+            app.perform(TubeEffect::SkipSegment).unwrap();
             assert!(
                 app.model.playhead >= 1570.0,
                 "manual skip advanced the playhead"
@@ -3046,6 +3056,92 @@ mod tests {
                 "master off suppresses the overlay"
             );
         }
+    }
+
+    /// Seeking and skipping a segment shown with a button are actions, so an
+    /// agent or a screen reader reaches them as a click does.
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the playhead is assigned the exact target under test"
+    )]
+    fn seeking_and_skipping_a_segment_are_actions() {
+        use crate::model::SkipMode;
+        let (mut app, _doc) = fresh_synth();
+        assert!(
+            app.perform(TubeEffect::Seek { seconds: 10.0 }).is_err(),
+            "with no video open there is nothing to seek in"
+        );
+        let statuses =
+            |app: &TubeApp| crate::rows::effect_statuses(&app.model, app.device_sync_view());
+        let no_video = ui::framework::EffectStatus::unavailable(
+            TubeEffect::SEEK,
+            "no_video",
+            "Open a video to seek in it",
+        );
+        let no_segment = ui::framework::EffectStatus::unavailable(
+            TubeEffect::SKIP_SEGMENT,
+            "no_segment",
+            "No segment to skip is playing",
+        );
+        assert!(statuses(&app).contains(&no_video));
+
+        // vid_rust_async has a Sponsor segment 1440..1570.
+        app.model.route = Route::Watch("vid_rust_async".into());
+        app.load_resolved_stream(
+            "vid_rust_async".into(),
+            "https://inv.example/x?local=true".into(),
+            true,
+            "360p",
+        );
+        let sponsor = Category::Sponsor.api_key().to_string();
+        app.model
+            .settings
+            .categories
+            .insert(sponsor.clone(), SkipMode::Show);
+        let offers_skip = |app: &TubeApp| {
+            crate::rows::live_rows(&app.model, app.device_sync_view())
+                .into_iter()
+                .find(|row| row.id() == "tube.current:vid_rust_async")
+                .expect("the open video is published")
+                .into_resource()
+                .actions
+                .iter()
+                .any(|action| action.id == TubeEffect::SKIP_SEGMENT.id)
+        };
+        assert!(!offers_skip(&app), "no segment plays at the start");
+        assert!(statuses(&app).contains(&no_segment));
+        assert!(!statuses(&app).contains(&no_video), "a video is open");
+
+        app.perform(TubeEffect::Seek { seconds: 1500.0 }).unwrap();
+        assert_eq!(
+            app.model.playhead, 1500.0,
+            "a segment shown with a button waits for it"
+        );
+        assert!(offers_skip(&app), "the open video offers to skip it");
+        assert!(!statuses(&app).contains(&no_segment));
+
+        app.perform(TubeEffect::SkipSegment).unwrap();
+        assert_eq!(app.model.playhead, 1570.0, "Skip lands at its end");
+        assert!(!offers_skip(&app), "past the segment there is none to skip");
+        assert!(
+            app.perform(TubeEffect::SkipSegment).is_err(),
+            "skipping with no segment playing says so"
+        );
+
+        app.model
+            .settings
+            .categories
+            .insert(sponsor, SkipMode::Skip);
+        app.perform(TubeEffect::Seek { seconds: 1500.0 }).unwrap();
+        assert!(
+            app.model.playhead >= 1570.0,
+            "seeking into a segment set to skip skips it, as playback does"
+        );
+        assert!(
+            app.perform(TubeEffect::Seek { seconds: -1.0 }).is_err(),
+            "a moment before the start is refused"
+        );
     }
 
     #[test]

@@ -225,6 +225,10 @@ history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernt
 history-sync-queue-full = Die Warteschlange für entfernte Änderungen ist voll. Nach der aktuellen Bearbeitung ist ein neuer Stand für die Synchronisierung nötig.
 history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich geändert, während entfernte Änderungen ausstanden. Verbinde dich neu und synchronisiere, bevor du fortfährst.
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
+arriving-loading = Wird geladen
+arriving-from = Von { $source }
+arriving-failed = Konnte nicht geladen werden
+arriving-retry = Erneut versuchen
 room-sync-connecting = Verbinde mit { $workspace }…
 room-sync-connecting-unnamed = Verbinde…
 room-sync-host-needs-update = Der Host dieses Arbeitsbereichs muss aktualisieren
@@ -387,6 +391,26 @@ tree-move-outdent = Aus dem übergeordneten Element verschieben
 # The show/hide control inside every password field.
 text-input-show-password = Passwort anzeigen
 text-input-hide-password = Passwort verbergen
+
+# The password prompt every secret in Tilo is asked by.
+secret-prompt-continue = Weiter
+secret-prompt-cancel = Abbrechen
+secret-prompt-username = Benutzername
+secret-prompt-password = Passwort
+secret-prompt-pin = PIN
+secret-prompt-puk = PUK
+secret-prompt-new-pin = Neue PIN
+secret-prompt-confirm-pin = Neue PIN bestätigen
+secret-prompt-caps-lock = Feststelltaste ist aktiv
+secret-prompt-pin-length = { $min } bis { $max } Ziffern
+secret-prompt-pin-length-exact = { $count } Ziffern
+secret-prompt-attempts-left = { $count ->
+    [one] Noch ein Versuch
+   *[other] Noch { $count } Versuche
+}
+secret-prompt-pins-differ = Die neuen PINs stimmen nicht überein
+secret-prompt-keypad-delete = Löschen
+secret-prompt-keypad-enter = Fertig
 
 # Authentication surfaces share the system theme and catalog.
 lock-welcome-back = Willkommen zurück
@@ -605,13 +629,11 @@ history-day-earlier = Früher
 
 save-status-stalled = Noch nicht gespeichert. Neuer Versuch…
 save-status-not-saved = Nicht gespeichert
-save-status-not-saved-detail = Deine Änderungen sind noch da.
 save-status-not-saved-named = „{ $document }“ wurde nicht gespeichert
 save-status-not-saved-notice = Deine Änderungen sind noch in { $app }.
 save-status-saved = Gespeichert
 save-status-failed = Speichern fehlgeschlagen
 save-status-retry = Erneut versuchen
-save-status-dismiss = Schließen
 
 # Suchleiste: das Band oben in einem Dokument, das darin sucht.
 find-bar-name = Suchen
@@ -745,6 +767,7 @@ widget-screenshot-edit = Bearbeiten
 widget-screenshot-open = Öffnen
 widget-screenshot-reveal = In Dateien zeigen
 widget-screenshot-send = Senden…
+widget-capture-title = Erfassen
 widget-capture-dismiss = Schließen
 widget-capture-mode-screenshot = Bildschirmfoto
 widget-capture-mode-recording = Aufnahme
@@ -778,6 +801,30 @@ widget-replay-stop = Letzte 30 s nicht mehr behalten
 widget-screenshot-send-workspace = In den Dateien dieses Arbeitsbereichs speichern
 widget-screenshot-send-no-device = Kein anderes Gerät ist online
 widget-screenshot-send-device = An { $device } senden
+widget-markup-title = Markieren
+widget-markup-close = Schließen
+widget-markup-undo = Rückgängig
+widget-markup-redo = Wiederholen
+widget-markup-tools-pen = Stiftwerkzeuge
+widget-markup-tools-highlighter = Markerwerkzeuge
+widget-markup-tools-arrow = Pfeilwerkzeuge
+widget-markup-tools-rectangle = Formwerkzeuge
+widget-markup-tools-redact = Schwärzungswerkzeuge
+widget-markup-tool-pen = Stift
+widget-markup-tool-highlighter = Marker
+widget-markup-tool-arrow = Pfeil
+widget-markup-tool-rectangle = Rechteck
+widget-markup-tool-redact = Schwärzen
+widget-markup-fit = Bild einpassen
+widget-markup-colors = Farben
+widget-markup-color-red = Rot
+widget-markup-color-yellow = Gelb
+widget-markup-color-blue = Blau
+widget-markup-color-green = Grün
+widget-markup-color-white = Weiß
+widget-markup-open = In App öffnen
+widget-markup-copy = Kopieren
+widget-markup-save = Kopie speichern
 
 ## Block editor
 block-a11y-formula-source = Quelltext-Editor
@@ -851,3 +898,10 @@ text-menu-numbered-list = Nummerierte Liste
 
 # A reference to something another app keeps, shown as a chip; $label is its name.
 reference-open = { $label } öffnen
+
+# A signal meter's name, by how strong the signal is (a Wi-Fi or mobile network).
+signal-meter-unknown = Signalstärke unbekannt
+signal-meter-weak = Schwaches Signal
+signal-meter-fair = Mittleres Signal
+signal-meter-good = Gutes Signal
+signal-meter-strong = Starkes Signal

@@ -267,6 +267,24 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             t("files-mounted-copy"),
         ));
     }
+    // A file whose bytes no device delivered says so where an agent and a
+    // screen reader look, before anyone opens it and waits for nothing.
+    if resource.presentation.is_none()
+        && entry
+            .availability
+            .as_ref()
+            .is_some_and(fs_protocol::AvailabilityProjectionV1::unavailable)
+    {
+        let detail = t("files-unavailable-offline");
+        resource.presentation = Some(ui::tilo_actions::ResourcePresentation {
+            detail: Some(detail.clone()),
+            badge: Some(t("files-unavailable")),
+            preview: None,
+        });
+        if let Some(open) = resource.actions.last_mut() {
+            open.description = Some(detail);
+        }
+    }
     if let Some(open_with) = &facts.open_with {
         append_open_with_actions(open_with, &resource_id, &mut resource);
     }

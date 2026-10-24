@@ -5,7 +5,7 @@
 //!
 //! A person's own service histories (SMS, Signal, `WhatsApp`, Tilo) never
 //! enter it: those stay the privileged broker's account-owned data, read
-//! through [`crate::history`] on a device holding the account. What this
+//! through `crate::history` on a device holding the account. What this
 //! record holds is what was put into it on purpose: messages *delivered*
 //! into it (a seeded scenario, an import, an integration relaying a text)
 //! and messages *written* in it, queued for a person to send. The person

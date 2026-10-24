@@ -8,7 +8,7 @@
 //!   [`CollabEvent::Document`]. The publication barrier completes when the
 //!   host has made every earlier change durable.
 //! - Presence rides the live plane: pointers, carets and selections become
-//!   [`PresenceFrame`]s whose selection anchors carry the editor's
+//!   [`PresenceFrame`](tilo_relay_protocol::live::PresenceFrame)s whose selection anchors carry the editor's
 //!   [`PresenceKey`] (`[1, uvarint(start), postcard(key)]` / `[2,
 //!   uvarint(end)]`, as in PR 541's `live_view`), and remote frames come back
 //!   as `RemoteCursorMoved` / `RemotePresenceUpdate`.

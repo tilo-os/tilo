@@ -28,6 +28,13 @@ impl ShellOverlayHost {
         self.file_picker_overlay.actions()
     }
 
+    /// What the open file chooser holds back from the windows: the
+    /// keyboard while its sheet's window is focused, the pointer over that
+    /// window and the sheet.
+    pub(crate) fn file_picker_capture(&self) -> crate::shell::input_policy::InputCapture {
+        self.file_picker_overlay.capture(self.file_picker_place())
+    }
+
     pub fn file_picker(&self) -> Option<&ui::widget::FilePicker> {
         self.file_picker_overlay.widget()
     }
@@ -46,6 +53,12 @@ impl ShellOverlayHost {
     /// can repaint.
     pub fn pump_file_picker(&mut self) -> bool {
         self.file_picker_overlay.pump(self.chrome.as_ref())
+    }
+
+    /// The queue the compositor's sheets come from, for a harness that
+    /// raises one the way a request from polkit or the network daemon does.
+    pub fn portal_dialog_queue(&self) -> crate::shell::portal_dialog::PortalDialogQueue {
+        self.portal_dialogs.queue().clone()
     }
 
     /// Latch the next portal-owned sheet. Its async reply remains held by the

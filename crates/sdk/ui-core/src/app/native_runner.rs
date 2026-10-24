@@ -10,6 +10,7 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_lock::MutexRecover as _;
 
+mod held_frame;
 #[cfg(target_os = "linux")]
 mod linux_header;
 mod private_text_input;
@@ -17,6 +18,7 @@ mod process_windows;
 mod slot_bar;
 #[cfg(any(windows, target_os = "linux"))]
 pub(super) mod startup;
+mod wheel_batch;
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
@@ -59,6 +61,9 @@ struct AppHandler {
     /// When the next "just typed" highlight steps down its fade
     /// (`PresenceCtx::typing_next_step`).
     typing_step_at: Option<crate::time::Instant>,
+    /// A frame held for a local read ([`crate::arriving`]): drawn when the
+    /// read answers, or at this instant when its frame budget runs out.
+    held_frame: Option<crate::time::Instant>,
     /// Debug check that animation frames move something.
     still_animation: animation_schedule::StillAnimation,
     native_scenario: Option<crate::native_scenario::Scenario>,
@@ -108,6 +113,8 @@ struct AppHandler {
     /// keyboard/IME events reach the reattached primary editor.
     floating_ime_return_continuation: Option<String>,
     private_input: private_text_input::Bridge,
+    /// Wheel deltas of this wake, routed as one event ([`wheel_batch`]).
+    wheel_batch: wheel_batch::WheelBatch,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
     /// The field with the keyboard was touched since the last IME sync.
@@ -2758,6 +2765,16 @@ impl AppHandler {
         if self.surface_suspended {
             return;
         }
+        if first_primary_frame {
+            // The frame budget local reads get is one refresh of the display
+            // the window opens on.
+            self.animation_schedule.set_refresh_millihertz(
+                window
+                    .current_monitor()
+                    .and_then(|monitor| monitor.refresh_rate_millihertz()),
+            );
+            crate::arriving::set_frame_budget(self.animation_schedule.interval());
+        }
         if self.render.is_none() {
             tilo_startup_metrics::mark("first-redraw-init-render-start");
             if let Err(reason) = self.init_render(window) {
@@ -3039,6 +3056,21 @@ impl AppHandler {
         };
         drop(layout_phase);
         mark_first_frame("first-frame-layout-done");
+        // A local read this frame would show has not answered and is still
+        // inside its frame budget ([`crate::arriving`]): the frame on screen
+        // stays until the data lands (its wake redraws) or the budget runs
+        // out (`about_to_wait` redraws then), so a window or a view opens
+        // complete. Like an aborted layout, the held frame keeps its render
+        // admission; the frame that is drawn rebuilds and repaints in full.
+        let now = crate::time::now();
+        if let Some(until) =
+            held_frame::frame_held_until(app.root_widget.holds_frame_until(now), now)
+        {
+            app.layout.structure_dirty = true;
+            self.held_frame = Some(until);
+            return;
+        }
+        self.held_frame = None;
         // A relayout that moved widgets and rebuilt or resized nothing may be
         // scrolls this window copies; that is decided with the frame's damage.
         let moved_from = boxes_before.filter(|_| {
@@ -3601,6 +3633,83 @@ impl AppHandler {
     }
 }
 
+impl AppHandler {
+    /// Route one event the platform reported for `window_id` (wheel deltas
+    /// already summed, [`wheel_batch`]).
+    fn platform_window_event(&mut self, window_id: WindowId, event: WindowEvent) {
+        let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
+        // Ctrl+C copies whichever source is typing: name the chord by its
+        // Latin key before any handler matches it.
+        let event =
+            crate::latin_chord::renamed(&event, self.app.input.modifiers.state()).unwrap_or(event);
+        // What this event opens or closes follows it (a key lands it at
+        // once, a click moves it): `motion::input_source`.
+        crate::motion::note_input(&event);
+        if let Some(window) = self
+            .window
+            .clone()
+            .filter(|window| window.id() == window_id)
+            && self
+                .private_input
+                .event(&mut self.app, window.as_ref(), &event)
+        {
+            self.sync_ime(&window);
+            return;
+        }
+        #[cfg(target_os = "android")]
+        if let WindowEvent::Touch(touch) = &event
+            && touch.phase == winit::event::TouchPhase::Started
+            && self.ime_state.is_some()
+            && self.touches_focused_field(window_id, touch.location)
+        {
+            for settled in self.text_input.settle() {
+                self.route_window_event(
+                    window_id,
+                    settled,
+                    native_input_isolation::EventOrigin::Platform,
+                );
+            }
+            self.text_input_touched = true;
+        }
+        let physical_input = if crate::physical_input_trace::Trace::observes(&event)
+            && self
+                .window
+                .as_ref()
+                .is_some_and(|window| window.id() == window_id)
+        {
+            let state = self.physical_input_trace.as_ref().and_then(|_| {
+                self.slot_bar
+                    .with_search_evidence(self.app.native_input_snapshot())
+            });
+            self.physical_input_trace
+                .as_mut()
+                .and_then(|trace| trace.begin(&event, state))
+        } else {
+            None
+        };
+        self.note_host_appearance_event(&event);
+        let admitted = self.route_window_event(
+            window_id,
+            event,
+            native_input_isolation::EventOrigin::Platform,
+        );
+        if let Some(input) = physical_input {
+            let mut row = crate::physical_input_trace::Trace::effect(
+                input,
+                self.slot_bar
+                    .with_search_evidence(self.app.native_input_snapshot()),
+            );
+            let modifiers = self.app.input.modifiers.state();
+            row["input_route_admitted"] = serde_json::json!(admitted);
+            row["modifiers"] = serde_json::json!({
+                "shift": modifiers.shift_key(), "control": modifiers.control_key(),
+                "alt": modifiers.alt_key(), "super": modifiers.super_key(),
+            });
+            crate::native_scenario::log::emit_json("tilo-physical-input", row);
+        }
+    }
+}
+
 impl ApplicationHandler<UserEvent> for AppHandler {
     #[allow(
         clippy::too_many_lines,
@@ -4035,76 +4144,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
-        // What this event opens or closes follows it (a key lands it at
-        // once, a click moves it): `motion::input_source`.
-        crate::motion::note_input(&event);
-        if let Some(window) = self
-            .window
-            .clone()
-            .filter(|window| window.id() == window_id)
-            && self
-                .private_input
-                .event(&mut self.app, window.as_ref(), &event)
-        {
-            self.sync_ime(&window);
-            return;
-        }
-        #[cfg(target_os = "android")]
-        if let WindowEvent::Touch(touch) = &event
-            && touch.phase == winit::event::TouchPhase::Started
-            && self.ime_state.is_some()
-            && self.touches_focused_field(window_id, touch.location)
-        {
-            for settled in self.text_input.settle() {
-                self.route_window_event(
-                    window_id,
-                    settled,
-                    native_input_isolation::EventOrigin::Platform,
-                );
-            }
-            self.text_input_touched = true;
-        }
-        let physical_input = if crate::physical_input_trace::Trace::observes(&event)
-            && self
-                .window
-                .as_ref()
-                .is_some_and(|window| window.id() == window_id)
-        {
-            let state = self.physical_input_trace.as_ref().and_then(|_| {
-                self.slot_bar
-                    .with_search_evidence(self.app.native_input_snapshot())
-            });
-            self.physical_input_trace
-                .as_mut()
-                .and_then(|trace| trace.begin(&event, state))
-        } else {
-            None
-        };
-        self.note_host_appearance_event(&event);
-        let admitted = self.route_window_event(
-            window_id,
-            event,
-            native_input_isolation::EventOrigin::Platform,
-        );
-        if let Some(input) = physical_input {
-            let mut row = crate::physical_input_trace::Trace::effect(
-                input,
-                self.slot_bar
-                    .with_search_evidence(self.app.native_input_snapshot()),
-            );
-            let modifiers = self.app.input.modifiers.state();
-            row["input_route_admitted"] = serde_json::json!(admitted);
-            row["modifiers"] = serde_json::json!({
-                "shift": modifiers.shift_key(), "control": modifiers.control_key(),
-                "alt": modifiers.alt_key(), "super": modifiers.super_key(),
-            });
-            crate::native_scenario::log::emit_json("tilo-physical-input", row);
+        // Wheel deltas reported in one wake route as one event; anything
+        // else routes the waiting sum first.
+        for (window_id, event) in self.wheel_batch.push(window_id, event) {
+            self.platform_window_event(window_id, event);
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let _slow = slow_event::Span::begin("about_to_wait", "");
+        // The wake's last wheel deltas go before the loop waits.
+        if let Some((window_id, event)) = self.wheel_batch.flush() {
+            self.platform_window_event(window_id, event);
+        }
         self.app.service_close_admission();
         if self.app.finish_close_if_ready() {
             self.closing.set(true);
@@ -4405,6 +4457,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
                 )
+                .chain(app.accessibility.zoom.deadline())
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -4429,7 +4482,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .into_iter()
                 .chain(app.local_input_capture_deadline())
                 .chain(app.presence_ctx.interaction_next_wake_deadline(now))
+                .chain(app.accessibility.zoom.deadline())
                 .any(|due| due <= now);
+            app.accessibility.zoom.publish();
             let widget_due = app
                 .root_widget
                 .next_wake_deadline()
@@ -4458,6 +4513,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
                 )
+                .chain(app.accessibility.zoom.deadline())
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -4473,10 +4529,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if tooltip_pending {
             request_primary_redraw();
         }
+        // A frame held for a local read is drawn once its budget runs out.
+        let held_due = self
+            .held_frame
+            .is_some_and(|until| until <= crate::time::now());
+        if held_due {
+            self.held_frame = None;
+            request_primary_redraw();
+        }
         let scheduled_deadline = scheduled_deadline
             .into_iter()
             .chain(tooltip_reveal.filter(|_| !tooltip_pending))
             .chain(self.typing_step_at)
+            .chain(self.held_frame)
             .min();
 
         // A widget asking for a frame is served whatever the motion setting.
@@ -5237,6 +5302,7 @@ impl App {
             floating_ime_continuation: None,
             floating_ime_return_continuation: None,
             private_input: private_text_input::Bridge::default(),
+            wheel_batch: wheel_batch::WheelBatch::default(),
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
             #[cfg(target_os = "android")]
@@ -5262,6 +5328,7 @@ impl App {
             native_input_route_isolation: false,
             animation_schedule: animation_schedule::AnimationSchedule::default(),
             typing_step_at: None,
+            held_frame: None,
             still_animation: animation_schedule::StillAnimation::default(),
             dev_window_state: std::collections::HashMap::new(),
             dev_loaded_library: crate::host::environment()

@@ -6,8 +6,9 @@
 #                                      booted system and logged-in user session
 #
 # The image mode runs during os/Containerfile itself.  Runtime mode is driven
-# over SSH by build-image.yml after bootc installation and graphical login,
-# through `os/dev/vm.sh test`, which copies this script, the Files AT-SPI smoke
+# over SSH by the installed-desktop gate (t's os-acceptance-{arch}) after bootc
+# installation and graphical login, through `os/dev/vm.sh test`, which copies
+# this script, the Files AT-SPI smoke
 # and the external AT-SPI client (test tooling the image does not ship) into
 # the guest and names their directory in TILO_GUEST_TESTS.
 # It intentionally does not turn missing FUSE/session facilities into skips.
@@ -221,7 +222,7 @@ require_exec "$payload/bin/file-explorer"
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
-require_toml_string "$manifest" sandbox.services.tilo-fs "optional@7"
+require_toml_string "$manifest" sandbox.services.tilo-fs "optional@8"
 # The package names the exact runtime build it links, and the image ships it.
 runtime_version="$(python3 - "$(at "$manifest")" <<'PY'
 import pathlib, re, sys, tomllib

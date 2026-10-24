@@ -112,7 +112,7 @@ fn run(window: ObservedWindow, servers: &mut Servers) {
         downloaded_apps::observe_window(ObservedWindow {
             surface_id: window.surface_id,
             pid,
-            pid_start_time: crate::shell::launcher::proc_stat(pid).map(|(_, start)| start),
+            pid_start_time: crate::shell::host_runtime::proc_stat(pid).map(|(_, start)| start),
             app_id: window.app_id,
         });
     }

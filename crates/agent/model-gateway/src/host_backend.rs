@@ -591,6 +591,69 @@ mod tests {
         }
     }
 
+    /// A refused connection reached no provider: it is classified as
+    /// unprocessed, asked again after the backoff, and an endpoint that is
+    /// up by then answers.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_refused_connection_is_unprocessed_and_asked_again() {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        let address = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap()
+        };
+        let endpoint = format!("http://{address}/v1");
+        let refused = host_http(reqwest::header::HeaderMap::new())
+            .unwrap()
+            .post(&endpoint)
+            .send()
+            .await
+            .unwrap_err();
+        let failure = rig_adapter::send_failure(&refused);
+        assert!(failure.unprocessed && !failure.outcome_unknown);
+        assert_eq!(failure.again, Again::Soon(None));
+        assert_eq!(failure.model_error.kind, neutral::ErrorKind::Transport);
+
+        // The endpoint comes up within the first backoff (half a second).
+        let peer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let listener = std::net::TcpListener::bind(address).unwrap();
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(&mut socket);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            reader.read_exact(&mut vec![0; length]).unwrap();
+            let body = r#"{"id":"reply","object":"chat.completion","created":1,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let request = neutral::Conversation::new("system", "hello").request(Vec::new(), 64);
+        let response = complete_async(
+            &endpoint,
+            &ApiKey::None,
+            Target::Standard,
+            ("model", &request),
+            "not-deduplicated",
+            Instant::now() + tilo_test_env::hang_bound(),
+            &ServiceCredentials::open_in(&dir.path().join("vault")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.stop_reason, neutral::StopReason::EndTurn);
+        peer.join().unwrap();
+    }
+
     /// A peer answering one request with `answer` (JSON), handing back the
     /// request's head (lower-cased) and body.
     fn answer_once(

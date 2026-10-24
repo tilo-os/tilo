@@ -58,6 +58,10 @@ pub enum Capability {
     /// The kernel's key retention service (`add_key`, `keyctl`), which
     /// container seccomp profiles often refuse.
     KernelKeyring,
+    /// TUN devices configured as the device VPN helper does: `/dev/net/tun`,
+    /// `ip` and `nft`, in user and network namespaces of the test's own
+    /// (`unshare --user --map-root-user --net`).
+    NetworkTunnel,
 }
 
 impl Capability {
@@ -78,6 +82,7 @@ impl Capability {
             Self::NamespaceEntry => "TILO_REQUIRE_SETNS",
             Self::Swtpm => "TILO_REQUIRE_SWTPM",
             Self::KernelKeyring => "TILO_REQUIRE_KEYRING",
+            Self::NetworkTunnel => "TILO_REQUIRE_TUN",
         }
     }
 
@@ -105,6 +110,7 @@ impl fmt::Display for Capability {
             Self::NamespaceEntry => "entering namespaces (setns)",
             Self::Swtpm => "an emulated TPM",
             Self::KernelKeyring => "the kernel keyring",
+            Self::NetworkTunnel => "TUN devices with ip and nft",
         })
     }
 }

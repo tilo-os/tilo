@@ -141,7 +141,7 @@ impl KeyLatency {
     }
 
     /// `surface` committed a new buffer at `at`. Returns the keys that waited
-    /// past [`UNANSWERED_AFTER`] and were dropped, by app.
+    /// past `UNANSWERED_AFTER` and were dropped, by app.
     pub fn surface_committed(&mut self, surface: u64, at: Instant) -> Vec<String> {
         let mut unanswered = Vec::new();
         self.pending.retain(|&id, (app, key_at)| {

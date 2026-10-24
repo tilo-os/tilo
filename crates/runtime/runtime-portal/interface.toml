@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 7
+version = 8
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -336,6 +336,7 @@ capnp = [
 "capnp:collab.capnp:ChannelHandle.send" = "@0 (op:Data)->()"
 "capnp:collab.capnp:ChannelHandle.sendAction" = "@11 (typeId:Text,payload:Data)->()"
 "capnp:collab.capnp:ChannelHandle.settings" = "@54 ()->(settings:AppSettings)"
+"capnp:collab.capnp:ChannelHandle.speakerChanged" = "@68 (after:UInt64)->(change:UInt64)"
 "capnp:collab.capnp:ChannelHandle.speakerCommand" = "@52 (appId:Text,commandJson:Data)->(replyJson:Data)"
 "capnp:collab.capnp:ChannelHandle.subscribe" = "@1 ()->(stream:Stream)"
 "capnp:collab.capnp:ChannelHandle.subscribeActionCatalogue" = "@20 ()->(stream:ActionCatalogueStream)"

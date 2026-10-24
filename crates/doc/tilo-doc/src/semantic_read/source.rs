@@ -225,7 +225,7 @@ impl<'a> Source<'a> {
         }
         Ok(())
     }
-    /// A bounded text fragment from `position` (see [`super::text_fragment`]).
+    /// A bounded text fragment from `position`.
     ///
     /// Elements are addressed by their text index, so the read seeks straight to the cursor and
     /// never visits mark boundaries, which occupy no text index.

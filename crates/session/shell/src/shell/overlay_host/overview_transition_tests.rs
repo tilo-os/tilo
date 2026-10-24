@@ -337,20 +337,51 @@ fn a_full_presenter_does_not_finish_the_transition() {
         "the open stays pending until a frame is presented"
     );
 
-    host.start_workspace_switch_frames(ui::tokens::MotionSource::Pointer);
-    // The run has already ended; crediting the presenter's wait brings it back.
-    let now = std::time::Instant::now();
-    host.workspace_switch_until = now.checked_sub(std::time::Duration::from_millis(1));
-    assert!(
-        !host.workspace_switch_holding_at(now),
-        "a finished switch is not a frame run"
-    );
+    host.start_workspace_switch(ui::tokens::MotionSource::Pointer);
     host.defer_running_transitions(std::time::Duration::from_millis(
         u64::from(ui::tokens::Durations::default().slow_ms) + 50,
     ));
     assert!(
-        host.workspace_switch_holding_at(now),
-        "a workspace switch stays pending while the presenter is full"
+        host.transition_present_pending(),
+        "a workspace switch stays pending until its frame is presented"
+    );
+    host.frame_presented();
+    assert!(
+        !host.workspace_switch_owed(),
+        "a presented frame pays what the switch owed"
+    );
+}
+
+/// A pointer switch's slide is held like the overview's zoom while the
+/// presenter is full: the windows resume where they stood instead of
+/// jumping to where the clock says they should be by now.
+#[test]
+fn a_full_presenter_does_not_finish_a_workspace_slide() {
+    let mut host = host();
+    let now = ui::motion::frame_now();
+    host.workspace_slide = workspace_slide::WorkspaceSlide::start(
+        7,
+        true,
+        ui::tokens::EffectiveMotion::default(),
+        ui::tokens::MotionSource::Pointer,
+        now,
+    );
+    assert!(host.workspace_slide_moving(now), "a pointer switch slides");
+    // Far past any slide's length.
+    let later = now + std::time::Duration::from_secs(5);
+    assert!(
+        !host.workspace_slide_moving(later),
+        "test setup: the slide ends within five seconds"
+    );
+    let held = std::time::Duration::from_secs(10);
+    host.defer_running_transitions(held);
+    assert!(
+        host.workspace_slide_moving(later),
+        "time spent waiting on a full presenter is not slide progress"
+    );
+    assert!(
+        !host.workspace_slide_moving(later + held),
+        "a held slide still comes to rest"
     );
 }
 
@@ -432,4 +463,45 @@ fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
     assert!(h.handle_shell_escape_chord(&mut handled));
     assert!(!chrome.borrow().overlays.overview);
     assert!(!h.overview_zoom.is_open());
+}
+
+/// A window on the display's screen flies into the overview (and the strip
+/// stops drawing it meanwhile, so it is never seen twice); one off screen or
+/// with no size fades in at its place in the picture instead.
+#[test]
+fn only_a_window_on_screen_flies_into_the_overview() {
+    let output = Rect::new(0.0, 0.0, 1600.0, 900.0);
+    assert!(ShellOverlayHost::flies_from(
+        Rect::new(100.0, 40.0, 900.0, 860.0),
+        output
+    ));
+    assert!(
+        ShellOverlayHost::flies_from(Rect::new(1200.0, 40.0, 2000.0, 860.0), output),
+        "partly on screen still flies from where it is seen"
+    );
+    assert!(!ShellOverlayHost::flies_from(
+        Rect::new(1700.0, 40.0, 2500.0, 860.0),
+        output
+    ));
+    assert!(!ShellOverlayHost::flies_from(
+        Rect::new(-900.0, 40.0, -100.0, 860.0),
+        output
+    ));
+    assert!(!ShellOverlayHost::flies_from(
+        Rect::new(100.0, 40.0, 100.0, 860.0),
+        output
+    ));
+}
+
+/// Super+Up and Super+Down are told to the desktop as keyboard motion
+/// before they act, so the window lands maximized or restored at once.
+#[test]
+fn maximize_and_restore_keys_land() {
+    use settings_store::hardware::ShortcutAction as A;
+    for action in [A::MaximizeWindow, A::RestoreWindow, A::ToggleMaximize] {
+        assert!(
+            ShellOverlayHost::is_navigation_shortcut(action),
+            "{action:?}"
+        );
+    }
 }

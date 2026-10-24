@@ -55,6 +55,7 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
             tethering: Vec::new(),
             remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView::default(),
             device_unlocks: Vec::new(),
+            device_vpn: None,
         },
         remote,
     )

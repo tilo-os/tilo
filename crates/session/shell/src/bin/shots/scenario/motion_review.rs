@@ -14,6 +14,9 @@ use super::{Action, Scenario};
 /// the ribbon and the rail.
 const REST: Point = Point::new(800.0, 500.0);
 
+/// Beside search's card and below it, over a window: a click outside it.
+const OUTSIDE_SEARCH: Point = Point::new(300.0, 780.0);
+
 /// Frames a hover-driven film records at least: the ribbon waits for the
 /// pointer to dwell before it lays its strips out.
 const DWELL_FRAMES: u32 = 90;
@@ -397,6 +400,8 @@ fn sheets() -> Scenario {
     );
     a.push(step(Step::LogTargets("file-picker")));
     key(&mut a, "10-file-picker-escape", NONE, esc());
+    // Escape took it down: asked again, for its Cancel button.
+    a.extend([Action::SeedFilePicker("open"), Action::Wait(6)]);
     rest(&mut a);
     // The picker's Cancel button.
     let cancel = Point::new(1080.0, 740.0);
@@ -502,9 +507,17 @@ fn launcher() -> Scenario {
         named(NamedKey::Escape),
     )));
     key(&mut a, "06-key-open-again", SUPER, named(NamedKey::Space));
+    // Search's card spans the middle of the display, REST included (a click
+    // there opens the row under it): the pointer goes beside the card first,
+    // so the film is of the click alone.
+    a.extend([
+        Action::MoveCursor(OUTSIDE_SEARCH),
+        Action::Wait(20),
+        Action::WaitSettled,
+    ]);
     a.push(Action::Film(act_film(
         "07-click-outside",
-        Action::ClickAt(REST),
+        Action::ClickAt(OUTSIDE_SEARCH),
     )));
     scenario(
         "motion_review_launcher",

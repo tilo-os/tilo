@@ -13,7 +13,7 @@
 //! Vello cannot sample what it has already drawn, so the blur is a pass
 //! that runs before the frame:
 //!
-//! 1. While a host holds a [`BackdropRecording`], [`fill`] draws a surface's
+//! 1. While a host holds a [`BackdropRecording`], `fill` draws a surface's
 //!    body as a placeholder image under the tint and records what lies
 //!    behind it: what the scene it is drawn into held so far, which of the
 //!    host's scenes that is (see [`layer_scene`]), the surface's bounds and

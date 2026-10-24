@@ -93,6 +93,7 @@ impl BooksApp {
         let on = self.keeps_catalogues();
         self.switch_at(
             ctx,
+            "keep-catalogues",
             col.x1(),
             row.center().y,
             on,

@@ -2,7 +2,7 @@
 //! resources.
 //!
 //! Apps do not depend on this crate. The public write path is
-//! [`tilo_document::RichTextAction`](tilo_document). [`DocMut`] exists only so
+//! `tilo_document::RichTextAction`. [`DocMut`] exists only so
 //! that resource's `Action::apply` can mutate storage; it is not an app API.
 //!
 //! A rich-text document and a workbook are versioned resources: every edit is a

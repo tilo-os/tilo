@@ -33,6 +33,7 @@ hunk-auto-theirs = Auto-resolved: theirs
 hunk-took-ours = Resolved: ours
 hunk-took-theirs = Resolved: theirs
 hunk-took-both = Resolved: both
+hunk-written = Resolved: own text
 take-ours = Take ours
 take-theirs = Take theirs
 take-both = Take both

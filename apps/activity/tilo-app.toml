@@ -1,0 +1,45 @@
+[package]
+id = "so.tilo.activity"
+name = "Activity"
+category = "Office"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+platforms = ["tilo-os"]
+platform-reason = "Reads the history the Tilo desktop session keeps of each workspace."
+
+[package.names]
+de = "Aktivität"
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+[resources]
+kinds = ["activity.filter"]
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@6"
+
+[entrypoint]
+bin = "bin/activity"
+type = "gui"
+splash-budget = 250
+
+[providers]
+mime = []
+ext = []

@@ -15,9 +15,9 @@
 #                  (os/kernel-buildroot-snapshot.env), reused while its inputs
 #                  are unchanged. TILO_KERNEL_TRUST=unsigned only when the chosen
 #                  kernel cannot pass the signed check (a local kernel).
-#   owner key      the RFC 8032 test-vector key the CI build-validation lane uses
-#                  (.forgejo/workflows/build-image.yml), never a production key.
-#   series         TILO_ALLOW_EMPTY_SERIES=1, as in that lane.
+#   owner key      the RFC 8032 test-vector key CI's unpublished image builds
+#                  use, never a production key.
+#   series         TILO_ALLOW_EMPTY_SERIES=1, as in those builds.
 #   browser        TILO_WITH_BROWSER=0 (no Browser or engine runtime).
 #   debug info     TILO_RUST_DEBUGINFO=0, as CI's dev image lane.
 #   layer epoch    TILO_LAYER_EPOCH=base: layers dated by the base image, so a new

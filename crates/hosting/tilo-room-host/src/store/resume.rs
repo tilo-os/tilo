@@ -91,7 +91,7 @@ impl WorkspaceStore {
     }
 
     /// Start a new, empty resume log for `device`. Its older logs stay within
-    /// [`RETAINED_LOGS`]: a session the device already left may subscribe
+    /// `RETAINED_LOGS`: a session the device already left may subscribe
     /// after the one it uses, and must not take that session's log away.
     ///
     /// # Errors

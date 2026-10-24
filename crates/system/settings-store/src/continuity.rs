@@ -224,6 +224,11 @@ policies! {
         "tilo.agent_providers.config",
         "tilo.collaboration.status_sharing",
         "tilo.collaboration.manual_status",
+        // Whether this device shares its connection, which device it routes
+        // through, and a stop asked of it: each about this device's network.
+        "tilo.device_vpn.exit",
+        "tilo.device_vpn.through",
+        "tilo.device_vpn.stop",
     ],
     Secret => [
         "tilo.agent_providers.api_key",

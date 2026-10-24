@@ -7,11 +7,9 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 script="$repo/os/tests/airplay-encrypted-session.sh"
 containerfile="$repo/os/Containerfile"
-workflow="$repo/.forgejo/workflows/build-image.yml"
 
 test -x "$script"
 test -f "$containerfile"
-test -f "$workflow"
 
 # Assembly must keep the script and must not treat its runtime as an install gate.
 grep -Fq 'COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh' \
@@ -23,8 +21,6 @@ if grep -n 'airplay-encrypted-session-test\.sh' "$containerfile" | grep -Eq '\|\
   echo 'Containerfile still runs AirPlay acceptance during assembly' >&2
   exit 1
 fi
-# Independent assembled-image invocation (not Containerfile install).
-grep -Fq '/usr/libexec/tilo/airplay-encrypted-session-test.sh' "$workflow"
 
 work="$(mktemp -d)"
 finish() {

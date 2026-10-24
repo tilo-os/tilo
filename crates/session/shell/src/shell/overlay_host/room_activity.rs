@@ -1,4 +1,5 @@
-//! The room activity sheet: refresh, awareness, inferred status and its events.
+//! The workspace's activity model: refresh, awareness, inferred status and
+//! what its actions did.
 
 #[allow(
     clippy::wildcard_imports,
@@ -7,81 +8,41 @@
 use super::*;
 
 impl ShellOverlayHost {
-    /// The room-activity sheet, ahead of the general absorb gate — it
-    /// wants exactly the events that gate would otherwise swallow
-    /// (hover, wheel); the gate still catches whatever the sheet
-    /// doesn't claim.
-    pub(super) fn route_room_activity_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) -> bool {
-        let pointer_event = matches!(
-            event,
-            WindowEvent::CursorMoved { .. }
-                | WindowEvent::MouseWheel { .. }
-                | WindowEvent::MouseInput { .. }
-        );
-        let keyboard_event = matches!(event, WindowEvent::KeyboardInput { .. });
-        let focused = self.chrome.as_ref().is_some_and(|chrome| {
-            crate::shell::tab_binding::focused_workspace_activity_tab(&chrome.borrow().tree())
-                .is_some()
-        });
-        if !((pointer_event && self.activity_window_rect().is_some())
-            || (keyboard_event && focused))
+    /// Keep the activity model current and act on what asked for Activity:
+    /// a view or focus is offered to the app ([`wire::FOCUS`]), and the
+    /// app is opened, or its window brought forward, like any app.
+    ///
+    /// [`wire::FOCUS`]: tilo_actions::remote::workspace_activity::FOCUS
+    pub(super) fn pump_room_activity(&mut self) {
+        self.drain_app_host_intents();
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let view_request = chrome.borrow_mut().take_workspace_view_request();
+        if let Some((_, tilo_desktop::activity::WorkspaceViewRequest::OpenActivity { view, .. })) =
+            &view_request
         {
-            return false;
+            self.room_activity.focus_view(*view);
         }
-        let sheet = self.room_activity.rect();
-        let pointer_inside = self.last_cursor.is_some_and(|p| sheet.contains(p));
-        let is_key = matches!(event, WindowEvent::KeyboardInput { .. });
-        // Escape belongs to the dismissal ladder below, except while a
-        // name field or typeahead is active — there it abandons the field
-        // instead. The tiled window itself is closed through window chrome.
-        let naming = self.room_activity.wants_keyboard();
-        let filtering = !self.room_activity.timeline().author_query().is_empty();
-        let is_escape = !naming
-            && !filtering
-            && matches!(
-                event,
-                WindowEvent::KeyboardInput {
-                    event: KeyEvent {
-                        logical_key: Key::Named(NamedKey::Escape),
-                        ..
-                    },
-                    ..
-                }
-            );
-        if (pointer_inside || (is_key && !is_escape))
-            && let Some(chrome) = self.chrome.clone()
-        {
-            let cursor = self.last_cursor;
-            let outcome = {
-                let st = chrome.borrow();
-                let records = st.records().clone();
-                let mut tree = st.tree_mut();
-                self.room_activity.handle_event_with_records(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    cursor,
-                    &mut *tree,
-                    Some(&records),
-                )
-            };
-            let consumed = outcome.handled || (pointer_inside && !is_key);
-            Self::apply_room_activity_outcome(&chrome, outcome);
-            // Pointer events over the sheet absorb regardless; keys
-            // only when consumed, or an arrow key with the cursor
-            // resting over the sheet would vanish.
-            if consumed {
-                *handled = true;
-                return true;
+        // Older control/shot clients still express this as an overlay edge.
+        if self.overlay_flags().room_activity {
+            chrome.borrow_mut().open_room_activity(None);
+        }
+        let open = chrome.borrow_mut().take_activity_open_request();
+        self.refresh_room_activity_awareness(view_request.is_some() || open.is_some());
+        if let Some(focus) = open {
+            if let Some(focus) = focus {
+                self.room_activity.apply_deep_link(focus);
             }
+            // A refusal is reported by the launch itself.
+            let _refused = crate::shell::search::providers::applications::launch_installed_app(
+                &chrome,
+                tilo_actions::remote::workspace_activity::APP_ID,
+                &t("shell-activity-title"),
+            );
         }
-        false
+        self.apply_pending_history_action();
+        self.publish_activity_revision();
     }
 
     pub(super) fn apply_room_activity_outcome(
@@ -169,8 +130,8 @@ impl ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    /// Lays the room-activity sheet out (by hand, not taffy, like the
-    /// other floating overlays) and re-derives its rows from the document.
+    /// Run the history action asked for from outside the app (a command,
+    /// a notification) on the changes Activity has selected.
     pub(super) fn apply_pending_history_action(&mut self) {
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -188,47 +149,6 @@ impl ShellOverlayHost {
         drop(tree);
         drop(st);
         Self::apply_room_activity_outcome(&chrome, outcome);
-    }
-
-    pub(super) fn refresh_room_activity(&mut self) {
-        if let Some(viewport) = self.activity_window_rect() {
-            self.room_activity.layout_window(viewport);
-        }
-        if let Some(chrome) = self.chrome.clone() {
-            let (tree, records) = {
-                let st = chrome.borrow();
-                self.room_activity.set_session_user(&st.local_user_id);
-                (st.tree_handle(), st.records().clone())
-            };
-            if self.room_activity.take_persisted_reads() {
-                // The glance derives from the same reads.
-                self.activity_refresh.invalidate();
-            }
-            let local = self.room_records.borrow();
-            self.room_activity
-                .refresh_observed_local(&tree, &records, &local, Instant::now());
-        }
-        self.refresh_history_narrative();
-    }
-
-    /// Content viewport of the active personal Activity tab. Its surrounding
-    /// group is an ordinary tiled window and therefore owns close, resize,
-    /// reorder, focus and clipping.
-    pub(super) fn activity_window_rect(&self) -> Option<Rect> {
-        let chrome = self.chrome.as_ref()?;
-        let (strip, group, tab) = {
-            let state = chrome.borrow();
-            crate::shell::tab_binding::active_workspace_activity_tab(&state.tree())?
-        };
-        let row_ptr = *self.group_row_ptrs.get(&strip)?;
-        // SAFETY: `group_row_ptrs` points into the retained content tree and
-        // is read sequentially on the compositor thread; see the field's
-        // ownership contract and the other accessors in this impl.
-        let row: &GroupRow = unsafe { &*row_ptr };
-        row.groups
-            .iter()
-            .find(|candidate| candidate.id == group)
-            .and_then(|candidate| candidate.content_rect_for_tab(tab))
     }
 
     pub(super) fn shortcut_help_button_rect(&self) -> Rect {
@@ -369,6 +289,8 @@ impl ShellOverlayHost {
                 attention,
             ) {
                 self.room_activity.prepare_away_view(workspace);
+                self.room_activity
+                    .focus_view(crate::shell::room_activity::ActivityView::CatchUp);
                 state.open_room_activity(None);
             }
         }
@@ -515,21 +437,6 @@ impl ShellOverlayHost {
     /// or drive a filter without synthesising a click.
     pub fn room_activity_mut(&mut self) -> &mut crate::shell::room_activity::RoomActivityPane {
         &mut self.room_activity
-    }
-
-    /// Treat the tiled recap as already open and lay it out now, so a
-    /// screenshot or a click-driven test sees the settled window on the very
-    /// next paint. It draws exactly as a live session does: the recap has no
-    /// entry animation for a capture to skip.
-    pub fn force_room_activity_settled(&mut self) {
-        self.room_activity_was_open = true;
-        self.refresh_room_activity();
-    }
-
-    /// Forget that the recap was open after a shot driver action closes it,
-    /// so a later open is a fresh rising edge.
-    pub fn force_room_activity_closed_for_shots(&mut self) {
-        self.room_activity_was_open = false;
     }
 
     /// Name-input rect inside the ws-settings modal. Matches the drawn

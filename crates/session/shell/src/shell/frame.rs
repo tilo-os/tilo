@@ -250,7 +250,7 @@ pub enum LayerPolicy {
     /// Every frame the layers can express.
     #[default]
     Always,
-    /// Only while a strip pans, and [`PAN_LINGER_FRAMES`] frames after it
+    /// Only while a strip pans, and `PAN_LINGER_FRAMES` frames after it
     /// stops. A frame at rest keeps its screen-space damage, so typing or a
     /// hover repaints what it changed, not a layer.
     WhilePanning,
@@ -2219,9 +2219,10 @@ impl FrameBuilder {
     /// `Rc<RefCell<_>>`, the tree behind an `Arc<RwLock<_>>`, and
     /// `ui::App::set_frame_tick` requires `Send + Sync`, which an `Rc` can't enter.
     ///
-    /// Cheap on a quiet frame: `RoomRecords::replicate_with` compares a
-    /// generation counter before reading any document, and the chrome only
-    /// bumps when something actually arrived.
+    /// Cheap on a quiet frame: `RoomRecords::replication_due` compares a
+    /// generation counter before reading any document, the tree is written
+    /// only when it is due, and the chrome only bumps when something
+    /// actually arrived.
     fn replicate_room_records(&self) {
         let index = self.host.room_records();
 
@@ -2233,7 +2234,9 @@ impl FrameBuilder {
             let chrome = self.chrome.borrow();
             let mut tree = chrome.tree_mut();
             let mut index = index.borrow_mut();
-            index.replicate_with(&mut tree)
+            // Asked through the guard first: a pump with nothing to exchange
+            // lends the tree no mutable access, so it announces no write.
+            index.replication_due(&tree) && index.replicate_with(&mut tree)
         };
         if arrived {
             self.chrome.borrow_mut().bump();
@@ -2391,6 +2394,7 @@ impl FrameBuilder {
     /// [`Self::paint`] before the displays magnify it: the desktop in
     /// logical coordinates, the space the widget tree is laid out in.
     fn paint_logical(&mut self) -> (Scene, Box<crate::shell::overlay_host::ShellSceneSections>) {
+        let motions_at = ui::motion::frame_now();
         self.refresh_configured_theme();
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
@@ -2402,6 +2406,7 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
+        self.frame_drawn(motions_at);
         sections.compose_into(&mut scene);
         for proxy in &self.floating_transfer_proxies {
             proxy.draw(&mut scene);
@@ -2498,6 +2503,7 @@ impl FrameBuilder {
         reason = "Retained-damage metadata must be derived alongside the exact scene composition; splitting this transaction risks draw-order or damage-region divergence."
     )]
     pub fn paint_with_damage(&mut self) -> FramePaint {
+        let motions_at = ui::motion::frame_now();
         // This producer owns the policy even when invoked during another draw.
         let _dense_scope = ui::retained_present::RetainedScene::begin(false);
         let mut phases = ScenePhases::start();
@@ -2580,6 +2586,7 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
+        self.frame_drawn(motions_at);
         // Each kind of client surface floating over the desktop is one
         // damage part, there whether or not any is mapped: a popup opening
         // or a floating window repainting repaints its own rect.
@@ -3323,8 +3330,10 @@ impl FrameBuilder {
                 .flatten();
             let compared = match &normalized {
                 Some((scene, image_damage)) => {
+                    // A buffer's damage where no display shows it (the part
+                    // of a window past the screen's edge) repairs nothing.
                     for &bounds in image_damage {
-                        regions.push(self.native_damage_rect(Some(bounds))?);
+                        regions.extend(self.native_damage_rect(Some(bounds)));
                     }
                     scene
                 }
@@ -4220,7 +4229,7 @@ impl FrameBuilder {
     }
 
     /// Where the room of the workspace holding `app_id`'s window stands
-    /// with its host ([`crate::shell::room_sync`]); `None` for a workspace
+    /// with its host (`crate::shell::room_sync`); `None` for a workspace
     /// that syncs with no host.
     #[must_use]
     pub fn room_sync_for_app(&self, app_id: &str) -> Option<ui::room_sync::RoomSync> {
@@ -4588,7 +4597,7 @@ impl FrameBuilder {
             .filter(|label| *label != "content")
             .map(str::to_string)
             .collect();
-        if demand.host & (1 << 10) != 0 {
+        if demand.host & crate::shell::animation_diagnostics::CONTENT_BIT != 0 {
             owners.extend(
                 self.content_animating_leaves()
                     .into_iter()
@@ -4608,6 +4617,13 @@ impl FrameBuilder {
         if demand.osk {
             owners.push("osk".to_string());
         }
+        // A toolkit menu or popover a shell surface draws in its own pass
+        // asks through the motion clock; it is named by where it started.
+        owners.extend(
+            ui::motion::frames_wanted_by(now)
+                .into_iter()
+                .map(|caller| format!("motion@{caller}")),
+        );
         owners
     }
 
@@ -4713,10 +4729,12 @@ impl FrameBuilder {
         self.chrome.borrow().revision
     }
 
-    /// A frame was painted for presentation. The content is never marked
-    /// drawn here, so motion that steps once per drawn frame (a window
-    /// group's width spring) is told the frame turned.
-    pub fn frame_presented(&mut self) {
+    /// The shell was drawn, its motions read at `motions_at` or later: the
+    /// motion clock may stop asking for a frame at rest it has now had, and
+    /// the window groups' once-per-drawn-frame motion is told the frame
+    /// turned. Every paint says it here, whoever asked for the paint.
+    fn frame_drawn(&mut self, motions_at: Instant) {
+        ui::motion::frame_drawn(motions_at);
         self.host.frame_presented();
     }
 
@@ -5145,6 +5163,8 @@ impl FrameBuilder {
             _ => {}
         }
         self.layout_osk_overlay();
+        let cover = self.osk_overlay.as_ref().filter(|_| active);
+        self.host.set_keyboard_cover(cover.map(Widget::get_rect));
     }
 
     /// Reconcile exact authenticated interactive bounds separately from the
@@ -5486,8 +5506,8 @@ impl FrameBuilder {
     /// What the focused chrome widget asks of an input method — its purpose
     /// and caret — when it takes text; `None` otherwise.
     pub fn focused_ime_field(&self, focus: Option<NodeId>) -> Option<ui::ime::ImeWindowState> {
-        if self.host.palette_visible() {
-            return self.host.palette_ime_field();
+        if self.host.overlay_owns_ime() {
+            return self.host.overlay_ime_field();
         }
         let widget = *self.node_map.get(&focus?)?;
         // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
@@ -5497,7 +5517,7 @@ impl FrameBuilder {
     }
 
     pub(crate) fn focused_ime_requires_deferred_ack(&self, focus: Option<NodeId>) -> bool {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return false;
         }
         let Some(widget) = focus.and_then(|focus| self.node_map.get(&focus)) else {
@@ -5511,7 +5531,7 @@ impl FrameBuilder {
     pub(crate) fn focused_ime_refuses_ordinary_commits(&self, focus: Option<NodeId>) -> bool {
         let widget = focus.and_then(|focus| self.node_map.get(&focus));
         // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
-        !self.host.palette_visible()
+        !self.host.overlay_owns_ime()
             && widget.is_some_and(|widget| unsafe { &**widget }.ime_refuses_ordinary_commits())
     }
 
@@ -5521,7 +5541,7 @@ impl FrameBuilder {
         document: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
     ) -> Option<ui::webview::text_input::Receipt> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return None;
         }
         let focus = focus?;
@@ -5557,7 +5577,7 @@ impl FrameBuilder {
         document: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
     ) -> Option<ui::webview::text_input::Receipt> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return None;
         }
         let focus = focus?;
@@ -5590,12 +5610,12 @@ impl FrameBuilder {
         focus: Option<NodeId>,
         document: &automerge::AutoCommit,
     ) -> Option<crate::compositor::shell_text_input::NativeEditStamp> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return Some(crate::compositor::shell_text_input::NativeEditStamp {
                 document: ui::bound_dispatch::DocumentEditStamp::for_document(document),
                 fingerprint: self
                     .host
-                    .palette_ime_edit_fingerprint(&self.ime_stamp_key)?,
+                    .overlay_ime_edit_fingerprint(&self.ime_stamp_key)?,
             });
         }
         let focus = focus?;
@@ -6529,45 +6549,6 @@ mod tests {
     }
 
     #[test]
-    fn frame_pump_settles_a_launchpad_request_once() {
-        let mut frame = FrameBuilder::new((1280, 800));
-        let mut doc = AutoCommit::new();
-        doc.put(
-            &automerge::ROOT,
-            tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP,
-            true,
-        )
-        .expect("queued launcher request");
-
-        assert!(
-            frame.pump_apps(&mut doc, &automerge::ROOT),
-            "a settled action requests repaint"
-        );
-        assert!(
-            frame.host.palette_visible(),
-            "the production frame pump opens the launcher"
-        );
-        assert!(
-            matches!(
-                doc.get(&automerge::ROOT, tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP),
-                Ok(Some((automerge::Value::Scalar(value), _)))
-                    if matches!(value.as_ref(), automerge::ScalarValue::Boolean(false))
-            ),
-            "typed settlement consumes the request"
-        );
-        doc.put(&automerge::ROOT, "pending-observer-witness", "uncommitted")
-            .expect("pending fixture edit");
-        assert!(doc.pending_ops() > 0);
-        let revision = (doc.base_heads(), doc.pending_ops());
-        frame.pump_apps(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            revision,
-            (doc.base_heads(), doc.pending_ops()),
-            "the next pump does not repeat the request"
-        );
-    }
-
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -6724,6 +6705,9 @@ mod tests {
             crate::shell::test_support::collaborator_renames_active_workspace(
                 &mut frame.chrome().tree_mut(),
             );
+            // A live frame: the tick reads the room, then paint.
+            let mut doc = AutoCommit::new();
+            frame.pump_apps(&mut doc, &automerge::ROOT);
             let _ = frame.paint_settled();
             assert!(
                 frame.chrome().activity_glance.unread > 0,
@@ -10005,241 +9989,6 @@ mod tests {
         super_f_foreign_window_covers_its_output_in_a_partitioned_desktop();
     }
 
-    fn both_directions_carry_the_desktop() {
-        let mut fb = FrameBuilder::new((3200, 1080));
-        let _ = fb.paint_settled();
-        for step in [1, -1] {
-            let mut switched = false;
-            fb.with_chrome(|st| {
-                switched = st.switch_workspace(step);
-            });
-            assert!(switched, "the demo tree switches by {step}");
-            fb.host_mut()
-                .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
-            for _ in 0..2 {
-                let frame = fb.paint_with_damage();
-                assert!(
-                    !frame.scene.encoding().is_empty(),
-                    "switching by {step} draws the workspace, not an empty clip"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn overview_and_workspace_switch_request_a_run_of_frames() {
-        fn overview_toggle_requests_frames_before_draw() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            fb.with_chrome(|st| {
-                st.overlays.overview = true;
-                st.bump();
-            });
-            // Latch on the host before update, as Super+Tab does.
-            fb.host_mut().latch_overview_transition();
-            assert!(
-                fb.animation_owners()
-                    .iter()
-                    .any(|owner| owner == "root-transition"),
-                "overview must request frames on the chord, not only after draw; owners {:?}",
-                fb.animation_owners()
-            );
-            let mut doc = AutoCommit::new();
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            assert!(
-                fb.animation_owners()
-                    .iter()
-                    .any(|owner| owner == "root-transition"),
-                "overview must request frames on the update that sees the toggle, not only after draw; owners {:?}",
-                fb.animation_owners()
-            );
-        }
-
-        fn workspace_switch_requests_frames_before_draw() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            let mut switched = false;
-            fb.with_chrome(|st| {
-                switched = st.switch_workspace(1);
-            });
-            assert!(switched, "the demo tree has a second workspace");
-            // Latch on the host before update, as Super+PageDown does.
-            fb.host_mut()
-                .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
-            assert!(
-                fb.animation_owners()
-                    .iter()
-                    .any(|owner| owner == "workspace-switch"),
-                "a workspace switch must request frames on the chord, not only after draw; owners {:?}",
-                fb.animation_owners()
-            );
-            let mut doc = AutoCommit::new();
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            assert!(
-                fb.animation_owners()
-                    .iter()
-                    .any(|owner| owner == "workspace-switch"),
-                "a workspace switch must keep requesting a run of frames; owners {:?}",
-                fb.animation_owners()
-            );
-        }
-
-        fn compositor_paint_run_is_not_host_demand() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            fb.with_chrome(|st| st.request_transition_paints(8));
-            assert_eq!(fb.chrome().transition_paints_remaining(), 8);
-            assert!(
-                !fb.needs_animation_frame(),
-                "the compositor paint run must not keep the host asking after the crossfade; owners {:?}",
-                fb.animation_owners()
-            );
-        }
-
-        fn latch_asks_the_compositor_for_eight_paints() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            fb.with_chrome(|st| {
-                st.overlays.overview = true;
-                st.bump();
-            });
-            fb.host_mut().latch_overview_transition();
-            assert_eq!(
-                fb.chrome().transition_paints_remaining(),
-                8,
-                "overview must keep the compositor painting until eight frames have run"
-            );
-        }
-
-        overview_toggle_requests_frames_before_draw();
-        workspace_switch_requests_frames_before_draw();
-        compositor_paint_run_is_not_host_demand();
-        latch_asks_the_compositor_for_eight_paints();
-        both_directions_carry_the_desktop();
-    }
-
-    #[test]
-    fn overview_fade_damages_only_its_display_on_two_heads() {
-        use crate::shell::output_scene::OutputGeometry;
-
-        /// Every frame of a fade carries the desktop and a sparse proof, and
-        /// after the chord's own frame repaints only the first display.
-        fn fade(fb: &mut FrameBuilder, open: bool) {
-            let direction = if open { "open" } else { "close" };
-            fb.with_chrome(|st| {
-                st.overlays.overview = open;
-                st.bump();
-            });
-            fb.host_mut().latch_overview_transition();
-            let mut repainted = false;
-            for index in 0..8 {
-                // The fade samples the wall clock in whole milliseconds.
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                let frame = fb.paint_with_damage();
-                assert!(
-                    !frame.scene.encoding().is_empty(),
-                    "{direction} frame {index} draws the desktop, not an empty clip"
-                );
-                if index == 0 {
-                    // The chord may change chrome beyond the overview (the
-                    // top bar's button) once.
-                    continue;
-                }
-                let damage = frame.damage_regions.unwrap_or_else(|| {
-                    panic!("{direction} frame {index} is sparse, not both displays")
-                });
-                for rect in &damage {
-                    let right = rect.x.saturating_add(rect.width);
-                    assert!(
-                        right <= 1920,
-                        "{direction} frame {index} stays on the first display ({rect:?})"
-                    );
-                }
-                repainted |= !damage.is_empty();
-            }
-            assert!(repainted, "the {direction} fade repaints its display");
-        }
-
-        let mut fb = FrameBuilder::new((3200, 1080));
-        fb.set_output_geometry(vec![
-            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
-            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
-        ]);
-        let _ = fb.paint_settled();
-        let _ = fb.paint_with_damage();
-        fade(&mut fb, true);
-        fade(&mut fb, false);
-    }
-
-    #[test]
-    fn single_head_transition_frames_carry_the_desktop() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-        let _ = fb.paint_with_damage();
-        fb.with_chrome(|st| {
-            st.overlays.overview = true;
-            st.bump();
-        });
-        fb.host_mut().latch_overview_transition();
-        for index in 0..8 {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            let frame = fb.paint_with_damage();
-            assert!(
-                !frame.scene.encoding().is_empty(),
-                "overview frame {index} on one display draws the desktop"
-            );
-        }
-        let mut switched = false;
-        fb.with_chrome(|st| {
-            switched = st.switch_workspace(1);
-        });
-        assert!(switched, "the demo tree has a second workspace");
-        fb.host_mut()
-            .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
-        for index in 0..8 {
-            let frame = fb.paint_with_damage();
-            assert!(
-                !frame.scene.encoding().is_empty(),
-                "switch frame {index} on one display draws the desktop"
-            );
-        }
-    }
-
-    #[test]
-    fn workspace_switch_frames_carry_the_desktop_and_settle_sparse() {
-        use crate::shell::output_scene::OutputGeometry;
-
-        let mut fb = FrameBuilder::new((3200, 1080));
-        fb.set_output_geometry(vec![
-            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
-            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
-        ]);
-        let _ = fb.paint_settled();
-        let _ = fb.paint_with_damage();
-        for step in [1, -1] {
-            let mut switched = false;
-            fb.with_chrome(|st| {
-                switched = st.switch_workspace(step);
-            });
-            assert!(switched, "the demo tree switches by {step}");
-            fb.host_mut()
-                .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
-            for index in 0..8 {
-                let frame = fb.paint_with_damage();
-                assert!(
-                    !frame.scene.encoding().is_empty(),
-                    "switch {step} frame {index} draws the workspace it shows"
-                );
-                if index > 0 {
-                    assert!(
-                        frame.damage_regions.is_some(),
-                        "switch {step} frame {index} repaints only what changed, not both displays"
-                    );
-                }
-            }
-        }
-    }
-
     #[test]
     fn overview_publishes_new_workspace_before_the_fade_paints() {
         use crate::shell::output_scene::OutputGeometry;
@@ -10788,6 +10537,18 @@ mod retained_tests;
 #[cfg(test)]
 #[path = "frame_window_bar_keyboard_tests.rs"]
 mod window_bar_keyboard_tests;
+
+#[cfg(test)]
+#[path = "frame_quiet_pump_tests.rs"]
+mod quiet_pump_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+#[path = "frame_transition_tests.rs"]
+mod transition_tests;
 
 /// `regions` without any region another one contains (the first of two
 /// equal ones stays): the same pixels, rasterised once. A changed card's

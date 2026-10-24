@@ -227,7 +227,7 @@ impl ShellNetwork {
     /// told over their personal fabric instead, and are left out here. A
     /// host this device reaches only through a relay is not told (a relay
     /// would fan the list out to the room): its windows are shown through
-    /// the room's carrier instead ([`super::room_window_carriers`]).
+    /// the room's carrier instead (`super::room_window_carriers`).
     pub fn publish_room_window_views(&self, shown: Vec<(RoomId, String, String, SurfaceView)>) {
         let own = self.online_device_ids();
         let mut by_host: BTreeMap<(iroh::EndpointId, RoomId), Vec<SurfaceView>> = BTreeMap::new();

@@ -31,6 +31,8 @@ use crate::{InputPurpose, OskWidget};
 /// French layout, the emoji panel and a word being composed.
 pub(crate) const SCENARIOS: &[&str] = &[
     "terminal",
+    "terminal-ctrl",
+    "terminal-locked",
     "number",
     "phone",
     "email",
@@ -63,6 +65,18 @@ impl Default for OskSurface {
 }
 
 impl OskSurface {
+    /// Tap the toolbar item `id`, as a scenario's finger would.
+    fn tap_tool(&mut self, id: &str) {
+        if let Some(index) = self
+            .keyboard
+            .toolbar_items()
+            .iter()
+            .position(|item| item.id == id)
+        {
+            self.keyboard.activate_tool(index);
+        }
+    }
+
     pub fn new() -> Self {
         Self::with_keyboard(OskWidget::new())
     }
@@ -328,6 +342,16 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
         }
         match scenario {
             Some("emoji") => self.keyboard.open_emoji_panel(),
+            Some("terminal-ctrl") => {
+                self.keyboard.set_purpose(InputPurpose::Terminal);
+                self.tap_tool("ctrl");
+            }
+            Some("terminal-locked") => {
+                self.keyboard.set_purpose(InputPurpose::Terminal);
+                self.tap_tool("ctrl");
+                self.tap_tool("ctrl");
+                self.tap_tool("alt");
+            }
             Some("composing") => {
                 for letter in ["h", "e", "l"] {
                     self.keyboard.activate_label(letter);

@@ -503,6 +503,11 @@ pub struct GroupRow {
     /// layout turns prior positions into [`GroupMove`]s and clears this.
     shift_armed: bool,
     moves: Vec<(u64, GroupMove)>,
+    /// Groups another surface draws for now, as one shared element: the
+    /// overview flying a window's picture between its strip and its place
+    /// in the overview ([`Self::set_shown_elsewhere`]). Not painted here
+    /// meanwhile, so the window is never on screen twice.
+    shown_elsewhere: Vec<u64>,
     /// `motion.springs.heavy` as last laid out, as a natural frequency.
     move_omega: f64,
     /// Capture-harness clock override for every move's elapsed time;
@@ -1432,6 +1437,7 @@ impl GroupRow {
             output_spans: Vec::new(),
             last_laid_x: HashMap::new(),
             shift_armed: false,
+            shown_elsewhere: Vec::new(),
             moves: Vec::new(),
             move_omega: spring_omega(crate::tokens::SpringPresets::default().heavy),
             shift_hold: None,
@@ -2378,6 +2384,16 @@ impl GroupRow {
         }
         self.shift_hold = Some(elapsed);
         true
+    }
+
+    /// Say which groups another surface is drawing for now (the overview's
+    /// flight carries their pictures); the row leaves them out until they
+    /// are handed back with a set that no longer names them.
+    pub fn set_shown_elsewhere(&mut self, ids: Vec<u64>) {
+        if self.shown_elsewhere != ids {
+            self.shown_elsewhere = ids;
+            self.scroll_dirty = true;
+        }
     }
 
     pub fn remove_group_by_id(&mut self, id: u64) -> bool {
@@ -4294,7 +4310,7 @@ impl Widget for GroupRow {
 
     /// Each window's top layer, in [`Self::children_mut`]'s order as the
     /// default draws it, noting which windows put anything there
-    /// ([`Self::overlay_groups`]).
+    /// (`Self::overlay_groups`).
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -4410,28 +4426,16 @@ impl Widget for GroupRow {
             g.set_strip_usable_px(usable);
             g.set_alone(alone);
         }
-        let runs = self.lanes.len().max(1);
-        let snap_lane: Vec<bool> = (0..runs)
-            .map(|k| {
-                let dest = self.dest_content_w(k);
-                let inset = self.pan_of_lane(k).inset;
-                let viewport = self.pan_of_lane(k).viewport.width().max(self.rect.width());
-                dest - inset <= viewport
-            })
-            .collect();
-        let lane_of: Vec<usize> = (0..self.groups.len())
-            .map(|i| self.lane_index_of(i))
-            .collect();
-        for (i, group) in self.groups.iter_mut().enumerate() {
+        // Every slot springs from where it is drawn to where it goes, the
+        // closing one to nothing and its neighbours into the room, whether or
+        // not the strip overflows: the pan's bounds follow where the springs
+        // are going ([`Self::dest_content_w`]), so a slot in flight never
+        // makes the strip scrollable. Only a spring aimed at a width the
+        // strip no longer has (the display changed under it) lands.
+        for group in &mut self.groups {
             group.set_reduce_motion(theme.reduce_motion);
             group.set_motion_source(self.motion_source);
-            let lane = lane_of.get(i).copied().unwrap_or(0);
-            let dest_fits = snap_lane.get(lane).copied().unwrap_or(false);
-            if group.is_closing() && !theme.reduce_motion {
-                // A closing slot owns its width spring even when its destination
-                // fits the viewport. Snapping to zero would remove the animation.
-                group.step_width_spring();
-            } else if dest_fits || group.width_target_is_stale() {
+            if group.width_target_is_stale() && !group.is_closing() {
                 group.snap_width_spring();
             } else {
                 group.step_width_spring();
@@ -4780,10 +4784,11 @@ impl Widget for GroupRow {
         for (k, ((w, e), s)) in content_w.into_iter().zip(edges).zip(spans).enumerate() {
             let dest = dest_w.get(k).copied().unwrap_or(0.0);
             let pan = self.pan_of_lane_mut(k);
-            // Dest for pan only when the dest strip itself overflows.
-            // In-flight springs from a wider share can be larger than
-            // the viewport even though the settled slots still fit.
-            pan.content_w = if dest > pan.viewport.width() { dest } else { w };
+            // The strip the springs are going to, not where they are: a slot
+            // in flight (a window opening beside another, a neighbour taking
+            // the room a closed one left) can lay out wider than that for a
+            // moment, and must not make the strip scrollable meanwhile.
+            pan.content_w = if dest > pan.inset { dest } else { w };
             pan.group_left_edges = e;
             if spans_aligned && !edge_resizing {
                 pan.hold_view_across_close(&s, &going);
@@ -5464,13 +5469,40 @@ impl GroupRow {
     ) {
         self.culled_groups.clear();
         if let Some(max_i) = maximized_idx {
-            // A maximized window covers its whole lane, so nothing else of
-            // the strip paints: not even the siblings fading out, which
-            // drawn over it showed their bars, frames and controls on top
-            // of its toolbar and content. They fade back in on restore,
-            // on the tiled path below (`fade_hero`).
+            // A maximized window covers its whole lane. While its frame
+            // grows over the siblings they fade out under it, drawn first so
+            // none of their bars, frames or controls shows over its toolbar
+            // or content; at rest nothing else of the strip paints. They
+            // fade back in on restore, on the tiled path below (`fade_hero`).
+            let fade_alpha =
+                crate::motion::unit_opacity(self.sibling_fade.progress(crate::time::now()));
+            if fade_alpha > f32::EPSILON {
+                for i in 0..self.groups.len() {
+                    let sibling = &mut self.groups[i];
+                    if i == max_i
+                        || !in_run.get(i).copied().unwrap_or(false)
+                        || self.shown_elsewhere.contains(&sibling.id)
+                    {
+                        continue;
+                    }
+                    let rect = sibling.get_rect();
+                    scene.push_layer(
+                        vello::peniko::Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        fade_alpha,
+                        transform,
+                        &rect.inflate(16.0, 16.0),
+                    );
+                    sibling.draw(scene, transform, tr, theme, presence);
+                    scene.pop_layer();
+                }
+            }
             if let Some(g) = self.groups.get_mut(max_i) {
-                g.draw(scene, transform, tr, theme, presence);
+                if self.shown_elsewhere.contains(&g.id) {
+                    self.culled_groups.push(g.id);
+                } else {
+                    g.draw(scene, transform, tr, theme, presence);
+                }
             }
             return;
         }
@@ -5497,7 +5529,7 @@ impl GroupRow {
             // flattens, bins and tiles everything encoded under the clip:
             // a strip of dozens of apps would size the GPU's bump buffers
             // for all of them.
-            if !self.paints_within_row(rect, dx) {
+            if !self.paints_within_row(rect, dx) || self.shown_elsewhere.contains(&id) {
                 self.culled_groups.push(id);
                 continue;
             }
@@ -6854,11 +6886,16 @@ mod tests {
         }]
     }
 
-    fn make_row_with_groups_with_taffy(tab_specs: &[&[u64]]) -> (GroupRow, TaffyTree<()>, NodeId) {
+    pub(super) fn make_row_with_groups_with_taffy(
+        tab_specs: &[&[u64]],
+    ) -> (GroupRow, TaffyTree<()>, NodeId) {
         make_row_with_groups_on_display(tab_specs, FIXTURE_USABLE_PX, 2000.0)
     }
 
-    fn relayout_row_owned(row: GroupRow, viewport_w: f64) -> (GroupRow, TaffyTree<()>, NodeId) {
+    pub(super) fn relayout_row_owned(
+        row: GroupRow,
+        viewport_w: f64,
+    ) -> (GroupRow, TaffyTree<()>, NodeId) {
         relayout_row_owned_with(row, viewport_w, &Theme::dark())
     }
 
@@ -6895,7 +6932,7 @@ mod tests {
         );
     }
 
-    fn relayout_row_owned_with(
+    pub(super) fn relayout_row_owned_with(
         mut row: GroupRow,
         viewport_w: f64,
         theme: &Theme,
@@ -8812,7 +8849,13 @@ mod tests {
             relayout_strip(&mut row, 1920.0);
 
             set_strip_permille(&mut row, 580);
+            // The windows narrow on their slot springs; measure them at rest.
             relayout_strip(&mut row, 1920.0);
+            row.frame_presented();
+            let settled = crate::time::now() + Duration::from_secs(2);
+            crate::time::testing::with_monotonic_time(settled, || {
+                relayout_strip(&mut row, 1920.0);
+            });
 
             let span = row
                 .pan
@@ -10730,12 +10773,13 @@ mod tests {
     }
 
     /// A maximized window covers its strip: nothing of a neighbour paints
-    /// over it, not even while the neighbours fade out. And the fade back
+    /// over it. While its frame grows the neighbours fade out under it (they
+    /// never cut out in one frame), and at rest it paints alone. The fade back
     /// in on restore keeps the row dirty until a frame drew it at rest, so
     /// a parent's subtree cache cannot keep a partway pose on screen.
     #[test]
     fn maximized_window_paints_alone_and_the_sibling_fade_redraws_to_rest() {
-        fn encoded(row: &mut GroupRow) -> (usize, usize) {
+        fn encoded(row: &mut GroupRow) -> Vec<u32> {
             let mut scene = Scene::new();
             row.draw(
                 &mut scene,
@@ -10745,11 +10789,7 @@ mod tests {
                 &PresenceCtx::empty(),
             );
             row.mark_drawn();
-            let encoding = scene.encoding();
-            (
-                encoding.draw_tags.len(),
-                encoding.resources.glyph_runs.len(),
-            )
+            scene.encoding().draw_tags.iter().map(|tag| tag.0).collect()
         }
         let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
         row.groups[1].maximized = true;
@@ -10767,8 +10807,12 @@ mod tests {
             settled, settled_again,
             "the maximized window draws the same at rest"
         );
-        assert_eq!(
-            fading, settled,
+        assert!(
+            fading.len() > settled.len(),
+            "the neighbours fade out under the maximizing window, not cut"
+        );
+        assert!(
+            fading.ends_with(&settled),
             "a neighbour fading out must not paint over the maximized window"
         );
 
@@ -10862,351 +10906,6 @@ mod tests {
         );
         assert_eq!(first_events.get(), 1);
         assert_eq!(second_events.get(), 1);
-    }
-
-    // A strip has unlimited space to the right, so fitting a new window
-    // between two others means moving the ones on its right along —
-    // never squeezing anybody.
-
-    #[test]
-    fn making_room_slides_pushed_groups_from_their_old_place() {
-        // Fresh curves are read in the instant they start: a descheduled
-        // runner cannot age them.
-        crate::time::testing::with_monotonic_time(crate::time::now(), || {
-            fn making_room_translates_the_groups_it_pushes_and_never_narrows_them() {
-                let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-                let before: Vec<(u64, Rect)> =
-                    row.groups.iter().map(|g| (g.id, g.get_rect())).collect();
-
-                row.insert_group(make_group(999, &[9]), 1);
-                let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-
-                let fresh = row
-                    .groups
-                    .iter()
-                    .find(|g| g.id == 999)
-                    .expect("the inserted group is in the row");
-                let travel = fresh.get_rect().width() + HANDLE_SLOT_PX;
-                assert!(travel > 1.0, "fixture: the new window has a real width");
-
-                for (idx, (id, was)) in before.iter().enumerate() {
-                    let now = row
-                        .groups
-                        .iter()
-                        .find(|g| g.id == *id)
-                        .expect("no pre-existing group may disappear")
-                        .get_rect();
-                    assert!(
-                        (now.width() - was.width()).abs() < 0.5,
-                        "group {id} must keep its width when room is made for \
-                     another: was {} now {}",
-                        was.width(),
-                        now.width(),
-                    );
-                    let expected_dx = if idx == 0 { 0.0 } else { travel };
-                    assert!(
-                        (now.x0 - was.x0 - expected_dx).abs() < 0.5,
-                        "group {id} must translate by exactly the new window's \
-                     footprint ({expected_dx}), not by some compressed \
-                     fraction of it: moved {}",
-                        now.x0 - was.x0,
-                    );
-                }
-            }
-
-            /// And the ones that moved are *seen* moving: they paint where they
-            /// used to be and travel to where they now belong.
-            fn the_groups_that_moved_start_from_where_they_were() {
-                let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-                let unmoved = row.groups[0].id;
-                let pushed: Vec<u64> = row.groups[1..].iter().map(|g| g.id).collect();
-
-                row.insert_group(make_group(999, &[9]), 1);
-                let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-                let travel = row
-                    .groups
-                    .iter()
-                    .find(|g| g.id == 999)
-                    .expect("inserted group")
-                    .get_rect()
-                    .width()
-                    + HANDLE_SLOT_PX;
-
-                assert_eq!(
-                    row.shift_offset_for(unmoved),
-                    0.0,
-                    "a group that did not move must not be animated",
-                );
-                for id in pushed {
-                    let off = row.shift_offset_for(id);
-                    assert!(
-                        off < 0.0,
-                        "group {id} must start left of its new home, i.e. where it \
-                     was; got {off}",
-                    );
-                    assert!(
-                        off >= -travel - 0.5 && off.abs() > travel * 0.5,
-                        "group {id} must start at (about) the position it had — a \
-                     travel of {travel} px; got {off}",
-                    );
-                }
-            }
-
-            fn appending_at_the_end_animates_nothing() {
-                let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-                let existing: Vec<u64> = row.groups.iter().map(|g| g.id).collect();
-
-                let at_end = row.groups.len();
-                row.insert_group(make_group(999, &[9]), at_end);
-                let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-
-                for id in existing {
-                    assert_eq!(
-                        row.shift_offset_for(id),
-                        0.0,
-                        "nothing had to move, so group {id} must not animate",
-                    );
-                }
-                assert!(!row.shift_in_flight(), "and no slide is in flight");
-            }
-
-            fn a_slide_in_flight_asks_for_animation_frames() {
-                let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-                assert!(
-                    !row.needs_animation_frame(),
-                    "fixture: an idle strip is idle",
-                );
-                row.insert_group(make_group(999, &[9]), 0);
-                let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-                assert!(
-                    row.needs_animation_frame(),
-                    "a strip making room must keep redrawing until it settles",
-                );
-            }
-
-            /// Reduced motion: the pushed groups are drawn where they now
-            /// belong on the first frame, and nothing asks to be redrawn.
-            fn reduced_motion_makes_room_without_a_slide() {
-                let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-                let pushed: Vec<u64> = row.groups.iter().map(|g| g.id).collect();
-                row.insert_group(make_group(999, &[9]), 0);
-                let theme = Theme::dark().with_reduce_motion(true);
-                let (row, _taffy, _root) = relayout_row_owned_with(row, 2000.0, &theme);
-                for id in pushed {
-                    assert_eq!(
-                        row.shift_offset_for(id),
-                        0.0,
-                        "under reduced motion group {id} is drawn at its new home",
-                    );
-                }
-                assert!(
-                    !row.needs_animation_frame(),
-                    "under reduced motion making room asks for no animation frames",
-                );
-            }
-
-            /// A second insert while the first slide is travelling bends the
-            /// one motion: the group is drawn exactly where it was, moving
-            /// exactly as fast, and only its destination changes.
-            fn a_second_insert_mid_flight_continues_from_where_the_group_is_drawn() {
-                let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-                let pushed = row.groups[2].id;
-                row.insert_group(make_group(999, &[9]), 1);
-                let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-                row.shift_hold = Some(Duration::from_millis(60));
-                let now = crate::time::now();
-                let (drawn, velocity) = row.move_state_at(pushed, now);
-                let laid_before = rect_of(&row, pushed).x0;
-                assert!(
-                    drawn < -1.0 && velocity > 1.0,
-                    "fixture: 60 ms in, the group is still travelling right: {drawn} px, {velocity} px/s"
-                );
-
-                row.insert_group(make_group(998, &[8]), 0);
-                let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-                let laid_after = rect_of(&row, pushed).x0;
-                assert!(
-                    laid_after > laid_before + 1.0,
-                    "fixture: the second insert pushes it on"
-                );
-                let (_, m) = row
-                    .moves
-                    .iter()
-                    .find(|(id, _)| *id == pushed)
-                    .copied()
-                    .expect("the retargeted group is still moving");
-                assert!(
-                    (laid_after + m.from - (laid_before + drawn)).abs() < 1e-6,
-                    "no snap: drawn at {} before the retarget, {} after",
-                    laid_before + drawn,
-                    laid_after + m.from
-                );
-                assert!(
-                    (m.velocity - velocity).abs() < 1e-6,
-                    "velocity carries across the retarget: {velocity} then {}",
-                    m.velocity
-                );
-            }
-
-            /// Closing a window: the groups to its right are drawn where they
-            /// were and spring left into the gap.
-            fn closing_a_window_slides_its_right_neighbours_into_the_gap() {
-                let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-                let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-                let closed = row.groups[0].id;
-                let footprint = rect_of(&row, closed).width() + HANDLE_SLOT_PX;
-                let neighbours: Vec<u64> = row.groups[1..].iter().map(|g| g.id).collect();
-                assert!(row.remove_group_by_id(closed));
-                let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-                for id in neighbours {
-                    let off = row.shift_offset_for(id);
-                    assert!(
-                        off > footprint * 0.5 && off <= footprint + 0.5,
-                        "group {id} must start where it was, {footprint} px right; got {off}"
-                    );
-                }
-                assert!(row.needs_animation_frame(), "the gap closes over frames");
-            }
-
-            /// A keyboard move swaps two groups; both are seen travelling, in
-            /// opposite directions.
-            fn a_reorder_springs_both_groups_from_their_old_places() {
-                let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-                let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-                let (a, b) = (row.groups[0].id, row.groups[1].id);
-                assert!(row.reorder_group_by_id(a, 1));
-                let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-                let (off_a, off_b) = (row.shift_offset_for(a), row.shift_offset_for(b));
-                assert!(
-                    off_a < -1.0,
-                    "the moved group starts left, where it was: {off_a}"
-                );
-                assert!(
-                    off_b > 1.0,
-                    "its neighbour starts right, where it was: {off_b}"
-                );
-            }
-
-            /// Critically damped: the path approaches home from one side and
-            /// arrives within the heavy spring's budget; then the row goes quiet.
-            fn the_spring_never_crosses_home_and_settles_then_goes_quiet() {
-                let omega = spring_omega(crate::tokens::SpringPresets::default().heavy);
-                let m = GroupMove {
-                    from: -600.0,
-                    velocity: 0.0,
-                    started: crate::time::now(),
-                };
-                let mut settled_at = None;
-                for ms in 0..=1000_u64 {
-                    let (x, v) = m.at(Duration::from_millis(ms), omega);
-                    assert!(x <= 0.0, "crossed home at {ms} ms: {x}");
-                    if settled_at.is_none()
-                        && x.abs() < MOVE_SETTLED_PX
-                        && v.abs() < MOVE_SETTLED_PX_PER_S
-                    {
-                        settled_at = Some(ms);
-                    }
-                }
-                let settled_at = settled_at.expect("the spring settles");
-                assert!(
-                    settled_at <= 450,
-                    "a 600 px move settles in under half a second, took {settled_at} ms"
-                );
-
-                let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-                row.insert_group(make_group(999, &[9]), 0);
-                let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-                for (_, m) in &mut row.moves {
-                    m.started = m
-                        .started
-                        .checked_sub(Duration::from_secs(2))
-                        .expect("the clock is past two seconds");
-                }
-                let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-                assert!(row.moves.is_empty(), "settled moves are dropped");
-                assert!(
-                    !row.needs_animation_frame(),
-                    "a settled strip asks for no frames"
-                );
-            }
-
-            /// A close left of the view, with the strip panned to its far end:
-            /// the pan follows the canvas the close took from before the view,
-            /// in the same pass the close lands in, so no group shown moves at
-            /// all, and nothing has to be pulled back into the strip's range.
-            fn a_close_while_panned_starts_every_group_where_it_was_drawn() {
-                fn panned_four() -> GroupRow {
-                    let (row, _taffy, _root) =
-                        make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4]]);
-                    let (mut row, _taffy, _root) = relayout_row_owned(row, 1200.0);
-                    // Past the end: the layout clamps it to the far end.
-                    row.set_scroll_x_for_test(1.0e6);
-                    let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
-                    assert!(row.scroll_x() > 1.0, "fixture: the strip is panned");
-                    row
-                }
-                let mut row = panned_four();
-                let drawn =
-                    |row: &GroupRow, id: u64| rect_of(row, id).x0 + row.shift_offset_for(id);
-                let survivors: Vec<u64> = row.groups[1..].iter().map(|g| g.id).collect();
-                let before: Vec<f64> = survivors.iter().map(|&id| drawn(&row, id)).collect();
-                let scroll_before = row.scroll_x();
-                let closed = row.groups[0].id;
-                let footprint = rect_of(&row, closed).width() + HANDLE_SLOT_PX;
-                let mut still = panned_four();
-                assert!(row.remove_group_by_id(closed));
-                let (mut row, _taffy, _root) = relayout_row_owned(row, 1200.0);
-                assert!(
-                    !row.hold_shift_at(Duration::ZERO),
-                    "nothing slides: the pan carries the view"
-                );
-                for (&id, was) in survivors.iter().zip(before) {
-                    let now = drawn(&row, id);
-                    assert!(
-                        (now - was).abs() < 1.0,
-                        "group {id} jumped from {was} to {now} on the close's first frame"
-                    );
-                }
-                assert!(
-                    (scroll_before - row.scroll_x() - footprint).abs() < 1.0,
-                    "the pan follows the {footprint} px the close took before the view: \
-                     from {scroll_before} to {}",
-                    row.scroll_x()
-                );
-                assert!(!row.snap_in_flight(), "nothing is pulled back");
-
-                assert!(still.remove_group_by_id(closed));
-                let theme = Theme::dark().with_reduce_motion(true);
-                let (still, _taffy, _root) = relayout_row_owned_with(still, 1200.0, &theme);
-                assert!(
-                    (scroll_before - still.scroll_x() - footprint).abs() < 1.0,
-                    "under reduced motion the pan follows the same"
-                );
-                assert!(
-                    !still.needs_animation_frame(),
-                    "under reduced motion nothing travels"
-                );
-            }
-
-            fn rect_of(row: &GroupRow, id: u64) -> Rect {
-                row.groups
-                    .iter()
-                    .find(|g| g.id == id)
-                    .map(WindowGroup::get_rect)
-                    .expect("group in the row")
-            }
-
-            making_room_translates_the_groups_it_pushes_and_never_narrows_them();
-            the_groups_that_moved_start_from_where_they_were();
-            appending_at_the_end_animates_nothing();
-            a_slide_in_flight_asks_for_animation_frames();
-            reduced_motion_makes_room_without_a_slide();
-            a_second_insert_mid_flight_continues_from_where_the_group_is_drawn();
-            closing_a_window_slides_its_right_neighbours_into_the_gap();
-            a_reorder_springs_both_groups_from_their_old_places();
-            the_spring_never_crosses_home_and_settles_then_goes_quiet();
-            a_close_while_panned_starts_every_group_where_it_was_drawn();
-        });
     }
 
     /// A 1000-wide display with the wheel gutter beside an 800-wide one
@@ -11497,3 +11196,7 @@ mod pacing_tests;
 #[cfg(test)]
 #[path = "group_row_sharing_tests.rs"]
 mod sharing_tests;
+
+#[cfg(test)]
+#[path = "group_row_making_room_tests.rs"]
+mod making_room_tests;

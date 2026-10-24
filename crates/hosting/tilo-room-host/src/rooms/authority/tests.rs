@@ -15,7 +15,7 @@ use tilo_user_identity::{DeviceCert, sign_device_cert};
 use crate::rooms::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::rooms::{
     CancelInvitationRequest, IssueInvitationRequest, PreAdmitRequest, RemoveMemberRequest, Rooms,
-    SetMemberRoleRequest,
+    SetMemberRoleRequest, WaitListed,
 };
 
 /// A new person admitted to `room` as an Editor, through the owner's
@@ -109,6 +109,65 @@ fn invitation(request_id: u8, role: MemberRole) -> IssueInvitationRequest {
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
         inviter_name: None,
     }
+}
+
+#[tokio::test]
+async fn an_address_left_at_the_door_is_on_the_wait_list_and_never_a_person_to_admit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
+    let room = rooms.create("Team").await.unwrap().room;
+    let ada = admit(rooms, &room, &owner, 1).await;
+    assert_eq!(
+        rooms.wait(&room, " Bo@Example.org ", 10).await.unwrap(),
+        WaitListed::Added
+    );
+    let ask = |request| rooms.page_rooms(&ada, request);
+    let list = || RoomsRequest::WaitList { room: room.clone() };
+
+    // Someone the room does not let invite reads no wait list.
+    assert!(matches!(ask(list()).await, RoomsReply::Refused(_)));
+    grant(rooms, &room, &owner, &ada, governance::INVITE).await;
+    let RoomsReply::WaitList(listed) = ask(list()).await else {
+        panic!("someone who may invite reads the wait list");
+    };
+    let [entry] = listed.as_slice() else {
+        panic!("{listed:?}");
+    };
+    assert_eq!(entry.contact, "bo@example.org");
+    let request_id = entry.request_id;
+
+    // The address is nobody to let in: no join request, nothing to admit
+    // or decline under its id.
+    assert!(matches!(
+        ask(RoomsRequest::Requests { room: room.clone() }).await,
+        RoomsReply::Requests(waiting) if waiting.is_empty()
+    ));
+    for request in [
+        RoomsRequest::Admit {
+            room: room.clone(),
+            request_id,
+        },
+        RoomsRequest::Decline {
+            room: room.clone(),
+            request_id,
+        },
+    ] {
+        assert!(matches!(ask(request).await, RoomsReply::Refused(_)));
+    }
+
+    // Taken off the list once, then there is nothing to take off.
+    let unlist = || RoomsRequest::Unlist {
+        room: room.clone(),
+        request_id,
+    };
+    assert!(matches!(
+        ask(unlist()).await,
+        RoomsReply::WaitList(left) if left.is_empty()
+    ));
+    assert!(matches!(ask(unlist()).await, RoomsReply::Refused(_)));
+    relay.shutdown().await;
 }
 
 #[tokio::test]

@@ -43,7 +43,7 @@
 //!
 //! The frame loop drives all of this and never touches the disk: each step
 //! that reads or writes an app profile does that on a thread of its own
-//! ([`after_disk`]), and the loop takes the answer up on a later round. A
+//! (`after_disk`), and the loop takes the answer up on a later round. A
 //! write the next process reads (the imported record and its presentation,
 //! late edits merged in) is committed there before the step that hands the
 //! record over (starting the destination instance, restarting it, retiring

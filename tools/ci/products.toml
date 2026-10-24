@@ -159,8 +159,8 @@ pointers = { release-rehearsal = "{dir}/receipt.json" }
 family = "ci-images"
 name = "ci-fast"
 about = """
-The fast CI images, x86_64 only: published from main, pinned by digest in tools/ci/images.toml
-by hand. image-ci-fast-smoke runs what the jobs that use them need, before either is published."""
+The fast CI image, x86_64 only: published from main, pinned by digest in tools/ci/images.toml
+by hand. image-ci-fast-smoke runs what the jobs that use it need, before it is published."""
 repository = "registry.tilo.so/tilo/ci-fast"
 dev = ["sha-{commit}"]
 gates = ["image-ci-fast-smoke"]
@@ -172,22 +172,6 @@ cost = "heavy"
 # It builds FROM the multi-GB CI builder: a micro-VM step can't grow past what it reserves.
 # Measured: 7.4 GiB peak, too close to 8 GiB for a step that can't grow.
 requirement = { cores = 4, memory = "12GiB" }
-
-[[product]]
-family = "ci-images"
-name = "ci-control"
-about = "ci-control adds the Docker client to the ci-fast image just built, not to the pinned one."
-repository = "registry.tilo.so/tilo/ci-control"
-dev = ["sha-{commit}"]
-gates = ["image-ci-fast-smoke"]
-
-[product.build]
-containerfile = "os/Containerfile.ci-control"
-build_args = ["--build-arg CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/image.oci.tar"]
-needs = ["image-ci-fast"]
-inputs = ["os/Containerfile.ci-control"]
-cost = "minutes"
-requirement = { cores = 4, memory = "8GiB" }
 
 [[product]]
 family = "ci-images"
@@ -620,7 +604,7 @@ nothing), upload the tapps, collections and runtime objects with the package tok
 `reads_pointers = ["stable:app-collection"]`) and submit
 the publisher-signed registry entries (submit-apps). Main publishes no apps."""
 each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
-fields = { inputs = ["apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"] }
+fields = { inputs = ["os/publication.env", "apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"] }
 
 [[matrix.check]]
 name = "apps-build-{arch}"
@@ -636,12 +620,13 @@ default = false
 
 # The size gate: packages the default collection as apps-build does and holds each tapp and the
 # runtime to its budget (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). It runs
-# on every release candidate (stable) and on demand (`t dispatch app-sizes-x86_64`, or
-# `t test app-sizes-x86_64` for a working tree), not on every push to main: each run builds the
-# whole collection, 10 to 16 minutes on 16 cores, and on main it cost 17 job-hours a day while
-# failing on every run. A candidate over budget is held back, and the commit that took an app
-# over is found among those the candidate adds.
-# Between candidates, a change that concerns an app runs that app's own size check
+# on every release candidate (stable), on demand (`t dispatch app-sizes-x86_64`, or
+# `t test app-sizes-x86_64` for a working tree), and on main's newest head when t has room left
+# (`idle`), where a failure is on `t main` and bisected to the commit that took an app over its
+# budget, before an image build packs that app (os/scripts/pack-apps.sh holds it to the same
+# budget). Not on every push to main: each run builds the whole collection, 10 to 16 minutes on
+# 16 cores, and on every push it cost 17 job-hours a day.
+# A change that concerns an app can run that app's own size check before it lands
 # (`t test app-size/<app>-<arch>`, or `runtime-size-<arch>` for the runtime), keyed by what it is
 # built from; t_toml.py generates them.
 [[matrix.check]]
@@ -652,7 +637,7 @@ requires = ["{node}"]
 requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 5400
 cost = "heavy"
-on = ["stable", "dispatch"]
+on = ["stable", "dispatch", "idle"]
 default = false
 
 # The default collection with its symbol tables, for reading what makes an app large:
@@ -1302,23 +1287,91 @@ timeout_secs = 7200
 default = false
 
 [[matrix.check]]
-name = "nightly-os-image-{arch}"
+name = "os-acceptance-{arch}"
 comment = """
-The image os-image-{arch} built, checked as a device gets it, on every release candidate and
-when dispatched (tools/ci/publish/os-image-smoke.sh): inside the image, every ELF resolves its
-libraries, every script its interpreter and every package its dependencies, the enabled units
-exist and verify, every GStreamer plugin loads and Miracast's software encoders work, and the
-programs the desktop runs start (tools/ci/image_smoke.py); then the image is installed onto a
-disk as a release validation installs one and booted under KVM until the greeter accepts input,
-with no unit failed on the way. It installs from the RPM set of the same run when no snapshot
-of it is published, so a package-set change is checked before stable ships it (`t dispatch
-nightly-os-image-x86_64 --ref main` checks it on main sooner). It builds the whole OS image, so
-pushes to main don't run it."""
+The devices and desktop a person gets from os-image-{arch} and os-dev-image-{arch}, booted under
+KVM on throwaway overlays of the dev image's installed disk (tools/ci/publish/os-acceptance.sh):
+a joined device signs in; nearby pairing from first-boot onboarding, a third device paired
+through one without the identity key, sibling unlock and, on x86_64, wake; device-admin reach
+through a relay; the installed desktop from the sign-in screen through first use, the apps,
+hot-plugged input and the lock screen to tilo-vmd, app updates and a live system update; the
+boot splash on a large panel. `t outputs os-acceptance-x86_64` gives every gate's
+report and the guests' logs."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-run = "bash tools/ci/publish/os-image-smoke.sh {arch} /target/os/{arch}/image /target/publish/os-smoke/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-image-smoke.sh", "tools/ci/image_smoke.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh"]
-needs = ["os-image-{arch}", "os-image-size-{arch}"]
-outputs = ["/target/publish/os-smoke/{arch}/**"]
+run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/record.py"]
+needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-image-{arch}"]
+outputs = ["/target/publish/os-acceptance/{arch}/**"]
+git = true
+requires = ["{node}", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 16, memory = "32GiB" }
+timeout_secs = 10800
+on = ["stable", "dispatch", "idle"]
+default = false
+
+[[matrix.check]]
+name = "publish-os-dev-{arch}"
+comment = """
+Main's dev VM image and its gated disk, once os-acceptance-{arch} passed on them
+(tools/ci/publish/os-dev-publish.sh): registry.tilo.so/tilo/tilo-ci:main-<commit7>-{arch} (the
+OS image), registry.tilo.so/tilo/tilo-vm:main-<commit7>-ci (an index of the architectures
+published so far) and its disk in the tilo-vm-disk package, which `tilo-vm vm create` and `vm
+upgrade --from sha:<commit>` take; tilo-vm:latest and, with both architectures, tilo-vm:main-ci
+move forward to it. Main's head publishes it every night (and when dispatched: `t dispatch
+publish-os-dev-x86_64 --ref main`); a night whose image fails os-acceptance-{arch} publishes
+nothing."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-dev-publish.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh"]
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-acceptance-{arch}"]
+git = true
+id_token = ["registry.tilo.so"]
+secrets = ["TILO_PACKAGES_TOKEN"]
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+requirement = { cores = 2, memory = "4GiB" }
+timeout_secs = 3600
+on = ["schedule:30 1 * * *", "dispatch"]
+
+[[matrix]]
+family = "os"
+about = """
+The OS release (tools/ci/publish/os-release.sh), released only when dispatched on stable or a
+release tag: `t dispatch publish-os-release --ref stable`. os-release-image-<arch> is the release
+image (thin LTO, the registry owner's key; tools/ci/os/os_toml.py); os-release-seal-<arch> checks
+it inside, installs it, which seals its UKI, and boots it to the greeter, on every release
+candidate too; sign-os-boot-<arch> signs its UKIs (EFI) and PCR 11 prediction with the keys in
+KMS, running nothing of the image; os-release-<arch> verifies and adds them, installs it once more
+and writes its SBOM and provenance; os-release-reproduce-<arch> builds the image again from an
+independent compile and must get the same bytes. sign-os-release signs the images and their
+index with the release key and attests their provenance and freshness; publish-os-release
+publishes registry.tilo.so/tilo/tilo:gen<N> (once), <version> on a final version tag, and
+latest. `t test os-release-rehearsal-x86_64` runs the boot signing, signing and publishing with
+throwaway keys into a throwaway OCI layout instead, without credentials. A board with a release
+of its own (the Lenovo 83ED) goes through the same steps apart, into its own series in
+code.tilo.so/tilo/tilo (below)."""
+each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
+[[matrix.check]]
+name = "os-release-seal-{arch}"
+comment = """
+The release image checked as a device gets it, on every release candidate and when dispatched:
+inside the image, every ELF resolves its libraries, every script its interpreter and every
+package its dependencies, the enabled units exist and verify, every GStreamer plugin loads and
+Miracast's software encoders work, and the programs the desktop runs start
+(tools/ci/image_smoke.py); then it is installed onto a disk as a device installs it, which seals
+its UKI with the composefs digest the install computes, and booted under KVM until the greeter
+accepts input, with no unit failed on the way. It installs from the RPM set of the same run when
+no snapshot of it is published, so a package-set change is checked before stable ships it
+(though no release ships such an image). The sealed image and what its boot signing signs are
+its outputs."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh seal {arch} /target/os/{arch}/release-image /target/publish/os-release/{arch}/sealed"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/image_smoke.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/sign-target-prediction.sh"]
+needs = ["os-release-image-{arch}", "os-release-image-size-{arch}"]
+outputs = ["/target/publish/os-release/{arch}/sealed/**"]
 git = true
 requires = ["{node}", "/dev/kvm", "disk-100g"]
 isolation = "vm"
@@ -1328,26 +1381,314 @@ timeout_secs = 5400
 on = ["stable", "dispatch"]
 default = false
 
+[[matrix.check]]
+name = "sign-os-boot-{arch}"
+comment = """
+The release's EFI signatures of its UKIs and its signed PCR 11 prediction, made with the keys in
+KMS as the release signing role (tools/signing/boot-signer.sh), over what os-release-seal-{arch}
+left: no code of the image runs here."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh sign-boot /target/publish/os-release/{arch}/sealed /target/publish/os-release/{arch}/boot-signed"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "tools/signing/boot-signer.sh", "keys/efi-signing.crt", "keys/tpm2-pcr-signing.public.pem", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"]
+needs = ["os-release-seal-{arch}", "os-assets"]
+outputs = ["/target/publish/os-release/{arch}/boot-signed/**"]
+id_token = ["sts.amazonaws.com"]
+env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing", TILO_PCR_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-pcr-prediction" }
+requires = ["{node}"]
+isolation = "vm"
+requirement = { cores = 2, memory = "4GiB" }
+on = ["dispatch"]
+default = false
+
+[[matrix.check]]
+name = "os-release-{arch}"
+comment = """
+The release image of {arch}: the boot signatures verified against the pinned keys and added
+under /boot, installed once more to prove its seal still holds, with its SPDX SBOM and SLSA
+provenance."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh apply {arch} /target/publish/os-release/{arch}/sealed /target/publish/os-release/{arch}/boot-signed /target/publish/os-release/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/install-cached-syft.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/dev/release-provenance.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh", "os/base-snapshot.env", "os/kernel-snapshot.env", "os/publication.env", "os/hardware/profiles/**"]
+needs = ["os-release-seal-{arch}", "sign-os-boot-{arch}", "os-assets"]
+outputs = ["/target/publish/os-release/{arch}/image.oci.tar", "/target/publish/os-release/{arch}/digest", "/target/publish/os-release/{arch}/generation", "/target/publish/os-release/{arch}/sbom.spdx.json", "/target/publish/os-release/{arch}/provenance.json", "/target/publish/os-release/{arch}/install.log"]
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 5400
+default = false
+
+[[matrix.check]]
+name = "os-release-recompile-{arch}"
+comment = """
+The release's compiled tree again, as os-compile-release-{arch} compiles it but in a fresh build
+directory and without the compiler cache, for os-release-reproduce-{arch}."""
+image = { check = "os-builder-{arch}", path = "/target/os/{arch}/builder/builder-base/oci" }
+run = "env -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER -u T_COMPILE_CACHE -u T_COMPILE_CACHE_TOKEN CARGO_TARGET_DIR=$TMPDIR/recompile TILO_COMPILER_CACHE=off bash os/image/compile.sh /target/os/{arch}/recompiled-release"
+inputs = ["**"]
+needs = ["os-assets", "test-assets"]
+outputs = ["/target/os/{arch}/recompiled-release/**"]
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["{node}"]
+cost = "heavy"
+requirement = { cores = 16, memory = "64GiB" }
+timeout_secs = 10800
+default = false
+
+[[matrix.check]]
+name = "os-release-reproduce-{arch}"
+comment = """
+The independent rebuild: every action of the release image (os/image/layers.toml) again in this
+one step, from os-release-recompile-{arch}'s tree, which must give os-release-image-{arch}'s
+digest byte for byte. A difference fails it, with os/scripts/oci-image-diff.py's report of it
+as its output."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh reproduce {arch} /target/os/{arch}/recompiled-release /target/publish/os-release/{arch}/reproduce"
+inputs = ["**"]
+needs = ["os-release-recompile-{arch}", "os-release-image-{arch}", "image-rpms-{arch}", "os-assets", "signing-tools"]
+outputs = ["/target/publish/os-release/{arch}/reproduce/**"]
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+writable_sources = true
+cost = "heavy"
+requirement = { cores = 16, memory = "32GiB" }
+timeout_secs = 10800
+default = false
+
+[[matrix.check]]
+name = "os-release-rehearsal-{arch}"
+comment = """
+A release of this tree rehearsed without credentials: sign-os-boot-{arch}, os-release-{arch},
+sign-os-release and publish-os-release's own steps, with throwaway keys for the boot, the image
+and its attestations, publishing into a throwaway OCI layout as stable would."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh rehearse {arch} /target/publish/os-release/{arch}/sealed /target/publish/os-release/{arch}/rehearsal"
+inputs = ["tools/ci/publish/**", "tools/signing/boot-signer.sh", "os/dev/**", "os/base-snapshot.env", "os/kernel-snapshot.env", "os/publication.env", "os/hardware/profiles/**", "os/external-assets/github-assets.tsv", "keys/**"]
+needs = ["os-release-seal-{arch}", "os-assets", "signing-tools"]
+outputs = ["/target/publish/os-release/{arch}/rehearsal/release/receipt.json"]
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 5400
+default = false
+
+[[matrix.check]]
+name = "os-release"
+comment = "The release index of both architectures' images, with its provenance."
+image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh index /target/publish/os-release"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-index.py", "os/dev/release-provenance.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh", "os/base-snapshot.env", "os/kernel-snapshot.env"]
+needs = ["os-release-x86_64", "os-release-aarch64"]
+outputs = ["/target/publish/os-release/index/**"]
+git = true
+requires = ["arch=x86_64"]
+isolation = "vm"
+requirement = { cores = 2, memory = "4GiB" }
+default = false
+
+[[matrix.check]]
+name = "sign-os-release"
+comment = """
+The release key in KMS signs each image and the index, and attests their provenance and a
+freshness statement valid for a day, each with a transparency log entry, once both independent
+rebuilds gave the same bytes."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-release.sh sign /target/publish/os-release"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-sign.sh", "tools/ci/publish/oci-attest.sh", "os/dev/release-freshness.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-release", "os-release-x86_64", "os-release-aarch64", "os-release-reproduce-x86_64", "os-release-reproduce-aarch64", "signing-tools"]
+outputs = ["/target/publish/os-release/*/payload.json", "/target/publish/os-release/*/signature", "/target/publish/os-release/*/bundle.json", "/target/publish/os-release/*/certified/**", "/target/publish/os-release/*/attestation.json", "/target/publish/os-release/*/attestation.bundle.json", "/target/publish/os-release/*/freshness.json", "/target/publish/os-release/*/freshness.attestation.json", "/target/publish/os-release/*/freshness.attestation.bundle.json"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[matrix.check]]
+name = "publish-os-release"
+comment = """
+The signed release: each image as gen<N>-<arch>, then the index as gen<N>, on a final version
+tag also <version>, and last latest, with their signatures, attestations and SBOMs; a gen<N>
+already published is never moved."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-release.sh publish /target/publish/os-release"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-release", "os-release-x86_64", "os-release-aarch64", "sign-os-release", "signing-tools"]
+outputs = ["/target/publish/os-release/*/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[matrix]]
+family = "os"
+about = """
+A board's own release, for each board of release_boards in os/image/layers.toml
+(tools/ci/publish/os-release.sh with the board for the architecture), released only when
+dispatched on stable or a release tag: `t dispatch publish-os-release-lenovo-83ed --ref stable`.
+os-release-image-<board> is the release image with its `board` layers built again with the
+board's hardware profile, firmware, update origin and generation (tools/ci/os/os_toml.py);
+os-release-seal-<board> checks it inside and installs it, which seals its UKI, but cannot boot it
+under QEMU (its UKI carries the board's device tree); sign-os-boot-<board>, os-release-<board>,
+whose provenance binds the board, its hardware definition and its firmware,
+os-release-reproduce-<board> and sign-os-release-<board> are an architecture's steps for it.
+publish-os-release-<board> publishes code.tilo.so/tilo/tilo:<board>-<commit>, which the image
+names as its update origin, and <board>-gen<N> of the board's own dense series
+(os/dev/board-generation.sh), each once, then <board>-latest, by which installed boards find
+their successor (docs/security/board-successor-updates.md). `t test
+os-release-rehearsal-lenovo-83ed` runs its boot signing, signing and publishing with throwaway keys
+into a throwaway OCI layout, without credentials."""
+each = [{ board = "lenovo-83ed", arch = "aarch64", node = "arch=arm64" }]
+
+[[matrix.check]]
+name = "os-release-seal-{board}"
+comment = """
+The board's release image checked inside as os-release-seal-{arch} checks it, its hardware profile
+and update origin read back, the Lenovo's sound stack checked, and installed onto a disk, which
+seals its UKI; its outputs are the sealed image and what its boot signing signs."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh seal {board} /target/os/{arch}/release-image-{board} /target/publish/os-release/{board}/sealed"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/image_smoke.py", "os/dev/_common.sh", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/sign-target-prediction.sh", "os/tests/board_audio_contract.sh", "os/image/layers.toml", "os/hardware/profiles/**"]
+needs = ["os-release-image-{board}", "os-release-image-size-{board}"]
+outputs = ["/target/publish/os-release/{board}/sealed/**"]
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 5400
+default = false
+
+[[matrix.check]]
+name = "sign-os-boot-{board}"
+comment = "The board's UKIs signed (EFI) and its PCR 11 prediction, as sign-os-boot-{arch} signs an architecture's."
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh sign-boot /target/publish/os-release/{board}/sealed /target/publish/os-release/{board}/boot-signed"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "tools/signing/boot-signer.sh", "keys/efi-signing.crt", "keys/tpm2-pcr-signing.public.pem", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"]
+needs = ["os-release-seal-{board}", "os-assets"]
+outputs = ["/target/publish/os-release/{board}/boot-signed/**"]
+id_token = ["sts.amazonaws.com"]
+env = { AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_EFI_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-efi-signing", TILO_PCR_SIGNING_KMS_KEY = "arn:aws:kms:us-east-1:125650147312:alias/tilo-pcr-prediction" }
+requires = ["{node}"]
+isolation = "vm"
+requirement = { cores = 2, memory = "4GiB" }
+on = ["dispatch"]
+default = false
+
+[[matrix.check]]
+name = "os-release-{board}"
+comment = """
+The board's release image: its boot signatures verified and added, installed once more, with its
+SPDX SBOM and SLSA provenance binding the board, its hardware definition and its firmware."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh apply {board} /target/publish/os-release/{board}/sealed /target/publish/os-release/{board}/boot-signed /target/publish/os-release/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/install-cached-syft.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/dev/release-provenance.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh", "os/base-snapshot.env", "os/kernel-snapshot.env", "os/publication.env", "os/image/layers.toml", "os/hardware/profiles/**"]
+needs = ["os-release-seal-{board}", "sign-os-boot-{board}", "os-assets"]
+outputs = ["/target/publish/os-release/{board}/image.oci.tar", "/target/publish/os-release/{board}/digest", "/target/publish/os-release/{board}/generation", "/target/publish/os-release/{board}/sbom.spdx.json", "/target/publish/os-release/{board}/provenance.json", "/target/publish/os-release/{board}/install.log"]
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 5400
+default = false
+
+[[matrix.check]]
+name = "os-release-reproduce-{board}"
+comment = """
+The board's independent rebuild: every action of its release image again in one step, from
+os-release-recompile-{arch}'s tree, which must give os-release-image-{board}'s digest byte for byte."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh reproduce {board} /target/os/{arch}/recompiled-release /target/publish/os-release/{board}/reproduce"
+inputs = ["**"]
+needs = ["os-release-recompile-{arch}", "os-release-image-{board}", "image-rpms-{arch}", "os-assets", "signing-tools"]
+outputs = ["/target/publish/os-release/{board}/reproduce/**"]
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+writable_sources = true
+cost = "heavy"
+requirement = { cores = 16, memory = "32GiB" }
+timeout_secs = 10800
+default = false
+
+[[matrix.check]]
+name = "os-release-rehearsal-{board}"
+comment = """
+The board's release of this tree rehearsed without credentials: sign-os-boot-{board},
+os-release-{board}, sign-os-release-{board} and publish-os-release-{board}'s own steps, with
+throwaway keys, publishing into a throwaway OCI layout as stable would; the board's series is
+read and, where empty, its seed verified, as publishing does before it tags the seed."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh rehearse {board} /target/publish/os-release/{board}/sealed /target/publish/os-release/{board}/rehearsal"
+inputs = ["tools/ci/publish/**", "tools/signing/boot-signer.sh", "os/dev/**", "os/base-snapshot.env", "os/kernel-snapshot.env", "os/publication.env", "os/image/layers.toml", "os/hardware/profiles/**", "os/external-assets/github-assets.tsv", "keys/**"]
+needs = ["os-release-seal-{board}", "os-assets", "signing-tools"]
+outputs = ["/target/publish/os-release/{board}/rehearsal/release/receipt.json"]
+git = true
+requires = ["{node}", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 5400
+default = false
+
+[[matrix.check]]
+name = "sign-os-release-{board}"
+comment = """
+The release key in KMS signs the board's image and attests its provenance and a freshness
+statement valid for a day, each with a transparency log entry, once its independent rebuild gave
+the same bytes."""
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-release.sh sign-board {board} /target/publish/os-release/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-sign.sh", "tools/ci/publish/oci-attest.sh", "os/dev/release-freshness.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/image/layers.toml", "os/hardware/profiles/**", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-release-{board}", "os-release-reproduce-{board}", "signing-tools"]
+outputs = ["/target/publish/os-release/{board}/payload.json", "/target/publish/os-release/{board}/signature", "/target/publish/os-release/{board}/bundle.json", "/target/publish/os-release/{board}/certified/**", "/target/publish/os-release/{board}/attestation.json", "/target/publish/os-release/{board}/attestation.bundle.json", "/target/publish/os-release/{board}/freshness.json", "/target/publish/os-release/{board}/freshness.attestation.json", "/target/publish/os-release/{board}/freshness.attestation.bundle.json"]
+id_token = ["sts.amazonaws.com"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[[matrix.check]]
+name = "publish-os-release-{board}"
+comment = """
+The board's signed release in code.tilo.so/tilo/tilo, the forge's registry, which takes no identity
+token from t: REGISTRY_TOKEN. An empty board series first gets its seed as <board>-gen1 and
+<board>-latest; then the image goes up as <board>-<commit> and <board>-gen<N>, neither ever moved,
+with its signature, attestations and SBOM, and <board>-latest moves to it."""
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-release.sh publish-board {board} /target/publish/os-release/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-publish.sh", "os/dev/board-generation.sh", "os/dev/next-generation.sh", "os/dev/_common.sh", "os/publication.env", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/image/layers.toml", "os/hardware/profiles/**", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-release-{board}", "sign-os-release-{board}", "signing-tools"]
+outputs = ["/target/publish/os-release/{board}/receipt.json"]
+secrets = ["REGISTRY_TOKEN"]
+requires = ["{node}"]
+isolation = "vm"
+requirement = { cores = 2, memory = "4GiB" }
+on = ["dispatch"]
+
 [[matrix]]
 family = "os"
 about = """
 Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
-since bootc takes a device tree only from one. When dispatched (`t dispatch
-publish-os-board-lenovo-83ed --ref main`; it builds the whole aarch64 OS image, so main
-doesn't run it on its own), main's head is built and pushed as
+since bootc takes a device tree only from one. Every night (and when dispatched: `t dispatch
+publish-os-board-lenovo-83ed --ref main`), main's head is built and, once os-board-<board>,
+os-board-size-<board> and os-acceptance-aarch64 (the dev image it is built on) pass, pushed as
 registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
 sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
-follow on their own (DEVELOPMENT.md, "Board dev images on real hardware")."""
+follow on their own; its flashable disk, which os-board-<board> installs (with the Lenovo's audio
+stack checked inside the image first), replaces tilo-vm-disk-latest/aarch64-<board> in the
+generic packages (DEVELOPMENT.md, "Board dev images on real hardware")."""
 each = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
 
 [[matrix.check]]
 name = "os-board-{board}"
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh board {board} /target/publish/os-dev/aarch64 /target/publish/os-board/{board}"
-inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", ".containerignore"]
+inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", "os/account.env", "os/tests/board_audio_contract.sh", ".containerignore"]
 needs = ["image-rpms-aarch64", "os-dev-image-aarch64", "os-assets"]
-outputs = ["/target/publish/os-board/{board}/image.oci.tar", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board"]
+outputs = ["/target/publish/os-board/{board}/image.oci.tar", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board", "/target/publish/os-board/{board}/disk/disk.qcow2"]
 git = true
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -1379,12 +1720,13 @@ default = false
 name = "publish-os-board-{board}"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh"]
-needs = ["os-board-{board}", "os-board-size-{board}"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh"]
+needs = ["os-board-{board}", "os-board-size-{board}", "os-acceptance-aarch64"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
+secrets = ["TILO_PACKAGES_TOKEN"]
 requires = ["arch=any"]
-on = ["dispatch"]
+on = ["schedule:30 1 * * *", "dispatch"]
 
 [[matrix]]
 family = "extension-manifests"

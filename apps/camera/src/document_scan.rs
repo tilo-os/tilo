@@ -35,7 +35,7 @@ pub fn capture_error_message(error: &str) -> &'static str {
         || error.contains("cannot connect")
         || error.contains("could not start scanner")
     {
-        "Camera cannot reach this scanner. Check its connection, then choose it again."
+        "Camera cannot reach this scanner. Check its connection, then try again."
     } else {
         "The page could not be scanned. Check the scanner and try again."
     }

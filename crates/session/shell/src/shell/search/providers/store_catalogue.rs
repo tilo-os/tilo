@@ -51,7 +51,7 @@ use crate::shell::search::{
 pub const PROVIDER_ID: &str = "store-catalogue";
 
 /// The id of the provider of the documents and closed actions of the Tilo
-/// apps this device has ([`Scope::Installed`]).
+/// apps this device has (`Scope::Installed`).
 pub const INSTALLED_PROVIDER_ID: &str = "installed-offers";
 
 /// Which apps' rows a provider lists.

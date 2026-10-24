@@ -76,7 +76,7 @@ struct FailedFetch {
 
 /// The OpenStreetMap Standard raster, used under the OSMF Tile Usage Policy
 /// (<https://operations.osmfoundation.org/policies/tiles/>): an identifying
-/// [`USER_AGENT`], attribution visible on the map, a persistent local cache, and
+/// `USER_AGENT`, attribution visible on the map, a persistent local cache, and
 /// no bulk download or prefetch — so offline areas are refused
 /// ([`TileLayer::allows_prefetch`]). The host must stay in the manifest's
 /// `[sandbox] net` allowlist.

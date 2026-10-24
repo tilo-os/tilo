@@ -10,6 +10,7 @@
 use super::page_part::PagePart;
 
 mod accessible;
+mod now_playing;
 mod query_view;
 use super::{
     Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Fill, HashMap,
@@ -21,6 +22,7 @@ use accessible::{
     accessible_album, accessible_artist, accessible_download, accessible_playlist,
     accessible_playlist_track, accessible_track,
 };
+pub(super) use now_playing::NowPlaying;
 pub(super) use query_view::SearchView;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
@@ -30,7 +32,6 @@ use ui::paint::PaintCtx;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
 use ui::widget::data_table::DataTableFace;
-use ui::widget::toast::ToastAnchor;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, MediaArt,
     MediaCardFace, MediaSize, SkeletonFace, SkeletonShape,
@@ -348,8 +349,10 @@ pub(super) fn lyrics_column(body: Rect, readable: f64, gutter: f64) -> Rect {
 /// How far the lyric lines are scrolled up in a column `column_h` high:
 /// synced lyrics keep the current line a third of the way down, so the
 /// eye finds it in one place; plain lyrics read from the top.
-pub(super) fn lyrics_scroll(current: Option<usize>, line_h: f64, column_h: f64) -> f64 {
-    current.map_or(0.0, |line| line as f64 * line_h - column_h / 3.0)
+/// Lines wrap, so each has its own height: the current line's top is
+/// `current_top` down the unscrolled column.
+pub(super) fn lyrics_scroll(current_top: Option<f64>, column_h: f64) -> f64 {
+    current_top.map_or(0.0, |top| top - column_h / 3.0)
 }
 
 /// Monotonic seconds since first use — the shared animation clock.
@@ -600,6 +603,8 @@ impl Widget for MusicApp {
         for child in self.children_mut() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
+        // The cover flying between the band and Now Playing.
+        self.paint_now_playing_flight(&mut PaintCtx::new(scene, transform, text_renderer, theme));
         // The songs being dragged follow the pointer over the whole window,
         // onto the sidebar's playlists.
         self.paint_track_drag(&mut PaintCtx::new(scene, transform, text_renderer, theme));
@@ -879,6 +884,7 @@ impl Widget for MusicApp {
             View::Browse => "Browse".to_string(),
             View::Queue => "Queue".to_string(),
             View::Lyrics => "Lyrics".to_string(),
+            View::NowPlaying => "Now playing".to_string(),
             View::Search => "Search".to_string(),
             View::Kept(id) => self
                 .kept_views()
@@ -1133,6 +1139,11 @@ impl Widget for MusicApp {
                         }),
                 );
             }
+            View::NowPlaying => page_content.push(
+                AccessNode::new(Role::Paragraph)
+                    .with_hashed_key("now-playing")
+                    .with_name(self.now_playing.spoken()),
+            ),
             // A query view's rows are its track lists' and cards' own.
             View::Recommendations | View::Search | View::Kept(_) => {}
         }
@@ -1150,12 +1161,7 @@ impl Widget for MusicApp {
             .with_name(page_name)
             .with_children(page_content);
 
-        let mut children = vec![search, page, player];
-        children.extend(
-            self.toast
-                .access_node()
-                .map(|toast| toast.with_hashed_key("toast")),
-        );
+        let children = vec![search, page, player];
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Music")
@@ -1327,6 +1333,8 @@ impl Widget for MusicApp {
             || self.live_search_pending.is_some()
             || self.search.needs_frame()
             || self.search.highlight.is_some()
+            || self.now_playing.in_flight(ui::time::now())
+            || self.track_tables.iter().any(|slot| slot.table.rows_moving())
             || self.source_invocation.is_some()
             || !self.spotify_jobs.is_empty()
             || self.pending_catalogue_query.is_some()
@@ -1351,6 +1359,7 @@ impl Widget for MusicApp {
             .then_some(self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             .into_iter()
             .chain(self.toast.deadline())
+            .chain(self.search.next_placeholder_step(ui::time::now()))
             .chain(
                 self.children()
                     .into_iter()
@@ -1374,6 +1383,17 @@ impl Widget for MusicApp {
     fn has_pending_visual_work(&self) -> bool {
         // A capture waits for the covers it shows.
         !self.images.is_idle()
+    }
+
+    /// A glide after a flick scrolls the body as the wheel does; it
+    /// changes no model, so it asks for no sync.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.dirty |= self.body_scroll.advance();
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1639,20 +1659,38 @@ impl MusicApp {
                 self.dirty = true;
                 self.start_or_apply_playback(invocation, next)
             }
-            transport => {
-                let next = crate::actions::next_playback(&transport, &self.pb, &|id| {
-                    self.playback_track(id).is_some()
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "`{}` is not a playback effect",
-                        ui::tilo_resource::Effect::id(&transport)
-                    )
-                })??;
-                self.dirty = true;
-                self.start_or_apply_playback(invocation, next)
-            }
+            transport => self.begin_transport_effect(invocation, &transport),
         }
+    }
+
+    /// A transport or queue effect that only changes this device's playback.
+    fn begin_transport_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        transport: &crate::actions::MusicEffect,
+    ) -> Result<ui::framework::Effected, String> {
+        let (mut next, edit) = crate::actions::next_playback(transport, &self.pb, &|id| {
+            self.playback_track(id).is_some()
+        })
+        .ok_or_else(|| {
+            format!(
+                "`{}` is not a playback effect",
+                ui::tilo_resource::Effect::id(transport)
+            )
+        })??;
+        self.dirty = true;
+        // The shuffled order follows the edit exactly as the person's own
+        // queue edits move it: a song put next is heard next, and what has
+        // played stays played.
+        let before = edit.and_then(|edit| self.follow_shuffled_edit(edit, &mut next));
+        let effected = self.start_or_apply_playback(invocation, next);
+        if effected.is_err()
+            && let Some(before) = before
+            && self.shuffle_order.len() != self.pb.queue.len()
+        {
+            self.shuffle_order = before;
+        }
+        effected
     }
 
     /// Move to `next`: only starting a source waits for the audio it starts.
@@ -2215,7 +2253,9 @@ impl MusicApp {
         // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
         self.tick();
-        self.dirty |= self.toast.expire();
+        // A result says so in the window's bar while it lasts.
+        self.toast.expire();
+        self.toast.publish();
 
         // The shell holds the sidebar and the transport; this is the
         // content column.
@@ -2228,6 +2268,7 @@ impl MusicApp {
         self.body_scroll.set_viewport(r, ctx.theme);
         let body = self.body_scroll.content_rect();
         self.body_rect = body;
+        self.follow_now_playing(ctx.theme, ui::time::now());
 
         // Body first so chrome draws on top (and chrome hits win). The window
         // ground is the framework's; nothing here fills it.
@@ -2269,7 +2310,6 @@ impl MusicApp {
         self.open_staged_track_menu();
         self.open_staged_facet();
 
-        self.draw_toast(ctx);
         self.paint_highlight(ctx);
 
         if self.name_prompt.is_none() {
@@ -2311,6 +2351,7 @@ impl MusicApp {
             View::Browse => "Browse".into(),
             View::Queue => "Queue".into(),
             View::Lyrics => "Lyrics".into(),
+            View::NowPlaying => "Now playing".into(),
             View::Search => "Search".into(),
             View::Kept(id) => self
                 .kept_views()
@@ -2381,6 +2422,7 @@ impl MusicApp {
             View::Liked => self.draw_liked(ctx, look, body, y),
             View::Queue => self.draw_queue(ctx, look, body, y),
             View::Lyrics => self.draw_lyrics(ctx, look, body, y),
+            View::NowPlaying => self.draw_now_playing(ctx, look, body, y),
             View::Browse => self.draw_browse(ctx, look, body, y),
             View::Album(id) => self.draw_album_detail(ctx, look, body, y, &id),
             View::Artist(id) => self.draw_artist_detail(ctx, look, body, y, &id),
@@ -3146,6 +3188,7 @@ impl MusicApp {
             index_width: half(index_w),
             duration_width: half(duration_w),
             action_width: half(action_w),
+            moves: table.queue_offset.is_some(),
         }
     }
 
@@ -4380,9 +4423,32 @@ impl MusicApp {
         };
         let active_style = ctx.theme.text(TextRole::Title);
         let style = ctx.theme.text(TextRole::Heading);
-        let line_h = line_of(ctx, &active_style) + look.related;
         let focus = current.unwrap_or(0);
-        let auto = lyrics_scroll(current, line_h, band.height());
+        let maxw = ui::num::f32_of_f64(band.width().max(1.0));
+        // Every line wraps to the column, the one being sung too; a blank
+        // line (a pause in the song) is a short gap, not a glyph.
+        let gap = look.related;
+        let blank = line_of(ctx, &style) / 2.0;
+        let mut tops = Vec::with_capacity(self.lyrics.len());
+        let mut heights = Vec::with_capacity(self.lyrics.len());
+        let mut top = 0.0;
+        for (i, line) in self.lyrics.iter().enumerate() {
+            let st = if Some(i) == current {
+                &active_style
+            } else {
+                &style
+            };
+            let text = line.text.trim();
+            let height = if text.is_empty() {
+                blank
+            } else {
+                f64::from(ctx.text.measure_style(text, Some(maxw), st).1)
+            };
+            tops.push(top);
+            heights.push(height);
+            top += height + gap;
+        }
+        let auto = lyrics_scroll(current.and_then(|i| tops.get(i).copied()), band.height());
         ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -4390,11 +4456,14 @@ impl MusicApp {
             ctx.transform,
             &band,
         );
-        let maxw = band.width().max(1.0);
         for (i, line) in self.lyrics.iter().enumerate() {
-            let ly = band.y0 + i as f64 * line_h - auto;
+            let text = line.text.trim();
+            let (Some(&top), Some(&height)) = (tops.get(i), heights.get(i)) else {
+                continue;
+            };
+            let ly = band.y0 + top - auto;
             // Do not leave half a lyric line cut against the header or player.
-            if ly < band.y0 || ly + line_h > band.y1 {
+            if text.is_empty() || ly < band.y0 || ly + height > band.y1 {
                 continue;
             }
             let active = Some(i) == current;
@@ -4406,15 +4475,7 @@ impl MusicApp {
             } else {
                 (&style, look.faint)
             };
-            let text = if line.text.trim().is_empty() {
-                "…"
-            } else {
-                line.text.as_str()
-            };
-            let shown = elide(ctx.text, text, st, maxw);
-            let h = ctx.text.measure_style(&shown, None, st).1;
-            let y = ly + (line_h - f64::from(h)) / 2.0;
-            ctx.text(&shown, st, ink, Point::new(band.x0, y), None);
+            ctx.text(text, st, ink, Point::new(band.x0, ly), Some(maxw));
         }
         ctx.scene.pop_layer();
     }
@@ -4477,20 +4538,6 @@ impl MusicApp {
     }
 
     // ---- now playing bar --------------------------------------------------
-
-    // ---- toast ------------------------------------------------------------
-
-    fn draw_toast(&self, ctx: &mut PaintCtx<'_>) {
-        let area = Rect::new(self.body_rect.x0, self.rect.y0, self.rect.x1, self.rect.y1);
-        self.toast.paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            area,
-            ToastAnchor::BottomCenter,
-        );
-    }
 
     // ---- gather helpers (own data so draw can borrow &mut self) -----------
 

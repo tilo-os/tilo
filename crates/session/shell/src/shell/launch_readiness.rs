@@ -129,7 +129,7 @@ impl StartupObservations {
 
     pub fn started(&self, token: Option<u64>, pid: u32) {
         let Some(token) = token else { return };
-        let Some((_, start)) = super::launcher::proc_stat(pid) else {
+        let Some((_, start)) = super::host_runtime::proc_stat(pid) else {
             self.fail(Some(token), "the application's launcher disappeared".into());
             return;
         };
@@ -182,7 +182,7 @@ impl StartupObservations {
 pub(crate) fn ancestry(mut pid: u32) -> Vec<(u32, u64)> {
     let mut ancestry = Vec::new();
     for _ in 0..32 {
-        let Some((parent, start)) = super::launcher::proc_stat(pid) else {
+        let Some((parent, start)) = super::host_runtime::proc_stat(pid) else {
             break;
         };
         ancestry.push((pid, start));

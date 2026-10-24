@@ -3,7 +3,7 @@
 //! Owns the in-memory [`RepoModel`], the diffs, the active screen and all
 //! transient selection and scroll state. Durable preferences live in the
 //! CRDT via [`Settings`]. The window's bar holds the client's controls
-//! ([`window_bar`]): the repository as the location, the screens as its
+//! (`window_bar`): the repository as the location, the screens as its
 //! views, the list column's toggle, Fetch, Pull and Push, the diff's layout
 //! and syntax highlighting, and History. The widget paints no header row:
 //! the list column of the Changes and History screens stands on the sidebar

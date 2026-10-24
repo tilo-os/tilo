@@ -86,10 +86,12 @@ pub mod device_read;
 pub mod effects;
 pub mod host;
 pub mod i18n;
+pub mod pages;
 pub mod pane_model;
 pub mod prefs;
 pub mod radios;
 pub mod search;
+pub mod secrets;
 pub mod setting;
 pub mod settings_app;
 #[cfg(test)]

@@ -83,6 +83,7 @@ impl Presence {
     }
 
     /// Hold the motion for `by` (time spent waiting on a full presenter).
+    #[track_caller]
     pub fn defer(&mut self, by: crate::time::Duration) {
         self.openness.defer(by);
     }

@@ -17,6 +17,10 @@
 //! or script can do. Ctrl with an arrow key moves the chosen display to the
 //! next place that way ([`placement::step`]), settling as a drop does. At
 //! rest the canvas asks for no frames.
+//!
+//! [`placement::snap_with_guides`]: crate::widget::display_arrangement::placement::snap_with_guides
+//! [`placement::settle`]: crate::widget::display_arrangement::placement::settle
+//! [`placement::step`]: crate::widget::display_arrangement::placement::step
 
 pub use settings_store::display_placement as placement;
 use tilo_sort::CompactSort as _;

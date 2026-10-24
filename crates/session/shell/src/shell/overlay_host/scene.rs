@@ -15,6 +15,8 @@ impl ShellOverlayHost {
     /// one independent source so the compositor can identify a stuck source
     /// without changing the scheduling decision itself.
     pub(crate) fn animation_demand_bits(&self, now: Instant) -> u32 {
+        use super::layers::ShellLayer as _;
+        let layers = &self.layers;
         crate::shell::animation_diagnostics::host_bits(
             &crate::shell::animation_diagnostics::HostDemandInputs {
                 onboarding: self.onboarding.is_some(),
@@ -24,19 +26,24 @@ impl ShellOverlayHost {
                     .is_some_and(Widget::needs_animation_frame),
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.overview_zoom_moving(now),
-                workspace_switch: self.workspace_switch_holding_at(now),
+                workspace_switch: self.workspace_switch_owed() || self.workspace_slide_moving(now),
                 quick_settings: self.qs_motion.is_animating(now)
                     || self.qs_root.is_animating(now)
                     || self.qs_root_scroll_fading(),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_moving(now),
-                power_menu: self.layers.power_menu.is_animating(now),
-                room_activity: self.room_activity.needs_animation_frame(now),
+                power_menu: layers.power_menu.is_animating(now),
+                tab_menu: layers.tab_menu.is_animating(now),
+                window_switcher: layers.window_switcher.is_animating(now),
+                dictation: layers.dictation.is_animating(now),
+                emoji_picker: layers.emoji_picker.is_animating(now),
+                display_confirm: layers.display_confirm.is_animating(now),
                 follow: self.follow_transition.is_moving(now),
-                room_replay: self.room_activity.replay_is_playing(),
-                projection: self.projection_overlay.needs_animation_frame(now),
+                projection: self.projection_overlay.needs_animation_frame(now)
+                    || self.display_identify.needs_frame(now),
                 content: self.content.needs_animation_frame(),
                 strip_switcher: self.strip_navigator.labels_need_animation_frame(now),
+                strip_indicators: self.strip_navigator.indicators_need_animation_frame(now),
                 capture_mirror: self
                     .capture_mirrors
                     .iter()
@@ -49,6 +56,22 @@ impl ShellOverlayHost {
                     self.notification_stack
                         .needs_animation_frame(&ChromeNotifications::new(chrome))
                 }),
+                desk: self.desk_animating(now),
+                cursor_chat: self.cursor_chat_animating(now),
+                collaborators: self.overlay_flags().collaborators
+                    && self.collaborators_overlay.needs_animation_frame(),
+                osd: self
+                    .chrome
+                    .as_ref()
+                    .and_then(|chrome| chrome.borrow().osd)
+                    .is_some_and(|osd| osd.needs_animation_frame_at(now)),
+                acknowledgement: self.current_acknowledgement(now).is_some_and(|ack| {
+                    ack.fading_at(now, self.acknowledgement_reduce_motion.get())
+                }),
+                window_previews: self.window_previews.changed(),
+                peer_sync: self.peer_sync_overlay.needs_animation_frame(),
+                directory_sheet: self.directory_sheet.needs_animation_frame(),
+                arrival_line: self.arrival_line.needs_animation_frame(),
             },
         )
     }
@@ -136,6 +159,7 @@ impl ShellOverlayHost {
         // geometry is resolved below; otherwise a first frame at large type
         // has a default-height card and clips its two-line controls.
         self.refresh_active_tab_presence();
+        self.hand_flying_windows_to_the_overview(ui::time::now());
         self.qs_root.set_layout_text_scale(theme.text_scale);
         self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
         self.qs_panel = QsPanelMetrics::for_theme(theme);
@@ -157,7 +181,8 @@ impl ShellOverlayHost {
         let mut phase_at = std::time::Instant::now();
         // Strips drawn in canvas coordinates are each drawn on their own:
         // the column skips them and they are drawn below, top to bottom.
-        let apart = if unbaked {
+        // A workspace slide moves the arriving windows as one drawing.
+        let apart = if unbaked && self.workspace_slide.is_none() {
             self.rows_on_screen()
         } else {
             Vec::new()
@@ -336,22 +361,7 @@ impl ShellOverlayHost {
                 None
             },
         );
-        overlay_part(
-            above_quick_settings,
-            "shell.room-activity",
-            desktop,
-            |scene| {
-                self.draw_room_activity_sheet(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                    flags,
-                );
-                None
-            },
-        );
+        self.room_activity.observe_replay_presence(presence);
         overlay_part(above_quick_settings, "shell.projection", desktop, |scene| {
             self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
             None
@@ -525,10 +535,6 @@ impl ShellOverlayHost {
             LayerId::Overview => flags.overview,
             LayerId::WorkspaceSettings => flags.ws_settings,
             LayerId::Collaborators => flags.collaborators,
-            LayerId::RoomActivity => self.chrome.as_ref().is_some_and(|chrome| {
-                crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
-                    .is_some()
-            }),
             // Every page publishes: the root, each drill-in, and the Wi-Fi
             // password prompt that replaces the network list.
             LayerId::QuickSettings => flags.quick_settings && self.chrome.is_some(),
@@ -576,7 +582,7 @@ impl ShellOverlayHost {
         self.latch_overview_transition_from(ui::motion::input_source());
     }
 
-    /// [`Self::latch_overview_transition`] for a change whose input is known:
+    /// `Self::latch_overview_transition` for a change whose input is known:
     /// Super+Tab, a pinch, a click on "Overview".
     pub fn latch_overview_transition_from(&mut self, source: ui::tokens::MotionSource) {
         // Do not read `ui::host::environment()` here: that is a process
@@ -595,14 +601,9 @@ impl ShellOverlayHost {
         self.overview_zoom.is_moving(now)
     }
 
-    /// Whether the workspace-switch frame run is still in flight.
-    /// Intermediate frames must not upload the desktop again.
-    pub(crate) fn workspace_switch_holding(&self) -> bool {
-        self.workspace_switch_holding_at(Instant::now())
-    }
-
-    pub(super) fn workspace_switch_holding_at(&self, now: Instant) -> bool {
-        self.workspace_switch_until.is_some_and(|until| now < until)
+    /// Whether a workspace switch still owes the frame that shows it.
+    pub(crate) fn workspace_switch_owed(&self) -> bool {
+        self.workspace_switch_owed
     }
 
     /// A key opened or closed the overview: the windows fly at `fast`, as
@@ -611,22 +612,16 @@ impl ShellOverlayHost {
         self.latch_overview_transition_from(ui::tokens::MotionSource::Keyboard);
     }
 
-    /// Keep the compositor painting for the switch's duration. The
-    /// desktop content is already swapped; this is the frame run, not a
-    /// second slide implementation. Reduced motion still runs the frames:
-    /// snapping the curve made the close flush both scanouts.
-    /// Call on the chord, not only from `update`: demand is sampled first.
-    ///
-    /// A switch is whole-view motion (`slow`); one a shortcut or action
-    /// started keeps only a `fast` direction cue.
-    pub(crate) fn start_workspace_switch_frames(&mut self, source: ui::tokens::MotionSource) {
-        let motion = ui::tokens::Motion::default();
-        let duration = motion.context(source, motion.durations.slow());
+    /// A workspace switch was asked for by `source`: ask for the frame that
+    /// shows it. Call on the chord, not only from `update`: demand is
+    /// sampled first. The content is swapped in that frame; whatever moves
+    /// after it (a pointer's slide, [`Self::slide_workspace`]) asks for its
+    /// own frames, so the switch owes only the next painted frame
+    /// ([`Self::frame_presented`]).
+    pub(crate) fn start_workspace_switch(&mut self, source: ui::tokens::MotionSource) {
+        self.workspace_switch_owed = true;
         self.workspace_switch_source = source;
-        let now = Instant::now();
-        self.workspace_switch_until = now.checked_add(duration);
-        self.workspace_switch_latency.chord(now);
-        self.request_compositor_transition_paints();
+        self.workspace_switch_latency.chord(Instant::now());
     }
 
     /// The switch latency tracker, which the frame loop tells about the
@@ -640,18 +635,23 @@ impl ShellOverlayHost {
     /// Whether a transition still owes a present. The clock may have been
     /// deferred; this is the signal that keeps the frame run alive.
     pub(crate) fn transition_present_pending(&self) -> bool {
-        self.overview_zoom_moving(ui::time::now()) || self.workspace_switch_holding()
+        let now = ui::time::now();
+        self.overview_zoom_moving(now)
+            || self.workspace_switch_owed()
+            || self.workspace_slide_moving(now)
     }
 
-    /// Give `by` back to a running overview or workspace switch. Call with
-    /// the park spent on a full presenter, before the next sample of the clock.
+    /// Give `by` back to a running overview or workspace slide. Call with
+    /// the park spent on a full presenter, before the next sample of the
+    /// clock. A workspace switch owes a frame, not a duration, so a wait
+    /// takes nothing from it.
     pub(crate) fn defer_running_transitions(&mut self, by: Duration) {
         if by.is_zero() {
             return;
         }
         self.overview_zoom.defer(by);
-        if let Some(until) = self.workspace_switch_until.as_mut() {
-            *until = until.checked_add(by).unwrap_or(*until);
+        if let Some(slide) = self.workspace_slide.as_mut() {
+            slide.defer(by);
         }
     }
 
@@ -684,7 +684,7 @@ impl ShellOverlayHost {
     pub(super) fn wake_deadline_sources(
         &self,
         now: Instant,
-    ) -> [(&'static str, Option<Instant>); 20] {
+    ) -> [(&'static str, Option<Instant>); 21] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -723,6 +723,16 @@ impl ShellOverlayHost {
                     self.notification_stack
                         .next_wake_deadline(&ChromeNotifications::new(chrome))
                 }),
+            ),
+            (
+                // Clear all's Undo goes away when its window ends, though
+                // nothing else paints meanwhile. A deadline already passed
+                // is the next update's to expire, not a reason to spin.
+                "notification-undo",
+                self.chrome
+                    .as_ref()
+                    .and_then(|chrome| chrome.borrow().notification_history_clear_deadline())
+                    .filter(|deadline| *deadline > now),
             ),
             (
                 "osd",
@@ -810,83 +820,10 @@ impl ShellOverlayHost {
     /// about the animation rather than about how busy the machine was between
     /// two statements.
     pub(super) fn needs_animation_frame_at(&self, now: Instant) -> bool {
-        // OOBE normally owns the screen, except when Capture Studio is
-        // temporarily above it. Keep both animation clocks alive so opening
-        // a screenshot picker during setup cannot freeze its entrance or
-        // leave an opaque frame behind after Escape.
-        if let Some(onboarding) = self.onboarding.as_ref() {
-            return onboarding.needs_animation_frame()
-                || self.capture_studio.needs_animation_frame();
-        }
-        // Continuous redraws while any of the overview crossfade, the
-        // workspace slide-swap, quick-settings open/close, or any inner
-        // widget's animation is in flight. `tick_*` clear their own flags once
-        // the duration has elapsed, so at rest this returns false and the
-        // event loop can go idle.
-        let qs_in_flight = self.qs_motion.is_animating(now)
-            || self.qs_root.is_animating(now)
-            || self.qs_root_scroll_fading();
-        let ws_settings_in_flight = self.workspace_settings_overlay.is_animating(now);
-        let palette_in_flight = self.palette_transition.is_moving(now);
-        let layers_in_flight = self.layers.is_animating(now);
-        let room_activity_in_flight = self.room_activity.needs_animation_frame(now);
-        let follow_in_flight = self.follow_transition.is_moving(now);
-        let cursor_chat_in_flight = self.cursor_chat_animating(now);
-        let room_replay_in_flight = self.room_activity.replay_is_playing();
-        let capture_in_flight = self.capture_studio.needs_animation_frame();
-        let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
-            || self.display_identify.needs_frame(now);
-        let switcher_frame = self.strip_navigator.labels_need_animation_frame(now);
-        let mirror_frame = self
-            .capture_mirrors
-            .iter()
-            .any(|(_, mirror)| mirror.needs_animation_frame());
-        let markup_frame = self
-            .screenshot_markup
-            .as_ref()
-            .is_some_and(Widget::needs_animation_frame);
-        let notification_frame = self.chrome.as_ref().is_some_and(|chrome| {
-            self.notification_stack
-                .needs_animation_frame(&ChromeNotifications::new(chrome))
-        });
-        let osd_frame = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| chrome.borrow().osd)
-            .is_some_and(|osd| osd.needs_animation_frame_at(now));
-        let acknowledgement_frame = {
-            let now = ui::time::now();
-            self.current_acknowledgement(now)
-                .is_some_and(|ack| ack.fading_at(now, self.acknowledgement_reduce_motion.get()))
-        };
-        self.overview_zoom_moving(now)
-            || self.desk_animating(now)
-            || self.strip_navigator.indicators_need_animation_frame(now)
-            || self.workspace_switch_holding_at(now)
-            || qs_in_flight
-            || ws_settings_in_flight
-            || palette_in_flight
-            || layers_in_flight
-            || room_activity_in_flight
-            || follow_in_flight
-            || cursor_chat_in_flight
-            || room_replay_in_flight
-            || capture_in_flight
-            // The projection component includes both its transition and the
-            // bounded worker-response frame pump in this signal.
-            || projection_needs_frame
-            || self.content.needs_animation_frame()
-            || switcher_frame
-            || mirror_frame
-            || markup_frame
-            || notification_frame
-            || (self.overlay_flags().collaborators && self.collaborators_overlay.needs_animation_frame())
-            || osd_frame
-            || acknowledgement_frame
-            || self.window_previews.changed()
-            || self.peer_sync_overlay.needs_animation_frame()
-            || self.directory_sheet.needs_animation_frame()
-            || self.arrival_line.needs_animation_frame()
+        // One model: the frame is owed exactly when a named source asks
+        // (`animation_demand_bits`), so what the compositor paints for and
+        // what its diagnostics name never disagree.
+        self.animation_demand_bits(now) != 0
     }
 }
 

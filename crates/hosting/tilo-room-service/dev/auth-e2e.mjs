@@ -75,10 +75,20 @@
 //   invite-door    the host started again taking people by invitation
 //                  (TILO_ROOMS_ADMISSION=invite): a fresh profile opening the
 //                  bare entry is refused at the door: a page of its own
-//                  headed by the workspace being invite-only, with a field to
-//                  open an invite link, no desktop and nothing kept
-//                  (screenshots at 1440x900 and 390x844); a pasted text that
-//                  is no invite link is said so
+//                  saying Tilo is invite-only, with the wait list's email
+//                  field, signing in with an existing identity, and the
+//                  invite link's field folded behind a toggle; no desktop
+//                  and nothing kept (screenshots at 1440x900, 390x844 and
+//                  2560x1440 at DPR 2); a pasted text that is no invite link
+//                  is said so
+//   wait-list      at that door, a text that is no email address is said so
+//                  beside the field; an address is kept and confirmed as
+//                  normalized, and the same address again is answered alike
+//   wait-list-invite
+//                  the first person, a member, opens "Waiting to join"
+//                  through search and finds that address with when it was
+//                  left (screenshots at 1440x900 and 390x844); Invite makes
+//                  an invite link for it and Remove takes it off the list
 //   invite-admits  the first person, a member, gets in as before, invites
 //                  with the desktop's Invite; that link pasted into the door
 //                  page's field asks to join, the member lets them in from
@@ -828,6 +838,59 @@ async function typeInNewContact(tab, text) {
   return landed ? {value: landed.value} : {value: (await tab.evaluate(WIDGET('contacts.form.first')))?.value ?? null};
 }
 
+/** Press `name` in `tab` as a keyboard does (CDP modifier bits: Ctrl 2). */
+async function key(tab, name, modifiers = 0) {
+  const named = {Enter: 13, Escape: 27};
+  const code = name.length === 1 ? `Key${name.toUpperCase()}` : name;
+  const event = {key: name, code, windowsVirtualKeyCode: named[name] ?? name.toUpperCase().charCodeAt(0), modifiers};
+  await tab.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...event, ...(name === 'Enter' ? {text: '\r'} : {})});
+  await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', ...event});
+  await sleep(300);
+}
+
+/** In `tab`, a member's desktop: open "Waiting to join" through search
+ * (Ctrl+K, its name, Enter), find `contact` on the wait list, invite it
+ * and take it off. `{row: {contact, added}, link, removed}`, or what did
+ * not happen as `error`. */
+async function inviteFromWaitList(tab, contact, shoot) {
+  const card = "document.querySelector('[data-card=waiting]')";
+  const ROW = `[...document.querySelectorAll('[data-card=waiting] [data-list=wait-list] li')]
+    .find(li => li.querySelector('.tilo-waiting-contact')?.textContent === ${JSON.stringify(contact)})`;
+  const opened = await until(async () => {
+    if (await tab.evaluate(`Boolean(${card})`)) return true;
+    await key(tab, 'k', 2);
+    if (!await until(() => tab.evaluate('tiloMount.state()?.searchOpen === true || null'), 5000, 250)) return null;
+    for (const ch of 'Waiting to join') {
+      await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch});
+      await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
+    }
+    await sleep(800);
+    await key(tab, 'Enter');
+    return await until(() => tab.evaluate(`Boolean(${card}) || null`), 5000, 250);
+  }, 60_000, 1000);
+  if (!opened) return {error: 'search did not open Waiting to join'};
+  const row = await until(() => tab.evaluate(`(() => {
+    const row = ${ROW};
+    return row ? {contact: row.querySelector('.tilo-waiting-contact').textContent, added: row.querySelector('time')?.dateTime ?? null} : null;
+  })()`), 30_000);
+  if (!row) return {error: 'the address is not on the wait list', shown: await tab.evaluate(`${card}?.innerText ?? null`).catch(() => null)};
+  for (const [name, width, height, mobile] of [['wait-list-inviter-1440x900', 1440, 900, false], ['wait-list-inviter-390x844', 390, 844, true]]) {
+    await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
+    await sleep(500);
+    await shoot(name, tab);
+  }
+  await tab.send('Emulation.clearDeviceMetricsOverride');
+  await tab.evaluate(`[...${ROW}.querySelectorAll('button')].find(b => b.textContent === 'Invite').click()`);
+  const link = await until(() => tab.evaluate("document.querySelector('[data-card=share] input[name=link]')?.value || null"), 30_000);
+  await tab.evaluate("document.querySelector('[data-card=share] button[type=submit]')?.click()").catch(() => {});
+  if (!link) return {row, error: 'Invite made no link'};
+  await until(() => tab.evaluate(`Boolean(${ROW}) || null`), 10_000);
+  await tab.evaluate(`[...${ROW}.querySelectorAll('button')].find(b => b.textContent === 'Remove').click()`).catch(() => {});
+  const removed = Boolean(await until(() => tab.evaluate(`!${ROW} || null`), 30_000));
+  await tab.evaluate(`${card}?.querySelector('button[type=submit]')?.click()`).catch(() => {});
+  return {row, link, removed};
+}
+
 /** Whether the page shows an entry card (an offer waiting for the person). */
 const offering = tab => tab.evaluate("Boolean(document.querySelector('.tilo-entry-card'))").catch(() => false);
 
@@ -1202,34 +1265,75 @@ async function main() {
     }
     keepLog('invite-door', door);
     const doorJoins = joinsTo(door.requests, api);
-    // The door: shown, headed by the workspace being invite-only, the
-    // field for the link in it.
-    const field = await door.evaluate(`(() => {
+    // The door: shown, apologising that Tilo is invite-only, the wait list's
+    // field first, signing in and the invite link's toggle below it, the
+    // link's field folded away until asked for.
+    const DOOR = `(() => {
       const shown = id => { const el = document.getElementById(id); return Boolean(el) && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0; };
-      return shown('arrival-door') && shown('arrival-invite') && document.getElementById('arrival-invite').closest('#arrival-door') !== null
-        && /invite-only/.test(document.getElementById('arrival-door-heading')?.textContent ?? '');
-    })()`).catch(() => false);
-    for (const [name, width, height, mobile] of [['invite-door-1440x900', 1440, 900, false], ['invite-door-390x844', 390, 844, true]]) {
-      await door.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
+      return {door: shown('arrival-door'), waitList: shown('arrival-wait'), signIn: shown('arrival-sign-in'), toggle: shown('arrival-invite-toggle'),
+        link: shown('arrival-invite'), inDoor: document.getElementById('arrival-invite')?.closest('#arrival-door') !== null,
+        heading: document.getElementById('arrival-door-heading')?.textContent ?? '', note: document.getElementById('arrival-wait-note')?.textContent ?? '',
+        done: shown('arrival-wait-done') ? document.getElementById('arrival-wait-done').textContent : null,
+        invalid: document.getElementById('arrival-wait-email')?.getAttribute('aria-invalid') === 'true'};
+    })()`;
+    const field = await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    for (const [name, width, height, mobile, deviceScaleFactor = 1] of [['invite-door-1440x900', 1440, 900, false],
+      ['invite-door-390x844', 390, 844, true], ['invite-door-2560x1440-dpr2', 2560, 1440, false, 2]]) {
+      await door.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor, mobile});
       await sleep(500);
       await shoot(name, door);
     }
     await door.send('Emulation.clearDeviceMetricsOverride');
     const notALink = await door.evaluate(`(() => {
+      document.getElementById('arrival-invite-toggle').click();
       document.getElementById('arrival-invite-link').value = 'hello';
       document.getElementById('arrival-invite').requestSubmit();
       return document.getElementById('arrival-invite-error').textContent;
     })()`).catch(error => `failed: ${error.message}`);
+    const unfolded = await door.evaluate(DOOR).catch(error => ({error: error.message}));
     check('invite-door', doorTurned.entry === 'refused' && !doorTurned.desktop && doorTurned.membership === null
-      && /need an invitation/.test(doorTurned.status) && field && doorJoins.at(-1)?.status === 403
-      && /invitation-only/.test(doorJoins.at(-1)?.body ?? '') && /isn’t an invite link/.test(notALink),
-    {entry: doorTurned.entry, desktop: doorTurned.desktop, membership: doorTurned.membership, status: doorTurned.status, field,
+      && /need an invitation/.test(doorTurned.status) && field.door && field.waitList && field.signIn && field.toggle && !field.link
+      && /invite-only/.test(field.heading) && /only use your email/.test(field.note) && unfolded.link && unfolded.inDoor
+      && doorJoins.at(-1)?.status === 403 && /invitation-only/.test(doorJoins.at(-1)?.body ?? '')
+      && /"waitList":true/.test(doorJoins.at(-1)?.body ?? '') && /isn’t an invite link/.test(notALink),
+    {entry: doorTurned.entry, desktop: doorTurned.desktop, membership: doorTurned.membership, status: doorTurned.status, field, unfolded,
       joins: doorJoins.map(j => ({status: j.status, body: j.body})), notALink});
+
+    // wait-list: an address that is none is said so on the page, a real one
+    // is kept and confirmed, and the same one again (as typed differently)
+    // is answered the same without a second entry.
+    const leave = text => door.evaluate(`(async () => {
+      const email = document.getElementById('arrival-wait-email');
+      email.value = ${JSON.stringify(text)};
+      email.dispatchEvent(new Event('input'));
+      document.getElementById('arrival-wait').requestSubmit();
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline && document.querySelector('#arrival-wait button')?.disabled !== false) await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 300));
+      return ${DOOR};
+    })()`).catch(error => ({error: error.message}));
+    const badAddress = await leave('not an address');
+    await shoot('wait-list-invalid', door).catch(() => {});
+    const waitListed = await leave('Waiting.Person@Example.org ');
+    await shoot('wait-list-done', door).catch(() => {});
+    const listedAgain = await fetch(`${api}/wait-list`, {method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({email: 'waiting.person@example.org'})}).then(async r => ({status: r.status, body: await r.json().catch(() => null)}))
+      .catch(error => ({error: error.message}));
+    check('wait-list', badAddress.invalid && /doesn’t look like an email/.test(badAddress.note) && badAddress.done === null
+      && /on the list.+waiting\.person@example\.org/.test(waitListed.done ?? '') && listedAgain.status === 200
+      && listedAgain.body?.email === 'waiting.person@example.org', {badAddress, waitListed, listedAgain});
 
     // invite-admits: the first person invites the stranger.
     const inviter = await page(browser, person);
     const inviting = await open(inviter, `${web}/`, settleOptions);
     keepLog('inviter', inviter);
+    // wait-list-invite: the member finds the address in "Waiting to join"
+    // (through search, as a person does), with when it was left, invites it
+    // with a link of its own and takes it off the list.
+    const listed = inviting.entry === 'open' ? await inviteFromWaitList(inviter, 'waiting.person@example.org', shoot)
+      : {error: 'the inviter is not in'};
+    check('wait-list-invite', listed.row?.contact === 'waiting.person@example.org' && Boolean(listed.row?.added)
+      && /[?&]invite=/.test(listed.link ?? '') && listed.removed === true, listed);
     const invitePressed = inviting.entry === 'open' && Boolean(await until(() => inviter.evaluate(PRESS_NAMED('Invite')), 60_000));
     const inviteLink = invitePressed ? await until(() => inviter.evaluate(
       "document.querySelector('[data-card=share] input[name=link]')?.value || null"), 30_000) : null;

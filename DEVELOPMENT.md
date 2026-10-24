@@ -34,38 +34,25 @@ driving, storage, platforms and troubleshooting; its source is
 
 Image-level changes (`os/`, units, packages) move the VM onto a new image
 instead: `tilo device vm upgrade --from sha:<commit>` for any commit CI has built,
-`--from local` for one that is not pushed yet (`tilo device guide images`). The
-`Build / OS dev` workflow builds on explicit dispatch (select the smallest
-needed architecture list), or for an image-changing pull request labelled
-`os-image` (`os-arm64` also requests both architectures), fully cached. Ordinary
-pushes and unlabelled PRs keep the native slots available for required package
-checks; scheduled and tagged releases retain their existing verification.
-PR dev images and x86 main dev images share one non-cancelling queue, so only
-one of these image workflows can occupy x86 native capacity at a time. This
-also queues an ARM-only request through the PR wrapper; the dedicated ARM main
-wrapper retains its independent queue. Existing requests finish before the
-next image starts.
-Architecture-specific main dispatches build the newest main commit only. It publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
-the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
-main also moves `tilo-vm:main-ci` to its newest dev images.
-`Release / OS` builds signed, reproduced releases only: tags, the nightly run
-and a `release` dispatch of main.
+`--from local` for one that is not pushed yet (`tilo device guide images`). t
+builds the OS and dev images of any tree (`t test os-dev-image-x86_64`, likewise
+`os-image-<arch>` and `os-board-<board>`) and gates installed images in
+`os-acceptance-<arch>`. Every night `publish-os-dev-<arch>` publishes main's head once that
+gate passed (`t dispatch publish-os-dev-x86_64 --ref main` does it now):
+`tilo-ci:main-<sha7>-<arch>`, the dev image `tilo-vm:main-<sha7>-ci` and its disk, and moves
+`tilo-vm:main-ci` and `tilo-vm:latest` forward.
 
-To run a main dev image on a physical x86_64 (or generic aarch64) machine, dispatch
-`Release / Dev VM disk` (`dev-disk.yml`) with `source_revision` set to the
-full commit SHA, `base_image` to
-`registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`, `dev_image` to the
-`tilo-vm@sha256:…` digest of `tilo-vm:main-<sha7>-ci-x86_64` (so the image is
-not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
-disk, `tilo-vm-candidate-x86_64.qcow2`; write it to a disk of at least 64 GB
-(`sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-x86_64.qcow2 /dev/sdX`)
-and boot it. It follows `tilo-vm:main-ci`, so `sudo bootc upgrade && sudo
-systemctl reboot` moves it to main's newest dev image. The newest such disk from
-main stays at a fixed URL, which retention never prunes:
+To run a main dev image on a physical x86_64 (or generic aarch64) machine, write its
+published disk to a disk of at least 64 GB and boot it; it follows `tilo-vm:main-ci`,
+so `sudo bootc upgrade && sudo systemctl reboot` moves it to main's newest dev image.
+The disk needs a forge token with package read access:
 
 ```sh
-curl -fLO https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x86_64/tilo-vm-candidate-x86_64.qcow2
-curl -fsSL https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/x86_64/tilo-vm-candidate-x86_64.qcow2.sha256 | sha256sum -c -
+tag=main-<sha7>-ci
+base=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk/$tag
+curl -fL -H "Authorization: token $FORGEJO_TOKEN" -O "$base/tilo-vm-$tag-x86_64.qcow2"
+curl -fsSL -H "Authorization: token $FORGEJO_TOKEN" "$base/tilo-vm-$tag-x86_64.qcow2.sha256" | sha256sum -c -
+sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-$tag-x86_64.qcow2 /dev/sdX
 ```
 
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
@@ -77,10 +64,10 @@ does; `tilo device guide fedora-loop` maps its commands.
 A board dev image is the board layer (`os/Containerfile.board`: firmware, device
 tree, initramfs) on the same commit's aarch64 dev image. It is sealed: bootc hands
 the kernel a device tree only from a UKI's `.dtb` section, so the image carries a
-UKI, which keeps the device tree across updates. t builds and publishes one for main's
-head when asked (`publish-os-board-<board>` in `t.toml`; it builds
-`os-image-aarch64`, `os-dev-image-aarch64` and `os-board-<board>` first, a few hours from
-cold):
+UKI, which keeps the device tree across updates. Every night t builds main's head and
+publishes it once `os-board-<board>`, `os-board-size-<board>` and `os-acceptance-aarch64`
+pass (`publish-os-board-<board>` in `t.toml`); a dispatch does it now, a few hours from
+cold:
 
 ```sh
 t dispatch publish-os-board-lenovo-83ed --ref main
@@ -92,21 +79,18 @@ t dispatch publish-os-board-lenovo-83ed --ref main
 | Orange Pi 3B v2.1 | `registry.tilo.so/tilo/tilo-vm:main-<sha7>-orangepi-3b-v2-1` | `registry.tilo.so/tilo/tilo-vm:orangepi-3b-v2-1-ci` |
 
 The moving tag moves only forward along main: a build of an older commit leaves it.
-`t test os-board-lenovo-83ed` builds the image from your tree without publishing it
-(`t outputs` gives the OCI archive). The flashable disk is not on t yet: the newest is
-the one Build / OS dev installed last, `tilo-vm-candidate-aarch64.qcow2`: 64 GB for the
-Lenovo, written to a USB drive or its internal disk and booted from the firmware
-boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its
-root grows on first boot):
-
-The newest disk per board stays at a fixed URL, which retention never prunes
-(`<board>` is `lenovo-83ed` or `orangepi-3b-v2-1`):
+`t test os-board-lenovo-83ed` builds the image and its flashable disk from your tree without
+publishing them (`t outputs` gives the OCI archive and `disk/disk.qcow2`). The disk is installed
+following the moving tag and replaces the board's durable copy, again only forward along main:
+64 GB for the Lenovo, written to a USB drive or its internal disk and booted from the firmware
+boot menu; 16 GB for the Orange Pi, written to an SD card of at least 16 GB (its root grows on
+first boot). `<board>` is `lenovo-83ed` or `orangepi-3b-v2-1`:
 
 ```sh
 base=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk-latest/aarch64-<board>
-curl -fLO "$base/tilo-vm-candidate-aarch64.qcow2"
-curl -fsSL "$base/tilo-vm-candidate-aarch64.qcow2.sha256" | sha256sum -c -
-sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-aarch64.qcow2 /dev/sdX
+curl -fLO "$base/tilo-vm-<board>.qcow2"
+curl -fsSL "$base/tilo-vm-<board>.qcow2.sha256" | sha256sum -c -
+sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-<board>.qcow2 /dev/sdX
 ```
 
 The installed system follows the moving tag on its own: the update timer stages each new
@@ -190,9 +174,8 @@ the signed catalogue. Forgejo package publication remains a distinct artifact ch
 and alone does not make an app discoverable. [Publishing with t](docs/publishing-on-t.md)
 says what is still to move.
 
-OS publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually
-run **Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
-scheduled integration runs do not publish an OS release. macOS setup packaging,
+OS releases are dispatched on stable or a release tag (`t dispatch
+publish-os-release --ref stable`, docs/release-pipeline.md). macOS setup packaging,
 cask publication and installation tests remain in **Release / imager** but are
 disabled during alpha; tags do not enable those lanes.
 

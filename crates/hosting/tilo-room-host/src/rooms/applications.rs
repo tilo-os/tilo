@@ -82,7 +82,9 @@ fn start_part(
         let mut started = automerge::AutoCommit::new();
         tilo_automerge::ApplyIncoming::load_incoming(&mut started, &genesis)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
-        candidate.publish_document(app, record, started.save(), key, at)?;
+        candidate
+            .publication_mut()
+            .publish_document(app, record, started.save(), key, at)?;
     }
     Ok(vec![hash])
 }
@@ -93,7 +95,7 @@ impl Rooms {
     /// trusted host code. This host-local API accepts no incoming member
     /// snapshot or factory. It keeps the existing graph and publishes only
     /// its admitted incremental changes, sealed for a record members write
-    /// sealed ([`super::sealed_records`]).
+    /// sealed (`super::sealed_records`).
     ///
     /// # Errors
     /// Refuses other certificates, stale custody, undeclared apps, a primary
@@ -398,7 +400,13 @@ impl Rooms {
                 )?;
             }
             None => {
-                candidate.publish_incremental(app, record, fresh, bot, system_time(now))?;
+                candidate.publication_mut().publish_incremental(
+                    app,
+                    record,
+                    fresh,
+                    bot,
+                    system_time(now),
+                )?;
             }
         }
         let collaboration = governed.collaboration().clone();
@@ -582,7 +590,9 @@ fn publish_authored(
             super::sealed_records::start_sealed(candidate, keys, (app, record), bytes, key, now)?;
         }
         (None, None) => {
-            candidate.publish_document(app, record, bytes, key, now)?;
+            candidate
+                .publication_mut()
+                .publish_document(app, record, bytes, key, now)?;
         }
     }
     Ok(true)
@@ -607,8 +617,16 @@ fn publish_genesis(
         // Establish ownership through the same governor-only StatePeer path
         // as native prepare_application_record, then merge the standard
         // factory.
-        candidate.publish_document(app, record, automerge::AutoCommit::new().save(), key, now)?;
-        candidate.publish_document(app, record, genesis, key, now)?;
+        candidate.publication_mut().publish_document(
+            app,
+            record,
+            automerge::AutoCommit::new().save(),
+            key,
+            now,
+        )?;
+        candidate
+            .publication_mut()
+            .publish_document(app, record, genesis, key, now)?;
     }
     Ok(())
 }

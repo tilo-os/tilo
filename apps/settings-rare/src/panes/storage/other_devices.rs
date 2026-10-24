@@ -19,13 +19,13 @@ use super::{DeviceResidency, StorageEffect};
 /// One device asked for its summary, and its answer when it comes.
 struct Asked {
     key: [u8; 32],
-    call: ui::LocalState<ui::InvocationCall>,
+    call: ui::InvocationCall,
 }
 
 /// One round of asking: the device list, then each device on it.
 pub(super) struct OtherDevices {
     remote: ui::RemoteActions,
-    list_call: Option<ui::LocalState<ui::InvocationCall>>,
+    list_call: Option<ui::InvocationCall>,
     /// The person's devices as the host last listed them.
     fleet: Vec<DeviceView>,
     asked: Vec<Asked>,
@@ -106,7 +106,7 @@ fn asked_of(fleet: &[DeviceView]) -> impl Iterator<Item = &DeviceView> {
 }
 
 /// Ask device `key` for its storage summary.
-fn ask(remote: &ui::RemoteActions, key: &[u8; 32]) -> ui::LocalState<ui::InvocationCall> {
+fn ask(remote: &ui::RemoteActions, key: &[u8; 32]) -> ui::InvocationCall {
     remote.invoke(own_device::target(), summary_request(key).argument(), None)
 }
 

@@ -21,8 +21,8 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
 use ui::widget::{
-    AvatarFace, Button, ButtonFace, ButtonRole, Checkbox, CheckboxFace, ColorSwatchFace,
-    ControlSize, Dropdown, ListRowFace, RowLeading, Toggle, ToggleFace, Widget,
+    AvatarFace, Button, ButtonFace, ButtonRole, CheckGlyph, Checkbox, CheckboxFace,
+    ColorSwatchFace, ControlSize, Dropdown, ListRowFace, RowLeading, Toggle, ToggleFace, Widget,
 };
 
 use super::{Action, CalTarget, CalendarApp, FormField, Sel, TaskPopover};
@@ -285,7 +285,7 @@ fn apply_repeat(event: &mut Event, value: &str) {
     event.recurrence_interval = interval;
 }
 
-const ALERTS: [(i64, &str); 7] = [
+pub(super) const ALERTS: [(i64, &str); 7] = [
     (0, "At time of event"),
     (5, "5 minutes before"),
     (10, "10 minutes before"),
@@ -1145,7 +1145,12 @@ impl CalendarApp {
             scene,
             t,
             sheet,
-            &ToggleFace::new(f.all_day, event.all_day).hovered(f.all_day.contains(mouse)),
+            &ToggleFace::new(f.all_day, event.all_day)
+                .pose(
+                    self.faces
+                        .switch(("all-day", event.id), event.all_day, sheet.motion()),
+                )
+                .hovered(f.all_day.contains(mouse)),
         );
         hits.push((f.all_day, Action::ToggleAllDay));
 
@@ -1250,7 +1255,14 @@ impl CalendarApp {
             ctx.scene,
             ctx.transform,
             theme,
-            &CheckboxFace::new(f.task_check, task.done).hovered(f.task_check.contains(mouse)),
+            &CheckboxFace::new(f.task_check, task.done)
+                .pose(self.faces.check(
+                    ("done", task.id),
+                    task.done,
+                    CheckGlyph::Check,
+                    theme.motion(),
+                ))
+                .hovered(f.task_check.contains(mouse)),
         );
         hits.push((f.task_check, Action::ToggleSelectedTask));
         let ink = if task.done {
@@ -1290,7 +1302,14 @@ impl CalendarApp {
                 ctx.scene,
                 ctx.transform,
                 theme,
-                &CheckboxFace::new(check, subtask.done).hovered(rect.contains(mouse)),
+                &CheckboxFace::new(check, subtask.done)
+                    .pose(self.faces.check(
+                        ("done", subtask.id),
+                        subtask.done,
+                        CheckGlyph::Check,
+                        theme.motion(),
+                    ))
+                    .hovered(rect.contains(mouse)),
             );
             let ink = if subtask.done {
                 theme.text_dim

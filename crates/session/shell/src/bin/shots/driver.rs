@@ -32,6 +32,7 @@ use taffy::prelude::NodeId;
 mod desktop_control;
 mod downloaded_scene;
 mod invite_scenes;
+mod now_playing_fixture;
 mod scene_catalogue;
 mod search_seed;
 mod two_groups_scene;
@@ -93,6 +94,8 @@ pub enum LockVisualState {
     Verifying,
     Error,
     Notifications,
+    /// The compact now-playing card under the credential panel.
+    NowPlaying,
 }
 
 impl ShellDriver {
@@ -612,6 +615,12 @@ impl ShellDriver {
         self.fb.take_backdrop()
     }
 
+    /// The ground the shell stands on, as the live compositor clears each
+    /// display to it before drawing the shell.
+    pub fn ground(&self) -> vello::peniko::Color {
+        ui::chrome::shell::desktop_ground(self.fb.theme())
+    }
+
     pub fn paint(&mut self) -> Scene {
         if let Some(state) = self.lock_visual {
             // The lock scene has no floating surfaces; drop any earlier frame's.
@@ -624,6 +633,7 @@ impl ShellDriver {
                 self.fb.scene_size(),
                 None,
             );
+            let lock_player = now_playing_fixture::shots_player();
             let view = match state {
                 LockVisualState::Default => shell::compositor::lock_screen::LockView {
                     clock: "12:34",
@@ -655,6 +665,12 @@ impl ShellDriver {
                     notification_count: 3,
                     ..Default::default()
                 },
+                LockVisualState::NowPlaying => shell::compositor::lock_screen::LockView {
+                    clock: "12:34",
+                    date: "Monday, 7 September",
+                    now_playing: Some(&lock_player),
+                    ..Default::default()
+                },
             };
             let theme = self.fb.theme().clone();
             return shell::compositor::lock_screen::draw_lock_scene(
@@ -664,12 +680,9 @@ impl ShellDriver {
                 &view,
             );
         }
+        // The paint itself turns the frame for motion that steps once per
+        // painted frame (a window group's width spring).
         let mut scene = self.fb.paint();
-        // As the compositor does after every paint (`compositor::native`):
-        // motion that steps once per presented frame (a window group's
-        // width spring) is told the frame turned, or it stops after its
-        // first step and a film shows it frozen.
-        self.fb.frame_presented();
         #[cfg(target_os = "linux")]
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
@@ -1298,8 +1311,12 @@ impl ShellDriver {
     /// this one, and three people here, one with a status line they wrote,
     /// one whose machine generated theirs, one with none, each on a window.
     pub fn seed_desk_for_shots(&mut self) {
+        use shell::shell::now_playing::FixturePlayers;
         use shell::shell::state::Collaborator;
-        self.seed_now_playing_for_shots();
+        let mut player = now_playing_fixture::shots_player();
+        player.artwork = None;
+        self.host_mut()
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
         let handle = self.chrome_handle();
         let room = {
             let st = handle.borrow();
@@ -1349,28 +1366,13 @@ impl ShellDriver {
         }
     }
 
-    /// A music player playing, as the now-playing card reads it.
+    /// A song playing with its cover, for the now-playing cards.
     pub fn seed_now_playing_for_shots(&mut self) {
-        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
-        let player = PlayerSnapshot {
-            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
-            identity: "Spotify".to_string(),
-            status: PlaybackStatus::Playing,
-            title: Some("Teardrop".to_string()),
-            artist: Some("Massive Attack".to_string()),
-            artwork: None,
-            track_id: Some("/org/tilo/shots/track/1".to_string()),
-            length_us: Some(330_000_000),
-            position_us: 94_000_000,
-            can_play: true,
-            can_pause: true,
-            can_seek: true,
-            can_go_next: true,
-            can_go_previous: true,
-            observed_at: Instant::now(),
-        };
+        use shell::shell::now_playing::FixturePlayers;
         self.host_mut()
-            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![
+                now_playing_fixture::shots_player(),
+            ])));
     }
 
     /// Three people and an agent here, as the live shell folds them: Ada
@@ -1829,7 +1831,6 @@ impl ShellDriver {
             };
             if changed {
                 self.with_chrome(|state| {
-                    state.overlays.room_activity = false;
                     state.overlays.collaborators = false;
                     state.bump();
                     state.push_notification(
@@ -1837,7 +1838,6 @@ impl ShellDriver {
                         "Written forward: the version you reverted from is still in the history.",
                     );
                 });
-                self.host_mut().force_room_activity_closed_for_shots();
                 // Prime the notification host. It drains newly queued chrome
                 // notifications during paint, so the named recovery frame
                 // must be the frame that displays the result, not the next
@@ -1978,6 +1978,7 @@ impl ShellDriver {
             "palette_github" => self.scene_seeded_query("github"),
             "palette_workbook" => self.scene_seeded_query("workbook"),
             "palette_open_app" => self.scene_palette_open_app(),
+            "palette_record_actions" => self.scene_palette_record_actions(),
             "palette_downloaded" => self.scene_downloaded_query("imager"),
             "palette_downloaded_missing" => self.scene_downloaded_query("ardour"),
             "launcher_downloaded" => self.scene_downloaded_launcher(),
@@ -2067,6 +2068,23 @@ impl ShellDriver {
             "emoji-picker" => self.scene_emoji_picker(),
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
+            "secret-prompt-authentication" => {
+                self.scene_secret_prompt_authentication(&["quinn"], None);
+            }
+            "secret-prompt-authentication-rejected" => self.scene_secret_prompt_authentication(
+                &["quinn"],
+                Some("That password was not accepted."),
+            ),
+            "secret-prompt-authentication-accounts" => {
+                self.scene_secret_prompt_authentication(&["quinn", "root"], None);
+            }
+            "secret-prompt-wifi" => self.scene_secret_prompt_network(SecretPromptNetwork::Wifi),
+            "secret-prompt-sign-in" => {
+                self.scene_secret_prompt_network(SecretPromptNetwork::SignIn);
+            }
+            "secret-prompt-sim-pin" => {
+                self.scene_secret_prompt_network(SecretPromptNetwork::SimPin);
+            }
             "desktop-control-ask" => self.scene_desktop_control_ask(),
             "desktop-control-chip" => self.scene_desktop_control_chip(),
             "desktop-control-menu" => self.scene_desktop_control_menu(),
@@ -2096,14 +2114,12 @@ impl ShellDriver {
                 #[cfg(not(debug_assertions))]
                 return Err("agent composer shots require a debug build".into());
             }
-            "room-activity" => self.scene_room_activity(),
-            "room-activity-named" => self.scene_room_activity_named(),
-            "room-activity-all" => self.scene_room_activity_all(),
             "ws-settings-permissions" => self.scene_ws_settings_permissions(),
             "notifications" => self.scene_notifications(),
             "notifications-one" => self.scene_notifications_one(),
             "notifications-dnd" => self.scene_notifications_dnd(),
             "notifications-graphics" => self.scene_notifications_graphics(),
+            "notifications-call" => return self.scene_notifications_call(),
             "multi-group" => self.scene_multi_group(),
             "maximized" => return self.scene_maximized(),
             "two-groups-focus" => self.scene_two_groups_focus(),
@@ -3059,6 +3075,87 @@ impl ShellDriver {
     /// A portal permission sheet: a sandboxed app asks for the camera and the
     /// request travels the production prompt queue into the compositor's
     /// prompt (`PermissionPrompt`, hosted by `overlay_host`).
+    /// The compositor's password sheet as polkit raises it: for one
+    /// account, after a failed attempt, or with a choice of account.
+    fn scene_secret_prompt_authentication(&mut self, accounts: &[&str], notice: Option<&str>) {
+        let queue = self.host_mut().portal_dialog_queue();
+        let request = shell::shell::portal_dialog::AuthenticationRequest {
+            // Each variant is its own request: a live handle is never queued twice.
+            handle: format!("polkit:shots/{}/{}", accounts.len(), notice.is_some()),
+            message: "Authentication is required to install software".into(),
+            action_id: "org.freedesktop.Flatpak.app-install".into(),
+            identities: accounts.iter().map(ToString::to_string).collect(),
+            identity: 0,
+            prompt: "Password:".into(),
+            echo: false,
+            notice: notice.map(str::to_owned),
+        };
+        if let Ok(reply) = queue.enqueue_authentication(request) {
+            self.held.push(Box::new(reply));
+        }
+        self.host_mut().pump_portal_dialogs();
+        self.step_frames(2);
+    }
+
+    /// The compositor's password sheet as the network daemon raises it.
+    fn scene_secret_prompt_network(&mut self, kind: SecretPromptNetwork) {
+        use shell::shell::portal_dialog::{
+            NetworkSecretsRequest, SecretFieldRule, SecretFieldSpec,
+        };
+        let field = |key: &str, label: &str, masked: bool, initial: &str| SecretFieldSpec {
+            key: key.into(),
+            label: label.into(),
+            masked,
+            required: true,
+            initial: initial.into(),
+            rule: SecretFieldRule::Any,
+        };
+        let request = match kind {
+            SecretPromptNetwork::Wifi => NetworkSecretsRequest {
+                handle: "nm-secrets:shots/wifi".into(),
+                title: "Wi-Fi password required".into(),
+                detail: "Enter the password for \u{201c}Café Lindenhof\u{201d}.".into(),
+                fields: vec![SecretFieldSpec {
+                    rule: SecretFieldRule::WpaPassphrase,
+                    ..field("psk", "Password", true, "")
+                }],
+                remember: Some(true),
+            },
+            SecretPromptNetwork::SignIn => NetworkSecretsRequest {
+                handle: "nm-secrets:shots/8021x".into(),
+                title: "Network sign-in".into(),
+                detail: "\u{201c}eduroam\u{201d} needs your user name and password.".into(),
+                fields: vec![
+                    field("identity", "User name", false, "quinn@example.edu"),
+                    SecretFieldSpec {
+                        required: false,
+                        ..field(
+                            "anonymous-identity",
+                            "Anonymous identity (optional)",
+                            false,
+                            "",
+                        )
+                    },
+                    field("password", "Password", true, ""),
+                ],
+                remember: Some(true),
+            },
+            SecretPromptNetwork::SimPin => NetworkSecretsRequest {
+                handle: "nm-secrets:shots/gsm".into(),
+                title: "SIM PIN required".into(),
+                detail: "Enter the PIN to unlock the SIM for \u{201c}Carrier\u{201d}.".into(),
+                fields: vec![field("pin", "SIM PIN", true, "")],
+                remember: Some(false),
+            },
+        };
+        let queue = self.host_mut().portal_dialog_queue();
+        if let Ok(reply) = queue.enqueue_network_secrets(request) {
+            self.held.push(Box::new(reply));
+        }
+        self.host_mut().pump_portal_dialogs();
+        self.step_frames(2);
+    }
+
     fn scene_portal_permission(&mut self) {
         use shell::portal::{FilePickerQueue, PortalCaller, PromptQueueHandle, PromptResolver};
         use shell::shell::state::{Capability, Expiry, WorkspaceId};
@@ -3109,10 +3206,10 @@ impl ShellDriver {
         self.step_frames(20);
     }
 
-    /// Drives the room through the production mirrors, not a seeded
-    /// `HistoryEntry` — these are the same calls the portal, permission
-    /// prompt, drop handler and settings modal make.
-    fn scene_room_activity(&mut self) {
+    /// A room with a history: changes made through the production mirrors,
+    /// not a seeded `HistoryEntry` — the same calls the portal, permission
+    /// prompt, drop handler and settings modal make — and a second person's.
+    pub fn seed_room_history_for_shots(&mut self) {
         use shell::shell::state::{Access, CapOverride, Scope, Subject};
         let handle = self.chrome_handle();
         let owner = {
@@ -3202,328 +3299,10 @@ impl ShellDriver {
                 let _ = tree.apply_changes(&changes);
             }
         }
-        self.with_chrome(|st| st.open_room_activity(None));
-        self.fb.host_mut().force_room_activity_settled();
-    }
-
-    /// Deterministic scenario entry point for the two history zoom levels.
-    /// It seeds the same collaborative changes as the legacy visual scene,
-    /// then switches through the pane's public API rather than reaching into
-    /// drawing state.
-    pub fn seed_room_activity_for_shots(&mut self, explore: bool) {
-        self.scene_room_activity();
-        if !explore {
-            use collab_types::ArtifactKind;
-            use ui::tilo_actions::ActionContext;
-            use ui::widget::history::{HistoryEntry, HistoryEntryId};
-
-            let local = shell::shell::state::local_user_id();
-            self.fb
-                .host_mut()
-                .room_activity_mut()
-                .open_external_entry(HistoryEntry {
-                    id: HistoryEntryId([0x51; 16]),
-                    author: ui::history_source::author_for_identity(local.clone(), &local),
-                    entry_kind: ui::widget::EntryKind::Text,
-                    artifact_kind: ArtifactKind::File,
-                    timestamp: std::time::SystemTime::now(),
-                    summary: "Updated revenue assumptions".into(),
-                    text_delta: Some((18, 4)),
-                    diff_payload: None,
-                    redaction: None,
-                    context: Some(
-                        ActionContext::for_resource(
-                            "sheets:q2-finance",
-                            "spreadsheet",
-                            "Q2 finance report",
-                        )
-                        .with_app("org.tilo.Sheets", "Sheets")
-                        .with_purpose("Preparing the board review"),
-                    ),
-                });
-
-            // Catch up needs two adjacent, shared work sessions so expanding
-            // either card proves the editable seam in the rendered product.
-            // These names go through the same document write path as the UI;
-            // the external resume hint above is deliberately not grouped.
-            let handle = self.chrome_handle();
-            let state = handle.borrow();
-            let mut tree = state.tree_mut();
-            let entries = self.fb.host().room_activity().entries().to_vec();
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "entries.len() >= 4, so 0 <= first_end < split <= last < entries.len()"
-            )]
-            if entries.len() >= 4 {
-                let split = entries.len() / 2;
-                if split >= 2 && entries.len().saturating_sub(split) >= 2 {
-                    let first_end = split.saturating_sub(1);
-                    let last = entries.len().saturating_sub(1);
-                    let pane = self.fb.host_mut().room_activity_mut();
-                    pane.apply_name(
-                        &mut *tree,
-                        &ui::GroupNameRequest {
-                            record_id: None,
-                            start: entries[0].id,
-                            end: entries[first_end].id,
-                            label: "Write Q3 financial report".to_string(),
-                        },
-                    );
-                    pane.apply_name(
-                        &mut *tree,
-                        &ui::GroupNameRequest {
-                            record_id: None,
-                            start: entries[split].id,
-                            end: entries[last].id,
-                            label: "Onboard Sarah".to_string(),
-                        },
-                    );
-                }
-            }
-            self.fb
-                .host_mut()
-                .room_activity_mut()
-                .prepare_away_recap_for_shots(&mut *tree);
-            drop(tree);
-            drop(state);
-        }
-        self.fb.host_mut().room_activity_mut().set_view(if explore {
-            shell::shell::room_activity::ActivityView::Explore
-        } else {
-            shell::shell::room_activity::ActivityView::CatchUp
-        });
-        self.fb.host_mut().force_room_activity_settled();
-        // Headless snapshots do not render, while this immediate-mode sheet
-        // derives its keyboard order from the controls it actually paints.
-        // Build one CPU-side scene (no adapter/GPU involved) so keyboard
-        // actions exercise the same rendered control set in every mode.
-        let _ = self.fb.paint();
-    }
-
-    pub fn seed_automatic_work_sessions_for_shots(&mut self) {
-        let handle = self.chrome_handle();
-        {
-            let state = handle.borrow();
-            let mut tree = state.tree_mut();
-            let workspace = tree.desktop.active;
-            for (actor, group_id, group_label, action) in [
-                (
-                    "Xaver",
-                    "finance",
-                    "Write Q3 financial report",
-                    "Draft totals",
-                ),
-                (
-                    "Quinten",
-                    "finance",
-                    "Write Q3 financial report",
-                    "Check forecast",
-                ),
-                (
-                    "Sarah",
-                    "finance",
-                    "Write Q3 financial report",
-                    "Reconcile actuals",
-                ),
-                (
-                    "Ada",
-                    "finance",
-                    "Write Q3 financial report",
-                    "Review variance",
-                ),
-                ("Sarah", "onboarding", "Onboard Sarah", "Open welcome notes"),
-                ("Ada", "onboarding", "Onboard Sarah", "Assign mentor"),
-            ] {
-                let context = tilo_actions::ActionContext::for_resource(
-                    format!("shots:{group_id}"),
-                    "document",
-                    group_label,
-                )
-                .with_app("org.tilo.Writer", "Writer")
-                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-                    tilo_actions::ActionKey::new(
-                        "org.tilo.Writer",
-                        "document",
-                        tilo_actions::entry::kebab(action),
-                    ),
-                    [],
-                )))
-                .with_group(group_id, group_label, "work-session");
-                let _ = tree.append_workspace_effect_receipt_for_shots(
-                    workspace,
-                    tilo_actions::InvocationId::new(),
-                    actor,
-                    context,
-                    tilo_actions::EffectReceiptStatus::Succeeded,
-                );
-            }
-        }
-        self.with_chrome(|state| state.open_room_activity(None));
-        self.fb
-            .host_mut()
-            .room_activity_mut()
-            .set_view(shell::shell::room_activity::ActivityView::CatchUp);
-        self.fb.host_mut().force_room_activity_settled();
-        let _ = self.fb.paint();
-    }
-
-    pub fn expand_automatic_work_session_for_shots(&mut self) -> bool {
-        let expanded = self
-            .fb
-            .host_mut()
-            .room_activity_mut()
-            .expand_work_session_for_shots(0);
-        let _ = self.fb.paint();
-        expanded
-    }
-
-    pub fn focus_first_room_activity_work_session_for_shots(&mut self) -> bool {
-        self.fb
-            .host_mut()
-            .room_activity_mut()
-            .focus_first_work_session_for_shots()
-    }
-
-    pub fn correct_automatic_work_session_for_shots(&mut self) -> bool {
-        let handle = self.chrome_handle();
-        let state = handle.borrow();
-        let mut tree = state.tree_mut();
-        let corrected = self
-            .fb
-            .host_mut()
-            .room_activity_mut()
-            .move_work_session_boundary_for_shots(&mut *tree, 1, 0, true);
-        drop(tree);
-        drop(state);
-        self.fb.host_mut().force_room_activity_settled();
-        let _ = self.fb.paint();
-        corrected
-    }
-
-    pub fn show_room_activity_replay_for_shots(&mut self) {
-        self.fb
-            .host_mut()
-            .room_activity_mut()
-            .set_view(shell::shell::room_activity::ActivityView::Replay);
-        self.fb.host_mut().force_room_activity_settled();
-        let _ = self.fb.paint();
-    }
-
-    /// Select Ada in the contributor controls using the history surface's
-    /// public filter API. Returns false if the seeded remote replica failed
-    /// to produce an authored change, rather than emitting a misleading PNG.
-    pub fn filter_room_activity_to_ada_for_shots(&mut self) -> bool {
-        let ada = self
-            .fb
-            .host()
-            .room_activity()
-            .contributors()
-            .iter()
-            .find(|name| name.eq_ignore_ascii_case("ada"))
-            .cloned();
-        let Some(ada) = ada else {
-            return false;
-        };
-        self.fb
-            .host_mut()
-            .room_activity_mut()
-            .set_author_filter(Some(ada));
-        self.fb.host_mut().force_room_activity_settled();
-        let _ = self.fb.paint();
-        true
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
-    )]
-    pub fn select_room_activity_entry(&mut self, index: usize) {
-        let (start, len) = {
-            let activity = self.fb.host().room_activity();
-            let entries = activity.timeline().entries();
-            let start = activity
-                .visible_entry(index)
-                .and_then(|visible| entries.iter().position(|entry| entry.id == visible.id))
-                .unwrap_or(index);
-            (start, entries.len())
-        };
-        for candidate in start..len {
-            self.fb
-                .host_mut()
-                .room_activity_mut()
-                .timeline_mut()
-                .set_selection(Some((candidate, candidate)));
-            let handle = self.chrome_handle();
-            let state = handle.borrow();
-            let mut tree = state.tree_mut();
-            if self
-                .fb
-                .host()
-                .room_activity()
-                .compare_selection(&mut *tree, None)
-                .is_some()
-            {
-                break;
-            }
-        }
-        let _ = self.fb.paint();
-    }
-
-    /// Two runs named, one by the peer under its own actor, so the band
-    /// reads "named by" someone other than the viewer. Both go in through
-    /// the pane's own write path (the `[Name]` chip's call).
-    fn scene_room_activity_named(&mut self) {
-        self.scene_room_activity();
         let handle = self.chrome_handle();
         let st = handle.borrow();
         let mut tree = st.tree_mut();
-        let entries = self.fb.host().room_activity().entries().to_vec();
-        if entries.len() >= 6 {
-            // The peer's own run: it named it before syncing.
-            let mut peer = tree.doc.fork();
-            peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
-            let end = entries.len().saturating_sub(1);
-            let start = entries.len().saturating_sub(3);
-            if let (Some(start_entry), Some(end_entry)) = (entries.get(start), entries.get(end)) {
-                ui::history_groups::name_range(
-                    &mut peer,
-                    &start_entry.id,
-                    Some(&end_entry.id),
-                    "Reading week",
-                );
-                tilo_resource::history::commit_stamped(&mut peer);
-                let _ = tree.doc.merge_incoming(&mut peer);
-            }
-
-            if let (Some(first), Some(fourth)) = (entries.first(), entries.get(3)) {
-                let pane = self.fb.host_mut().room_activity_mut();
-                pane.apply_name(
-                    &mut *tree,
-                    &ui::GroupNameRequest {
-                        record_id: None,
-                        start: first.id,
-                        end: fourth.id,
-                        label: "Set up the room".to_string(),
-                    },
-                );
-            }
-        }
-        drop(tree);
-        drop(st);
-        self.fb.host_mut().force_room_activity_settled();
-    }
-
-    /// Widened to the whole tree; every row now says which workspace it
-    /// happened in.
-    fn scene_room_activity_all(&mut self) {
-        self.scene_room_activity();
-        let handle = self.chrome_handle();
-        let st = handle.borrow();
-        let tree = st.tree();
-        self.fb.host_mut().room_activity_mut().set_scope(
-            shell::shell::room_activity::RoomScope::AllWorkspaces,
-            &*tree,
-        );
+        self.fb.host_mut().room_activity_mut().refresh(&mut *tree);
     }
 
     fn scene_ws_settings_permissions(&mut self) {
@@ -3591,6 +3370,30 @@ impl ShellDriver {
                     .with_shown_at(settled_at),
             );
         });
+    }
+
+    /// An incoming call over a maximized window: the call's card stands
+    /// below the window's bar, never over its History, restore or close,
+    /// and offers its answers on the card.
+    fn scene_notifications_call(&mut self) -> Result<(), String> {
+        use tilo_desktop::notifications::{Addressed, Notification};
+        self.scene_maximized()?;
+        let settled_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        self.with_chrome(|st| {
+            let mut call = Notification::new("Jonas is calling", "Video call")
+                .with_from("Jonas", "peer:jonas")
+                .with_addressed(Addressed::IncomingCall)
+                .with_dismiss_after(Duration::from_secs(60))
+                .with_shown_at(settled_at);
+            call.actions = vec![
+                ("answer".into(), "Answer".into()),
+                ("decline".into(), "Decline".into()),
+            ];
+            st.push_notification_full(call);
+        });
+        Ok(())
     }
 
     /// The notice a desktop shows once it gave a dead GPU up for software, as the
@@ -4349,4 +4152,12 @@ mod tests {
         );
         (files_tab_id, files_rect)
     }
+}
+
+/// Which network sheet a shots scene raises.
+#[derive(Clone, Copy)]
+enum SecretPromptNetwork {
+    Wifi,
+    SignIn,
+    SimPin,
 }

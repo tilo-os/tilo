@@ -115,10 +115,10 @@ pub fn parse_from(
 }
 
 /// Where a CI build of `tag` can come from, in the order `vm upgrade` tries
-/// them: the dev images dev-disk.yml publishes (from the unsigned integration
-/// image, then from a signed release), which the VM pulls itself; then the
+/// them: the dev images published for it (built on the unsigned integration
+/// image, then on a signed release), which the VM pulls itself; then the
 /// production images a dev image can be built FROM here: the integration image
-/// build-image.yml pushes for every main build, then the signed release.
+/// of a main build (t's publish-os-dev-<arch>), then the signed release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiCandidates {
     pub dev_images: Vec<String>,
@@ -506,6 +506,9 @@ pub struct Deployment {
     pub image: String,
     pub transport: String,
     pub digest: String,
+    /// The composefs identity it boots (`composefs.verity`, without the
+    /// `sha512:` prefix), which is how its boot loader entry names it.
+    pub verity: Option<String>,
 }
 
 impl Deployment {
@@ -519,6 +522,12 @@ impl Deployment {
                 .unwrap_or("registry")
                 .to_owned(),
             digest: image.get("imageDigest")?.as_str()?.to_owned(),
+            verity: value
+                .pointer("/composefs/verity")
+                .and_then(Value::as_str)
+                .map(|v| v.strip_prefix("sha512:").unwrap_or(v))
+                .filter(|v| v.len() == 128 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+                .map(str::to_owned),
         })
     }
 
@@ -628,6 +637,110 @@ pub fn under_vm_lock(words: &[String]) -> String {
         "mkdir -p {LOCKS} && flock --nonblock --conflict-exit-code 75 {LOCKS}/vm.lock sh -c {}",
         sh_quote(&bootc_line(&args))
     )
+}
+
+/// The VM's own boot-entry pass, run right after bootc staged a deployment or
+/// reordered them. A deployment that has never booted well has to carry a
+/// boot loader try counter BEFORE the reboot into it: one that fails before
+/// userspace (a hung disk unlock, a crash in the initrd) never runs anything
+/// that could add it later, and without one the boot loader picks it again on
+/// every boot instead of going back to the previous deployment.
+pub const BOOT_ENTRIES: &str = "if [ -x /usr/libexec/tilo-deployment ]; then /usr/libexec/tilo-deployment entries 2>&1; echo \"@@entries $?\"; else echo '@@entries absent'; fi";
+
+/// What [`BOOT_ENTRIES`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntriesOutcome {
+    /// The pass ran: every deployment that needs a counter has one.
+    Done,
+    /// The image's pass found no boot loader layout: an image from before
+    /// tilo-esp-generator mounts nothing at /boot or /boot/efi, so its pass
+    /// cannot see the ESP even where sd-boot started from one.
+    NoLayout,
+    /// The image has no tilo-deployment at all.
+    Absent,
+    /// The pass failed; its output.
+    Failed(String),
+}
+
+pub fn parse_entries(output: &str) -> EntriesOutcome {
+    let status = output
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("@@entries "));
+    match status {
+        Some("absent") => EntriesOutcome::Absent,
+        Some("0") if output.contains("nothing to maintain") => EntriesOutcome::NoLayout,
+        Some("0") => EntriesOutcome::Done,
+        _ => EntriesOutcome::Failed(
+            output
+                .lines()
+                .filter(|line| !line.starts_with("@@entries"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+    }
+}
+
+/// How many tries a staged deployment gets; tilo-deployment's own default.
+pub const BOOT_TRIES: u32 = 3;
+
+/// For an image whose own pass cannot see the ESP ([`EntriesOutcome::NoLayout`]
+/// or [`EntriesOutcome::Absent`]): mount the ESP the boot loader started from
+/// (`LoaderDevicePartUUID`) in a private mount namespace and give the entry
+/// that boots `verity` its try counter, the same rename tilo-deployment does.
+/// The entry is found by the composefs identity it boots, never by name:
+/// bootc renumbers every entry when it stages one. Prints `@@counted N`, or
+/// `@@counter none` where no boot loader names an ESP (a VM started without
+/// systemd-boot), or `@@counter failed: WHY`.
+pub fn count_staged_entry_script(verity: &str) -> String {
+    let inner = format!(
+        r#"m=$(mktemp -d) || {{ echo '@@counter failed: no scratch directory'; exit 0; }}
+if ! mount -t vfat -o rw "/dev/disk/by-partuuid/$1" "$m" 2>/dev/null; then echo "@@counter failed: could not mount the ESP (PARTUUID $1) read-write"; exit 0; fi
+n=0
+for f in "$m"/loader/entries.staged/bootc*.conf "$m"/loader/entries/bootc*.conf; do
+  [ -f "$f" ] || continue
+  case "${{f##*/}}" in *+*) continue ;; esac
+  u=$(sed -n 's/^uki[[:space:]]\{{1,\}}//p' "$f" | head -1)
+  if [ -n "$u" ]; then c=$(/usr/libexec/tilo-uki-cmdline show "$m/${{u#/}}" 2>/dev/null); else c=$(sed -n 's/^options[[:space:]]//p' "$f"); fi
+  printf '%s\n' "$c" | tr ' \t' '\n\n' | sed 's/^composefs=sha512:/composefs=/' | grep -qx 'composefs={verity}' || continue
+  mv "$f" "${{f%.conf}}+{BOOT_TRIES}.conf" && n=$((n + 1))
+done
+sync
+umount "$m"; rmdir "$m"
+echo "@@counted $n""#
+    );
+    format!(
+        "p=$(tail -c +5 /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f 2>/dev/null | tr -d '\\000' | tr 'A-F' 'a-f'); \
+         case \"$p\" in ????????-????-????-????-????????????) ;; *) echo '@@counter none'; exit 0 ;; esac; \
+         unshare -m sh -c {} counter \"$p\"",
+        crate::vmbuild::sh_quote(&inner)
+    )
+}
+
+/// What [`count_staged_entry_script`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Counted {
+    Entries(usize),
+    NoBootLoader,
+    Failed(String),
+}
+
+pub fn parse_counted(output: &str) -> Counted {
+    for line in output.lines().rev() {
+        let line = line.trim();
+        if let Some(n) = line.strip_prefix("@@counted ") {
+            return n
+                .parse()
+                .map_or_else(|_| Counted::Failed(line.to_owned()), Counted::Entries);
+        }
+        if line == "@@counter none" {
+            return Counted::NoBootLoader;
+        }
+        if let Some(why) = line.strip_prefix("@@counter failed: ") {
+            return Counted::Failed(why.to_owned());
+        }
+    }
+    Counted::Failed(format!("no answer: {}", output.trim()))
 }
 
 /// Printed in place of bootc's status when the VM has no bootc.
@@ -1450,5 +1563,84 @@ mod tests {
                 (5 + 6) as u64 + std::fs::metadata(blobs.join("dd")).unwrap().len()
             );
         }
+    }
+
+    #[test]
+    fn a_staged_deployment_names_the_composefs_identity_its_entry_boots() {
+        let verity = "ab".repeat(64);
+        let json = format!(
+            r#"{{"status":{{"staged":{{"image":{{"image":{{"image":"registry.tilo.so/tilo/tilo-vm:x","transport":"registry"}},"imageDigest":"sha256:1"}},"composefs":{{"verity":"sha512:{verity}"}}}},"booted":{{"image":{{"image":{{"image":"a"}},"imageDigest":"sha256:0"}},"composefs":{{"verity":"short"}}}}}}}}"#
+        );
+        let status = parse_bootc_status(&json).unwrap();
+        assert_eq!(
+            status.staged.unwrap().verity.as_deref(),
+            Some(verity.as_str())
+        );
+        assert_eq!(
+            status.booted.unwrap().verity,
+            None,
+            "a malformed identity is no identity"
+        );
+    }
+
+    #[test]
+    fn the_boot_entry_pass_says_whether_the_next_boot_is_counted() {
+        assert_eq!(
+            parse_entries(
+                "tilo-deployment: boot counter: bootc_x-1.conf gets 3 tries\n@@entries 0\n"
+            ),
+            EntriesOutcome::Done
+        );
+        // An image from before tilo-esp-generator, and the current wording.
+        assert_eq!(
+            parse_entries(
+                "tilo-deployment: no systemd-boot layout — nothing to maintain\n@@entries 0\n"
+            ),
+            EntriesOutcome::NoLayout
+        );
+        assert_eq!(
+            parse_entries(
+                "tilo-deployment: the ESP this machine started from (PARTUUID x) is not mounted and could not be mounted read-only; nothing to maintain\n@@entries 0\n"
+            ),
+            EntriesOutcome::NoLayout
+        );
+        assert_eq!(parse_entries("@@entries absent\n"), EntriesOutcome::Absent);
+        assert_eq!(
+            parse_entries("tilo-deployment: not a managed UKI entry: x\n@@entries 1\n"),
+            EntriesOutcome::Failed("tilo-deployment: not a managed UKI entry: x".into())
+        );
+        assert!(matches!(parse_entries(""), EntriesOutcome::Failed(_)));
+    }
+
+    #[test]
+    fn the_staged_entry_is_counted_by_the_identity_it_boots_in_a_private_mount() {
+        let verity = "cd".repeat(64);
+        let script = count_staged_entry_script(&verity);
+        assert!(script.contains("LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"));
+        assert!(script.contains("unshare -m sh -c"));
+        assert!(script.contains(&format!("composefs={verity}")));
+        assert!(script.contains("+3.conf"));
+        assert!(script.contains("entries.staged"));
+        assert_eq!(parse_counted("@@counted 1\n"), Counted::Entries(1));
+        assert_eq!(parse_counted("@@counted 0"), Counted::Entries(0));
+        assert_eq!(parse_counted("@@counter none\n"), Counted::NoBootLoader);
+        assert_eq!(
+            parse_counted("@@counter failed: could not mount the ESP (PARTUUID x) read-write\n"),
+            Counted::Failed("could not mount the ESP (PARTUUID x) read-write".into())
+        );
+        assert!(matches!(
+            parse_counted("sh: unshare: not found"),
+            Counted::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn the_counting_script_runs_in_a_shell() {
+        let script = count_staged_entry_script(&"ef".repeat(64));
+        let status = std::process::Command::new("sh")
+            .args(["-n", "-c", &script])
+            .status()
+            .unwrap();
+        assert!(status.success(), "{script}");
     }
 }

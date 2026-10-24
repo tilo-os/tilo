@@ -8,8 +8,11 @@ the installation. tilo-media builds without GStreamer by default; its own
 decode, encode, real-time and voice tests compile only with those features, and
 wait for a pipeline's start-up with the shared test bound only under
 test-support, so its runs enable all five (the job image carries GStreamer).
-Only enable these features when the gateway itself is selected, not for its
-client dependents. Keep package argument strings separate from feature flags.
+A cargo family's build of named packages gets them through workspace-unify
+(tools/ci/workspace_unify.py), so every package is built with them, the
+gateway's client dependents too: what ships without them is checked by
+DEFAULT_BUILDS_ALSO_CHECKED. Keep package argument strings separate from
+feature flags.
 """
 from __future__ import annotations
 
@@ -57,6 +60,9 @@ NATIVE_TEST_FEATURES = {
     # Reading an AppImage's embedded entry is the compositor's alone; its
     # tests build the images they read.
     "tilo-desktop-entry": ("appimage",),
+    # The tunnel the shell links is a feature the root helper leaves out; its
+    # tests, and the namespace test of both together, need it.
+    "tilo-device-vpn": ("test-support",),
 }
 
 # Packages whose tested features above are not their default build. The
@@ -65,7 +71,18 @@ NATIVE_TEST_FEATURES = {
 # ships, each alone: otherwise code and tests the default leaves out rot
 # unseen, as the Imager's did when the installation became a feature. Not in
 # the test family's shared jobs, whose memory t budgets for one build each.
-DEFAULT_BUILDS_ALSO_CHECKED = ("imager", "imager-backend")
+# Those whose tested features are a server's (the gateway's inference and host
+# backend, tilo-net's development proxy, tilo-moq's relay, tilo-crypto's test
+# SRP server) ship to clients without them; every other build has them
+# (workspace-unify), so code that compiles only with them would pass unseen.
+DEFAULT_BUILDS_ALSO_CHECKED = (
+    "imager",
+    "imager-backend",
+    "tilo-crypto",
+    "tilo-model-gateway",
+    "tilo-moq",
+    "tilo-net",
+)
 
 
 def arguments(packages: list[str]) -> list[str]:

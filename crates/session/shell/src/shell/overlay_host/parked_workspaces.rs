@@ -10,8 +10,9 @@
 //! strips' scroll where the person left them; only what changed in the tree
 //! while it was away is reconciled.
 //!
-//! Kept content is not drawn, laid out or updated, and nothing routes input to
-//! it. Its apps stay mounted, as they would on screen, until the content is
+//! Kept content is not laid out or updated, and nothing routes input to it.
+//! It is drawn only as it was laid out: leaving the screen in a workspace
+//! slide (`workspace_slide`) and into a window's picture in picture. Its apps stay mounted, as they would on screen, until the content is
 //! dropped: when more than [`KEPT_WORKSPACES`] are kept, when its workspace is
 //! removed or becomes another room, or when one of its tabs moves to another
 //! workspace (which then mounts the tab itself).
@@ -84,6 +85,14 @@ impl ParkedWorkspaces {
     pub(super) fn take(&mut self, workspace: u64) -> Option<Box<dyn Widget>> {
         let index = self.entries.iter().position(|e| e.workspace == workspace)?;
         Some(self.entries.remove(index).content)
+    }
+
+    /// The content kept for `workspace`, still kept.
+    pub(super) fn content_mut(&mut self, workspace: u64) -> Option<&mut (dyn Widget + 'static)> {
+        self.entries
+            .iter_mut()
+            .find(|e| e.workspace == workspace)
+            .map(|entry| entry.content.as_mut())
     }
 
     /// Remove and return the content `desktop` has moved on from: its

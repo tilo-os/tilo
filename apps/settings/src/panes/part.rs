@@ -60,6 +60,7 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (220, audio::AudioEffect::FAMILY),
     (240, display::DisplayEffect::FAMILY),
     (250, network::NetworkEffect::FAMILY),
+    (252, network::vpn::VpnEffect::FAMILY),
     (255, network::mobile::MobileEffect::FAMILY),
 ];
 
@@ -225,10 +226,14 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
         categories: &[Category::Network],
         build: |app, _| {
-            network::mobile::with_mobile(
-                model_pane(network::area(app).map(network::NetworkArea::model)),
-                model_pane(network::mobile::area(app).map(network::mobile::MobileArea::model)),
-            )
+            let network = network::area(app).map(network::NetworkArea::model);
+            // The modem's card and page are the network pane's.
+            if let Some(network) = network
+                && let Some(mobile) = network::mobile::area(app)
+            {
+                network.borrow_mut().host_mobile(mobile.model());
+            }
+            model_pane(network)
         },
     },
     crate::area::PaneEntry {

@@ -6,7 +6,7 @@
 //!     restore, and pruning by the retention policy.
 //!   * [`model`] — the catalog (sources, snapshots, destinations) + sample
 //!     data `--shots` shows in place of a repository.
-//!   * [`doc`] — the retention policy, the one durable, collaborative part.
+//!   * [`model::RetentionPolicy`] — the retention policy, the one durable, collaborative part.
 //!   * [`actions`] — the retention action, the effects (back up, verify,
 //!     restore, set up) and the live catalog rows.
 //!   * [`resource`] — the resource, the device-local backup location and the

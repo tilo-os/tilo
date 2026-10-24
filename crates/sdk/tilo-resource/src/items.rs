@@ -881,6 +881,7 @@ fn bound_to(decl: &Declaration, values: Vec<(String, serde_json::Value)>) -> Act
     let params = unbound_params(&decl.params, &values);
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
+    let fixed = values.clone();
     let mut spec = ActionSpec::typed(
         decl.id,
         decl.label.clone(),
@@ -902,7 +903,8 @@ fn bound_to(decl: &Declaration, values: Vec<(String, serde_json::Value)>) -> Act
             crate::resource::encode_built(action)
         },
     )
-    .of_kind(decl.kind);
+    .of_kind(decl.kind)
+    .with_bound(fixed);
     if decl.kind == crate::ActionKind::Undoable {
         spec = spec.reversible();
     }

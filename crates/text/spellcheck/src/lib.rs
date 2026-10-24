@@ -471,7 +471,7 @@ pub struct Dictionaries {
     prepare: fn(&mut dyn FnMut() -> bool) -> bool,
 }
 
-/// Hands over [`Dictionaries`], for [`install_dictionaries`].
+/// Hands over [`Dictionaries`], for `install_dictionaries`.
 pub type MakeDictionaries = fn() -> Dictionaries;
 
 /// The dictionaries this crate checks with.

@@ -274,7 +274,7 @@ fn word_boxes(tr: &mut TextRenderer, line: &str, style: &TextStyle, x: f64) -> V
 /// page-point rectangle of every rendered text line. The text engine
 /// (`tr`) is needed because line breaking depends on real glyph advances,
 /// so this must run where a [`TextRenderer`] is available (the draw pass).
-/// It breaks lines with the same [`wrap_lines`] the painter uses, so the snap
+/// It breaks lines with the same `wrap_lines` the painter uses, so the snap
 /// geometry matches the painted glyphs.
 pub fn collect_text_lines(tr: &mut TextRenderer, page: &Page) -> Vec<TextLine> {
     let content_x = MARGIN;

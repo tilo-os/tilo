@@ -28,6 +28,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             .flat_map(|change| change.raw_bytes().to_vec())
             .collect();
         let message = signing
+            .publication_mut()
             .signed_mutation(
                 "so.tilo.chat",
                 "",

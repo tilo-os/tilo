@@ -143,10 +143,11 @@ class SwitchLineTest(unittest.TestCase):
         self.assertIn("first frame shown 90.0 ms", problems[0])
         self.assertIn("3 refresh intervals", problems[1])
 
-    def test_a_jump_or_a_missing_line_is_a_problem(self):
-        jump = parse_switch_lines(SWITCH.format(q=4000, s=4000, f=2, d=0))
-        self.assertIn("2 frames", judge_switch_lines(jump, 1, BUDGETS, hardware=False)[0])
-        self.assertIn("1 WORKSPACE-SWITCH lines", judge_switch_lines(jump, 2, BUDGETS, hardware=False)[0])
+    def test_a_switch_drawn_in_one_frame_passes_and_a_missing_line_is_a_problem(self):
+        one_frame = parse_switch_lines(SWITCH.format(q=4000, s=4000, f=1, d=0))
+        self.assertEqual(judge_switch_lines(one_frame, 1, BUDGETS, hardware=False), [])
+        self.assertIn("1 WORKSPACE-SWITCH lines",
+                      judge_switch_lines(one_frame, 2, BUDGETS, hardware=False)[0])
 
 
 W16_BUDGETS = {"animation_min_frames": 8, "input_first_frame_ms": 33.4, "frame_late_ms_p95": 16.7,
@@ -170,7 +171,8 @@ def run(frames, reasons="apps", late_us=1000, cpu_us=1000, input_us=2000, extra=
 
 
 class AnimationJudgeTest(unittest.TestCase):
-    """W16: the overview fade through its action, the keyboard toggle that arrives at once."""
+    """W16: the overview fade through its action; the keyboard toggle and workspace switches,
+    which arrive at once."""
 
     def test_the_fade_through_the_action_passes_and_a_jump_fails(self):
         fade = run(12, "animation+transition")

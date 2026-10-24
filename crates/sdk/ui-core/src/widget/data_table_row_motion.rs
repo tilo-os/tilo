@@ -10,7 +10,39 @@ use crate::theme::Theme;
 use vello::Scene;
 use vello::kurbo::Affine;
 
+/// The table's rows on their way, and where the last frame showed them.
+///
+/// A view that builds its table anew on every change (a sort it keeps in
+/// its own state rebuilds the view) would drop the motion a header click
+/// started; the table leaves it, under its id, for the table the rebuild
+/// puts in its place (`motion::keep`), which goes on from there.
+#[derive(Default)]
+pub(super) struct Moving {
+    /// Shown rows on their way (`motion::ListChange`).
+    pub(super) rows: crate::collection_transition::RowMotions<RowIdentity>,
+    /// The rows the last frame showed and their tops: where a change the
+    /// person makes moves them from.
+    pub(super) drawn: Vec<(RowIdentity, f64)>,
+    /// Laid out, so it took up what the table it replaces left, and leaves
+    /// its own when dropped.
+    bound: bool,
+}
+
 impl DataTableCore {
+    /// At its first layout, go on from the rows the table with its id
+    /// left when a rebuild dropped it.
+    pub(super) fn take_up_row_motion(&mut self) {
+        if std::mem::replace(&mut self.moving.bound, true) || self.test_id.is_empty() {
+            return;
+        }
+        if let Some(kept) = crate::motion::take_kept::<Moving>(&self.test_id) {
+            self.moving = Moving {
+                bound: true,
+                ..kept
+            };
+        }
+    }
+
     /// The rows shown in the body now, each with its top: what a frame
     /// draws, and what a change moves from and to. Rows outside the body's
     /// viewport (the overscan) are not shown, so they never animate.
@@ -49,25 +81,28 @@ impl DataTableCore {
             .iter()
             .any(|change| matches!(change, TableModelChange::RowsInserted { .. }));
         let source = crate::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
-            crate::time::now(),
+            crate::motion::frame_now(),
             self.reduce_motion,
         )
-        .filter(|_| structural && !resets && !self.drawn_rows.is_empty());
-        self.row_motion
-            .capture(self.drawn_rows.iter().copied(), inserts, source);
+        .filter(|_| structural && !resets && !self.moving.drawn.is_empty());
+        self.moving
+            .rows
+            .capture(self.moving.drawn.iter().copied(), inserts, source);
     }
 
-    /// Before a sort: note where the shown rows stand. Every row shown
-    /// after it that was not shown before came from off-screen and fades
-    /// in at its slot.
-    pub(super) fn capture_sort_motion(&mut self) {
+    /// Before a sort, or a keyed table's rows replaced by its host: note
+    /// where the shown rows stand. Every row shown after it that was not
+    /// shown before came from off-screen (or is new) and fades in at its
+    /// slot.
+    pub(super) fn capture_reorder_motion(&mut self) {
         let source = crate::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
-            crate::time::now(),
+            crate::motion::frame_now(),
             self.reduce_motion,
         )
-        .filter(|_| !self.drawn_rows.is_empty());
-        self.row_motion
-            .capture(self.drawn_rows.iter().copied(), true, source);
+        .filter(|_| !self.moving.drawn.is_empty());
+        self.moving
+            .rows
+            .capture(self.moving.drawn.iter().copied(), true, source);
     }
 
     /// Start the motion of a change made since the last frame, from where
@@ -80,18 +115,28 @@ impl DataTableCore {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-    ) {
+    ) -> Vec<crate::widget::paint_damage::PaintPart> {
         // A sort or change the person made since the last frame starts its
         // motion from where the rows were drawn to where they are now.
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         let shown = self.shown_rows();
-        self.row_motion
+        self.moving
+            .rows
             .start(shown.iter().copied(), theme.motion(), now);
-        self.drawn_rows = shown;
-        self.draw_rows(scene, transform, text_renderer, theme);
+        self.moving.drawn = shown;
+        let offset = self.viewport.offset();
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+        )]
+        let scrolled = transform * Affine::translate((0.0, -offset)) * transform.inverse();
+        let parts = self.draw_rows(transform, text_renderer, theme);
+        for part in &parts {
+            scene.append(part.scene(), Some(scrolled));
+        }
         for cell in &mut self.mounted_cells {
             // A cell control travels and fades with its row.
-            let (dy, alpha) = self.row_motion.pose(&cell.row_key, now);
+            let (dy, alpha) = self.moving.rows.pose(&cell.row_key, now);
             let cell_transform = transform * Affine::translate((0.0, dy));
             let faded = alpha < 1.0;
             if faded {
@@ -108,6 +153,17 @@ impl DataTableCore {
             if faded {
                 scene.pop_layer();
             }
+        }
+        parts
+    }
+}
+
+/// A table a rebuild drops leaves its rows' motion for the one put in its
+/// place.
+impl Drop for DataTableCore {
+    fn drop(&mut self) {
+        if self.moving.bound && !self.test_id.is_empty() {
+            crate::motion::keep(self.test_id.clone(), None, std::mem::take(&mut self.moving));
         }
     }
 }

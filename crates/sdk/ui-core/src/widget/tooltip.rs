@@ -46,6 +46,16 @@ impl ChipMetrics {
     }
 }
 
+/// How far above its anchor a one-line chip reaches when [`chip_rect`]
+/// stands it there: its gap off the anchor, its height and the margin it
+/// keeps inside its viewport. A viewport with this much room above the
+/// anchor holds the chip there.
+pub fn chip_reach_above(theme: &Theme) -> f64 {
+    let m = ChipMetrics::of(theme);
+    let line = f64::from(theme.text(TextRole::Caption).line_height_px());
+    (m.gap + line + 2.0 * m.pad_y + m.margin).ceil()
+}
+
 /// The chip's size for `label`: wrapped `Caption` text plus the chip's pads.
 pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
     let max_w = ChipMetrics::of(theme).max_w;
@@ -594,14 +604,18 @@ impl Widget for Tooltip {
         "Tooltip"
     }
 
+    // Not on screen until the reveal delay elapses, so hidden until then.
+    fn accessibility_hidden(&self) -> bool {
+        !self.is_visible
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // Not on screen until the reveal delay elapses, so hidden until then.
         Some(
             AccessNode::new(Role::Tooltip)
                 .with_name(self.label.clone())
                 .with_state(AccessState {
-                    hidden: !self.is_visible,
+                    hidden: self.accessibility_hidden(),
                     ..Default::default()
                 }),
         )

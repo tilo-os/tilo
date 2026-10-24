@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, joinWhenSeated, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, doorRefused, enteredWorkspaces, forgetGoneRooms, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, leaveOnWaitList, joinWhenSeated, keptMembership, listedWorkspaces, markUnavailable, nameEntered, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedRoom, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -151,9 +151,39 @@ test('a door that names the person removed tells them so, whatever this browser 
 test('a door taking people by invitation tells a visitor without one so, and asks once', async () => {
   const {calls, options} = harness({person: identity(0x44),
     joinReply: {status: 403, body: {error: 'this room takes people by invitation for now', code: 'invitation-only'}}});
-  await assert.rejects(joinViaHost(options), error => error instanceof HostAdmissionError && error.code === 'invitation-only');
+  await assert.rejects(joinViaHost(options), error => error instanceof HostAdmissionError && error.code === 'invitation-only'
+    && error.door === null);
   assert.equal(calls.posted.length, 1);
   assert.equal(calls.connected.length, 0);
+});
+
+test('a door taking people by invitation says when it keeps a wait list, and where to be taken off it', async () => {
+  for (const [contact, said] of [['hello@example.org', 'hello@example.org'], [undefined, null], ['', null]]) {
+    const {options} = harness({person: identity(0x44), joinReply: {status: 403,
+      body: {error: 'this room takes people by invitation for now', code: 'invitation-only', waitList: true, contact}}});
+    await assert.rejects(joinViaHost(options),
+      error => error.code === 'invitation-only' && error.door?.waitList === true && error.door.contact === said);
+  }
+});
+
+test('an address left at the door is sent there, and each refusal is named for the page to say', async () => {
+  const posted = [];
+  const door = answer => async (url, init) => { posted.push({url: String(url), init}); return reply(answer); };
+  assert.equal(await leaveOnWaitList({workspace: commons, email: ' Ada@Example.org ',
+    fetch: door({body: {email: 'ada@example.org'}})}), 'ada@example.org');
+  assert.equal(posted[0].url, 'https://rooms.example/wait-list');
+  assert.equal(posted[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(posted[0].init.body), {email: ' Ada@Example.org '});
+  for (const [status, code, headers = {}] of [[400, 'invalid-email'], [429, 'too-many', {'retry-after': '600'}],
+    [503, 'wait-list-full'], [404, 'no-wait-list'], [503, 'unavailable'], [500, 'something-else']]) {
+    await assert.rejects(leaveOnWaitList({workspace: commons, email: 'x@y.org', fetch: door({status, headers, body: {error: 'no', code}})}),
+      error => error instanceof HostAdmissionError && error.code === (code === 'something-else' ? 'unavailable' : code)
+        && error.retryAfter === (code === 'too-many' ? 600 : null));
+  }
+  await assert.rejects(leaveOnWaitList({workspace: commons, email: 'x@y.org', fetch: async () => { throw new TypeError('Failed to fetch'); }}),
+    {name: 'HostAdmissionError', code: 'unavailable'});
+  await assert.rejects(leaveOnWaitList({workspace: {name: 'Closed', host: {origin: 'https://h.example'}}, email: 'x@y.org', fetch: door({})}),
+    {name: 'HostAdmissionError', code: 'invitation-only'});
 });
 
 test('an address cooling down after a removal turns away someone who kept no membership, as the door said', async () => {

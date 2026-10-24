@@ -44,6 +44,7 @@ pub mod bot;
 pub mod control;
 mod desk;
 pub mod host;
+pub mod message_lines;
 pub mod model;
 pub mod participant;
 pub mod planner;
@@ -70,7 +71,9 @@ pub use model::{
 };
 pub use participant::actions::{RECORD_PROVIDER, record_provider};
 pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};
-pub use planner::{DirectPlanner, NoReads, PlanContext, Planner, Reads, Step, StepAction};
+pub use planner::{
+    DirectPlanner, NoReads, PlanContext, Planner, Reads, Step, StepAction, TurnRetries,
+};
 pub use room_actions::{HostActions, RoomActions, RoomRecordsLink};
 pub use worker::ConfinedReplica;
 

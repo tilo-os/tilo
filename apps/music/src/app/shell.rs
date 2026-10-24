@@ -273,9 +273,11 @@ impl MusicApp {
                 .clone()
                 .unwrap_or_else(|| self.lib.artist_name(&track.artist_id).to_owned());
             state.error = self.playback_error.is_some();
-            if !track.album_id.is_empty() {
-                state.opens = Some("Open album".to_owned());
-            }
+            state.opens = Some(if self.view == View::NowPlaying {
+                "Close Now Playing".to_owned()
+            } else {
+                "Open Now Playing".to_owned()
+            });
             self.lib
                 .album_title(&track.album_id)
                 .clone_into(&mut state.art_name);
@@ -311,19 +313,8 @@ impl MusicApp {
                 TransportEvent::Lyrics => Action::Nav(View::Lyrics),
                 TransportEvent::Queue => Action::ToggleQueue,
                 TransportEvent::More(anchor) => Action::OpenPlayerMenu(anchor),
-                // The art opens the song's album.
-                TransportEvent::OpenPlaying => {
-                    match self
-                        .pb
-                        .current
-                        .as_deref()
-                        .and_then(|id| self.playback_track(id))
-                        .map(|track| track.album_id.clone())
-                    {
-                        Some(album) if !album.is_empty() => Action::Nav(View::Album(album)),
-                        _ => continue,
-                    }
-                }
+                // The cover opens Now Playing, and closes it again.
+                TransportEvent::OpenPlaying => self.now_playing_toggle(),
             };
             self.dispatch(action, state);
         }

@@ -502,4 +502,10 @@ type = "gui"
             assert!(matches!(error, TappError::MetadataAfterBlobs(_)), "{error}");
         }
     }
+
+    #[test]
+    fn empty_input_is_refused_without_a_panic() {
+        assert!(read(&[][..], &mut DiscardBlobs).is_err());
+        assert!(crate::SignedRoot::decode(&[]).is_err());
+    }
 }

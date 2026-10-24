@@ -147,7 +147,7 @@ fn at(point: &[f64]) -> Point {
 
 impl StrokeEdit {
     /// The stroke's points, showing those that shape it: where it turns,
-    /// its ends, and no more than [`MOST_SHOWN`].
+    /// its ends, and no more than `MOST_SHOWN`.
     pub fn new(points: Vec<StrokePoint>, size: f64, smoothing: f64) -> Self {
         let mut tolerance = (size * 0.25).max(1.0);
         let mut keys = crate::brushes::kept(&points, tolerance);

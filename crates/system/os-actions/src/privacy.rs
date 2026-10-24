@@ -159,7 +159,7 @@ impl DeviceGraphWatch {
         }
     }
 
-    /// No document arrived before [`MONITOR_QUIET`]. A graph we have already
+    /// No document arrived before `MONITOR_QUIET`. A graph we have already
     /// seen is unchanged; a monitor that has not produced one yet stays up.
     pub fn observe_quiet(&mut self) -> MonitorDisposition {
         if self.established {

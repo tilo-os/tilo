@@ -1112,6 +1112,12 @@ impl Widget for Text {
         self.rect
     }
 
+    /// The node below never sets `hidden`: answered without resolving the
+    /// text, for every text of a list on every focus walk.
+    fn accessibility_hidden(&self) -> bool {
+        false
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         // The FTL-resolved text *is* the accessible name. Empty text carries no

@@ -566,16 +566,42 @@ impl CompositionFocus {
                     .map(|key| format!("semantic:{key}"))
             })
     }
+    /// Whether `widget`'s [`Self::key`] is `key`. A name is compared without
+    /// building the widget's accessibility node (and resolving its translated
+    /// label), which a rebuild would otherwise do for every widget.
+    fn has_key(widget: &dyn Widget, key: &str) -> bool {
+        if let Some(name) = key.strip_prefix("named:") {
+            return widget.test_id() == Some(name);
+        }
+        key.strip_prefix("semantic:").is_some_and(|semantic| {
+            widget.test_id().is_none()
+                && widget
+                    .accessibility_root()
+                    .and_then(|access| access.semantic_key)
+                    .as_deref()
+                    == Some(semantic)
+        })
+    }
     /// Recover focus from the retained tree after a structural mutation. No
     /// pointer from the previous layout is read; owner custody follows the
     /// same component/legacy boundaries as the next admitted topology.
     pub(crate) fn capture_live(root: &dyn Widget) -> Option<Self> {
+        type Visit<'v> = dyn FnMut(
+                &dyn Widget,
+                &Option<crate::bound_dispatch::CallbackBinding>,
+                &Option<crate::history_mode::HistoryOwner>,
+                bool,
+            ) + 'v;
+        /// Visit every widget a rebuild admits, in tree order, inside its
+        /// binding entry, with the component binding and legacy owner it is
+        /// admitted under and whether it is a focus target (focused, with no
+        /// focused ancestor).
         fn walk(
             widget: &dyn Widget,
             binding: Option<crate::bound_dispatch::CallbackBinding>,
             legacy: Option<crate::history_mode::HistoryOwner>,
             focused_ancestor: bool,
-            nodes: &mut Vec<(CompositionFocus, bool)>,
+            visit: &mut Visit<'_>,
         ) {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
                 return;
@@ -600,55 +626,80 @@ impl CompositionFocus {
                 own_binding.or(binding)
             };
             let focused = widget.is_focusable() && widget.is_enabled() && widget.is_focused();
-            nodes.push((
-                CompositionFocus {
-                    ambiguous: false,
-                    key: CompositionFocus::key(widget),
-                    semantic_key: widget
-                        .accessibility_root()
-                        .and_then(|access| access.semantic_key),
-                    qualified_semantic: false,
-                    binding: binding.clone(),
-                    legacy: legacy.clone(),
-                    state: crate::undo::get_state(widget),
-                },
-                focused && !focused_ancestor,
-            ));
+            visit(widget, &binding, &legacy, focused && !focused_ancestor);
             widget.for_each_child(&mut |child| {
                 walk(
                     child,
                     binding.clone(),
                     legacy.clone(),
                     focused_ancestor || focused,
-                    nodes,
+                    visit,
                 );
             });
         }
-        let mut nodes = Vec::new();
-        walk(root, None, None, false, &mut nodes);
-        let mut targets = nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, focused))| *focused);
-        let index = targets.next()?.0;
-        if targets.next().is_some() {
+        // The unique focus target first: only it needs an identity.
+        let mut visited = 0_usize;
+        let mut targets = 0_usize;
+        let mut found = None;
+        walk(
+            root,
+            None,
+            None,
+            false,
+            &mut |widget, binding, legacy, target| {
+                if target {
+                    targets = targets.saturating_add(1);
+                    if found.is_none() {
+                        found = Some((
+                            visited,
+                            CompositionFocus {
+                                ambiguous: false,
+                                key: CompositionFocus::key(widget),
+                                semantic_key: widget
+                                    .accessibility_root()
+                                    .and_then(|access| access.semantic_key),
+                                qualified_semantic: false,
+                                binding: binding.clone(),
+                                legacy: legacy.clone(),
+                                state: crate::undo::get_state(widget),
+                            },
+                        ));
+                    }
+                }
+                visited = visited.saturating_add(1);
+            },
+        );
+        if targets != 1 {
             return None;
         }
-        let (mut focus, _) = nodes.remove(index);
-        let key = focus.key.as_ref()?;
-        focus.ambiguous = nodes.iter().any(|(other, _)| {
-            other.key.as_ref() == Some(key)
-                && match (&focus.binding, &other.binding) {
-                    (Some(a), Some(b)) => a.same_component(b),
-                    (None, None) => true,
-                    _ => false,
-                }
-                && match (&focus.legacy, &other.legacy) {
-                    (Some(a), Some(b)) => a.same_owner(b),
-                    (None, None) => true,
-                    _ => false,
-                }
-        });
+        let (target, mut focus) = found?;
+        let key = focus.key.clone()?;
+        // Then whether another widget of the same owners answers to its key.
+        let mut visited = 0_usize;
+        let mut ambiguous = false;
+        walk(
+            root,
+            None,
+            None,
+            false,
+            &mut |widget, binding, legacy, _| {
+                ambiguous = ambiguous
+                    || (visited != target
+                        && match (&focus.binding, binding) {
+                            (Some(a), Some(b)) => a.same_component(b),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                        && match (&focus.legacy, legacy) {
+                            (Some(a), Some(b)) => a.same_owner(b),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                        && Self::has_key(widget, &key));
+                visited = visited.saturating_add(1);
+            },
+        );
+        focus.ambiguous = ambiguous;
         Some(focus)
     }
 
@@ -737,8 +788,7 @@ impl CompositionFocus {
                     // SAFETY: the same exclusive admitted tree is still live.
                     unsafe {
                         crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                            focus.same_owner(bindings, node)
-                                && Self::key(widget).as_ref() == Some(key)
+                            focus.same_owner(bindings, node) && Self::has_key(widget, key)
                         })
                     }
                     .unwrap_or(false)
@@ -754,7 +804,7 @@ impl CompositionFocus {
                     .filter(|&&node| unsafe {
                         crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
                             focus.same_owner(bindings, node)
-                                && Self::key(widget).as_ref() == Some(key)
+                                && Self::has_key(widget, key)
                                 && widget
                                     .accessibility_root()
                                     .and_then(|access| access.semantic_key)
@@ -846,7 +896,7 @@ impl CompositionFocus {
                         !self.ambiguous
                             && self.same_owner(bindings, node)
                             && match &self.key {
-                                Some(key) => Self::key(widget).as_ref() == Some(key),
+                                Some(key) => Self::has_key(widget, key),
                                 None => false,
                             }
                     })
@@ -1009,6 +1059,80 @@ mod tests {
     use super::*;
     use crate::widget::TaffyTreeExt;
     use vello::kurbo::{Point, Rect};
+
+    /// A focusable control that counts how often its accessibility node is
+    /// built: what a rebuild pays per widget to resolve its translated name.
+    struct AccessCount {
+        built: std::rc::Rc<std::cell::Cell<usize>>,
+        focused: bool,
+        id: Option<&'static str>,
+    }
+    impl Widget for AccessCount {
+        fn name(&self) -> &'static str {
+            "AccessCount"
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &crate::Theme,
+            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            tree.widget_leaf(taffy::Style::default(), nodes, self)
+        }
+        fn is_focusable(&self) -> bool {
+            true
+        }
+        fn is_focused(&self) -> bool {
+            self.focused
+        }
+        fn test_id(&self) -> Option<&str> {
+            self.id
+        }
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            self.built.set(self.built.get().saturating_add(1));
+            Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_semantic_key("shared"),
+            )
+        }
+    }
+
+    #[test]
+    fn focus_captured_across_a_rebuild_builds_only_the_focused_accessibility_node() {
+        use crate::widget::Column;
+        let built = std::rc::Rc::new(std::cell::Cell::new(0));
+        let list = |focused: Option<Option<&'static str>>| {
+            let mut column = Column::new();
+            for _ in 0..50 {
+                column = column.push(Box::new(AccessCount {
+                    built: built.clone(),
+                    focused: false,
+                    id: None,
+                }));
+            }
+            if let Some(id) = focused {
+                column = column.push(Box::new(AccessCount {
+                    built: built.clone(),
+                    focused: true,
+                    id,
+                }));
+            }
+            column
+        };
+        assert!(CompositionFocus::capture_live(&list(None)).is_none());
+        assert_eq!(built.get(), 0, "with nothing focused, no node is built");
+
+        let focus = CompositionFocus::capture_live(&list(Some(Some("target")))).unwrap();
+        assert_eq!(focus.key.as_deref(), Some("named:target"));
+        assert!(!focus.ambiguous, "no other control has its name");
+        assert_eq!(built.get(), 1, "a named target's own node only");
+
+        // A target known by its semantic key alone is compared with every
+        // other control's, and they share it.
+        built.set(0);
+        let focus = CompositionFocus::capture_live(&list(Some(None))).unwrap();
+        assert_eq!(focus.key.as_deref(), Some("semantic:shared"));
+        assert!(focus.ambiguous, "the others answer to the same key");
+    }
 
     #[derive(Default)]
     struct UnsettledStyles {

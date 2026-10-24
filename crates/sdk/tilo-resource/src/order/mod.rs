@@ -31,7 +31,7 @@ fn char_of(value: u8) -> char {
 /// remaining tie by item identity.
 ///
 /// Toward an open end the key steps rather than halves the gap (see
-/// [`after`] and [`before`]), so a list appended or prepended to one item
+/// `after` and `before`), so a list appended or prepended to one item
 /// at a time keeps keys a few characters long instead of growing one
 /// character every few items.
 #[must_use]

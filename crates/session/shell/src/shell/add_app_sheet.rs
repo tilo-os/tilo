@@ -1,4 +1,4 @@
-//! "Add <name> to apps?": asked once, the first time a downloaded program
+//! "Add \<name\> to apps?": asked once, the first time a downloaded program
 //! runs ([`crate::shell::downloaded_apps`]). The program has already
 //! started; the question only decides whether it gets an entry in the
 //! person's apps.
@@ -107,14 +107,16 @@ impl Asking {
             ));
         }
         let (on_add, on_decline, on_dismiss) = (added.clone(), declined.clone(), declined.clone());
-        let dialog = ModalDialog::new(title.clone(), body)
+        let mut dialog = ModalDialog::new(title.clone(), body)
             .with_test_id(SHEET)
             .primary_action(t("downloaded-app-add-action"), move || on_add.set(true))
             .secondary_action(t("downloaded-app-add-decline"), move || {
                 on_decline.set(true);
             })
-            .on_dismiss(move || on_dismiss.set(true))
-            .open(true);
+            .on_dismiss(move || on_dismiss.set(true));
+        // Asked now: it arrives (`motion::Appear`), from a click on a
+        // motion, from a key or an action at once.
+        dialog.set_open(true);
         Self {
             ask,
             title,

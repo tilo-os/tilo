@@ -375,7 +375,7 @@ impl SemanticTree {
     /// receive no layout dispatch id. `focused` folds
     /// into each node's [`AccessState::focused`]. `resources` is the focused
     /// app's open-resource forest
-    /// ([`Widget::resources`]); each
+    /// ([`crate::resources::PublishesResources::resources`]); each
     /// exported [`ActionSpec`] becomes an invokable
     /// affordance.
     pub fn refresh(

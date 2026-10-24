@@ -41,7 +41,10 @@ fn native_publication_retained_bootstrap_preserves_relay_live_freshness_distinct
     )
     .unwrap();
     let origin = native(&browser);
-    let messages = host.bootstrap_messages(&key, now).unwrap();
+    let messages = host
+        .publication_mut()
+        .bootstrap_messages(&key, now)
+        .unwrap();
     let mut live = browser.clone();
     let mut live_rejected_document = false;
     for message in messages {
@@ -72,6 +75,7 @@ fn native_publication_preserves_original_member_author_and_exact_retry() {
         .unwrap();
     doc.commit_edit("fixture", "member-published");
     let message = host
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
     let origin = native(&receiver);
@@ -117,6 +121,7 @@ fn native_publication_rechecks_pinned_publisher_and_original_author_revocations(
         .unwrap();
     doc.commit_edit("fixture", "member-change");
     let message = host
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let origin = native(&baseline);
@@ -268,12 +273,14 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
     doc.put(ROOT, "predecessor", true).unwrap();
     doc.commit_edit("fixture", "predecessor");
     let predecessor = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "native-descendant", true).unwrap();
     doc.commit_edit("fixture", "native-descendant");
     let descendant = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     {
@@ -339,12 +346,14 @@ fn native_publication_streaming_cut_accepts_complete_out_of_order_original_packe
     doc.put(ROOT, "parent", true).unwrap();
     doc.commit_edit("fixture", "parent");
     let parent = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "child", true).unwrap();
     doc.commit_edit("fixture", "child");
     let child = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let publisher = receiver.authority().device_public_key;
@@ -437,12 +446,14 @@ fn native_publication_streaming_cut_preserves_preexisting_relay_pending() {
     doc.put(ROOT, "pending-parent", "parent").unwrap();
     doc.commit_edit("fixture", "pending-parent");
     let _parent = author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "pending-child", "child").unwrap();
     doc.commit_edit("fixture", "pending-child");
     let child = author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
     receiver
@@ -496,12 +507,14 @@ fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
     doc.put(ROOT, "governor-parent", "parent").unwrap();
     doc.commit_edit("fixture", "governor-parent");
     let parent = author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &governor, now)
         .unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "revoked-member-child", "child").unwrap();
     doc.commit_edit("fixture", "revoked-member-child");
     let child = author
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
     let cut = receiver

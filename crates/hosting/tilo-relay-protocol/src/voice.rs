@@ -25,11 +25,11 @@
 //! session) learns its calls with
 //! [`Envelope::VoiceCalls`](crate::Envelope::VoiceCalls).
 //!
-//! What a participant shows besides its voice (its camera, a shared screen)
-//! is [`Showing`], set with
+//! What a participant shows besides its voice (its camera, a shared screen,
+//! whether its microphone is off or it is deafened) is [`Showing`], set with
 //! [`Envelope::VoiceShow`](crate::Envelope::VoiceShow) and carried on its
 //! [`VoiceParticipant`] in every grant and call list, so everyone sees who
-//! has a camera on or shares a screen before any picture arrives.
+//! has a camera on, shares a screen or is muted before any picture arrives.
 //!
 //! Browser and native devices use the same envelopes: a browser session is
 //! one more peer of the relay.
@@ -169,15 +169,52 @@ pub struct VoiceParticipant {
     pub publishes: bool,
     /// What it shows besides its voice.
     pub showing: Showing,
+    /// Set when a bridge holds this participation: for a person on another
+    /// service, whose voice it carries into the call, or for the bridge
+    /// itself, listening to carry the call out. Its person is then the
+    /// bridge's, never the one it shows.
+    pub bridged: Option<Bridged>,
+}
+
+/// Who a bridge's participation stands for. A bridge (a room's Discord bot)
+/// holds one participation per person on the other side, so each is heard,
+/// shown and turned down on their own, and one of its own that hears the
+/// call and carries it out. A participant reading one shows it by `name`,
+/// marked as reached through `service`, and never as the bridge's person.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bridged {
+    /// The service, lowercase: `discord`.
+    pub service: String,
+    /// The account on that service whose voice this carries; `None` for
+    /// the bridge's own participation, which carries the call out.
+    pub account: Option<String>,
+    /// The shown name: trimmed, NFC-normalized, 1..=80 characters, as an
+    /// appearance's (`tilo_actions::appearance`).
+    pub name: String,
+    /// BLAKE3 hex of the avatar in the room's content store.
+    pub avatar: Option<String>,
+    /// The room member the account is linked to: the participant is shown
+    /// as that member, reached through `service`.
+    pub linked: Option<[u8; 32]>,
 }
 
 /// What a participant shows besides its voice: its pictures are published
 /// on the carrier while it shows them (tilo-video/1, `tilo_moq::video`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own fact the others see: camera, screen, muted, deafened"
+)]
 pub struct Showing {
     pub camera: bool,
     /// It shares a screen.
     pub screen: bool,
+    /// Its microphone is off: everyone sees it muted. A participant that may
+    /// not publish counts as muted.
+    pub muted: bool,
+    /// It hears nothing of the call (and is muted): everyone sees it
+    /// deafened.
+    pub deafened: bool,
 }
 
 /// The call that is room `room`'s window carrier: every member device of a

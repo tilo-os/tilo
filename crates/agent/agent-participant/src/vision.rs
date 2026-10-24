@@ -3,7 +3,7 @@
 //! A plan that edits a picture or a drawing is planned better when the
 //! model sees it: what a canvas `look` rendered, a PDF page, a scan someone
 //! put in the room. Pictures reach the model three ways, each through the
-//! same [`Eyes`] that budgets them and keeps the conversation's text honest
+//! same `Eyes` that budgets them and keeps the conversation's text honest
 //! about what was shown:
 //!
 //! - a `read_view` whose read rendered a picture (Canvas `look`) carries it

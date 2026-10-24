@@ -3361,8 +3361,16 @@ impl App {
     }
 
     fn service_local_control_history(&mut self) -> bool {
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("idle.controls");
         let controls = self.dispatch_control_invocations();
+        #[cfg(test)]
+        drop(probe);
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("idle.history");
         let history = self.service_history();
+        #[cfg(test)]
+        drop(probe);
         let refused = !self.actions.refusals.is_empty();
         self.say_refusals();
         let changed = controls != 0 || history || refused;

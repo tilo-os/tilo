@@ -301,6 +301,81 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
     }
 }
 
+/// An item verb with its item bound takes the item again from a caller
+/// that passes it anyway, by its id or a longer form of its address, and
+/// refuses another item naming the one it acts on; what it publishes
+/// stays the remaining parameters.
+#[test]
+fn an_item_verb_hears_its_bound_item_passed_again_and_refuses_another() {
+    let mut board = Replica::<Board>::new();
+    board.apply(Board::ADD_CARD.with("Write docs")).unwrap();
+    board.apply(Board::ADD_CARD.with("Ship")).unwrap();
+    let state = board.state().unwrap();
+    let published = tilo_resource::publish::<Board>("board", "Board", &state);
+    let ids = card_ids(&board);
+    let (first, second) = (ids[0].as_str(), ids[1].as_str());
+    let card = published.children.first().unwrap();
+    let move_card = card
+        .actions
+        .iter()
+        .find(|spec| spec.id == "move-card")
+        .unwrap();
+    let names: Vec<_> = move_card
+        .params()
+        .iter()
+        .map(|param| param.name.as_ref())
+        .collect();
+    assert_eq!(names, ["index"], "the published parameters stay unbound");
+    let arguments = |card: &str| {
+        serde_json::json!({"card": card, "index": 1})
+            .as_object()
+            .unwrap()
+            .clone()
+    };
+    let alone = move_card
+        .build_json(serde_json::json!({"index": 1}).as_object().unwrap())
+        .unwrap();
+    assert_ne!(
+        alone.type_id,
+        tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+    );
+    for same in [
+        first.to_owned(),
+        format!("cards/{first}"),
+        card.id.as_str().to_owned(),
+    ] {
+        assert_eq!(
+            move_card.build_json(&arguments(&same)).unwrap().type_id,
+            alone.type_id,
+            "{same}"
+        );
+        move_card.validate_json(&arguments(&same)).unwrap();
+    }
+    let refused = move_card
+        .build_json(&arguments(second))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains(&format!("`card` is `{first}` here"))
+            && refused.contains("acts on that item only"),
+        "{refused}"
+    );
+    let pairs = |card: &str| {
+        [
+            (
+                "card".to_owned(),
+                tilo_actions::ArgValue::Text(card.to_owned()),
+            ),
+            ("index".to_owned(), tilo_actions::ArgValue::Integer(1)),
+        ]
+    };
+    assert_eq!(
+        move_card.build_args(pairs(first)).unwrap().type_id,
+        alone.type_id
+    );
+    assert!(move_card.build_args(pairs(second)).is_err());
+}
+
 #[test]
 fn documents_replay_converge_version_index_and_migrate() {
     // phase: replaying_the_log_reproduces_the_document_exactly

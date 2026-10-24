@@ -5,7 +5,7 @@
 use vello::Scene;
 use vello::kurbo::Affine;
 
-use super::{FrameHarness, window_bar};
+use super::FrameHarness;
 
 impl FrameHarness {
     /// Rasterise the most recently laid-out frame to a PNG over the window
@@ -74,7 +74,9 @@ impl FrameHarness {
     }
 
     /// Write the `--shots` capture: the frame alone, or under the desktop's
-    /// window bar when `window_bar` is set.
+    /// window bar when `window_bar` is set. Only the native launcher takes
+    /// `--shots`.
+    #[cfg(feature = "native")]
     pub(crate) fn write_shot(&mut self, out: &std::path::Path, window_bar: bool) {
         if window_bar {
             self.present_in_window_bar();
@@ -93,7 +95,7 @@ impl FrameHarness {
     pub fn render_window_png(&mut self, out: &std::path::Path) {
         self.drain_component_wakes();
         let scale = crate::offscreen::capture_device_scale();
-        let bar = window_bar::bar_height_px();
+        let bar = self.window_bar_height_px(self.viewport.0);
         let device_bar = bar.saturating_mul(scale);
         let transform = self.capture_draw_transform();
         let mut scene = Scene::new();

@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
+use ui::webview::ExtensionPermissionSet;
 
 /// Inventory record for one unpacked extension.
 #[derive(Debug, Clone, PartialEq)]
@@ -818,6 +819,65 @@ mod approval_tests {
         .unwrap();
         assert!(!is_approved(&extension));
     }
+
+    #[test]
+    fn what_an_extension_was_granted_later_stays_with_it_until_it_goes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("addon");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(
+            path.join("manifest.json"),
+            r#"{"name":"fixture","version":"1","manifest_version":3,"optional_permissions":["tabs"]}"#,
+        )
+        .unwrap();
+        let extension = list_in(root.path()).pop().unwrap();
+        assert!(granted(&extension).is_empty());
+        let tabs = ExtensionPermissionSet {
+            permissions: vec!["tabs".into()],
+            origins: vec!["https://*.example.org/*".into()],
+        };
+        set_granted(&extension, &tabs).unwrap();
+        assert_eq!(granted(&extension), tabs);
+        // A record is no extension.
+        assert_eq!(list_in(root.path()).len(), 1);
+        // An update keeps it: the record is the extension's place's.
+        std::fs::write(
+            path.join("manifest.json"),
+            r#"{"name":"fixture","version":"2","manifest_version":3,"optional_permissions":["tabs"]}"#,
+        )
+        .unwrap();
+        assert_eq!(granted(&list_in(root.path()).pop().unwrap()), tabs);
+        // Given up, it leaves nothing behind.
+        set_granted(&extension, &ExtensionPermissionSet::default()).unwrap();
+        assert!(granted(&extension).is_empty());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        set_granted(&extension, &tabs).unwrap();
+        uninstall(&extension, root.path()).unwrap();
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_request_for_more_access_is_put_as_its_addition_was() {
+        let asked = |permissions: &[&str], origins: &[&str]| {
+            asked_summary(&ExtensionPermissionSet {
+                permissions: permissions.iter().map(|&entry| entry.to_owned()).collect(),
+                origins: origins.iter().map(|&entry| entry.to_owned()).collect(),
+            })
+        };
+        assert_eq!(
+            asked(&["tabs"], &["http://127.0.0.1/*"]),
+            [
+                "Read and change your data on 127.0.0.1",
+                "Read your browsing history"
+            ]
+        );
+        assert_eq!(
+            asked(&[], &["<all_urls>"]),
+            ["Read and change all your data on all websites"]
+        );
+        // Nothing Chrome asks about: granted without a question.
+        assert!(asked(&["storage", "alarms"], &[]).is_empty());
+    }
 }
 
 fn approval_path(extension: &ExtensionInfo) -> Option<PathBuf> {
@@ -949,7 +1009,7 @@ fn asks_for_more(allowed: &[String], now: &[String]) -> bool {
 /// The Browser's own extension, which turns the others on and off as
 /// Chrome's extensions page does: turning one off keeps what it stored, its
 /// settings and logins, where Chromium's `DevTools` can only uninstall it.
-const MANAGER_FILES: [(&str, &str); 5] = [
+const MANAGER_FILES: [(&str, &str); 4] = [
     (
         "manifest.json",
         include_str!("../assets/extension-manager/manifest.json"),
@@ -966,21 +1026,44 @@ const MANAGER_FILES: [(&str, &str); 5] = [
         "worker.js",
         include_str!("../assets/extension-manager/worker.js"),
     ),
-    ("tab.js", include_str!("../assets/extension-manager/tab.js")),
 ];
+
+/// The token the manager's worker reports to the engine with, beside it
+/// (`worker.js`): what extensions' rules acted on in the Browser's tabs.
+const MANAGER_TOKEN_FILE: &str = "tilo-bridge-token.js";
 
 /// Where the manager extension is, written beside the profile's extensions
 /// and never listed among them; `None` when it cannot be written.
 pub fn manager_dir() -> Option<PathBuf> {
     let dir = crate::storage::data_dir()?.join("extension-manager");
-    std::fs::create_dir_all(&dir).ok()?;
+    write_manager(&dir)?;
+    dir.canonicalize().ok()
+}
+
+/// Write the manager's files into `dir`, with its worker's token, which
+/// lasts from one start to the next.
+fn write_manager(dir: &Path) -> Option<()> {
+    std::fs::create_dir_all(dir).ok()?;
     for (name, text) in MANAGER_FILES {
         let path = dir.join(name);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(text) {
             std::fs::write(&path, text).ok()?;
         }
     }
-    dir.canonicalize().ok()
+    if manager_token(dir).is_none() {
+        let token = new_token()?;
+        std::fs::write(
+            dir.join(MANAGER_TOKEN_FILE),
+            format!("globalThis.__tiloBridgeToken = \"{token}\";\n"),
+        )
+        .ok()?;
+    }
+    Some(())
+}
+
+/// The token the worker of the manager at `dir` reports to the engine with.
+pub fn manager_token(dir: &Path) -> Option<String> {
+    tabs_token(&std::fs::read_to_string(dir.join(MANAGER_TOKEN_FILE)).ok()?)
 }
 
 /// The identifier Chromium gives the manager unpacked at `dir`.
@@ -1503,8 +1586,82 @@ pub fn uninstall(extension: &ExtensionInfo, root: &Path) -> Result<(), Extension
     }
     set_approved(extension, false)?;
     set_pinned_in(&root, &extension.id, false)?;
+    set_granted(extension, &ExtensionPermissionSet::default())?;
     std::fs::remove_dir_all(&path)?;
     Ok(())
+}
+
+/// Where what the person granted an extension of what it may ask for is
+/// kept: beside it, as its approval is.
+fn granted_path(extension: &ExtensionInfo) -> Option<PathBuf> {
+    let path = extension.path.canonicalize().ok()?;
+    let key = blake3::hash(path.to_str()?.as_bytes()).to_hex();
+    Some(path.parent()?.join(format!(".tilo-granted-{key}.json")))
+}
+
+/// What the person granted the extension of what its manifest lets it ask
+/// for later (`chrome.permissions.request`): kept across runs and updates,
+/// and gone with the extension. The engine holds it to what the manifest
+/// still offers.
+pub fn granted(extension: &ExtensionInfo) -> ExtensionPermissionSet {
+    let read = granted_path(extension)
+        .and_then(|path| read_bounded(&path))
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let list = |key: &str| -> Vec<String> {
+        read.as_ref()
+            .and_then(|value| value.get(key))
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|entry| entry.len() <= MAX_EXTENSION_PERMISSION_BYTES)
+            .take(MAX_EXTENSION_PERMISSIONS)
+            .map(str::to_owned)
+            .collect()
+    };
+    ExtensionPermissionSet {
+        permissions: list("permissions"),
+        origins: list("origins"),
+    }
+}
+
+/// Keep what the extension holds now of what it may ask for; nothing
+/// leaves no file.
+///
+/// # Errors
+/// Returns an error when the record cannot be written.
+pub fn set_granted(
+    extension: &ExtensionInfo,
+    granted: &ExtensionPermissionSet,
+) -> Result<(), ExtensionError> {
+    let path = granted_path(extension)
+        .ok_or_else(|| ExtensionError::Manifest("Extension path is invalid".into()))?;
+    if granted.is_empty() {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        return Ok(());
+    }
+    let text = serde_json::json!({"permissions": granted.permissions, "origins": granted.origins});
+    std::fs::write(path, text.to_string())?;
+    Ok(())
+}
+
+/// What an extension asking for `asked` asks to do, as the person is asked
+/// it: one plain line per kind of access, as when it was added. Empty when
+/// none of it is access Chrome would ask about (`storage`, `alarms`), which
+/// Chrome grants without asking.
+pub fn asked_summary(asked: &ExtensionPermissionSet) -> Vec<String> {
+    let manifest = serde_json::json!({
+        "permissions": asked.permissions,
+        "host_permissions": asked.origins,
+    });
+    let quiet = crate::CATALOG.t("browser-extension-no-access");
+    summarize_manifest(&manifest.to_string())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|line| *line != quiet)
+        .collect()
 }
 
 fn pinned_path(root: &Path) -> PathBuf {
@@ -1827,6 +1984,20 @@ mod tabs_tests {
 
     const RUNS_TABS: &str =
         ";typeof importScripts=='function'&&importScripts('/tilo-extension-tabs.js');";
+
+    #[test]
+    fn the_manager_keeps_the_token_its_worker_reports_with() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let dir = root.path().join("extension-manager");
+        write_manager(&dir).expect("the manager is written");
+        let token = manager_token(&dir).expect("its worker is given a token");
+        assert_eq!(token.len(), 48);
+        let worker = std::fs::read_to_string(dir.join("worker.js")).expect("worker");
+        assert!(worker.contains(&format!("importScripts('{MANAGER_TOKEN_FILE}')")));
+        // Written again at the next start: the same token.
+        write_manager(&dir).expect("the manager is written again");
+        assert_eq!(manager_token(&dir), Some(token));
+    }
 
     #[test]
     fn an_extensions_worker_runs_the_tab_script_first_with_its_token() {

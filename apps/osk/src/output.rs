@@ -24,7 +24,7 @@
 //! Everything here is pure; the live Wayland halves live in
 //! [`crate::imclient`] and [`crate::inject`].
 
-use crate::inject::Symbol;
+use crate::inject::{Keypress, Symbol};
 
 /// One ordered instruction for the focused text field.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,9 +33,18 @@ pub enum OskOutput {
     SetPreedit(String),
     /// Replace the composing text with this string and make it final.
     Commit(String),
-    /// Press an editing key. The keyboard never emits one while text is still
-    /// composing: the composition is committed (or cleared) first.
-    Key(Symbol),
+    /// Press a key, with the modifiers held for it. The keyboard never emits
+    /// one while text is still composing: the composition is committed (or
+    /// cleared) first.
+    Key(Keypress),
+}
+
+impl OskOutput {
+    /// Press `symbol` with no modifiers.
+    #[must_use]
+    pub fn key(symbol: Symbol) -> Self {
+        Self::Key(symbol.into())
+    }
 }
 
 /// The Wayland connection a [`Step`] travels on.
@@ -53,8 +62,8 @@ pub enum Step {
     Preedit(String),
     /// `commit_string` + `commit` on the input method.
     Commit(String),
-    /// Tap a keysym on the virtual keyboard.
-    Key(Symbol),
+    /// Tap a keysym on the virtual keyboard, with its modifiers held.
+    Key(Keypress),
     /// Round-trip on this channel before issuing anything on the other one, so
     /// the compositor has applied everything already sent.
     Barrier(Channel),
@@ -78,7 +87,7 @@ impl OrderedRouter {
         let (channel, step) = match output {
             OskOutput::SetPreedit(text) => (Channel::InputMethod, Step::Preedit(text)),
             OskOutput::Commit(text) => (Channel::InputMethod, Step::Commit(text)),
-            OskOutput::Key(symbol) => (Channel::Keys, Step::Key(symbol)),
+            OskOutput::Key(keypress) => (Channel::Keys, Step::Key(keypress)),
         };
         let mut steps = Vec::with_capacity(2);
         if let Some(previous) = self.last
@@ -105,6 +114,21 @@ impl PreeditEmulator {
         Self::default()
     }
 
+    /// The keys that bring the field in line with `output`.
+    pub fn keypresses(&mut self, output: &OskOutput) -> Vec<Keypress> {
+        match output {
+            OskOutput::Key(keypress) => {
+                self.shown.clear();
+                vec![*keypress]
+            }
+            other => self
+                .symbols(other)
+                .into_iter()
+                .map(Keypress::from)
+                .collect(),
+        }
+    }
+
     /// The keysyms that bring the field in line with `output`.
     pub fn symbols(&mut self, output: &OskOutput) -> Vec<Symbol> {
         match output {
@@ -114,11 +138,11 @@ impl PreeditEmulator {
                 self.shown.clear();
                 symbols
             }
-            OskOutput::Key(symbol) => {
+            OskOutput::Key(keypress) => {
                 // The keyboard commits before any key; whatever was shown is
                 // final text from here on.
                 self.shown.clear();
-                vec![*symbol]
+                vec![keypress.symbol]
             }
         }
     }
@@ -185,9 +209,13 @@ impl TextMirror {
                 self.push(text);
                 self.preedit_start = self.text.len();
             }
-            OskOutput::Key(symbol) => {
+            OskOutput::Key(keypress) if !keypress.modifiers.is_empty() => {
+                // A chord is a command to the program, not text.
                 self.preedit_start = self.text.len();
-                match symbol {
+            }
+            OskOutput::Key(keypress) => {
+                self.preedit_start = self.text.len();
+                match keypress.symbol {
                     Symbol::BackSpace => {
                         self.text.pop();
                     }
@@ -197,7 +225,7 @@ impl TextMirror {
                     Symbol::Unicode(c) => self.push(c.encode_utf8(&mut [0; 4])),
                     // The mirror keeps no caret; it stays a record of what
                     // was typed, in order.
-                    Symbol::Left | Symbol::Right => {}
+                    Symbol::Left | Symbol::Right | Symbol::Up | Symbol::Down | Symbol::Escape => {}
                 }
                 self.preedit_start = self.text.len();
             }
@@ -236,15 +264,15 @@ mod tests {
         assert_eq!(router.route(pre("he")), vec![Step::Preedit("he".into())]);
         assert_eq!(router.route(commit("he")), vec![Step::Commit("he".into())]);
         assert_eq!(
-            router.route(OskOutput::Key(Symbol::Return)),
+            router.route(OskOutput::key(Symbol::Return)),
             vec![
                 Step::Barrier(Channel::InputMethod),
-                Step::Key(Symbol::Return)
+                Step::Key(Keypress::from(Symbol::Return))
             ]
         );
         assert_eq!(
-            router.route(OskOutput::Key(Symbol::BackSpace)),
-            vec![Step::Key(Symbol::BackSpace)]
+            router.route(OskOutput::key(Symbol::BackSpace)),
+            vec![Step::Key(Keypress::from(Symbol::BackSpace))]
         );
         assert_eq!(
             router.route(commit("x")),
@@ -270,7 +298,7 @@ mod tests {
         assert_eq!(vk.symbols(&pre("a")), vec![Symbol::Unicode('a')]);
         assert_eq!(vk.symbols(&pre("")), vec![Symbol::BackSpace]);
         assert_eq!(
-            vk.symbols(&OskOutput::Key(Symbol::BackSpace)),
+            vk.symbols(&OskOutput::key(Symbol::BackSpace)),
             vec![Symbol::BackSpace]
         );
     }
@@ -300,9 +328,9 @@ mod tests {
         m.apply(&pre("m"));
         assert_eq!(m.text(), "help m");
         m.apply(&pre(""));
-        m.apply(&OskOutput::Key(Symbol::BackSpace));
+        m.apply(&OskOutput::key(Symbol::BackSpace));
         assert_eq!(m.text(), "help");
-        m.apply(&OskOutput::Key(Symbol::Return));
+        m.apply(&OskOutput::key(Symbol::Return));
         assert_eq!(m.text(), "help\n");
     }
 

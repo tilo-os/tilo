@@ -3,7 +3,7 @@
 //!
 //! Every document-mutating operation is a [`RichTextAction`] from tilo-doc's
 //! rich-text vocabulary (re-exported here with its builders). The same
-//! [`EncodedAction`] is what toolbar/panel/menu affordances dispatch and what
+//! [`EncodedAction`](tilo_actions::EncodedAction) is what toolbar/panel/menu affordances dispatch and what
 //! Ctrl+K dispatches — one source of truth, one replay path. This module adds
 //! what is the word processor's own: its application operations (open, save,
 //! zoom, panels) and the resource tree it publishes.

@@ -1,5 +1,7 @@
 messages-empty-heading = Your people, together
 messages-empty-hint = Add people in Contacts to start a conversation.
+messages-open-contacts = Open Contacts
+messages-open-contacts-description = Add the people you message in Contacts
 messages-choose-heading = Choose a person
 messages-choose-hint = Your conversations stay separate for each service and account.
 messages-people = People

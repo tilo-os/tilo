@@ -51,6 +51,8 @@ struct Inner {
     /// opened and not yet taken, and the engines of those adopted.
     accepts_popups: bool,
     popups: Vec<super::Popup>,
+    /// Whether it was asked for the page's own questions.
+    accepts_page_dialogs: bool,
     adopted: std::collections::HashMap<u32, Arc<TestEngine>>,
     /// The tabs it was asked to create, oldest first.
     created: Vec<Arc<TestEngine>>,
@@ -134,6 +136,11 @@ impl TestEngine {
     /// Whether it was asked for the page's popups.
     pub fn accepts_popups(&self) -> bool {
         self.lock_inner().accepts_popups
+    }
+
+    /// Whether it was asked for the page's own questions.
+    pub fn accepts_page_dialogs(&self) -> bool {
+        self.lock_inner().accepts_page_dialogs
     }
 
     /// The tabs it created, oldest first.
@@ -447,6 +454,10 @@ impl WebViewEngine for TestEngine {
         self.lock_inner().accepts_popups = true;
     }
 
+    fn accept_page_dialogs(&self) {
+        self.lock_inner().accepts_page_dialogs = true;
+    }
+
     fn take_popups(&self) -> Vec<super::Popup> {
         std::mem::take(&mut self.lock_inner().popups)
     }
@@ -610,13 +621,21 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::PermissionDecision { .. }
             | WebViewCommand::PermissionDismissed { .. }
             | WebViewCommand::ExtensionAccess { .. }
+            | WebViewCommand::ExtensionGrants { .. }
+            | WebViewCommand::ExtensionPermissionDecision { .. }
             | WebViewCommand::ExtensionForget { .. }
             | WebViewCommand::ExtensionIdentity { .. }
             | WebViewCommand::ExtensionPanel { .. }
+            | WebViewCommand::ExtensionSignInPanel { .. }
             | WebViewCommand::ExtensionClick { .. }
+            | WebViewCommand::ExtensionMenuChoice { .. }
+            | WebViewCommand::ExtensionNotificationChosen { .. }
+            | WebViewCommand::ExtensionOmnibox { .. }
+            | WebViewCommand::ExtensionOpenSidePanel { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }
+            | WebViewCommand::AnswerPageDialog { .. }
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
             | WebViewCommand::ReportDocumentSize(_)

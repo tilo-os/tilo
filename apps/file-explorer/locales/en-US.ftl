@@ -126,6 +126,8 @@ files-replica-counts = Kept on { $durable } other { $durable ->
    *[other] devices
 }
 files-transfer-state = Transfer: { $state }
+files-unavailable = Unavailable
+files-unavailable-offline = Unavailable until a device that keeps it is online
 files-transfer-idle = idle
 files-transfer-queued = queued
 files-transfer-downloading = downloading
@@ -304,6 +306,7 @@ files-history-current-version-label = Current version
 
 ## Accessible collaborative state
 files-a11y-transfer-failed = Transfer failed
+files-a11y-unavailable = Unavailable until a device that keeps it is online
 files-a11y-transfer-queued = Transfer queued
 files-a11y-downloading = Downloading
 files-a11y-uploading = Uploading
@@ -657,7 +660,8 @@ file-explorer-import-mounted = Created independent editable copies in { $folder 
 ## Notices
 files-notice-undo = Undo
 files-notice-open-with = Open With…
-files-notice-dismiss = Dismiss
+files-notice-try-again = Try again
+files-notice-open-history = Open Version history
 files-menu-undo = Undo
 files-open-failed = Couldn’t open “{ $name }”
 files-open-unavailable = Files can’t open documents in this window.

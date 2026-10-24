@@ -1,4 +1,4 @@
-//! "Uninstall <name>?" for each kind of app, over the desktop as the shell
+//! "Uninstall \<name\>?" for each kind of app, over the desktop as the shell
 //! hosts it. The apps are made up: a capture never reads the machine's.
 use std::path::PathBuf;
 

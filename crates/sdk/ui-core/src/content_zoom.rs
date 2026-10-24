@@ -13,13 +13,12 @@
 //! terminal's grid, set in the theme's code type, grows its font with it.
 //!
 //! A window's factor is remembered per app on this device, and every change
-//! shows the standard transient indicator ([`crate::StatusBubble`], "110%").
+//! is said in the window's bar for a while ("110%").
 
 use winit::event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
 
 use crate::platform::PlatformConventions;
-use crate::status_bubble::StatusBubble;
 use crate::time::Instant;
 
 /// The zoom levels every step moves between, as factors of the default.
@@ -185,14 +184,15 @@ impl crate::storage::SettingsSchema for ZoomPrefs {
     const SCOPE: crate::storage::Scope = crate::storage::Scope::DeviceLocal;
 }
 
-/// A window's content zoom: its factor, where it is remembered, the
-/// indicator that shows a change, and the scroll and pinch it accumulates
-/// into steps.
+/// A window's content zoom: its factor, where it is remembered, the level
+/// the window's bar says after a change, and the scroll and pinch it
+/// accumulates into steps.
 #[derive(Debug)]
 pub struct WindowZoom {
     factor: f32,
     settings: Option<crate::storage::Settings<ZoomPrefs>>,
-    bubble: StatusBubble,
+    /// The level, said in the window's bar for a while after it changed.
+    level: crate::widget::toast::Transient<String>,
     pinch: f64,
     scroll: f64,
 }
@@ -202,7 +202,7 @@ impl Default for WindowZoom {
         Self {
             factor: 1.0,
             settings: None,
-            bubble: StatusBubble::new(),
+            level: crate::widget::toast::Transient::new(),
             pinch: 0.0,
             scroll: 0.0,
         }
@@ -264,36 +264,38 @@ impl WindowZoom {
         changed
     }
 
-    /// Show the indicator for `factor` (a widget's own zoom says its level
-    /// through the same indicator), and ask the frames its fade needs.
-    pub fn indicate(&mut self, factor: f32, now: Instant) {
+    /// Say the level `factor` in the window's bar (a widget's own zoom
+    /// says its level the same way); the same level again (a step at a
+    /// bound) says it once more.
+    pub fn indicate(&mut self, factor: f32, _now: Instant) {
         let text = crate::format::percent(f64::from(factor));
-        if !self.bubble.show(&text, now) {
-            // The same level again (a step at a bound): show it once more.
-            self.bubble.poke(now);
-        }
-        if let Some(until) = now.checked_add(crate::status_bubble::DEFAULT_LINGER) {
-            crate::motion::want_frames_until(until);
-        }
+        self.level.show(text);
+        self.publish();
     }
 
+    /// Whether the window's bar says the level.
     #[must_use]
-    pub fn indicator_visible(&self, now: Instant) -> bool {
-        self.bubble.is_visible(now)
+    pub fn indicator_visible(&self, _now: Instant) -> bool {
+        self.level.is_shown()
     }
 
-    /// Paint the indicator over the window (`area`, logical) while it
-    /// shows. Returns the rect it painted.
-    pub fn paint_indicator(
-        &self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        tr: &mut crate::text_render::TextRenderer,
-        theme: &crate::theme::Theme,
-        area: vello::kurbo::Rect,
-        now: Instant,
-    ) -> Option<vello::kurbo::Rect> {
-        self.bubble.paint(scene, transform, tr, theme, area, now)
+    /// Keep the window's bar saying the level while it lasts, and let it go
+    /// once its time is up; the host calls this on its frames and at
+    /// [`Self::deadline`].
+    pub fn publish(&mut self) {
+        self.level.expire();
+        self.level.publish(|level| {
+            crate::window_toolbar::ToolbarNotice::new(
+                level.clone(),
+                crate::widget::toast::ToastKind::Info,
+            )
+        });
+    }
+
+    /// When the level leaves the window's bar, for the host's wake.
+    #[must_use]
+    pub fn deadline(&self) -> Option<Instant> {
+        self.level.deadline()
     }
 
     /// The step `gesture` amounts to, if any yet.

@@ -32,6 +32,15 @@
 //! ending a call closes their voice within one carrier observation of the
 //! decision.
 //!
+//! A bridge (a room's Discord bot) holds participations that stand for
+//! someone else ([`Bridged`]): one of its own that only hears the call, to
+//! carry it out, and one per person on the other side that only speaks,
+//! each with its own publication. The host running the bridge joins them
+//! in-process ([`Rooms::voice_join_bridged`]), never over the wire; the
+//! bot's device must be a bot the room lets show other people's names, and
+//! a person a guest is linked to must still be a member, whose denials hold
+//! for the guest as for them.
+//!
 //! Every device that asked for a room's calls ([`Rooms::voice_calls`]) is
 //! sent the room's call list again whenever it changes: someone joins or
 //! leaves a call, a participation ends, or a call starts or ends. A voice
@@ -50,8 +59,8 @@ use tilo_moq::relay::{
 use tilo_peer_state::room::media::{self, CallPhaseV1, DirectionsV1, RoomMediaV1};
 use tilo_peer_state::{GovernedAccess, StatePeer};
 use tilo_relay_protocol::voice::{
-    self as protocol, CallOperation, CallState, CallSummary, Directions, PARTICIPATION_TTL,
-    Showing, VoiceGrant, VoiceParticipant,
+    self as protocol, Bridged, CallOperation, CallState, CallSummary, Directions,
+    PARTICIPATION_TTL, Showing, VoiceGrant, VoiceParticipant,
 };
 use tilo_relay_protocol::{AuthenticatedPeer, Envelope};
 use tokio::sync::mpsc;
@@ -91,6 +100,8 @@ struct Participation {
     directions: Directions,
     /// What it shows besides its voice, as it last said.
     showing: Showing,
+    /// Who it stands for, when a bridge holds it.
+    bridged: Option<Bridged>,
     seen: Instant,
     outbound: mpsc::Sender<Envelope>,
     token: [u8; 32],
@@ -116,7 +127,20 @@ struct Watcher {
 }
 
 impl Participation {
-    /// What it shows that the others see: nothing while it may not publish.
+    /// It as the participants of its call see it, published under `id`.
+    fn participant(&self, id: &[u8; 32]) -> VoiceParticipant {
+        VoiceParticipant {
+            device_public_key: self.device,
+            user_public_key: self.user,
+            namespace: protocol::namespace(&self.call, id),
+            publishes: self.directions.publish,
+            showing: self.shown(),
+            bridged: self.bridged.clone(),
+        }
+    }
+
+    /// What it shows that the others see: nothing, and muted, while it may
+    /// not publish; whether it listens is its own either way.
     const fn shown(&self) -> Showing {
         if self.directions.publish {
             self.showing
@@ -124,8 +148,34 @@ impl Participation {
             Showing {
                 camera: false,
                 screen: false,
+                muted: true,
+                deafened: self.showing.deafened,
             }
         }
+    }
+}
+
+/// The place a participation holds for its device. A device holds each
+/// place in one call at a time, and the places never end each other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Seat<'a> {
+    /// The device's own voice.
+    Own,
+    /// A bridge's own participation, which hears the call to carry it out.
+    Bridge,
+    /// One person, by account, a bridge carries into the call.
+    Carried(&'a str),
+}
+
+/// The seat of a participation standing for `bridged`.
+fn seat(bridged: Option<&Bridged>) -> Seat<'_> {
+    match bridged {
+        None => Seat::Own,
+        Some(Bridged { account: None, .. }) => Seat::Bridge,
+        Some(Bridged {
+            account: Some(account),
+            ..
+        }) => Seat::Carried(account),
     }
 }
 
@@ -142,17 +192,24 @@ impl State {
         Some(participation)
     }
 
-    /// End the participations of `device` its join of `call` replaces: of a
-    /// voice call, its voice participation; of a room's window carrier
-    /// (`windows`), its earlier one in that carrier. The other calls it
-    /// left, whose participants hear the change.
-    fn end_device(&mut self, device: [u8; 32], call: &[u8; 32], windows: bool) -> Vec<[u8; 32]> {
+    /// End the participations of `device` its join of `call` in `seat`
+    /// replaces: of a voice call, its participation in that seat; of a
+    /// room's window carrier (`windows`), its earlier one in that carrier.
+    /// The other calls it left, whose participants hear the change.
+    fn end_device(
+        &mut self,
+        device: [u8; 32],
+        call: &[u8; 32],
+        windows: bool,
+        seat: Seat<'_>,
+    ) -> Vec<[u8; 32]> {
         let earlier: Vec<[u8; 32]> = self
             .participations
             .iter()
             .filter(|(_, existing)| {
                 existing.device == device
                     && existing.windows == windows
+                    && self::seat(existing.bridged.as_ref()) == seat
                     && (!windows || existing.call == *call)
             })
             .map(|(id, _)| *id)
@@ -205,13 +262,7 @@ impl Calls {
         let own = state.participations.get(id)?;
         let mut participants: Vec<VoiceParticipant> = state
             .in_call(&own.call)
-            .map(|(other, participation)| VoiceParticipant {
-                device_public_key: participation.device,
-                user_public_key: participation.user,
-                namespace: protocol::namespace(&participation.call, other),
-                publishes: participation.directions.publish,
-                showing: participation.shown(),
-            })
+            .map(|(other, participation)| participation.participant(other))
             .collect();
         participants.sort_by(|a, b| a.namespace.cmp(&b.namespace));
         let namespace = protocol::namespace(&own.call, id);
@@ -256,6 +307,22 @@ impl Calls {
         }
     }
 
+    /// Send every participant of `call` but `joined` its current grant:
+    /// `joined` has its own as the answer to its join.
+    fn announce_to_others(&self, state: &State, call: [u8; 32], joined: [u8; 32]) {
+        for (other, participation) in &state.participations {
+            if *other == joined || participation.call != call {
+                continue;
+            }
+            if let Some(grant) = self.grant(state, other) {
+                let _ = participation.outbound.try_send(Envelope::VoiceGranted {
+                    workspace_id: participation.workspace_id,
+                    grant: Box::new(grant),
+                });
+            }
+        }
+    }
+
     /// Re-derive every participation in `room` from its committed policy:
     /// refuse those that may no longer take part, update the others, and
     /// send the participants of every call that changed their new grants.
@@ -274,6 +341,7 @@ impl Calls {
                     participation.device,
                     participation.user,
                     &participation.call,
+                    participation.bridged.as_ref(),
                 )
             });
             match current {
@@ -364,6 +432,18 @@ impl Calls {
     fn permits(&self, id: &[u8; 32], direction: Direction, namespace: &str) -> bool {
         self.state().permits(id, direction, namespace)
     }
+
+    /// Participation `id`'s carrier session is still connected: as good as
+    /// a heartbeat. A browser runs a hidden, silent tab's timers once a
+    /// minute, its heartbeats with them, while its network stack keeps the
+    /// carrier alive; the carrier's idle timeout still ends a device that
+    /// went away.
+    #[cfg(feature = "web")]
+    fn carrier_connected(&self, id: &[u8; 32]) {
+        if let Some(participation) = self.state().participations.get_mut(id) {
+            participation.seen = Instant::now();
+        }
+    }
 }
 
 impl State {
@@ -413,6 +493,9 @@ struct Policy {
     /// Whether the room shares its members' layout, and with it their
     /// windows.
     shares_layout: bool,
+    /// The devices of the bots acting in the room that may show other
+    /// people's names: those that may bridge a call.
+    bridges: Vec<[u8; 32]>,
 }
 
 impl Policy {
@@ -427,26 +510,48 @@ impl Policy {
         } else {
             peer.validated_media_policy()?
         };
+        let now = SystemTime::now();
+        let bridges = peer
+            .governance()
+            .installations(now)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|bot| {
+                bot.acting
+                    && bot.withdrawn_at_ns.is_none()
+                    && matches!(
+                        bot.installation.appearance,
+                        tilo_peer_state::AppearancePolicy::Personas
+                    )
+            })
+            .map(|bot| bot.device_public_key)
+            .collect();
         Ok(Self {
             calls,
-            access: peer.governance().governed_access(SystemTime::now())?,
+            access: peer.governance().governed_access(now)?,
             windows: protocol::windows_call(room.room()),
             shares_layout: !peer.governance().room_layout().is_personal(),
+            bridges,
         })
     }
 }
 
-/// What `device` of person `user` may do in `call` under `policy`: the
-/// call's epoch and directions, or why it may not take part. A person's
-/// every certified device takes part, as the relay admits them all to the
-/// room; the relay verified the certificate when the device connected.
+/// What `device` of person `user` may do in `call` under `policy`,
+/// standing for `bridged` when a bridge holds it: the call's epoch and
+/// directions, or why it may not take part. A person's every certified
+/// device takes part, as the relay admits them all to the room; the relay
+/// verified the certificate when the device connected.
 fn current(
     policy: &Policy,
     device: [u8; 32],
     user: [u8; 32],
     call: &[u8; 32],
+    bridged: Option<&Bridged>,
 ) -> Result<(u64, Directions), String> {
     if *call == policy.windows {
+        if bridged.is_some() {
+            return Err("a bridge carries voice calls, not windows".into());
+        }
         // The room's window carrier: every member device publishes the
         // windows it runs and views the others', while the room shares its
         // layout.
@@ -472,19 +577,73 @@ fn current(
     if call.phase != CallPhaseV1::Active {
         return Err("the call has ended".into());
     }
-    if !policy.access.member_devices.contains(&device)
-        && !policy.access.member_user_roots.contains(&user)
-    {
+    if !member(policy, device, user) {
         return Err("not a member of the room".into());
     }
-    let denied = call.denied.get(&user);
-    Ok((
-        call.epoch,
-        Directions {
-            publish: call.allowed.publish && !denied.is_some_and(|value| value.publish),
-            subscribe: call.allowed.subscribe && !denied.is_some_and(|value| value.subscribe),
-        },
-    ))
+    let linked = match bridged {
+        None => None,
+        Some(bridged) => {
+            if !policy.bridges.contains(&device) {
+                return Err(
+                    "only a bot the room lets show other people's names bridges a call".into(),
+                );
+            }
+            if let Some(linked) = bridged.linked
+                && !policy.access.member_user_roots.contains(&linked)
+            {
+                return Err("the person this account is linked to is no member of the room".into());
+            }
+            bridged.linked
+        }
+    };
+    // A guest linked to a person is that person in the call: a denial of
+    // either holds.
+    let denied = |pick: fn(&DirectionsV1) -> bool| {
+        call.denied.get(&user).is_some_and(pick)
+            || linked.is_some_and(|linked| call.denied.get(&linked).is_some_and(pick))
+    };
+    let mut directions = Directions {
+        publish: call.allowed.publish && !denied(|value| value.publish),
+        subscribe: call.allowed.subscribe && !denied(|value| value.subscribe),
+    };
+    // A bridge's own participation only hears the call, to carry it out; a
+    // person it carries only speaks, and hears the call on their service.
+    match seat(bridged) {
+        Seat::Own => {}
+        Seat::Bridge => directions.publish = false,
+        Seat::Carried(_) => directions.subscribe = false,
+    }
+    Ok((call.epoch, directions))
+}
+
+/// Whether a participant may be shown as `bridged`: a lowercase service,
+/// and a name, avatar and account an appearance may carry
+/// (`tilo_actions::appearance`).
+#[cfg(any(feature = "agents", test))]
+fn validate_bridged(bridged: &Bridged) -> Result<(), String> {
+    let service = bridged.service.chars().count();
+    if !(1..=32).contains(&service)
+        || !bridged
+            .service
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err("a bridged service is 1 to 32 lowercase letters, digits or '-'".into());
+    }
+    tilo_actions::appearance::Appearance {
+        name: bridged.name.clone(),
+        avatar: bridged.avatar.clone(),
+        persona: bridged
+            .account
+            .as_ref()
+            .map(|account| tilo_actions::appearance::Persona {
+                service: bridged.service.clone(),
+                account: account.clone(),
+                linked: bridged.linked.map(hex::encode),
+            }),
+    }
+    .validate()
+    .map_err(|error| error.to_string())
 }
 
 impl GovernedRoom {
@@ -499,7 +658,7 @@ impl GovernedRoom {
         record: &str,
         channel: &str,
     ) -> Result<media::ChatCallBindingV1, String> {
-        if !self.peer().is_sealed_record(app, record) {
+        if !self.peer().publication().is_sealed_record(app, record) {
             return self
                 .peer()
                 .media()
@@ -559,13 +718,7 @@ fn call_list(state: &State, policy: &Policy) -> Vec<CallSummary> {
         .map(|(call, entry)| {
             let mut participants: Vec<VoiceParticipant> = state
                 .in_call(call)
-                .map(|(id, participation)| VoiceParticipant {
-                    device_public_key: participation.device,
-                    user_public_key: participation.user,
-                    namespace: protocol::namespace(call, id),
-                    publishes: participation.directions.publish,
-                    showing: participation.shown(),
-                })
+                .map(|(id, participation)| participation.participant(id))
                 .collect();
             participants.sort_by(|a, b| a.namespace.cmp(&b.namespace));
             CallSummary {
@@ -867,6 +1020,12 @@ impl SessionAuthorization for Session {
                 self.status_offered_in(&calls.state(), offered, lapsed)
             })
     }
+
+    fn connected(&self) {
+        if let Some(calls) = self.calls.upgrade() {
+            calls.carrier_connected(&self.participation);
+        }
+    }
 }
 
 /// Admits a carrier session presenting a current grant's token.
@@ -926,7 +1085,7 @@ impl Rooms {
     /// [`Self::voice_call`] for the device `caller` certifies, however it
     /// reached the relay: the envelope and the room's `call` action share
     /// it, and with it the one authorization.
-    pub(super) async fn voice_call_as(
+    pub async fn voice_call_as(
         &self,
         room: &str,
         caller: &tilo_user_identity::DeviceCert,
@@ -1027,6 +1186,61 @@ impl Rooms {
         participation: Option<[u8; 32]>,
         outbound: mpsc::Sender<Envelope>,
     ) -> Result<VoiceGrant, String> {
+        self.join(
+            room,
+            (peer.device_public_key, peer.user_public_key),
+            call,
+            participation,
+            None,
+            outbound,
+        )
+        .await
+    }
+
+    /// Join `call` of `room` with the bot device `cert` standing for
+    /// `bridged`, or continue `participation` (a changed name, avatar or
+    /// link is taken as it is). A device holds the bridge's own seat and
+    /// one per account it carries, each in one call at a time. Only the
+    /// host running the bridge calls this: no envelope reaches it.
+    ///
+    /// # Errors
+    /// `bridged` is malformed, the device is no bot the room lets show
+    /// other people's names, the person an account is linked to is no
+    /// member, or the call refuses it as anyone.
+    #[cfg(feature = "agents")]
+    pub async fn voice_join_bridged(
+        &self,
+        room: &str,
+        cert: &tilo_user_identity::DeviceCert,
+        call: [u8; 32],
+        participation: Option<[u8; 32]>,
+        bridged: Bridged,
+        outbound: mpsc::Sender<Envelope>,
+    ) -> Result<VoiceGrant, String> {
+        validate_bridged(&bridged)?;
+        tilo_user_identity::verify_device_cert_at(cert, tilo_clock::unix_now_ns())
+            .map_err(|error| error.to_string())?;
+        self.join(
+            room,
+            (cert.device_public_key, cert.user_public_key),
+            call,
+            participation,
+            Some(bridged),
+            outbound,
+        )
+        .await
+    }
+
+    /// [`Self::voice_join`] for `(device, user)`, standing for `bridged`.
+    async fn join(
+        &self,
+        room: &str,
+        (device, user): ([u8; 32], [u8; 32]),
+        call: [u8; 32],
+        participation: Option<[u8; 32]>,
+        bridged: Option<Bridged>,
+        outbound: mpsc::Sender<Envelope>,
+    ) -> Result<VoiceGrant, String> {
         let calls = &self.inner.calls;
         if !self.serves_voice() {
             return Err("this relay serves no voice carrier".into());
@@ -1035,8 +1249,7 @@ impl Rooms {
         let (workspace_id, epoch, directions, windows) = {
             let governed = governed.lock().await;
             let policy = Policy::read(&governed)?;
-            let (epoch, directions) =
-                current(&policy, peer.device_public_key, peer.user_public_key, &call)?;
+            let (epoch, directions) = current(&policy, device, user, &call, bridged.as_ref())?;
             (
                 governed.workspace_id(),
                 epoch,
@@ -1045,16 +1258,23 @@ impl Rooms {
             )
         };
         let mut state = calls.state();
+        let mut changed = participation.is_none();
         let id = if let Some(id) = participation {
             let existing = state
                 .participations
                 .get_mut(&id)
                 .filter(|existing| {
-                    existing.call == call && existing.device == peer.device_public_key
+                    existing.call == call
+                        && existing.device == device
+                        && seat(existing.bridged.as_ref()) == seat(bridged.as_ref())
                 })
                 .ok_or("the participation ended; join afresh")?;
             existing.seen = Instant::now();
             existing.outbound = outbound;
+            if existing.bridged != bridged {
+                existing.bridged = bridged;
+                changed = true;
+            }
             if existing
                 .token_expires
                 .saturating_duration_since(Instant::now())
@@ -1064,10 +1284,10 @@ impl Rooms {
             }
             id
         } else {
-            // A device is in one call at a time: its earlier participation,
-            // in this call or another, ends with this join. Its window
-            // carrier stands beside it.
-            let left = state.end_device(peer.device_public_key, &call, windows);
+            // A device is in one call at a time in each seat: its earlier
+            // participation there, in this call or another, ends with this
+            // join. Its window carrier stands beside it.
+            let left = state.end_device(device, &call, windows, seat(bridged.as_ref()));
             calls.announce(&state, &left);
             let id = loop {
                 let id: [u8; 32] = rand::random();
@@ -1083,10 +1303,11 @@ impl Rooms {
                     call,
                     windows,
                     epoch,
-                    device: peer.device_public_key,
-                    user: peer.user_public_key,
+                    device,
+                    user,
                     directions,
                     showing: Showing::default(),
+                    bridged,
                     seen: Instant::now(),
                     outbound,
                     token: [0; 32],
@@ -1095,30 +1316,20 @@ impl Rooms {
                 },
             );
             state.renew_token(id);
-            state.changed.insert(room.to_owned());
             tracing::info!(%room, call = %hex::encode(call), "voice participant joined");
             id
         };
-        let changed = state.participations.get(&id).is_some_and(|participation| {
+        changed |= state.participations.get(&id).is_some_and(|participation| {
             (participation.epoch, participation.directions) != (epoch, directions)
-        }) || participation.is_none();
+        });
         if let Some(existing) = state.participations.get_mut(&id) {
             existing.epoch = epoch;
             existing.directions = directions;
         }
         let grant = calls.grant(&state, &id).ok_or("the participation ended")?;
         if changed {
-            for (other, participation) in &state.participations {
-                if *other == id || participation.call != call {
-                    continue;
-                }
-                if let Some(grant) = calls.grant(&state, other) {
-                    let _ = participation.outbound.try_send(Envelope::VoiceGranted {
-                        workspace_id: participation.workspace_id,
-                        grant: Box::new(grant),
-                    });
-                }
-            }
+            state.changed.insert(room.to_owned());
+            calls.announce_to_others(&state, call, id);
         }
         drop(state);
         self.watch_calls();
@@ -1135,23 +1346,52 @@ impl Rooms {
         peer: &AuthenticatedPeer,
         outbound: mpsc::Sender<Envelope>,
     ) -> Result<Vec<CallSummary>, String> {
+        self.watch_call_list(
+            room,
+            (peer.device_public_key, peer.user_public_key),
+            outbound,
+        )
+        .await
+    }
+
+    /// [`Self::voice_calls`] for the device `cert` certifies, in-process:
+    /// how the host running a bridge follows who is in the room's calls.
+    #[cfg(feature = "agents")]
+    pub async fn voice_calls_as(
+        &self,
+        room: &str,
+        cert: &tilo_user_identity::DeviceCert,
+        outbound: mpsc::Sender<Envelope>,
+    ) -> Result<Vec<CallSummary>, String> {
+        self.watch_call_list(
+            room,
+            (cert.device_public_key, cert.user_public_key),
+            outbound,
+        )
+        .await
+    }
+
+    async fn watch_call_list(
+        &self,
+        room: &str,
+        (device, user): ([u8; 32], [u8; 32]),
+        outbound: mpsc::Sender<Envelope>,
+    ) -> Result<Vec<CallSummary>, String> {
         let governed = self.room(room).await.map_err(|error| error.to_string())?;
         let (workspace_id, policy) = {
             let governed = governed.lock().await;
             (governed.workspace_id(), Policy::read(&governed)?)
         };
-        if !member(&policy, peer.device_public_key, peer.user_public_key) {
+        if !member(&policy, device, user) {
             return Err("not a member of the room".into());
         }
         let mut state = self.inner.calls.state();
         let watchers = state.watchers.entry(room.to_owned()).or_default();
-        watchers.retain(|watcher| {
-            !watcher.outbound.is_closed() && watcher.device != peer.device_public_key
-        });
+        watchers.retain(|watcher| !watcher.outbound.is_closed() && watcher.device != device);
         watchers.push(Watcher {
             workspace_id,
-            device: peer.device_public_key,
-            user: peer.user_public_key,
+            device,
+            user,
             outbound,
         });
         let list = call_list(&state, &policy);
@@ -1211,14 +1451,28 @@ impl Rooms {
         call: [u8; 32],
         participation: [u8; 32],
     ) {
+        self.leave(peer.device_public_key, call, participation);
+    }
+
+    /// End `participation` in `call` the bot device `cert` holds for a
+    /// bridge ([`Self::voice_join_bridged`]).
+    #[cfg(feature = "agents")]
+    pub fn voice_leave_bridged(
+        &self,
+        cert: &tilo_user_identity::DeviceCert,
+        call: [u8; 32],
+        participation: [u8; 32],
+    ) {
+        self.leave(cert.device_public_key, call, participation);
+    }
+
+    fn leave(&self, device: [u8; 32], call: [u8; 32], participation: [u8; 32]) {
         let calls = &self.inner.calls;
         let mut state = calls.state();
         let owned = state
             .participations
             .get(&participation)
-            .is_some_and(|existing| {
-                existing.call == call && existing.device == peer.device_public_key
-            });
+            .is_some_and(|existing| existing.call == call && existing.device == device);
         if owned && let Some(left) = state.remove(&participation) {
             calls.announce(&state, &[call]);
             state.changed.insert(left.room);
@@ -1237,12 +1491,31 @@ impl Rooms {
         participation: [u8; 32],
         showing: Showing,
     ) {
+        self.show(peer.device_public_key, call, participation, showing);
+    }
+
+    /// [`Self::voice_show`] for a participation a bridge on this host holds
+    /// for a person on another service: whether that person is muted there.
+    /// The host running the bridge calls this: no envelope reaches it.
+    #[cfg(feature = "agents")]
+    pub fn voice_show_bridged(
+        &self,
+        cert: &tilo_user_identity::DeviceCert,
+        call: [u8; 32],
+        participation: [u8; 32],
+        showing: Showing,
+    ) {
+        self.show(cert.device_public_key, call, participation, showing);
+    }
+
+    /// Set what participation `participation` of `device` in `call` shows.
+    fn show(&self, device: [u8; 32], call: [u8; 32], participation: [u8; 32], showing: Showing) {
         let calls = &self.inner.calls;
         let mut state = calls.state();
         let Some(existing) = state
             .participations
             .get_mut(&participation)
-            .filter(|existing| existing.call == call && existing.device == peer.device_public_key)
+            .filter(|existing| existing.call == call && existing.device == device)
         else {
             return;
         };
@@ -1348,6 +1621,7 @@ mod tests {
                         subscribe: true,
                     },
                     showing: Showing::default(),
+                    bridged: None,
                     seen: Instant::now(),
                     outbound,
                     token: id,
@@ -1455,6 +1729,36 @@ mod tests {
         ));
     }
 
+    /// A hidden browser tab beats once a minute; its connected carrier keeps
+    /// its participation, and one with no carrier still ends on time.
+    #[cfg(feature = "web")]
+    #[test]
+    fn a_connected_carrier_keeps_a_participation_whose_heartbeats_are_late() {
+        let calls = Arc::new(Calls::default());
+        let unheard = Instant::now()
+            .checked_sub(PARTICIPATION_TTL.saturating_add(Duration::from_secs(1)))
+            .unwrap();
+        let mut connections = Vec::new();
+        for id in [[4; 32], [5; 32]] {
+            let (outbound, connection) = mpsc::channel(1);
+            connections.push(connection);
+            let mut fixture = participation(id, [3; 32], false);
+            fixture.outbound = outbound;
+            fixture.seen = unheard;
+            fixture.token = id;
+            fixture.token_expires = Instant::now().checked_add(GRANT_TTL).unwrap();
+            let mut state = calls.state();
+            state.participations.insert(id, fixture);
+            state.tokens.insert(id, id);
+        }
+        let carrier = Authority(Arc::downgrade(&calls)).admit(&[4; 32]).unwrap();
+        carrier.connected();
+        calls.expire();
+        let remaining: Vec<[u8; 32]> = calls.state().participations.keys().copied().collect();
+        assert_eq!(remaining, [[4; 32]]);
+        drop(connections);
+    }
+
     /// One participation of `device` in `call`, for `State` fixtures.
     fn participation(device: [u8; 32], call: [u8; 32], windows: bool) -> Participation {
         let (outbound, _) = mpsc::channel(1);
@@ -1471,6 +1775,7 @@ mod tests {
                 subscribe: true,
             },
             showing: Showing::default(),
+            bridged: None,
             seen: Instant::now(),
             outbound,
             token: [0; 32],
@@ -1498,7 +1803,10 @@ mod tests {
             .participations
             .insert([7; 32], participation(device, elsewhere, true));
 
-        assert_eq!(state.end_device(device, &[4; 32], false), [[3; 32]]);
+        assert_eq!(
+            state.end_device(device, &[4; 32], false, Seat::Own),
+            [[3; 32]]
+        );
         assert_eq!(
             state
                 .participations
@@ -1508,7 +1816,11 @@ mod tests {
             [[2; 32], [7; 32]].into(),
             "both window carriers stand"
         );
-        assert!(state.end_device(device, &windows, true).is_empty());
+        assert!(
+            state
+                .end_device(device, &windows, true, Seat::Own)
+                .is_empty()
+        );
         assert_eq!(
             state.participations.keys().copied().collect::<Vec<_>>(),
             [[7; 32]],
@@ -1530,10 +1842,11 @@ mod tests {
             },
             windows: protocol::windows_call("room"),
             shares_layout: true,
+            bridges: Vec::new(),
         };
         let windows = policy.windows;
         assert_eq!(
-            current(&policy, member_device, [2; 32], &windows),
+            current(&policy, member_device, [2; 32], &windows, None),
             Ok((
                 0,
                 Directions {
@@ -1543,7 +1856,7 @@ mod tests {
             ))
         );
         assert!(
-            current(&policy, [3; 32], [4; 32], &windows).is_err(),
+            current(&policy, [3; 32], [4; 32], &windows, None).is_err(),
             "a stranger"
         );
         assert!(
@@ -1551,13 +1864,227 @@ mod tests {
                 &policy,
                 member_device,
                 [2; 32],
-                &protocol::windows_call("other room")
+                &protocol::windows_call("other room"),
+                None
             )
             .is_err(),
             "another room's carrier is no call of this one"
         );
         policy.shares_layout = false;
-        assert!(current(&policy, member_device, [2; 32], &windows).is_err());
+        assert!(current(&policy, member_device, [2; 32], &windows, None).is_err());
+    }
+
+    /// Who a bridge's participation in a fixture stands for: the bridge
+    /// itself without `account`.
+    fn bridged(account: Option<&str>, linked: Option<[u8; 32]>) -> Bridged {
+        Bridged {
+            service: "discord".into(),
+            account: account.map(str::to_owned),
+            name: account.map_or("Discord", |_| "Grace").into(),
+            avatar: None,
+            linked,
+        }
+    }
+
+    /// A bridge's own participation and each person it carries are their
+    /// own seats: joining one ends only the device's earlier participation
+    /// in that seat, never another, nor the device's own voice.
+    #[test]
+    fn a_bridge_holds_its_own_seat_and_one_per_person_it_carries() {
+        let device = [9; 32];
+        let (call, other) = ([3; 32], [4; 32]);
+        let mut state = State::default();
+        let mut seated = |id: [u8; 32], call: [u8; 32], who: Option<Bridged>| {
+            let mut held = participation(device, call, false);
+            held.bridged = who;
+            state.participations.insert(id, held);
+        };
+        seated([1; 32], call, Some(bridged(None, None)));
+        seated([2; 32], call, Some(bridged(Some("100"), None)));
+        seated([5; 32], call, Some(bridged(Some("200"), None)));
+        seated([6; 32], other, None);
+
+        assert_eq!(
+            state.end_device(device, &other, false, Seat::Carried("100")),
+            [call],
+            "Grace moves to the other call"
+        );
+        assert_eq!(
+            state.end_device(device, &other, false, Seat::Bridge),
+            [call],
+            "the bridge's own seat moves alone"
+        );
+        let left: std::collections::BTreeSet<_> = state.participations.keys().copied().collect();
+        assert_eq!(
+            left,
+            [[5; 32], [6; 32]].into(),
+            "the other person and the device's own voice stand"
+        );
+    }
+
+    /// A policy with one active call `[3; 32]` in which members publish and
+    /// subscribe, whose members are `people` (device = person), and whose
+    /// one bot that may show other names is `bridge`.
+    fn bridging_policy(people: &[[u8; 32]], bridge: [u8; 32]) -> Policy {
+        let mut calls = BTreeMap::new();
+        calls.insert(
+            [3; 32],
+            media::CallV1 {
+                binding: media::ChatCallBindingV1 {
+                    app_id: "so.tilo.chat".into(),
+                    record_id: String::new(),
+                    channel_id: "voice".into(),
+                    channel_object: "voice".into(),
+                    chat_workspace_id: "main".into(),
+                },
+                epoch: 2,
+                phase: CallPhaseV1::Active,
+                allowed: DirectionsV1 {
+                    publish: true,
+                    subscribe: true,
+                },
+                denied: BTreeMap::new(),
+            },
+        );
+        Policy {
+            calls: Some(RoomMediaV1 {
+                version: 1,
+                room: [0; 16],
+                authorization_revision: 1,
+                authorization_basis: [0; 32],
+                calls,
+            }),
+            access: GovernedAccess {
+                member_devices: people.iter().copied().chain([bridge]).collect(),
+                member_user_roots: people.to_vec(),
+            },
+            windows: protocol::windows_call("room"),
+            shares_layout: true,
+            bridges: vec![bridge],
+        }
+    }
+
+    /// A bridge's own participation only hears, a person it carries only
+    /// speaks; only a bot the room lets show other names bridges, and only
+    /// into voice calls.
+    #[test]
+    fn a_bridge_hears_the_call_and_the_people_it_carries_speak() {
+        let (bridge, root, ada) = ([7; 32], [8; 32], [1; 32]);
+        let policy = bridging_policy(&[ada], bridge);
+        let call = [3; 32];
+        let own = bridged(None, None);
+        let grace = bridged(Some("100"), None);
+        assert_eq!(
+            current(&policy, bridge, root, &call, Some(&own)),
+            Ok((
+                2,
+                Directions {
+                    publish: false,
+                    subscribe: true
+                }
+            ))
+        );
+        assert_eq!(
+            current(&policy, bridge, root, &call, Some(&grace)),
+            Ok((
+                2,
+                Directions {
+                    publish: true,
+                    subscribe: false
+                }
+            ))
+        );
+        assert!(
+            current(&policy, ada, ada, &call, Some(&grace)).is_err(),
+            "a member's own device bridges nobody"
+        );
+        assert!(current(&policy, bridge, root, &policy.windows, Some(&own)).is_err());
+    }
+
+    /// A guest linked to a person stands or falls with them: refused once
+    /// the person is no member (removed or banned), and a denial of the
+    /// person holds for the guest.
+    #[test]
+    fn a_guest_linked_to_a_person_is_held_to_that_persons_standing() {
+        let (bridge, root, ada, bo) = ([7; 32], [8; 32], [1; 32], [2; 32]);
+        let call = [3; 32];
+        let linked = bridged(Some("100"), Some(ada));
+        let mut policy = bridging_policy(&[ada], bridge);
+        assert!(current(&policy, bridge, root, &call, Some(&linked)).is_ok());
+
+        let removed = bridging_policy(&[bo], bridge);
+        assert_eq!(
+            current(&removed, bridge, root, &call, Some(&linked)),
+            Err("the person this account is linked to is no member of the room".into())
+        );
+
+        policy
+            .calls
+            .as_mut()
+            .unwrap()
+            .calls
+            .get_mut(&call)
+            .unwrap()
+            .denied
+            .insert(
+                ada,
+                DirectionsV1 {
+                    publish: true,
+                    subscribe: false,
+                },
+            );
+        assert_eq!(
+            current(&policy, bridge, root, &call, Some(&linked)),
+            Ok((
+                2,
+                Directions {
+                    publish: false,
+                    subscribe: false
+                }
+            )),
+            "Ada may not speak, so neither may her Discord account"
+        );
+        assert!(
+            current(
+                &policy,
+                bridge,
+                root,
+                &call,
+                Some(&bridged(Some("200"), None))
+            )
+            .is_ok_and(|(_, directions)| directions.publish),
+            "an unlinked guest is not Ada"
+        );
+    }
+
+    #[test]
+    fn a_bridged_participant_is_shown_only_as_an_appearance_may_be() {
+        assert!(validate_bridged(&bridged(None, None)).is_ok());
+        assert!(validate_bridged(&bridged(Some("100"), Some([1; 32]))).is_ok());
+        for broken in [
+            Bridged {
+                service: "Discord".into(),
+                ..bridged(None, None)
+            },
+            Bridged {
+                name: " Grace".into(),
+                ..bridged(Some("100"), None)
+            },
+            Bridged {
+                name: "Gr\u{202E}ace".into(),
+                ..bridged(Some("100"), None)
+            },
+            Bridged {
+                avatar: Some("not a hash".into()),
+                ..bridged(Some("100"), None)
+            },
+            Bridged {
+                account: Some("1 00".into()),
+                ..bridged(None, None)
+            },
+        ] {
+            assert!(validate_bridged(&broken).is_err(), "{broken:?}");
+        }
     }
 
     #[test]

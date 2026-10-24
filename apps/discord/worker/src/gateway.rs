@@ -3,7 +3,10 @@
 //!
 //! The resume state (session, sequence, the last message seen per channel)
 //! is the host's to keep: the worker has no writable path, so it reports
-//! the state as a `Checkpoint` and gets it back in `Start`.
+//! the state as a `Checkpoint` and gets it back in `Start`. A dropped
+//! connection resumes its session; a new worker process identifies afresh
+//! and backfills from the last message seen per channel (see
+//! [`Gateway::new`]).
 
 #![allow(
     clippy::indexing_slicing,
@@ -19,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_connector::protocol::FromWorker;
 use tilo_net::Method;
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_websockets::{ClientBuilder, Connector, MaybeTlsStream, Message, WebSocketStream};
 use url::Url;
@@ -31,10 +35,13 @@ use discord_wire::op::ChannelKind;
 use crate::events::{Emit, Guild, snowflake_ms};
 use crate::rest::{Auth, Body, RestError, segment};
 use crate::secrets::{BOT_TOKEN, TOKEN_ITEM};
+use crate::voice::CallCommand;
+use crate::voice::call::{Calls, LinkEvent};
 
-/// `GUILDS`, `GUILD_MEMBERS`, `GUILD_MODERATION` (bans), `GUILD_MESSAGES`,
-/// `GUILD_MESSAGE_REACTIONS` and `MESSAGE_CONTENT`.
-pub const INTENTS: u64 = 1 | (1 << 1) | (1 << 2) | (1 << 9) | (1 << 10) | (1 << 15);
+/// `GUILDS`, `GUILD_MEMBERS`, `GUILD_MODERATION` (bans),
+/// `GUILD_VOICE_STATES` (who is in voice, and the bot's own voice joins),
+/// `GUILD_MESSAGES`, `GUILD_MESSAGE_REACTIONS` and `MESSAGE_CONTENT`.
+pub const INTENTS: u64 = 1 | (1 << 1) | (1 << 2) | (1 << 7) | (1 << 9) | (1 << 10) | (1 << 15);
 /// Messages read back per channel when a session could not be resumed.
 pub const BACKFILL_LIMIT: u32 = 100;
 /// The newest messages read from each text channel the first time the
@@ -47,7 +54,7 @@ const TOKEN_RETRY: Duration = Duration::from_secs(30);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const CHECKPOINT_EVERY: Duration = Duration::from_secs(1);
 
-type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+pub(crate) type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// The resume state the host keeps for the worker.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,7 +66,7 @@ pub struct Checkpoint {
     #[serde(default)]
     pub seq: u64,
     /// When the session was identified, in Unix seconds; part of every
-    /// sequence-keyed event id (see [`Gateway::sequence`]).
+    /// sequence-keyed event id (see `Gateway::sequence`).
     #[serde(default)]
     pub session_started_s: u64,
     /// Channel (or thread) → the last message seen in it.
@@ -105,16 +112,41 @@ pub struct Gateway {
     last_checkpoint: Instant,
     /// Whether the last connection got as far as READY or RESUMED.
     established: bool,
+    links_rx: Option<mpsc::UnboundedReceiver<LinkEvent>>,
+    /// The guild's voice and the bot's call.
+    calls: Calls,
+    /// Frames for the gateway that dispatches produced.
+    outbox: Vec<Value>,
+}
+
+/// What reaches the gateway task besides the gateway: the host's `Call`s
+/// and what voice connections say.
+struct Inbox {
+    commands: mpsc::UnboundedReceiver<CallCommand>,
+    links: mpsc::UnboundedReceiver<LinkEvent>,
 }
 
 impl Gateway {
     #[must_use]
     pub fn new(ctx: Arc<Ctx>, checkpoint: Option<Value>) -> Self {
-        let state: Checkpoint = checkpoint
+        let mut state: Checkpoint = checkpoint
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default();
+        // A session resumes only in the process that holds its guild: a
+        // resume replays missed events but never the GUILD_CREATE the guild
+        // is built from, so a new process (the host restarted) that resumed
+        // would hold no guild and drop every event as not ours. It
+        // identifies afresh instead, and the backfill reads, from what each
+        // channel last saw, the messages said while it was gone.
+        state.session_id = None;
+        state.resume_url = None;
+        state.seq = 0;
         let guild_id = ctx.config.guild_id.clone();
+        let (links, links_rx) = mpsc::unbounded_channel();
         Self {
+            calls: Calls::new(Arc::clone(&ctx), links),
+            links_rx: Some(links_rx),
+            outbox: Vec::new(),
             ctx,
             state,
             guild: None,
@@ -129,12 +161,17 @@ impl Gateway {
         }
     }
 
-    /// Keep a session open until the task is dropped.
-    pub async fn run(mut self) {
+    /// Keep a session open until the task is dropped, taking the host's
+    /// `Call`s from `commands`.
+    pub async fn run(mut self, commands: mpsc::UnboundedReceiver<CallCommand>) {
+        let Some(links) = self.links_rx.take() else {
+            return;
+        };
+        let mut inbox = Inbox { commands, links };
         let mut backoff = Duration::from_secs(1);
         loop {
             self.established = false;
-            let end = self.session().await;
+            let end = self.session(&mut inbox).await;
             self.flush_checkpoint();
             let wait = match end {
                 End::Reconnect => {
@@ -227,26 +264,11 @@ impl Gateway {
         Ok(url)
     }
 
-    async fn connect(url: &Url) -> Option<Socket> {
-        let mut tls = tilo_net::client_config().ok()?;
-        tls.alpn_protocols = vec![b"http/1.1".to_vec()];
-        let connector = Connector::Rustls(tokio_rustls::TlsConnector::from(Arc::new(tls)));
-        let builder = ClientBuilder::new()
-            .uri(url.as_str())
-            .ok()?
-            .connector(&connector);
-        let (socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, builder.connect())
-            .await
-            .ok()?
-            .ok()?;
-        Some(socket)
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "one connection from token to close, read top to bottom"
     )]
-    async fn session(&mut self) -> End {
+    async fn session(&mut self, inbox: &mut Inbox) -> End {
         let Some(token) = self.ctx.secrets.get(BOT_TOKEN, TOKEN_ITEM).await else {
             return End::NoToken;
         };
@@ -255,7 +277,7 @@ impl Gateway {
             Err(end) => return end,
         };
         url.set_query(Some("v=10&encoding=json"));
-        let Some(mut socket) = Self::connect(&url).await else {
+        let Some(mut socket) = connect(&url).await else {
             self.ctx
                 .status(false, "could not connect to Discord's gateway");
             return End::Reconnect;
@@ -327,6 +349,9 @@ impl Gateway {
                             if self.dirty && self.last_checkpoint.elapsed() >= CHECKPOINT_EVERY {
                                 self.flush_checkpoint();
                             }
+                            if self.send_outbox(&mut socket).await.is_err() {
+                                return End::Reconnect;
+                            }
                         }
                         Some(1) => {
                             let seq = json!(self.state.seq);
@@ -345,8 +370,33 @@ impl Gateway {
                         _ => {}
                     }
                 }
+                Some(command) = inbox.commands.recv() => {
+                    let send = self.calls.command(command.call, command.status, self.guild.as_ref());
+                    self.outbox.extend(send);
+                    if self.send_outbox(&mut socket).await.is_err() {
+                        return End::Reconnect;
+                    }
+                }
+                Some(event) = inbox.links.recv() => {
+                    let send = self.calls.link_event(event, self.guild.as_ref());
+                    self.outbox.extend(send);
+                    if self.send_outbox(&mut socket).await.is_err() {
+                        return End::Reconnect;
+                    }
+                }
             }
         }
+    }
+
+    /// Send what the voice side asked for on the main gateway.
+    async fn send_outbox(&mut self, socket: &mut Socket) -> Result<(), ()> {
+        for frame in std::mem::take(&mut self.outbox) {
+            socket
+                .send(Message::text(frame.to_string()))
+                .await
+                .map_err(|_| ())?;
+        }
+        Ok(())
     }
 
     fn forget_session(&mut self) {
@@ -439,6 +489,8 @@ impl Gateway {
                 let guild =
                     Guild::from_create(data, &self.bot_user, self.ctx.config.cdn_base.as_str());
                 self.emit(guild.layout(self.sequence(seq)));
+                let send = self.calls.guild_created(data, &guild);
+                self.outbox.extend(send);
                 self.guild = Some(guild);
                 self.note_threads();
                 self.register_commands();
@@ -522,10 +574,31 @@ impl Gateway {
                     self.emit(emit);
                 }
             }
+            "VOICE_STATE_UPDATE" | "VOICE_SERVER_UPDATE" => {
+                let Some(guild) = self
+                    .guild
+                    .as_ref()
+                    .filter(|guild| data["guild_id"] == guild.id.as_str())
+                else {
+                    return;
+                };
+                let send = self.calls.dispatch(kind, data, guild);
+                self.outbox.extend(send);
+            }
             "GUILD_MEMBER_UPDATE"
             | "GUILD_MEMBER_REMOVE"
             | "GUILD_BAN_ADD"
             | "GUILD_BAN_REMOVE" => {
+                if kind == "GUILD_MEMBER_UPDATE"
+                    && let Some(guild) = self
+                        .guild
+                        .as_mut()
+                        .filter(|guild| data["guild_id"] == guild.id.as_str())
+                {
+                    guild.bot_member(data);
+                    let send = self.calls.dispatch(kind, data, guild);
+                    self.outbox.extend(send);
+                }
                 let sequence = self.sequence(seq);
                 if let Some(emit) = self
                     .guild
@@ -781,6 +854,22 @@ impl Gateway {
     }
 }
 
+/// Open a WebSocket to `url`, over TLS for `wss`, within [`CONNECT_TIMEOUT`].
+pub(crate) async fn connect(url: &Url) -> Option<Socket> {
+    let mut tls = tilo_net::client_config().ok()?;
+    tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let connector = Connector::Rustls(tokio_rustls::TlsConnector::from(Arc::new(tls)));
+    let builder = ClientBuilder::new()
+        .uri(url.as_str())
+        .ok()?
+        .connector(&connector);
+    let (socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, builder.connect())
+        .await
+        .ok()?
+        .ok()?;
+    Some(socket)
+}
+
 async fn read(socket: &mut Socket) -> Result<Value, ()> {
     loop {
         let frame = socket.next().await.ok_or(())?.map_err(|_| ())?;
@@ -798,8 +887,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn intents_are_the_six_the_bridge_needs() {
-        assert_eq!(INTENTS, 34_311);
+    fn intents_are_the_seven_the_bridge_needs() {
+        assert_eq!(INTENTS, 34_439);
     }
 
     #[test]

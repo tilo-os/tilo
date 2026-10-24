@@ -429,6 +429,9 @@ fn pane_sections_stack_on_the_s6_step_and_never_touch() {
             .filter(|r| r.width() > 0.0 && r.height() > 0.0)
             .collect();
         sections.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        // A section that fills its parent exactly (an untitled card holding one
+        // section) is the same slot, not a sibling.
+        sections.dedup();
         let outer: Vec<Rect> = sections
             .iter()
             .copied()

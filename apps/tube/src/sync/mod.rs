@@ -11,7 +11,7 @@
 //!   framing layout, JSON package models), each **cited to the exact
 //!   grayjay-android source file** it was read from. Pure data + codec, always
 //!   compiled, hermetically unit-tested.
-//! * [`transport`] (feature `grayjay-sync`) — the live [`GrayjaySyncTransport`]:
+//! * [`transport`] (feature `grayjay-sync`) — the live [`GrayjaySyncTransport`](transport::GrayjaySyncTransport):
 //!   a blocking TCP client that runs the real `Noise_IK_25519_ChaChaPoly_BLAKE2b`
 //!   handshake (with a `Noise_N` pairing sub-handshake), the length-prefixed +
 //!   STREAM-chunked framing, the authorize exchange, and the gzip'd-JSON

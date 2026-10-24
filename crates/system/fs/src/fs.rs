@@ -36,7 +36,7 @@ use fuser::{
 use libc::{
     EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EROFS,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
@@ -642,6 +642,7 @@ mod history_jobs;
 #[path = "history_read.rs"]
 mod history_read;
 pub mod native_ops;
+mod unavailable;
 mod write_stage;
 use tilo_lock::MutexRecover as _;
 use write_stage::{MissingRanges, SharedStage, StagedRead};
@@ -1642,7 +1643,14 @@ impl QuickFS {
     /// Answer a `read` whose bytes must come from a peer. The read still
     /// blocks its caller as POSIX expects, but no FUSE worker waits on the
     /// network, so a slow peer stalls only the readers of that file.
-    fn reply_remote(&self, hash: Hash, range: (u64, u64), nonblocking: bool, reply: ReplyData) {
+    fn reply_remote(
+        &self,
+        ino: u64,
+        hash: Hash,
+        range: (u64, u64),
+        nonblocking: bool,
+        reply: ReplyData,
+    ) {
         let (offset, size) = range;
         let hydrator = Arc::clone(&self.hydrator);
         let rt = hydrator.runtime_handle.clone();
@@ -1659,10 +1667,13 @@ impl QuickFS {
         }
         // The kernel holds the page locked while the read waits, so anyone
         // else touching it waits too: the read fails at its bound rather
-        // than wait on a peer that went quiet.
+        // than wait on a peer that went quiet, and the file's record says it
+        // is unavailable until bytes arrive.
+        let note = self.unavailable_note(ino);
         rt.spawn(async move {
             let read = async move { hydrator.read(hash, offset, size).await };
-            match crate::hydration::bounded_read(crate::hydration::BLOCKED_READ_BOUND, read).await {
+            let bound = crate::hydration::BLOCKED_READ_BOUND;
+            match unavailable::noted_bounded_read(bound, read, note).await {
                 Ok(data) => reply.data(&data),
                 Err(error) => {
                     eprintln!("content hydration failed for {hash}: {error:#}");
@@ -1670,6 +1681,17 @@ impl QuickFS {
                 }
             }
         });
+    }
+
+    /// Where a blocked read of `ino`'s bytes notes whether they arrived:
+    /// its availability record, when this mount keeps them.
+    fn unavailable_note(&self, ino: u64) -> Option<unavailable::UnavailableNote> {
+        let registry = Arc::clone(self.availability.as_ref()?);
+        let record_id = self.ns().record_id_for(ino)?;
+        Some(unavailable::UnavailableNote {
+            registry,
+            record_id,
+        })
     }
 
     /// Answer a FUSE `read` that [`Self::plan_read`] sent to a buffer.
@@ -1682,10 +1704,11 @@ impl QuickFS {
             BufferedRead::Staged(Ok(StagedRead::Missing(missing))) => {
                 let hydrator = Arc::clone(&self.hydrator);
                 let rt = hydrator.runtime_handle.clone();
+                let note = self.unavailable_note(ino);
                 rt.spawn(async move {
                     let read = async move { Ok(missing.finish(&hydrator).await?) };
                     let bound = crate::hydration::BLOCKED_READ_BOUND;
-                    match crate::hydration::bounded_read(bound, read).await {
+                    match unavailable::noted_bounded_read(bound, read, note).await {
                         Ok(bytes) => reply.data(&bytes),
                         Err(error) => {
                             eprintln!("content hydration for a staged read failed: {error:#}");
@@ -4126,7 +4149,7 @@ impl QuickFS {
                     record.transfer.phase = TransferPhase::Idle;
                     record.transfer.progress = None;
                     record.transfer.last_error = Some(crate::availability::TransferError {
-                        message: "No available replica could provide this file".into(),
+                        message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
                         occurred_at_ms: now_ms(),
                     });
                     record.transfer.retry_count = 1;
@@ -5914,6 +5937,9 @@ async fn reconcile_pinned_hydration(
 ) -> PinnedPassOutcome {
     let has_pinned_policy = registry.lock_recover().has_pinned_policy();
     if !has_pinned_policy {
+        // Nothing is kept offline any more: what was goes back to the cache
+        // budget. An in-memory pass over the area, no namespace walk.
+        keep_offline_only(&hydrator, HashSet::new()).await;
         return PinnedPassOutcome::default();
     }
     let candidates = {
@@ -5948,6 +5974,17 @@ async fn reconcile_pinned_hydration(
             .cloned()
             .collect::<Vec<_>>()
     };
+    // The pins decide what the cache budget may take, before this pass
+    // fetches anything: a fetch counts against the budget when it ends, and
+    // a pinned download can run for hours, so a file already here when it
+    // was pinned is held from now on, not from the end of the pass. What no
+    // pin covers any more (unpinned, an earlier version, a deleted file) is
+    // cache again.
+    let kept = pinned_files
+        .iter()
+        .filter_map(|candidate| candidate.hash.map(|hash| *hash.as_bytes()))
+        .collect();
+    keep_offline_only(&hydrator, kept).await;
     let mut probes = HashMap::with_capacity(pinned_files.len());
     for candidate in &pinned_files {
         let Some(hash) = candidate.hash else {
@@ -5980,6 +6017,17 @@ async fn reconcile_pinned_hydration(
     }
     while in_flight.join_next().await.is_some() {}
     plan.outcome
+}
+
+/// Holds exactly the file-backed content in `kept` against the cache budget
+/// ([`crate::store::area::FileArea::keep_offline_only`]), off the async
+/// runtime's workers: it records every change it makes.
+async fn keep_offline_only(hydrator: &Hydrator, kept: HashSet<[u8; 32]>) {
+    let files = Arc::clone(hydrator.store.files());
+    let applied = tokio::task::spawn_blocking(move || files.keep_offline_only(&kept)).await;
+    if let Ok(Err(error)) = applied {
+        eprintln!("could not record which content is kept offline: {error}");
+    }
 }
 
 /// Run one member of a bounded scheduler batch.  All members observe the same
@@ -6043,7 +6091,7 @@ async fn hydrate_pinned_candidate(
             record.transfer.retry_at_ms =
                 Some(now_ms().saturating_add(delay.saturating_mul(1_000)));
             record.transfer.last_error = Some(crate::availability::TransferError {
-                message: "No available replica could provide this file".into(),
+                message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
                 occurred_at_ms: now_ms(),
             });
         }),
@@ -6361,6 +6409,7 @@ impl Filesystem for QuickFS {
             ReadPlan::Buffered(buffered) => self.reply_buffered(ino.0, buffered, reply),
             ReadPlan::Local(data) => reply.data(&data),
             ReadPlan::Remote(hash) => self.reply_remote(
+                ino.0,
                 hash,
                 (offset, u64::from(size)),
                 flags.0 & libc::O_NONBLOCK != 0,

@@ -187,6 +187,20 @@ lists it first. The owner root comes from a mounted secret; without
 it the service refuses to start. The full design is in
 `docs/architecture/discord-bridge.md` §9.
 
+**The door of an invite-only room.** With `TILO_ROOMS_ADMISSION=invite`
+a stranger's `POST /join` is refused, and the page offers the room's wait
+list, signing in with an existing Tilo identity, and pasting an invitation
+link. `POST /wait-list` `{email}` keeps one address, normalized (trimmed,
+lowercased, at most 254 characters), on the room's wait list in the relay's
+room store (`<room>.wait-list` beside the room on
+`TILO_ROOMS_STATE`). It answers `200 {email}`, also for an address already
+listed, so nobody learns who else is on it; `400 invalid-email`; `429
+too-many` with `Retry-After` past 5 addresses in ten minutes or 20 a day from
+one network; `503 wait-list-full`; `404 no-wait-list` in an open room. The
+room's inviters find the addresses in its "Waiting to join" list, with when
+each was left: Invite makes an ordinary invitation link to send by email
+(the service sends no mail) and Remove takes the address off.
+
 **One origin.** The room API and the relay share one public origin
 (e.g. `https://rooms.example`). The relay serves browsers on its plain HTTP
 listener (`TILO_ROOMS_RELAY_PLAIN`) and every relay route starts with
@@ -217,6 +231,9 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is believed |
 | `TILO_ROOMS_MAX_GUESTS` | `300` | people online at once (up to 10000; one room admitted 100 with join p99 under 10 s and stopped admitting past about 250 in the last capacity sweep, `docs/benchmarks/room-host-capacity-2026-10.md`) |
 | `TILO_ROOMS_MAX_SPECTATORS` | `1000` | watching sessions at once |
+| `TILO_ROOMS_ADMISSION` | `open` | who the door lets in: `open`, anyone as a guest; `invite`, only the room's members and people with an invitation, the rest are refused with `403 {code: "invitation-only"}` and, while the room keeps a wait list, `waitList: true` and `contact` |
+| `TILO_ROOMS_WAIT_LIST_MAX` | `10000` | addresses (0–1000000) the wait list of an `invite` room keeps; past it `POST /wait-list` answers `503 wait-list-full`. `0`: no wait list |
+| `TILO_ROOMS_CONTACT` | unset | an email address or `https://` page the door names for being taken off the wait list |
 | `TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY` | `5`, `30` | guest joins one address may make (an IPv6 address counts by its /64); a visitor past them watches until the window frees up. The windows are rebuilt from the guest ledger on the volume at start, so a restart does not reset them; a join the room never answered (it was restarting) does not count. Raise them where many visitors share an address: offices, schools, mobile carriers' NAT |
 | `TILO_ROOMS_SPECTATES_PER_10_MIN` | `30` | spectator certificates one address may take |
 | `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | none | user keys (hex), comma-separated |

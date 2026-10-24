@@ -284,14 +284,7 @@ fn window_close_retires_without_input_and_undo_during_fade_is_live() {
             "a retained visual cannot be harvested as a window"
         );
     }
-    std::thread::sleep(
-        theme
-            .tokens
-            .motion
-            .durations
-            .base()
-            .saturating_add(Duration::from_millis(40)),
-    );
+    std::thread::sleep(past_window_close());
     host.update(&AutoCommit::new(), &automerge::ROOT);
     let _ = host.take_structure_dirty();
     assert!(
@@ -1155,14 +1148,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                 .is_some_and(|group| group.is_closing()),
             "resync keeps only the dying visual, never canonical window state"
         );
-        std::thread::sleep(
-            Theme::dark()
-                .tokens
-                .motion
-                .durations
-                .base()
-                .saturating_add(Duration::from_millis(40)),
-        );
+        std::thread::sleep(past_window_close());
         let _ = host.take_structure_dirty();
         assert!(
             host.group_at_for_tests(strip_id, 0).is_none(),
@@ -1536,11 +1522,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
         layout_close_fixture(&mut host, &theme);
         // A window leaves on the named window motion, not on a theme's
         // duration token: wait past exactly that.
-        let past_close = ui::motion::WindowMotion::OPEN.settle_time(
-            ui::motion::Direction::Exit,
-            ui::tokens::EffectiveMotion::default(),
-            ui::tokens::MotionSource::Pointer,
-        ) + Duration::from_millis(60);
+        let past_close = past_window_close();
 
         // The close button: the widget starts retiring, the shell asks the
         // client, which has not exited.
@@ -1753,4 +1735,20 @@ fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
     drop(tree);
     drop(state);
     assert_eq!(shown, Some(opened), "the new window is the focused one");
+}
+
+/// When a window closed by pointer has gone: its content has faded out and
+/// its place on the strip has shut, with a margin for a slow runner.
+fn past_window_close() -> Duration {
+    let fade = ui::motion::WindowMotion::OPEN.settle_time(
+        ui::motion::Direction::Exit,
+        ui::tokens::EffectiveMotion::default(),
+        ui::tokens::MotionSource::Pointer,
+    );
+    let slot = ui::motion::WindowMotion::MOVE.settle_time(
+        ui::motion::Direction::Enter,
+        ui::tokens::EffectiveMotion::default(),
+        ui::tokens::MotionSource::Pointer,
+    );
+    fade.max(slot).saturating_add(Duration::from_millis(60))
 }

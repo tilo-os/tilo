@@ -1,84 +1,102 @@
-//! The window's notices: shown over its bottom trailing corner, taken
-//! down, and their one button published to assistive technology and
-//! agents as a button of the window.
+//! The window's notice: an operation's result or failure, shown in the
+//! window's bar ([`crate::window_toolbar::notify`]) for a while, with at
+//! most one button there.
 
 use super::NavShell;
-use crate::widget::Widget as _;
 use crate::widget::toast::ToastKind;
+use crate::window_toolbar::{ToolbarAction, ToolbarNotice};
 
-/// The semantic target of a notice's button: this prefix, then the
-/// notice's text, which [`NavShell::take_toast_action`] reports.
-pub(super) const TOAST_ACTION: &str = "toast-action:";
+/// The bar action id of a notice's button.
+pub const WINDOW_NOTICE_ACTION: &str = "nav-shell-notice";
+
+/// What the window's notice says, and its button.
+#[derive(Clone, Debug)]
+pub(super) struct ShellNotice {
+    text: String,
+    kind: ToastKind,
+    /// The button's icon and name ("Undo").
+    action: Option<(String, String)>,
+}
 
 impl NavShell {
-    /// Show a transient notice over the window's bottom trailing corner: an
-    /// operation's result or failure. It replaces the one showing, expires on
-    /// its own (held while the pointer rests on it and under the capture
-    /// clock), and a click dismisses it.
+    /// Show a transient notice in the window's bar: an operation's result or
+    /// failure. It replaces the one showing and leaves on its own.
     pub fn toast(&mut self, text: impl Into<String>, kind: ToastKind) {
-        self.toasts.push(text, kind);
-        self.toasts_dirty = true;
+        self.notice.show(ShellNotice {
+            text: text.into(),
+            kind,
+            action: None,
+        });
+        self.notice_pressed = None;
+        self.publish_notice();
     }
 
-    /// Show a notice with one button, `action` ("Undo"), beside its text.
+    /// Show a notice with one button beside it in the bar, named `action`
+    /// ("Undo") with the icon `icon` ("undo-2").
     /// [`Self::take_toast_action`] reports the press.
     pub fn toast_with_action(
         &mut self,
         text: impl Into<String>,
         kind: ToastKind,
+        icon: &str,
         action: impl Into<String>,
     ) {
-        self.toasts.push_with_action(text, kind, action);
-        self.toasts_dirty = true;
+        self.notice.show(ShellNotice {
+            text: text.into(),
+            kind,
+            action: Some((icon.to_owned(), action.into())),
+        });
+        self.notice_pressed = None;
+        self.publish_notice();
     }
 
     /// The text of the notice whose button the person pressed since the
     /// last call.
     pub fn take_toast_action(&mut self) -> Option<String> {
-        self.toasts.take_activated()
+        self.notice_pressed.take()
     }
 
     /// Take down the notice showing, when its news no longer holds.
     pub fn dismiss_toast(&mut self) {
-        if !self.toasts.is_empty() {
-            self.toasts.dismiss(0);
-            self.toasts_dirty = true;
+        if self.notice.dismiss() {
+            self.publish_notice();
         }
     }
 
     /// The notice showing, if any.
     pub fn toast_text(&self) -> Option<&str> {
-        self.toasts.iter().next().map(|toast| toast.text.as_str())
+        self.notice.get().map(|notice| notice.text.as_str())
     }
 
-    /// Whether the notices painted anything other than what the host last
-    /// presented: one came, went, expired, moved or changed its look.
-    pub(super) fn toasts_changed(&self) -> bool {
-        self.toasts_painted != self.toasts_drawn
-            || !self.toasts_scene.encoding_eq(&self.toasts_drawn_scene)
-    }
-
-    pub(super) fn toasts_expired(&self) -> bool {
-        self.toasts
-            .next_wake_deadline()
-            .is_some_and(|deadline| deadline <= crate::time::now())
-    }
-
-    /// The showing notices' buttons ("Undo") as buttons of the window: the
-    /// notices are painted over the window rather than laid out in it, so
-    /// the window publishes and operates their buttons.
-    pub(super) fn toast_buttons(&self) -> impl Iterator<Item = crate::a11y::AccessNode> + '_ {
-        self.toasts.action_buttons().map(|(text, action, painted)| {
-            let target = format!("{TOAST_ACTION}{text}");
-            let button = crate::a11y::AccessNode::new(crate::a11y::Role::Button)
-                .with_name(action.to_owned())
-                .with_description(text.to_owned())
-                .with_hashed_key(&target)
-                .with_action_target(target);
-            match painted {
-                Some(rect) => button.with_bounds(rect),
-                None => button,
+    /// Keep the window's bar showing the notice while it is up.
+    pub(super) fn publish_notice(&self) {
+        self.notice.publish(|notice| {
+            let shown = ToolbarNotice::new(notice.text.clone(), notice.kind);
+            match &notice.action {
+                Some((icon, name)) => shown.action(ToolbarAction::new(
+                    WINDOW_NOTICE_ACTION,
+                    icon.clone(),
+                    name.clone(),
+                )),
+                None => shown,
             }
-        })
+        });
+    }
+
+    /// The notice's button was pressed in the bar: report it once, and take
+    /// the notice down. Whether there was one to press.
+    pub(super) fn press_notice_action(&mut self) -> bool {
+        let Some(text) = self
+            .notice
+            .get()
+            .filter(|notice| notice.action.is_some())
+            .map(|notice| notice.text.clone())
+        else {
+            return false;
+        };
+        self.notice_pressed = Some(text);
+        self.notice.dismiss();
+        self.publish_notice();
+        true
     }
 }

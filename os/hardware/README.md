@@ -171,30 +171,26 @@ Generic images retain the official `latest` default and trusted overrides.
 
 ### CI-built Lenovo install image
 
-`build-image.yml` accepts `hardware_profile=lenovo-83ed` on an explicit
-`main`-branch dispatch with `publish=true`. Supply an independently
-reviewed `firmware_candidate` OCI digest and `firmware_manifest_sha256`. The
-artifact is a native Linux OCI image containing only `/firmware/`: the manifest
-and exactly the files named by the selected hardware definition, packaged with
-a `FROM scratch` / `COPY` image. CI imports those inert files on the native ARM64 runner,
-builds and independently rebuilds the image, closes the composefs/UKI seal by
-installing it to a disposable disk, signs its target prediction, and publishes
-the signed ARM64 image at
-`code.tilo.so/tilo/tilo:lenovo-83ed-<full-main-commit>`.
-The image binds that exact immutable tag as its update reference. The workflow
-attests the firmware artifact and manifest digest in SLSA provenance and retains
-the import receipt. Obtain the final `repo@sha256:...` child digest from the CI
-release-child artifact or registry tag and verify its Cosign signature and
-provenance before a physical install.
+The Lenovo board's release is on t (`publish-os-release-lenovo-83ed`, dispatched on stable or a
+release tag; `os-board-lenovo-83ed` builds the unsigned dev board image). Its firmware is the
+reviewed OCI artifact `TILO_LENOVO_FIRMWARE_REF` with its independently pinned
+`TILO_LENOVO_FIRMWARE_MANIFEST_SHA256` (`os/publication.env`): a native Linux OCI image
+containing only `/firmware/`, the manifest and exactly the files named by the selected hardware
+definition, packaged with a `FROM scratch` / `COPY` image. The release image's layers that read
+the hardware profile are built again with it on a native ARM64 node, with those inert files
+imported; it is independently rebuilt, its composefs/UKI seal is closed by installing it to a
+disposable disk, its target prediction is signed, and the signed ARM64 image is published at
+`code.tilo.so/tilo/tilo:lenovo-83ed-<full-main-commit>` and `lenovo-83ed-gen<N>`, with
+`lenovo-83ed-latest` moved to it. The image binds that exact immutable tag as its update
+reference; installed boards find their successor through `lenovo-83ed-latest`
+(docs/security/board-successor-updates.md). Its SLSA provenance binds the board, its hardware
+definition, the firmware artifact and manifest digest. Obtain the final `repo@sha256:...` digest
+from the registry tag and verify its Cosign signature and provenance before a physical install.
 
-This is an initial, generation-1 board image with an immutable update
-reference. It does not join or advance the generic multiarch `latest`/`genN`
-release series, and automatic board upgrades are not available until a
-separate dense Lenovo generation series is implemented. QEMU's `virt` machine
-cannot boot the Lenovo device tree, so CI's board path validates the disk
-install and signed image without claiming a physical boot; the generic ARM64
-image continues to run the full VM desktop gate. The first laptop boot and
-device drivers still require on-device acceptance.
+It does not join the generic multiarch `latest`/`genN` release series. QEMU's `virt` machine
+cannot boot the Lenovo device tree its UKI carries, so the release validates the disk install
+and the signed image without claiming a physical boot; the generic ARM64 image runs the full VM
+desktop gate. The first laptop boot and device drivers still require on-device acceptance.
 
 Local driver invocations may instead use `--hardware-profile` with already
 staged, verified firmware. Firmware transfer and hash checks establish build

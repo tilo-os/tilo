@@ -68,7 +68,7 @@ struct Beside {
 }
 
 /// One record held in its app's view, attached and never drawn. See the
-/// [module docs](self).
+/// module docs.
 pub struct AttachedView {
     definition: &'static ApplicationDefinition,
     checkout: RecordCheckout,

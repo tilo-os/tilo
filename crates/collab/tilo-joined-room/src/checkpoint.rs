@@ -572,9 +572,12 @@ impl NativeWorkspaceOwner {
             .checked_add(1)
             .ok_or("checkpoint generation exhausted")?;
         self.with_current(room, |previous| {
-            candidate
-                .peer
-                .durable_mutation_messages(&previous.peer, key, now, generation)?;
+            candidate.peer.publication_mut().durable_mutation_messages(
+                &previous.peer,
+                key,
+                now,
+                generation,
+            )?;
             Ok(())
         })?;
         candidate.record.peer = candidate.peer.durable()?;

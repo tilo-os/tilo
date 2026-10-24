@@ -473,17 +473,18 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       click_named "I understand that without an encrypted backup, losing this device means losing this identity."
       wait_for_names "Continue without backup"
       click_named "Continue without backup"
-      # The media codecs step appears only where the codec pack is offered.
+      # The media codecs step appears only where the codec pack is offered. A new
+      # identity ends on the welcome (a joined device's on "Your identity is ready").
       for _ in $(seq 1 400); do
         collect_tree || { sleep 0.05; continue; }
-        node_named "Your identity is ready" >/dev/null && break
+        node_named "Welcome to Tilo" >/dev/null && break
         if node_named "Not now" >/dev/null; then
           click_named "Not now"
           break
         fi
         sleep 0.05
       done
-      wait_for_names "Your identity is ready"
+      wait_for_names "Welcome to Tilo"
     fi
     ;;
   oobe-nearby)

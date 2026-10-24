@@ -99,7 +99,7 @@ pub(crate) fn window_toolbar(view: View, anchor: NaiveDate, sidebar_open: bool) 
         toolbar.leading = vec![
             ToolbarAction::new(PREVIOUS, "chevron-left", previous).navigating(),
             ToolbarAction::new(NEXT, "chevron-right", next).navigating(),
-            ToolbarAction::new(TODAY, "calendar", "Today"),
+            ToolbarAction::new(TODAY, "calendar", "Today").labelled(),
         ];
     }
     let new = if view == View::Tasks {

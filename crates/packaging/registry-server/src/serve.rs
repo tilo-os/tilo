@@ -5,7 +5,7 @@
 //! - `GET  /registry`             → `RegistryHandshake` JSON
 //! - `GET  /health`               → `{ "ok": true }`
 //! - `GET  /metrics`              → when the channel authorization and the
-//!   published snapshot expire, for the operator's alerts ([`crate::metrics`])
+//!   published snapshot expire, for the operator's alerts (`crate::metrics`)
 //! - `GET  /entries`              → owner-signed `SignedRegistrySnapshot`,
 //!   expired or not (clients judge freshness)
 //! - `GET  /entries?format=compact` → its `CompactRegistrySnapshot`, or the

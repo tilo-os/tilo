@@ -267,7 +267,7 @@ pub(crate) fn valid_hex(value: &str, bytes: usize) -> bool {
 /// Whether a snapshot issued at `issued_at_unix` and expiring at
 /// `expires_at_unix` may be used at `now_unix`: issued no further ahead than
 /// the clock skew a verifier tolerates, and not yet expired. The only part
-/// of [`verify_snapshot`] and [`verify_compact_snapshot`] that depends on
+/// of [`verify_snapshot`] and [`verify_compact_snapshot`](crate::verify_compact_snapshot) that depends on
 /// the time, so a server that verified a snapshot once re-checks just this.
 #[must_use]
 pub fn within_validity_window(issued_at_unix: u64, expires_at_unix: u64, now_unix: u64) -> bool {

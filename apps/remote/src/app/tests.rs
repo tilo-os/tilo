@@ -458,7 +458,11 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
         app.workspace.get_mut(id).unwrap().host = Atom(SecretKey::generate().public().to_string());
         app.apply(Action::ConfirmPending);
         assert!(app.session.borrow().live.is_none());
-        assert_eq!(app.toasts.len(), 1, "the person learns why nothing opened");
+        assert_eq!(
+            app.shell.toast_text(),
+            Some("This connection changed while you were asked. Review it, then try again."),
+            "the person learns why nothing opened, in the window's bar"
+        );
     }
 
     eprintln!("phase unavailable_transports_open_a_recovery_state_without_a_socket");

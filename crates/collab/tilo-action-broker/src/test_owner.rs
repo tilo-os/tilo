@@ -210,7 +210,8 @@ impl SessionOwner {
     }
 
     fn publications(&self, mut peer: StatePeer) -> Result<Vec<Vec<u8>>, String> {
-        peer.durable_bootstrap_messages(&self.key, SystemTime::now(), self.generation.max(1))?
+        peer.publication_mut()
+            .durable_bootstrap_messages(&self.key, SystemTime::now(), self.generation.max(1))?
             .iter()
             .map(|message| postcard::to_stdvec(message).map_err(|e| e.to_string()))
             .collect()

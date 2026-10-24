@@ -11,7 +11,7 @@
 //! hit-tests them on the next click; a frame always precedes input so
 //! regions are never stale.
 //!
-//! State: the library record ([`Ebook`](crate::resource::Ebook)) holds the
+//! State: the library record ([`Ebook`]) holds the
 //! shelf, settings, progress and annotations, changed through its field
 //! edits and verbs. Ephemeral widget caches (open book, page index,
 //! selection, layout cache) are per-peer view state kept out of the document
@@ -56,7 +56,7 @@ use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::metrics::Metrics;
 use ui::widget::modal_dialog;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, Transient};
+use ui::widget::toast::{ToastKind, Transient};
 use ui::widget::{
     Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead, ColorSwatchFace, Continuable,
     ControlSize, DropZoneFace, EditOutcome, EditableLabel, EmptyState, EmptyStateContent,
@@ -64,6 +64,10 @@ use ui::widget::{
     ScrollMetrics, Scrollbar, SegmentedFace, SegmentedStyle, SidebarDrawer, Slider, SliderFace,
     Toggle, ToggleFace, ToggleGroup, Widget, card_column_width, card_columns,
 };
+use ui::window_toolbar::ToolbarNotice;
+
+/// The bar action id of "Try again" beside a book the store could not send.
+const STORE_RETRY_ACTION: &str = "ebook.store.retry";
 
 use crate::comment_overlay::{CommentAction, CommentOverlay};
 use crate::content::{self, is_shared};
@@ -79,7 +83,6 @@ use crate::model::{
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice};
 use crate::paint;
-use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
 use crate::reading_settings::{Appearance, ReadingSettings, ReadingSettingsAction};
 use crate::resource::{Ebook, HiPiece, Passage, books};
@@ -254,7 +257,9 @@ struct LoadingImport {
     path: PathBuf,
     kind: ImportKind,
     expected_book_id: Option<String>,
-    /// The "Opening …" card: progress, up while the import runs.
+    /// The store's book this import fetches, when it fetches one.
+    store_book: Option<u64>,
+    /// The "Opening …" notice: progress, up while the import runs.
     card: Transient<()>,
 }
 
@@ -661,8 +666,6 @@ enum Action {
     CloseFontPicker,
     AddSystemFont(String),
     BeginRenameFont(String),
-    /// Dismiss the last import failure.
-    DismissLoadError,
 
     // --- search ------------------------------------------------------------
     /// Open the book, chapter, annotation or passage a result is anchored at.
@@ -864,6 +867,9 @@ pub struct BooksApp {
     pending_share: Option<PendingShare>,
     /// Why the last open failed, as a toast for a notice's lifetime.
     load_error: Transient<String>,
+    /// The store's book whose fetch could not reach the store: its failure
+    /// carries "Try again", which fetches it again.
+    retry_store: Option<u64>,
     /// Why the last open failed, for as long as that stands: the empty
     /// library says it in place of its hint until a book opens or another
     /// import starts. It is state, not a toast, so it keeps no time.
@@ -872,6 +878,8 @@ pub struct BooksApp {
     // --- taffy / paint geometry -------------------------------------------
     rect: Rect,
     dirty: bool,
+    /// The settings' switches, sliding as a click turns them.
+    faces: ui::widget::FaceMotions,
 
     // --- view state (ephemeral, per-peer) ---------------------------------
     view: View,
@@ -893,16 +901,13 @@ pub struct BooksApp {
     reader_spacing: ui::tokens::spacing::Spacing,
     reader_compact_breakpoint: f64,
     selection_hud_h: f64,
-    /// Height of the page bubble in the current theme: the page foot's band
-    /// is at least this tall, so the bubble it shares with the progress
-    /// slider never covers text. Refreshed with `header_h`.
-    bubble_h: f64,
+    /// Height of the page foot's control row in the current theme: the
+    /// foot's band is at least this tall, so the progress slider and its
+    /// label never cover text. Refreshed with `header_h`.
+    foot_h: f64,
     /// The reading-appearance button as last painted: where its popover
     /// opens from.
     type_button: Rect,
-    /// Where a transient card may appear this frame: the window, or in the
-    /// reader the reading column above the progress slider.
-    toast_area: Rect,
     /// Independent rail offsets.  A book can have hundreds of chapters and a
     /// reader can have years of annotations, so neither rail may silently
     /// truncate at the bottom of the viewport.
@@ -983,8 +988,12 @@ pub struct BooksApp {
     /// modal hit stack, and emits settings effects for CRDT persistence here.
     reading_settings: ReadingSettings,
 
-    /// Owns the transient page indicator's animation, drawing and hit-testing.
-    reader_bubble: ReaderBubble,
+    /// The reading position, said in the window's bar for a while when the
+    /// page changes ("Chapter 2, page 3 of 12").
+    page_notice: Transient<String>,
+    /// The (chapter, page) last seen, so only a change is news; `None`
+    /// before a book shows, so opening one is not a change.
+    page_said: Option<(usize, usize)>,
 
     cursor: Point,
     /// Pointer tooltip derived from the same semantic label the accessibility
@@ -1242,9 +1251,11 @@ impl BooksApp {
             import_loading: None,
             pending_share: None,
             load_error: Transient::new(),
+            retry_store: None,
             open_failure: None,
             rect: Rect::ZERO,
             dirty: true,
+            faces: ui::widget::FaceMotions::default(),
             view: View::Library,
             book_idx: 0,
             chapter: 0,
@@ -1257,9 +1268,8 @@ impl BooksApp {
             reader_spacing: ui::tokens::spacing::Spacing::BASE,
             reader_compact_breakpoint: f64::from(Metrics::BASE.compact_breakpoint),
             selection_hud_h: ui::SelectionHud::height(&Theme::dark()),
-            bubble_h: ui::status_bubble::pill_height(&Theme::dark()),
+            foot_h: foot_control_height(&Theme::dark()),
             type_button: Rect::ZERO,
-            toast_area: Rect::ZERO,
             toc_scroll: 0.0,
             toc_max_scroll: 0.0,
             toc_scroll_to_active: true,
@@ -1293,7 +1303,8 @@ impl BooksApp {
             scroll_to_cursor: false,
             turn_accum: 0.0,
             reading_settings: ReadingSettings::default(),
-            reader_bubble: ReaderBubble::default(),
+            page_notice: Transient::new(),
+            page_said: None,
             cursor: Point::ZERO,
             hover_tooltip: None,
             semantic_focus: None,
@@ -1373,11 +1384,38 @@ impl BooksApp {
         }
     }
 
-    /// Screenshot-only: force the floating page bubble hover-pinned open so
-    /// a single still frame captures the transient indicator. Never armed at
-    /// runtime.
+    /// Screenshot-only: say the reading position in the window's bar, as a
+    /// page change does. Never armed at runtime.
     fn arm_reader_bubble_for_shots(&mut self) {
-        self.reader_bubble.arm_for_shots();
+        self.page_notice.show(self.page_line());
+    }
+
+    /// "Chapter 2, page 3 of 12", or "3 of 12" for a book without chapters.
+    fn page_line(&self) -> String {
+        let page = self.page + 1;
+        let pages = self.cur_page_count.max(1);
+        if self.num_chapters() > 0 {
+            format!("Chapter {}, page {page} of {pages}", self.chapter + 1)
+        } else {
+            format!("{page} of {pages}")
+        }
+    }
+
+    /// Say the reading position in the window's bar when the page changes
+    /// in the reader; opening a book is not a change.
+    fn follow_page_line(&mut self) {
+        if self.view == View::Reader {
+            let now = (self.chapter, self.page);
+            if self.page_said.is_some_and(|said| said != now) {
+                self.page_notice.show(self.page_line());
+            }
+            self.page_said = Some(now);
+        } else {
+            self.page_said = None;
+        }
+        self.page_notice.expire();
+        self.page_notice
+            .publish(|line| ToolbarNotice::new(line.clone(), ToastKind::Info));
     }
 
     fn num_chapters(&self) -> usize {
@@ -1883,7 +1921,11 @@ impl BooksApp {
             ImportKind::Open,
             None,
             Some(crate::store::book_url(id)),
-        )
+        )?;
+        if let Some(loading) = self.import_loading.as_mut() {
+            loading.store_book = Some(id);
+        }
+        Ok(())
     }
 
     fn begin_import_from(
@@ -1923,6 +1965,7 @@ impl BooksApp {
             path,
             kind,
             expected_book_id,
+            store_book: None,
             card: Transient::showing_progress(()),
         });
         self.clear_failure();
@@ -2087,7 +2130,10 @@ impl BooksApp {
             if !current {
                 continue;
             }
-            self.import_loading = None;
+            let store_book = self
+                .import_loading
+                .take()
+                .and_then(|loading| loading.store_book);
             match completed.result {
                 Ok(book) => {
                     let (book, entry) = content::prepare_imported_book(&completed.path, book);
@@ -2127,6 +2173,10 @@ impl BooksApp {
                         .and_then(|name| name.to_str())
                         .unwrap_or("book");
                     self.report_failure(format!("Couldn’t open {name}: {error}"));
+                    // The store could not be reached: trying again fetches
+                    // the book again.
+                    self.retry_store =
+                        store_book.filter(|_| error == crate::store::unreachable_message());
                     if let Some(invocation) = self.resource_invocation.take() {
                         self.completed_resource_invocation =
                             Some(tilo_actions::InvocationUpdate::Failed {
@@ -2182,6 +2232,7 @@ impl BooksApp {
             path: path.to_path_buf(),
             kind,
             expected_book_id: None,
+            store_book: None,
             card: Transient::showing_progress(()),
         });
         Ok((entered, release))
@@ -2259,9 +2310,6 @@ impl BooksApp {
             Action::ToggleNotes => self.on_toggle_notes(),
             Action::ToggleTypePopover => self.reading_settings.toggle(),
             Action::DismissOverlay => self.on_dismiss_overlay(),
-            Action::DismissLoadError => {
-                self.load_error.dismiss();
-            }
             Action::Swallow => {}
             Action::ToggleBookmark => self.toggle_bookmark(doc),
             Action::FontInc => self.bump_setting(doc, |s| {
@@ -4092,7 +4140,6 @@ impl BooksApp {
             Action::EditComment(id) => format!("highlight.comment.edit:{id}"),
             Action::DeleteComment(id) => format!("highlight.comment.delete:{id}"),
             Action::OpenViaPortal => "library.open".into(),
-            Action::DismissLoadError => "library.dismiss-error".into(),
             Action::ToggleWatchFolder(path) => {
                 format!("library.watch:{}", ui::a11y::hash_key(path))
             }
@@ -4198,7 +4245,6 @@ impl BooksApp {
             Action::EditComment(id) => self.annotation_label(*id, "Edit comment"),
             Action::DeleteComment(id) => self.annotation_label(*id, "Delete comment"),
             Action::OpenViaPortal => "Open book".into(),
-            Action::DismissLoadError => "Dismiss".into(),
             Action::ToggleWatchFolder(path) => format!("Watch {}", path.display()),
             Action::ToggleKeepCatalogues => crate::catalogue::KEEP_CATALOGUES.into(),
             Action::OpenSettings => "Book settings".into(),
@@ -4449,27 +4495,67 @@ impl BooksApp {
     /// long as it stands.
     fn report_failure(&mut self, message: String) {
         self.open_failure = Some(message.clone());
+        self.retry_store = None;
         self.load_error.show(message);
+    }
+
+    /// Fetch the store's book again when "Try again" was pressed beside its
+    /// failure in the window's bar; whether it was.
+    fn take_store_retry(&mut self) -> bool {
+        if !ui::window_toolbar::take_notice_press(STORE_RETRY_ACTION) {
+            return false;
+        }
+        let Some(id) = self.retry_store.take() else {
+            return false;
+        };
+        if let Err(error) = self.begin_get_from_store(id) {
+            self.settle_import_failure(error, "ebook.importer_unavailable");
+        }
+        self.dirty = true;
+        true
     }
 
     /// What failed no longer stands: a book opened or another import began.
     fn clear_failure(&mut self) {
         self.open_failure = None;
+        self.retry_store = None;
         self.load_error.dismiss();
     }
 
-    /// Keep the "Opening …" card up while its import runs, and take a
-    /// failure's card down once it has been up for a notice's lifetime, so
-    /// the window repaints without it.
+    /// Say an import in flight in the window's bar, for as long as it runs
+    /// (parsing happens off-thread, so the previous book stays interactive),
+    /// or the last import's failure, for a notice's lifetime.
     fn expire_load_toast(&mut self) {
-        // An import in flight is the work its card follows.
-        let opening = self.import_loading.as_mut().is_some_and(|loading| {
+        if let Some(loading) = self.import_loading.as_mut() {
+            // An import in flight is the work its notice follows.
             loading.card.keep_while(true);
-            loading.card.expire()
-        });
-        if self.load_error.expire() || opening {
-            self.dirty = true;
+            loading.card.expire();
+            let name = loading
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("book");
+            let text = format!("Opening {name}");
+            loading
+                .card
+                .publish(|()| ToolbarNotice::new(text, ToastKind::Info));
         }
+        if self.load_error.expire() {
+            self.retry_store = None;
+        }
+        let retry = self.retry_store.is_some();
+        self.load_error.publish(|error| {
+            let notice = ToolbarNotice::new(error.clone(), ToastKind::Error);
+            if retry {
+                notice.action(ui::window_toolbar::ToolbarAction::new(
+                    STORE_RETRY_ACTION,
+                    "rotate-cw",
+                    "Try again",
+                ))
+            } else {
+                notice
+            }
+        });
     }
 
     /// When the import's card leaves, for the app's wake deadline.
@@ -4480,47 +4566,6 @@ impl BooksApp {
             .into_iter()
             .chain(self.load_error.deadline())
             .min()
-    }
-
-    /// An import in flight, for as long as it runs, or the last import's
-    /// failure, for a notice's lifetime or until it is dismissed, as a
-    /// transient card at the bottom of the window.
-    fn draw_load_toast(&mut self, ctx: &mut PaintCtx<'_>) {
-        let opening;
-        let (title, body, kind, since) = if let Some(loading) = &self.import_loading {
-            let name = loading
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("book");
-            opening = format!("Opening {name}");
-            (opening.as_str(), "", ToastKind::Info, loading.card.since())
-        } else if let Some(error) = self.load_error.as_deref() {
-            // "Couldn't open x.epub: the reason" reads as a title and a body.
-            let (title, body) = error.split_once(": ").unwrap_or((error, ""));
-            (title, body, ToastKind::Error, self.load_error.since())
-        } else {
-            return;
-        };
-        let Some(since) = since else {
-            return;
-        };
-        let closable = self.import_loading.is_none();
-        let card = ToastCard::new(title, kind).body(body).closable(closable);
-        let hit = ui::widget::toast::paint_transient(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            self.toast_area,
-            ToastAnchor::BottomCenter,
-            &card,
-            since,
-        );
-        if closable && hit.close_rect.width() > 0.0 {
-            self.push_hit(hit.card_rect, Action::Swallow);
-            self.push_hit(hit.close_rect, Action::DismissLoadError);
-        }
     }
 }
 
@@ -4629,7 +4674,9 @@ impl Widget for BooksApp {
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
         self.drain_opens();
+        self.take_store_retry();
         self.expire_load_toast();
+        self.follow_page_line();
         self.poll_query();
         if self.absorb_layout_chunks() {
             self.dirty = true;
@@ -4754,8 +4801,7 @@ impl Widget for BooksApp {
         self.reader_spacing = theme.tokens.spacing;
         self.reader_compact_breakpoint = f64::from(theme.tokens.metrics.compact_breakpoint);
         self.selection_hud_h = ui::SelectionHud::height(theme);
-        self.bubble_h = ui::status_bubble::pill_height(theme);
-        self.toast_area = self.rect;
+        self.foot_h = foot_control_height(theme);
         // Resolve the drawers against this frame's width (a breakpoint
         // crossing settles them without a slide), then advance any toggle.
         self.toc_drawer.scale_for(theme);
@@ -4777,12 +4823,6 @@ impl Widget for BooksApp {
             View::Reader => self.draw_reader(&mut ctx),
             View::Settings => self.draw_settings(&mut ctx),
             View::Search => self.draw_query_view(&mut ctx),
-        }
-        // The empty shelf says what failed in its own empty state. Every
-        // other view needs an honest loading/result surface: parsing happens
-        // off-thread, so the previous book stays interactive.
-        if self.view != View::Library || !self.library.is_empty() || !self.elsewhere.is_empty() {
-            self.draw_load_toast(&mut ctx);
         }
         // The open list of a dropdown lies over everything.
         let window = self.rect;
@@ -5319,20 +5359,32 @@ impl Widget for BooksApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.flaps_animating()
+        self.dirty
+            || self.flaps_animating()
+            || self.faces.needs_redraw(ui::motion::frame_now())
+            || self.shelf_controls.needs_redraw()
+    }
+
+    /// "Try again" beside a failed fetch is pressed between events.
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        self.take_store_retry()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.load_toast_deadline()
+            .into_iter()
+            .chain(self.next_query_placeholder_step(ui::time::now()))
+            .chain(self.page_notice.deadline())
+            .min()
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the loop pumping while a flap is mid-slide, a page turn is
-        // easing in, or the floating page bubble is lingering/fading.
+        // Keep the loop pumping while a flap is mid-slide or a page turn is
+        // easing in. The painted switches ask the motion clock for their own
+        // frames.
         !self.reduce_motion
             && (self.flaps_animating()
                 || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
-                || self.reader_bubble.needs_frame(ui::time::now())
                 || (self.view != View::Reader && self.awaiting_arrival()))
     }
 
@@ -5926,23 +5978,9 @@ impl BooksApp {
         } else {
             None
         };
-        // The bubble is drawn below subsequent reader overlays, whose hits
-        // keep precedence where geometry overlaps; but it is drawn over the
-        // progress slider it shares the foot with, so its chevrons win there.
-        let bubble_action = if comment_action.is_none()
-            && shelf_action.is_none()
-            && top
-                .as_ref()
-                .is_none_or(|hit| matches!(hit.action, Action::SeekProgress))
-        {
-            self.reader_bubble.hit_test(self.cursor)
-        } else {
-            None
-        };
         if comment_action.is_none()
             && shelf_action.is_none()
             && top.is_none()
-            && bubble_action.is_none()
             && self.turn_page_from_margin(doc)
         {
             *handled = true;
@@ -5953,12 +5991,10 @@ impl BooksApp {
         self.press_pos = self.cursor;
         self.shelf_focus_visible = false;
 
-        if bubble_action.is_none()
-            && matches!(
-                top.as_ref().map(|hit| &hit.action),
-                Some(Action::SeekProgress)
-            )
-        {
+        if matches!(
+            top.as_ref().map(|hit| &hit.action),
+            Some(Action::SeekProgress)
+        ) {
             self.progress_dragging = true;
             self.on_seek_progress(self.progress_fraction_at(self.cursor));
             self.dirty = true;
@@ -5973,10 +6009,7 @@ impl BooksApp {
 
         // A press on page text runs through the shared
         // selection-gesture core: single → double (word) → triple.
-        let on_page = self.view == View::Reader
-            && comment_action.is_none()
-            && top.is_none()
-            && bubble_action.is_none();
+        let on_page = self.view == View::Reader && comment_action.is_none() && top.is_none();
         let consumed_page = self.resolve_page_press(on_page, modifiers.state().shift_key());
 
         if let Some(action) = comment_action {
@@ -5988,18 +6021,6 @@ impl BooksApp {
         } else if let Some(action) = shelf_action {
             self.dispatch_shelf_control(action, doc);
             self.refresh_from_doc(doc);
-            self.dirty = true;
-            *handled = true;
-        } else if let Some(action) = bubble_action {
-            self.dispatch(
-                match action {
-                    ReaderBubbleAction::PreviousPage => Action::PrevPage,
-                    ReaderBubbleAction::NextPage => Action::NextPage,
-                },
-                doc,
-            );
-            self.refresh_from_doc(doc);
-            self.persist_progress(doc);
             self.dirty = true;
             *handled = true;
         } else if let Some(h) = top {
@@ -6713,14 +6734,24 @@ impl BooksApp {
     }
 
     /// Draw a shared switch face and retain the app-specific action routing.
-    fn switch(&mut self, ctx: &mut PaintCtx<'_>, track: Rect, on: bool, action: Action) {
+    /// `key` names the switch, so it slides when a click turns it.
+    fn switch(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        key: impl std::hash::Hash,
+        track: Rect,
+        on: bool,
+        action: Action,
+    ) {
         let theme = ctx.theme;
         let hit = pointer_target(track, theme);
         Toggle::paint(
             ctx.scene,
             ctx.transform,
             theme,
-            &ToggleFace::new(track, on).hovered(hit.contains(self.cursor)),
+            &ToggleFace::new(track, on)
+                .pose(self.faces.switch(key, on, theme.motion()))
+                .hovered(hit.contains(self.cursor)),
         );
         self.push_hit(hit, action);
     }
@@ -6730,6 +6761,7 @@ impl BooksApp {
     fn switch_at(
         &mut self,
         ctx: &mut PaintCtx<'_>,
+        key: impl std::hash::Hash,
         x1: f64,
         cy: f64,
         on: bool,
@@ -6737,7 +6769,7 @@ impl BooksApp {
     ) -> Rect {
         let (w, h) = switch_size(ctx.theme);
         let track = Rect::new(x1 - w, cy - h / 2.0, x1, cy + h / 2.0);
-        self.switch(ctx, track, on, action);
+        self.switch(ctx, key, track, on, action);
         track
     }
 }
@@ -7183,8 +7215,7 @@ struct ReaderPageGeometry {
     /// rule, so header, rule and first line never meet at any text scale.
     header_y: f64,
     rule_y: f64,
-    /// The band at the page's foot the progress slider is centred in. The
-    /// page bubble's slot lies between it and the content box.
+    /// The band at the page's foot the progress slider is centred in.
     slider_band: f64,
 }
 
@@ -7339,7 +7370,7 @@ impl BooksApp {
     }
 
     /// The page-bottom progress bar, then chrome drawn over the finished
-    /// page: top bar, floating page bubble, selection HUD, rails, note
+    /// page: top bar, selection HUD, rails, note
     /// composer, comment overlay, and reading-settings popover. Restores
     /// `self.library`, taken at the top of [`Self::draw_reader`].
     fn draw_reader_footer_and_chrome(
@@ -7398,40 +7429,9 @@ impl BooksApp {
             .with_ui_scale(theme.ui_scale)
             .with_text_scale(theme.text_scale)
         };
-        // The foot's band: the slider's, and the page bubble's while a new
-        // page is shown. Reaching for the slider gives it back.
-        let band = Rect::new(
-            geom.center_x0,
-            paper_y1 - geom.slider_band,
-            geom.center_x1,
-            paper_y1,
-        );
-        let position = ReaderPosition {
-            chapter: self.chapter,
-            page: self.page,
-            page_count: self.cur_page_count,
-            chapter_count: nchap.max(1),
-        };
-        let slider_active = self.progress_dragging || band.contains(self.cursor);
-        let bubble = self
-            .reader_bubble
-            .advance(position, slider_active, self.cursor);
-        let slider_alpha = 1.0 - bubble;
-        if slider_alpha > 0.0 {
-            ctx.scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                slider_alpha,
-                ctx.transform,
-                &band,
-            );
-            Slider::paint(ctx.scene, ctx.transform, &page_theme, &face);
-            draw_progress_label(ctx, label, frac, page_theme.text_dim);
-            ctx.scene.pop_layer();
-        }
+        Slider::paint(ctx.scene, ctx.transform, &page_theme, &face);
+        draw_progress_label(ctx, label, frac, page_theme.text_dim);
         self.push_hit(slider_rect, Action::SeekProgress);
-        self.toast_area = Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, band.y0);
-        self.reader_bubble.draw(ctx, band, self.cursor, position);
 
         // ---- chrome: header row, selection HUD, drawers
         self.draw_reader_header(ctx, &lib);
@@ -7479,8 +7479,8 @@ impl BooksApp {
         let center_x0 = column.x0;
         let center_x1 = column.x1;
         let body_y0 = r.y0 + self.header_h;
-        // The page renders to the window bottom: the page indicator floats as
-        // a transient bubble (`ReaderBubble`) instead of a permanent strip.
+        // The page renders to the window bottom: the reading position is
+        // said in the window's bar instead of a permanent strip.
         let body_y1 = r.y1;
 
         // ---- paper rect + content box -----------------------------------
@@ -7493,14 +7493,14 @@ impl BooksApp {
         // kept whether or not text is selected, so selecting never covers a
         // line or moves the text.
         let hud_slot = self.selection_hud_h + 2.0 * f64::from(sp.s2);
-        // The foot is one band the progress slider and the page bubble take
-        // turns in, so neither ever lies over the text.
+        // The foot is the progress slider's band, so it never lies over the
+        // text.
         let slider_band = if framed {
             f64::from(sp.s12)
         } else {
             f64::from(sp.s8)
         }
-        .max(self.bubble_h + f64::from(sp.s4));
+        .max(self.foot_h + f64::from(sp.s4));
         let pad_bot = slider_band;
         let (paper_x, paper_y, paper_w, paper_h, pad_x, pad_top, header_y, rule_y) = if framed {
             let margin = f64::from(sp.s6);
@@ -9072,6 +9072,14 @@ fn progress_label(fraction: f32) -> String {
 
 /// The width the widest progress label takes, so the slider beside it
 /// keeps one length as the number grows.
+/// The height of the page foot's control row: a `Label` line with its
+/// padding, never below a bar control.
+fn foot_control_height(theme: &Theme) -> f64 {
+    let pad = f64::from(theme.tokens.spacing.s1) * 1.5;
+    (f64::from(theme.text(TextRole::Label).line_height_px()) + 2.0 * pad)
+        .max(f64::from(theme.tokens.metrics.bar_control_height))
+}
+
 fn progress_label_width(ctx: &mut PaintCtx<'_>) -> f64 {
     let style = ctx.theme.text(TextRole::Caption).numeric();
     f64::from(ctx.text.measure_style("100%", None, &style).0)

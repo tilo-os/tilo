@@ -18,7 +18,7 @@ class ModelProviderHosts(unittest.TestCase):
         self.assertEqual(set(providers["platforms"]), {"tilo-os", "linux", "macos", "web"})
         self.assertEqual(apps["so.tilo.settings"]["platforms"], ["tilo-os"])
         manifest = tomllib.loads((ROOT / "apps/model-providers/tilo-app.toml").read_text())
-        self.assertEqual(manifest["sandbox"]["services"], {"model-gateway": "optional@7"})
+        self.assertEqual(manifest["sandbox"]["services"], {"model-gateway": "optional@8"})
         self.assertEqual(manifest["sandbox"]["net"]["mode"], "off")
         self.assertTrue(providers["keywords"])
         published = json.loads((ROOT / "crates/browser/tilo-web-desktop/apps.json").read_text())

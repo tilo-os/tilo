@@ -581,6 +581,47 @@ plans in those: half-pixel steps at 200 % rasterise 527,850 of 4,450,688 px
 per frame (11.9 %), and whole steps 693,328 down and 552,832 up (were about
 725,000 and 584,832).
 
+### Every toolkit scroller, under the fingers and gliding
+
+`app::scroll_cost_tests::scroll_cost_of_every_scroller` scrolls each toolkit
+scroller in a 1280×800 window, 60 wheel steps of 40 px and then a flick at
+120 Hz. For each frame it reports CPU per probed phase, what was shaped, and
+what was repainted and copied. It fails when a frame of a scroll changes
+nothing on screen, repaints the window whole, or a flick does not glide.
+Timings below are p50 per frame from a debug build on the arm t worker, and
+are not asserted; the pixel counts are.
+
+| Scroller | Under the fingers, before | after | Gliding, before | after |
+|---|---|---|---|---|
+| Scrollable, 2,000 text rows | 150.5 ms, copies | 17.1 ms, copies | 75.9 ms, whole repaint | 9.5 ms, copies |
+| VirtualList, 100,000 rows | 16.7 ms, whole repaint (moved geometry) | 14.5 ms, copies | 2.8 ms, one whole repaint | 1.4 ms, copies |
+| TreeView, 10,000 rows | 1,024,000 px repainted | 123,282 px, 972,800 copied | whole repaint | 73,596 px, copies |
+| ScrollRegion, 10,000 rows | copies | copies | no glide | 47 frames, copies |
+| Code editor, 3,000 lines | 645,120 px repainted | 51,200 px, 593,920 copied | whole repaint | 5,120 px, copies |
+| DataTable, 100,000 rows | (fixture showed no rows) | 231,536 px, 910,080 copied | — | 15,392 px, copies |
+
+What changed:
+
+- A hosted frame no longer sweeps every mapped widget for history. The
+  widgets that take part are found once per admitted layout. The
+  Scrollable's idle model went from 63.8 ms to 1.4 ms per frame, and a
+  view-only pan commits without the sweep (64 ms to 0.07 ms per wheel
+  event).
+- The wheel deltas of one wake are routed as one event.
+- Rows draw unscrolled and say the content scrolled, so a scroll copies
+  what it only moved. This covers DataTable, TreeView and the code editor.
+- VirtualList measures an entering row once.
+- Every scroller glides on the shared momentum, in whole device pixels.
+
+What is left:
+
+- The VirtualList still relays out the list as each row enters
+  (`frame.layout` about 12 ms).
+- The code editor's draw spends about 11 ms on its text rows, all of them
+  and not only the strip that entered.
+- The Scrollable still walks its 2,000 rows to plan damage
+  (`frame.damage` about 4 ms).
+
 ### Notes input latency on a 27-note notebook
 
 `cargo run --release -p notes --example notes-latency` opens the real Notes

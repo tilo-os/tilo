@@ -11,7 +11,7 @@
 // usage: node scripts/perf/native_stream_qualification.mjs BUNDLE_DIR --out REPORT_JSON
 //          --relay TILO_RELAY --source LEGACY_STREAM_SOURCE --renderer gpu|swiftshader
 //          [--seconds S] [--window WxH] [--fps N] [--inputs N] [--carrier webtransport|https] [--warm-up S]
-//          [--codec h264|vp9|av1]
+//          [--codec h264|vp9|av1] [--reopen]
 //          [--viewport WxH] [--expect-revision SHA] [--allow-dev] [--max-load L] [--enforce-goals]
 //
 // The pieces, all built from one commit:
@@ -33,6 +33,11 @@
 // as another, so its roles decide who drives the window.
 //
 // The run, in order:
+//   reopen    with --reopen, a first window streams 4 s and closes before
+//             the measured one opens, on a desktop then at rest: the desktop
+//             must rest under each, the window after another as under the
+//             first (a desktop once presented a frame for every picture
+//             of a window opened after another had closed)
 //   startup   the session starts its stream (grant, stream start) while the
 //             page shows the room's desktop: to the first presented picture
 //             of the window, visible on the desktop
@@ -54,9 +59,12 @@
 //             second window, a second device of the owner and a second person
 //
 // Correctness, judged on every run (a miss exits 1, with the report): no
-// decoder error; every drawn picture's number reads back with a valid check
-// (no corrupt picture) and is the frame its timestamp names; pictures never go
-// back to an older frame; the page ends on the last frame sent; this member
+// decoder error; the desktop under the window presents at most
+// MAX_DESKTOP_FPS frames a second while the window streams (its pictures go
+// to the window's own canvas, never through the desktop, and the report
+// names what asked for the frames it did present); every drawn picture's
+// number reads back with a valid check (no corrupt picture) and is the frame
+// its timestamp names; pictures never go back to an older frame; the page ends on the last frame sent; this member
 // drives the window (it is the session's own user) and every press arrives,
 // in order; and every acceptance case holds.
 //
@@ -90,6 +98,14 @@ import {Invalid, RENDERERS, chromeFlags, classifyAdapter, hostState, parseViewpo
 import {runAcceptance} from './native_stream_acceptance.mjs';
 
 export const GOALS = {startupMs: 1000, latencyP95Ms: 100, deliveredPercent: 99, inputP95Ms: 50};
+/** Most frames a second the desktop under a streaming window may present
+ * (its opening and the odd status change, never one per picture). */
+export const MAX_DESKTOP_FPS = 2;
+/** The surfaces of the window a --reopen run opens and closes first, and of the measured one. */
+export const EARLIER_SURFACE = 6;
+/** How long that first window streams. */
+const EARLIER_SECONDS = 4;
+export const MEASURED_SURFACE = 7;
 export const CARRIERS = ['webtransport', 'https'];
 /** The stream's codec (`--codec`): VP9 and AV1 are what a session without an
  * H.264 encoder streams once every member's page decodes them. */
@@ -100,10 +116,10 @@ const VIEWPORT = {width: 1280, height: 800, deviceScaleFactor: 1};
 const HARNESS_PATH = '/native-stream-qualification.html';
 const USAGE = 'usage: native_stream_qualification.mjs BUNDLE_DIR --out REPORT_JSON --relay BIN --source BIN '
   + '--renderer gpu|swiftshader [--seconds S] [--window WxH] [--fps N] [--inputs N] [--carrier webtransport|https] [--warm-up S] '
-  + '[--codec h264|vp9|av1] [--viewport WxH] [--expect-revision SHA] [--allow-dev] [--max-load L] [--enforce-goals]';
+  + '[--codec h264|vp9|av1] [--reopen] [--viewport WxH] [--expect-revision SHA] [--allow-dev] [--max-load L] [--enforce-goals]';
 
 export function parseArgs(argv) {
-  const options = {seconds: 10, inputs: 20, carrier: 'webtransport', codec: 'h264', allowDev: false, enforceGoals: false,
+  const options = {seconds: 10, inputs: 20, carrier: 'webtransport', codec: 'h264', allowDev: false, enforceGoals: false, reopen: false,
     window: {width: 1280, height: 720}};
   const positionals = [];
   for (let i = 0; i < argv.length; i++) {
@@ -132,6 +148,7 @@ export function parseArgs(argv) {
     } else if (arg === '--viewport') options.viewport = parseViewport(argv[++i]);
     else if (arg === '--expect-revision') options.expectRevision = argv[++i];
     else if (arg === '--allow-dev') options.allowDev = true;
+    else if (arg === '--reopen') options.reopen = true;
     else if (arg === '--enforce-goals') options.enforceGoals = true;
     else if (arg.startsWith('--')) throw Error(`unknown option ${arg}\n${USAGE}`);
     else positionals.push(arg);
@@ -267,6 +284,7 @@ try {
   const wasm = await import('./pkg/tilo_browser_runtime.js');
   const {connectPeer, joinWorkspace} = await import('./peer.mjs');
   await wasm.default();
+  globalThis.tiloRuntime = wasm;
   const origin = q.get('origin'), profile = q.get('profile'), label = q.get('label') || 'Stream viewer';
   let peer;
   // How far the page got, for a run that ends invalid while it connects.
@@ -370,7 +388,7 @@ const event = name => line => { try { return JSON.parse(line).event === name; } 
  * `presses` the page's click times and `arrivals` the presses the session
  * received (wall-clock microseconds throughout).
  */
-export function analyse({sent, draws, start, stop, presses, arrivals, decoder, control, measureFromUs = -Infinity}) {
+export function analyse({sent, draws, start, stop, presses, arrivals, decoder, control, measureFromUs = -Infinity, desktop}) {
   const captured = new Map(sent.map(frame => [frame.index, frame]));
   const valid = draws.filter(draw => draw.index !== null);
   const corrupt = draws.length - valid.length;
@@ -422,6 +440,7 @@ export function analyse({sent, draws, start, stop, presses, arrivals, decoder, c
     ...(correctness.converged ? [] : [`the page ended on frame ${final}, not the last sent ${stop.lastIndex}`]),
     ...(control ? [] : ['the session\'s own user may not drive its window']),
     ...(presses.length && arrivals.length === presses.length ? [] : [`${arrivals.length} of ${presses.length} presses reached the session`]),
+    ...desktopFailures(desktop),
   ];
   return {
     samples: {
@@ -445,6 +464,27 @@ export function analyse({sent, draws, start, stop, presses, arrivals, decoder, c
   };
 }
 
+/**
+ * The desktop under the window, from its presented frame counts `before`
+ * and `after` the timed stream of `seconds`: frames a second, or null when
+ * the page did not say.
+ */
+export function desktopFramesPerSecond({before, after, seconds}) {
+  return Number.isFinite(before) && Number.isFinite(after) && seconds > 0
+    ? Math.round((after - before) / seconds * 10) / 10 : null;
+}
+
+/** Whether the desktop stayed at rest under the streaming `window`
+ * (`desktop` as `desktopFramesPerSecond` takes it); a run that measured no
+ * desktop is not judged here. */
+export function desktopFailures(desktop, window = 'the window') {
+  if (desktop === undefined) return [];
+  const fps = desktopFramesPerSecond(desktop);
+  if (fps === null) return [`the desktop under ${window} did not say how many frames it presented`];
+  return fps > MAX_DESKTOP_FPS
+    ? [`the desktop under ${window} presented ${fps} frames/s while it streamed (at most ${MAX_DESKTOP_FPS})`] : [];
+}
+
 /** Each goal with its measured value and verdict. */
 export function judgeGoals(summary, counts) {
   const atMost = (name, measured, target) => ({name, measured, target, met: measured <= target});
@@ -465,7 +505,8 @@ export function formatSummary(report) {
       + `encoder ${report.session.encoder}, ${report.session.width}x${report.session.height} at ${report.session.fps} fps, carrier ${report.workload.carrier} (took ${report.live?.carrier ?? "unknown"})`,
     `  ${report.browser.product} | adapter ${report.renderer} | decoders ${c.codecs.join(', ') || 'none'}`,
     `  sent ${c.sent} frames (${c.sentFps} fps, ${c.keyframes} keyframes), drawn ${c.distinctDrawn} (${c.drawnFps} fps), `
-      + `delivered ${c.delivered}/${c.owed} (${c.deliveredPercent} %), desktop under it presented ${c.desktopFramesPerSecond} frames/s (${c.desktopStillWindowFramesPerSecond} once the window was still)`,
+      + `delivered ${c.delivered}/${c.owed} (${c.deliveredPercent} %), desktop under it presented ${c.desktopFramesPerSecond} frames/s (${c.desktopStillWindowFramesPerSecond} once the window was still`
+      + `${c.earlierDesktopFramesPerSecond === undefined ? '' : `, ${c.earlierDesktopFramesPerSecond} under the window before it`})`,
     row('startup (ms)', s.startup_ms), row('frame latency (ms)', s.frame_latency_ms),
     row('frame interval (ms)', s.frame_interval_ms), row('encode (ms)', s.encode_ms), row('input (ms)', s.input_ms),
   ];
@@ -669,7 +710,27 @@ async function main() {
         15_000, `the ${name}'s exit`);
       return {source: process_, session: ready, log, exited};
     };
-    const {source, session, log: framesLog, exited} = await startSession('session', {surface: 7, seconds: options.warmUp + options.seconds});
+    // The window before the measured one (--reopen): its desktop frames
+    // a second once it streams, judged as the measured window's are.
+    let earlierDesktop;
+    if (options.reopen) {
+      const earlier = await startSession('earlier session', {surface: EARLIER_SURFACE, seconds: EARLIER_SECONDS});
+      await sleep(1000);
+      earlier.source.process.stdin.write('start\n');
+      await earlier.source.line(event('started'), 10_000, 'the earlier stream start');
+      // Its opening is the desktop's to draw; from here it only streams.
+      await sleep(1000);
+      const before = await desktopFrames(), from = performance.now();
+      await earlier.source.line(event('stopped'), (EARLIER_SECONDS + 120) * 1000, 'the end of the earlier stream');
+      earlierDesktop = {before, after: await desktopFrames(), seconds: (performance.now() - from) / 1000};
+      // It closes, and the desktop comes to rest before the measured one opens.
+      earlier.source.process.stdin.end();
+      await earlier.exited();
+      await until(page, `!document.querySelector(${JSON.stringify(`canvas.tilo-legacy-window[data-key^="${earlier.session.device}:"]`)})`,
+        30_000, 'the earlier window did not close');
+      await sleep(3000);
+    }
+    const {source, session, log: framesLog, exited} = await startSession('session', {surface: MEASURED_SURFACE, seconds: options.warmUp + options.seconds});
     const mine = `${session.device}:`;
     const decoderBefore = await page.evaluate('JSON.parse(JSON.stringify(globalThis.__tiloStream.decoder))', 300_000);
     console.error(`session ready: ${session.encoder} at ${session.fps} fps`);
@@ -679,9 +740,14 @@ async function main() {
     // Frames captured from here on are timed (the warm-up's are only judged).
     const measureFromUs = start.startUs + options.warmUp * 1e6;
     await sleep(Math.max(0, measureFromUs / 1000 - (performance.timeOrigin + performance.now())));
+    // What asked for each frame the desktop presents meanwhile (the
+    // runtime's frame metrics), so a desktop that does not rest says why.
+    await page.evaluate('globalThis.tiloRuntime.configure_frame_metrics(true)');
     const framesBefore = await desktopFrames();
     const stop = JSON.parse(await source.line(event('stopped'), (options.warmUp + options.seconds + 120) * 1000, 'the end of the stream'));
     const framesAfter = await desktopFrames();
+    const desktopRequesters = await page.evaluate(`(() => { const metrics = JSON.parse(globalThis.tiloRuntime.take_frame_metrics());
+      globalThis.tiloRuntime.configure_frame_metrics(false); return metrics.map(mount => mount.requesters); })()`);
     console.error(`stream captured ${stop.frames} frames in ${stop.seconds.toFixed(1)} s, last published frame ${stop.lastIndex}`);
     // A still window: the page must come to rest on the last frame.
     const settle = Date.now() + 15_000;
@@ -723,10 +789,15 @@ async function main() {
     if (options.maxLoad !== undefined && after.load1 / after.cpus > options.maxLoad) {
       throw new Invalid(`host contended after the run: load ${after.load1} on ${after.cpus} CPUs`);
     }
-    const analysis = analyse({sent, draws, start, stop, presses, arrivals, decoder, control, measureFromUs});
+    const desktop = {before: framesBefore, after: framesAfter, seconds: (stop.stopUs - measureFromUs) / 1e6};
+    const analysis = analyse({sent, draws, start, stop, presses, arrivals, decoder, control, measureFromUs, desktop});
     analysis.counts.desktopStillWindowFramesPerSecond = stillWindow;
-    analysis.counts.desktopFramesPerSecond = Number.isFinite(framesBefore) && Number.isFinite(framesAfter)
-      ? Math.round((framesAfter - framesBefore) / ((stop.stopUs - measureFromUs) / 1e6) * 10) / 10 : null;
+    analysis.counts.desktopFramesPerSecond = desktopFramesPerSecond(desktop);
+    analysis.counts.desktopFrameRequesters = desktopRequesters;
+    if (earlierDesktop) {
+      analysis.counts.earlierDesktopFramesPerSecond = desktopFramesPerSecond(earlierDesktop);
+      analysis.correctness.failures.push(...desktopFailures(earlierDesktop, 'the window before it'));
+    }
     const summary = Object.fromEntries(Object.entries(analysis.samples).map(([name, values]) => [name, stats(values)]));
 
     // The acceptance cases (native_stream_acceptance.mjs), on the same
@@ -752,7 +823,7 @@ async function main() {
         codec: session.codec ?? options.codec},
       live: {carrier: live.live?.carrier ?? null, state: live.live?.state ?? null},
       workload: {seconds: options.seconds, inputs: options.inputs, carrier: options.carrier, codec: options.codec, warmUpSeconds: options.warmUp,
-        chromeFlags: flags},
+        reopen: options.reopen, chromeFlags: flags},
       summary, counts: analysis.counts, correctness, goals: judgeGoals(summary, analysis.counts),
       acceptance: {cases: acceptance.cases, pageErrors: acceptance.pageErrors},
       samples: analysis.samples,

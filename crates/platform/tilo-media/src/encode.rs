@@ -113,6 +113,14 @@ pub struct EncoderSpec {
     /// `false` means no observation has shown the encoder ignoring the setting;
     /// it does not guarantee accuracy for an encoder that is not installed.
     pub ignores_bitrate: bool,
+    /// Properties every encode sets, whatever its target, as `gst-launch`
+    /// `property=value` pairs; empty for most encoders.
+    ///
+    /// `x264enc` applies its speed preset's B-frames unless told otherwise.
+    /// Reordered frames make the encoder push its first frame out late, and an
+    /// MP4 written from it presents its first picture two frames in, behind the
+    /// audio. Asking for none keeps every export starting at zero.
+    pub fixed_args: &'static str,
 }
 
 impl EncoderSpec {
@@ -147,6 +155,17 @@ impl EncoderSpec {
             self.bitrate_value(bits_per_second)
         )
     }
+
+    /// Everything a `gst-launch` description sets on this encoder: its
+    /// [`Self::bitrate_arg`], then its [`Self::fixed_args`].
+    pub fn launch_args(&self, bits_per_second: u64) -> String {
+        let bitrate = self.bitrate_arg(bits_per_second);
+        if self.fixed_args.is_empty() {
+            bitrate
+        } else {
+            format!("{bitrate} {}", self.fixed_args)
+        }
+    }
 }
 
 /// A video codec the export can write.
@@ -174,8 +193,8 @@ pub enum AudioCodec {
 
 /// H.264. VA is first because it covers AMD and Intel hardware.
 /// `x264enc` outranks `openh264enc` because openh264 only writes Baseline
-/// profile — no CABAC, no B-frames — which reduces quality at the same
-/// bitrate.
+/// profile — no CABAC — which reduces quality at the same bitrate. Neither
+/// writes B-frames here: see [`EncoderSpec::fixed_args`].
 const H264: &[EncoderSpec] = &[
     kbit("vah264enc", EncoderKind::Va),
     kbit("nvh264enc", EncoderKind::NvCodec),
@@ -185,7 +204,10 @@ const H264: &[EncoderSpec] = &[
     // The older gstreamer-vaapi plugin, still shipped by some distributions.
     kbit("vaapih264enc", EncoderKind::Va),
     kbit("v4l2h264enc", EncoderKind::V4l2),
-    kbit("x264enc", EncoderKind::Software),
+    EncoderSpec {
+        fixed_args: "bframes=0",
+        ..kbit("x264enc", EncoderKind::Software)
+    },
     H264_BASELINE,
 ];
 const H264_BASELINE: EncoderSpec = bits_untracked("openh264enc", EncoderKind::Software);
@@ -243,6 +265,7 @@ const fn bits(element: &'static str, kind: EncoderKind) -> EncoderSpec {
         bitrate_property: "bitrate",
         bitrate_units: BitrateUnits::BitsPerSecond,
         ignores_bitrate: false,
+        fixed_args: "",
     }
 }
 
@@ -263,6 +286,7 @@ const fn kbit(element: &'static str, kind: EncoderKind) -> EncoderSpec {
         bitrate_property: "bitrate",
         bitrate_units: BitrateUnits::KilobitsPerSecond,
         ignores_bitrate: false,
+        fixed_args: "",
     }
 }
 
@@ -277,6 +301,7 @@ const fn target_bits(element: &'static str) -> EncoderSpec {
         bitrate_property: "target-bitrate",
         bitrate_units: BitrateUnits::BitsPerSecond,
         ignores_bitrate: true,
+        fixed_args: "",
     }
 }
 
@@ -461,7 +486,7 @@ impl Selection {
 /// Pick an encoder for `codec`, trying each candidate against `available`.
 ///
 /// `available` answers "is this element factory installed", which in a real
-/// build is [`registry_has`]. Kept as a parameter so the preference order is
+/// build is `registry_has`. Kept as a parameter so the preference order is
 /// unit-testable against a fabricated registry — including registries this
 /// machine cannot have, which is the only way to prove the hardware branch.
 pub fn select_video(
@@ -819,6 +844,10 @@ mod tests {
                 "bitrate=16000",
                 "x264enc counts in kilobits — the same number would ask it for 16 Gbit/s",
             );
+            // x264's preset would reorder frames and start an MP4's pictures
+            // two frames in; every encode asks it for none.
+            assert_eq!(x264.launch_args(target), "bitrate=16000 bframes=0");
+            assert_eq!(openh264.launch_args(target), "bitrate=16000000");
 
             let va = H264.iter().find(|s| s.element == "vah264enc").unwrap();
             assert_eq!(

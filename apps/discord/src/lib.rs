@@ -21,6 +21,7 @@ pub mod setup;
 pub mod slug;
 pub mod tilo;
 pub mod token;
+pub mod voice;
 
 pub use record::{
     DChannel, DRole, Guild, Link, LinkFailure, MappedKind, Mapping, Origin, Ownership, PendingLink,

@@ -20,14 +20,27 @@ def verified(data):
     return data
 
 
+def cache_dirs():
+    """Where the source may already be, the first also where a download goes."""
+    explicit = os.environ.get("TILO_NTFS_SOURCE_CACHE")
+    if explicit:
+        return [pathlib.Path(explicit)]
+    shared = ROOT.parents[2] / "target/ntfs-source"
+    # Cargo lets a build script write only below OUT_DIR; the workspace's target/ may be
+    # read-only (or not where the build directory is), so it is only read, for a prewarmed copy.
+    out_dir = os.environ.get("OUT_DIR")
+    return [pathlib.Path(out_dir) / "ntfs-source", shared] if out_dir else [shared]
+
+
 def source_bytes():
     bundled = ROOT / "vendor" / NAME
     if bundled.exists():
         return verified(bundled.read_bytes())
-    default = ROOT.parents[2] / "target/ntfs-source"
-    cache = pathlib.Path(os.environ.get("TILO_NTFS_SOURCE_CACHE", default)) / SHA / NAME
-    if cache.exists():
-        return verified(cache.read_bytes())
+    caches = [directory / SHA / NAME for directory in cache_dirs()]
+    for cache in caches:
+        if cache.exists():
+            return verified(cache.read_bytes())
+    cache = caches[0]
     if os.environ.get("TILO_NTFS_SOURCE_OFFLINE") == "1" or os.environ.get("CARGO_NET_OFFLINE", "").lower() == "true":
         raise RuntimeError("NTFS source is not cached; prewarm with source_artifact.py before offline builds")
     with urllib.request.urlopen(URL, timeout=60) as response:

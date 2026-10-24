@@ -15,7 +15,7 @@
 //!
 //! The daemon binds a single iroh endpoint. Every inbound
 //! connection speaks a Tilo relay ALPN and performs a small
-//! authenticated handshake ([`transport::hello`]):
+//! authenticated handshake ([`Hello`](tilo_relay_protocol::auth::Hello)):
 //!
 //! 1. Client sends its `DeviceCert` + a challenge nonce.
 //! 2. Server verifies the cert chains to *this relay's* user
@@ -109,6 +109,8 @@ mod offload_device;
 mod offload_media;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_placement;
+#[cfg(not(target_arch = "wasm32"))]
+mod offload_rooms;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_route;
 #[cfg(not(target_arch = "wasm32"))]

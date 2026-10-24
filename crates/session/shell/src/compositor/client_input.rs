@@ -1619,7 +1619,13 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
             .client_input
             .keyboard_focus()
             .map(|surface| crate::compositor::foreign::store().sheet_root(surface)),
-        chrome_captures_input(fb) || fb.host().dictation_mutes_remote_input(),
+        // The same decision as local input; dictation takes everything
+        // from other devices while it listens.
+        if fb.host().dictation_mutes_remote_input() {
+            crate::shell::input_policy::InputCapture::ALL
+        } else {
+            crate::shell::input_policy::input_capture(fb)
+        },
         fb.host().palette_visible(),
     )
     .chrome_regions(chrome_regions)
@@ -2779,11 +2785,11 @@ mod tests {
             let remote_view = crate::network::input_firewall::ShellView::new(
                 vec![(HIDDEN_SURFACE, Rect::new(0.0, 0.0, 400.0, 300.0))],
                 gate_keyboard_focus(Some(HIDDEN_SURFACE), chrome_captures_input(&fb)),
-                chrome_captures_input(&fb),
+                crate::shell::input_policy::input_capture(&fb),
                 false,
             );
             assert!(
-                remote_view.chrome_captures_input(),
+                remote_view.captures_keyboard(),
                 "remote peers must see OOBE as occluding trusted chrome"
             );
         }
@@ -2818,7 +2824,7 @@ mod tests {
             let view = ShellView::new(
                 tiles.iter().map(|h| (h.surface_id, h.rect)).collect(),
                 None,
-                false,
+                crate::shell::input_policy::InputCapture::NONE,
                 false,
             )
             .chrome_regions(
@@ -2961,7 +2967,7 @@ mod tests {
             let _ = fb.paint_settled();
             let mut state = state_sharing(ORPHAN_SURFACE);
             publish_remote_input_view(&mut state, &fb, false);
-            assert!(!state.remote_input_firewall.view().chrome_captures_input());
+            assert!(!state.remote_input_firewall.view().captures_keyboard());
 
             fb.host_mut()
                 .dictation_surface_mut()
@@ -2972,7 +2978,7 @@ mod tests {
             );
             publish_remote_input_view(&mut state, &fb, false);
             assert!(
-                state.remote_input_firewall.view().chrome_captures_input(),
+                state.remote_input_firewall.view().captures_keyboard(),
                 "a peer cannot operate the local microphone controls"
             );
 
@@ -2981,7 +2987,7 @@ mod tests {
                 .status(crate::compositor::dictation::DictationStatus::Idle);
             publish_remote_input_view(&mut state, &fb, false);
             assert!(
-                !state.remote_input_firewall.view().chrome_captures_input(),
+                !state.remote_input_firewall.view().captures_keyboard(),
                 "closing dictation must restore normal shared-seat policy"
             );
         }
@@ -3084,7 +3090,7 @@ mod tests {
         state.remote_input_firewall.publish_view(ShellView::new(
             vec![(surface, Rect::new(0.0, 0.0, 400.0, 300.0))],
             Some(surface),
-            false,
+            crate::shell::input_policy::InputCapture::NONE,
             false,
         ));
         state
@@ -3161,7 +3167,7 @@ mod tests {
             state.remote_input_firewall.publish_view(ShellView::new(
                 vec![(SHARED, Rect::new(0.0, 0.0, 400.0, 300.0))],
                 Some(PRIVATE),
-                false,
+                crate::shell::input_policy::InputCapture::NONE,
                 false,
             ));
             assert_eq!(

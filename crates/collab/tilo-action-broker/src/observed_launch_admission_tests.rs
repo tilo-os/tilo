@@ -27,6 +27,7 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                     requests: Mutex::new(Vec::new()),
                     adoption: Mutex::new(None),
                     original: Mutex::new(None),
+                    pressed: true.into(),
                 });
                 let rig = Rig::with_services(
                     &env,

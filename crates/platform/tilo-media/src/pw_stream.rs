@@ -5,7 +5,7 @@
 //! which the first sample of the block will leave the speaker. That time comes
 //! from `pw_stream_get_time`: the cycle's timestamp plus the delay to the
 //! device plus whatever is still queued in the stream, so a
-//! [`SyncPlayout`](crate::sync_playout::SyncPlayout) behind it can schedule
+//! [`SyncPlayout`] behind it can schedule
 //! against the moment the listener hears a sample rather than the moment it
 //! was written.
 //!
@@ -584,7 +584,7 @@ pub fn whole_frames(bytes: &[u8], stride: usize) -> &[u8] {
 /// Plays one buffer so that its first frame leaves the speaker at a chosen
 /// local time: the playback half of a timed measurement such as an acoustic
 /// sweep. Frames scheduled before the stream could play them are reported
-/// through [`ScheduledBuffer::late_by_ns`] rather than silently shifted.
+/// through [`ScheduleProgress::late_by_ns`] rather than silently shifted.
 #[derive(Debug)]
 pub struct ScheduledBuffer {
     samples: Arc<[f32]>,

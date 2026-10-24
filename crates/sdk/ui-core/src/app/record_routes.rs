@@ -1,6 +1,6 @@
 //! Records a host holds without a window, kept in step over their routes.
 //!
-//! A window's records sync through its App ([`super::document_routes`]). A
+//! A window's records sync through its App (`super::document_routes`). A
 //! host that holds records of its own (the session keeps the person's
 //! settings sections) syncs them the same way through a
 //! [`RecordRouteParticipant`]: each record joins its route on the broker, its

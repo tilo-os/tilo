@@ -12,12 +12,12 @@
 //! - [`shortcut`] — the serialisable program: inputs, [`Step`]s, value
 //!   [`Binding`]s between them, the [`grant`](Shortcut::grant) that bounds its
 //!   authority and the [`TriggerSpec`]s that may start it.
-//! - [`check`] — the save-time type checker. It reads the descriptors a host
+//! - [`check`](mod@check) — the save-time type checker. It reads the descriptors a host
 //!   returned from `query` (parameters, contracts, result specs) and refuses a
 //!   binding whose type cannot satisfy the parameter it feeds, a step output
 //!   pointer that the declared result schema does not have, an action outside
 //!   the grant, and a shortcut that could run itself.
-//! - [`run`] — the interpreter. It invokes each step as the person who
+//! - [`run`](mod@run) — the interpreter. It invokes each step as the person who
 //!   started the run, only inside the shortcut's grant, with invocation ids
 //!   derived from the run so a retried run observes what already happened
 //!   instead of doing it twice, and it hands confirmation and questions to

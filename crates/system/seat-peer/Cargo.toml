@@ -1,0 +1,21 @@
+[package]
+name = "tilo-seat-peer"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Who is on the other end of a root service's local socket: the kernel's account of the caller, and whether it is the seat's compositor"
+
+[lib]
+name = "seat_peer"
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

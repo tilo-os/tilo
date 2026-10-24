@@ -16,7 +16,7 @@ fn current_peer(client: &ClientState, room: &str, package: &str) -> Option<(u32,
     }
     let pid = client.pid?;
     let start = client.pid_start_time?;
-    (crate::shell::launcher::proc_stat(pid)?.1 == start).then_some((pid, start))
+    (crate::shell::host_runtime::proc_stat(pid)?.1 == start).then_some((pid, start))
 }
 
 struct Window {
@@ -150,7 +150,7 @@ mod tests {
         let room = "authenticated-room";
         let package = "so.tilo.calculator";
         let pid = std::process::id();
-        let (_, start) = crate::shell::launcher::proc_stat(pid).expect("actual kernel process");
+        let (_, start) = crate::shell::host_runtime::proc_stat(pid).expect("actual kernel process");
         let make = || ClientState {
             package_id: Some(package.into()),
             workspace_id: Some(room.into()),

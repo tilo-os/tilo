@@ -18,7 +18,11 @@ fn host() -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     )
     .unwrap();
     receiver.select_admission_v5().unwrap();
-    for message in native.bootstrap_messages(&a, now).unwrap() {
+    for message in native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap()
+    {
         receiver.receive_from(origin(&a), message, now).unwrap();
     }
     (receiver, a, b, now)
@@ -175,7 +179,10 @@ fn a_plaintext_write_after_a_sealed_one_is_refused_as_a_downgrade() {
     host.receive_from(origin(&b), sealed(&host, &b, 1, b"sealed"), now)
         .unwrap();
     let mut restored = restore(&host, now).unwrap();
-    let plaintext = restored.publish_incremental(APP, RECORD, Vec::new(), &a, now);
+    let plaintext =
+        restored
+            .publication_mut()
+            .publish_incremental(APP, RECORD, Vec::new(), &a, now);
     assert!(plaintext.is_err(), "the record stays encrypted");
 }
 
@@ -371,6 +378,7 @@ fn the_key_holder_admits_the_opened_plaintext_and_keeps_the_record_encrypted() {
 
     assert!(
         restored
+            .publication_mut()
             .publish_incremental(APP, RECORD, Vec::new(), &a, now)
             .is_err(),
         "a plaintext write to the encrypted record is a downgrade"

@@ -50,10 +50,11 @@ GLYPH_JOIN = re.compile(r"\S\s+[·•|—–›»]\s+\S|\S\s/\s\S|^\s*[·•]\s|
 # triangles.
 GLYPH_ICON = re.compile("[←→↑↓↖↗↘↙↔↕⇐⇒⇑⇓✓✔✗✘✕✖●○◉◎★☆▶◀▲▼▸◂▴▾►◄⬤⏵⏴⏶⏷]")
 # Literals no person reads in the interface: logs, panics, errors, assertion
-# messages and lint reasons.
+# messages and lint reasons. `format_args!` goes straight to a writer (a log
+# line written in one write), never into a string a surface shows.
 NOT_UI = re.compile(
     r"(?:\b(?:info|warn|error|debug|trace|e?println|e?print|panic|unreachable|todo|"
-    r"assert\w*|debug_assert\w*|bail|ensure|anyhow|write|writeln|format_err)!"
+    r"assert\w*|debug_assert\w*|bail|ensure|anyhow|write|writeln|format_err|format_args)!"
     r"|\.(?:expect|context|with_context|map_err)\b|\breason\s*=)[^;{}]*$"
 )
 RAW_COLOUR = re.compile(

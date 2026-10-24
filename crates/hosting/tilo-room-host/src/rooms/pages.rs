@@ -8,7 +8,10 @@
 //! a device with no session yet. Unlike the workspace-join protocol, a
 //! page's verified redemption is not admitted at once: it waits, in memory,
 //! until someone the room lets invite admits or declines it. A relay restart forgets waiting
-//! requests; the person asks again.
+//! requests; the person asks again. The addresses left at the door of a room
+//! that takes people by invitation are no such requests: they are kept with
+//! the room ([`super::wait_list`]) and listed on their own
+//! ([`RoomsRequest::WaitList`]).
 
 use tilo_action_policy::roles::governance;
 use tilo_governor::Governor;
@@ -18,7 +21,7 @@ use tilo_peer_state::join::{
 };
 use tilo_relay_protocol::rooms::{
     Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_REQUESTS, PendingInvite, PreAdmission,
-    Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest,
+    Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest, WaitListEntry,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -221,6 +224,13 @@ impl Rooms {
             RoomsRequest::Decline { room, request_id } => {
                 self.decline_page(&room, device, request_id, now).await?;
                 RoomsReply::Requests(self.waiting(&room, now))
+            }
+            RoomsRequest::WaitList { room } => {
+                RoomsReply::WaitList(self.wait_list(&room, device, now).await?)
+            }
+            RoomsRequest::Unlist { room, request_id } => {
+                self.unlist(&room, device, request_id, now).await?;
+                RoomsReply::WaitList(self.wait_list(&room, device, now).await?)
             }
             request @ (RoomsRequest::SetRole { .. }
             | RoomsRequest::Remove { .. }
@@ -570,6 +580,78 @@ impl Rooms {
             )?;
         }
         Ok(self.waiting(room, now))
+    }
+
+    /// The addresses left at `room`'s door, oldest first, for someone the
+    /// room lets invite.
+    async fn wait_list(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        now: u64,
+    ) -> Result<Vec<WaitListEntry>, CollaborationError> {
+        let governed = self.room(room).await?;
+        let governed = governed.lock().await;
+        self.authorize(
+            device,
+            Some(&governed),
+            RoomOp::Govern(governance::INVITE),
+            now,
+        )?;
+        Ok(governed.wait_list.entries())
+    }
+
+    /// Take the address `request_id` off `room`'s wait list, for someone the
+    /// room lets invite.
+    async fn unlist(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        now: u64,
+    ) -> Result<(), CollaborationError> {
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        self.authorize(
+            device,
+            Some(&governed),
+            RoomOp::Govern(governance::INVITE),
+            now,
+        )?;
+        if !governed
+            .wait_list
+            .remove(request_id)
+            .map_err(CollaborationError::new)?
+        {
+            return Err(CollaborationError::new("no such address on the wait list"));
+        }
+        drop(governed);
+        tracing::info!(%room, "an address was taken off the wait list");
+        Ok(())
+    }
+
+    /// Keep the request of someone who asked at `room`'s door without an
+    /// invitation, to be invited at `contact` (an address
+    /// [`tilo_relay_protocol::rooms::contact_address`] accepts), while the
+    /// room keeps fewer than `max`. Whoever may invite sees it on the room's
+    /// wait list until they take it off.
+    pub async fn wait(
+        &self,
+        room: &str,
+        contact: &str,
+        max: usize,
+    ) -> Result<super::WaitListed, CollaborationError> {
+        let contact = tilo_relay_protocol::rooms::contact_address(contact)
+            .map_err(CollaborationError::new)?;
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        let kept = governed
+            .wait_list
+            .keep(&contact, tilo_clock::unix_now_ns(), max)
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        tracing::info!(%room, outcome = ?kept, "a request was left at the door");
+        Ok(kept)
     }
 
     fn waiting(&self, room: &str, now: u64) -> Vec<JoinRequest> {

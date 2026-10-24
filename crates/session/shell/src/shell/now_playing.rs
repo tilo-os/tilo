@@ -42,6 +42,18 @@ pub struct Artwork {
     pub rgba: Arc<Vec<u8>>,
 }
 
+impl Artwork {
+    /// The artwork as a picture to paint.
+    #[must_use]
+    pub fn image(&self) -> vello::peniko::ImageData {
+        ui::raster::rgba8(
+            vello::peniko::Blob::new(self.rgba.clone()),
+            self.width,
+            self.height,
+        )
+    }
+}
+
 impl PartialEq for Artwork {
     fn eq(&self, other: &Self) -> bool {
         self.width == other.width
@@ -133,13 +145,28 @@ impl PlayerSnapshot {
             .or_else(|| (self.headline() != self.identity).then_some(self.identity.as_str()))
     }
 
-    /// A monogram for the artwork slot when the player offers no local art.
+    /// The song as every player surface paints it ([`ui::widget::SongFace`]):
+    /// the headline over the artist, the application under them when it is
+    /// not already one of them, and `image` (the decoded artwork) or the
+    /// placeholder cover seeded with the application's name.
     #[must_use]
-    pub fn monogram(&self) -> String {
-        self.identity
-            .chars()
-            .find(|c| c.is_alphanumeric())
-            .map_or_else(String::new, |c| c.to_uppercase().collect())
+    pub fn song(&self, image: Option<vello::peniko::ImageData>) -> ui::widget::Song {
+        let subtitle = self.subline().unwrap_or_default().to_owned();
+        let detail = if subtitle != self.identity && self.headline() != self.identity {
+            self.identity.clone()
+        } else {
+            String::new()
+        };
+        ui::widget::Song {
+            title: self.headline().to_owned(),
+            subtitle,
+            detail,
+            error: false,
+            art: image.map_or(ui::widget::TransportArt::Placeholder, |image| {
+                ui::widget::TransportArt::Image(image)
+            }),
+            art_name: self.identity.clone(),
+        }
     }
 }
 
@@ -805,7 +832,32 @@ pub(crate) mod tests {
         p.title = None;
         assert_eq!(p.headline(), "Radio");
         assert_eq!(p.subline(), None);
-        assert_eq!(p.monogram(), "R");
+    }
+
+    #[test]
+    fn the_song_names_the_application_once() {
+        let mut p = player("a", "Radio", PlaybackStatus::Playing);
+        let song = p.song(None);
+        assert_eq!(
+            (
+                song.title.as_str(),
+                song.subtitle.as_str(),
+                song.detail.as_str()
+            ),
+            ("Radio track", "An Artist", "Radio")
+        );
+        assert_eq!(song.art, ui::widget::TransportArt::Placeholder);
+        assert_eq!(
+            song.art_name, "Radio",
+            "the placeholder is the application's"
+        );
+        p.artist = None;
+        let song = p.song(None);
+        assert_eq!(
+            (song.subtitle.as_str(), song.detail.as_str()),
+            ("Radio", ""),
+            "the application is the subtitle, not a third line too"
+        );
     }
 
     #[test]

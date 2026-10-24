@@ -205,12 +205,16 @@ impl<T: Animatable> MotionValue<T> {
 
     /// Hold the motion for `by`: time spent waiting (on a full presenter)
     /// is not progress, so the curve resumes where it stood.
+    #[track_caller]
     pub fn defer(&mut self, by: Duration) {
         if self.settles_at.is_none() {
             return;
         }
         self.started = self.started.checked_add(by).unwrap_or(self.started);
         self.settles_at = self.settles_at.and_then(|at| at.checked_add(by));
+        if let Some(until) = self.settles_at {
+            super::clock::want_frames_until(until);
+        }
     }
 
     /// Jump to `value` and rest there.
@@ -284,8 +288,11 @@ impl<T: Animatable> MotionValue<T> {
         } else {
             now.checked_add(Duration::from_secs_f64(settle))
         };
-        if self.settles_at.is_none() {
-            self.snap(target);
+        match self.settles_at {
+            // Every motion asks the frame pump for its frames, wherever it
+            // was started and whoever draws it: a settled one asks nothing.
+            Some(until) => super::clock::want_frames_until(until),
+            None => self.snap(target),
         }
     }
 

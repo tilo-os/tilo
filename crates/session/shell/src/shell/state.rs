@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
+mod continuation_labels;
 mod local_app_records;
 mod room_binding;
 mod tree_handle;
@@ -11,6 +12,7 @@ mod window_hosting;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
+pub use continuation_labels::{ContinuationLabels, UnresolvedContinuationLabels};
 pub use local_app_records::LocalAppRecord;
 pub(crate) use room_binding::room_holds_files;
 pub use tree_handle::{
@@ -1924,7 +1926,7 @@ impl WorkspaceTree {
     pub fn queue_save(&self) {
         let started = std::time::Instant::now();
         let export = self.fs_capability_export();
-        let actions = crate::shell::launcher::action_authority::Export::of(self);
+        let actions = crate::shell::action_authority::Export::of(self);
         let failure = actions.failure_handle();
         match (&self.persist_path, export) {
             (Some(path), export) => {
@@ -3138,6 +3140,10 @@ impl WorkspaceTree {
         // already happened, so a doc-write failure only means this append
         // doesn't replicate.
         tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, ws_id, name, room);
+        // Its strip goes in with it: a window moved or opened into the new
+        // workspace is recorded against that strip, and a move the document
+        // cannot record is refused.
+        self.seed_doc_from_cache();
         // A newly-created workspace is local session state as well as a
         // collaboration-document change. Persist it at the mutation boundary:
         // otherwise a compositor crash before the next unrelated edit silently
@@ -3147,7 +3153,7 @@ impl WorkspaceTree {
     }
 
     /// Add a dormant local entry for a room discovered through the private
-    /// same-identity continuation lane. Unlike [`Self::append_empty_workspace`]
+    /// same-identity continuation lane. Unlike [`Self::create_hosted_workspace`]
     /// this creates no strip or window and never changes focus, so merely
     /// learning that another device has a workspace open cannot publish an
     /// empty local layout into that room or pull the current session away.
@@ -3303,7 +3309,7 @@ impl WorkspaceTree {
     ///
     /// A workspace the native owner holds or is joining is not deleted here:
     /// its room goes with it through the owner
-    /// ([`super::native_workspace_owner::release_workspace_room`]), so a
+    /// (`super::native_workspace_owner::release_workspace_room`), so a
     /// workspace and its room never part.
     pub fn delete_workspace(&mut self, id: WorkspaceId) -> Option<(usize, Workspace)> {
         if self.desktop.workspaces.len() < 2 {
@@ -3485,8 +3491,9 @@ impl WorkspaceTree {
     }
 
     /// Materialize another device's continuation as synchronized placeholder
-    /// tabs. This never activates a workspace, strip, or group; the compositor
-    /// opens the matching local apps through its normal authorized launch path.
+    /// tabs, titled by the session's `labels`. This never activates a
+    /// workspace, strip, or group; the compositor opens the matching local
+    /// apps through its normal authorized launch path.
     #[allow(
         clippy::too_many_lines,
         clippy::indexing_slicing,
@@ -3496,6 +3503,7 @@ impl WorkspaceTree {
         &mut self,
         _source_device: &str,
         continuation: &crate::shell::personal_continuity::WorkspaceContinuation,
+        labels: &dyn ContinuationLabels,
     ) -> bool {
         let existing_continuation_tabs = self.continuation_tabs.clone();
         let (changed, file_references, file_reference_removals, inserted_continuation_tabs) = {
@@ -3544,10 +3552,7 @@ impl WorkspaceTree {
                         (
                             // Built on the compositor loop: the installed
                             // apps as last enumerated, never a registry read.
-                            crate::shell::launcher::installed_apps_without_waiting()
-                                .into_iter()
-                                .find(|installed| installed.package_id == *app_id)
-                                .map_or_else(|| app_id.clone(), |installed| installed.display_name),
+                            labels.app_name(app_id).unwrap_or_else(|| app_id.clone()),
                             TileContent::PeerWindow {
                                 app_id: app_id.clone(),
                                 label: "Available on another device".to_string(),
@@ -3559,7 +3564,7 @@ impl WorkspaceTree {
                     crate::shell::personal_continuity::LaunchIntent::FileReference { .. } => {
                         file_references.push((app.id.0, app.launch.clone()));
                         (
-                            crate::shell::doc_open::continuity_file_reference_label(&app.launch),
+                            labels.file_reference_label(&app.launch),
                             TileContent::Stub {
                                 kind: AppKind::FileExplorer,
                                 label: "Available on another device".to_string(),
@@ -3999,7 +4004,7 @@ impl WorkspaceTree {
     /// into the restart snapshot. `Ok(false)` when the order did not change.
     ///
     /// Only reorders inside one strip commit here; a close runs its own
-    /// lifecycle ([`crate::shell::window_actions::close_tab`]).
+    /// lifecycle, in the window actions above the model.
     ///
     /// Like a close, a move is not checked per person: this desktop records
     /// no window authors, so the policy a shared desktop applies to other
@@ -5003,6 +5008,43 @@ mod automerge_foundation_tests {
             );
         }
     }
+
+    #[test]
+    fn a_window_moves_into_a_workspace_created_moments_ago() {
+        // The window menu's Move to workspace, right after Create a
+        // workspace: nothing else has written the new workspace's strip to
+        // the replicated document, and a move the document cannot record
+        // is refused, so the window must find that strip there.
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let src_strip = tree.desktop.workspaces[0].strips[0].id;
+        let tab = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let (fresh, _) = tree.create_hosted_workspace("Fresh");
+        let dst_strip = tree.desktop.active_strip[&fresh];
+        assert!(
+            tree.move_tab_across_strips(
+                src_strip,
+                dst_strip,
+                tab,
+                next_id(),
+                DropTarget::GroupGap { gap_index: 0 },
+            ),
+            "the new workspace's strip is in the document"
+        );
+        let landed = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == fresh)
+            .is_some_and(|workspace| {
+                workspace.strips.iter().any(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .any(|group| group.tabs.iter().any(|t| t.id == tab))
+                })
+            });
+        assert!(landed, "the window is in the new workspace");
+    }
 }
 
 #[cfg(test)]
@@ -5854,6 +5896,7 @@ mod workspace_tree_lifecycle_tests {
                         room,
                         apps: vec![app],
                     },
+                    &crate::shell::doc_open::DesktopContinuationLabels,
                 ));
                 assert!(tree.continuation_tabs.contains(&0x99));
                 assert!(tree.reconcile_continuation_tabs(&BTreeSet::new()));
@@ -5886,6 +5929,7 @@ mod workspace_tree_lifecycle_tests {
                         room,
                         apps: vec![app],
                     },
+                    &crate::shell::doc_open::DesktopContinuationLabels,
                 );
 
                 assert!(tree.claim_continuation_tab(0x9a));
@@ -5982,6 +6026,7 @@ mod workspace_tree_lifecycle_tests {
                         room,
                         apps: vec![make(0, "so.tilo.browser")],
                     },
+                    &crate::shell::doc_open::DesktopContinuationLabels,
                 );
                 tree.materialize_continuation_workspace(
                     "Laptop",
@@ -5989,6 +6034,7 @@ mod workspace_tree_lifecycle_tests {
                         room,
                         apps: vec![make(1, "so.tilo.music")],
                     },
+                    &crate::shell::doc_open::DesktopContinuationLabels,
                 );
                 let workspace = tree
                     .desktop
@@ -6051,6 +6097,7 @@ mod workspace_tree_lifecycle_tests {
                                 stamp,
                             )],
                     },
+                    &crate::shell::doc_open::DesktopContinuationLabels,
                 ));
                 let workspace = tree
                     .desktop
@@ -6140,6 +6187,7 @@ mod workspace_tree_lifecycle_tests {
                 room,
                 apps: vec![file],
             },
+            &crate::shell::doc_open::DesktopContinuationLabels,
         ));
         assert!(tree.continuation_file_references.contains_key(&id.0));
 
@@ -6156,6 +6204,7 @@ mod workspace_tree_lifecycle_tests {
                 room,
                 apps: vec![app.clone()],
             },
+            &crate::shell::doc_open::DesktopContinuationLabels,
         ));
         assert!(!tree.continuation_file_references.contains_key(&id.0));
         // Every checkpoint offers it again; one that moved nothing changes
@@ -6167,6 +6216,7 @@ mod workspace_tree_lifecycle_tests {
                 room,
                 apps: vec![app],
             },
+            &crate::shell::doc_open::DesktopContinuationLabels,
         ));
         assert_eq!(tree.current_heads(), heads);
         let replacement = tree

@@ -204,6 +204,78 @@ fn dispatch_device_action(
     Ok(())
 }
 
+/// Routing through the person's devices: one action per device this one
+/// routes or could route through, one per device routing through this one,
+/// and this device's switch.
+fn device_vpn_actions(status: &settings_store::device_vpn::DeviceVpnStatus) -> Vec<DeviceAction> {
+    let token = |device: &str| opaque("so.tilo.continuity.device-vpn.v1", device.as_bytes());
+    let named = |label: &str| {
+        if label.is_empty() {
+            t("search-continuity-certified-device")
+        } else {
+            label.to_owned()
+        }
+    };
+    let mut actions = Vec::new();
+    for row in status.rows() {
+        let args = [("device", named(&row.label).into())];
+        let (verb, title, action) = if row.is_on() {
+            (
+                "stop",
+                "search-continuity-vpn-stop",
+                DeviceFabricUiAction::StopRouteThrough {
+                    device: row.device.clone(),
+                },
+            )
+        } else {
+            (
+                "through",
+                "search-continuity-vpn-through",
+                DeviceFabricUiAction::RouteThrough {
+                    device: row.device.clone(),
+                },
+            )
+        };
+        actions.push(DeviceAction {
+            id: format!("vpn.{verb}.{}", token(&row.device)),
+            title: t_args(title, &args),
+            subtitle: t("search-continuity-vpn-subtitle"),
+            action,
+            confirm: false,
+        });
+    }
+    for user in &status.exit_users {
+        actions.push(DeviceAction {
+            id: format!("vpn.exit.stop.{}", token(&user.device)),
+            title: t_args(
+                "search-continuity-vpn-exit-stop",
+                &[("device", named(&user.label).into())],
+            ),
+            subtitle: t("search-continuity-vpn-exit-subtitle"),
+            action: DeviceFabricUiAction::StopExitUser {
+                device: user.device.clone(),
+            },
+            confirm: false,
+        });
+    }
+    if status.exit_available {
+        let on = !status.exit_on;
+        actions.push(DeviceAction {
+            id: format!("vpn.exit.{}", if on { "share" } else { "unshare" }),
+            title: t(if on {
+                "search-continuity-vpn-share"
+            } else {
+                "search-continuity-vpn-unshare"
+            }),
+            subtitle: t("search-continuity-vpn-exit-subtitle"),
+            action: DeviceFabricUiAction::ShareConnection { on },
+            // Sharing opens this device's connection to the person's others.
+            confirm: on,
+        });
+    }
+    actions
+}
+
 /// A device's identity as it appears in action ids: a digest, never the id.
 fn device_token(id: &DeviceId) -> String {
     opaque("so.tilo.continuity.device.v1", id.as_str().as_bytes())
@@ -777,6 +849,9 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             });
         }
     }
+    if let Some(status) = &view.device_vpn {
+        actions.extend(device_vpn_actions(status));
+    }
     for device in view.devices.iter().filter(|device| !device.is_local) {
         actions.push(DeviceAction {
             id: format!("device.remove.{}", device_token(&device.id)),
@@ -972,7 +1047,7 @@ fn result_bytes(result: &SearchResult) -> usize {
         .id
         .len()
         .saturating_add(result.title.len())
-        .saturating_add(result.subtitle.as_ref().map_or(0, String::len))
+        .saturating_add(result.secondary_len())
         .saturating_add(result.provider_id.len())
 }
 
@@ -1394,7 +1469,7 @@ pub const CONTINUE_PROVIDER_ID: &str = "continuity.continue";
 const CONTINUE_ID: &str = "continuity.continue";
 const CONTINUE_DISMISS_ID: &str = "continuity.continue.dismiss";
 
-/// The palette's door to the top bar's "Continue <app> from <device>"
+/// The palette's door to the top bar's "Continue \<app\> from \<device\>"
 /// offer: accept it (focus that tab here) or dismiss it.
 #[derive(Default)]
 pub struct ContinueFromDeviceProvider {

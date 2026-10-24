@@ -196,6 +196,7 @@ const SCENARIOS: &[&str] = &[
     "search-focus",
     "skeleton",
     "nowplaying",
+    "nowplaying-page",
     "queue",
     "lyrics",
     "downloading",
@@ -226,7 +227,7 @@ const SCENARIOS: &[&str] = &[
     "kept-view",
 ];
 
-/// Framework app: the music widget is the surface over [`Music`].
+/// Framework app: the music widget is the surface over [`Library`].
 pub struct MusicShell;
 
 impl ResourceApp for MusicShell {

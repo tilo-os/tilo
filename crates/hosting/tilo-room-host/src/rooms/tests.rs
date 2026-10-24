@@ -524,6 +524,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     let state = room.collaboration().clone();
     let mut candidate = room.peer().clone();
     candidate
+        .publication_mut()
         .publish_document("notes", "plan", large(), &key, SystemTime::now())
         .unwrap();
     room.commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
@@ -560,6 +561,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         automerge::AutoCommit::load(&room.peer().document("notes", "plan").unwrap()).unwrap();
     edited.put(automerge::ROOT, "edited", true).unwrap();
     candidate
+        .publication_mut()
         .publish_document("notes", "plan", edited.save(), &key, SystemTime::now())
         .unwrap();
     room.commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
@@ -2554,7 +2556,7 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
 /// One person's device joining `room` through its door, as a Tilo computer
 /// does: the challenge, the door's admission spent with the proof, then the
 /// Complete. Answers the Complete it sent and the host's answer.
-async fn door_join(
+pub(crate) async fn door_join(
     rooms: &Rooms,
     host: &DeviceCert,
     room: &str,

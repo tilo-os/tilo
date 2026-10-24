@@ -173,9 +173,8 @@ certify performance.
 
 - Rebuilding the bootc qcow2 to measure the boot-time delta against
   the baseline requires pulling the digest-pinned frozen RPM repo
-  (`registry.tilo.so/tilo/rpms`, anonymously readable). In CI the
-  `.forgejo/workflows/build-image.yml` job rebuilds it; the rebuilt
-  image + qcow2 flow through the release channel.
+  (`registry.tilo.so/tilo/rpms`, anonymously readable). In CI t's
+  `os-image-{arch}` check rebuilds the image.
 
 Measurements are workload- and host-dependent. Record the image revision,
 CPU/memory/KVM settings, adapter, and `TILO_DISTROBOX` value with each result;

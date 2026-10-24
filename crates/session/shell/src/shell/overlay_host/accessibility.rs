@@ -214,9 +214,6 @@ impl ShellOverlayHost {
                 LayerId::Collaborators => root
                     .children
                     .push(self.collaborators_overlay.accessibility_snapshot()),
-                LayerId::RoomActivity => root
-                    .children
-                    .push(self.room_activity.accessibility_snapshot()),
                 LayerId::NowPlaying => {
                     if let Some(card) = self.now_playing_accessibility() {
                         root.children.push(card);
@@ -402,12 +399,6 @@ impl ShellOverlayHost {
                 }
                 _ => self.palette.synthetic_accessibility_rect(child_path),
             },
-            LayerId::RoomActivity => {
-                let mut local_path = Vec::with_capacity(path.len());
-                local_path.push(0);
-                local_path.extend_from_slice(child_path);
-                self.room_activity.accessibility_rect_for_path(&local_path)
-            }
             LayerId::Collaborators => self
                 .collaborators_overlay
                 .accessibility_rect_for_path(child_path),
@@ -490,12 +481,6 @@ impl ShellOverlayHost {
         match overlay {
             LayerId::CommandPalette => {
                 self.palette.focus_synthetic_accessibility(child_path)
-            }
-            LayerId::RoomActivity => {
-                let mut local_path = Vec::with_capacity(path.len());
-                local_path.push(0);
-                local_path.extend_from_slice(child_path);
-                self.room_activity.focus_accessibility_path(&local_path)
             }
             LayerId::Collaborators => self
                 .collaborators_overlay

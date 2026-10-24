@@ -70,7 +70,7 @@ pub fn agent_resource(agent_id: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GrantRequest {
-    /// Display name, 1..=[`MAX_AGENT_TEXT_BYTES`] bytes.
+    /// Display name, 1..=`MAX_AGENT_TEXT_BYTES` bytes.
     pub label: String,
     /// Cursor colour `#rrggbb`; the host picks one when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,7 +215,7 @@ pub struct AgentInfo {
     pub tasks: Vec<AgentTask>,
     /// Conversation in order.
     pub conversation: Vec<AgentMessage>,
-    /// [`AgentDelegation::encode`], hex: the browser verifies it against the
+    /// `AgentDelegation::encode`, hex: the browser verifies it against the
     /// user root before calling the agent "yours".
     pub delegation: String,
 }

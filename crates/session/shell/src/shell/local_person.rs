@@ -172,7 +172,7 @@ mod tests {
     /// before the explicit publication so none arrives after it.
     fn publish_after_saves(tree: &crate::shell::state::WorkspaceTreeHandle) {
         crate::shell::persist::wait_for_saves();
-        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+        super::super::action_authority::Export::of(&tree.read()).publish();
     }
 
     #[test]
@@ -209,7 +209,7 @@ mod tests {
         tree.persist_path = Some(directory.path().join("state.json"));
         let tree = tree.shared();
         let owner = super::super::native_workspace_owner::open(tree.clone()).unwrap();
-        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+        super::super::action_authority::Export::of(&tree.read()).publish();
         let service = NativeLocalPerson {
             tree: tree.downgrade(),
         };
@@ -280,7 +280,7 @@ mod tests {
         crate::shell::persist::wait_for_saves();
         tree.write().desktop.workspaces[0].set_owner(person.clone());
         crate::shell::persist::wait_for_saves();
-        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+        super::super::action_authority::Export::of(&tree.read()).publish();
         assert!(service.certificate(&room.to_string(), &person).is_ok());
         drop(owner);
         assert!(

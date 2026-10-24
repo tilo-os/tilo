@@ -524,103 +524,6 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
     tree.reconcile_strip_topology(source_strip, &topology)
 }
 
-/// Open or focus the one personal workspace-activity window in the active
-/// workspace. The tab is device-local, but otherwise uses the ordinary tiled
-/// window model so close, resize, tab/group reorder and persistence need no
-/// activity-specific implementations.
-pub fn open_workspace_activity(tree: &mut WorkspaceTree) -> TabId {
-    let active_workspace = tree.desktop.active;
-    let existing = tree
-        .desktop
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.id == active_workspace)
-        .and_then(|workspace| {
-            workspace.strips.iter().find_map(|strip| {
-                strip.window_groups.iter().find_map(|group| {
-                    group.tabs.iter().find_map(|tab| {
-                        matches!(tab.tile, TileContent::WorkspaceActivity)
-                            .then_some((strip.id, group.id, tab.id))
-                    })
-                })
-            })
-        });
-    if let Some((strip, group, tab)) = existing {
-        if let Some(workspace) = tree
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == active_workspace)
-            && let Some(group_state) = workspace
-                .strips
-                .iter_mut()
-                .find(|candidate| candidate.id == strip)
-                .and_then(|strip_state| {
-                    strip_state
-                        .window_groups
-                        .iter_mut()
-                        .find(|candidate| candidate.id == group)
-                })
-        {
-            group_state.active_tab = tab;
-            if let Some(tab_state) = group_state.tabs.iter_mut().find(|t| t.id == tab) {
-                tab_state.title = crate::shell::i18n::t("shell-activity-title");
-            }
-        }
-        tree.desktop.active_strip.insert(active_workspace, strip);
-        tree.desktop.set_active_group(strip, group);
-        return tab;
-    }
-
-    let tab = Tab {
-        id: next_id(),
-        title: crate::shell::i18n::t("shell-activity-title"),
-        tile: TileContent::WorkspaceActivity,
-        app_title: None,
-    };
-    let tab_id = place_tab(tree, tab, Placement::NewGroup);
-    // The local cache intentionally retains the window; room projection
-    // filters the typed tile before any collaborative document write.
-    tree.queue_save();
-    tab_id
-}
-
-pub fn active_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, GroupId, TabId)> {
-    tree.desktop.active_workspace().and_then(|workspace| {
-        workspace.strips.iter().find_map(|strip| {
-            strip.window_groups.iter().find_map(|group| {
-                (group.active_tab != 0).then_some(())?;
-                group.tabs.iter().find_map(|tab| {
-                    (tab.id == group.active_tab
-                        && matches!(tab.tile, TileContent::WorkspaceActivity))
-                    .then_some((strip.id, group.id, tab.id))
-                })
-            })
-        })
-    })
-}
-
-/// The workspace-activity tab only owns keyboard input when its ordinary
-/// tiled group is the workspace's focused group. A selected tab in another
-/// visible group may still paint and receive pointer input, but must not
-/// steal keystrokes from the focused window.
-pub fn focused_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, GroupId, TabId)> {
-    let workspace = tree.desktop.active_workspace()?;
-    let strip_id = tree.desktop.active_strip.get(&workspace.id).copied()?;
-    let group_id = tree.desktop.active_group_for(strip_id)?;
-    let group = workspace
-        .strips
-        .iter()
-        .find(|strip| strip.id == strip_id)?
-        .window_groups
-        .iter()
-        .find(|group| group.id == group_id)?;
-    let tab = group.tabs.iter().find(|tab| {
-        tab.id == group.active_tab && matches!(tab.tile, TileContent::WorkspaceActivity)
-    })?;
-    Some((strip_id, group_id, tab.id))
-}
-
 /// Where a tab placed in `group` goes: the exact index a placement names,
 /// else right of the tab the user was on, not at the end of the bar.
 fn tab_insert_index(group: &WindowGroup, placement: Placement) -> usize {
@@ -1447,17 +1350,14 @@ fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous
         .and_then(|workspace| workspace.strips.get(strip_idx))
         .and_then(|strip| strip.window_groups.get(group_idx))
         .and_then(|group| group.tabs.get(tab_idx))
-        .is_some_and(|tab| {
-            matches!(&tab.tile, TileContent::Foreign { .. }) || tab.tile.is_device_local()
-        })
+        .is_some_and(|tab| matches!(&tab.tile, TileContent::Foreign { .. }))
         || !tree.doc_holds_tab(strip_id, group_id, tab_id, remove_group);
     // Delete from the CRDT before touching the cache. Besides making the
     // ordering explicit, this guarantees that a revision/peer merge between
     // the two representations cannot treat the stale document entry as an
-    // insertion and resurrect it. A newly adopted `Foreign` surface, the
-    // device-local workspace-activity window, and a tab placed since the
-    // document last took the cache (an opening card whose launch was
-    // refused in the same frame) may never have entered the replicated
+    // insertion and resurrect it. A newly adopted `Foreign` surface and a
+    // tab placed since the document last took the cache (an opening card
+    // whose launch was refused in the same frame) may never have entered the replicated
     // document; absence there is therefore already the desired durable
     // state, not a failed close.
     if !tree.doc_remove_tab(strip_id, group_id, tab_id, remove_group) && !cache_only {
@@ -1570,90 +1470,6 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn activation_focuses_and_reveals_the_exact_surface_and_its_group() {
-        {
-            let mut tree = WorkspaceTree::bootstrap_demo();
-            tree.persist_path = None;
-            let groups_before = tree
-                .desktop
-                .active_workspace()
-                .expect("active workspace")
-                .strips
-                .iter()
-                .map(|strip| strip.window_groups.len())
-                .sum::<usize>();
-
-            let first = open_workspace_activity(&mut tree);
-            let first_location = active_workspace_activity_tab(&tree).expect("window is active");
-            assert_eq!(first_location.2, first);
-            assert_eq!(
-                tree.desktop
-                    .active_workspace()
-                    .expect("active workspace")
-                    .strips
-                    .iter()
-                    .map(|strip| strip.window_groups.len())
-                    .sum::<usize>(),
-                groups_before + 1,
-                "the recap is a normal window group"
-            );
-
-            let second = open_workspace_activity(&mut tree);
-            assert_eq!(second, first, "reopening focuses the existing singleton");
-            assert_eq!(active_workspace_activity_tab(&tree), Some(first_location));
-            assert_eq!(focused_workspace_activity_tab(&tree), Some(first_location));
-            assert_eq!(
-                tree.desktop
-                    .active_workspace()
-                    .expect("active workspace")
-                    .strips
-                    .iter()
-                    .flat_map(|strip| &strip.window_groups)
-                    .flat_map(|group| &group.tabs)
-                    .filter(|tab| matches!(tab.tile, TileContent::WorkspaceActivity))
-                    .count(),
-                1
-            );
-        }
-
-        {
-            let dir = tempfile::tempdir().expect("state dir");
-            let path = dir.path().join("workspace.json");
-            let mut tree = WorkspaceTree::bootstrap_demo();
-            tree.persist_path = Some(path.clone());
-            let tab = open_workspace_activity(&mut tree);
-            tree.queue_save();
-            let saved = crate::shell::persist::load_tree_from(&path).expect("activity persisted");
-            assert!(
-                saved
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .flat_map(|workspace| workspace.strips.iter())
-                    .flat_map(|strip| strip.window_groups.iter())
-                    .flat_map(|group| group.tabs.iter())
-                    .any(|tab| matches!(tab.tile, TileContent::WorkspaceActivity)),
-                "open activity is durable"
-            );
-            assert!(
-                remove_tab(&mut tree, tab),
-                "activity is a closeable tiled window"
-            );
-            tree.queue_save();
-            let restarted =
-                crate::shell::persist::load_tree_from(&path).expect("closed activity state");
-            assert!(
-                restarted
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .flat_map(|workspace| workspace.strips.iter())
-                    .flat_map(|strip| strip.window_groups.iter())
-                    .flat_map(|group| group.tabs.iter())
-                    .all(|tab| !matches!(tab.tile, TileContent::WorkspaceActivity)),
-                "closing activity must drop it from durable desktop state"
-            );
-        }
-
         {
             let dir = tempfile::tempdir().expect("state dir");
             let path = dir.path().join("workspace.json");
@@ -2729,6 +2545,7 @@ mod tests {
                         },
                     )],
                 },
+                &crate::shell::doc_open::DesktopContinuationLabels,
             );
             crate::shell::launcher::set_pending_placement(
                 "so.tilo.browser",

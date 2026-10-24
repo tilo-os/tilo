@@ -5,7 +5,7 @@
 //!
 //! The Tilo action-model recipe (`docs/action-model-recipe.md`) sorts every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an [`Action`] (a serializable value that deterministically changes
+//! becomes an [`Action`](tilo_actions::Action) (a serializable value that deterministically changes
 //! the shared Automerge document, so undo and multi-peer replay come for free),
 //! while presentation / view state stays plain app code. The git client is a
 //! near-textbook case of a mostly-**external** app:
@@ -214,7 +214,7 @@ pub enum GitClientEffect {
 // ===========================================================================
 
 /// Keep the palette's contextual tree cheap even for monorepos. Every omitted
-/// item is still addressable by id ([`repository_row`], [`working_tree_row`]).
+/// item is still addressable by id (`repository_row`, `working_tree_row`).
 pub const MAX_CONTEXT_CHANGES: usize = 48;
 pub const MAX_CONTEXT_COMMITS: usize = 48;
 pub const MAX_CONTEXT_REFS: usize = 32;

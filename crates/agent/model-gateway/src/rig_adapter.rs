@@ -192,23 +192,14 @@ impl GatewayHttp {
             .timeout(budget)
             .headers(headers.clone())
             .json(body);
-        let response = outgoing.send().await.map_err(|error| ProviderFailure {
-            model_error: crate::openai::Failure::transport(error.is_timeout(), error.is_connect())
-                .model_error(),
-            why: if error.is_timeout() {
-                "provider request timed out"
-            } else {
-                "provider transport failed"
-            }
-            .into(),
-            again: if error.is_timeout() || error.is_connect() {
-                Again::Soon(None)
-            } else {
-                Again::Never
-            },
-            outcome_unknown: !error.is_builder() && !error.is_connect(),
-            unprocessed: error.is_connect(),
-            status: None,
+        let response = outgoing.send().await.map_err(|error| {
+            // Content-free: what failed, never the URL or the error's text.
+            eprintln!(
+                "tilo-model-gateway: provider transport failed model={} cause={}",
+                log_token(&self.model),
+                send_cause(&error)
+            );
+            send_failure(&error)
         })?;
         let status = response.status();
         *self
@@ -269,6 +260,83 @@ impl GatewayHttp {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(failure);
         http::Error::instance(std::io::Error::other("provider transport failed"))
+    }
+}
+
+/// What a request that got no response means. A connection that could
+/// not be made (no address, refused, its TLS handshake failed) and a
+/// request the client handed back unwritten ([`never_sent`]) provably
+/// reached no provider: those are asked again. A connection lost after
+/// the request was written may have been taken, so its outcome is unknown.
+pub(super) fn send_failure(error: &reqwest::Error) -> ProviderFailure {
+    let unsent = error.is_connect() || never_sent(error);
+    ProviderFailure {
+        model_error: crate::openai::Failure::transport(error.is_timeout(), unsent).model_error(),
+        why: if error.is_timeout() {
+            "provider request timed out"
+        } else {
+            "provider transport failed"
+        }
+        .into(),
+        again: if error.is_timeout() || unsent {
+            Again::Soon(None)
+        } else {
+            Again::Never
+        },
+        outcome_unknown: !error.is_builder() && !unsent,
+        unprocessed: unsent,
+        status: None,
+    }
+}
+
+/// Whether the HTTP client gave the request back before writing any of it:
+/// hyper cancels a request whose connection closed before it was sent. It
+/// sends one again by itself only on a reused connection, so on a new one
+/// the cancellation reaches here.
+fn never_sent(error: &reqwest::Error) -> bool {
+    hyper_cause(error).is_some_and(hyper::Error::is_canceled)
+}
+
+/// The hyper error under a reqwest one, if any.
+fn hyper_cause(error: &reqwest::Error) -> Option<&hyper::Error> {
+    let mut cause = std::error::Error::source(error);
+    while let Some(error) = cause {
+        if let Some(hyper) = error.downcast_ref::<hyper::Error>() {
+            return Some(hyper);
+        }
+        cause = error.source();
+    }
+    None
+}
+
+/// A word for why a request got no response, for the log: whether its
+/// connection failed, or was lost before or after the request went out.
+fn send_cause(error: &reqwest::Error) -> &'static str {
+    let reset = || {
+        let mut cause = std::error::Error::source(error);
+        while let Some(error) = cause {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionReset)
+            {
+                return true;
+            }
+            cause = error.source();
+        }
+        false
+    };
+    if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if never_sent(error) {
+        "not_sent"
+    } else if hyper_cause(error).is_some_and(hyper::Error::is_incomplete_message) {
+        "closed_before_response"
+    } else if reset() {
+        "reset"
+    } else {
+        "other"
     }
 }
 

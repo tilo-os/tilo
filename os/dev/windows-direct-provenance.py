@@ -22,7 +22,7 @@ DOCKER_INDEX = "application/vnd.docker.distribution.manifest.list.v2+json"
 PROOF_SCHEMA = "tilo.windows-vm-install-proof-check.v1"
 PROOF_SCHEMA_V2 = "tilo.windows-vm-install-proof-check.v2"
 BUILD_TYPE = "https://tilo.sh/buildtypes/bootc-os/v1"
-BUILDER_ID = "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"
+BUILDER_ID = "https://code.tilo.so/tilo/t/os-release-v1"
 SOURCE = re.compile(r"git\+ssh://code\.tilo\.so/tilo/tilo@([0-9a-f]{40})\Z")
 PUBLIC_REPOSITORY = "registry.tilo.so/tilo/tilo"
 # Board images carry private firmware and stay on the forge's private registry.

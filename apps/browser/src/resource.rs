@@ -182,6 +182,7 @@ const SCENARIOS: &[&str] = &[
     "loading",
     "error",
     "permission",
+    "page-dialog",
     "suggestions",
     "library-history",
     "library-bookmarks",
@@ -260,7 +261,7 @@ impl ResourceApp for BrowserShell {
         match scenario {
             Some("pip-empty" | "suggestions") => (1000, 650),
             Some("settings" | "history-paused") => (900, 700),
-            Some("loading" | "error" | "permission") => (900, 620),
+            Some("loading" | "error" | "permission" | "page-dialog") => (900, 620),
             Some(name) if name.starts_with("library-") || name.starts_with("downloads-") => {
                 (1000, 700)
             }
@@ -696,6 +697,44 @@ mod tests {
             app.state().exceptions().into_iter().collect::<Vec<_>>(),
             ["https://example.org"],
             "the page's own site"
+        );
+    }
+
+    /// The page's question is the window's row while the page waits on it,
+    /// with the dialog's answers bound to it; answered in the dialog, both
+    /// go. (An agent's answer through the row runs in the widget's tests:
+    /// a capture takes no effects.)
+    #[test]
+    fn a_pages_question_is_answered_through_its_row() {
+        let mut app = TestApp::<BrowserShell>::capture(Some("page-dialog")).unwrap();
+        app.settle();
+        let published = app.harness().resources();
+        let question = find(&published, crate::page_dialogs::ROW)
+            .expect("the question the page waits on is a row");
+        assert_eq!(question.label, "shop.example.org asks");
+        let ids: Vec<&str> = question.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["accept-page-dialog", "dismiss-page-dialog"]);
+        assert!(
+            question.actions.iter().all(|a| a.params().is_empty()),
+            "a confirm asks nothing more: the question is bound"
+        );
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key(crate::page_dialogs::ROW),
+            "the dialog stands over the page"
+        );
+
+        // A person answers in the dialog, and the row goes with it.
+        app.harness()
+            .click_named(&format!("{}.secondary", crate::page_dialogs::ROW))
+            .unwrap();
+        app.settle();
+        assert!(find(&app.harness().resources(), crate::page_dialogs::ROW).is_none());
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key(crate::page_dialogs::ROW)
         );
     }
 

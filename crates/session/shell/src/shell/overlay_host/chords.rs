@@ -196,13 +196,11 @@ impl ShellOverlayHost {
                 *handled = true;
                 return true;
             }
-            if shift_down {
-                self.room_activity
-                    .set_view(crate::shell::room_activity::ActivityView::Explore);
+            self.room_activity.focus_view(if shift_down {
+                crate::shell::room_activity::ActivityView::Explore
             } else {
-                self.room_activity
-                    .set_view(crate::shell::room_activity::ActivityView::CatchUp);
-            }
+                crate::shell::room_activity::ActivityView::CatchUp
+            });
             let mut st = chrome.borrow_mut();
             st.open_room_activity(None);
             *handled = true;
@@ -356,6 +354,11 @@ impl ShellOverlayHost {
             // most browsers/terminals/editors, and the
             // shell would swallow it ahead of the client.
             "w" | "W" => {
+                // A shortcut's close lands: the window is gone on the next
+                // frame and its neighbours are in their places.
+                if !repeat {
+                    self.begin_motion(ui::tokens::MotionSource::Keyboard);
+                }
                 if repeat || self.close_focused_tab() {
                     *handled = true;
                     true

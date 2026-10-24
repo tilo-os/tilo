@@ -86,7 +86,7 @@ impl CardContent {
 }
 
 impl CameraApp {
-    /// Paint the scanner. Returns the top-trailing cluster's panel.
+    /// Paint the scanner.
     pub(super) fn draw_scanner(
         &mut self,
         scene: &mut Scene,
@@ -94,7 +94,7 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         full: Rect,
-    ) -> Rect {
+    ) {
         let m = HudMetrics::of(theme);
         let live = self.feed_active();
         let code = self.scanned.clone().filter(|_| !self.scan_dismissed);
@@ -141,22 +141,19 @@ impl CameraApp {
             };
             let area = Rect::new(
                 full.x0 + m.edge,
-                full.y0 + m.edge + m.bar(),
+                full.y0 + m.edge,
                 layout.side.map_or(full.x1, |side| side.x0) - m.edge,
-                below.unwrap_or_else(|| full.y1 - m.edge - m.bar()),
+                below.unwrap_or(full.y1 - m.edge),
             );
             self.draw_scanner_offline(scene, t, tr, theme, area);
         }
 
-        let corner = self.draw_corner_actions(scene, t, tr, theme, full);
         if let (Some(code), Some(card)) = (code.as_ref(), layout.card) {
             self.draw_scan_card(scene, t, tr, theme, card, code);
         }
         if let Some(recent) = layout.recent {
             self.draw_recent_scans(scene, t, tr, theme, recent);
         }
-        self.draw_mode_switcher(scene, t, tr, theme, full);
-        corner
     }
 
     /// The guide, the hint, the result card and the recent scans for
@@ -173,8 +170,8 @@ impl CameraApp {
         let spacing = &theme.tokens.spacing;
         let group = f64::from(spacing.s6);
         let stack = f64::from(spacing.s4);
-        let top = full.y0 + m.edge + m.bar() + m.gap;
-        let bottom = full.y1 - m.edge - m.bar() - group;
+        let top = full.y0 + m.edge;
+        let bottom = full.y1 - m.edge;
         // The side column holds text, so it grows with the text. It goes
         // beside the guide while the stage left of it is at least as wide.
         let growth = f64::from(theme.text_growth());

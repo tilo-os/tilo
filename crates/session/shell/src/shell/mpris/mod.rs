@@ -14,7 +14,7 @@
 //! accepted resumes).
 //!
 //! Which players exist, and what each reports, comes from one signal-driven
-//! observer ([`observer`]) and the table it keeps ([`table`]); nothing here
+//! observer (`observer`) and the table it keeps (`table`); nothing here
 //! polls the bus. Commands still go to a player directly, and a resume still
 //! reads a player's `Position` while it verifies the playhead, because MPRIS
 //! has no signal for a playhead that merely advances.

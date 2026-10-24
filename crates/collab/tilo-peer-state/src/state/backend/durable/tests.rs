@@ -26,14 +26,10 @@ fn retained_durable_v4_decodes_without_migration_copy() {
 fn retained_durable_v5_decodes_the_borrowed_exact_index_into_owned_storage() {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
     peer.select_admission_v5().unwrap();
+    let current_document = peer.document("test.app", "tab:1").unwrap();
     let NeighbourMsg::AppDocument { envelope, .. } = peer
-        .publish_document(
-            "test.app",
-            "tab:1",
-            peer.document("test.app", "tab:1").unwrap(),
-            &key,
-            now,
-        )
+        .publication_mut()
+        .publish_document("test.app", "tab:1", current_document, &key, now)
         .unwrap()
     else {
         panic!("signed publication");
@@ -116,12 +112,14 @@ fn retained_durable_keeps_real_pending_input_after_the_original_is_dropped() {
     doc.put(ROOT, "retained-predecessor", true).unwrap();
     doc.commit_edit("fixture", "retained-predecessor");
     source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "retained-descendant", true).unwrap();
     doc.commit_edit("fixture", "retained-descendant");
     let descendant = source
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     receiver

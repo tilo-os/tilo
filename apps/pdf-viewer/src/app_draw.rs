@@ -176,14 +176,8 @@ impl PdfApp {
     fn draw_all(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.canvas_hover_zones.clear();
         self.current_page = self.nearest_page();
-        // A page change (not the initial open) briefly floats the page bubble.
-        if self.has_document
-            && self.bubble_shown_page != 0
-            && self.current_page != self.bubble_shown_page
-        {
-            self.page_bubble.poke(ui::time::now());
-        }
-        self.bubble_shown_page = self.current_page;
+        // A page or zoom change (not the opening) says itself in the bar.
+        self.follow_page_line();
         self.measure_tabs(tr, theme);
         // A key (a tool's hotkey, B, Ctrl+plus) changes what the window bar
         // shows without a sync.
@@ -269,7 +263,6 @@ impl PdfApp {
         if let Some(grips) = self.selection_grips() {
             grips.draw(scene, base, theme);
         }
-        self.draw_page_bubble(scene, base, tr, theme);
 
         // On a narrow window the panels float above the canvas behind a scrim.
         if self.overlay_mode && (self.show_rail || self.show_sidebar) {
@@ -296,8 +289,6 @@ impl PdfApp {
         // The context menu paints in the top layer (`draw_overlay`). File
         // open/save is the host desktop's portal picker (HIG §5), so there is
         // no in-app dialog to draw here.
-        // A transient toast (save confirmation, copy confirmation) on top.
-        self.draw_toast(scene, base, tr, theme);
 
         self.sidebar_hits = hits;
         self.shown.note(self.canvas_shown(base, theme));
@@ -317,21 +308,10 @@ impl PdfApp {
                 self.viewport.v_scrollbar_thumb(),
                 self.viewport.h_scrollbar_thumb(),
             ],
-            // The pill's soft shadow paints past its rect: every pixel it
-            // touches stays put on screen while the pages scroll under it.
-            bubble: if self.bubble_rect.area() > 0.0 {
-                ui::widget::floating_surface::painted_bounds(self.bubble_rect, theme)
-            } else {
-                Rect::ZERO
-            },
             hud: self.sel_hud.as_ref().map_or(Rect::ZERO, |hud| {
                 ui::widget::floating_surface::painted_bounds(hud.rect(), theme)
             }),
-            floating: self
-                .status_note
-                .as_deref()
-                .is_some_and(|note| !note.is_empty())
-                || self.editing.is_some()
+            floating: self.editing.is_some()
                 || self.context_menu.is_some()
                 || (self.overlay_mode && (self.show_rail || self.show_sidebar)),
         }
@@ -635,7 +615,7 @@ impl PdfApp {
             self.raster_render_batch = batch;
         } else if !batch.is_empty() {
             self.status_note
-                .show("PDF render worker is unavailable".to_string());
+                .show(crate::t("pdf-note-pages-unavailable"));
         }
     }
 
@@ -722,7 +702,7 @@ impl PdfApp {
                 self.raster_tile_batch = batch;
             } else if !batch.is_empty() {
                 self.status_note
-                    .show("PDF render worker is unavailable".to_string());
+                    .show(crate::t("pdf-note-pages-unavailable"));
             }
         }
     }
@@ -786,8 +766,7 @@ impl PdfApp {
                 })
             {
                 self.raster_text_pending.remove(&i);
-                self.status_note
-                    .show("PDF text worker is unavailable".to_string());
+                self.status_note.show(crate::t("pdf-note-text-unavailable"));
             }
         }
     }
@@ -1300,28 +1279,6 @@ impl PdfApp {
 
         self.canvas_hover_zones.push(hud.rect());
         self.sel_hud = Some(hud);
-    }
-
-    /// A transient toast (e.g. "Saved to …" or "Copied 42 characters")
-    /// centred near the bottom of the canvas. Set on an action, gone after a
-    /// notice's lifetime or the next document interaction (Esc, a new
-    /// open/load).
-    fn draw_toast(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let Some(note) = self.status_note.as_deref() else {
-            return;
-        };
-        if note.is_empty() {
-            return;
-        }
-        self.status_note.paint(
-            scene,
-            base,
-            tr,
-            theme,
-            self.canvas_rect,
-            ToastAnchor::BottomCenter,
-            &ToastCard::new(note, ToastKind::Info),
-        );
     }
 
     // ---- thumbnail rail --------------------------------------------
@@ -2594,9 +2551,9 @@ impl PdfApp {
         ctx.scene.pop_layer();
     }
 
-    // ---- floating page bubble ---------------------------------------
+    // ---- the page and the zoom ---------------------------------------
 
-    /// The zoom the page pill shows, in percent. With no document there is
+    /// The zoom the bar says, in percent. With no document there is
     /// nothing being zoomed: it reads 100%, not a value fitted to the window.
     pub(crate) fn shown_zoom_percent(&self) -> f64 {
         if self.has_document {
@@ -2606,129 +2563,41 @@ impl PdfApp {
         }
     }
 
-    /// What the page pill's two segments say: the page, and the zoom.
-    pub(crate) fn page_pill_labels(&self) -> (String, String) {
-        (
-            format!("Page {} of {}", self.current_page, self.doc.page_count()),
-            format!("{:.0}%", self.shown_zoom_percent()),
+    /// What the window's bar says on a page or zoom change: the page, and
+    /// the zoom.
+    pub(crate) fn page_line(&self) -> String {
+        format!(
+            "Page {} of {}, {:.0}%",
+            self.current_page,
+            self.doc.page_count(),
+            self.shown_zoom_percent()
         )
     }
 
-    /// The floating page-info overlay over the bottom-centre of the canvas:
-    /// a pill whose first segment is `‹ Page X of Y ›` and whose second,
-    /// past a rule, is the zoom. It appears on a page change (poked from
-    /// `draw_all`) or while the pointer hovers the bottom-centre band, then
-    /// fades. Its chevrons step pages; its rects are captured for hover and
-    /// click. Each segment is its own text run, so a zoom reshapes only the
-    /// percentage, and the zoom segment is as wide as the widest zoom, so
-    /// the pill keeps its place while zooming.
-    fn draw_page_bubble(
-        &mut self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.bubble_rect = Rect::ZERO;
-        self.bubble_prev = Rect::ZERO;
-        self.bubble_next = Rect::ZERO;
+    /// Say the page and the zoom in the window's bar when either changes
+    /// while a document is open; opening one is not a change.
+    fn follow_page_line(&mut self) {
         if !self.has_document {
+            self.page_said = None;
             return;
         }
-        let now = ui::time::now();
-        let canvas = self.canvas_rect;
-        let (label, zoom_label) = self.page_pill_labels();
-        let control = f64::from(theme.tokens.metrics.min_pointer_target);
-        let (page_w, pill_h) = ui::status_bubble::pill_size(&label, tr, theme, control);
-        let zoom_style = theme.text(TextRole::Label).numeric();
-        let widest = format!("{:.0}%", ZOOM_MAX * 100.0);
-        let pad = f64::from(theme.tokens.spacing.s3);
-        let zoom_w = f64::from(tr.measure_style(&widest, None, &zoom_style).0) + 2.0 * pad;
-        let pill_w = page_w + zoom_w;
-        let cx = canvas.center().x;
-        let by = canvas.y1 - f64::from(theme.tokens.spacing.rhythm.group) - pill_h;
-        let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
-        let page_rect = Rect::new(rect.x0, rect.y0, rect.x0 + page_w, rect.y1);
-        let zoom_rect = Rect::new(page_rect.x1, rect.y0, rect.x1, rect.y1);
-
-        // Reveal zone: a band across the bottom-centre of the canvas (plus the
-        // pill itself), so approaching the bottom edge surfaces the indicator.
-        let reach = f64::from(theme.tokens.spacing.s8);
-        let zone = Rect::new(rect.x0 - reach, rect.y0 - reach, rect.x1 + reach, canvas.y1);
-        self.canvas_hover_zones.push(zone);
-        let over = self.shots_page_bubble || zone.contains(self.last_mouse);
-        self.page_bubble.set_hover(over, now);
-
-        let alpha = self.page_bubble.alpha(now);
-        if alpha <= 0.0 {
-            return;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a zoom percent is a small positive whole number"
+        )]
+        let now = (self.current_page, self.shown_zoom_percent() as u32);
+        if self.page_said.is_some_and(|said| said != now) {
+            // The bar says it; nothing on the pages changes.
+            self.page_notice.show(self.page_line());
+            self.page_notice.publish(|line| {
+                ui::window_toolbar::ToolbarNotice::new(
+                    line.clone(),
+                    ui::widget::toast::ToastKind::Info,
+                )
+            });
         }
-
-        // Capture geometry for hover + click hit-testing (the chevron slots).
-        self.bubble_rect = rect;
-        self.bubble_prev = Rect::new(rect.x0, rect.y0, rect.x0 + control, rect.y1);
-        self.bubble_next = Rect::new(page_rect.x1 - control, rect.y0, page_rect.x1, rect.y1);
-
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            alpha,
-            base,
-            &rect.inflate(reach, reach),
-        );
-        ui::widget::floating_surface::paint(scene, base, rect, theme);
-        let ground = ui::chrome::panel_ground(theme);
-        let ink = theme.on_ground(ground);
-        for (segment, text, style) in [
-            (page_rect, label.as_str(), theme.text(TextRole::Label)),
-            (zoom_rect, zoom_label.as_str(), zoom_style),
-        ] {
-            let (tw, th) = tr.measure_style(text, None, &style);
-            let x = segment.x0 + (segment.width() - f64::from(tw)) / 2.0;
-            let y =
-                ui::text_metrics::centered_text_top(segment.y0, segment.height(), f64::from(th));
-            tr.draw_style(
-                scene,
-                text,
-                ink.text_primary,
-                base.pre_translate(vello::kurbo::Vec2::new(x, y)),
-                None,
-                &style,
-            );
-        }
-        ui::surface::vertical_separator(
-            scene,
-            base,
-            page_rect.x1,
-            rect.y0,
-            rect.y1,
-            f64::from(theme.tokens.spacing.s2),
-            ground,
-        );
-        let icon = f64::from(theme.tokens.metrics.icon_sm);
-        for (slot, glyph, enabled) in [
-            (self.bubble_prev, Icon::ChevronLeft, self.current_page > 1),
-            (
-                self.bubble_next,
-                Icon::ChevronRight,
-                self.current_page < self.doc.page_count(),
-            ),
-        ] {
-            let colour = if enabled && slot.contains(self.last_mouse) {
-                ink.text_primary
-            } else if enabled {
-                ink.text_dim
-            } else {
-                ink.text_tertiary
-            };
-            glyph.draw(
-                scene,
-                base,
-                Rect::from_center_size(slot.center(), (icon, icon)),
-                colour,
-            );
-        }
-        scene.pop_layer();
+        self.page_said = Some(now);
     }
 }
 

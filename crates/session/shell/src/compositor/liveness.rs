@@ -20,7 +20,7 @@
 //!   to stderr.
 //! * `{"op":"threads"}` answers `{"threads":[...]}` whatever the loop is doing.
 //! * `{"op":"forbid_main_thread_files"}` has the main loop arm the audit of
-//!   every path its thread walks from then on ([`main_thread_files`]), and
+//!   every path its thread walks from then on (`main_thread_files`), and
 //!   answers `{"armed":null}` once it has; `{"op":"main_thread_files"}`
 //!   answers `{"main_thread_files":[...]}`, what it walked since.
 //!
@@ -52,7 +52,7 @@
 //! that is running, faulting in a page, or allocating is reported by its state
 //! and wait channel alone, and the heartbeat does not dump at all while the
 //! main thread is still working. A thread that does not answer within
-//! [`DUMP_WAIT`] is reported as such rather than waited for. A main thread
+//! `DUMP_WAIT` is reported as such rather than waited for. A main thread
 //! initially observed running is sampled again within that same deadline:
 //! reporting its later epoll wait without the stack would hide which loop it
 //! entered. Development heartbeat failures also snapshot a fixed-size wake

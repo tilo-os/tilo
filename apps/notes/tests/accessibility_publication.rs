@@ -196,6 +196,10 @@ fn a_pointer_moving_within_a_block_walks_no_widgets() {
         // Over the text: the block is hovered from here on.
         input(app, &mut damage, cursor_moved(text.x, text.y));
         rest(app, &mut damage);
+        // On a slow machine the rest outlasts the drag handles' hold and they
+        // fade; the pointer arriving again brings them back. What is measured
+        // is the pointer moving on within a hovered block, inside that hold.
+        input(app, &mut damage, cursor_moved(text.x, text.y));
 
         let builds = app.semantic_tree_builds_for_test();
         for step in 1..=6_u8 {

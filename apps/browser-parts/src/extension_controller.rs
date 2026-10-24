@@ -3,9 +3,9 @@
 //!
 //! The controller owns no widget state the document needs; it is the
 //! window's local, device-only view of the profile's extensions. Interface
-//! closures queue [`Command`]s, `sync` runs them and starts the slow parts
+//! closures queue `Command`s, `sync` runs them and starts the slow parts
 //! (download, verify, unpack) on worker threads whose results come back
-//! through [`Outcome`]s, so nothing here blocks a frame. The profile itself
+//! through `Outcome`s, so nothing here blocks a frame. The profile itself
 //! (which extensions are installed, approved and pinned, their manifests and
 //! icons) is read and written on one worker of its own, in order, since the
 //! window may be drawn on the compositor's frame loop.
@@ -16,7 +16,10 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
 use ui::icons::Icon;
-use ui::webview::{ExtensionActionIcon, SharedEngine, WebViewCommand, WebViewEvent};
+use ui::webview::{
+    ExtensionActionIcon, ExtensionMenuItem, ExtensionPermissionSet, SharedEngine, WebViewCommand,
+    WebViewEvent,
+};
 use ui::widget::floating_surface::PanelAlign;
 use ui::widget::{
     Actions, Banner, Button, Column, Container, Element, ListRow, MenuButton, MenuItem, Text,
@@ -27,11 +30,17 @@ use ui::window_toolbar::ToolbarAction;
 use ui::tilo_actions::{Resource, ResourcePresentation};
 
 use crate::CATALOG;
+use crate::capabilities::ExtensionQuestion;
 use crate::effects::ExtensionRequest;
 use crate::extension_host::{ExtensionHost, Wanted};
+use crate::extension_omnibox::ExtensionOmnibox;
 use crate::extension_toolbar::{self as toolbar, Installed};
 use crate::extensions::{self, ExtensionInfo, StagedPackage};
 use crate::web_store;
+
+mod omnibox;
+mod side_panel;
+use side_panel::SidePanel;
 
 /// An extension popup's size before its page says how big it is, in
 /// logical pixels: as wide as a panel, and short, because a page reports at
@@ -39,14 +48,23 @@ use crate::web_store;
 const POPUP_SIZE: (f32, f32) = (360.0, 120.0);
 /// The largest popup, as in Chrome.
 const POPUP_MAX: (f32, f32) = (800.0, 600.0);
+/// An extension's side panel beside the page, in logical pixels: about as
+/// wide as Chrome's, which extensions lay their panels out for.
+pub const SIDE_PANEL_WIDTH: f32 = 360.0;
 
 const ADD_BUTTON: &str = "browser.extension.add";
 const MENU_BUTTON: &str = "browser.extensions.menu";
 
-/// The window bar's action ids: the Web Store offer, and the prefix of an
-/// item opening one extension's popup.
+/// The window bar's action ids: the Web Store offer, the prefix of an item
+/// opening one extension's popup, and of an item of one extension's button
+/// menu (followed by the extension's id and the item's key).
 const BAR_ADD: &str = "extension-add";
 const BAR_OPEN: &str = "extension-open:";
+const BAR_MENU: &str = "extension-menu:";
+/// Chrome's extension ids: 32 letters.
+const EXTENSION_ID_LEN: usize = 32;
+/// The prefix of an item showing or hiding one extension's side panel.
+const BAR_SIDE_PANEL: &str = "extension-side-panel:";
 
 /// Something the interface asked for.
 #[derive(Debug, Clone)]
@@ -65,7 +83,35 @@ enum Command {
     OpenAction(String),
     /// Show an extension's settings page.
     OpenSettings(String),
+    /// Words for an extension's keyword in the address, as Enter sends them.
+    Send(String, String),
     ClosePanel,
+    /// Choose an item of an extension's button menu: (extension, key).
+    ChooseMenuItem(String, String),
+    /// Show an extension's side panel beside the page, or close it.
+    OpenSidePanel(String),
+    CloseSidePanel(String),
+}
+
+/// The commands of a button menu, depth first, each with whether it can be
+/// chosen now: the rows of a menu one level deep. A disabled submenu's
+/// commands cannot be.
+fn menu_commands<'a>(
+    items: &'a [ExtensionMenuItem],
+    enabled: bool,
+    out: &mut Vec<(&'a ExtensionMenuItem, bool)>,
+) {
+    for item in items {
+        match item {
+            ExtensionMenuItem::Separator => {}
+            ExtensionMenuItem::Submenu {
+                enabled: open,
+                items,
+                ..
+            } => menu_commands(items, enabled && *open, out),
+            ExtensionMenuItem::Command { enabled: on, .. } => out.push((item, enabled && *on)),
+        }
+    }
 }
 
 /// The extensions whose badges the window shows, so whose state is read:
@@ -93,6 +139,45 @@ enum ExtensionPage {
         id: String,
         url: String,
     },
+    /// A web page it asked the person to sign in on
+    /// (`identity.launchWebAuthFlow`), which the engine watches: the
+    /// sign-in ends, and the page closes, once it goes to the extension's
+    /// own address.
+    SignIn {
+        id: String,
+        url: String,
+        flow: u32,
+    },
+}
+
+/// The most sign-ins loaded out of sight at once: an extension checking
+/// whether the person is still signed in, which takes a moment.
+const QUIET_SIGN_INS: usize = 4;
+
+/// The extension a panel's page belongs to, by the key it is shown under:
+/// its popup's is its id, its settings' and a sign-in's carry a prefix.
+fn panel_owner(key: &str) -> &str {
+    key.strip_prefix("settings:")
+        .or_else(|| key.strip_prefix("sign-in:"))
+        .unwrap_or(key)
+}
+
+/// The site a sign-in page is on, as the panel names it above the page:
+/// the person types a password there, so they see whose page it is.
+fn sign_in_site(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+}
+
+/// What an extension's page in the panel opens (its dashboard, a help page)
+/// opens beside the window, as Chrome opens it in a tab.
+fn open_beside(page: &SharedEngine) {
+    for (url, background) in page.take_new_tab_requests() {
+        if url.starts_with("https://") || url.starts_with("http://") {
+            ui::shell_tabs::open_beside(Some(url), background);
+        }
+    }
 }
 
 /// An icon an extension gave its button through `chrome.action.setIcon`.
@@ -215,6 +300,12 @@ enum Panel {
         engine: SharedEngine,
         /// The size its page asked for, once it said.
         size: Option<(f32, f32)>,
+        /// For a sign-in page, the site it is on now.
+        site: Option<String>,
+        /// Under a sign-in page, the extension's own page that asked for it
+        /// (its settings, its popup): it goes on out of sight to hear how
+        /// the sign-in ended, and shows again once the sign-in page closes.
+        beneath: Option<Box<Panel>>,
     },
 }
 
@@ -238,6 +329,7 @@ pub struct ExtensionController {
     store_item: Option<web_store::Item>,
     busy: bool,
     panel: Option<Panel>,
+    side_panel: Option<SidePanel>,
     file_path: ui::LocalState<String>,
     chromium_version: String,
     /// Extensions to turn on (`true`) or off through the manager extension.
@@ -254,6 +346,17 @@ pub struct ExtensionController {
     updated_at: Option<ui::time::Instant>,
     /// Extensions an update left off until the person allows more access.
     awaiting: Vec<String>,
+    /// What each extension's button menu holds, as the engine told it: the
+    /// `chrome.contextMenus` items the extension made for its button.
+    menus: HashMap<String, Vec<ExtensionMenuItem>>,
+    /// Extensions' requests for more access, for the window to ask the
+    /// person ([`Self::take_questions`]).
+    questions: Vec<ExtensionQuestion>,
+    /// Pages extensions sign in on out of sight, until the engine closes
+    /// each as its sign-in ends.
+    quiet_sign_ins: Vec<SharedEngine>,
+    /// The extension typed to after its keyword in the address, if any.
+    omnibox: ExtensionOmnibox,
 }
 
 /// The switches `installed` asks for that this session has not made yet,
@@ -289,6 +392,10 @@ fn manager_url(manager: &str, switches: &[(String, bool)]) -> String {
     )
 }
 
+/// The longest words an extension's keyword takes, as the engine carries
+/// them.
+const MAX_KEYWORD_TEXT_BYTES: usize = 2048;
+
 /// How long a manager page may take before it is let go.
 const SWITCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -309,6 +416,7 @@ impl ExtensionController {
             store_item: None,
             busy: false,
             panel: None,
+            side_panel: None,
             file_path: ui::LocalState::new(String::new()),
             chromium_version: web_store::FALLBACK_CHROMIUM_VERSION.to_owned(),
             switches: Vec::new(),
@@ -318,7 +426,76 @@ impl ExtensionController {
             switching: Vec::new(),
             updated_at: None,
             awaiting: Vec::new(),
+            menus: HashMap::new(),
+            questions: Vec::new(),
+            quiet_sign_ins: Vec::new(),
+            omnibox: ExtensionOmnibox::default(),
         }
+    }
+
+    /// The requests for more access extensions made since asked, which the
+    /// window asks the person in its shared prompt.
+    pub fn take_questions(&mut self) -> Vec<ExtensionQuestion> {
+        std::mem::take(&mut self.questions)
+    }
+
+    /// An extension asks for more access (`chrome.permissions.request`):
+    /// the person is asked what it could then do, as when it was added.
+    /// Access Chrome asks nobody about (`storage`) is granted at once, as
+    /// there; one asked of an extension that is off, refused.
+    fn permission_request(
+        &mut self,
+        request: u32,
+        id: &str,
+        asked: &ExtensionPermissionSet,
+        engine: &SharedEngine,
+    ) {
+        let Some(extension) = self
+            .installed
+            .iter()
+            .find(|extension| extension.id == id && extension.enabled)
+        else {
+            engine.send(WebViewCommand::ExtensionPermissionDecision {
+                request,
+                allow: false,
+            });
+            return;
+        };
+        let lines = extensions::asked_summary(asked);
+        if lines.is_empty() {
+            engine.send(WebViewCommand::ExtensionPermissionDecision {
+                request,
+                allow: true,
+            });
+            return;
+        }
+        self.questions.push(ExtensionQuestion {
+            request,
+            name: extension.name.clone(),
+            lines,
+        });
+    }
+
+    /// What an extension holds of what it may ask for changed: kept with
+    /// the extension, so it holds it in the next run too. The engine holds
+    /// it already and is not told it again.
+    fn keep_granted(&mut self, id: &str, granted: ExtensionPermissionSet) {
+        if let Some(told) = self.access_told.get_mut(id) {
+            told.granted.clone_from(&granted);
+        }
+        if let Some(extension) = self
+            .installed
+            .iter_mut()
+            .find(|extension| extension.id == id)
+        {
+            extension.access.granted.clone_from(&granted);
+        }
+        let Some(info) = self.info_of(id).cloned() else {
+            return;
+        };
+        self.change_profile(move || {
+            extensions::set_granted(&info, &granted).map_err(|error| error.to_string())
+        });
     }
 
     fn queue(&self, command: Command) -> impl FnMut() + 'static {
@@ -344,8 +521,10 @@ impl ExtensionController {
     }
 
     /// What the engine says of extensions' toolbar buttons on this window's
-    /// page: one changed, the page's own values went with its document, or
-    /// one asks to open its popup. Returns whether the interface changed.
+    /// page: one changed, the page's own values went with its document, one
+    /// asks to open its popup, or the person pressed its keyboard shortcut;
+    /// or of an extension's notification, which the system shows.
+    /// Returns whether the interface changed.
     pub fn on_engine_event(&mut self, event: WebViewEvent, engine: &SharedEngine) -> bool {
         if !self.active {
             return false;
@@ -358,6 +537,16 @@ impl ExtensionController {
                     changed = true;
                 }
                 changed
+            }
+            WebViewEvent::ExtensionMenu { id, items } => {
+                if items.is_empty() {
+                    self.menus.remove(&id).is_some()
+                } else if self.menus.get(&id) == Some(&items) {
+                    false
+                } else {
+                    self.menus.insert(id, items);
+                    true
+                }
             }
             WebViewEvent::ExtensionActionReset => {
                 let before = self.action_icons.len();
@@ -383,6 +572,79 @@ impl ExtensionController {
                     engine,
                 );
                 true
+            }
+            // Its button's keyboard shortcut: as a click on the button.
+            WebViewEvent::ExtensionExecuteAction { id } => {
+                self.open_action(&id, engine);
+                true
+            }
+            // Shown by the system, named for the extension; one taken away
+            // goes also for an extension no longer installed.
+            WebViewEvent::ExtensionNotification {
+                id,
+                notification,
+                notice,
+            } => {
+                let name = self
+                    .installed
+                    .iter()
+                    .find(|extension| extension.id == id && extension.enabled)
+                    .map(|extension| extension.name.clone());
+                if notice.is_some() && name.is_none() {
+                    return false;
+                }
+                crate::extension_notices::announce(
+                    &*ui::host::current().notifications,
+                    engine,
+                    name.as_deref().unwrap_or_default(),
+                    &id,
+                    (&notification, notice.as_ref()),
+                );
+                false
+            }
+            WebViewEvent::ExtensionPermissionRequest { request, id, asked } => {
+                self.permission_request(request, &id, &asked, engine);
+                !self.questions.is_empty()
+            }
+            WebViewEvent::ExtensionPermissions { id, granted } => {
+                self.keep_granted(&id, granted);
+                false
+            }
+            // It asks the person to sign in: the page shows where its popup
+            // would, in place of whatever the panel showed. One that may
+            // not ask them loads out of sight, as in Chrome.
+            WebViewEvent::ExtensionSignIn {
+                id,
+                url,
+                interactive,
+                flow,
+            } => {
+                let running = self
+                    .installed
+                    .iter()
+                    .any(|extension| extension.id == id && extension.enabled);
+                if !running {
+                    return false;
+                }
+                if interactive {
+                    self.open_page(ExtensionPage::SignIn { id, url, flow }, engine);
+                    return true;
+                }
+                if let Ok(page) = engine.create_tab() {
+                    page.send(WebViewCommand::ExtensionSignInPanel { id, flow });
+                    page.send(WebViewCommand::Navigate(url));
+                    // The oldest goes for a new one: its sign-in ends.
+                    if self.quiet_sign_ins.len() >= QUIET_SIGN_INS {
+                        self.quiet_sign_ins.remove(0);
+                    }
+                    self.quiet_sign_ins.push(page);
+                }
+                false
+            }
+            event @ (WebViewEvent::ExtensionOmniboxSuggestions { .. }
+            | WebViewEvent::ExtensionOmniboxDefault { .. }) => self.omnibox.on_engine_event(&event),
+            WebViewEvent::ExtensionSidePanel { id, change } => {
+                self.side_panel_changed(id, change, engine)
             }
             _ => false,
         }
@@ -557,19 +819,45 @@ impl ExtensionController {
         self.host.flush(engine);
         self.tell_access(engine);
         changed |= self.switch(engine, now);
+        let mut permissions = Vec::new();
+        // Their events are not the window's; what they open goes nowhere.
+        self.quiet_sign_ins.retain(|page| {
+            let closed = page
+                .drain_events()
+                .into_iter()
+                .any(|event| matches!(event, WebViewEvent::TabClosed));
+            let _ = page.take_new_tab_requests();
+            !closed
+        });
         if let Some(Panel::Popup {
             engine: popup,
             size,
+            site: shown_site,
+            beneath,
             ..
         }) = &mut self.panel
         {
             // The popup is a tab of its own: its page events are not the
-            // window's, but they must not pile up.
+            // window's, but they must not pile up. What it asks for is the
+            // window's to ask.
             let mut closed = false;
             for event in popup.drain_events() {
                 match event {
-                    // Its page closed it (a password filled, a choice made).
+                    event @ (ui::webview::WebViewEvent::ExtensionPermissionRequest { .. }
+                    | ui::webview::WebViewEvent::ExtensionPermissions { .. }) => {
+                        permissions.push(event);
+                    }
+                    // Its page closed it (a password filled, a choice made),
+                    // or a sign-in reached its end.
                     ui::webview::WebViewEvent::TabClosed => closed = true,
+                    // A sign-in page names the site it moved on to.
+                    ui::webview::WebViewEvent::UriChanged(url) if shown_site.is_some() => {
+                        let now = sign_in_site(&url);
+                        if now.is_some() && now != *shown_site {
+                            *shown_site = now;
+                            changed = true;
+                        }
+                    }
                     // As big as its page, as Chrome sizes a popup.
                     ui::webview::WebViewEvent::DocumentSize { width, height, .. } => {
                         let page = (
@@ -584,18 +872,34 @@ impl ExtensionController {
                     _ => {}
                 }
             }
-            // What it opens (its dashboard, a help page) opens beside the
-            // window, as Chrome opens it in a tab.
-            for (url, background) in popup.take_new_tab_requests() {
-                if url.starts_with("https://") || url.starts_with("http://") {
-                    ui::shell_tabs::open_beside(Some(url), background);
+            open_beside(popup);
+            // The page under a sign-in asks the window for what it needs,
+            // and is gone once it closes itself.
+            if let Some(Panel::Popup { engine: under, .. }) = beneath.as_deref() {
+                let mut gone = false;
+                for event in under.drain_events() {
+                    match event {
+                        event @ (WebViewEvent::ExtensionPermissionRequest { .. }
+                        | WebViewEvent::ExtensionPermissions { .. }) => permissions.push(event),
+                        WebViewEvent::TabClosed => gone = true,
+                        _ => {}
+                    }
+                }
+                open_beside(under);
+                if gone {
+                    *beneath = None;
                 }
             }
             if closed {
-                self.panel = None;
+                let under = beneath.take();
+                self.panel = under.map(|page| *page);
                 changed = true;
             }
         }
+        for event in permissions {
+            changed |= self.on_engine_event(event, engine);
+        }
+        changed |= self.sync_side_panel();
         changed
     }
 
@@ -659,7 +963,7 @@ impl ExtensionController {
         // A page of an extension turned off or removed closes with it, and
         // an update waits for the person only while its extension is off.
         if let Some(Panel::Popup { id, .. }) = &self.panel {
-            let owner = id.strip_prefix("settings:").unwrap_or(id);
+            let owner = panel_owner(id);
             if !profile
                 .installed
                 .iter()
@@ -668,6 +972,7 @@ impl ExtensionController {
                 self.panel = None;
             }
         }
+        self.keep_side_panel(&profile.installed);
         self.awaiting.retain(|name| {
             profile
                 .installed
@@ -766,26 +1071,65 @@ impl ExtensionController {
     /// installed extension may do with the Browser's tabs, as it changes.
     fn tell_access(&mut self, engine: &SharedEngine) {
         if self.identity_told.is_none()
-            && let Some(id) = extensions::manager_dir()
-                .as_deref()
-                .and_then(extensions::manager_id)
+            && let Some(dir) = extensions::manager_dir()
+            && let Some(id) = extensions::manager_id(&dir)
         {
             engine.send(WebViewCommand::ExtensionIdentity { id: id.clone() });
+            // Its worker tells the engine what extensions' rules acted on in
+            // the tabs, which it counts for each page.
+            if let Some(token) = extensions::manager_token(&dir) {
+                engine.send(WebViewCommand::ExtensionAccess {
+                    id: id.clone(),
+                    permissions: Vec::new(),
+                    hosts: Vec::new(),
+                    scriptable: Vec::new(),
+                    token: Some(token),
+                    commands: None,
+                });
+            }
             self.identity_told = Some(id);
         }
+        // A turned-off extension does not run, so its keyboard shortcuts are
+        // no one's: the page keeps those keys, and another extension may
+        // have them. Turned on again, it gets them back in its place.
+        let effective = |extension: &Installed| {
+            let mut access = extension.access.clone();
+            if !extension.enabled {
+                access.commands = None;
+            }
+            access
+        };
         let current: HashMap<String, toolbar::Access> = self
             .installed
             .iter()
-            .map(|extension| (extension.id.clone(), extension.access.clone()))
+            .map(|extension| (extension.id.clone(), effective(extension)))
             .collect();
-        for (id, access) in &current {
-            if self.access_told.get(id) != Some(access) {
+        // In the order they were installed: of two extensions suggesting
+        // one keyboard shortcut, the engine gives it to the one told first.
+        for extension in &self.installed {
+            let (id, access) = (&extension.id, &effective(extension));
+            let told = self.access_told.get(id);
+            if told != Some(access) {
                 engine.send(WebViewCommand::ExtensionAccess {
                     id: id.clone(),
                     permissions: access.permissions.clone(),
                     hosts: access.hosts.clone(),
+                    scriptable: access.scriptable.clone(),
                     token: access.token.clone(),
+                    commands: access.commands.clone(),
                 });
+                // What it may ask for later, and was granted: told when it
+                // has any, or had before.
+                let asks = |access: &toolbar::Access| {
+                    !access.optional.is_empty() || !access.granted.is_empty()
+                };
+                if asks(access) || told.is_some_and(asks) {
+                    engine.send(WebViewCommand::ExtensionGrants {
+                        id: id.clone(),
+                        optional: access.optional.clone(),
+                        granted: access.granted.clone(),
+                    });
+                }
             }
         }
         for id in self.access_told.keys() {
@@ -908,6 +1252,17 @@ impl ExtensionController {
             }
             Command::OpenAction(id) => self.open_action(&id, engine),
             Command::OpenSettings(id) => self.open_settings(&id, engine),
+            Command::ChooseMenuItem(id, key) => {
+                if self.menus.contains_key(&id) {
+                    engine.send(WebViewCommand::ExtensionMenuChoice { id, key });
+                }
+            }
+            Command::Send(id, text) => engine.send(WebViewCommand::ExtensionOmnibox {
+                id,
+                input: ui::webview::OmniboxInput::Entered { text },
+            }),
+            Command::OpenSidePanel(id) => self.open_side_panel(id, engine),
+            Command::CloseSidePanel(id) => self.close_side_panel(&id),
             // Busy: ignore a second fetch until the first settles.
             Command::Fetch(_) | Command::StageFile(_) => {}
         }
@@ -976,31 +1331,93 @@ impl ExtensionController {
         );
     }
 
-    /// Open one of an extension's own pages in the panel, in a tab of its own.
+    /// Open one of an extension's own pages, or a page it asks the person to
+    /// sign in on, in the panel, in a tab of its own.
     fn open_page(&mut self, kind: ExtensionPage, engine: &SharedEngine) {
-        let (key, url, action, size) = match kind {
-            ExtensionPage::Popup { id, url, clicked } => {
-                (id.clone(), url, clicked.then_some(id), None)
-            }
-            ExtensionPage::Settings { id, url } => {
-                (format!("settings:{id}"), url, None, Some(POPUP_MAX))
+        // Its "current tab" is the page it opened over, which the extension
+        // may script when its button opened it. A sign-in page keeps the
+        // size it is given: it is a site's, sized for a window.
+        let (key, url, mark, size, heading) = match kind {
+            ExtensionPage::Popup { id, url, clicked } => (
+                id.clone(),
+                url,
+                WebViewCommand::ExtensionPanel {
+                    action: clicked.then_some(id),
+                },
+                None,
+                None,
+            ),
+            ExtensionPage::Settings { id, url } => (
+                format!("settings:{id}"),
+                url,
+                WebViewCommand::ExtensionPanel { action: None },
+                Some(POPUP_MAX),
+                None,
+            ),
+            ExtensionPage::SignIn { id, url, flow } => {
+                let heading = Some(sign_in_site(&url).unwrap_or_default());
+                (
+                    format!("sign-in:{id}"),
+                    url,
+                    WebViewCommand::ExtensionSignInPanel { id, flow },
+                    Some(POPUP_MAX),
+                    heading,
+                )
             }
         };
         match engine.create_tab() {
             Ok(page) => {
-                // Its "current tab" is the page it opened over, which the
-                // extension may script when its button opened it.
-                page.send(WebViewCommand::ExtensionPanel { action });
-                page.send(WebViewCommand::ReportDocumentSize(true));
+                let sign_in = heading.is_some();
+                let beneath = if sign_in {
+                    self.asked_from(panel_owner(&key))
+                } else {
+                    None
+                };
+                page.send(mark);
+                if !sign_in {
+                    page.send(WebViewCommand::ReportDocumentSize(true));
+                }
                 page.send(WebViewCommand::Navigate(url));
                 self.panel = Some(Panel::Popup {
                     id: key,
                     engine: page,
                     size,
+                    site: heading,
+                    beneath,
                 });
             }
             Err(error) => self.panel = Some(Panel::Message(error)),
         }
+    }
+
+    /// The page in the panel that extension `asker`'s sign-in shows over,
+    /// to keep beneath it: the extension's own page, which asked for it
+    /// and waits to hear how it ends, or the page under its earlier
+    /// sign-in. Another extension's page closes, as Chrome's popup closes.
+    fn asked_from(&mut self, asker: &str) -> Option<Box<Panel>> {
+        let Some(Panel::Popup {
+            id,
+            engine,
+            size,
+            site,
+            beneath,
+        }) = self.panel.take()
+        else {
+            return None;
+        };
+        if panel_owner(&id) != asker {
+            return None;
+        }
+        if site.is_some() {
+            return beneath;
+        }
+        Some(Box::new(Panel::Popup {
+            id,
+            engine,
+            size,
+            site,
+            beneath,
+        }))
     }
 
     /// The width an open extension page asks for, within `room`; `None`
@@ -1059,6 +1476,7 @@ impl ExtensionController {
             }
             buttons.push(Box::new(button));
         }
+        buttons.extend(self.side_panel_button());
         if !model.menu.is_empty() {
             buttons.push(Box::new(self.extensions_menu(&model)));
         }
@@ -1088,24 +1506,59 @@ impl ExtensionController {
     }
 
     /// The bar's Extensions items: one per enabled extension with an action,
-    /// which opens its popup, as the Extensions menu's rows do.
+    /// which opens its popup, as the Extensions menu's rows do, each followed
+    /// by what its button menu offers, as far as the bar's menu has room
+    /// beside its last item. The bar's menu is one level deep: a submenu's
+    /// items stand in its place.
     pub fn bar_items(&self) -> Vec<ToolbarAction> {
         if !self.active {
             return Vec::new();
         }
-        self.model()
-            .menu
-            .into_iter()
-            .map(|entry| {
-                let name = if entry.button.badge.is_empty() {
-                    entry.button.label
-                } else {
-                    format!("{} ({})", entry.button.label, entry.button.badge)
+        let entries = self.model().menu;
+        let side_panels = self.side_panel_entries();
+        let mut room = ui::window_toolbar::MAX_ITEMS
+            .saturating_sub(1)
+            .saturating_sub(entries.len())
+            .saturating_sub(side_panels.len());
+        let mut items = Vec::new();
+        for entry in entries {
+            let name = if entry.button.badge.is_empty() {
+                entry.button.label
+            } else {
+                format!("{} ({})", entry.button.label, entry.button.badge)
+            };
+            let id = entry.button.id;
+            items.push(
+                ToolbarAction::new(format!("{BAR_OPEN}{id}"), "box", name)
+                    .enabled(entry.button.enabled),
+            );
+            let mut commands = Vec::new();
+            menu_commands(
+                self.menus.get(&id).map_or(&[][..], Vec::as_slice),
+                true,
+                &mut commands,
+            );
+            for (command, enabled) in commands.into_iter().take(room) {
+                let ExtensionMenuItem::Command {
+                    key,
+                    label,
+                    checked,
+                    ..
+                } = command
+                else {
+                    continue;
                 };
-                ToolbarAction::new(format!("{BAR_OPEN}{}", entry.button.id), "box", name)
-                    .enabled(entry.button.enabled)
-            })
-            .collect()
+                room -= 1;
+                let item = ToolbarAction::new(format!("{BAR_MENU}{id}{key}"), "", label.clone())
+                    .enabled(enabled);
+                items.push(match checked {
+                    Some(on) => item.on(*on),
+                    None => item,
+                });
+            }
+        }
+        items.extend(side_panel::bar_items(side_panels));
+        items
     }
 
     /// Run a bar action from [`Self::bar_offer`] or [`Self::bar_items`] on
@@ -1118,6 +1571,13 @@ impl ExtensionController {
             }
         } else if let Some(extension) = id.strip_prefix(BAR_OPEN) {
             Command::OpenAction(extension.to_owned())
+        } else if let Some((extension, key)) = id
+            .strip_prefix(BAR_MENU)
+            .and_then(|rest| rest.split_at_checked(EXTENSION_ID_LEN))
+        {
+            Command::ChooseMenuItem(extension.to_owned(), key.to_owned())
+        } else if let Some(command) = self.side_panel_bar_command(id) {
+            command
         } else {
             return false;
         };
@@ -1148,11 +1608,52 @@ impl ExtensionController {
                 )
                 .with_checked(entry.pinned),
             );
+            // What the extension made for its button's menu.
+            if let Some(menu) = self.menus.get(&entry.button.id) {
+                items.push(MenuItem::submenu(
+                    format!("More from {}", entry.button.label),
+                    self.menu_rows(&entry.button.id, menu),
+                ));
+            }
         }
+        items.extend(self.side_panel_menu_items());
         Button::icon_only(MENU_BUTTON, Icon::Box, "Extensions")
             .tooltip("Extensions")
             .with_menu(items)
             .aligned(PanelAlign::Trailing)
+    }
+
+    /// An extension's button menu as rows: check marks on its checkbox and
+    /// radio items, its submenus nested, its disabled items greyed.
+    fn menu_rows(&self, extension: &str, items: &[ExtensionMenuItem]) -> Vec<MenuItem> {
+        items
+            .iter()
+            .map(|item| match item {
+                ExtensionMenuItem::Separator => MenuItem::separator(),
+                ExtensionMenuItem::Submenu {
+                    label,
+                    enabled,
+                    items,
+                } => MenuItem::submenu(label, self.menu_rows(extension, items))
+                    .with_enabled(*enabled),
+                ExtensionMenuItem::Command {
+                    key,
+                    label,
+                    checked,
+                    enabled,
+                } => {
+                    let choose = std::cell::RefCell::new(
+                        self.queue(Command::ChooseMenuItem(extension.to_owned(), key.clone())),
+                    );
+                    let row = MenuItem::action(label, move || (choose.borrow_mut())())
+                        .with_enabled(*enabled);
+                    match checked {
+                        Some(checked) => row.with_checked(*checked),
+                        None => row,
+                    }
+                }
+            })
+            .collect()
     }
 
     /// The anchored panel: what to show, and the controls to open beside,
@@ -1214,18 +1715,44 @@ impl ExtensionController {
                 ),
                 vec![ADD_BUTTON.to_owned(), MENU_BUTTON.to_owned()],
             ),
-            Panel::Popup { id, engine, size } => {
+            Panel::Popup {
+                id,
+                engine,
+                size,
+                site: heading,
+                ..
+            } => {
                 let view = ui::widget::WebView::new(engine.clone())
                     .with_test_id("browser.extension.popup");
                 let page = size.unwrap_or(POPUP_SIZE);
                 let size = (page.0.min(width), page.1.min(max_height));
+                // A sign-in page under the name of the site it is on.
+                let content: Element = match heading {
+                    Some(name) => Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_rhythm(ui::tokens::Rhythm::Sibling)
+                            .push(Box::new(
+                                Text::new(name)
+                                    .with_role(ui::tokens::TextRole::Caption)
+                                    .dimmed(),
+                            ))
+                            .push(Box::new(
+                                Container::new()
+                                    .with_no_padding()
+                                    .with_flex_grow()
+                                    .with_child(Box::new(view)),
+                            )),
+                    ),
+                    None => Box::new(view),
+                };
                 (
                     Box::new(
                         Container::new()
                             .with_no_padding()
                             .with_width(size.0)
                             .with_height(size.1)
-                            .with_child(Box::new(view)),
+                            .with_child(content),
                     ),
                     vec![
                         format!("browser.extension.action.{id}"),
@@ -1352,6 +1879,18 @@ impl ExtensionController {
                     resource =
                         resource.with_action(E::OpenExtensionSettings { id: id.clone() }.bound());
                 }
+                if extension.enabled && extension.keyword.is_some() {
+                    resource = resource.with_action(
+                        E::SendToExtension {
+                            id: id.clone(),
+                            text: String::new(),
+                        }
+                        .bound_asking(&["text"]),
+                    );
+                }
+                if let Some(action) = self.side_panel_action(extension) {
+                    resource = resource.with_action(action);
+                }
                 if extension.enabled && extension.action.is_some() {
                     resource = resource.with_action(if extension.pinned {
                         E::UnpinExtension { id: id.clone() }.bound()
@@ -1380,6 +1919,9 @@ impl ExtensionController {
             | ExtensionRequest::Pin(id, _)
             | ExtensionRequest::OpenSettings(id)
             | ExtensionRequest::Use(id)
+            | ExtensionRequest::Send(id, _)
+            | ExtensionRequest::OpenSidePanel(id)
+            | ExtensionRequest::CloseSidePanel(id)
             | ExtensionRequest::Remove(id) => id.clone(),
         };
         let (info, extension) = self
@@ -1407,6 +1949,18 @@ impl ExtensionController {
             }
             ExtensionRequest::OpenSettings(_) => Command::OpenSettings(id),
             ExtensionRequest::Use(_) => Command::OpenAction(id),
+            ExtensionRequest::Send(..) if !extension.enabled || extension.keyword.is_none() => {
+                return Err("This extension is off or has no keyword".into());
+            }
+            ExtensionRequest::Send(_, text) if text.len() > MAX_KEYWORD_TEXT_BYTES => {
+                return Err(format!(
+                    "The words must be at most {MAX_KEYWORD_TEXT_BYTES} bytes"
+                ));
+            }
+            ExtensionRequest::Send(_, text) => Command::Send(id, text.clone()),
+            ExtensionRequest::OpenSidePanel(_) | ExtensionRequest::CloseSidePanel(_) => {
+                side_panel::command(request, extension)?
+            }
             ExtensionRequest::Remove(_) => Command::Remove(id),
         };
         (self.queue(command))();
@@ -1548,6 +2102,11 @@ fn read_package_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    mod access;
+    mod omnibox;
+    mod side_panel;
+    mod sign_in;
+
     const STORE_ITEM: &str = "https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh";
 
     fn queued(controller: &ExtensionController) -> Vec<String> {
@@ -1598,6 +2157,8 @@ mod tests {
             id: "abc".into(),
             engine: page.clone(),
             size: None,
+            site: None,
+            beneath: None,
         });
         let shown = |controller: &ExtensionController| match &controller.panel {
             Some(Panel::Popup { size, .. }) => *size,
@@ -1640,7 +2201,103 @@ mod tests {
             }),
             options: None,
             access,
+            keyword: None,
         }
+    }
+
+    #[test]
+    fn an_extensions_button_menu_shows_its_items_and_a_choice_reaches_it() {
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        let id = "a".repeat(32);
+        controller.installed = vec![installed(&id, None, toolbar::Access::default())];
+        let command =
+            |key: &str, label: &str, checked: Option<bool>, enabled| ExtensionMenuItem::Command {
+                key: key.into(),
+                label: label.into(),
+                checked,
+                enabled,
+            };
+        let items = vec![
+            command("\"dark\"", "Dark pages", Some(true), true),
+            ExtensionMenuItem::Separator,
+            ExtensionMenuItem::Submenu {
+                label: "Lists".into(),
+                enabled: true,
+                items: vec![
+                    command("1", "Easy", Some(false), true),
+                    command("2", "Strict", Some(true), false),
+                ],
+            },
+        ];
+        let told = WebViewEvent::ExtensionMenu {
+            id: id.clone(),
+            items,
+        };
+        assert!(controller.on_engine_event(told.clone(), &shared));
+        assert!(!controller.on_engine_event(told, &shared), "nothing new");
+
+        // The Extensions menu: its own rows, then the extension's.
+        let mut menu = controller.extensions_menu(&controller.model());
+        let rows = menu.menu_mut().items().to_vec();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert_eq!(rows[2].label(), Some(format!("More from {id}").as_str()));
+        let nested = rows[2].submenu_items().expect("its items open beside it");
+        assert_eq!(
+            nested[0].checked(),
+            Some(true),
+            "a check mark on a checked item"
+        );
+        assert!(matches!(nested[1], MenuItem::Separator));
+        let lists = nested[2].submenu_items().expect("a submenu of its own");
+        assert_eq!(lists[0].checked(), Some(false));
+        assert!(!lists[1].is_enabled(), "a disabled item is greyed");
+        let MenuItem::Action { action, .. } = &lists[0] else {
+            panic!("a command row");
+        };
+        action();
+        assert_eq!(
+            queued(&controller).last().map(String::as_str),
+            Some(format!(r#"ChooseMenuItem("{id}", "1")"#).as_str())
+        );
+        let commands = std::mem::take(&mut *controller.commands.lock().unwrap());
+        for command in commands {
+            controller.run(command, &shared);
+        }
+        assert!(
+            window
+                .commands()
+                .contains(&WebViewCommand::ExtensionMenuChoice {
+                    id: id.clone(),
+                    key: "1".into()
+                })
+        );
+
+        // The window bar's menu is one level deep: the submenu's items stand
+        // in its place, after the extension's own item.
+        let bar = controller.bar_items();
+        let names: Vec<_> = bar.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(names, [id.as_str(), "Dark pages", "Easy", "Strict"]);
+        assert!(bar[1].on && bar[1].toggles);
+        assert!(!bar[3].enabled);
+        assert!(controller.bar_action(&bar[2].id));
+        assert_eq!(
+            queued(&controller).last().map(String::as_str),
+            Some(format!(r#"ChooseMenuItem("{id}", "1")"#).as_str())
+        );
+
+        // Taken away: the menu row goes.
+        assert!(controller.on_engine_event(
+            WebViewEvent::ExtensionMenu {
+                id,
+                items: Vec::new()
+            },
+            &shared
+        ));
+        let mut menu = controller.extensions_menu(&controller.model());
+        assert_eq!(menu.menu_mut().items().len(), 2);
+        assert_eq!(controller.bar_items().len(), 1);
     }
 
     #[test]
@@ -1658,6 +2315,53 @@ mod tests {
             id: "clicker".into()
         }));
         assert!(window.created_tabs().is_empty());
+    }
+
+    #[test]
+    fn a_buttons_keyboard_shortcut_acts_as_a_click_on_it() {
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        let (clicker, opener) = ("c".repeat(32), "d".repeat(32));
+        controller.installed = vec![
+            installed(&clicker, None, toolbar::Access::default()),
+            installed(&opener, Some("popup.html"), toolbar::Access::default()),
+        ];
+        let pressed = |id: &str| WebViewEvent::ExtensionExecuteAction { id: id.into() };
+
+        // Without a popup, the extension hears of a click.
+        assert!(controller.on_engine_event(pressed(&clicker), &shared));
+        assert!(window.commands().contains(&WebViewCommand::ExtensionClick {
+            id: clicker.clone()
+        }));
+
+        // With one, its popup opens over the page, which it may script, as
+        // after a click; pressed again, it closes.
+        assert!(controller.on_engine_event(pressed(&opener), &shared));
+        let created = window.created_tabs();
+        assert_eq!(created.len(), 1);
+        let commands = created[0].commands();
+        assert!(commands.contains(&WebViewCommand::ExtensionPanel {
+            action: Some(opener.clone())
+        }));
+        assert!(commands.contains(&WebViewCommand::Navigate(format!(
+            "chrome-extension://{opener}/popup.html"
+        ))));
+        controller.on_engine_event(pressed(&opener), &shared);
+        assert!(controller.panel.is_none());
+
+        // One turned off has no button to act as.
+        controller.installed[0].enabled = false;
+        let clicks = || {
+            window
+                .commands()
+                .iter()
+                .filter(|command| matches!(command, WebViewCommand::ExtensionClick { .. }))
+                .count()
+        };
+        let before = clicks();
+        controller.on_engine_event(pressed(&clicker), &shared);
+        assert_eq!(clicks(), before);
     }
 
     #[test]
@@ -1854,52 +2558,6 @@ mod tests {
                 action: Some("asker".into())
             },
             "opened by its button, it may script the page"
-        );
-    }
-
-    #[test]
-    fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
-        let window = ui::webview::test_engine::TestEngine::new();
-        let shared: SharedEngine = window.clone();
-        let mut controller = ExtensionController::new(true);
-        let tabs = toolbar::Access {
-            permissions: vec!["tabs".into()],
-            hosts: vec!["https://*/*".into()],
-            token: Some("a".repeat(48)),
-        };
-        controller.installed = vec![installed("reader", None, tabs)];
-        controller.tell_access(&shared);
-        let told = |window: &ui::webview::test_engine::TestEngine| {
-            window
-                .commands()
-                .into_iter()
-                .filter(|command| {
-                    matches!(
-                        command,
-                        WebViewCommand::ExtensionAccess { .. }
-                            | WebViewCommand::ExtensionForget { .. }
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            told(&window),
-            [WebViewCommand::ExtensionAccess {
-                id: "reader".into(),
-                permissions: vec!["tabs".into()],
-                hosts: vec!["https://*/*".into()],
-                token: Some("a".repeat(48)),
-            }]
-        );
-        controller.tell_access(&shared);
-        assert_eq!(told(&window).len(), 1, "told once while it stays the same");
-        controller.installed.clear();
-        controller.tell_access(&shared);
-        assert_eq!(
-            told(&window).last(),
-            Some(&WebViewCommand::ExtensionForget {
-                id: "reader".into()
-            })
         );
     }
 
@@ -2103,6 +2761,8 @@ mod tests {
             id: "settings:abc".into(),
             engine: ui::webview::test_engine::TestEngine::new(),
             size: None,
+            site: None,
+            beneath: None,
         });
         controller.awaiting = vec!["abc".into()];
         let profile = |installed: Vec<Installed>| Profile {
@@ -2200,6 +2860,7 @@ mod tests {
             action: action.then(crate::extension_toolbar::ActionManifest::default),
             options: None,
             access: crate::extension_toolbar::Access::default(),
+            keyword: None,
         };
         let installed = [
             extension("pinned", true, true),
@@ -2221,6 +2882,7 @@ mod tests {
             action: None,
             options: None,
             access: crate::extension_toolbar::Access::default(),
+            keyword: None,
         };
         let mut switched = HashMap::new();
         // At start each is put in the state the person chose, once.

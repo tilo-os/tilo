@@ -15,6 +15,7 @@
 
 pub(crate) mod actions;
 
+use crate::shell::input_policy::{InputCapture, PointerCapture};
 use crate::shell::state::WorkspaceAuthority as _;
 use taffy::TaffyTree;
 use vello::Scene;
@@ -101,6 +102,33 @@ impl FilePickerOverlay {
         files: std::rc::Rc<crate::shell::search::providers::FilesProvider>,
     ) {
         self.search = Some(files);
+    }
+
+    /// What the open chooser holds back from the windows where `place`
+    /// puts it. A sheet holds the keyboard while its window is the focused
+    /// one and the pointer over itself and that window (anywhere while a
+    /// press it took is held); a chooser no window asked for holds both
+    /// everywhere. Everything else goes on as if no chooser were up.
+    pub(crate) fn capture(&self, place: PickerPlace) -> InputCapture {
+        if self.active.is_none() {
+            return InputCapture::NONE;
+        }
+        match place {
+            PickerPlace::Window {
+                window, focused, ..
+            } => InputCapture {
+                keyboard: focused,
+                pointer: if self.grabbed {
+                    PointerCapture::Everywhere
+                } else {
+                    PointerCapture::Within(
+                        std::iter::once(window).chain(place.dialog_rect()).collect(),
+                    )
+                },
+            },
+            PickerPlace::Hidden => InputCapture::NONE,
+            PickerPlace::Display(_) => InputCapture::ALL,
+        }
     }
 
     pub(crate) fn widget(&self) -> Option<&ui::widget::FilePicker> {
@@ -344,24 +372,21 @@ impl FilePickerOverlay {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
+        let capture = self.capture(place);
         let Some(active) = self.active.as_mut() else {
             return false;
         };
         let Some(rect) = place.dialog_rect() else {
             return false;
         };
-        if let PickerPlace::Window {
-            window, focused, ..
-        } = place
-        {
+        if let PickerPlace::Window { .. } = place {
             let at = match event {
                 WindowEvent::Touch(touch) => Some(ctx.logical(touch.location)),
                 _ => pointer,
             };
-            let over = at.is_some_and(|at| window.contains(at) || rect.contains(at));
             let takes = match sheet_input(event) {
-                SheetInput::Pointer => over || self.grabbed,
-                SheetInput::Keys => focused && !ctx.modifiers.state().super_key(),
+                SheetInput::Pointer => at.is_some_and(|at| capture.pointer.at(at)),
+                SheetInput::Keys => capture.keyboard && !ctx.modifiers.state().super_key(),
                 SheetInput::Other => false,
             };
             if !takes {

@@ -3,7 +3,7 @@
 //! The drive list is a [`NavList`] in the shell's sidebar; the detail is one
 //! scrolling page of sections, property lists, stat tiles and tables. Nothing
 //! here paints, sizes or colours anything: every control says what it is and
-//! the theme decides how it looks. Interaction leaves as an [`Intent`] the
+//! the theme decides how it looks. Interaction leaves as an `Intent` the
 //! app applies to the window and the machine.
 
 use std::cell::Cell;
@@ -16,8 +16,8 @@ use ui::tokens::{Rhythm, TextRole};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::{
     Chip, ChipStyle, ContextMenuArea, Element, EmptyState, ListRow, MenuEntry, NavItem, NavList,
-    NavSection, Property, PropertyList, Row, RowStatus, Scrollable, Section, Skeleton, StatGroup,
-    StatTile, Text, Tone,
+    NavSection, Property, PropertyList, Row, RowStatus, Scrollable, Section, SkeletonShape,
+    StatGroup, StatTile, Text, Tone,
 };
 use ui::window_toolbar::{
     LocationSegment, ToolbarAction, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
@@ -284,11 +284,17 @@ pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>) -> Element {
         )))
         .push(Box::new(Section::titled(
             "Filesystems",
-            vec![Box::new(Skeleton::row())],
+            vec![ui::widget::ArrivingView::placeholder(
+                ui::arriving::Source::Local,
+                SkeletonShape::Row,
+            )],
         )))
         .push(Box::new(Section::titled(
             "Details",
-            vec![Box::new(Skeleton::text(4))],
+            vec![ui::widget::ArrivingView::placeholder(
+                ui::arriving::Source::Local,
+                SkeletonShape::Text { lines: 4 },
+            )],
         )));
     page(
         Row::new().push(Box::new(Chip::new("Reading drives…"))),

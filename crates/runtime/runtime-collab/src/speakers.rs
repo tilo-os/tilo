@@ -439,6 +439,27 @@ impl SpeakerReply {
     }
 }
 
+#[cfg(feature = "client")]
+impl crate::ChannelHandle {
+    /// Wait until what a speaker snapshot would show may have changed since
+    /// `after` (0 at first, then what the previous call returned), and
+    /// return the value to wait from next. The answer names nothing: the
+    /// caller asks for a fresh snapshot through the speaker command. The
+    /// call stays pending, without traffic, while nothing changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`](runtime_portal::NotAvailable) when this route may not manage speaker
+    /// groups, the host has none (an older broker answers unimplemented),
+    /// or the broker is unavailable.
+    pub async fn speaker_changed(&self, after: u64) -> Result<u64, runtime_portal::NotAvailable> {
+        let mut request = self.inner.speaker_changed_request();
+        request.get().set_after(after);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_change())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

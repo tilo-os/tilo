@@ -588,7 +588,8 @@ pub trait LauncherServices: Send + Sync {
     /// now: a press of theirs (never an agent's) reached one of its windows
     /// within the activation window, and has not proved another open
     /// already. Answering uses it up. A host without that record answers
-    /// `false`, and an app's launches then keep the person's place.
+    /// `false`: an app then opens nothing on its own, only what an
+    /// invocation someone else asked of it calls for.
     fn person_initiated(&self, _app_id: &str) -> bool {
         false
     }
@@ -932,7 +933,35 @@ pub trait HostStepServices: Send + Sync {
         &self,
         request: &HostStepRequest<'_>,
     ) -> Result<tilo_actions::remote::Pending<HostStepOutcome>, String>;
+    /// Follow one admitted step whose contract is
+    /// [`ExecutionMode::Live`](tilo_actions::ExecutionMode::Live): how to
+    /// read its result as it is now, and when that may have changed. The
+    /// broker reads it once at the start and again after each change, as
+    /// long as the caller follows it and may still read it.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be followed: the arguments are malformed, or the
+    /// step has no live result.
+    fn watch(&self, request: &HostStepRequest<'_>) -> Result<LiveView, String> {
+        let _ = request;
+        Err("this step has no live result".into())
+    }
 }
+
+/// A live result a host step serves ([`HostStepServices::watch`]).
+pub struct LiveView {
+    /// The whole result as it is now. A host that reads it on a thread of
+    /// its own answers when it has; one that has it at hand answers at once
+    /// ([`Pending::ready`](tilo_actions::remote::Pending::ready)).
+    pub read: Box<dyn FnMut() -> tilo_actions::remote::Pending<LiveRead> + Send>,
+    /// Moves whenever the result may have changed. Moving without a
+    /// change costs one read whose item the caller already holds.
+    pub changes: tokio::sync::watch::Receiver<u64>,
+}
+
+/// One read of a [`LiveView`]: the result now, or why it failed for good.
+pub type LiveRead = Result<serde_json::Value, Box<tilo_actions::ActionFailure>>;
 
 pub trait ContinuationServices: Send + Sync {
     /// Reports one application instance's continuation metadata.
@@ -983,6 +1012,44 @@ pub trait SearchIndexServices: Send + Sync {
     ///
     /// Returns a message when the delta is malformed or cannot be kept.
     fn publish(&self, room: RoomId, app: &str, record: &str, delta: &[u8]) -> Result<(), String>;
+}
+
+/// The scope component content puts are kept under in a room's content
+/// store: neutral, no application's. The store reads by room, so every app
+/// of the room reads what was put there once an action hands it the
+/// reference.
+pub const CONTENT_PUT_SCOPE: &str = "tilo.content";
+
+/// The device content store, as the content put door writes to it
+/// (`tilo_actions::remote::ContentPuts`). Actions carry intent and
+/// references; bytes travel by session transport into the content store.
+pub trait ContentStoreServices: Send + Sync {
+    /// The most bytes one piece of content may have.
+    fn max_bytes(&self) -> u64;
+    /// Open an upload kept for `room` under [`CONTENT_PUT_SCOPE`].
+    ///
+    /// # Errors
+    ///
+    /// Returns why the store cannot take an upload.
+    fn begin(&self, room: &str) -> Result<Box<dyn ContentSink>, String>;
+}
+
+/// One upload into the content store. Dropped unfinished, it stores
+/// nothing.
+pub trait ContentSink: Send {
+    /// Hand the store the next bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the store refused them; the upload is over then.
+    fn append(&mut self, bytes: &[u8]) -> Result<(), String>;
+    /// Store what was appended, recording the room's reference to it, and
+    /// answer its hash (lowercase BLAKE3 hex) and length.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the store did not keep it.
+    fn finish(self: Box<Self>) -> Result<(String, u64), String>;
 }
 
 /// Called on the broker `LocalSet`; returned Cap'n Proto clients never cross threads.
@@ -1070,7 +1137,22 @@ pub trait RealtimeServices: Send + Sync {
 pub trait SpeakerServices: Send + Sync {
     /// Runs one validated speaker-group command.
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply;
+
+    /// Resolves once what a [`runtime_collab::SpeakerCommand::Snapshot`]
+    /// would show may have changed since `after` (0 at first, then the value
+    /// the previous wait returned), with the value to wait from next. It
+    /// names nothing: Settings asks for a snapshot, which the host checks as
+    /// it checks every command. `None` when the host cannot say when its
+    /// speaker groups change; the broker then answers unimplemented.
+    fn changed(&self, after: u64) -> Option<SpeakerChange> {
+        let _ = after;
+        None
+    }
 }
+
+/// A wait for the speaker groups' next change, as [`SpeakerServices::changed`]
+/// returns it.
+pub type SpeakerChange = NearbyTransferChange;
 /// The host's Wi-Fi credential continuity across the person's devices: the
 /// broker admits only the certified Settings route, bounds and validates the
 /// command, and hands it here. A host without Wi-Fi radios installs none.
@@ -1533,6 +1615,9 @@ pub struct HostServices {
     /// The session's persistent search index of applications' content.
     /// Without it apps' content is findable only while they run.
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
+    /// The device content store content puts go to. Without it the content
+    /// put door is not offered.
+    pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
     pub speakers: Option<Arc<dyn SpeakerServices>>,

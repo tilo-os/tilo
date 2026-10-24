@@ -77,6 +77,22 @@ fn publish_pipeline_seed(gpu: &ui::gpu::DeviceHandle, cache: &wgpu::PipelineCach
     }
 }
 
+/// The GPU finishes what this target submitted before its queue can go.
+///
+/// wgpu waits on a dropped queue's last submission for at most about six
+/// seconds and then panics, as freeing resources the GPU still uses would be
+/// undefined behaviour. A software device on a loaded machine has taken longer
+/// than that, so the wait is made here, for as long as the work takes; a lost
+/// device finishes nothing and is not waited for. A GPU that never finishes is
+/// a hung main loop, which the watchdog ends.
+impl Drop for RetainedGpuTarget {
+    fn drop(&mut self) {
+        if self.loss.reason().is_none() {
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        }
+    }
+}
+
 impl RetainedGpuTarget {
     /// Construct an offscreen target on the supplied context-owned device and queue.
     ///
@@ -537,7 +553,7 @@ impl RetainedGpuTarget {
     /// first frame of the next strip pan copies and composites instead of
     /// rasterising every layer. Rasterises only the layers that differ from
     /// what the textures hold, a whole one in bands
-    /// ([`strip_layers::warm_bands`]), and stops between two renders
+    /// (`strip_layers::warm_bands`), and stops between two renders
     /// as soon as `keep_going` says a frame waits, keeping what it finished.
     /// The output target is left alone. Returns the pixels rasterised, or
     /// `None` when the layers cannot present `cache`.

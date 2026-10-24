@@ -507,7 +507,7 @@ impl DeviceMeshArea {
 
     /// The model, over this device's relay configuration, or, for a
     /// screenshot, over an unconfigured one with nothing paired: from the
-    /// read [`Self::start_read`] started, waiting for it if it still runs,
+    /// read `Self::start_read` started, waiting for it if it still runs,
     /// else read here.
     pub fn model(&self) -> &Shared<DeviceMeshModel> {
         self.model.get_or_init(|| {
@@ -639,9 +639,9 @@ pub struct DeviceMeshModel {
     management_device: Option<String>,
     /// A home-server removal the host runs for this pane, and the server:
     /// it signs with the root key, so it never runs here.
-    management_call: Option<(ui::LocalState<ui::InvocationCall>, String)>,
+    management_call: Option<(ui::InvocationCall, String)>,
     /// The host's answer to the device list, while it is asked.
-    devices_call: Option<ui::LocalState<ui::InvocationCall>>,
+    devices_call: Option<ui::InvocationCall>,
     /// The revocation the host signs: its invocation, the device's name and
     /// the caller waiting for it.
     revoke_call: Option<RevokeCall>,
@@ -650,7 +650,7 @@ pub struct DeviceMeshModel {
     apply_queued: bool,
     /// The pairing step the host runs for this pane: its invocation, and
     /// whether it is the discovery (else the approval).
-    pairing_call: Option<ui::LocalState<ui::InvocationCall>>,
+    pairing_call: Option<ui::InvocationCall>,
     pairing_discovery: bool,
     pairing_candidate: Option<PairCandidate>,
     pairing_target: PairingTarget,
@@ -672,7 +672,7 @@ pub struct DeviceMeshModel {
 
 /// A device revocation the host is signing.
 struct RevokeCall {
-    call: ui::LocalState<ui::InvocationCall>,
+    call: ui::InvocationCall,
     label: String,
     reply: Option<EffectReply>,
 }
@@ -1625,32 +1625,32 @@ impl DeviceMeshModel {
         };
         self.remote.poll();
         let answer = call.get();
-        if !answer.is_settled() {
+        if !answer.is_finished() {
             return;
         }
         self.pairing_call = None;
         let discovery = std::mem::take(&mut self.pairing_discovery);
         self.changed = true;
         let output = match answer {
-            ui::RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => output,
-            ui::RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => {
+            ui::Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => output,
+            ui::Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
                 self.load_status = format!(
                     "Device was not paired: {}. Choose the pairing action to retry.",
                     error.message
                 );
                 return;
             }
-            ui::RemoteCall::Done(_) => {
+            ui::Arrival::Ready(_) => {
                 self.load_status =
                     "Pairing stopped: it was cancelled. Choose the pairing action to retry.".into();
                 return;
             }
-            ui::RemoteCall::Refused(error) => {
+            ui::Arrival::Failed(error) => {
                 self.load_status =
                     format!("Pairing stopped: {error}. Choose the pairing action to retry.");
                 return;
             }
-            ui::RemoteCall::Pending => return,
+            ui::Arrival::Pending { .. } => return,
         };
         if discovery {
             match output
@@ -2308,10 +2308,6 @@ mod tests {
 
     /// Peer health, fresh metrics and complete residency.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn device_health_and_workspace_status_reflect_fresh_facts() {
         // Case `peer_health_is_a_compact_visual_state_with_detail_beside_it`.
         {

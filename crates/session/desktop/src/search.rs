@@ -185,9 +185,7 @@ fn app_id(tile: &TileContent) -> Option<&str> {
         | TileContent::LocalApp { app_id, .. }
         | TileContent::PeerWindow { app_id, .. }
         | TileContent::HostedWindow { app_id, .. } => Some(app_id),
-        TileContent::AppPlaceholder { .. }
-        | TileContent::Stub { .. }
-        | TileContent::WorkspaceActivity => None,
+        TileContent::AppPlaceholder { .. } | TileContent::Stub { .. } => None,
     }
 }
 
@@ -318,9 +316,7 @@ fn move_rows(
     } = *place;
     if matches!(
         tab.tile,
-        TileContent::WorkspaceActivity
-            | TileContent::PeerWindow { .. }
-            | TileContent::HostedWindow { .. }
+        TileContent::PeerWindow { .. } | TileContent::HostedWindow { .. }
     ) {
         return;
     }

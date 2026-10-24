@@ -13,7 +13,6 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-IMAGE_WORKFLOW = ROOT / ".forgejo/workflows/build-image.yml"
 KERNEL_BUILD = ROOT / "tools/ci/publish/kernel.sh"
 APPS_WORKFLOW = ROOT / ".forgejo/workflows/release-apps.yml"
 DESKTOP_WORKFLOW = ROOT / ".forgejo/workflows/release-desktop.yml"
@@ -60,58 +59,6 @@ def run_script(step: str, env: dict[str, str], files: dict[str, str] | None = No
             name, _, value = line.partition("=")
             values[name] = value
     return values, text
-
-
-class ImagePublicationTests(unittest.TestCase):
-    def setUp(self):
-        self.workflow = IMAGE_WORKFLOW.read_text()
-        self.steps = steps(self.workflow)
-        self.bind = self.steps["Bind the runner compiler cache"]
-
-    def test_image_publication_binds_no_cache_while_integration_builds_keep_it(self):
-        with self.subTest(phase="the bind passes the runner's Actions cache as secrets"):
-            values, _ = run_script(self.bind, {"ACTIONS_CACHE_URL": "http://10.0.0.5:8088/x/",
-                                               "ACTIONS_RUNTIME_TOKEN": "tok"})
-            self.assertEqual(values["mode"], "shared")
-            self.assertEqual(values["secret-envs"].splitlines(), [
-                "actions_cache_url=ACTIONS_CACHE_URL",
-                "actions_runtime_token=ACTIONS_RUNTIME_TOKEN",
-            ])
-        with self.subTest(phase='a slot without the cache compiles without it'):
-            values, _ = run_script(self.bind, {})
-            self.assertEqual(values["mode"], "off")
-            self.assertEqual(values["secret-envs"], "")
-        with self.subTest(phase='no image build carries S3 cache settings or credentials'):
-            for forbidden in ("SCCACHE_BUCKET", "FALLBACK_AWS", "aws_access_key_id", "compiler_cache_env.sh",
-                              "TILO_PUBLICATION_CACHE"):
-                self.assertNotIn(forbidden, self.workflow)
-        with self.subTest(phase='every image build takes its cache mode and credentials from the bind'):
-            builds = {name: step for name, step in self.steps.items()
-                      if "docker/build-push-action@" in step}
-            self.assertGreaterEqual(len(builds), 5)
-            for name, step in builds.items():
-                with self.subTest(name):
-                    self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE=1", step)
-                    self.assertNotIn("aws_access_key_id=AWS_ACCESS_KEY_ID", step)
-                    if name == "Independently rebuild the release candidate":
-                        continue
-                    self.assertIn("TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}", step)
-                    self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE", step)
-                    self.assertIn("${{ steps.compiler-cache.outputs.secret-envs }}", step)
-                    if name != "Build and cache the compile stages":
-                        self.assertIn("browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY", step)
-                        self.assertNotIn("browser_app_identity", step)
-        with self.subTest(phase='the independent rebuild never sees the cache'):
-            repro = self.steps["Independently rebuild the release candidate"]
-            self.assertIn("if: steps.release-mode.outputs.publish == 'true'", repro)
-            clear = self.steps["Clear the builder for the independent rebuild"]
-            self.assertIn('docker buildx prune --builder "$BUILDER_NAME" --all --force', clear)
-            self.assertIn("TILO_COMPILER_CACHE=off\n", repro)
-            self.assertIn("TILO_REQUIRE_COMPILER_CACHE=0\n", repro)
-            self.assertIn("no-cache: true", repro)
-            self.assertIn("browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY", repro)
-            for forbidden in ("SCCACHE_", "AWS_", "aws_", "compiler-cache"):
-                self.assertNotIn(forbidden, repro)
 
 
 class KernelPublicationTests(unittest.TestCase):

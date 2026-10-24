@@ -161,15 +161,25 @@ impl ChatApp {
                 .voice_people(&channel.id)
                 .into_iter()
                 .map(|person| {
-                    let name = self.user_name(&person);
+                    let name = self.call_name(&person);
                     let speaking = self.speaking.level(&person, now) > 0.0;
                     NavItem::new(format!("in-call:{}/{person}", channel.id), name)
-                        .person(&person, self.identity_colour(&person), speaking)
+                        .person(&person, self.call_colour(&person), speaking)
+                        .person_face(self.call_face_name(&person), self.call_picture(&person))
                         .without_actions()
                 })
                 .collect();
             if !people.is_empty() {
                 item = item.children(people).expanded();
+            }
+            // Before anyone joins: whose voices this channel's call also
+            // reaches.
+            let services = self.call_bridges(&channel.id);
+            if !services.is_empty() {
+                item = item.secondary(crate::i18n::t_args(
+                    "chat-call-bridged-short",
+                    &[("services", services.join(", ").into())],
+                ));
             }
         }
         item

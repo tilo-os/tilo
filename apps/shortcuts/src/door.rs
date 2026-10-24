@@ -26,7 +26,7 @@ use ui::tilo_actions::remote::{
 };
 use ui::tilo_actions::{ActionOutput, InvocationUpdate};
 use ui::widget::Decorator;
-use ui::{CatalogueCall, InvocationCall, LocalState, RemoteActions, RemoteCall};
+use ui::{Arrival, CatalogueCall, InvocationCall, LocalState, RemoteActions};
 
 use crate::editor;
 use crate::model::Workbench;
@@ -69,25 +69,6 @@ pub enum DoorEffect {
 /// The library's own actions, published by the session under this app's id.
 const LIBRARY_RESOURCE: &str = "shortcuts";
 
-/// Something the door reads, as it stands.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum Loaded<T> {
-    #[default]
-    Loading,
-    Ready(T),
-    Failed(String),
-}
-
-impl<T> Loaded<T> {
-    #[must_use]
-    pub const fn ready(&self) -> Option<&T> {
-        match self {
-            Self::Ready(value) => Some(value),
-            Self::Loading | Self::Failed(_) => None,
-        }
-    }
-}
-
 /// Where one run stands.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RunStatus {
@@ -126,8 +107,8 @@ pub enum Drafting {
 /// Everything the door knows, shown by the views.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DoorState {
-    pub catalogue: Loaded<ActionCatalog>,
-    pub library: Loaded<Vec<Shortcut>>,
+    pub catalogue: Arrival<ActionCatalog>,
+    pub library: Arrival<Vec<Shortcut>>,
     pub runs: Vec<RunRecord>,
     pub notice: Option<Notice>,
     /// The last draft asked of the agent.
@@ -168,8 +149,8 @@ enum Purpose {
 }
 
 enum Answer {
-    Catalogue(LocalState<CatalogueCall>),
-    Invocation(LocalState<InvocationCall>),
+    Catalogue(CatalogueCall),
+    Invocation(InvocationCall),
 }
 
 struct Call {
@@ -218,11 +199,11 @@ impl DoorCore {
     /// person's words.
     fn catalogue_missing(&self) -> String {
         self.state.with(|state| match &state.catalogue {
-            Loaded::Failed(_) => {
+            Arrival::Failed(_) => {
                 "the actions your apps offer could not be read here, so nothing can be saved"
                     .to_owned()
             }
-            Loaded::Loading | Loaded::Ready(_) => {
+            Arrival::Pending { .. } | Arrival::Ready(_) => {
                 "the actions your apps offer are still being read; try again in a moment".to_owned()
             }
         })
@@ -236,7 +217,7 @@ impl DoorCore {
         });
         self.state.update(|state| {
             if state.catalogue.ready().is_none() {
-                state.catalogue = Loaded::Loading;
+                state.catalogue = Arrival::local();
             }
         });
         self.calls.push(Call {
@@ -404,7 +385,7 @@ impl DoorCore {
                 .get(index)
                 .is_some_and(|call| match &call.answer {
                     Answer::Catalogue(answer) => !answer.get().is_pending(),
-                    Answer::Invocation(answer) => answer.get().is_settled(),
+                    Answer::Invocation(answer) => answer.get().is_finished(),
                 });
             if settled {
                 let call = self.calls.remove(index);
@@ -418,30 +399,30 @@ impl DoorCore {
     fn settle(&mut self, call: Call) {
         let outcome: Result<Option<ActionOutput>, String> = match &call.answer {
             Answer::Catalogue(answer) => match answer.get() {
-                RemoteCall::Done(page) => {
+                Arrival::Ready(page) => {
                     self.state.update(|state| {
-                        state.catalogue = Loaded::Ready(ActionCatalog::new(page.rows));
+                        state.catalogue = Arrival::Ready(ActionCatalog::new(page.rows));
                     });
                     self.list_library();
                     Ok(None)
                 }
-                RemoteCall::Refused(error) => Err(catalogue_refusal(&error)),
-                RemoteCall::Pending => return,
+                Arrival::Failed(error) => Err(catalogue_refusal(&error)),
+                Arrival::Pending { .. } => return,
             },
             Answer::Invocation(answer) => match answer.get() {
-                RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => Ok(Some(output)),
-                RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => Err(error.message),
-                RemoteCall::Done(InvocationUpdate::Cancelled { message, .. }) => {
+                Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Ok(Some(output)),
+                Arrival::Ready(InvocationUpdate::Failed { error, .. }) => Err(error.message),
+                Arrival::Ready(InvocationUpdate::Cancelled { message, .. }) => {
                     Err(message.unwrap_or_else(|| "cancelled".to_owned()))
                 }
-                RemoteCall::Refused(error) => Err(error.to_string()),
-                RemoteCall::Done(_) | RemoteCall::Pending => return,
+                Arrival::Failed(error) => Err(error.to_string()),
+                Arrival::Ready(_) | Arrival::Pending { .. } => return,
             },
         };
         match (&call.purpose, &outcome) {
             (Purpose::Catalogue, Err(reason)) => self.state.update(|state| {
-                state.catalogue = Loaded::Failed(reason.clone());
-                state.library = Loaded::Failed(reason.clone());
+                state.catalogue = Arrival::Failed(reason.clone());
+                state.library = Arrival::Failed(reason.clone());
             }),
             (Purpose::Catalogue, Ok(_)) => {}
             (Purpose::List, Ok(output)) => {
@@ -459,12 +440,12 @@ impl DoorCore {
                     let mut listing = std::mem::take(&mut self.listing);
                     listing.sort_by(|left, right| left.name.cmp(&right.name));
                     self.state
-                        .update(|state| state.library = Loaded::Ready(listing));
+                        .update(|state| state.library = Arrival::Ready(listing));
                 }
             }
             (Purpose::List, Err(reason)) => {
                 self.state
-                    .update(|state| state.library = Loaded::Failed(reason.clone()));
+                    .update(|state| state.library = Arrival::Failed(reason.clone()));
             }
             (Purpose::Save { name }, result) => {
                 let notice = match result {
@@ -561,7 +542,7 @@ impl DoorCore {
         if targets.is_empty() {
             self.state.update(|state| {
                 state.library =
-                    Loaded::Failed("this workspace offers no shortcut library".to_owned());
+                    Arrival::Failed("this workspace offers no shortcut library".to_owned());
             });
             return;
         }

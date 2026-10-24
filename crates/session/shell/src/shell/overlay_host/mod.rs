@@ -11,6 +11,7 @@
 //! event so typing and Enter work without the desktop stealing focus.
 
 mod accessibility;
+mod activity_served;
 mod agent_actions;
 mod agent_markers;
 mod app_chooser;
@@ -77,6 +78,7 @@ mod task_import;
 mod top_bar_reveal;
 mod widget;
 mod window_toolbars;
+mod workspace_slide;
 
 pub use controller::{ControllerDelivery, ControllerKey};
 use layers::{
@@ -122,7 +124,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
-    PermissionPrompt, PromptChoice, TextInput, Widget, WindowGroup as UiWindowGroup,
+    PermissionPrompt, PromptChoice, SecretPrompt, TextInput, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
@@ -245,6 +247,7 @@ mod paint_top;
 mod palette_routing;
 mod palette_run;
 mod palette_search;
+use palette_search::LaunchpadMark;
 mod peer_sync;
 mod portal_prompts;
 mod projection;
@@ -488,6 +491,9 @@ pub struct ShellOverlayHost {
     /// The content of workspaces shown recently, kept while another one is
     /// `content` so a switch back puts it back instead of building it again.
     parked_workspaces: parked_workspaces::ParkedWorkspaces,
+    /// The pointer-made workspace switch moving between the content kept
+    /// for the workspace shown before and the content shown now.
+    workspace_slide: Option<workspace_slide::WorkspaceSlide>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
     /// stay unreachable until a real identity has been provisioned and the
@@ -563,6 +569,9 @@ pub struct ShellOverlayHost {
     /// A launchpad app card awaiting the Applications index; see
     /// [`Self::retry_pending_launchpad_app`].
     pending_launchpad_app: Option<PendingLaunchpadApp>,
+    /// Where the widget document stood when the launchpad harvest last found
+    /// no request in it; see [`Self::settle_launchpad`].
+    launchpad_quiet_at: Option<LaunchpadMark>,
     /// Launchpad cards' app actions awaiting admission; see
     /// [`Self::poll_pending_launchpad_actions`].
     pending_launchpad_actions: Vec<PendingLaunchpadAction>,
@@ -654,11 +663,14 @@ pub struct ShellOverlayHost {
     /// The input the person last used, which the next surface that opens
     /// or closes follows: a shortcut lands at once, a click animates.
     input_source: ui::tokens::MotionSource,
-    /// What started the running workspace switch.
+    /// A workspace switch was asked for and no frame has been painted since:
+    /// the switch owes the one frame that shows the other workspace. The
+    /// switch itself does not move (the content is swapped in that frame),
+    /// so nothing past that frame is owed.
+    workspace_switch_owed: bool,
+    /// The input the switch [`Self::workspace_switch_owed`] was asked by: a
+    /// chord announces its switch before the content is swapped.
     workspace_switch_source: ui::tokens::MotionSource,
-    /// Wall-clock end of that frame run. Draw must not clear it: snapping
-    /// the curve let the close flush both scanouts on every remaining paint.
-    workspace_switch_until: Option<Instant>,
     /// Times each switch from its chord to its first and resting frames.
     workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency,
     /// Previous-frame quick-settings visibility, to detect the open edge.
@@ -738,6 +750,9 @@ pub struct ShellOverlayHost {
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
     palette_transition: ui::motion::Presence,
+    /// The checkboxes the shell's own sheets paint, filling as a click
+    /// checks them.
+    faces: ui::widget::FaceMotions,
     /// Per-strip raw pointers to the [`GroupRow`] widgets inside
     /// `content`, so the per-frame reconcilers reach them without
     /// downcasting `&dyn Widget`. Empty until
@@ -941,9 +956,6 @@ pub struct ShellOverlayHost {
     /// Describes apps' changes for their History, with the model on this device.
     history_describer: crate::shell::history_narrative::HistoryDescriber,
     status_narrative_request: Option<ui::NarrativeRequest>,
-    /// Whether the sheet was open last frame, to invalidate derived rows
-    /// on the rising edge.
-    room_activity_was_open: bool,
     /// Workspace whose passive activity was last presented. Entering a
     /// different workspace with unseen work opens Catch up once, so the user
     /// does not have to notice and decode a tiny unread badge after time away.
@@ -953,6 +965,9 @@ pub struct ShellOverlayHost {
     /// lock and record reads) until
     /// [`room_activity::ACTIVITY_AWARENESS_FALLBACK`] passes.
     activity_refresh: ActivityRefreshGate,
+    /// What the activity model served apps when they last read it
+    /// ([`tilo_desktop::activity::RoomActivityPane::served_revision`]).
+    activity_served: Option<u64>,
     /// Unseen work discovered during a workspace transition waits until
     /// Overview/People/another modal releases attention. Cleared as soon as
     /// Catch up is shown or opened manually, so dismissal remains sticky.
@@ -960,6 +975,12 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// Who is here arriving from the bar and leaving (`motion::Appear`).
+    collaborators_appearing: ui::motion::Appearing,
+    /// The roster as it was last painted at rest, and its panel: what is
+    /// drawn arriving, and leaving once it is closed.
+    collaborators_painted: Scene,
+    collaborators_painted_panel: Rect,
     /// Roster id whose recent summary People shows. Local view state: the
     /// same person stays expanded as the roster reorders.
     expanded_collaborator: Option<String>,
@@ -1009,8 +1030,11 @@ pub struct ShellOverlayHost {
     /// The invite, join and pairing sheet's node while it is up.
     peer_sync_node: Option<NodeId>,
     /// The question about one of the person's apps on screen, "Uninstall
-    /// <name>?" or "Add <name> to apps?" ([`app_sheets`]).
+    /// \<name\>?" or "Add \<name\> to apps?" ([`app_sheets`]).
     app_sheet: Option<app_sheets::AppSheet>,
+    /// The question just answered, drawn leaving until it has gone; it
+    /// takes no input.
+    app_sheet_leaving: Option<app_sheets::AppSheet>,
     /// The sheet's window node and its own, while it is laid out.
     app_sheet_nodes: Option<(NodeId, NodeId)>,
     /// The sheet opened or closed since the tree was last built.
@@ -1047,10 +1071,10 @@ pub struct ShellOverlayHost {
     /// The Super+P display sheet, including controller, editor, animation,
     /// painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
-    /// The Wi-Fi join prompt's passphrase field — the only place the
+    /// The Wi-Fi join prompt — its passphrase field is the only place the
     /// passphrase lives — and the prompt (`WifiPasswordPrompt::id`) it is
     /// typed for.
-    wifi_password_input: TextInput,
+    wifi_prompt: SecretPrompt,
     wifi_password_prompt: Option<u64>,
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.
@@ -1668,6 +1692,8 @@ fn active_tab_provider_id(
 /// an optional detail in secondary ink, the row lifted while focused.
 struct CheckRow<'a> {
     checked: bool,
+    /// Where the box's fill and mark are this frame.
+    pose: ui::widget::CheckPose,
     label: &'a str,
     detail: Option<&'a str>,
     focused: bool,
@@ -1697,7 +1723,7 @@ fn draw_check_row(
         scene,
         transform,
         theme,
-        &ui::widget::CheckboxFace::new(check, row.checked),
+        &ui::widget::CheckboxFace::new(check, row.checked).pose(row.pose),
     );
     let style = theme.text(TextRole::Body);
     let x = check.x1 + pad;
@@ -1819,6 +1845,12 @@ mod parked_workspaces_tests;
 #[cfg(test)]
 #[path = "capture_tool_tests.rs"]
 mod capture_tool_tests;
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+mod people_motion_tests;
 
 #[cfg(test)]
 #[allow(

@@ -155,9 +155,6 @@ pub(super) struct Geo {
     pub endian: Rect,
     /// Where the inspector's properties start.
     pub properties: Rect,
-    /// Where the status bubble and toasts float: the content above the
-    /// status bar.
-    pub bubble_area: Rect,
     /// Row pitch and the measured line height inside it.
     pub row_h: f64,
     pub line_h: f64,
@@ -302,7 +299,6 @@ impl HexView {
         );
         geo.status = status;
         geo.grid = region;
-        geo.bubble_area = Rect::new(content.x0, outer.y0, content.x1, status.y0);
     }
 
     /// The grid: how many bytes a row holds so the rows fill the content

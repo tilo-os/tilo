@@ -123,6 +123,9 @@ fn handle(state: &mut State, tx: &mpsc::UnboundedSender<Outgoing>, frame: &Value
             }
             state.dispatch("RESUMED", json!({}));
         }
+        Some(4) if data["guild_id"] == GUILD => {
+            state.bot_voice_state(data["channel_id"].as_str());
+        }
         _ => {}
     }
 }

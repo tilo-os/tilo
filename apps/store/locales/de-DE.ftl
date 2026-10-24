@@ -177,7 +177,6 @@ store-update-to = Version { $version }
 store-updates-none = Alle Apps sind aktuell
 store-installed-none = Noch keine Apps auf diesem Gerät
 store-bots-none = Deine Quellen führen keine Bots
-store-loading = Apps werden geladen
 store-empty-title = Keine Apps verfügbar
 store-empty-help = Füge eine Quelle hinzu, der du vertraust, oder aktiviere sie.
 store-offline-title = Der App-Katalog ist nicht erreichbar

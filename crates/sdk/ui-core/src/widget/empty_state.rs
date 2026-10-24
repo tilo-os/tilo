@@ -26,7 +26,7 @@
 //! "just works". The action is surfaced through the toolkit's drain channel
 //! ([`EmptyState::take_action`]) rather than a callback, matching the
 //! CRDT-native input model used by [`super::ContextMenu`] /
-//! [`super::TriStateControl`].
+//! `TriStateControl`.
 
 use crate::widget::{AppModel, ModelPath};
 use std::cell::RefCell;

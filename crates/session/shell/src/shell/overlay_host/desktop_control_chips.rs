@@ -248,7 +248,7 @@ mod tests {
 
     fn me() -> Holder {
         let pid = std::process::id();
-        let (_, start) = crate::shell::launcher::proc_stat(pid).expect("own stat");
+        let (_, start) = crate::shell::host_runtime::proc_stat(pid).expect("own stat");
         Holder { pid, start }
     }
 

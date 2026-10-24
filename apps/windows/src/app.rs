@@ -2,7 +2,7 @@
 //! managed Windows appliance.
 //!
 //! The window is a retained [`NavShell`]: the overview lists the apps and the
-//! appliance, the content shows the selection. Controls queue an [`Intent`];
+//! appliance, the content shows the selection. Controls queue an `Intent`;
 //! the app applies intents against the selected model in one ordered place
 //! and swaps the columns when what they show changes.
 use crate::actions;

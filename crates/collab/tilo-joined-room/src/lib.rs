@@ -310,6 +310,12 @@ impl SharedOwner {
         result
     }
 }
+impl Drop for SharedOwner {
+    fn drop(&mut self) {
+        // Rooms that required this owner have none now.
+        tilo_identity_host::policy_change::announce();
+    }
+}
 impl WeakNativeWorkspaceOwner {
     #[must_use]
     pub fn upgrade(&self) -> Option<NativeWorkspaceOwner> {

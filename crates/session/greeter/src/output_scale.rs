@@ -469,10 +469,24 @@ pub fn start() -> Displays {
 /// [`start`] on an established Wayland connection: configure until the
 /// outputs settle (bounded), then keep them configured on a watcher thread.
 pub fn configure_connection(connection: &Connection) -> Result<Displays, (&'static str, Displays)> {
+    configure_connection_within(connection, STARTUP_LIMIT)
+}
+
+/// [`configure_connection`], waiting up to `limit` for the outputs to settle
+/// rather than the sign-in window's own bound: a harness that answers the
+/// request itself, on a loaded machine, waits as long as it needs.
+///
+/// # Errors
+///
+/// As [`configure_connection`].
+pub fn configure_connection_within(
+    connection: &Connection,
+    limit: Duration,
+) -> Result<Displays, (&'static str, Displays)> {
     let displays = Displays::default();
     let mut queue = connection.new_event_queue::<Outputs>();
     let mut state = Outputs::new(displays.clone());
-    let settled = settle(connection, &mut queue, &mut state, STARTUP_LIMIT);
+    let settled = settle(connection, &mut queue, &mut state, limit);
     if state.manager.is_some() {
         watch(connection.clone(), queue, state);
     }

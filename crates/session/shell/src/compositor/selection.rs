@@ -978,7 +978,7 @@ pub fn record_client_bytes(
 /// selection stays ephemeral, as on every other desktop.
 ///
 /// Returns whether ownership changed. The same payload is not taken over
-/// again within [`ADOPT_COOLDOWN_MS`], so a clipboard manager that re-copies
+/// again within `ADOPT_COOLDOWN_MS`, so a clipboard manager that re-copies
 /// the selection it sees cannot start a ping-pong with the compositor.
 pub fn adopt_complete_client_selection(store: &SharedSelection, now_ms: u64) -> bool {
     let Ok(mut store) = store.lock() else {

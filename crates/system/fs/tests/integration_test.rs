@@ -1999,6 +1999,8 @@ struct SignalledMount {
     dir: tempfile::TempDir,
     namespace: Arc<Mutex<Namespace>>,
     signal: Arc<fs::change_signal::ChangeSignal>,
+    availability: Arc<Mutex<fs::AvailabilityRegistry>>,
+    _registry_dir: tempfile::TempDir,
 }
 
 async fn signalled_mount() -> SignalledMount {
@@ -2015,8 +2017,13 @@ async fn signalled_mount() -> SignalledMount {
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
     let signal = Arc::new(fs::change_signal::ChangeSignal::new().unwrap());
-    let quick_fs =
-        QuickFS::new(namespace.clone(), hydrator, heuristics).with_change_signal(signal.clone());
+    let registry_dir = tempdir().unwrap();
+    let availability = Arc::new(Mutex::new(
+        fs::AvailabilityRegistry::open(registry_dir.path().join("availability.json")).unwrap(),
+    ));
+    let quick_fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
+        .with_change_signal(signal.clone())
+        .with_availability(availability.clone());
     let dir = tempdir().unwrap();
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName("quickfs_change_signal".to_string())];
@@ -2029,7 +2036,27 @@ async fn signalled_mount() -> SignalledMount {
         dir,
         namespace,
         signal,
+        availability,
+        _registry_dir: registry_dir,
     }
+}
+
+/// Start `signal` on `mount`, as the daemon does once the session runs.
+async fn start_signal(mount: &SignalledMount) -> fs::change_signal::ChangeSignalTask {
+    let (signal, namespace, availability, path, notifier) = (
+        mount.signal.clone(),
+        mount.namespace.clone(),
+        mount.availability.clone(),
+        mount.dir.path().to_path_buf(),
+        mount.session.notifier(),
+    );
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        signal.start(namespace, Some(availability), &path, notifier, &runtime)
+    })
+    .await
+    .unwrap()
+    .expect("the first signal goes through")
 }
 
 /// Opening and reading a folder is reported too; those are the watcher's
@@ -2063,15 +2090,8 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
     use tilo_files::native::CHANGE_SIGNAL_XATTR;
 
     require_fuse!();
-    let SignalledMount {
-        session,
-        endpoint,
-        store,
-        dir,
-        namespace,
-        signal,
-    } = signalled_mount().await;
-    let docs = dir.path().join("docs");
+    let mount = signalled_mount().await;
+    let docs = mount.dir.path().join("docs");
     let read_signal = |path: &std::path::Path| {
         let mut value = [0_u8; 8];
         rustix::fs::getxattr(path, CHANGE_SIGNAL_XATTR, &mut value[..])
@@ -2083,19 +2103,7 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
         "no folder claims to signal before a signal went through"
     );
 
-    let task = {
-        let (namespace, mount, notifier) = (
-            namespace.clone(),
-            dir.path().to_path_buf(),
-            session.notifier(),
-        );
-        let runtime = tokio::runtime::Handle::current();
-        let signal = signal.clone();
-        tokio::task::spawn_blocking(move || signal.start(namespace, &mount, notifier, &runtime))
-            .await
-            .unwrap()
-            .expect("the first signal goes through")
-    };
+    let task = start_signal(&mount).await;
     assert_eq!(
         read_signal(&docs),
         Ok(b"1".to_vec()),
@@ -2123,11 +2131,16 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
         .watch(&docs, notify::RecursiveMode::NonRecursive)
         .unwrap();
 
-    let mut peer = Namespace::from_bytes("peer", &namespace.lock().unwrap().save()).unwrap();
+    let mut peer = Namespace::from_bytes("peer", &mount.namespace.lock().unwrap().save()).unwrap();
     let peer_docs = peer.resolve_path_ino("/docs").unwrap();
     peer.create_file(peer_docs, "from-peer.md", None, 0, 2)
         .unwrap();
-    namespace.lock().unwrap().merge_doc(&mut peer).unwrap();
+    mount
+        .namespace
+        .lock()
+        .unwrap()
+        .merge_doc(&mut peer)
+        .unwrap();
 
     let (event, events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
         .await
@@ -2149,5 +2162,86 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
 
     drop(watcher);
     drop(task);
+    let SignalledMount {
+        session,
+        endpoint,
+        store,
+        ..
+    } = mount;
+    shutdown_fuse_fixture(session, endpoint, store).await;
+}
+
+/// A file's availability is no change to the namespace, yet Files shows
+/// it: when a read no peer answered marks the file unavailable, its folder's
+/// watcher hears of it like of any change, and reads the file as
+/// unavailable without polling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_availability_change_reaches_inotify_on_its_directory() {
+    use fs::availability::{RecordAvailability, RecordKind, TransferError};
+    use notify::Watcher as _;
+
+    require_fuse!();
+    let mount = signalled_mount().await;
+    let docs = mount.dir.path().join("docs");
+    let record = {
+        let mut ns = mount.namespace.lock().unwrap();
+        let docs_ino = ns.resolve_path_ino("/docs").unwrap();
+        let missing = iroh_blobs::Hash::from([9; 32]);
+        let ino = ns
+            .create_file(docs_ino, "report.pdf", Some(&missing), 4, 1)
+            .unwrap();
+        ns.record_id_for(ino).unwrap()
+    };
+    let task = start_signal(&mount).await;
+
+    assert_eq!(list(&docs), Ok(vec!["report.pdf".to_string()]));
+    let report = docs.join("report.pdf");
+    let availability = || {
+        let mut value = vec![0_u8; usize::from(u16::MAX)];
+        let len = rustix::fs::getxattr(&report, fs_protocol::AVAILABILITY_XATTR, &mut value[..])
+            .expect("the mount projects the file's availability");
+        fs_protocol::AvailabilityProjectionV1::parse_xattr(&value[..len]).unwrap()
+    };
+    assert!(!availability().unavailable());
+    let (events_tx, events) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let _ = events_tx.send(event);
+    })
+    .unwrap();
+    watcher
+        .watch(&docs, notify::RecursiveMode::NonRecursive)
+        .unwrap();
+
+    // What a read that waited its bound for a quiet peer writes.
+    let mut unavailable = RecordAvailability::new(record, RecordKind::File);
+    unavailable.transfer.last_error = Some(TransferError {
+        message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
+        occurred_at_ms: 12,
+    });
+    mount.availability.lock().unwrap().put(unavailable).unwrap();
+
+    let (event, _events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
+        .await
+        .unwrap();
+    let event = event
+        .expect("inotify reports the file's changed availability")
+        .unwrap();
+    assert!(
+        event.paths.iter().any(|path| path == &docs),
+        "the event names the file's folder: {event:?}"
+    );
+    assert!(
+        availability().unavailable(),
+        "the folder's watcher reads the file as unavailable"
+    );
+
+    drop(watcher);
+    drop(task);
+    let SignalledMount {
+        session,
+        endpoint,
+        store,
+        ..
+    } = mount;
     shutdown_fuse_fixture(session, endpoint, store).await;
 }

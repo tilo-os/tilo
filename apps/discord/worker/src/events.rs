@@ -59,6 +59,10 @@ pub struct Guild {
     pub roles: BTreeMap<String, RoleInfo>,
     /// Thread → its parent text channel.
     pub threads: HashMap<String, String>,
+    /// The guild's owner, who has every permission.
+    pub owner: String,
+    /// The bot's own roles, for its permissions in a channel.
+    pub bot_roles: Vec<String>,
 }
 
 fn text(value: &Value) -> String {
@@ -159,8 +163,17 @@ impl Guild {
             id: text(&data["id"]),
             bot_user: bot_user.to_owned(),
             cdn_base: cdn_base.trim_end_matches('/').to_owned(),
+            owner: text(&data["owner_id"]),
             ..Self::default()
         };
+        if let Some(bot) = data["members"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|member| member["user"]["id"] == bot_user)
+        {
+            guild.bot_member(bot);
+        }
         for channel in data["channels"].as_array().into_iter().flatten() {
             guild.put_channel(channel);
         }
@@ -212,6 +225,20 @@ impl Guild {
                 overwrites,
             },
         );
+    }
+
+    /// Take in the bot's own member object (`GUILD_CREATE`'s or a
+    /// `GUILD_MEMBER_UPDATE`); anyone else's is ignored.
+    pub fn bot_member(&mut self, member: &Value) {
+        if member["user"]["id"] != self.bot_user.as_str() {
+            return;
+        }
+        self.bot_roles = member["roles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|role| role.as_str().map(str::to_owned))
+            .collect();
     }
 
     fn put_role(&mut self, role: &Value) {
@@ -288,7 +315,8 @@ impl Guild {
         }
     }
 
-    fn avatar_url(&self, user: &Value) -> Option<String> {
+    #[must_use]
+    pub fn avatar_url(&self, user: &Value) -> Option<String> {
         let hash = opt_text(&user["avatar"])?;
         let id = text(&user["id"]);
         Some(format!(

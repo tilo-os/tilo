@@ -20,7 +20,7 @@ pub(crate) struct DeviceView {
 }
 
 /// Ask the host for the devices trusted under the workspace's identity.
-pub(crate) fn list(remote: &ui::RemoteActions) -> ui::LocalState<ui::InvocationCall> {
+pub(crate) fn list(remote: &ui::RemoteActions) -> ui::InvocationCall {
     remote.invoke(
         identity_admin::target(identity_admin::DEVICES),
         InvokeArgument::None,
@@ -35,7 +35,7 @@ pub(crate) fn revoke(
     remote: &ui::RemoteActions,
     device: &[u8; 32],
     reason: &str,
-) -> ui::LocalState<ui::InvocationCall> {
+) -> ui::InvocationCall {
     let mut arguments = serde_json::Map::new();
     arguments.insert("device".into(), hex::encode(device).into());
     arguments.insert("reason".into(), reason.into());
@@ -81,18 +81,18 @@ pub(crate) fn views(listed: Vec<FleetDevice>) -> Result<Vec<DeviceView>, String>
 ///
 /// The host's refusal or failure, or that it was cancelled.
 pub(crate) fn settled(
-    call: &ui::LocalState<ui::InvocationCall>,
+    call: &ui::InvocationCall,
 ) -> Option<Result<ui::tilo_actions::ActionOutput, String>> {
     use ui::tilo_actions::InvocationUpdate;
     let answer = call.get();
-    if !answer.is_settled() {
+    if !answer.is_finished() {
         return None;
     }
     Some(match answer {
-        ui::RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => Ok(output),
-        ui::RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => Err(error.message),
-        ui::RemoteCall::Refused(error) => Err(error.to_string()),
-        ui::RemoteCall::Done(_) | ui::RemoteCall::Pending => {
+        ui::Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+        ui::Arrival::Ready(InvocationUpdate::Failed { error, .. }) => Err(error.message),
+        ui::Arrival::Failed(error) => Err(error.to_string()),
+        ui::Arrival::Ready(_) | ui::Arrival::Pending { .. } => {
             Err("the host stopped before it answered".into())
         }
     })

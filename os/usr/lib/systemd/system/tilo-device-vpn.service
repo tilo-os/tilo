@@ -1,0 +1,28 @@
+# Owns the device VPN's privileged half for the shell (docs/device-vpn.md): the
+# TUN devices, the person's routing rules, the kill switch, NetworkManager's
+# DNS while names go through the tunnel, and forwarding and masquerade while
+# this device is an exit. It exits after a minute without requests while
+# nothing is open.
+[Unit]
+Description=Device VPN helper
+Requires=tilo-device-vpn.socket
+After=tilo-device-vpn.socket tilo-device-vpn-reset.service
+
+[Service]
+ExecStart=/usr/libexec/tilo-device-vpn serve
+NoNewPrivileges=yes
+# TUN devices, routes, rules and nftables; reading a caller's executable and
+# namespaces under /proc and checking through its pidfd that it is still the
+# process that connected.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_PTRACE
+AmbientCapabilities=
+# Netlink for ip and nft; the system bus for NetworkManager; the control socket.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+ProtectSystem=strict
+ReadWritePaths=/run/tilo-device-vpn /var/lib/tilo/device-vpn
+ProtectHome=yes
+PrivateTmp=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+UMask=0077

@@ -50,6 +50,12 @@ inline std::string FramePacket(uint32_t tab,uint32_t width,uint32_t height,const
   if(tab!=1) AppendU32(out,tab);
   AppendU32(out,width); AppendU32(out,height); out.append(pixels,size); return out;
 }
+// At most `limit` bytes of UTF-8 `text`, cut where a character starts.
+inline std::string BoundedText(std::string text,size_t limit) {
+  if(text.size()<=limit) return text;
+  size_t end=limit;while(end>0 && (static_cast<unsigned char>(text[end])&0xC0)==0x80) --end;
+  text.resize(end);return text;
+}
 inline std::string EncodePacket(uint8_t kind,const std::string& data) {
   if(data.size()+1>kMaxPacket) throw std::length_error("IPC packet too large");
   std::string out; out.reserve(data.size()+5); AppendU32(out,static_cast<uint32_t>(data.size()+1)); out.push_back(kind); out+=data; return out;

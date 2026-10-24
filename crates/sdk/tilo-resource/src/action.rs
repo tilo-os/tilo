@@ -1190,7 +1190,7 @@ fn apply_operation(
 
 impl<O: Operation> tilo_actions::Action for Stamped<O> {
     /// Read the record, run the method, write back what changed
-    /// ([`apply_operation`]).
+    /// (`apply_operation`).
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
         apply_operation(

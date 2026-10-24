@@ -15,7 +15,7 @@
 //! Settings › Displays can revoke.
 //!
 //! The Keep/Revert band is the one the Super+P sheet shows
-//! ([`paint_keep_revert_band`]), so a staged layout looks and reads the same
+//! (`paint_keep_revert_band`), so a staged layout looks and reads the same
 //! wherever it came from.
 
 use std::time::{Duration, Instant};

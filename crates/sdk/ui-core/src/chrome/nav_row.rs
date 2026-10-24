@@ -132,6 +132,10 @@ pub struct NavRowFace<'a> {
     /// `Some(checked)`: a checkbox in the leading slot. The whole row is
     /// its target.
     pub checked: Option<bool>,
+    /// Where that checkbox's fill and mark are this frame
+    /// ([`crate::widget::FaceMotions::check`]); at rest on `checked` when
+    /// unset.
+    pub check_pose: Option<crate::widget::CheckPose>,
     /// A usage bar under the text, `0.0..=1.0`.
     pub level: Option<f32>,
     /// The people on this row's place, by identity, each a mark in their
@@ -167,6 +171,7 @@ impl<'a> NavRowFace<'a> {
             swatch: None,
             avatar: None,
             checked: None,
+            check_pose: None,
             level: None,
             presence: &[],
             unread: false,
@@ -954,7 +959,11 @@ pub fn paint_nav_row(
             scene,
             transform,
             theme,
-            &crate::widget::CheckboxFace::new(rect, checked).hovered(face.state.hover),
+            &match face.check_pose {
+                Some(pose) => crate::widget::CheckboxFace::new(rect, checked).pose(pose),
+                None => crate::widget::CheckboxFace::new(rect, checked),
+            }
+            .hovered(face.state.hover),
         );
     }
     if let Some(rect) = layout.icon {

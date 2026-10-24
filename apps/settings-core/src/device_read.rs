@@ -19,7 +19,7 @@ pub type Erased = Box<dyn Any + Send>;
 
 /// One background read of a `T`, started at most once.
 ///
-/// Only its edges know `T`: [`ErasedRead`] carries every result as an
+/// Only its edges know `T`: `ErasedRead` carries every result as an
 /// [`Erased`] box. Each area reads a type of its own, and a channel per
 /// type compiled `std::sync::mpsc` once per area into the Settings tapp,
 /// over its size budget.

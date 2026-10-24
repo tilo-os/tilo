@@ -174,9 +174,11 @@ fi
 [ "$("$vm" ssh 'sha256sum /var/lib/tilo/device/cert.bin')" = "$cert_before" ] \
   || die "startup replaced the joined device's certificate"
 # An authored app starts on the joined device: its launch brokers the joined
-# identity, which holds no key of its own, and only reads the identity store.
-identity_manifest="cd $identity_dir && find . -printf '%p %y %m %i %s %T@\n' | LC_ALL=C sort \
-  && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum"
+# identity, which holds no key of its own, and writes none of its records. The
+# local index (registry.json) may record which identity the workspace it opens
+# in uses.
+identity_manifest="cd $identity_dir && find . -mindepth 1 ! -path ./registry.json -printf '%p %y %m %i %s %T@\n' | LC_ALL=C sort \
+  && find . -type f ! -path ./registry.json -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum"
 "$vm" ssh "$identity_manifest" > "$out/identity-before-notes.txt" \
   || die "could not record the identity directory"
 "$vm" test installed-atspi-apps.sh 'open Notes' > "$out/notes-open.txt" 2>&1 || {

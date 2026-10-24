@@ -47,6 +47,33 @@ impl Settings {
 ///
 /// # Errors
 /// Returns why `uri` is not a Settings link this version understands.
+/// The effect a system tool's intent opens Settings with: VPN's list, a
+/// profile's page or its import. Network's pane when the VPN effects are not
+/// in this build.
+pub fn tool_effect(intent: &os_actions::ToolIntent) -> Result<SettingsEffect, String> {
+    let os_actions::ToolIntent::Vpn { route, profile } = intent else {
+        return Err("Settings opens only the VPN tool".into());
+    };
+    let mut arguments = serde_json::Map::new();
+    let id = match (route, profile) {
+        (os_actions::VpnRoute::Import, _) => "import-vpn-file",
+        (os_actions::VpnRoute::Profile | os_actions::VpnRoute::DnsRouting, Some(profile)) => {
+            arguments.insert(
+                "connection".to_owned(),
+                serde_json::Value::from(profile.as_str()),
+            );
+            "show-vpn-profile"
+        }
+        _ => "show-vpns",
+    };
+    SettingsEffect::decode(id, &arguments).or_else(|_| {
+        Ok(NavigationEffect::OpenPane {
+            pane: Category::Network.slug().to_owned(),
+        }
+        .into())
+    })
+}
+
 pub fn parse_settings_uri(uri: &str) -> Result<SettingsEffect, String> {
     let rest = uri
         .strip_prefix("settings://")
@@ -140,10 +167,15 @@ impl ResourceApp for SettingsShell {
     /// `settings://models/<id>` opens Agent Models at that model's card and
     /// `settings://<pane>` opens the pane. Neither changes anything.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Settings>> {
-        let Some(argument) = input.argument() else {
-            return Vec::new();
+        let parsed = match input.argument() {
+            Some(argument) => parse_settings_uri(argument),
+            // Opened as a system tool (VPN): where the tool's intent says.
+            None => match os_actions::tool_intent_from_env() {
+                Some(intent) => tool_effect(&intent),
+                None => return Vec::new(),
+            },
         };
-        match parse_settings_uri(argument) {
+        match parsed {
             Ok(effect) => vec![Invoke::effect(&effect)],
             Err(error) => {
                 tracing::warn!(%error, "ignoring the Settings link");

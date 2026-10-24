@@ -237,6 +237,8 @@ const PROFILE_OPS: &[&str] = &[
     "extension_access",
     "extension_forget",
     "extension_identity",
+    "extension_grants",
+    "extension_permission_decision",
 ];
 
 static SERVERS: Mutex<Vec<Weak<Server>>> = Mutex::new(Vec::new());

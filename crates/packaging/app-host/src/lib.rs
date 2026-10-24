@@ -11,7 +11,7 @@
 //!
 //! - [`install`] — admit a `.tapp` against the catalogue identity the Store
 //!   capability approved, and install it into the package store.
-//! - [`fetch`] — remote fetch: resolve an app-id through the registry
+//! - `fetch` — remote fetch: resolve an app-id through the registry
 //!   protocol (`app-registry`), download the tapp over iroh-blobs, verify
 //!   it fail-closed, and install it.
 //! - [`service`] — Cap'n Proto `AppHost` server implementation.

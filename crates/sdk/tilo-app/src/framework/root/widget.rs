@@ -49,8 +49,10 @@ pub(crate) trait RootModel:
         presence: &PresenceCtx,
     );
     fn needs_redraw(&self) -> bool;
-    /// The window's save status the root presents over its view.
+    /// The window's save status the root says in the window's bar.
     fn save_indicator(&self) -> &crate::framework::saves::SaveIndicator;
+    /// The save status, for a test to move its clock.
+    #[cfg(test)]
     fn save_indicator_mut(&mut self) -> &mut crate::framework::saves::SaveIndicator;
     fn resource_operation_handlers(&self) -> HashSet<String>;
     fn poll_resource_operation(
@@ -245,24 +247,16 @@ impl Decorator for RootWidget {
         self.0.needs_redraw()
     }
 
-    // The save status floats over the view: its pixels are the root's own,
-    // beside whatever the view damaged.
     fn collect_damage(&self, regions: &mut Vec<ui_core::vello::kurbo::Rect>) {
         self.0.view().collect_damage(regions);
-        let area = self.0.view().get_rect();
-        self.0
-            .save_indicator()
-            .collect_damage(area, ui_core::time::now(), regions);
     }
 
     fn mark_drawn(&mut self) {
-        self.0.save_indicator_mut().mark_drawn();
         self.0.view_mut().mark_drawn();
     }
 
     fn has_transient_feedback(&self) -> bool {
         self.0.view().has_transient_feedback()
-            || self.0.save_indicator().is_visible(ui_core::time::now())
     }
 
     // The save status's deadline is the sync's; the view serves its own.
@@ -286,46 +280,16 @@ impl Decorator for RootWidget {
         }
     }
 
-    // A press on the save status's buttons is its own; everything else is
-    // the view's.
     fn handle_event(
         &mut self,
         event: &ui_core::winit::event::WindowEvent,
         ctx: &mut ui_core::widget::EventCtx<'_>,
     ) {
-        use ui_core::winit::event::{ElementState, MouseButton, WindowEvent};
-        let save = self.0.save_indicator_mut();
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                save.pointer_moved(ui_core::vello::kurbo::Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if save.press() => {
-                *ctx.handled = true;
-                return;
-            }
-            _ => {}
-        }
         self.0.view_mut().handle_event(event, ctx);
     }
 
-    // The save status is a synthetic child of the view's node; a view that
-    // is presentational stands in a plain group while it shows.
     fn accessibility(&self) -> Option<ui_core::a11y::AccessNode> {
-        let view = self.0.view().accessibility();
-        let Some(save) = self.0.save_indicator().accessibility() else {
-            return view;
-        };
-        let mut node =
-            view.unwrap_or_else(|| ui_core::a11y::AccessNode::new(ui_core::a11y::Role::Group));
-        node.children.push(save);
-        Some(node)
+        self.0.view().accessibility()
     }
 
     fn perform_semantic_action(
@@ -335,11 +299,9 @@ impl Decorator for RootWidget {
         state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.0.save_indicator_mut().perform(target)
-            || self
-                .0
-                .view_mut()
-                .perform_semantic_action(target, action, state, path)
+        self.0
+            .view_mut()
+            .perform_semantic_action(target, action, state, path)
     }
 
     fn name(&self) -> &'static str {

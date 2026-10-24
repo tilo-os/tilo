@@ -2810,3 +2810,100 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
     assert_eq!(observed.author, browser.device_public_key);
     assert_eq!(observed.body, forged.body);
 }
+
+/// A heartbeat is answered while the session's writer is held behind a live
+/// frame whose authorization waits for the room's lock: a slow store under
+/// that lock never makes the host look silent.
+#[tokio::test]
+async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
+    let (root, user) = UserIdentity::generate("owner", 1);
+    let (b, _) = certified_device(&root, user.public_key, "b");
+    let room = uuid::Uuid::from_u128(91);
+    let id = crate::room_workspace_id(&room.to_string()).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut runtime = crate::workspace::WorkspaceRuntime::open(
+        tmp.path(),
+        id,
+        true,
+        crate::workspace::Membership::default(),
+    )
+    .unwrap();
+    runtime.admit_device(b.device_public_key).unwrap();
+    let workspace = Arc::new(AsyncMutex::new(runtime));
+    let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, workspace.clone())])));
+    let (client, server) = tokio::io::duplex(65536);
+    let (read, write) = tokio::io::split(server);
+    let session = tokio::spawn(run_peer_stream(
+        b.clone(),
+        read,
+        write,
+        PeerContext {
+            workspaces: registry,
+            autobind: None,
+            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+            trust_policy: Arc::new(std::sync::RwLock::new(
+                crate::policy::TrustPolicy::AllowMatchingUser,
+            )),
+            own_user_public_key: user.public_key,
+            own_device_cert: b.cert.clone(),
+            own_device_public_key: b.cert.device_public_key,
+            app_serving: None,
+            metrics: Arc::new(crate::metrics::Metrics::default()),
+            live_bridge: None,
+            agents: crate::peer::AgentRegistry::default(),
+            positions: None,
+            compactor: None,
+            member_limits: None,
+        },
+        std::future::pending::<()>(),
+    ));
+    let (read, mut write) = tokio::io::split(client);
+    let mut reader = SessionReader::new(read);
+    write
+        .write_all(
+            &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Subscribe {
+                workspace_id: id,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        reader.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::Ready { .. }))
+    ));
+    let outbound = workspace.lock().await.subscribers[&b.device_public_key]
+        .tx
+        .clone();
+    // Hold the room: the writer's authorization of the next live frame waits
+    // for it, as it waits for a slow store under it.
+    let held = workspace.lock().await;
+    outbound
+        .send(Envelope::Presence {
+            workspace_id: id,
+            payload: vec![1],
+        })
+        .await
+        .unwrap();
+    tilo_test_env::within("the writer to take the live frame", async {
+        while outbound.capacity() < outbound.max_capacity() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    write
+        .write_all(&tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Ping).unwrap())
+        .await
+        .unwrap();
+    let answer = tilo_test_env::within("the heartbeat's answer while the writer waits", async {
+        reader.read_next().await.unwrap()
+    })
+    .await;
+    assert!(
+        matches!(answer, Some(EnvelopeV2::State(Envelope::Pong))),
+        "the heartbeat must be answered ahead of the held live frame: {answer:?}"
+    );
+    drop(held);
+    session.abort();
+    let _ = session.await;
+}

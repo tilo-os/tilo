@@ -36,15 +36,20 @@ pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
 pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
 
 mod catalogue;
+mod content_put;
 pub mod feedback;
 pub mod own_device;
 mod pending;
 mod wait;
+pub mod workspace_activity;
 
 pub use catalogue::{
     CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
     ViewResourceQuery,
+};
+pub use content_put::{
+    CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_OPEN_CONTENT_PUTS,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
@@ -1303,6 +1308,12 @@ pub trait ActionHost {
         let _ = (caller, request);
         Pending::ready(Err(ActionHostError::ConfirmationRequired))
     }
+
+    /// Where this host's callers put content into their room's content
+    /// store ([`ContentPuts`]); `None` for a host without one.
+    fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
+        None
+    }
 }
 
 /// A shared host is the host: what lets one be handed to [`serve`], which
@@ -1346,6 +1357,10 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         request: &InvokeRequest,
     ) -> Pending<Result<Confirmation, ActionHostError>> {
         (**self).confirm(caller, request)
+    }
+
+    fn content_puts(&self) -> Option<std::sync::Arc<dyn ContentPuts>> {
+        (**self).content_puts()
     }
 }
 

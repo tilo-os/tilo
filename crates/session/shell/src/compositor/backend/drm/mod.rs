@@ -3832,7 +3832,7 @@ impl Backend for DrmBackend {
 
     /// The CPU renderer composited with GLES keeps every layer in a canvas
     /// of its own, strips in canvas coordinates
-    /// ([`cpu_layers::CpuLayers`]), so every frame comes as layers.
+    /// (`cpu_layers::CpuLayers`), so every frame comes as layers.
     fn strip_layer_canvas(&self) -> Option<u32> {
         (cpu_present::cpu_render_reason().is_some() && gl_present::available())
             .then_some(cpu_layers::MAX_STRIP_CANVAS)

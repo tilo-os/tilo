@@ -39,6 +39,14 @@ pub struct SearchData {
     pub placeholder: Option<String>,
 }
 
+/// A row the person moved to, as it is found again once the rows are
+/// rebuilt: rows are numbered by position, which a late answer changes.
+enum ChosenRow {
+    /// A hit, by its `(provider, id)`.
+    Hit(String, String),
+    ShowAll(ResourceKind),
+}
+
 struct Sources {
     applications: Applications,
     windows: Windows,
@@ -73,6 +81,10 @@ pub struct DesktopSearch {
     more_rows: Vec<ResourceKind>,
     /// The kinds the person asked to see whole in this search.
     expanded: Vec<ResourceKind>,
+    /// The row the palette selected by itself when the rows were last
+    /// built: a selection still on it is the person's best result, not a
+    /// row they chose.
+    auto_selected: Option<String>,
     shown_query: Option<String>,
     /// [`ui::search::engine_generation`] when the rows were built: the
     /// content rows come again once the index's code arrived.
@@ -104,6 +116,7 @@ impl DesktopSearch {
             rows: Vec::new(),
             more_rows: Vec::new(),
             expanded: Vec::new(),
+            auto_selected: None,
             shown_query: None,
             shown_generation: 0,
             dismissed: false,
@@ -219,6 +232,18 @@ impl DesktopSearch {
             self.palette.entry_row_capacity(),
             &self.expanded,
         );
+        // An app's answer arriving late, or the index's code, re-ranks the
+        // rows of the same query: the row the person moved to stays chosen,
+        // so Enter does not open whatever slid under the cursor. A
+        // selection they never moved follows the best result.
+        let chosen = (self.shown_query.as_deref() == Some(query.as_str())
+            && self.palette.selected_id() != self.auto_selected.as_deref())
+        .then(|| {
+            self.palette
+                .selected_id()
+                .and_then(|id| self.chosen_row(id))
+        })
+        .flatten();
         let mut rows = Vec::new();
         let mut entries = Vec::new();
         self.more_rows.clear();
@@ -242,7 +267,32 @@ impl DesktopSearch {
                 self.more_rows.push(group.kind);
             }
         }
+        let kept = chosen.and_then(|chosen| match chosen {
+            ChosenRow::Hit(provider, id) => rows
+                .iter()
+                .position(|hit| hit.provider == provider && hit.id == id)
+                .map(|index| format!("hit:{index}")),
+            ChosenRow::ShowAll(kind) => self
+                .more_rows
+                .iter()
+                .position(|more| *more == kind)
+                .map(|index| format!("{MORE_PREFIX}{index}")),
+        });
         self.palette.set_entries(entries);
+        let cursor = kept.and_then(|id| {
+            self.palette
+                .visible_entries()
+                .iter()
+                .position(|entry| entry.id == id)
+        });
+        if let Some(cursor) = cursor {
+            self.palette.set_cursor(cursor);
+        }
+        self.auto_selected = if cursor.is_some() {
+            None
+        } else {
+            self.palette.selected_id().map(str::to_owned)
+        };
         // A large index answers typed text only once the engine's code is
         // in: while it is on its way, an empty list says it is still
         // searching.
@@ -311,11 +361,22 @@ impl DesktopSearch {
         self.rows.get(index).cloned()
     }
 
+    /// What the row `id` shows, to find it again among rebuilt rows: a hit,
+    /// or the "Show all" row of a group.
+    fn chosen_row(&self, id: &str) -> Option<ChosenRow> {
+        if let Some(more) = id.strip_prefix(MORE_PREFIX) {
+            let kind = self.more_rows.get(more.parse::<usize>().ok()?)?;
+            return Some(ChosenRow::ShowAll(kind.clone()));
+        }
+        self.hit(id).map(|hit| ChosenRow::Hit(hit.provider, hit.id))
+    }
+
     fn finish(&mut self) {
         self.sources = None;
         self.rows.clear();
         self.more_rows.clear();
         self.expanded.clear();
+        self.auto_selected = None;
         self.shown_query = None;
         self.dismissed = false;
     }
@@ -489,6 +550,179 @@ mod tests {
         assert!(search.refresh());
         assert!(search.results().iter().any(|hit| hit.title == "Notes"));
         assert!(!search.refresh());
+    }
+
+    /// An app whose rows for a query come after it is asked, as a framework
+    /// app's do: it answers on its next frame.
+    struct LateApp {
+        arrived: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+
+    impl ui::search::SearchProvider for LateApp {
+        fn name(&self) -> &'static str {
+            "Notes"
+        }
+        fn search(&self, _: &str) -> Vec<ui::search::SearchResult> {
+            Vec::new()
+        }
+        fn search_page(
+            &self,
+            query: &ui::search::SearchQuery,
+            _: Option<&ui::search::SearchCursor>,
+            _: usize,
+            _: usize,
+        ) -> ui::search::SearchPage {
+            if !self.arrived.get() {
+                let mut page = ui::search::SearchPage::empty();
+                page.pending = Some(ui::search::PendingToken::new(1));
+                return page;
+            }
+            let row = ui::search::SearchResult::for_action(
+                "Notes",
+                format!("{} from the meeting", query.text()),
+                tilo_actions::ActionAddress::new("meeting", "open"),
+            );
+            ui::search::SearchPage::of(vec![row], None)
+        }
+        fn poll_page(&self, _: &ui::search::PendingToken) -> ui::search::PagePoll {
+            if self.arrived.get() {
+                ui::search::PagePoll::Answered(ui::search::SearchPage::empty())
+            } else {
+                ui::search::PagePoll::Pending
+            }
+        }
+    }
+
+    /// Search over `base` with an app whose answer is still coming.
+    fn with_a_late_app(base: SearchData) -> (DesktopSearch, std::rc::Rc<std::cell::Cell<bool>>) {
+        let arrived = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut meeting = Resource::new("meeting", "notes.page", "Meeting");
+        meeting
+            .actions
+            .push(tilo_actions::ActionSpec::immediate_encoded(
+                "open",
+                "Open",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction {
+                    type_id: "test.open".into(),
+                    payload: Vec::new(),
+                },
+            ));
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            resources: vec![meeting],
+            providers: vec![Box::new(LateApp {
+                arrived: std::rc::Rc::clone(&arrived),
+            })],
+            content_only: true,
+            ..base
+        });
+        (search, arrived)
+    }
+
+    fn selected(search: &DesktopSearch) -> Option<(String, String)> {
+        let hit = search.hit(search.palette().selected_id()?)?;
+        Some((hit.provider, hit.id))
+    }
+
+    /// The person arrowed to a row; an app's answer arriving a frame later
+    /// re-ranks the list. Enter must still open the row they moved to, not
+    /// whatever slid under the cursor.
+    #[test]
+    fn an_answer_that_arrives_late_keeps_the_row_the_person_moved_to() {
+        let (mut search, arrived) = with_a_late_app(data());
+        search.set_query("notes");
+        assert!(search.waiting(), "the app's answer is still coming");
+        assert!(search.results().len() >= 2, "{:?}", search.results());
+        assert!(arrow_down(&mut search));
+        let chosen = selected(&search).expect("a row is selected");
+
+        arrived.set(true);
+        assert!(search.refresh(), "the answer re-ranks the rows");
+        assert!(
+            search
+                .results()
+                .iter()
+                .any(|hit| hit.title == "notes from the meeting"),
+            "the late answer is listed: {:?}",
+            search.results()
+        );
+        assert_eq!(selected(&search), Some(chosen));
+    }
+
+    /// The person moved to a group's "Show all" row; an app's answer
+    /// arriving a frame later adds its group and moves the rows. Enter must
+    /// still show all of the group they chose, not open the row that took
+    /// its place.
+    #[test]
+    fn an_answer_that_arrives_late_keeps_the_show_all_row_the_person_moved_to() {
+        // More windows and commands for the query than one card shows.
+        let (mut search, arrived) = with_a_late_app(SearchData {
+            windows: (0..12)
+                .map(|tab| WindowEntry {
+                    tab,
+                    title: format!("Meeting notes {tab}"),
+                    app_title: "Notes".into(),
+                    app: Some("so.tilo.notes".into()),
+                    place: vec!["Workspace".into(), "Main".into()],
+                })
+                .collect(),
+            commands: (0..12)
+                .map(|i| CommandSpec {
+                    id: format!("host:{i}"),
+                    title: format!("Meeting room {i}"),
+                    subtitle: None,
+                })
+                .collect(),
+            ..data()
+        });
+        search.set_query("meeting");
+        assert!(search.waiting(), "the app's answer is still coming");
+        let mut moves = 0;
+        while !search
+            .palette()
+            .selected_id()
+            .is_some_and(|id| id.starts_with(MORE_PREFIX))
+        {
+            assert!(arrow_down(&mut search), "a group was cut short");
+            moves += 1;
+        }
+        assert!(moves > 0, "the person moved to the row");
+        let group = |search: &DesktopSearch| {
+            let entries = search.palette().visible_entries();
+            entries
+                .get(search.palette().cursor())
+                .and_then(|entry| entry.group.clone())
+        };
+        let chosen = group(&search).expect("the row names its group");
+
+        arrived.set(true);
+        assert!(search.refresh(), "the answer rebuilds the rows");
+        assert!(!search.waiting(), "the app answered");
+        assert!(
+            search
+                .palette()
+                .selected_id()
+                .is_some_and(|id| id.starts_with(MORE_PREFIX)),
+            "{:?}",
+            search.palette().selected_id()
+        );
+        assert_eq!(group(&search).as_deref(), Some(chosen.as_str()));
+    }
+
+    /// Nobody moved the selection: it is the best result, and follows the
+    /// best result when an answer arrives.
+    #[test]
+    fn an_unmoved_selection_follows_the_best_result() {
+        let (mut search, arrived) = with_a_late_app(data());
+        search.set_query("notes");
+        arrived.set(true);
+        assert!(search.refresh());
+        let best = search.results().first().expect("rows");
+        assert_eq!(
+            selected(&search),
+            Some((best.provider.clone(), best.id.clone()))
+        );
     }
 
     /// Every app of the registry the web runs, a few windows and commands:

@@ -839,13 +839,22 @@ impl ActionArgs {
                 // not get.
                 return Err(ArgError::Unknown { name });
             };
+            // Callers (models especially) write null for "not set": for an
+            // optional parameter that is leaving it out. A nullable one
+            // takes null as its value.
+            if matches!(value, ArgValue::Null) && !param.nullable && !param.required {
+                continue;
+            }
             if matches!(value, ArgValue::Null) && !param.nullable {
                 return Err(ArgError::Constraint {
                     name,
                     reason: "may not be null".into(),
                 });
             }
-            if !matches!(value, ArgValue::Null) && !value.satisfies(param.ty) {
+            if !matches!(value, ArgValue::Null)
+                && !value.satisfies(param.ty)
+                && !schema_alternative_of(param, &value)
+            {
                 return Err(ArgError::WrongType {
                     name,
                     expected: param.ty,
@@ -1199,6 +1208,32 @@ fn validate_schema_value(
     schema: &serde_json::Value,
 ) -> Result<(), String> {
     check_schema_value(value, schema).map_err(|refusal| refusal.to_string())
+}
+
+/// Whether `param`'s schema offers `value`'s JSON type as one of its
+/// alternatives (`oneOf`), beside the parameter's own type: a byte parameter
+/// takes its bytes inline, as an array, or a content reference, as a string.
+/// The schema then decides which alternative the value is.
+fn schema_alternative_of(param: &ActionParam, value: &ArgValue) -> bool {
+    let json_type = match value.to_json() {
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Number(number) if number.is_i64() || number.is_u64() => "integer",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Object(_) => "object",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Null => return false,
+    };
+    param
+        .schema
+        .as_deref()
+        .and_then(|schema| schema.get("oneOf"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|alternatives| {
+            alternatives.iter().any(|alternative| {
+                alternative.get("type").and_then(serde_json::Value::as_str) == Some(json_type)
+            })
+        })
 }
 
 fn check_schema_value(
@@ -1781,6 +1816,32 @@ mod rich_schema_tests {
         resource_datetime_secret_and_nullable_values_round_trip();
         malformed_schema_is_rejected_before_it_describes_values();
         unique_array_items_are_published_and_enforced();
+    }
+
+    #[test]
+    fn null_leaves_an_optional_argument_out_and_is_no_required_ones_value() {
+        let params = vec![
+            ActionParam::required("media", ParamType::Text, "media"),
+            ActionParam::optional("fade_in", ParamType::Number, "fade in"),
+            ActionParam::optional("parent", ParamType::Text, "parent").nullable(),
+        ];
+        let supplied = json!({"media": "shot-a.mp4", "fade_in": null, "parent": null});
+        let bound = ActionArgs::bind_json(&params, supplied.as_object().unwrap()).unwrap();
+        assert_eq!(
+            bound.to_json(),
+            *json!({"media": "shot-a.mp4", "parent": null})
+                .as_object()
+                .unwrap()
+        );
+        assert_eq!(bound.number("fade_in"), None);
+
+        let missing = json!({"media": null});
+        assert_eq!(
+            ActionArgs::bind_json(&params, missing.as_object().unwrap())
+                .unwrap_err()
+                .to_string(),
+            "argument `media` may not be null"
+        );
     }
 
     #[test]

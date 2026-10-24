@@ -264,7 +264,7 @@ impl RoomOwner {
         if !self.creation.allows(app, kind) {
             return Err(format!("{app} does not declare the resource kind `{kind}`"));
         }
-        candidate.publish_document(
+        candidate.publication_mut().publish_document(
             app,
             record,
             automerge::AutoCommit::new().save(),

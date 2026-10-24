@@ -15,13 +15,13 @@ const ADA: [u8; 32] = [8; 32];
 const GREETER: &str = "0b7e4c2a-9d1f-4e3b-8a6c-5f2d1e0c9b8a";
 
 /// The root `governor()`'s device belongs to, which installs the room's bots.
-fn owner_root() -> ed25519_dalek::SigningKey {
+pub(super) fn owner_root() -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&[1; 32])
 }
 
 /// A host that decides what members and bots change against the surfaces
 /// of the apps it runs, as a room host does.
-async fn bot_host(
+pub(super) async fn bot_host(
     state: &std::path::Path,
     key: &ed25519_dalek::SigningKey,
     cert: &DeviceCert,
@@ -1239,7 +1239,7 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
 }
 
 /// The Discord bridge as the host installs it, its program as shipped.
-fn discord_bridge() -> installed::InstalledBot {
+pub(super) fn discord_bridge() -> installed::InstalledBot {
     installed::InstalledBot {
         installation: "5b8d2278-de54-4bf8-a0b8-8ae4f0587eed".into(),
         entry: "discord-bridge".into(),

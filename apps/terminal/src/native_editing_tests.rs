@@ -39,7 +39,7 @@ mod native_editing_tests {
             .fill(0);
         producer.send(&frame)?;
         wait_until("the native announcement", || {
-            widget.ime_content() == Some(ui::ime::InputContent::TEXT)
+            widget.ime_requires_deferred_ack()
         });
         Ok((widget, producer))
     }
@@ -57,6 +57,10 @@ mod native_editing_tests {
         );
         assert!(widget.start_deferred_text().is_some());
         widget.try_write_input(b"typed").unwrap();
+        assert!(
+            !widget.ime_requires_deferred_ack(),
+            "typing revoked the editor's offer"
+        );
         assert_eq!(widget.ime_content(), Some(ui::ime::InputContent::TERMINAL));
         let mut packet = [0; editor::FRAME_BYTES];
         let size = producer.receive(&mut packet).unwrap();
@@ -67,10 +71,16 @@ mod native_editing_tests {
     /// At a native editor prompt, dictation still needs the editor's
     /// acknowledgement, but an ordinary commit (the on-screen keyboard's
     /// letters) becomes the editor's own acknowledged edit, so hosts serve the
-    /// prompt to standard text input and the on-screen keyboard opens.
+    /// prompt to standard text input and the on-screen keyboard opens. The
+    /// field stays a terminal input, so the keyboard keeps its terminal keys.
     #[test]
     fn a_native_editor_prompt_takes_ordinary_commits() {
         let (widget, _producer) = fixture().expect("qualified native editor fixture");
+        assert_eq!(
+            widget.ime_content(),
+            Some(ui::ime::InputContent::TERMINAL),
+            "the prompt is still terminal input"
+        );
         assert!(
             widget.ime_requires_deferred_ack(),
             "dictation stays acknowledged"
@@ -80,6 +90,43 @@ mod native_editing_tests {
             "the on-screen keyboard's commits reach the prompt"
         );
         assert!(ui::ime::ImeWindowState::from_widget(&widget).is_some());
+    }
+
+    /// The on-screen keyboard's terminal keys work at a native editor
+    /// prompt: each is a real key the editor reads from the PTY, so Up walks
+    /// its history and Ctrl+C interrupts.
+    #[test]
+    fn the_terminal_keys_reach_a_native_editor_prompt_as_keys() {
+        use winit::keyboard::{Key, NamedKey};
+        let (mut widget, _producer) = fixture().expect("qualified native editor fixture");
+        let writes = widget.attach_input_probe();
+        let mut doc = automerge::AutoCommit::new();
+        for (key, ctrl, alt, bytes) in [
+            (Key::Named(NamedKey::ArrowUp), false, false, &b"\x1b[A"[..]),
+            (
+                Key::Named(NamedKey::ArrowDown),
+                false,
+                false,
+                &b"\x1b[B"[..],
+            ),
+            (Key::Named(NamedKey::Escape), false, false, &b"\x1b"[..]),
+            (Key::Named(NamedKey::Tab), false, false, &b"\t"[..]),
+            (Key::Character("c".into()), true, false, &b"\x03"[..]),
+            (
+                Key::Named(NamedKey::ArrowLeft),
+                false,
+                true,
+                &b"\x1b[1;3D"[..],
+            ),
+        ] {
+            crate::tests::send_key_mods(&mut widget, &mut doc, key.clone(), ctrl, false, alt);
+            assert_eq!(
+                crate::tests::drain_writes(&writes),
+                bytes,
+                "{key:?} ctrl={ctrl} alt={alt}"
+            );
+            assert_eq!(widget.ime_content(), Some(ui::ime::InputContent::TERMINAL));
+        }
     }
 
     #[test]

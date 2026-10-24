@@ -185,7 +185,10 @@ pub(super) fn generate() -> ShellSelectionFixture {
             .unwrap()
     );
 
-    let baseline = owner.durable_bootstrap_messages(&key, at(2), 1).unwrap();
+    let baseline = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, at(2), 1)
+        .unwrap();
     let baseline_peer = owner.durable().unwrap();
 
     // The other device writes one signed change to the Writer document.
@@ -197,6 +200,7 @@ pub(super) fn generate() -> ShellSelectionFixture {
         .unwrap();
     doc.commit_edit("fixture", "foreign_once");
     let original = sender
+        .publication_mut()
         .publish_incremental(
             WRITER.0,
             WRITER.1,
@@ -216,6 +220,7 @@ pub(super) fn generate() -> ShellSelectionFixture {
         )
         .unwrap();
     let mut tail = owner
+        .publication_mut()
         .durable_mutation_messages(&before, &key, at(4), 2)
         .unwrap();
     assert_eq!(
@@ -247,6 +252,7 @@ pub(super) fn generate() -> ShellSelectionFixture {
         )
         .unwrap();
     let rename = owner
+        .publication_mut()
         .durable_mutation_messages(&before, &key, at(5), 3)
         .unwrap();
     assert_eq!(
@@ -256,7 +262,10 @@ pub(super) fn generate() -> ShellSelectionFixture {
     tail.extend(rename);
 
     let rows = owner.rows();
-    let checkpoint2 = owner.durable_bootstrap_messages(&key, at(6), 4).unwrap();
+    let checkpoint2 = owner
+        .publication_mut()
+        .durable_bootstrap_messages(&key, at(6), 4)
+        .unwrap();
     ShellSelectionFixture {
         room: ROOM.into(),
         certificates: owner.certificates(),

@@ -197,6 +197,16 @@ pub enum ChatEffect {
     /// microphone itself is asked for through the device's own prompt.
     #[effect(row, kind = "undoable")]
     Unmute { channel: String },
+    /// Deafen
+    ///
+    /// Hear nothing of the call, and be muted, until undeafened.
+    #[effect(row, idempotent, kind = "read")]
+    Deafen { channel: String },
+    /// Undeafen
+    ///
+    /// Hear the call again; the microphone comes back as it was.
+    #[effect(row, idempotent, kind = "read")]
+    Undeafen { channel: String },
     /// Turn camera on
     ///
     /// Shows this person's camera to everyone in the call; asked for
@@ -307,6 +317,8 @@ impl ChatApp {
             | ChatEffect::LeaveCall { .. }
             | ChatEffect::Mute { .. }
             | ChatEffect::Unmute { .. }
+            | ChatEffect::Deafen { .. }
+            | ChatEffect::Undeafen { .. }
             | ChatEffect::CameraOn { .. }
             | ChatEffect::CameraOff { .. }
             | ChatEffect::ShareScreen { .. }
@@ -982,6 +994,12 @@ impl ChatApp {
                 .operation(in_call_only(ChatEffect::Unmute {
                     channel: channel_id(),
                 }))
+                .operation(in_call_only(ChatEffect::Deafen {
+                    channel: channel_id(),
+                }))
+                .operation(in_call_only(ChatEffect::Undeafen {
+                    channel: channel_id(),
+                }))
                 .operation(in_call_only(ChatEffect::CameraOn {
                     channel: channel_id(),
                 }))
@@ -1155,6 +1173,8 @@ fn voice_command_of(effect: ChatEffect) -> Option<(String, Command)> {
         ChatEffect::LeaveCall { channel } => (channel, Command::Leave),
         ChatEffect::Mute { channel } => (channel, Command::SetMuted { muted: true }),
         ChatEffect::Unmute { channel } => (channel, Command::SetMuted { muted: false }),
+        ChatEffect::Deafen { channel } => (channel, Command::SetDeafened { deafened: true }),
+        ChatEffect::Undeafen { channel } => (channel, Command::SetDeafened { deafened: false }),
         ChatEffect::CameraOn { channel } => (channel, Command::SetCamera { on: true }),
         ChatEffect::CameraOff { channel } => (channel, Command::SetCamera { on: false }),
         ChatEffect::ShareScreen { channel } => (channel, Command::SetScreen { on: true }),

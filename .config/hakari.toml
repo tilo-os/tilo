@@ -59,7 +59,11 @@ platforms = [
 # their dependencies are unified and verified like any other crate. X11
 # builds add only X11 crates on top: what x11rb and x11-dl ask of shared
 # crates (libc, once_cell, rustix, tracing, ...) is within the hack's union.
-workspace-members = ["frame-link", "tilo-winit-x11"]
+#
+# workspace-unify depends on every library with the features the whole
+# workspace builds it with (tools/ci/workspace_unify.py): counted, it would be
+# every crate's union at once, and the hack would take all of them.
+workspace-members = ["frame-link", "tilo-winit-x11", "workspace-unify"]
 # Every managed member builds every crate listed in the hack, so none may need
 # a system library: server containers (tilo-relay, registry-server) and cross
 # builds have no desktop development packages. Media stays optional
@@ -117,6 +121,8 @@ third-party = [
 # - tilo-advisory-lock is the builder image's sccache canary, compiled cold into
 #   an empty namespace (tools/ci/publish/ci-builder-canary.sh); it must stay small.
 workspace-members = [
+    # resolves the others' features and builds nothing (tools/ci/workspace_unify.py)
+    "workspace-unify",
     # tilo-desktop-model and its member dependencies
     "collab-types",
     "desktop-policy",

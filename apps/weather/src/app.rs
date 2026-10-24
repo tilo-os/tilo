@@ -4,7 +4,7 @@
 //! a sidebar app. The window is the shared [`ui::widget::NavShell`] with no
 //! sidebar: the *contentful city list* is the overview, the forecast is the
 //! content. The window bar names the place shown and offers Add place and
-//! Refresh ([`window_bar`]); the shell draws no header row.
+//! Refresh (`window_bar`); the shell draws no header row.
 //!
 //! * **Wide** (both columns fit): the two panels sit **side by side**.
 //! * **Narrow**: the city list is full-screen; tapping a city **pushes** the

@@ -213,3 +213,84 @@ fn a_render_of_content_the_room_lacks_or_a_size_too_large_is_refused_before_rend
         Err(DoorError::InvalidArguments(_))
     ));
 }
+
+/// One agent brings footage into a new project and places it on V1, the
+/// lane a new project lacks until a clip names it; another participant's
+/// replica of the same record, on the room's content, views a frame of it.
+#[test]
+fn a_second_participant_views_a_frame_of_footage_the_first_imported() {
+    if !renders() {
+        return;
+    }
+    let room = ContentStore::memory();
+    // The footage: a second of a title, rendered and kept in the room.
+    let maker = agents_record(&timeline(None), &room);
+    let export = offered(&maker, "export-video-content").unwrap().address;
+    let made = maker
+        .invoke(
+            &export,
+            &arguments(serde_json::json!({ "width": 320, "height": 180, "fps": 24 })),
+            true,
+        )
+        .unwrap_or_else(|error| panic!("the host renders: {error}"));
+    let footage = made.value.unwrap()["content"].as_str().unwrap().to_owned();
+
+    let editor = ConfinedReplica::open(
+        &catalogue(),
+        VIDEO,
+        ROOM,
+        "editor",
+        &ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap()
+    .lending(room.clone());
+    let import = offered(&editor, "import-content").unwrap().address;
+    editor
+        .invoke(
+            &import,
+            &arguments(serde_json::json!({ "content": footage, "name": "shot-a.mp4" })),
+            true,
+        )
+        .unwrap_or_else(|error| panic!("the footage comes into the bin: {error}"));
+    let add = offered(&editor, "add-clip").unwrap().address;
+    let placed = editor
+        .invoke(
+            &add,
+            &arguments(serde_json::json!({ "media": "shot-a.mp4", "track": "V1", "at": 0 })),
+            true,
+        )
+        .unwrap_or_else(|error| panic!("a new project takes a clip on V1: {error}"));
+    assert_eq!(placed.value.unwrap()["placed"]["track"], "V1");
+    let Some(collab_types::DocumentMutation::Snapshot(snapshot)) = editor.take_mutation().unwrap()
+    else {
+        panic!("a new record is published whole");
+    };
+
+    let reviewer = ConfinedReplica::open(
+        &catalogue(),
+        VIDEO,
+        ROOM,
+        "reviewer",
+        &ReplicaActor::Agent,
+        Seed::Existing {
+            record: editor.record_id().clone(),
+            changes: vec![snapshot],
+        },
+    )
+    .unwrap()
+    .lending(room.clone());
+    let frame = offered(&reviewer, "view-frame-content").unwrap().address;
+    let answer = reviewer
+        .invoke(
+            &frame,
+            &arguments(serde_json::json!({ "at": 0.5, "width": 160 })),
+            true,
+        )
+        .unwrap_or_else(|error| panic!("the reviewer views the footage: {error}"))
+        .value
+        .unwrap();
+    let hash = tilo_actions::content_hash(answer["content"].as_str().unwrap()).unwrap();
+    let png = room.read(hash).expect("the room keeps the frame");
+    assert_eq!(png.get(..4), Some(&b"\x89PNG"[..]));
+}

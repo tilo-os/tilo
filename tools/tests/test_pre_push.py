@@ -88,6 +88,48 @@ class SelectTests(unittest.TestCase):
         # Outside every package (the workspace manifest, docs) nothing is linted.
         self.assertEqual(pre_push.select(scope, ["Cargo.toml", "docs/t.md"])["run"], ["fmt-changed", "changes"])
 
+    def test_an_app_s_change_selects_its_aarch64_size_check_and_a_library_s_none(self):
+        scope = {"base": "base", "checks": []}
+        chosen = pre_push.select(scope, ["apps/notes/src/lib.rs", "apps/notes/locales/en-US.ftl",
+                                         "apps/messages/src/app.rs", "docs/t.md"])
+        self.assertEqual(chosen["sizes"], ["app-size/messages-aarch64", "app-size/notes-aarch64"])
+        # A shared crate reaches most apps: main's whole-collection size gate holds it.
+        self.assertEqual(pre_push.select(scope, ["crates/sdk/ui/src/lib.rs"])["sizes"], [])
+        checks = {check["name"] for check in t_matrix.load(ROOT)["check"]}
+        for name in chosen["sizes"]:
+            self.assertIn(name, checks)
+        self.assertIn(pre_push.SIZE_RUNTIME, checks)
+
+    def test_each_push_s_size_decision_is_recorded_and_only_checked_ones_run(self):
+        one = ["app-size/notes-aarch64"]
+        many = [f"app-size/app{n}-aarch64" for n in range(pre_push.SIZE_APPS + 1)]
+        built = pre_push.runtime_built
+        asked = []
+        with tempfile.TemporaryDirectory() as directory:
+            record = Path(directory) / "t-gate-sizes"
+            try:
+                pre_push.runtime_built = lambda top, rev: asked.append(rev) or True
+                self.assertEqual(pre_push.sizes(".", "a" * 40, one, record), one)
+                # A change to more apps than SIZE_APPS is a shared one: t is not even asked.
+                self.assertEqual(pre_push.sizes(".", "b" * 40, many, record), [])
+                pre_push.runtime_built = lambda top, rev: False
+                self.assertEqual(pre_push.sizes(".", "c" * 40, one, record), [])
+                self.assertEqual(pre_push.sizes(".", "d" * 40, [], record), [])
+            finally:
+                pre_push.runtime_built = built
+            lines = record.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(asked, ["a" * 40])
+        self.assertEqual([line.split()[1:3] for line in lines],
+                         [["aaaaaaaaaa", "checked"], ["bbbbbbbbbb", "shared-change"],
+                          ["cccccccccc", "runtime-not-built"]])
+        self.assertTrue(lines[2].endswith(" app-size/notes-aarch64"), lines[2])
+
+    def test_only_a_run_with_every_check_cached_counts_as_built(self):
+        self.assertTrue(pre_push.all_cached({"type": "planned", "checks": ["thin-runtime-aarch64"], "cached": 1}))
+        self.assertFalse(pre_push.all_cached({"type": "planned", "checks": ["thin-runtime-aarch64"], "cached": 0}))
+        self.assertFalse(pre_push.all_cached({"type": "planned", "checks": [], "cached": 0}))
+        self.assertFalse(pre_push.all_cached(None))
+
     def test_opt_in_names_what_t_suggest_says_the_change_touches(self):
         suggest = {"checks": [
             {"check": "test-x86_64/shell", "reason": "opt-in; your change touches it: `t test test-x86_64/shell`"},

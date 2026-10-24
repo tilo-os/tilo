@@ -48,16 +48,11 @@ class CollectionMembersTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("holds no tapp", result.stderr)
 
-    def test_both_readers_use_the_one_allowlist(self):
-        workflow = (ROOT / ".forgejo/workflows/build-image.yml").read_text()
-        self.assertIn('tar -tzf "$work/apps.tar.gz" \\\n'
-                      '            | tools/apps/check-collection-members.sh --require-tapp "app collection"',
-                      workflow)
+    def test_prior_collection_reader_uses_the_allowlist(self):
         reuse = (ROOT / "tools/reuse_prior_app_collection.sh").read_text()
         self.assertIn('tar -tzf "$prior" | "$(dirname "${BASH_SOURCE[0]}")/apps/check-collection-members.sh" '
                       '"prior collection"', reuse)
-        for text in (workflow, reuse):
-            self.assertNotIn("while IFS= read -r member", text)
+        self.assertNotIn("while IFS= read -r member", reuse)
 
 
 if __name__ == "__main__":

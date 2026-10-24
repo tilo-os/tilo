@@ -11,11 +11,17 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
+use ui::webview::ExtensionPermissionSet;
 
 use crate::extensions::ExtensionInfo;
 
 /// Chrome shows at most four characters of a badge.
 const MAX_BADGE_CHARS: usize = 4;
+/// What Chromium answers for the badge of every tab while an extension's
+/// button shows each page's count of what its rules did there
+/// (`declarativeNetRequest`): no text of its own. The engine tells each
+/// page's count for that page's tab (`extension_action`).
+const RULE_COUNT_PLACEHOLDER: &str = "<<declarativeNetRequestActionCount>>";
 const MAX_TITLE_BYTES: usize = 256;
 /// The button's icon is drawn at toolbar size; larger sources downscale.
 const TARGET_ICON_PX: u32 = 32;
@@ -67,15 +73,30 @@ pub fn action_manifest(manifest: &Value) -> Option<ActionManifest> {
 }
 
 /// What an extension may do with the Browser's tabs, as its manifest asks:
-/// its API permissions (`tabs`, `activeTab`, `scripting`) and the sites it
-/// may read and script, which its content scripts' sites count among.
+/// its API permissions (`tabs`, `activeTab`, `scripting`), the sites it may
+/// read and script, and apart from those the sites its content scripts run
+/// on. As in Chrome, a content script's sites give no access to the tab
+/// APIs: an extension whose content scripts match every page sees no tab's
+/// address, scripts no page and captures none without asking.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Access {
     pub permissions: Vec<String>,
+    /// Its host permissions: `host_permissions`, and in MV2 the sites among
+    /// its `permissions`.
     pub hosts: Vec<String>,
+    /// Where its declared content scripts run.
+    pub scriptable: Vec<String>,
     /// The token its service worker shows the engine
     /// ([`crate::extensions::prepare_tabs`]).
     pub token: Option<String>,
+    /// Its keyboard shortcuts: the manifest's `commands`, whose suggested
+    /// keys the engine gives and runs as Chrome does.
+    pub commands: Option<Value>,
+    /// What it may ask for later (`optional_permissions`,
+    /// `optional_host_permissions`), and what of that the person granted
+    /// ([`crate::extensions::granted`]).
+    pub optional: ExtensionPermissionSet,
+    pub granted: ExtensionPermissionSet,
 }
 
 pub fn access(manifest: &Value) -> Access {
@@ -88,13 +109,38 @@ pub fn access(manifest: &Value) -> Access {
             .map(str::to_owned)
             .collect()
     };
+    // Manifest V2 lists sites among its permissions and optional
+    // permissions. From V3 on Chrome grants none it finds there (it warns of
+    // each and drops it): sites are asked for in `host_permissions` and
+    // `optional_host_permissions` alone. A manifest without a version is
+    // read as V2, as the Library reads it ([`crate::extensions`]).
+    let before_v3 = manifest
+        .get("manifest_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(2)
+        < 3;
     let site = |entry: &String| entry == "<all_urls>" || entry.contains("://");
+    let mut optional = ExtensionPermissionSet {
+        permissions: Vec::new(),
+        origins: strings(manifest.get("optional_host_permissions")),
+    };
+    for entry in strings(manifest.get("optional_permissions")) {
+        if site(&entry) {
+            if before_v3 {
+                optional.origins.push(entry);
+            }
+        } else {
+            optional.permissions.push(entry);
+        }
+    }
     let mut permissions = Vec::new();
     let mut hosts = strings(manifest.get("host_permissions"));
-    // Manifest V2 lists sites among its permissions.
+    let mut scriptable = Vec::new();
     for entry in strings(manifest.get("permissions")) {
         if site(&entry) {
-            hosts.push(entry);
+            if before_v3 {
+                hosts.push(entry);
+            }
         } else {
             permissions.push(entry);
         }
@@ -105,14 +151,23 @@ pub fn access(manifest: &Value) -> Access {
         .into_iter()
         .flatten()
     {
-        hosts.extend(strings(script.get("matches")));
+        scriptable.extend(strings(script.get("matches")));
     }
-    hosts.sort();
-    hosts.dedup();
+    for sites in [&mut hosts, &mut scriptable] {
+        sites.sort();
+        sites.dedup();
+    }
     Access {
         permissions,
         hosts,
+        scriptable,
         token: None,
+        commands: manifest
+            .get("commands")
+            .filter(|commands| commands.is_object())
+            .cloned(),
+        optional,
+        granted: ExtensionPermissionSet::default(),
     }
 }
 
@@ -158,6 +213,9 @@ pub struct Installed {
     /// `options_page`): where an ad blocker keeps its lists and allowed sites.
     pub options: Option<String>,
     pub access: Access,
+    /// Its keyword in the address (`omnibox.keyword`): typed with a space,
+    /// what follows is the extension's ([`crate::extension_omnibox`]).
+    pub keyword: Option<String>,
 }
 
 impl Installed {
@@ -179,6 +237,7 @@ impl Installed {
         let options = options_page(&manifest);
         let access = Access {
             token: crate::extensions::tabs_token_of(&info.path),
+            granted: crate::extensions::granted(info),
             ..access(&manifest)
         };
         Some(Self {
@@ -190,7 +249,16 @@ impl Installed {
             action,
             options,
             access,
+            keyword: crate::extension_omnibox::manifest_keyword(&manifest),
         })
+    }
+
+    /// Whether it may show a side panel beside the page (`chrome.sidePanel`).
+    pub fn side_panel(&self) -> bool {
+        self.access
+            .permissions
+            .iter()
+            .any(|permission| permission == "sidePanel")
     }
 
     /// `chrome-extension://<id>/<popup>`, when the action has a popup.
@@ -444,7 +512,10 @@ pub fn action_state(body: &str) -> Option<ActionState> {
     let value = reply.get("result")?.get("value")?.as_str()?;
     let state: Value = serde_json::from_str(value).ok()?;
     Some(ActionState {
-        badge: badge_text(state.get("text")?.as_str()?),
+        badge: match state.get("text")?.as_str()? {
+            RULE_COUNT_PLACEHOLDER => String::new(),
+            text => badge_text(text),
+        },
         title: state
             .get("title")
             .and_then(Value::as_str)
@@ -511,11 +582,14 @@ mod tests {
             action: action_manifest(&serde_json::from_str(manifest).unwrap()),
             options: options_page(&serde_json::from_str(manifest).unwrap()),
             access: access(&serde_json::from_str(manifest).unwrap()),
+            keyword: crate::extension_omnibox::manifest_keyword(
+                &serde_json::from_str(manifest).unwrap(),
+            ),
         }
     }
 
     #[test]
-    fn an_extension_may_use_the_tabs_and_sites_its_manifest_asks_for() {
+    fn an_extension_has_its_host_permissions_apart_from_its_content_scripts_sites() {
         let manifest = serde_json::json!({
             "permissions": ["tabs", "scripting", "https://old.example/*"],
             "host_permissions": ["*://*.example.com/*"],
@@ -525,15 +599,58 @@ mod tests {
             access(&manifest),
             Access {
                 permissions: vec!["tabs".into(), "scripting".into()],
-                hosts: vec![
-                    "*://*.example.com/*".into(),
-                    "<all_urls>".into(),
-                    "https://old.example/*".into(),
-                ],
+                hosts: vec!["*://*.example.com/*".into(), "https://old.example/*".into()],
+                scriptable: vec!["<all_urls>".into()],
                 token: None,
+                commands: None,
+                optional: ExtensionPermissionSet::default(),
+                granted: ExtensionPermissionSet::default(),
             }
         );
         assert_eq!(access(&serde_json::json!({})), Access::default());
+        // What it may ask for later: MV3 names sites apart, MV2 among the rest.
+        let optional = |manifest| access(&manifest).optional;
+        assert_eq!(
+            optional(serde_json::json!({
+                "optional_permissions": ["tabs", "http://old.example/*"],
+                "optional_host_permissions": ["https://*.example.org/*"],
+            })),
+            ExtensionPermissionSet {
+                permissions: vec!["tabs".into()],
+                origins: vec![
+                    "https://*.example.org/*".into(),
+                    "http://old.example/*".into()
+                ],
+            }
+        );
+        // From V3 on, a site among its permissions or optional permissions
+        // is no host permission, as in Chrome: one asking for every site
+        // there reads, scripts and captures no tab.
+        let v3 = access(&serde_json::json!({
+            "manifest_version": 3,
+            "permissions": ["tabs", "<all_urls>", "https://old.example/*"],
+            "optional_permissions": ["bookmarks", "*://*/*"],
+            "host_permissions": ["https://*.example.com/*"],
+        }));
+        assert_eq!(v3.permissions, vec!["tabs".to_owned()]);
+        assert_eq!(v3.hosts, vec!["https://*.example.com/*".to_owned()]);
+        assert_eq!(
+            v3.optional,
+            ExtensionPermissionSet {
+                permissions: vec!["bookmarks".into()],
+                origins: Vec::new(),
+            }
+        );
+        // Its keyboard shortcuts go to the engine as the manifest has them.
+        let shortcuts = serde_json::json!({"_execute_action": {"suggested_key": "Alt+Shift+Y"}});
+        assert_eq!(
+            access(&serde_json::json!({"commands": shortcuts})).commands,
+            Some(shortcuts)
+        );
+        assert_eq!(
+            access(&serde_json::json!({"commands": ["toggle"]})).commands,
+            None
+        );
     }
 
     #[test]
@@ -758,6 +875,17 @@ mod tests {
             Some(ActionState {
                 popup: Some(format!("chrome-extension://{id}/p.html")),
                 disabled: true,
+                ..ActionState::default()
+            })
+        );
+        // A button that shows each page's count has no text for every tab.
+        let counting = json!({"result":{"type":"string","value":
+            json!({"text":RULE_COUNT_PLACEHOLDER,"title":"uBlock Origin Lite"}).to_string()}})
+        .to_string();
+        assert_eq!(
+            action_state(&counting),
+            Some(ActionState {
+                title: Some("uBlock Origin Lite".into()),
                 ..ActionState::default()
             })
         );

@@ -442,8 +442,8 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         if time.monotonic() >= deadline:
             raise GateError("the app palette exposed no editable query over AT-SPI")
         time.sleep(POLL_SECONDS * 4)
-    # The palette names an app's launch row "Open <app>".
-    row_name = f"Open {app_name}"
+    # The palette names an app's launch row by the app's name.
+    row_name = app_name
     tree, _ = wait_for_shell_node(shell, row_name)
     rows = [
         path for path in AtspiClient.named(tree, row_name)

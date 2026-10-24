@@ -57,7 +57,7 @@ impl tilo_platform_caps::Feature for Feature {
     /// order. A [`Dir`](crate::Dir) kept in memory provides less than its
     /// target's column: no native paths, modes or links. On the web, blocking
     /// calls work on the app locations the host mirrored
-    /// ([`web::mirror`](crate::web)), except for locks.
+    /// (`web::mirror`), except for locks.
     fn targets(self) -> [Availability; 3] {
         use Availability::{Available, Unsupported};
         match self {

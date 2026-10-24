@@ -16,7 +16,7 @@
 //! its column widths and its scroll anchor survive the app's per-change
 //! rebuild of the file view. Everything a rebuild changes (entries,
 //! selection, sort, zoom, the rename in progress) goes in through
-//! [`ListSlot::sync`].
+//! `ListSlot::sync`.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

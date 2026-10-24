@@ -20,6 +20,8 @@ struct Shown {
     importing: bool,
     channels: usize,
     links: usize,
+    /// Why calls do not reach Discord, as the bridge last heard it.
+    voice_problem: Option<String>,
 }
 
 impl Shown {
@@ -29,6 +31,7 @@ impl Shown {
             importing: guild.ownership == Ownership::Importing,
             channels: guild.channels.len(),
             links: guild.links.len(),
+            voice_problem: guild.voice_problem.clone(),
         }
     }
 }
@@ -46,9 +49,10 @@ fn status(shown: &Shown) -> String {
     })
 }
 
-/// The counts, as separate facts.
+/// The counts, as separate facts, and why calls do not reach Discord when
+/// they do not: said where the bridge's state is read, never left silent.
 fn facts(shown: &Shown) -> Vec<Fact> {
-    vec![
+    let mut facts = vec![
         Fact::with_icon(
             Icon::Hash,
             CATALOG.t_args("discord-channels", &[("count", count(shown.channels))]),
@@ -57,7 +61,17 @@ fn facts(shown: &Shown) -> Vec<Fact> {
             Icon::Users,
             CATALOG.t_args("discord-linked-accounts", &[("count", count(shown.links))]),
         ),
-    ]
+    ];
+    if let Some(problem) = &shown.voice_problem {
+        facts.push(Fact::with_icon(
+            Icon::TriangleAlert,
+            CATALOG.t_args(
+                "discord-voice-problem",
+                &[("problem", ArgValue::Text(problem.clone()))],
+            ),
+        ));
+    }
+    facts
 }
 
 /// Before a server is bridged: what the app is, and bridging one.

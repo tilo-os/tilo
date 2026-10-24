@@ -4398,7 +4398,7 @@ impl RecordStore {
     }
 
     /// Say `text` of what was just done to the open record `id` once the
-    /// room it is shared in keeps it ([`RoomNotices`]): at once when no host
+    /// room it is shared in keeps it (`RoomNotices`): at once when no host
     /// replicates it, never when the room refuses it. The pending action is
     /// committed first, so the change it names is among the heads held.
     ///

@@ -2,11 +2,12 @@
 // an offscreen embedding: its tab registry holds only the tabs of its own
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
-// click, a tab's capture, context menu items and scripts on a tab from the
-// host's tabs instead, over a request the host answers itself. A page of the
-// extension is known by its address; its worker, which has none, by a token
-// the Browser wrote with this script into the worker it runs first
-// (extensions.rs).
+// click, keyboard shortcuts, the address's keyword, a tab's capture, context
+// menu items, notifications, signing in, scripts on a tab, what network
+// rules did in a tab and downloads from the host's tabs instead, over a
+// request the host answers itself. A page of the extension is known by its
+// address; its worker, which has none, by a token the Browser wrote with
+// this script into the worker it runs first (extensions.rs).
 (() => {
   const runtime = globalThis.chrome && chrome.runtime;
   if (!runtime || !runtime.id || location.protocol !== 'chrome-extension:') return;
@@ -92,9 +93,16 @@
   };
 
   // Events the host fires: a toolbar click, a tab that changed. The host
-  // fires only those an extension listens to, so it is told of each.
+  // fires only those an extension listens to, so it is told of each. A
+  // worker tells all its first script listens for at once, when that script
+  // has run (`listening`), and hears then what happened while it started;
+  // what it listens for later, it tells as it does.
   const listeners = new Map();
   const listened = new Set();
+  // What a listener is given where the host's arguments are not all it
+  // gets: a callback (omnibox.onInputChanged's `suggest`).
+  const adapters = new Map();
+  let told = !(typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope);
   const event = (namespace, key, name) => {
     const target = namespace && namespace[key];
     if (!target) return;
@@ -105,7 +113,7 @@
       own.add(listener);
       if (!listened.has(name)) {
         listened.add(name);
-        call('listen', {event: name}).catch(() => listened.delete(name));
+        if (told) call('listen', {event: name}).catch(() => listened.delete(name));
       }
     };
     target.removeListener = (listener) => own.delete(listener);
@@ -196,10 +204,105 @@
   };
   if ((manifest.permissions || []).includes('scripting')) watch();
 
+  // Network rules (declarativeNetRequest). Chromium counts what they do in
+  // the Browser's tabs for no tab (-1), so it shows no count for the page
+  // and answers for no tab. The Browser's own extension sees the requests
+  // rules acted on in each tab, and the host counts them for the page: on
+  // the button of an extension that asks (displayActionCountAsBadgeText),
+  // changed as it says (tabUpdate). Which rules matched a request is asked
+  // of the extension's own rules here.
+  const rules = globalThis.chrome.declarativeNetRequest;
+  const testOutcome = rules && typeof rules.testMatchOutcome === 'function' ? rules.testMatchOutcome.bind(rules) : null;
+  const matchedRules = (request) => {
+    if (!testOutcome) return Promise.resolve([]);
+    const {url, type, method, initiator, tabId} = request;
+    const asked = {url, type, method, tabId};
+    if (initiator) asked.initiator = initiator;
+    return testOutcome(asked).then((outcome) => outcome.matchedRules || [], () => []);
+  };
+
+  // Events the person causes, during whose listeners an API that needs a
+  // gesture (sidePanel.open) may be called; `acting` while one runs. In a
+  // page of the extension the page's own activation counts.
+  const PERSON = new Set(['action.onClicked', 'commands.onCommand', 'contextMenus.onClicked']);
+  let acting = 0;
+  const gesture = () => acting > 0
+    || (typeof navigator !== 'undefined' && !!navigator.userActivation && navigator.userActivation.isActive);
+
+  // The extension's side panel, which the Browser shows beside the page.
+  // Chromium keeps its options, for every tab and for one, and how a click
+  // on the button treats it, and answers for them; it finds no window to
+  // open it in, so the host asks the Browser to show it beside the tab's
+  // page, and to show what the options say where it shows already.
+  const sidePanel = (() => {
+    const panel = chrome.sidePanel;
+    if (!panel || typeof panel.getOptions !== 'function') return null;
+    const native = {};
+    for (const name of ['getOptions', 'setOptions', 'getPanelBehavior', 'setPanelBehavior']) native[name] = panel[name].bind(panel);
+    // Whether a click on the button opens the panel, read once and kept as
+    // the extension changes it; null until read.
+    let opensOnClick = null;
+    const read = native.getPanelBehavior().then((behavior) => {
+      if (opensOnClick === null) opensOnClick = !!(behavior && behavior.openPanelOnActionClick);
+    }, () => {
+      if (opensOnClick === null) opensOnClick = false;
+    });
+    replace(panel, 'setPanelBehavior', async (behavior) => {
+      await native.setPanelBehavior(behavior || {});
+      if (behavior && typeof behavior.openPanelOnActionClick === 'boolean') opensOnClick = behavior.openPanelOnActionClick;
+    });
+    // The page the options show, named from the extension's root; none
+    // where the panel is off or has no page.
+    const pageOf = (options) => {
+      if (!options || options.enabled === false || typeof options.path !== 'string' || !options.path) return null;
+      return options.path.startsWith('chrome-extension:') ? options.path : runtime.getURL(options.path.replace(/^\//, ''));
+    };
+    // In Chrome a window holds tabs; here each tab is a window of its own.
+    const tabOf = (options) => {
+      const {tabId, windowId} = options || {};
+      if (Number.isInteger(tabId)) return tabId;
+      if (Number.isInteger(windowId)) return windowId;
+      throw new Error('At least one of `tabId` and `windowId` must be provided');
+    };
+    replace(panel, 'open', (options) => {
+      const acted = gesture();
+      return (async () => {
+        if (!acted) throw new Error('`sidePanel.open()` may only be called in response to a user gesture.');
+        const tabId = tabOf(options);
+        const forTab = Number.isInteger((options || {}).tabId);
+        const url = pageOf(await native.getOptions(forTab ? {tabId} : {}));
+        if (!url) throw new Error(`No active side panel for ${forTab ? 'tabId' : 'windowId'}: ${tabId}`);
+        await call('sidePanel.show', {tabId, url, mode: 'open'});
+      })();
+    });
+    replace(panel, 'close', async (options) => {
+      await call('sidePanel.show', {tabId: tabOf(options), url: null, mode: 'close'});
+    });
+    // Where the panel shows, it follows its options: another page, or
+    // closed once turned off. Options for every tab reach each tab without
+    // options of its own.
+    replace(panel, 'setOptions', async (options) => {
+      await native.setOptions(options || {});
+      const tabId = (options || {}).tabId;
+      const shown = Number.isInteger(tabId) ? [tabId] : await call('sidePanel.shown');
+      await Promise.all((shown || []).map(async (shownOver) => {
+        const url = pageOf(await native.getOptions({tabId: shownOver}));
+        await call('sidePanel.show', {tabId: shownOver, url, mode: 'options'});
+      }));
+    });
+    return {native, pageOf, read, opensOnClick: () => opensOnClick};
+  })();
+
   // The worker's first script has run once this task ends: its listeners
   // are registered, and an event may reach them.
   let ready = false;
-  setTimeout(() => { ready = true; });
+  setTimeout(() => {
+    ready = true;
+    if (told) return;
+    told = true;
+    const events = [...listened];
+    call('listening', {events}).catch(() => { for (const name of events) listened.delete(name); });
+  });
   Object.defineProperty(globalThis, '__tiloExtensionTabs', {
     value: Object.freeze({
       get ready() { return ready; },
@@ -225,49 +328,117 @@
         }
         return true;
       },
+      // Which of these requests rules acted on in a tab the extension's own
+      // rules match: the host counts them for the page.
+      matched(requests) {
+        return Promise.all((requests || []).map((request) => matchedRules(request).then((found) => found.length > 0)));
+      },
       // The host tells the extension of a tab event: every listener runs.
+      // One the person caused (a click, a shortcut, a menu item) lets its
+      // listeners do what needs a gesture while they run, as in Chrome.
       dispatch(name, args) {
-        for (const listener of listeners.get(name) || []) {
+        const run = () => {
+          const adapt = adapters.get(name);
+          const given = adapt ? adapt(args) : args;
+          const acted = PERSON.has(name);
+          if (acted) ++acting;
           try {
-            listener(...args);
-          } catch (error) {
-            console.error(error);
+            for (const listener of listeners.get(name) || []) {
+              try {
+                listener(...given);
+              } catch (error) {
+                console.error(error);
+              }
+            }
+          } finally {
+            if (acted) --acting;
           }
-        }
-        return (listeners.get(name) || new Set()).size;
+          return (listeners.get(name) || new Set()).size;
+        };
+        return name === 'webNavigation.onCreatedNavigationTarget' ? sourceFrame(args[0]).then(run) : run();
+      },
+      // The person clicked the extension's toolbar button over `tab`: its
+      // side panel opens or closes there when it asked for that
+      // (`openPanelOnActionClick`) and has one for the tab, as in Chrome;
+      // otherwise the extension hears of the click. One known not to open
+      // its panel on a click hears of it at once, while the click's gesture
+      // lasts.
+      clicked(tab) {
+        if (!sidePanel || sidePanel.opensOnClick() === false) return this.dispatch('action.onClicked', [tab]);
+        return (async () => {
+          await sidePanel.read;
+          const url = sidePanel.opensOnClick() && sidePanel.pageOf(await sidePanel.native.getOptions({tabId: tab.id}));
+          if (!url) return this.dispatch('action.onClicked', [tab]);
+          await call('sidePanel.show', {tabId: tab.id, url, mode: 'toggle'});
+          return 0;
+        })();
+      },
+      // The person opened the extension's side panel over the tab `tabId`
+      // from the Browser: its page for that tab, if it has one.
+      async showPanel(tabId) {
+        const url = sidePanel && sidePanel.pageOf(await sidePanel.native.getOptions({tabId}));
+        if (!url) return false;
+        await call('sidePanel.show', {tabId, url, mode: 'open'});
+        return true;
       },
     }),
   });
 
+  // A page that opened a tab is known to the host by its tab, and by its
+  // frame's address if that was not the main frame: the frame's id and its
+  // process are Chromium's, as is the page's frame list here.
+  const sourceFrame = async (details) => {
+    const frameUrl = details.sourceFrameUrl;
+    delete details.sourceFrameUrl;
+    let frames = null;
+    try {
+      frames = await chrome.webNavigation.getAllFrames({tabId: details.sourceTabId});
+    } catch (error) {
+      // The page is gone: the main frame, process unknown.
+    }
+    const frame = (frames || []).find((each) => (frameUrl === undefined ? each.frameId === 0 : each.url === frameUrl))
+      || (frames || []).find((each) => each.frameId === 0);
+    if (frame) {
+      details.sourceFrameId = frame.frameId;
+      details.sourceProcessId = frame.processId;
+    }
+  };
+
   // The host asks which frame of a page the extension's world there is, by
-  // a message from that world: Chromium tells only the extension
-  // (`sender.frameId`). It is answered here and never reaches the
-  // extension's own listeners.
-  const onMessage = runtime.onMessage;
-  if (onMessage) {
-    const probe = (message) => message !== null && typeof message === 'object' && message.__tiloFrame === true;
-    const add = onMessage.addListener.bind(onMessage);
-    const remove = onMessage.removeListener.bind(onMessage);
-    add((message, sender, reply) => {
-      if (probe(message) && sender.id === runtime.id && sender.tab && typeof sender.frameId === 'number') reply(sender.frameId);
+  // a port from that world: Chromium tells only the extension
+  // (`sender.frameId`, `sender.documentId`). It is answered here and never
+  // reaches the extension's own listeners.
+  const onConnect = runtime.onConnect;
+  if (onConnect) {
+    const probe = (port) => port !== null && typeof port === 'object' && port.name === '__tiloFrame';
+    const add = onConnect.addListener.bind(onConnect);
+    const remove = onConnect.removeListener.bind(onConnect);
+    add((port) => {
+      const sender = probe(port) && port.sender;
+      if (!sender || sender.id !== runtime.id || !sender.tab || typeof sender.frameId !== 'number') return;
+      try {
+        port.postMessage({frameId: sender.frameId, documentId: sender.documentId ?? null});
+      } catch (error) {
+        // The world that asked is gone.
+      }
     });
     const own = new Map();
-    onMessage.addListener = (listener) => {
+    onConnect.addListener = (listener) => {
       if (typeof listener !== 'function' || own.has(listener)) return;
-      const filtered = function (message, ...rest) {
-        return probe(message) ? undefined : listener.call(this, message, ...rest);
+      const filtered = function (port, ...rest) {
+        return probe(port) ? undefined : listener.call(this, port, ...rest);
       };
       own.set(listener, filtered);
       add(filtered);
     };
-    onMessage.removeListener = (listener) => {
+    onConnect.removeListener = (listener) => {
       const filtered = own.get(listener);
       if (!filtered) return;
       own.delete(listener);
       remove(filtered);
     };
-    onMessage.hasListener = (listener) => own.has(listener);
-    onMessage.hasListeners = () => own.size > 0;
+    onConnect.hasListener = (listener) => own.has(listener);
+    onConnect.hasListeners = () => own.size > 0;
   }
 
   const {tabs, windows, scripting, action} = chrome;
@@ -289,7 +460,7 @@
     return call('tabs.captureVisibleTab', {windowId: windowId ?? null, options: options || {}});
   });
   replace(tabs, 'sendMessage', (tabId, message, options) =>
-    call('tabs.sendMessage', {tabId, message, frameId: options && options.frameId}));
+    call('tabs.sendMessage', {tabId, message, frameId: options && options.frameId, documentId: options && options.documentId}));
   if (tabs) {
     tabs.connect = (tabId, info) => {
       const id = 'x' + crypto.randomUUID();
@@ -310,8 +481,13 @@
   event(tabs, 'onCreated', 'tabs.onCreated');
   event(tabs, 'onUpdated', 'tabs.onUpdated');
   event(tabs, 'onActivated', 'tabs.onActivated');
+  event(tabs, 'onHighlighted', 'tabs.onHighlighted');
+  event(tabs, 'onZoomChange', 'tabs.onZoomChange');
   event(tabs, 'onRemoved', 'tabs.onRemoved');
   event(windows, 'onFocusChanged', 'windows.onFocusChanged');
+  // Chromium follows a tab's navigations itself and tells of them by the
+  // ids these APIs give; a page opening a tab it cannot see, the host does.
+  event(chrome.webNavigation, 'onCreatedNavigationTarget', 'webNavigation.onCreatedNavigationTarget');
   event(action, 'onClicked', 'action.onClicked');
   event(chrome.browserAction, 'onClicked', 'action.onClicked');
 
@@ -432,9 +608,213 @@
   toolbar(action);
   toolbar(chrome.browserAction);
 
+  // Downloads. Chromium starts an extension's download on none of the
+  // host's pages, and cancels it: the host starts it on the page in front
+  // instead, through the Browser's own downloads (capabilities.h), so the
+  // person is asked as for any download, which also answers `saveAs`. It is
+  // saved under the last part of `filename`, in a folder of its own like
+  // every download here. Everything else (search, pause, resume, cancel,
+  // erase, onCreated and onChanged) is Chromium's own, which sees every
+  // download of the profile; open and show ask the Browser, which opens
+  // files for the person.
+  const downloads = chrome.downloads;
+  if (downloads) {
+    replace(downloads, 'download', async (options) => {
+      const {url, filename, method, headers, body} = options || {};
+      if (typeof url !== 'string' || !url) throw new Error('Invalid URL');
+      // The host starts a download by its address alone.
+      if ((method && String(method).toUpperCase() !== 'GET') || body !== undefined) {
+        throw new Error('Tilo does not support downloads with a request body yet');
+      }
+      if (Array.isArray(headers) && headers.length) {
+        throw new Error('Tilo does not support downloads with headers of their own yet');
+      }
+      let address;
+      try {
+        address = new URL(url, location.href).href;
+      } catch (error) {
+        throw new Error('Invalid URL');
+      }
+      return call('downloads.download', {url: address, filename: typeof filename === 'string' ? filename : ''});
+    });
+    replace(downloads, 'open', (downloadId) => call('downloads.open', {downloadId}));
+    // Chrome answers show() at once, with nothing to wait for.
+    const show = api((downloadId) => call('downloads.show', {downloadId}));
+    downloads.show = (downloadId) => {
+      show(downloadId).catch((error) => console.error(`Unchecked runtime.lastError: ${error.message}`));
+    };
+  }
+
+  // Keyboard shortcuts: the host gives each command the key its manifest
+  // suggests, as Chrome does, and fires onCommand with the page it was
+  // pressed on (extension_commands.h). The toolbar button's own command acts
+  // as a click on it, and the Browser answers that.
+  if (!chrome.commands && manifest.commands) chrome.commands = {onCommand: {}};
+  const commands = chrome.commands;
+  if (commands) {
+    const button = manifest.action ? '_execute_action'
+      : manifest.browser_action ? '_execute_browser_action'
+        : manifest.page_action ? '_execute_page_action' : null;
+    const localized = (text) => (typeof text === 'string' && chrome.i18n
+      ? text.replace(/__MSG_(\w+)__/g, (whole, key) => chrome.i18n.getMessage(key) || whole) : text);
+    replace(commands, 'getAll', async () => {
+      const listed = (await call('commands.getAll')) || [];
+      // Chrome lists the button's command also when the manifest names none.
+      if (button && !listed.some(({name}) => name === button)) listed.unshift({name: button, description: '', shortcut: ''});
+      return listed.map(({name, description, shortcut}) => ({name, description: localized(description), shortcut}));
+    });
+    event(commands, 'onCommand', 'commands.onCommand');
+  }
+
+  // Chromium's own call, in the callback form older extensions' APIs take.
+  const nativeCall = (method, ...args) => new Promise((resolve, reject) => {
+    method(...args, (value) => {
+      const error = runtime.lastError;
+      if (error) reject(new Error(error.message)); else resolve(value);
+    });
+  });
+  if (rules && typeof rules.setExtensionActionOptions === 'function') {
+    const native = rules.setExtensionActionOptions.bind(rules);
+    replace(rules, 'setExtensionActionOptions', async (options) => {
+      const {displayActionCountAsBadgeText: display, tabUpdate} = options || {};
+      if (tabUpdate !== undefined && (tabUpdate === null || typeof tabUpdate !== 'object'
+        || !Number.isInteger(tabUpdate.tabId) || !Number.isInteger(tabUpdate.increment))) {
+        throw new Error('Invalid value for tabUpdate');
+      }
+      // Chromium keeps the choice for every tab, and answers getBadgeText by it.
+      if (typeof display === 'boolean') await nativeCall(native, {displayActionCountAsBadgeText: display});
+      if (typeof display === 'boolean' || tabUpdate) {
+        await call('dnr.options', {display: typeof display === 'boolean' ? display : null, tabUpdate: tabUpdate || null});
+      }
+    });
+  }
+  // The rules that matched in one tab: Chromium finds none of the Browser's
+  // tabs and refuses ("No tab with id"). The host knows the requests rules
+  // acted on in the tab's page; which of the extension's own rules matched
+  // each is asked of them.
+  if (rules && typeof rules.getMatchedRules === 'function') {
+    const native = rules.getMatchedRules.bind(rules);
+    replace(rules, 'getMatchedRules', async (filter) => {
+      const tabId = filter && filter.tabId;
+      try {
+        return await nativeCall(native, filter || {});
+      } catch (error) {
+        if (!Number.isInteger(tabId) || !/^No tab with id/.test(error.message)) throw error;
+      }
+      const since = typeof filter.minTimeStamp === 'number' ? filter.minTimeStamp : -Infinity;
+      const requests = (await call('dnr.requests', {tabId})).filter((request) => request.timeStamp >= since);
+      const found = await Promise.all(requests.map(matchedRules));
+      const rulesMatchedInfo = [];
+      requests.forEach((request, index) => {
+        for (const rule of found[index]) rulesMatchedInfo.push({rule, tabId, timeStamp: request.timeStamp});
+      });
+      return {rulesMatchedInfo};
+    });
+  }
+
+  // Access an extension asks for later (`optional_permissions`,
+  // `optional_host_permissions`). Chromium asks the person in its own
+  // window's dialog, which Tilo's pages are in none of: the host asks the
+  // Browser instead, which keeps what the person allowed with the extension
+  // (extension_permissions.h). As in Chrome, a request is made in answer to
+  // something the person did, and the extension's worker and pages hear of
+  // what it gained or gave up.
+  const permissions = chrome.permissions;
+  if (permissions) {
+    const setOf = (given) => ({
+      permissions: [].concat((given && given.permissions) || []),
+      origins: [].concat((given && given.origins) || []),
+    });
+    replace(permissions, 'getAll', () => call('permissions.getAll'));
+    replace(permissions, 'contains', (given) => call('permissions.contains', setOf(given)));
+    replace(permissions, 'request', (given) => {
+      const activation = typeof navigator !== 'undefined' && navigator.userActivation;
+      if (!activation || !activation.isActive) {
+        return Promise.reject(new Error('This function must be called during a user gesture'));
+      }
+      return call('permissions.request', setOf(given));
+    });
+    replace(permissions, 'remove', (given) => call('permissions.remove', setOf(given)));
+    event(permissions, 'onAdded', 'permissions.onAdded');
+    event(permissions, 'onRemoved', 'permissions.onRemoved');
+  }
+
+  // The address's keyword (the manifest's `omnibox`): the Browser tells the
+  // host what the person types after it, and the host tells the extension,
+  // as Chrome does. What it suggests for a change, and its default
+  // suggestion, show under the address; Enter, or a suggestion chosen,
+  // reaches onInputEntered with the page in the current tab.
+  if (!chrome.omnibox && manifest.omnibox) chrome.omnibox = {};
+  const omnibox = chrome.omnibox;
+  if (omnibox) {
+    const events = ['onInputStarted', 'onInputChanged', 'onInputEntered', 'onInputCancelled'];
+    for (const key of events) {
+      if (!omnibox[key]) omnibox[key] = {};
+      event(omnibox, key, 'omnibox.' + key);
+    }
+    const text = (value) => (value === undefined || value === null ? '' : String(value));
+    // Only what the Browser shows of a suggestion crosses to the host.
+    const plain = (suggestion) => ({content: text(suggestion && suggestion.content),
+      description: text(suggestion && suggestion.description)});
+    adapters.set('omnibox.onInputChanged', ([input, request]) => [input, (suggestions) => {
+      call('omnibox.suggest', {request, suggestions: [].concat(suggestions || []).map(plain)})
+        .catch((error) => console.error(error));
+    }]);
+    replace(omnibox, 'setDefaultSuggestion', (suggestion) =>
+      call('omnibox.setDefaultSuggestion', {description: plain(suggestion).description}).then(() => undefined));
+  }
+
+  // Signing in (`identity`). Chrome shows the page an extension names in a
+  // window of its own and ends the call once that page goes to the
+  // extension's own address; here the Browser shows it in a panel over the
+  // page in front, or loads it out of sight when the extension may not ask
+  // the person, and the host watches where it goes (extension_sign_in.h).
+  // The outcome is asked for in turns the host holds a while, and between
+  // them a call to Chromium keeps a worker awake, as Chrome keeps it awake
+  // while the call is under way. No one signs in to the Browser itself, so
+  // getAuthToken, which asks the Browser's account, says so.
+  if (!chrome.identity && (manifest.permissions || []).includes('identity')) chrome.identity = {};
+  const identity = chrome.identity;
+  if (identity) {
+    if (typeof identity.getRedirectURL !== 'function') {
+      identity.getRedirectURL = (path) => {
+        let own = path === undefined || path === null ? '/' : String(path);
+        if (!own.startsWith('/')) own = '/' + own;
+        return `https://${runtime.id}.chromiumapp.org${own}`;
+      };
+    }
+    const awake = () => {
+      try {
+        runtime.getPlatformInfo(() => void runtime.lastError);
+      } catch (ignored) {
+        // A page needs no keeping awake.
+      }
+    };
+    replace(identity, 'launchWebAuthFlow', async (details) => {
+      if (!details || typeof details.url !== 'string') throw new Error('identity.launchWebAuthFlow needs the url of the page to sign in on');
+      const timeout = details.timeoutMsForNonInteractive;
+      const flow = await call('identity.launchWebAuthFlow', {
+        url: details.url,
+        interactive: details.interactive === true,
+        abortOnLoad: details.abortOnLoadForNonInteractive !== false,
+        timeout: Number.isFinite(timeout) ? Math.max(0, Math.round(timeout)) : null,
+      });
+      for (;;) {
+        const url = await call('identity.wait', {flow});
+        if (typeof url === 'string') return url;
+        awake();
+      }
+    });
+    replace(identity, 'getAuthToken', async () => {
+      throw new Error('The user is not signed in.');
+    });
+  }
+
   // Context menu items: the host keeps them and shows them in the page's
-  // menu (extension_menus.h); a choice comes back as onClicked.
-  if (!chrome.contextMenus && (runtime.getManifest().permissions || []).includes('contextMenus')) {
+  // menu (extension_menus.h); a choice comes back as onClicked. An
+  // extension may ask for them later, too.
+  const declared = (manifest.permissions || []).concat(manifest.optional_permissions || []);
+  if (!chrome.contextMenus && declared.includes('contextMenus')) {
     chrome.contextMenus = {onClicked: {}};
   }
   const menus = chrome.contextMenus;
@@ -470,6 +850,33 @@
     replace(menus, 'remove', (id) => inOrder('contextMenus.remove', {id}));
     replace(menus, 'removeAll', () => inOrder('contextMenus.removeAll'));
     event(menus, 'onClicked', 'contextMenus.onClicked');
+  }
+
+  // Notifications: Tilo's notification service shows them, through the
+  // Browser, and the host keeps them (extension_notifications.h). A choice
+  // comes back as onClicked or onButtonClicked, then onClosed.
+  const notices = chrome.notifications;
+  if (notices) {
+    // What crosses to the host: plain data, so an icon given as pixels
+    // counts as given and a function is left out.
+    const plainOptions = (options) => {
+      const own = {...(options || {})};
+      for (const key of ['iconUrl', 'imageUrl', 'appIconMaskUrl']) {
+        if (own[key] !== undefined && typeof own[key] !== 'string') own[key] = {};
+      }
+      return JSON.parse(JSON.stringify(own));
+    };
+    // `create(options)` makes up the id.
+    replace(notices, 'create', (id, options) => {
+      if (options === undefined && id !== null && typeof id === 'object') [id, options] = ['', id];
+      return call('notifications.create', {id: typeof id === 'string' ? id : '', options: plainOptions(options)});
+    });
+    replace(notices, 'update', (id, options) => call('notifications.update', {id: String(id), options: plainOptions(options)}));
+    replace(notices, 'clear', (id) => call('notifications.clear', {id: String(id)}));
+    replace(notices, 'getAll', async () => (await call('notifications.getAll')) || {});
+    event(notices, 'onClicked', 'notifications.onClicked');
+    event(notices, 'onButtonClicked', 'notifications.onButtonClicked');
+    event(notices, 'onClosed', 'notifications.onClosed');
   }
 
   if (scripting) {

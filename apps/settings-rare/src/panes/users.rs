@@ -299,7 +299,7 @@ impl UserAdmin for AccountsServiceAdmin {
 }
 
 /// A call to the host's identity store, answering on its state.
-type IdentityCall = ui::LocalState<ui::InvocationCall>;
+type IdentityCall = ui::InvocationCall;
 
 /// What lists and changes the person's identities. Each call answers on
 /// the state it returns; nothing here waits.
@@ -1179,15 +1179,13 @@ impl UserAdmin for SampleAdmin {
 
 /// A call the host already answered with `value`.
 fn answered(value: serde_json::Value) -> IdentityCall {
-    ui::LocalState::new(ui::RemoteCall::Done(
-        ui::tilo_actions::InvocationUpdate::Succeeded {
-            invocation: ui::tilo_actions::InvocationId::new(),
-            output: ui::tilo_actions::ActionOutput {
-                value: Some(value),
-                resources: Vec::new(),
-            },
+    ui::Arriving::ready(ui::tilo_actions::InvocationUpdate::Succeeded {
+        invocation: ui::tilo_actions::InvocationId::new(),
+        output: ui::tilo_actions::ActionOutput {
+            value: Some(value),
+            resources: Vec::new(),
         },
-    ))
+    })
 }
 
 impl IdentityAdmin for SampleAdmin {

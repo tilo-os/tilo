@@ -681,8 +681,8 @@ impl Artwork {
     /// the paper), marker for flat see-through tone, airbrush for soft glows,
     /// calligraphy for lettering. brush eraser (no colour) clears paint under
     /// it on its layer; remove-marks along takes whole strokes. Each stroke:
-    /// points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or
-    /// pigment:<name>). Answers the new ids. One stroke can be many: forks
+    /// points `[[x,y] or [x,y,pressure]]`, size, colour (#rrggbb or
+    /// `pigment:<name>`). Answers the new ids. One stroke can be many: forks
     /// grows a branch or bare tree; dabs scatters foliage, flowers or (with
     /// `dab_length`, angle -90) grass; hatch shades the area its points
     /// enclose. Work like a painter, looking close after each passage: big
@@ -721,7 +721,7 @@ impl Artwork {
 
     /// Edit marks.
     ///
-    /// Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale,
+    /// Change marks by id: colours, opacity, name, `move_by` `[dx,dy]`, scale,
     /// rotate and flip about their centre, or move them to another layer.
     /// Strokes: re-brush (brush, size, params), smooth, simplify, extend,
     /// split at a point, merge. Pictures: crop, straighten, adjust (exposure,

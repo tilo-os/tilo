@@ -27,6 +27,24 @@ export class MediaAdmissionError extends Error {
   constructor() {super('media admission denied'); this.name = 'MediaAdmissionError';}
 }
 
+/** This browser cannot open a carrier at all: no retry will help. */
+export class CarrierUnsupportedError extends Error {
+  constructor(message) {super(message); this.name = 'CarrierUnsupportedError';}
+}
+
+/**
+ * Why this browser cannot open a carrier, or null when it can. The host
+ * accepts only sessions that offer `MOQ_PROTOCOL`, which a browser does
+ * only where WebTransport negotiates subprotocols (`protocol` on the
+ * session: Chrome 143, Firefox 155, Safari 26.4 on); an older one is
+ * answered 404 every time.
+ */
+export function carrierUnsupported(WebTransport = globalThis.WebTransport) {
+  if (typeof WebTransport !== 'function') return 'WebTransport is unavailable';
+  if (!('protocol' in (WebTransport.prototype ?? {}))) return 'WebTransport cannot negotiate the carrier protocol';
+  return null;
+}
+
 /** The admission preface bytes for `grant`. */
 export function encodePreface(grant) {
   if (!(grant instanceof Uint8Array) || grant.byteLength === 0 || grant.byteLength > MAX_GRANT_BYTES) {
@@ -60,7 +78,8 @@ async function readByte(reader) {
 export async function openCarrier({url, grant, serverCertificateHashes, signal, WebTransport = globalThis.WebTransport, setTimer = (callback, delay) => globalThis.setTimeout(callback, delay)}) {
   signal?.throwIfAborted?.();
   const preface = encodePreface(grant);
-  if (typeof WebTransport !== 'function') throw new Error('WebTransport is unavailable');
+  const unsupported = carrierUnsupported(WebTransport);
+  if (unsupported) throw new CarrierUnsupportedError(unsupported);
   const options = {protocols: [MOQ_PROTOCOL], allowPooling: false, congestionControl: 'low-latency'};
   if (serverCertificateHashes) options.serverCertificateHashes = serverCertificateHashes;
   const transport = new WebTransport(url.href, options);
