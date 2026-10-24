@@ -3975,7 +3975,6 @@ impl ActorState {
                     if host == own
             ),
             NetCmd::GovernorAction { ws, .. } => self.native_routes.is_local(*ws),
-            NetCmd::NativeEnrollment(command) => command.is_local(),
             _ => false,
         }
     }
