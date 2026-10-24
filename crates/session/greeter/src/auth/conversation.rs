@@ -183,6 +183,55 @@ pub(crate) fn spawn_auth_updates<F: Fn(AuthUpdate) + Send + 'static>(
     session
 }
 
+/// Start the session of the person who signed in at boot, without asking
+/// them anything. `pam_tilo` accepts the boot sign-in once; a PAM stack that
+/// asks for anything instead means there is no boot sign-in to accept, and
+/// the attempt is cancelled before any answer is given. Notes PAM shows on
+/// the way are not shown: nothing appears between the boot screen and the
+/// desktop except the ordinary transition.
+pub fn spawn_handoff(
+    proxy: EventLoopProxy<UserEvent>,
+    sock: String,
+    username: String,
+    cmd: Vec<String>,
+    env: Vec<String>,
+) -> AuthSession {
+    spawn_handoff_updates(sock, username, cmd, env, move |update| {
+        let _ = proxy.send_event(UserEvent::External(update.encode()));
+    })
+}
+
+pub(crate) fn spawn_handoff_updates<F: Fn(AuthUpdate) + Send + 'static>(
+    sock: String,
+    username: String,
+    cmd: Vec<String>,
+    env: Vec<String>,
+    update: F,
+) -> AuthSession {
+    let (session, _answers) = session();
+    let control = session.conversation.clone();
+    std::thread::spawn(move || {
+        let result = authenticate_conversation(
+            &sock,
+            &username,
+            &cmd,
+            &env,
+            &control,
+            |kind, _text| match kind {
+                AuthMessageType::Info | AuthMessageType::Error => Ok(None),
+                AuthMessageType::Secret | AuthMessageType::Visible => Err(AuthError::Cancelled),
+            },
+            || update(AuthUpdate::Accepted),
+        );
+        if let Err(error) = result {
+            let failure = Failure::from(&error);
+            tracing::info!(?failure, "the boot sign-in did not start a session");
+            update(AuthUpdate::Failed(failure));
+        }
+    });
+    session
+}
+
 fn run_worker<F: Fn(AuthUpdate)>(
     attempt: Attempt,
     session: &AuthSession,

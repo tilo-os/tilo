@@ -67,7 +67,7 @@ mod console;
 
 pub use console::{CONSOLE_WAKE, PROVIDER as CONSOLE_PROVIDER};
 
-use crate::auth::{AuthSession, AuthUpdate, Failure, spawn_auth};
+use crate::auth::{AuthSession, AuthUpdate, Failure, spawn_auth, spawn_handoff};
 use crate::device_status::DeviceStatus;
 use crate::i18n::{t, t_args};
 use crate::local_users::{LoginUser, discover_login_users, remember_user, remembered_user};
@@ -716,6 +716,20 @@ pub struct GreeterApp {
     /// has, keys typed at the greeter go nowhere, so the console reports
     /// sign-in as accepting input only once this is set.
     keyboard_focus: bool,
+    /// The person who signed in on the boot screen, whose session starts
+    /// without this screen asking them anything.
+    boot_sign_in: BootSignIn,
+}
+
+/// Where the boot sign-in handoff is (see [`crate::handoff`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BootSignIn {
+    /// Nobody signed in at boot, or the handoff is over.
+    None,
+    /// Someone did; their session starts once the event loop runs.
+    Pending,
+    /// greetd is starting their session.
+    Running,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -773,7 +787,68 @@ impl GreeterApp {
         );
         app.users = users;
         app.device = DeviceStatus::read();
+        if let Some(name) =
+            crate::handoff::pending_sign_in(std::path::Path::new(crate::handoff::DEFAULT_SOCKET))
+        {
+            app.offer_boot_sign_in(&name);
+        }
         app
+    }
+
+    /// The person `name` signed in on the boot screen: show the ordinary
+    /// "Starting your session" frame for them, and start their session as
+    /// soon as the event loop runs ([`Self::start_boot_sign_in`]). If it
+    /// does not start, the screen is the one they would otherwise have seen,
+    /// with them already chosen.
+    fn offer_boot_sign_in(&mut self, name: &str) {
+        // An account the screen does not list (discovery is conservative)
+        // falls back to the typed-username form.
+        self.login_user = self
+            .users
+            .iter()
+            .find(|user| user.username == name)
+            .cloned();
+        self.username.set(name.to_owned());
+        self.boot_sign_in = BootSignIn::Pending;
+        self.phase = AuthPhase::Starting;
+        self.notice = Notice::None;
+        self.dirty_structure = true;
+        self.focus_reset_pending = true;
+    }
+
+    /// Ask greetd to start the boot-signed-in person's session.
+    fn start_boot_sign_in(&mut self) {
+        if self.boot_sign_in != BootSignIn::Pending {
+            return;
+        }
+        let Some(proxy) = self.proxy.get().cloned() else {
+            return;
+        };
+        let sock = std::env::var("GREETD_SOCK").ok().filter(|s| !s.is_empty());
+        let (Some(sock), Some(session)) = (sock, self.sessions.get(self.selected_session)) else {
+            self.end_boot_sign_in();
+            return;
+        };
+        self.boot_sign_in = BootSignIn::Running;
+        self.auth_session = Some(spawn_handoff(
+            proxy,
+            sock,
+            self.attempt_username(),
+            session.argv.clone(),
+            Self::session_env(None),
+        ));
+    }
+
+    /// The boot sign-in did not start a session: show the ordinary screen,
+    /// without an error. The person signs in there as they would have.
+    fn end_boot_sign_in(&mut self) {
+        self.boot_sign_in = BootSignIn::None;
+        self.phase = AuthPhase::Idle;
+        self.auth_session.take();
+        self.prompt.clear();
+        self.notice = Notice::None;
+        self.dirty_structure = true;
+        self.focus_reset_pending = true;
     }
 
     /// Construct with an explicit session list (used by tests / headless
@@ -853,6 +928,7 @@ impl GreeterApp {
             console: None,
             next_sign_in_diagnostics: None,
             keyboard_focus: false,
+            boot_sign_in: BootSignIn::None,
         }
     }
 
@@ -1978,6 +2054,10 @@ impl GreeterApp {
     /// explain it, clear the passcode, keep the username, and put the
     /// keyboard back on the first field so the next try is just typing.
     fn finish_failure(&mut self, failure: Failure) {
+        if self.boot_sign_in != BootSignIn::None {
+            self.end_boot_sign_in();
+            return;
+        }
         self.phase = AuthPhase::Idle;
         self.auth_session.take();
         self.prompt.clear();
@@ -2026,6 +2106,9 @@ impl GreeterApp {
     /// process exits moments later, but the attempt resolves into a visible
     /// success frame rather than the spinner just disappearing.
     fn begin_starting(&mut self) {
+        if self.boot_sign_in == BootSignIn::Running {
+            remember_user(&self.attempt_username());
+        }
         if self.phase == AuthPhase::Starting {
             return;
         }
@@ -2119,6 +2202,8 @@ impl Widget for GreeterApp {
         // taking a sign-in request raised by Enter or the sign-in action in
         // the same event cycle.
         self.composed.sync(state, root);
+
+        self.start_boot_sign_in();
 
         // Each request is taken before it is acted on, so one activation
         // starts exactly one attempt.
@@ -4184,6 +4269,84 @@ mod tests {
             .expect("the clock asks for a wake");
         let until = wake.saturating_duration_since(Instant::now());
         assert!(until <= Duration::from_secs(60), "{until:?}");
+    }
+
+    #[test]
+    fn a_boot_sign_in_shows_only_the_transition_and_falls_back_without_an_error() {
+        let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.offer_boot_sign_in("grace");
+        app.sync(&doc, &root);
+        assert_eq!(app.phase, AuthPhase::Starting);
+        assert_eq!(
+            app.login_user.as_ref().map(|u| u.username.as_str()),
+            Some("grace"),
+            "the person who signed in at boot is the one starting"
+        );
+        assert_eq!(app.status_text(), "Starting your session…");
+        assert!(
+            !focusables(&app).contains(&"greeter.password".to_string()),
+            "nothing to type while the session starts"
+        );
+
+        app.on_external_event(
+            &AuthUpdate::Accepted.encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.phase, AuthPhase::Starting);
+
+        // greetd refused, or PAM asked a question: the ordinary screen, with
+        // that person chosen, and no error.
+        let _ = Widget::take_focus_reset(&mut app);
+        app.on_external_event(
+            &AuthUpdate::Failed(Failure::Cancelled).encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.phase, AuthPhase::Idle);
+        assert_eq!(app.notice, Notice::None);
+        assert_eq!(app.failures, 0);
+        assert!(Widget::take_focus_reset(&mut app));
+        app.sync(&doc, &root);
+        assert_eq!(
+            focusables(&app).first().map(String::as_str),
+            Some("greeter.password")
+        );
+        assert_eq!(
+            app.login_user.as_ref().map(|u| u.username.as_str()),
+            Some("grace")
+        );
+
+        // The handoff is over: a later refusal reads as usual.
+        seed_password(&app, "wrongpw");
+        app.begin_authenticating();
+        app.on_external_event(
+            &AuthUpdate::Failed(Failure::Credentials).encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.notice, Notice::Error("greeter-error-passcode"));
+    }
+
+    #[test]
+    fn a_boot_sign_in_for_an_unlisted_account_falls_back_to_the_named_form() {
+        let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.offer_boot_sign_in("svc");
+        app.sync(&doc, &root);
+        assert_eq!(app.phase, AuthPhase::Starting);
+        assert_eq!(app.attempt_username(), "svc");
+        app.on_external_event(
+            &AuthUpdate::Failed(Failure::NotPermitted).encode(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+        );
+        assert_eq!(app.phase, AuthPhase::Idle);
+        assert_eq!(app.notice, Notice::None);
+        assert_eq!(typed_username(&app), "svc");
     }
 
     #[test]
