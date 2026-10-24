@@ -507,3 +507,33 @@ fn an_extensions_request_for_more_access_reaches_the_browser_and_its_answer_the_
         assert_eq!(event(bad.clone()), None, "{bad}");
     }
 }
+
+#[test]
+fn an_extensions_request_to_open_a_download_names_the_download_and_how() {
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(json!({"event":"extension_download_open","tab":2,"id":7,"reveal":false})),
+        Some(WebViewEvent::ExtensionDownloadOpen {
+            id: 7,
+            reveal: false
+        })
+    );
+    assert_eq!(
+        event(json!({"event":"extension_download_open","tab":2,"id":7,"reveal":true})),
+        Some(WebViewEvent::ExtensionDownloadOpen {
+            id: 7,
+            reveal: true
+        })
+    );
+    for bad in [
+        json!({"event":"extension_download_open","tab":2,"id":0,"reveal":false}),
+        json!({"event":"extension_download_open","tab":2,"id":"7","reveal":false}),
+        json!({"event":"extension_download_open","tab":2,"id":7}),
+        json!({"event":"extension_download_open","tab":2,"id":7,"reveal":"yes"}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+}

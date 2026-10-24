@@ -3,11 +3,11 @@
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
 // click, keyboard shortcuts, a tab's capture, context menu items,
-// notifications, scripts on a tab and what network rules did in a tab from
-// the host's tabs instead, over a request the host answers itself. A page of
-// the extension is known by its address; its worker, which has none, by a
-// token the Browser wrote with this script into the worker it runs first
-// (extensions.rs).
+// notifications, scripts on a tab, what network rules did in a tab and
+// downloads from the host's tabs instead, over a request the host answers
+// itself. A page of the extension is known by its address; its worker,
+// which has none, by a token the Browser wrote with this script into the
+// worker it runs first (extensions.rs).
 (() => {
   const runtime = globalThis.chrome && chrome.runtime;
   if (!runtime || !runtime.id || location.protocol !== 'chrome-extension:') return;
@@ -460,6 +460,43 @@
   };
   toolbar(action);
   toolbar(chrome.browserAction);
+
+  // Downloads. Chromium starts an extension's download on none of the
+  // host's pages, and cancels it: the host starts it on the page in front
+  // instead, through the Browser's own downloads (capabilities.h), so the
+  // person is asked as for any download, which also answers `saveAs`. It is
+  // saved under the last part of `filename`, in a folder of its own like
+  // every download here. Everything else (search, pause, resume, cancel,
+  // erase, onCreated and onChanged) is Chromium's own, which sees every
+  // download of the profile; open and show ask the Browser, which opens
+  // files for the person.
+  const downloads = chrome.downloads;
+  if (downloads) {
+    replace(downloads, 'download', async (options) => {
+      const {url, filename, method, headers, body} = options || {};
+      if (typeof url !== 'string' || !url) throw new Error('Invalid URL');
+      // The host starts a download by its address alone.
+      if ((method && String(method).toUpperCase() !== 'GET') || body !== undefined) {
+        throw new Error('Tilo does not support downloads with a request body yet');
+      }
+      if (Array.isArray(headers) && headers.length) {
+        throw new Error('Tilo does not support downloads with headers of their own yet');
+      }
+      let address;
+      try {
+        address = new URL(url, location.href).href;
+      } catch (error) {
+        throw new Error('Invalid URL');
+      }
+      return call('downloads.download', {url: address, filename: typeof filename === 'string' ? filename : ''});
+    });
+    replace(downloads, 'open', (downloadId) => call('downloads.open', {downloadId}));
+    // Chrome answers show() at once, with nothing to wait for.
+    const show = api((downloadId) => call('downloads.show', {downloadId}));
+    downloads.show = (downloadId) => {
+      show(downloadId).catch((error) => console.error(`Unchecked runtime.lastError: ${error.message}`));
+    };
+  }
 
   // Keyboard shortcuts: the host gives each command the key its manifest
   // suggests, as Chrome does, and fires onCommand with the page it was

@@ -3158,7 +3158,8 @@ impl BrowserWidget {
                 | WebViewEvent::PermissionClosed { .. }
                 | WebViewEvent::NativeDownloadRequested { .. }
                 | WebViewEvent::DownloadUpdated { .. }
-                | WebViewEvent::DownloadRuntime { .. }) => {
+                | WebViewEvent::DownloadRuntime { .. }
+                | WebViewEvent::ExtensionDownloadOpen { .. }) => {
                     self.keep_native_download(&event);
                     self.capabilities.apply(event);
                     self.structure_dirty = true;

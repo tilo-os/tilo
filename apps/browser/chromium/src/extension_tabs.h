@@ -270,6 +270,17 @@ class ExtensionTabs {
     std::function<void(std::string)> save_menus;
     // An event for the Browser about one of the host's tabs.
     std::function<void(int, const std::string&, CefRefPtr<CefDictionaryValue>)> event;
+    // Download an address on the page of a tab, under a name when one is
+    // given, as the Browser downloads any (capabilities.h): the person is
+    // asked. Called back with the download's id once it started, or 0 and
+    // why it did not.
+    std::function<void(int, const std::string&, const std::string&, std::function<void(int, const std::string&)>)> download;
+    // Ask the Browser showing the tab to open a complete download, or show
+    // it in its folder: why it cannot, or empty.
+    std::function<std::string(int, int, bool)> open_download;
+    // Whether the person clicked in the tab or pressed a key there within
+    // the last few seconds.
+    std::function<bool(int)> activated;
     bool private_mode = false;
   };
   explicit ExtensionTabs(Hooks hooks) : hooks_(std::move(hooks)) {}
@@ -337,6 +348,7 @@ class ExtensionTabs {
     commands_.Forget(id);
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     listening_.erase(id);
+    gestures_.erase(id);
     for (auto it = granted_.begin(); it != granted_.end();) it = it->first == id ? granted_.erase(it) : std::next(it);
     captures_.erase(id);
     for (auto it = ports_.begin(); it != ports_.end();) it = it->second.extension == id ? ports_.erase(it) : std::next(it);
@@ -537,6 +549,22 @@ class ExtensionTabs {
       Notify(extension, method, args, reply);
     } else if (method.rfind("permissions.", 0) == 0) {
       Permissions(extension, caller, method, args, reply);
+    } else if (method == "downloads.download") {
+      Download(extension, Current(tabs, from), args, reply);
+    } else if (method == "downloads.open" || method == "downloads.show") {
+      const bool open = method == "downloads.open";
+      if (!Has(extension, "downloads") || (open && !Has(extension, "downloads.open"))) { Fail(reply, "The extension may not open downloads"); return; }
+      // As in Chrome, a download opens on the person's click or key: in the
+      // extension's page, or on its button, menu item or shortcut for its
+      // worker.
+      if (open && !(from ? hooks_.activated && hooks_.activated(from->tab) : Gestured(extension))) { Fail(reply, "User gesture required"); return; }
+      const auto id = IntOf(args, "downloadId");
+      const auto* tab = Current(tabs, from);
+      const auto error = !id ? std::string("Invalid downloadId")
+                         : !tab || !hooks_.open_download ? std::string("No window to open it in")
+                         : hooks_.open_download(tab->tab, *id, !open);
+      if (!error.empty()) { Fail(reply, error); return; }
+      Succeed(reply, nullptr);
     } else if (method == "commands.getAll") {
       auto list = CefListValue::Create();
       for (const auto& command : commands_.All(extension)) {
@@ -613,6 +641,7 @@ class ExtensionTabs {
       const auto* found = Find(tabs, tab);
       if (!found || !access_.count(offer.extension)) return;
       if (Has(offer.extension, "activeTab") && !found->panel) granted_.insert({offer.extension, found->id});
+      gestures_[offer.extension] = std::chrono::steady_clock::now();
       auto args = CefListValue::Create();
       args->SetDictionary(0, info);
       if (!found->panel) args->SetDictionary(1, TabObject(offer.extension, *found));
@@ -641,6 +670,7 @@ class ExtensionTabs {
     const auto* found = Find(tabs, tab);
     if (!found || !access_.count(extension)) return;
     if (Has(extension, "activeTab")) granted_.insert({extension, found->id});
+    gestures_[extension] = std::chrono::steady_clock::now();
     auto args = CefListValue::Create();
     args->SetDictionary(0, TabObject(extension, *found));
     Push(extension, "action.onClicked", args, true);
@@ -689,6 +719,7 @@ class ExtensionTabs {
       return;
     }
     if (Has(extension, "activeTab")) granted_.insert({extension, found->id});
+    gestures_[extension] = std::chrono::steady_clock::now();
     auto args = CefListValue::Create();
     args->SetString(0, name);
     args->SetDictionary(1, TabObject(extension, *found));
@@ -1224,6 +1255,48 @@ class ExtensionTabs {
   static bool Navigable(const std::string& extension, const std::string& url) {
     return url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0 || url == "about:blank" ||
            url.rfind("chrome-extension://" + extension + "/", 0) == 0;
+  }
+  // `chrome.downloads.download`: an address the extension may fetch (a web
+  // address, its own data, or one of its own pages' blobs) to a name within
+  // the downloads folder, as in Chrome. Saved under the name's last part,
+  // in a folder of its own like every download here.
+  void Download(const std::string& extension, const ExtensionTab* tab, CefRefPtr<CefDictionaryValue> args, const Reply& reply) {
+    if (!Has(extension, "downloads")) { Fail(reply, "The extension may not download files"); return; }
+    const auto url = StringOf(args, "url");
+    const auto filename = StringOf(args, "filename");
+    const bool fetchable = url.rfind("http://", 0) == 0 || url.rfind("https://", 0) == 0 || url.rfind("data:", 0) == 0 ||
+                           url.rfind("blob:chrome-extension://" + extension + "/", 0) == 0;
+    if (!fetchable) { Fail(reply, "Invalid URL"); return; }
+    if (!DownloadName(filename)) { Fail(reply, "Invalid filename"); return; }
+    if (!tab || !hooks_.download) { Fail(reply, "No page to download from"); return; }
+    hooks_.download(tab->tab, url, filename, [reply](int id, const std::string& error) {
+      if (!id) { Fail(reply, error); return; }
+      auto value = CefValue::Create();
+      value->SetInt(id);
+      Succeed(reply, value);
+    });
+  }
+  // A name relative to the downloads folder that stays inside it, as Chrome
+  // takes one: none at all, or parts without "." or "..", control
+  // characters or a backslash, not starting with "/".
+  static bool DownloadName(const std::string& name) {
+    if (name.empty()) return true;
+    if (name.size() > 4096 || name.front() == '/') return false;
+    for (const unsigned char c : name) if (c < 32 || c == 127 || c == '\\') return false;
+    size_t start = 0;
+    while (start <= name.size()) {
+      const auto end = std::min(name.find('/', start), name.size());
+      const auto part = name.substr(start, end - start);
+      if (part.empty() || part == "." || part == "..") return false;
+      start = end + 1;
+    }
+    return true;
+  }
+  // Whether the person used the extension's button, menu item or shortcut
+  // within the last few seconds, as long as Chrome counts a click.
+  bool Gestured(const std::string& extension) const {
+    auto found = gestures_.find(extension);
+    return found != gestures_.end() && std::chrono::steady_clock::now() - found->second <= std::chrono::seconds(5);
   }
   // What the manifest requires, or the person granted it since.
   bool Has(const std::string& extension, const char* permission) const {
@@ -2887,6 +2960,9 @@ class ExtensionTabs {
   int asked_ = 0;
   std::map<std::string, std::set<std::string>> listening_;
   std::set<std::pair<std::string, int>> granted_;
+  // When the person last used each extension's button, menu item or
+  // shortcut.
+  std::map<std::string, std::chrono::steady_clock::time_point> gestures_;
   // Each button's look for one tab, by extension and tab id.
   std::map<std::pair<std::string, int>, std::map<std::string, CefRefPtr<CefValue>>> action_states_;
   std::map<std::string, std::vector<Waiting>> waiting_;
