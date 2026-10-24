@@ -26,6 +26,9 @@ use crate::widgets::{StatusTone, error_caption, note, page, row, rows, section, 
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
 mod devices;
+mod home_relay;
+#[cfg(test)]
+mod home_relay_tests;
 
 crate::effects::effect_family!(DeviceMeshEffect => answer);
 
@@ -412,6 +415,14 @@ pub enum DeviceMeshEffect {
         #[param("The home server's node id")]
         device: String,
     },
+    /// Have the person's home relay host a workspace this device hosts as
+    /// well, or no longer.
+    #[effect(row, idempotent)]
+    SetHomeRelayHosting {
+        #[param("The workspace's room id")]
+        room: String,
+        on: bool,
+    },
     /// Ask, under a device's row, whether to remove it.
     #[effect(view, row, label = "Remove device")]
     ReviewRemoval {
@@ -521,7 +532,9 @@ impl DeviceMeshArea {
             // stand-ins.
             if self.cx.reaches_devices() {
                 model.refresh_personal_devices();
+                model.refresh_home_relay();
             } else if let Some(scene) = self.cx.scene() {
+                model.home_relay.hosting.clone_from(&scene.home_relay);
                 match crate::device_fleet::views(scene.fleet_devices.clone()) {
                     Ok(devices) => model.personal_devices = devices,
                     Err(error) => model.personal_device_error = Some(error),
@@ -665,6 +678,8 @@ pub struct DeviceMeshModel {
     following: std::rc::Weak<MeshFollow>,
     /// Home servers still to ask on opening, one after another.
     health_round: usize,
+    /// Which workspaces the home relay hosts too, as the host answers.
+    home_relay: home_relay::HomeRelay,
     /// A home server's removal still waits to be delivered; it is retried
     /// with the health checks.
     removals_pending: bool,
@@ -1042,6 +1057,7 @@ impl DeviceMeshModel {
             management_device: None,
             management_call: None,
             devices_call: None,
+            home_relay: home_relay::HomeRelay::default(),
             revoke_call: None,
             next_peer_health: 0,
             apply_child: None,
@@ -1136,6 +1152,10 @@ impl DeviceMeshModel {
                 self.start_home_peer_removal(&peer);
                 false
             }
+            DeviceMeshEffect::SetHomeRelayHosting { room, on } => {
+                self.choose_home_relay(room, *on)?;
+                false
+            }
             DeviceMeshEffect::ReviewRemoval { .. } | DeviceMeshEffect::CancelRemoval => false,
         };
         if configured {
@@ -1206,9 +1226,11 @@ impl DeviceMeshModel {
         if self.devices_call.is_some()
             || self.revoke_call.is_some()
             || self.management_call.is_some()
+            || self.home_relay.waiting()
         {
             self.remote.poll();
         }
+        self.poll_home_relay();
         if let Some(answer) = self
             .devices_call
             .as_ref()
@@ -1470,13 +1492,15 @@ impl DeviceMeshModel {
         }
         roaming_rows.push(note(&t("mesh-roaming-caption")));
 
-        page(vec![
-            self.devices_section(),
+        let mut sections = vec![self.devices_section()];
+        sections.extend(self.home_relay_section());
+        sections.extend([
             section(&t("mesh-continue-title"), rows(continuation_rows)),
             section(&t("mesh-privacy-title"), rows(privacy_rows)),
             section(&t("mesh-roaming-title"), rows(roaming_rows)),
             section(&t("mesh-activity-title"), rows(audit_rows)),
-        ])
+        ]);
+        page(sections)
     }
 
     /// The row switching the mesh service `service` of this device.
@@ -2593,12 +2617,12 @@ mod tests {
     /// The host's pairing actions, in process: it records what it was asked
     /// and answers the way the host does.
     #[derive(Default)]
-    struct PairingHost {
+    pub(super) struct PairingHost {
         asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
     }
 
     impl PairingHost {
-        fn asked(&self) -> Vec<ui::tilo_actions::remote::InvokeRequest> {
+        pub(super) fn asked(&self) -> Vec<ui::tilo_actions::remote::InvokeRequest> {
             self.asked.lock().unwrap().clone()
         }
     }
@@ -2629,9 +2653,23 @@ mod tests {
                 ui::tilo_actions::remote::ActionHostError,
             >,
         > {
-            use ui::tilo_actions::remote::{device_pairing, identity_admin};
+            use ui::tilo_actions::remote::{device_pairing, home_relay_hosting, identity_admin};
             let invocation = request.invocation;
-            let value = if request.target.provider == identity_admin::PROVIDER {
+            let value = if request.target.provider == home_relay_hosting::PROVIDER {
+                let studio_on = self
+                    .asked
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|asked| asked.target.address.action == home_relay_hosting::SET);
+                serde_json::json!({
+                    "relay": "Home server",
+                    "workspaces": [
+                        { "room": super::home_relay_tests::PERSONAL_ROOM, "name": "Personal", "on_relay": true },
+                        { "room": super::home_relay_tests::STUDIO_ROOM, "name": "Studio", "on_relay": studio_on },
+                    ],
+                })
+            } else if request.target.provider == identity_admin::PROVIDER {
                 match request.target.address.action.as_str() {
                     identity_admin::DEVICES => serde_json::json!([
                         {

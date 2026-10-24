@@ -226,6 +226,9 @@ pub struct CaptureScene {
     /// The person's trusted devices, as a stand-in for the host's device
     /// list, for the devices & sync capture.
     pub fleet_devices: Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>,
+    /// The person's home relay and the workspaces this device hosts, as a
+    /// stand-in for the host's answer, for the devices & sync capture.
+    pub home_relay: Option<ui::tilo_actions::remote::home_relay_hosting::HomeRelayHosting>,
     /// Whether the capture asks about removing the first other device.
     pub device_removal: bool,
     pub network: Option<NetworkSample>,
@@ -387,6 +390,8 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             _ => None,
         },
         device_removal: fixture.scenario() == Some(DEVICES_REMOVE),
+        home_relay: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
+            .then(home_relay_fixture),
         fleet_devices: if matches!(
             fixture.scenario(),
             Some(scenario) if scenario == Category::DeviceMesh.slug() || scenario == DEVICES_REMOVE
@@ -454,6 +459,25 @@ fn fleet_fixture() -> Vec<ui::tilo_actions::remote::identity_admin::FleetDevice>
         ),
         device("Home server", "6c47f2a0", "6C 47 F2 A0 E1 38", false, true),
     ]
+}
+
+/// The person's home server and three workspaces this device hosts, one of
+/// them kept on the server too.
+fn home_relay_fixture() -> ui::tilo_actions::remote::home_relay_hosting::HomeRelayHosting {
+    use ui::tilo_actions::remote::home_relay_hosting::{HomeRelayHosting, HostedWorkspace};
+    let workspace = |room: &str, name: &str, on_relay| HostedWorkspace {
+        room: room.into(),
+        name: name.into(),
+        on_relay,
+    };
+    HomeRelayHosting {
+        relay: Some("Home server".into()),
+        workspaces: vec![
+            workspace("4d6f1a2c-0000-4000-8000-000000000001", "Personal", true),
+            workspace("4d6f1a2c-0000-4000-8000-000000000002", "Studio", false),
+            workspace("4d6f1a2c-0000-4000-8000-000000000003", "Taxes", false),
+        ],
+    }
 }
 
 /// Three devices of one person: a laptop holding work nothing else has

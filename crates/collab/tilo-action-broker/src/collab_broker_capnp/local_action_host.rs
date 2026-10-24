@@ -776,6 +776,7 @@ fn certified_provider(provider: &str) -> bool {
         provider,
         tilo_actions::remote::device_pairing::PROVIDER
             | tilo_actions::remote::identity_admin::PROVIDER
+            | tilo_actions::remote::home_relay_hosting::PROVIDER
             | tilo_actions::remote::own_device::PROVIDER
     ) || provider.parse::<u64>().is_ok()
         || tilo_actions::remote::application_provider(provider).is_some()

@@ -138,11 +138,15 @@ fn populated_tree() -> WorkspaceTree {
             "room_share_floor",
             serde_json::json!({ room(2).to_string(): 11 }),
         ),
+        // Rooms another device's continuation once made workspaces for.
+        (
+            "continuation_rooms",
+            serde_json::json!([room(3).to_string()]),
+        ),
     ] {
         tree.retired_fields.insert(key.into(), value);
     }
     tree.continuation_tabs.insert(5);
-    tree.continuation_rooms.insert(room(3));
     tree.continuation_owned_tabs.insert(5, room(3));
     tree.continuation_closed_tabs.insert(12, room(3));
     tree.native_document_tabs.insert(

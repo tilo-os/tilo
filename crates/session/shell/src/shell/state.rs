@@ -835,11 +835,6 @@ pub struct WorkspaceTree {
     /// governed by any of their devices.
     #[serde(skip)]
     pub local_person: Option<[u8; 32]>,
-    /// Rooms introduced only by another device's private continuation offer.
-    /// Once a person takes ownership of an offered tab the room becomes local
-    /// and is removed from this set.
-    #[serde(default)]
-    pub continuation_rooms: BTreeSet<RoomId>,
     /// Offered tabs this device has actively taken over. Kept separately so
     /// a launch immediately followed by a close still emits a tombstone even
     /// if no periodic checkpoint ran between those events.
@@ -952,7 +947,6 @@ impl Default for WorkspaceTree {
             strips_to_retain: BTreeSet::new(),
             continuation_tabs: BTreeSet::new(),
             local_person: None,
-            continuation_rooms: BTreeSet::new(),
             continuation_owned_tabs: HashMap::new(),
             continuation_closed_tabs: HashMap::new(),
             continuation_file_references: HashMap::new(),
@@ -3150,6 +3144,33 @@ impl WorkspaceTree {
         taken
     }
 
+    /// Forget each mark that a room is being joined with no enrollment into
+    /// it in flight: the person's continuity once marked the rooms it named
+    /// without entering them anywhere, and a mark nothing is entering would
+    /// keep the room from ever being entered. The mark is bookkeeping;
+    /// the room's workspace stays as it is. Answers the rooms whose mark
+    /// went.
+    pub fn drop_unentered_joins(&mut self) -> Vec<RoomId> {
+        let entering: BTreeSet<RoomId> = self
+            .native_authority
+            .joins()
+            .map(|(room, _)| room)
+            .collect();
+        let unentered: Vec<RoomId> = self
+            .joining_rooms
+            .iter()
+            .filter(|room| !entering.contains(room))
+            .copied()
+            .collect();
+        for room in &unentered {
+            self.joining_rooms.remove(room);
+        }
+        if !unentered.is_empty() {
+            self.queue_save();
+        }
+        unentered
+    }
+
     /// Append a workspace named `name` showing `room`.
     fn append_workspace_for_room(&mut self, name: &str, room: RoomId) -> WorkspaceId {
         let ws_id = self.new_workspace_id(room);
@@ -3180,53 +3201,11 @@ impl WorkspaceTree {
         ws_id
     }
 
-    /// Add a dormant local entry for a room discovered through the private
-    /// same-identity continuation lane. Unlike [`Self::create_hosted_workspace`]
-    /// this creates no strip or window and never changes focus, so merely
-    /// learning that another device has a workspace open cannot publish an
-    /// empty local layout into that room or pull the current session away.
-    /// The workspace is joining ([`Self::join_native_room`]) until the room's
-    /// replica installs, which supplies its real name and layout.
-    /// `_source_device` is a continuity label, not a key.
-    pub fn adopt_continuation_room(&mut self, room: RoomId, _source_device: &str) -> bool {
-        if room.is_nil() || is_local_person_room(room) || self.has_workspace(room) {
-            return false;
-        }
-        let id = self.new_workspace_id(room);
-        let workspace = Workspace::in_room(id, room, "From another device");
-        self.desktop.workspaces.push(workspace);
-        self.continuation_rooms.insert(room);
-        if !self.native_authority.holds(room) {
-            self.joining_rooms.insert(room);
-        }
-        self.seed_doc_from_cache();
-        self.queue_save();
-        true
-    }
-
-    /// Join a room copied from the machine that enrolled this device.
-    ///
-    /// This is membership, not a continuation offer, so turning app
-    /// continuations off does not remove it.
-    pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
-        if is_local_person_room(room)
-            || self
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room() == room)
-        {
-            return false;
-        }
-        self.adopt_personal_room(room, "From another device")
-    }
-
     /// Hold `room` as one of the person's workspaces, named `name`: the
     /// person's workspace list says they are in it. A room this tree lacks
     /// is joined without focus or layout, its workspace joining
-    /// ([`Self::join_native_room`]) until the room's replica installs; a
-    /// room only offered by another device's continuation becomes a
-    /// workspace of its own; one already held takes the listed name. Who
+    /// ([`Self::join_native_room`]) until the room's replica installs; one
+    /// already here takes the listed name. Who
     /// owns and governs the room is the room's own governance, projected
     /// with its replica. Returns whether the tree changed.
     pub fn adopt_personal_room(&mut self, room: RoomId, name: &str) -> bool {
@@ -3239,17 +3218,13 @@ impl WorkspaceTree {
             .iter()
             .position(|workspace| workspace.room() == room)
         {
-            let offered = self.continuation_rooms.remove(&room);
             let Some(workspace) = self.desktop.workspaces.get_mut(index) else {
                 return false;
             };
-            let renamed = workspace.name != name;
-            if renamed {
-                workspace.name = name.to_string();
-            }
-            if !(offered || renamed) {
+            if workspace.name == name {
                 return false;
             }
+            workspace.name = name.to_string();
             self.seed_doc_from_cache();
             self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
             self.queue_save();
@@ -3286,7 +3261,6 @@ impl WorkspaceTree {
             // it is no place in the list to put back.
             let removed = self.archived_workspaces.remove(archived);
             self.room_docs.remove(&room);
-            self.continuation_rooms.remove(&room);
             self.joining_rooms.remove(&room);
             self.pending_placements.remove(&room);
             self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
@@ -3322,7 +3296,6 @@ impl WorkspaceTree {
         // person showing it here again) does not make this device claim a
         // room another device governs.
         self.room_docs.remove(&room);
-        self.continuation_rooms.remove(&room);
         self.joining_rooms.remove(&room);
         self.pending_placements.remove(&room);
         self.seed_doc_from_cache();
@@ -3457,64 +3430,9 @@ impl WorkspaceTree {
                 .any(|candidate| candidate.id == tab)
                 .then_some(workspace.room())
         }) {
-            self.continuation_rooms.remove(&room);
             self.continuation_closed_tabs.remove(&tab);
             self.continuation_owned_tabs.insert(tab, room);
         }
-        true
-    }
-
-    /// Remove rooms which exist here solely because of a continuation offer
-    /// and are no longer offered by any device.
-    pub fn reconcile_continuation_rooms(&mut self, desired: &BTreeSet<RoomId>) -> bool {
-        let stale: BTreeSet<_> = self
-            .continuation_rooms
-            .difference(desired)
-            .copied()
-            .collect();
-        if stale.is_empty() {
-            return false;
-        }
-        let stale_tabs: BTreeSet<_> = self
-            .desktop
-            .workspaces
-            .iter()
-            .filter(|workspace| stale.contains(&workspace.room()))
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.id)
-            .filter(|tab| self.continuation_tabs.contains(tab))
-            .collect();
-        self.desktop
-            .workspaces
-            .retain(|workspace| !stale.contains(&workspace.room()));
-        self.continuation_rooms.retain(|room| !stale.contains(room));
-        self.continuation_tabs
-            .retain(|tab| !stale_tabs.contains(tab));
-        self.continuation_file_references
-            .retain(|tab, _| !stale_tabs.contains(tab));
-        if let Ok(mut registry) =
-            crate::shell::personal_continuity_registry::global_registry().lock()
-        {
-            for tab in stale_tabs {
-                registry.remove_remote_tab(crate::shell::personal_continuity::AppInstanceId(tab));
-            }
-        }
-        if !self
-            .desktop
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.id == self.desktop.active)
-        {
-            self.desktop.active = self
-                .desktop
-                .workspaces
-                .first()
-                .map_or_else(WorkspaceId::default, |workspace| workspace.id);
-        }
-        self.seed_doc_from_cache();
-        self.queue_save();
         true
     }
 
@@ -5785,6 +5703,30 @@ mod hosted_workspace_tests {
             "a placement not yet taken survives a restart"
         );
     }
+
+    /// A room marked as being joined that no enrollment is entering is
+    /// marked no more after a restart; its workspace and name stay.
+    #[test]
+    fn a_join_mark_with_nothing_entering_is_cleared_on_load() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = RoomId::new();
+        let id = tree.join_native_room("Plans", room).expect("joined");
+        assert!(tree.is_joining(room));
+
+        crate::shell::persist::save_tree_to(&tree, &path).expect("save");
+        let loaded = crate::shell::persist::load_tree_from(&path).expect("load");
+        assert!(!loaded.is_joining(room), "nothing enters the room");
+        let workspace = loaded
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .expect("the workspace stays");
+        assert_eq!(workspace.room(), room);
+        assert_eq!(workspace.name, "Plans");
+    }
 }
 #[cfg(test)]
 mod preset_assignment {
@@ -5904,7 +5846,7 @@ mod workspace_tree_lifecycle_tests {
             {
                 let mut tree = WorkspaceTree::bootstrap_default();
                 let room = RoomId::new();
-                tree.adopt_continuation_room(room, "Laptop");
+                tree.join_room("Plans", room);
                 let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
                 let app = crate::shell::personal_continuity::AppInstanceState::new(
                     crate::shell::personal_continuity::AppInstanceId(0x99),
@@ -5935,7 +5877,7 @@ mod workspace_tree_lifecycle_tests {
             {
                 let mut tree = WorkspaceTree::bootstrap_default();
                 let room = RoomId::new();
-                tree.adopt_continuation_room(room, "Laptop");
+                tree.join_room("Plans", room);
                 let app = crate::shell::personal_continuity::AppInstanceState::new(
                     crate::shell::personal_continuity::AppInstanceId(0x9a),
                     crate::shell::personal_continuity::TabPlacement {
@@ -5962,7 +5904,6 @@ mod workspace_tree_lifecycle_tests {
 
                 assert!(tree.claim_continuation_tab(0x9a));
                 assert!(!tree.continuation_tabs.contains(&0x9a));
-                assert!(!tree.continuation_rooms.contains(&room));
                 assert!(!tree.reconcile_continuation_tabs(&BTreeSet::new()));
                 assert!(tree.desktop.workspaces.iter().any(|workspace| {
                     workspace
@@ -5973,64 +5914,15 @@ mod workspace_tree_lifecycle_tests {
                         .any(|tab| tab.id == 0x9a)
                 }));
             }
-
-            // Phase `vanished_continuation_room_is_removed_but_claimed_room_is_not`.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let offered = RoomId::new();
-                let claimed = RoomId::new();
-                tree.adopt_continuation_room(offered, "Laptop");
-                tree.adopt_continuation_room(claimed, "Laptop");
-                tree.continuation_rooms.remove(&claimed);
-
-                assert!(tree.reconcile_continuation_rooms(&BTreeSet::new()));
-                assert!(
-                    !tree
-                        .desktop
-                        .workspaces
-                        .iter()
-                        .any(|workspace| workspace.room() == offered)
-                );
-                assert!(
-                    tree.desktop
-                        .workspaces
-                        .iter()
-                        .any(|workspace| workspace.room() == claimed)
-                );
-            }
         }
 
         // Phase `continuation_offers_stay_dormant_live_and_free_of_identifiers`.
         {
-            // Phase `continuity_room_is_dormant_and_does_not_steal_focus`.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let active_before = tree.desktop.active;
-                let room = RoomId::new();
-
-                assert!(tree.adopt_continuation_room(room, "Laptop"));
-                assert!(!tree.adopt_continuation_room(room, "Laptop"));
-                assert_eq!(tree.desktop.active, active_before);
-                let adopted = tree
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.room() == room)
-                    .expect("continuation workspace");
-                assert_eq!(adopted.name, "From another device");
-                assert!(!adopted.name.contains("Laptop"));
-                assert!(adopted.strips.is_empty());
-                assert!(
-                    tree.is_joining(room),
-                    "the offered room is joined through its host"
-                );
-            }
-
             // Phase `continuation_offer_tracks_live_placement_and_title`.
             {
                 let mut tree = WorkspaceTree::bootstrap_default();
                 let room = RoomId::new();
-                tree.adopt_continuation_room(room, "Laptop");
+                tree.join_room("Plans", room);
                 let device = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
                 let make = |strip, title_app: &str| {
                     crate::shell::personal_continuity::AppInstanceState::new(
@@ -6099,7 +5991,7 @@ mod workspace_tree_lifecycle_tests {
                 let mut tree = WorkspaceTree::bootstrap_default();
                 let room = RoomId::new();
                 let source = "ab".repeat(32);
-                tree.adopt_continuation_room(room, &source);
+                tree.join_room("Plans", room);
                 let stamp = ContinuityStamp {
                     counter: 1,
                     device: DeviceId::new("laptop").unwrap(),
@@ -6191,7 +6083,7 @@ mod workspace_tree_lifecycle_tests {
 
         let mut tree = WorkspaceTree::bootstrap_default();
         let room = RoomId::new();
-        tree.adopt_continuation_room(room, "Laptop");
+        tree.join_room("Plans", room);
         let id = AppInstanceId(0x55);
         let placement = TabPlacement {
             strip: 0,
