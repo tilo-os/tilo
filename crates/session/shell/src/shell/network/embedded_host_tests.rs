@@ -303,3 +303,57 @@ fn a_new_workspace_keeps_its_windows_and_never_joins_while_it_is_placed() {
     assert!(network.administered_room(room).is_some());
     drop(network);
 }
+
+#[test]
+fn a_placed_workspace_is_installed_by_one_pass_once_its_enrollment_lands() {
+    let mut home = tilo_test_env::TestHome::new().expect("home");
+    let dir = tempfile::tempdir().expect("temp");
+    let person = ed25519_dalek::SigningKey::from_bytes(&[0x53; 32]);
+    home.env().set(
+        "TILO_USER_ID",
+        hex::encode(person.verifying_key().to_bytes()),
+    );
+    let mut tree = WorkspaceTree::default();
+    let (_, room) = tree.create_hosted_workspace("Plans");
+    tree.persist_path = Some(dir.path().join("workspaces.json"));
+    let tree = tree.shared();
+    let network = crate::shell::network::idle_quiet_tests::device_reaching(
+        tree.clone(),
+        dir.path(),
+        &person,
+        tilo_user_identity::DeviceCapabilities::primary(),
+        crate::shell::network::Reach::Loopback,
+    );
+    let landed = |network: &ShellNetwork| {
+        tree.read().native_authority.holds(room)
+            || network.enrolling_into(room).is_some_and(|id| {
+                network
+                    .native_enrollment
+                    .attempts
+                    .lock()
+                    .expect("attempts")
+                    .get(&id)
+                    .is_some_and(crate::network::invite::enrollment_driver::Attempt::has_landed)
+            })
+    };
+    let deadline = tilo_test_env::hang_deadline();
+    while !tree.read().native_authority.holds(room) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the workspace was never placed"
+        );
+        network.tick();
+        if !landed(&network) {
+            assert_eq!(
+                network.shared_room_passes(),
+                0,
+                "a pass ran while the enrollment was pending"
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    network.tick();
+    network.tick();
+    assert_eq!(network.shared_room_passes(), 1);
+    drop(network);
+}
