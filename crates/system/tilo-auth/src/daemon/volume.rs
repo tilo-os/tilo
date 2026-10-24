@@ -2,6 +2,7 @@
 //! adding it on a running system without asking anyone for the old disk
 //! passphrase.
 
+use crate::keyring;
 use crate::luks::Authority;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -83,22 +84,38 @@ impl Held {
     }
 }
 
+/// The volume key the initrd links into uid 0's user keyring while the
+/// system volume has no sign-in yet (`link-volume-key=` in tilo-root-discover).
+pub const LINKED_VOLUME_KEY: &str = "tilo-auth:volume-key";
+/// LUKS2 volume keys are at most 512 bits for every cipher the installer uses;
+/// the slack only lets a longer one fail at the key check instead of here.
+const MAX_VOLUME_KEY: usize = 128;
+
 /// The first of, in order: the secret this boot unlocked the volume with
-/// (tilo-rollback leaves it in `/run` for its own confirmation); what the
-/// person just typed, when it is also a disk passphrase (the installer makes
-/// the account password the disk passphrase on machines without a TPM); the
-/// open mapping's volume key, when the kernel shows it.
+/// (tilo-rollback leaves it in `/run` for its own confirmation); the volume
+/// key the initrd linked as `linked`; what the person just typed, when it is
+/// also a disk passphrase (the installer makes the account password the disk
+/// passphrase on machines without a TPM); the open mapping's volume key, when
+/// the kernel shows it.
 pub fn held_credential(
     runner: &dyn Runner,
     ws: &Workspace,
     volume: &SystemVolume,
     proof_file: &Path,
+    linked: Option<&str>,
     typed: Option<&str>,
 ) -> Result<Option<Held>> {
     if let Ok(proof) = std::fs::read(proof_file) {
         let proof = Zeroizing::new(proof);
         if verify_passphrase(runner, ws, &volume.device, &proof, None)? {
             return Ok(Some(Held::Passphrase(proof)));
+        }
+    }
+    if let Some(description) = linked {
+        match keyring::read_one(description, MAX_VOLUME_KEY) {
+            Ok(Some(key)) => return Ok(Some(Held::VolumeKey(key))),
+            Ok(None) => {}
+            Err(e) => eprintln!("tilo-authd: could not read the linked volume key: {e}"),
         }
     }
     if let Some(typed) = typed.filter(|t| !t.is_empty())

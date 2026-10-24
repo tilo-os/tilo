@@ -32,6 +32,8 @@ pub mod guard;
 #[cfg(feature = "service")]
 pub mod handoff;
 #[cfg(feature = "service")]
+pub mod keyring;
+#[cfg(feature = "service")]
 pub mod lockout_store;
 #[cfg(feature = "service")]
 pub mod luks;

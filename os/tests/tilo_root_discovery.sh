@@ -139,9 +139,14 @@ echo 'ok: no root discovery units outside the initrd'
 
 # Exercise the encrypted production path with an attach implementation that
 # checks the actual options received by systemd-cryptsetup, not a source grep.
+# It answers isLuks for every root, and lists a tilo-signin token when the
+# test says the root has one.
 cat >"$work/bin/encrypted" <<'EOF'
 #!/bin/bash
-exit 0
+[ "$1" = luksDump ] || exit 0
+printf 'LUKS header information\nTokens:\n'
+[ "${TILO_TEST_SIGNIN_TOKEN:-0}" = 1 ] && printf '  0: tilo-signin\n\tKeyslot:    1\n'
+printf '  1: systemd-tpm2\n\tKeyslot:    0\nDigests:\n'
 EOF
 cat >"$work/bin/attach" <<'EOF'
 #!/bin/bash
@@ -152,6 +157,7 @@ case ",$5," in *,password-cache=no,*) ;; *) exit 1 ;; esac
 case ",$5," in *,tpm2-device=auto,*) ;; *) exit 1 ;; esac
 case ",$5," in *,fido2-device=auto,*) ;; *) exit 1 ;; esac
 [ "$LC_ALL" = C ] && [ "$SYSTEMD_LOG_TARGET" = console ]
+printf '%s\n' "$5" >"$TILO_TEST_OPTIONS_LOG"
 if [ "${TILO_TEST_EXPECT_KEY:-0}" = 1 ]; then
   [ "$(cat "$TILO_ROOT_RUNTIME/cryptsetup-keys.d/root.key")" = derived ] || exit 1
 fi
@@ -187,7 +193,7 @@ TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/encrypte
 TILO_ROOT_CRYPTSETUP="$work/bin/attach" TILO_ROOT_UNLOCK="${TILO_TEST_UNLOCK:-true}" \
 TILO_ROOT_SIGNIN="${TILO_TEST_SIGNIN:-$work/bin/absent}" \
 TILO_ROOT_SIBLING_UNLOCK="${TILO_TEST_SIBLING:-false}" TILO_ROOT_SYSTEMCTL="$work/bin/systemctl" \
-TILO_TEST_ORDER_LOG="$work/order" \
+TILO_TEST_ORDER_LOG="$work/order" TILO_TEST_OPTIONS_LOG="$work/options" \
 TILO_ROOT_PLYMOUTH="$work/bin/plymouth" TILO_TEST_PLYMOUTH_LOG="$work/plymouth-events" \
 TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
 }
@@ -267,6 +273,17 @@ printf '%s\n' "rollback-unlock $work/dev/tilo-root root" attach >"$work/expected
 cmp "$work/expected-order" "$work/order"
 test ! -e "$work/run/cryptsetup-keys.d/root.key"
 echo 'ok: without a sign-in program the root unlocks as before, and its key file goes once it is open'
+
+# Until a root has a sign-in, the volume key goes to uid 0's user keyring for
+# the first person's keyslot; once it has one, it never leaves the attach.
+link=',link-volume-key=@u::%user:tilo-auth:volume-key'
+rm -rf "$work/run/tilo-root" "$work/order"
+encrypted_discover
+case "$(cat "$work/options")" in *"$link") ;; *) cat "$work/options" >&2; exit 1 ;; esac
+rm -rf "$work/run/tilo-root" "$work/order"
+TILO_TEST_SIGNIN_TOKEN=1 encrypted_discover
+case "$(cat "$work/options")" in *link-volume-key*) cat "$work/options" >&2; exit 1 ;; esac
+echo 'ok: the volume key is linked for the first sign-in only while the root has none'
 
 
 # The install preflight binds both the PCR policy and the exact target UKI to

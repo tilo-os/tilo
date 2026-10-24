@@ -127,6 +127,7 @@ impl Machine {
                 mapping: None,
             }),
             handoff: None,
+            volume_key: None,
         }
     }
 
@@ -213,6 +214,25 @@ impl Machine {
             .collect();
         slots.sort();
         slots
+    }
+
+    /// What the initrd's `link-volume-key=` does: cryptsetup links the
+    /// volume key into the user keyring as a `user` key described
+    /// `description`.
+    fn link_volume_key(&self, description: &str) -> bool {
+        let file = self.path("link.key");
+        std::fs::write(&file, DISK_PASSPHRASE).unwrap();
+        let ok = Command::new("cryptsetup")
+            .args(["open", "--test-passphrase", "--key-file"])
+            .arg(&file)
+            .arg("--link-vk-to-keyring")
+            .arg(format!("@u::%user:{description}"))
+            .arg(&self.device)
+            .status()
+            .unwrap()
+            .success();
+        std::fs::remove_file(&file).unwrap();
+        ok
     }
 
     fn opens(&self, passphrase: &str) -> bool {
@@ -693,6 +713,75 @@ fn keyring() -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     handoff::take(&probe).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn volume_key_linked(description: &str) -> bool {
+    tilo_auth::keyring::read_one(description, 128)
+        .unwrap()
+        .is_some()
+}
+
+/// cryptsetup links the volume key readable by its possessor only, as the
+/// daemon's unit makes it (`KeyringMode=shared`).
+fn linked_volume_key(m: &Machine) -> Result<(), String> {
+    let probe = format!("tilo-authd-vk-probe-{}", std::process::id());
+    if !m.link_volume_key(&probe) {
+        return Err("cryptsetup could not link the volume key".into());
+    }
+    let read = tilo_auth::keyring::read_one(&probe, 128);
+    tilo_auth::keyring::forget(&probe).map_err(|e| e.to_string())?;
+    match read {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err("the linked volume key is not there".into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[test]
+fn the_linked_volume_key_adds_the_first_keyslot_once() {
+    let m = machine!(true, &[("ada", "123456"), ("bob", "654321")]);
+    require_capability!(
+        KernelKeyring,
+        linked_volume_key(&m),
+        "the linked volume key cannot be read back"
+    );
+    let description = format!("tilo-auth-test-volume-key-{}", std::process::id());
+    let config = || Config {
+        volume_key: Some(description.clone()),
+        ..m.config()
+    };
+
+    // Whatever the first sign-in attempt of the boot answers, it is the last
+    // that may use the key.
+    assert!(m.link_volume_key(&description));
+    let daemon = m.daemon_with(config());
+    daemon.settle_volume_key();
+    assert!(
+        volume_key_linked(&description),
+        "the volume has no sign-in yet"
+    );
+    assert_eq!(
+        verify(&daemon, ADA, "ada", "wrong"),
+        refused(Refusal::Wrong)
+    );
+    assert!(!volume_key_linked(&description));
+
+    // The admin's first sign-in adds their keyslot with it, though neither
+    // their password nor anything else this boot holds opens the volume.
+    assert!(m.link_volume_key(&description));
+    let daemon = m.daemon_with(config());
+    daemon.settle_volume_key();
+    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
+    assert!(!volume_key_linked(&description));
+    let record = m.record(ADA.uid).unwrap();
+    assert!(record.system_keyslot.is_some());
+    assert_eq!(record.attention, None);
+    assert_eq!(m.slots().len(), 3);
+
+    // A volume that has a sign-in never keeps it.
+    assert!(m.link_volume_key(&description));
+    m.daemon_with(config()).settle_volume_key();
+    assert!(!volume_key_linked(&description));
 }
 
 #[test]
