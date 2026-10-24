@@ -14,7 +14,7 @@ impl BrowserWidget {
     /// time, until the person closes it.
     fn side_panel_docks(&self, theme: &Theme) -> bool {
         let room = ui::num::f32_of_f64(self.rect.width());
-        room >= crate::extension_controller::SIDE_PANEL_WIDTH
+        room >= crate::extension_controller::side_panel_width(theme)
             + theme.tokens.metrics.reading_min_width
     }
 
@@ -41,7 +41,7 @@ impl BrowserWidget {
         );
         let docks = self.side_panel_docks(theme);
         let width = if docks {
-            crate::extension_controller::SIDE_PANEL_WIDTH
+            crate::extension_controller::side_panel_width(theme)
         } else {
             ui::num::f32_of_f64(self.rect.width())
         };
