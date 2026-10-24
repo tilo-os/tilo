@@ -1360,6 +1360,7 @@ async fn assert_native_wire_input(
 fn assert_native_receiver_policy(controller: &DeviceId, event: native_fabric::FabricInputEvent) {
     use shell::compositor::state::State;
     use shell::network::ShellView;
+    use shell::shell::input_policy::InputCapture;
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::wayland_server::Display;
     let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
@@ -1402,11 +1403,14 @@ fn assert_native_receiver_policy(controller: &DeviceId, event: native_fabric::Fa
     }
     state
         .remote_input_firewall
-        .publish_view(ShellView::new(Vec::new(), None, false, false).locked(true));
+        .publish_view(ShellView::new(Vec::new(), None, InputCapture::NONE, false).locked(true));
     assert!(!state.apply_personal_fabric_input(controller, event));
-    state
-        .remote_input_firewall
-        .publish_view(ShellView::new(Vec::new(), None, false, false));
+    state.remote_input_firewall.publish_view(ShellView::new(
+        Vec::new(),
+        None,
+        InputCapture::NONE,
+        false,
+    ));
     state.remote_input_firewall.engage_kill_switch();
     assert!(!state.apply_personal_fabric_input(controller, event));
 }

@@ -16,6 +16,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
 use shell::network::{Denial, InputEvent, ShellView, StreamingShare};
+use shell::shell::input_policy::InputCapture;
 use vello::kurbo::Rect;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
@@ -181,7 +182,7 @@ fn a_remote_participant_types_exactly_its_text_and_repeats_only_as_its_sender_do
     h.state.remote_input_firewall.publish_view(ShellView::new(
         vec![(window, Rect::new(0.0, 0.0, 800.0, 600.0))],
         Some(window),
-        false,
+        InputCapture::NONE,
         false,
     ));
     assert!(h.state.apply_remote_input(
@@ -277,7 +278,7 @@ fn headless_workspace_host_focus_reaches_the_requested_wayland_window() {
             (current, Rect::new(400.0, 0.0, 800.0, 600.0)),
         ],
         Some(old),
-        false,
+        InputCapture::NONE,
         false,
     ));
     assert!(h.state.apply_remote_input(
@@ -469,7 +470,7 @@ fn assert_host_focus_permissions(
             (current, Rect::new(400.0, 0.0, 800.0, 600.0)),
         ],
         Some(current),
-        true,
+        InputCapture::ALL,
         false,
     ));
     assert!(h.state.apply_remote_input(

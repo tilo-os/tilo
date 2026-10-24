@@ -28,18 +28,11 @@ impl ShellOverlayHost {
         self.file_picker_overlay.actions()
     }
 
-    /// The open file chooser holds the keyboard: its sheet's window is the
-    /// focused one, or no window asked for it.
-    pub fn file_picker_takes_keyboard(&self) -> bool {
-        self.file_picker_overlay
-            .takes_keyboard(self.file_picker_place())
-    }
-
-    /// The open file chooser takes the pointer at `at`: on its sheet or the
-    /// window waiting on it.
-    pub(crate) fn file_picker_takes_pointer_at(&self, at: Point) -> bool {
-        self.file_picker_overlay
-            .takes_pointer_at(self.file_picker_place(), at)
+    /// What the open file chooser holds back from the windows: the
+    /// keyboard while its sheet's window is focused, the pointer over that
+    /// window and the sheet.
+    pub(crate) fn file_picker_capture(&self) -> crate::shell::input_policy::InputCapture {
+        self.file_picker_overlay.capture(self.file_picker_place())
     }
 
     pub fn file_picker(&self) -> Option<&ui::widget::FilePicker> {
