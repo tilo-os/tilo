@@ -531,7 +531,7 @@ impl ShellNetwork {
     /// `room`, as this device's current admitted custody of it names it.
     /// `Ok(None)` when the room is governed elsewhere than where it is
     /// served.
-    fn host_governor(&self, room: RoomId) -> Result<Option<iroh::EndpointId>, String> {
+    pub(super) fn host_governor(&self, room: RoomId) -> Result<Option<iroh::EndpointId>, String> {
         let owner = self.native_owner()?;
         let identity = self
             .host_identity
@@ -548,7 +548,7 @@ impl ShellNetwork {
 
     /// Queue the member's own `action` with `arguments` in `room`, at its
     /// host governor `host`.
-    fn ask_as_member(
+    pub(super) fn ask_as_member(
         &self,
         room: RoomId,
         host: iroh::EndpointId,

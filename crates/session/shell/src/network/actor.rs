@@ -2674,8 +2674,7 @@ impl ActorState {
                     }
                 }
                 if let Some(frame) = self.room_governance.send(request, host, Instant::now()) {
-                    self.publish_remote_action(ws, host, NeighbourMsg::RemoteAction { frame })
-                        .await;
+                    self.publish_to_host_sessions(ws, host, frame);
                 }
             }
             room_governance::Addressee::Host(endpoint) => {
@@ -2740,6 +2739,28 @@ impl ActorState {
         {
             // Its caller hears nothing and gives up in its own time.
             tracing::warn!(%error, host = %endpoint, "a request to a host was not sent");
+        }
+    }
+
+    /// Send `frame`, addressed to the room host whose device is `host`, on a
+    /// host session of `ws`: the one whose handshake authenticated that
+    /// device, else any other, which routes it there. Never the direct
+    /// surface route: a device hosting its own rooms is also a member of
+    /// them under the same key, and its shell does not answer for its host.
+    fn publish_to_host_sessions(&self, ws: WorkspaceId, host: EndpointId, frame: Vec<u8>) {
+        let device = *host.as_bytes();
+        let mut sessions: Vec<_> = self
+            .host_sessions
+            .iter()
+            .filter(|((session_ws, _), _)| *session_ws == ws)
+            .map(|(_, runtime)| &runtime.session)
+            .collect();
+        sessions.sort_by_key(|session| session.relay_device_public_key() != device);
+        let sent = sessions
+            .into_iter()
+            .any(|session| session.publish_remote_action(device, frame.clone()).is_ok());
+        if !sent {
+            tracing::warn!(ws, %host, "no session with the room's host to send a request on");
         }
     }
 
