@@ -7732,8 +7732,12 @@ mod tests {
                 )
                 .expect("name is a declared text parameter");
                 (action.apply)(&mut c.borrow_mut(), &args).expect("owner may admit");
+                // The governor answers each before the next is typed, so a
+                // later spelling finds the agent already admitted.
+                c.borrow()
+                    .tree_mut()
+                    .govern_requests_here_for_test(&FIXTURE_USER.to_owned());
             }
-            governed(&c, FIXTURE_USER);
             let members = c
                 .borrow()
                 .tree()
