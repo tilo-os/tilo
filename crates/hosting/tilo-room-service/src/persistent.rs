@@ -1,7 +1,9 @@
 //! The persistent public room: one `tilo-relay room --persistent` child on
 //! the persistent volume, restarted when it exits. Guests are admitted by
 //! `POST /join` and watching pages by `POST /spectate`, each under the
-//! room's limits.
+//! room's limits. While the room takes people by invitation, someone without
+//! one leaves an email address at `POST /wait-list`, which the room keeps
+//! with its join requests for whoever may invite.
 
 use crate::config::{Config, PersistentConfig};
 use crate::guests::GuestLedger;
@@ -51,6 +53,45 @@ pub struct JoinAnswer {
     pub origin: String,
 }
 
+/// The wait list a door taking people by invitation offers those it turns
+/// away (`Persistent::wait_list`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaitListDoor<'a> {
+    /// Where to ask to be taken off the list, if the operator named it
+    /// (`TILO_ROOMS_CONTACT`).
+    pub contact: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WaitListRequest {
+    /// The address to be invited at.
+    pub email: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitListAnswer {
+    /// The address as the room keeps it (trimmed, lowercased): what the
+    /// door confirms. Whether it was on the list already is not said, so
+    /// the door tells nobody whose address is.
+    pub email: String,
+}
+
+/// Why `POST /wait-list` kept nothing.
+#[derive(Clone, Copy, Debug)]
+pub enum WaitRefusal {
+    /// The room takes anyone at its door, or keeps no wait list.
+    NoWaitList,
+    Invalid(&'static str),
+    TooMany {
+        retry_after_secs: u64,
+    },
+    /// The room keeps as many as it takes.
+    Full,
+    Unavailable,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpectateRequest {
@@ -95,6 +136,10 @@ enum Answer {
     Removed,
     /// The room takes people by invitation and has no such member.
     InviteOnly,
+    /// The room keeps the request left at its door.
+    WaitListed,
+    /// The room keeps as many requests left at its door as it takes.
+    WaitListFull,
 }
 
 type Waiters = HashMap<String, oneshot::Sender<std::result::Result<Answer, String>>>;
@@ -124,6 +169,13 @@ pub(crate) struct Shared {
     /// The room takes people by invitation (`TILO_ROOMS_ADMISSION=invite`):
     /// its relay lets in only its members.
     invite_only: bool,
+    /// Addresses left on the wait list, per address hash.
+    waits: std::sync::Mutex<JoinLimits>,
+    /// The room keeps a wait list: it takes people by invitation and
+    /// `TILO_ROOMS_WAIT_LIST_MAX` is not 0.
+    wait_list: bool,
+    /// Where someone on the wait list asks to be taken off it.
+    contact: Option<String>,
 }
 
 impl Shared {
@@ -150,6 +202,8 @@ impl Shared {
             (persistent.guest_joins, persistent.spectator_joins),
         )?;
         shared.invite_only = persistent.admission == crate::config::Admission::Invite;
+        shared.wait_list = shared.invite_only && persistent.wait_list_max > 0;
+        shared.contact.clone_from(&persistent.contact);
         Ok(shared)
     }
 
@@ -177,6 +231,9 @@ impl Shared {
             watching: std::sync::Mutex::new(Seats::new(max_spectators)),
             presence: std::sync::Mutex::default(),
             invite_only: false,
+            waits: std::sync::Mutex::new(JoinLimits::new(JoinRates::WAIT_LIST)),
+            wait_list: false,
+            contact: None,
         })
     }
 
@@ -362,6 +419,11 @@ fn governance(command: &mut Command, persistent: &PersistentConfig) {
     }
     if persistent.admission == crate::config::Admission::Invite {
         command.arg("--members-only");
+        if persistent.wait_list_max > 0 {
+            command
+                .arg("--wait-list-max")
+                .arg(persistent.wait_list_max.to_string());
+        }
     }
 }
 
@@ -685,19 +747,15 @@ impl Persistent {
                     reason,
                     removed,
                     invite_only,
-                }) => {
-                    eprintln!("tilo-room-service: a pre-admission was refused: {reason}");
-                    self.settle(
-                        &format!("join:{token_sha256}"),
-                        if removed {
-                            Ok(Answer::Removed)
-                        } else if invite_only {
-                            Ok(Answer::InviteOnly)
-                        } else {
-                            Err(reason)
-                        },
-                    );
+                }) => self.pre_admit_refused(&token_sha256, reason, removed, invite_only),
+                Ok(RoomEvent::WaitListed { request, .. }) => {
+                    self.settle(&format!("wait:{request}"), Ok(Answer::WaitListed));
                 }
+                Ok(RoomEvent::WaitListRefused {
+                    request,
+                    reason,
+                    full,
+                }) => self.wait_list_refused(&request, reason, full),
                 Ok(RoomEvent::SpectatorCertified {
                     device_public_key,
                     certificate,
@@ -759,6 +817,38 @@ impl Persistent {
             }
         }
         Ok(())
+    }
+
+    /// The room refused to pre-admit the visitor whose token hashes to
+    /// `token_sha256`: removed, not invited, or for `reason`.
+    fn pre_admit_refused(
+        &self,
+        token_sha256: &str,
+        reason: String,
+        removed: bool,
+        invite_only: bool,
+    ) {
+        eprintln!("tilo-room-service: a pre-admission was refused: {reason}");
+        let answer = if removed {
+            Ok(Answer::Removed)
+        } else if invite_only {
+            Ok(Answer::InviteOnly)
+        } else {
+            Err(reason)
+        };
+        self.settle(&format!("join:{token_sha256}"), answer);
+    }
+
+    /// The room did not keep wait-list request `request`: its list is full,
+    /// or for `reason`.
+    fn wait_list_refused(&self, request: &str, reason: String, full: bool) {
+        eprintln!("tilo-room-service: a wait-list request was not kept: {reason}");
+        let answer = if full {
+            Ok(Answer::WaitListFull)
+        } else {
+            Err(reason)
+        };
+        self.settle(&format!("wait:{request}"), answer);
     }
 
     fn settle(&self, key: &str, answer: std::result::Result<Answer, String>) {
@@ -881,6 +971,56 @@ impl Persistent {
     /// Whether the door lets in only the room's members (`TILO_ROOMS_ADMISSION=invite`).
     pub fn invite_only(&self) -> bool {
         self.shared.invite_only
+    }
+
+    /// Whether someone the door turns away may leave an address to be
+    /// invited at (`POST /wait-list`), and where they ask to be taken off
+    /// the list again, if the operator named it.
+    pub fn wait_list(&self) -> Option<WaitListDoor<'_>> {
+        self.shared.wait_list.then_some(WaitListDoor {
+            contact: self.shared.contact.as_deref(),
+        })
+    }
+
+    /// `POST /wait-list`: keep the visitor's address with the room's join
+    /// requests, to be invited at. Each address counts against its own
+    /// per-address window, so one address cannot fill the list.
+    pub async fn wait(
+        &self,
+        ip: IpAddr,
+        request: WaitListRequest,
+    ) -> std::result::Result<WaitListAnswer, WaitRefusal> {
+        if !self.shared.wait_list {
+            return Err(WaitRefusal::NoWaitList);
+        }
+        let email = tilo_relay_protocol::rooms::contact_address(&request.email)
+            .map_err(WaitRefusal::Invalid)?;
+        let ip_hash = self.shared.hasher.hash(ip);
+        let now = tilo_clock::unix_now_ms();
+        self.shared
+            .waits
+            .lock_recover()
+            .check_and_record(&ip_hash, now)
+            .map_err(|retry_after_secs| WaitRefusal::TooMany { retry_after_secs })?;
+        let request = hex::encode(rand::random::<[u8; 32]>());
+        let answered = self
+            .ask(
+                format!("wait:{request}"),
+                OperatorCommand::WaitList {
+                    request,
+                    contact: email.clone(),
+                },
+            )
+            .await;
+        match answered {
+            Ok((Answer::WaitListed, _, _)) => Ok(WaitListAnswer { email }),
+            Ok((Answer::WaitListFull, _, _)) => Err(WaitRefusal::Full),
+            Ok(_) | Err(_) => {
+                // Not kept: the attempt does not use the address's window up.
+                self.shared.waits.lock_recover().forget(&ip_hash, now);
+                Err(WaitRefusal::Unavailable)
+            }
+        }
     }
 
     pub fn watching(&self) -> u32 {
@@ -1012,7 +1152,7 @@ impl Persistent {
                 unadmit();
                 return Err(JoinRefusal::InviteOnly);
             }
-            Answer::Certificate(_) => {
+            Answer::Certificate(_) | Answer::WaitListed | Answer::WaitListFull => {
                 unadmit();
                 return Err(JoinRefusal::Unavailable);
             }
@@ -1152,6 +1292,177 @@ mod tests {
             },
             dir,
         )
+    }
+
+    /// A room taking people by invitation that keeps a wait list.
+    async fn inviting() -> (Arc<Persistent>, Relay, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut shared = Shared::with_key(
+            dir.path().to_path_buf(),
+            [7; 32],
+            200,
+            1000,
+            (JoinRates::GUESTS, JoinRates::SPECTATORS),
+        )
+        .unwrap();
+        shared.invite_only = true;
+        shared.wait_list = true;
+        shared.contact = Some("hello@example.org".into());
+        let (stdin, relay_stdin) = tokio::io::duplex(64 * 1024);
+        let (mut relay_stdout, stdout) = tokio::io::duplex(64 * 1024);
+        let started = RoomEvent::Started {
+            version: room_operator::VERSION,
+            origin: "https://rooms.example".into(),
+            plain_origin: None,
+            user_public_key: "ee".repeat(32),
+            certificate_sha256: None,
+            allowed_origins: Vec::new(),
+            room: Some("room-uuid".into()),
+        };
+        relay_stdout
+            .write_all(format!("{}\n", started.to_line()).as_bytes())
+            .await
+            .unwrap();
+        let persistent =
+            Persistent::attach_for_test(Arc::new(shared), Box::new(stdin), stdout).await;
+        let relay = Relay {
+            commands: BufReader::new(relay_stdin).lines(),
+            events: relay_stdout,
+        };
+        (persistent, relay, dir)
+    }
+
+    /// Leaves `email` at the door from `address`, answering as the relay
+    /// with `answer` (given the command's request) when the door asks it.
+    async fn wait_once(
+        persistent: &Arc<Persistent>,
+        relay: &mut Relay,
+        address: &str,
+        email: &str,
+        answer: impl FnOnce(String) -> RoomEvent,
+    ) -> (
+        std::result::Result<WaitListAnswer, WaitRefusal>,
+        Option<String>,
+    ) {
+        let waiting = tokio::spawn({
+            let persistent = Arc::clone(persistent);
+            let address = ip(address);
+            let email = email.to_owned();
+            async move { persistent.wait(address, WaitListRequest { email }).await }
+        });
+        let OperatorCommand::WaitList { request, contact } = relay.command().await else {
+            panic!("expected a wait-list request");
+        };
+        relay.report(&answer(request)).await;
+        (waiting.await.unwrap(), Some(contact))
+    }
+
+    #[tokio::test]
+    async fn an_address_left_at_the_door_goes_to_the_room_as_typed_once_normalized() {
+        let (persistent, mut relay, _dir) = inviting().await;
+        assert_eq!(
+            persistent.wait_list(),
+            Some(WaitListDoor {
+                contact: Some("hello@example.org")
+            })
+        );
+        let (answer, contact) = wait_once(
+            &persistent,
+            &mut relay,
+            "203.0.113.1",
+            " Ada@Example.ORG ",
+            |request| RoomEvent::WaitListed {
+                request,
+                added: true,
+            },
+        )
+        .await;
+        assert_eq!(contact.as_deref(), Some("ada@example.org"));
+        assert_eq!(answer.unwrap().email, "ada@example.org");
+        // The same address again reads as kept: nobody learns whose it is.
+        let (again, _) = wait_once(
+            &persistent,
+            &mut relay,
+            "203.0.113.1",
+            "ada@example.org",
+            |request| RoomEvent::WaitListed {
+                request,
+                added: false,
+            },
+        )
+        .await;
+        assert_eq!(again.unwrap().email, "ada@example.org");
+        let (full, _) = wait_once(
+            &persistent,
+            &mut relay,
+            "203.0.113.2",
+            "bo@example.org",
+            |request| RoomEvent::WaitListRefused {
+                request,
+                reason: "the wait list is full".into(),
+                full: true,
+            },
+        )
+        .await;
+        assert!(matches!(full, Err(WaitRefusal::Full)));
+    }
+
+    #[tokio::test]
+    async fn a_bad_address_or_one_network_too_often_is_refused_before_the_room_is_asked() {
+        let (persistent, mut relay, _dir) = inviting().await;
+        assert!(matches!(
+            persistent
+                .wait(
+                    ip("203.0.113.1"),
+                    WaitListRequest {
+                        email: "ada".into()
+                    }
+                )
+                .await,
+            Err(WaitRefusal::Invalid(_))
+        ));
+        for n in 0..JoinRates::WAIT_LIST.per_ten_minutes {
+            let (answer, _) = wait_once(
+                &persistent,
+                &mut relay,
+                "203.0.113.1",
+                &format!("p{n}@example.org"),
+                |request| RoomEvent::WaitListed {
+                    request,
+                    added: true,
+                },
+            )
+            .await;
+            answer.unwrap();
+        }
+        assert!(matches!(
+            persistent
+                .wait(
+                    ip("203.0.113.1"),
+                    WaitListRequest {
+                        email: "more@example.org".into()
+                    }
+                )
+                .await,
+            Err(WaitRefusal::TooMany { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_open_room_keeps_no_wait_list() {
+        let (persistent, _relay, _dir) = persistent(200, 1000).await;
+        assert_eq!(persistent.wait_list(), None);
+        assert!(matches!(
+            persistent
+                .wait(
+                    ip("203.0.113.1"),
+                    WaitListRequest {
+                        email: "ada@example.org".into()
+                    }
+                )
+                .await,
+            Err(WaitRefusal::NoWaitList)
+        ));
     }
 
     fn request(key: u8) -> JoinRequest {
@@ -1355,6 +1666,28 @@ mod tests {
         assert!(!members_only(None));
         assert!(!members_only(Some("open")));
         assert!(members_only(Some("invite")));
+    }
+
+    #[test]
+    fn a_room_taking_people_by_invitation_keeps_the_wait_list_the_operator_sizes() {
+        let invite = ("TILO_ROOMS_ADMISSION", "invite");
+        assert_eq!(relay_args("--wait-list-max", &[invite]), ["10000"]);
+        assert_eq!(
+            relay_args(
+                "--wait-list-max",
+                &[invite, ("TILO_ROOMS_WAIT_LIST_MAX", "50")]
+            ),
+            ["50"]
+        );
+        assert!(
+            relay_args(
+                "--wait-list-max",
+                &[invite, ("TILO_ROOMS_WAIT_LIST_MAX", "0")]
+            )
+            .is_empty()
+        );
+        // An open room lets everyone in: there is nothing to wait for.
+        assert!(relay_args("--wait-list-max", &[]).is_empty());
     }
 
     #[tokio::test]

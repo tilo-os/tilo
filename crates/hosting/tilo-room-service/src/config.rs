@@ -100,6 +100,15 @@ pub struct PersistentConfig {
     /// guest (`open`, unless set), or only its members (`invite`), so a
     /// newcomer needs an invitation from someone in it.
     pub admission: Admission,
+    /// How many requests to be invited the door keeps while the room takes
+    /// people by invitation (`TILO_ROOMS_WAIT_LIST_MAX`, 10000 unless set,
+    /// `0` keeps none): someone without an invitation leaves an email
+    /// address, and whoever may invite sees it with the room's join requests.
+    pub wait_list_max: usize,
+    /// Where someone on the wait list asks to be taken off it
+    /// (`TILO_ROOMS_CONTACT`: an email address or an `https://` page), said
+    /// under the door's email field; unset, the door names none.
+    pub contact: Option<String>,
     /// Days a member may be away (no session) before their membership ends
     /// (`TILO_ROOMS_INACTIVE_AFTER_DAYS`, 30 unless set); one who comes back
     /// later joins through the door again as the same person. Membership
@@ -479,11 +488,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         description: description(var)?,
         chat_channels: chat_channels(var)?,
         strips: strips(var)?,
-        trusted_proxies: var("TILO_ROOMS_TRUSTED_PROXIES")
-            .unwrap_or_default()
-            .parse::<TrustedProxies>()
-            .map_err(anyhow::Error::msg)
-            .context("TILO_ROOMS_TRUSTED_PROXIES is invalid")?,
+        trusted_proxies: trusted_proxies(var)?,
         country_header: var("TILO_ROOMS_COUNTRY_HEADER")
             .map(|name| name.trim().to_owned())
             .filter(|name| !name.is_empty()),
@@ -497,6 +502,8 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         seed_apps,
         layout: layout(var)?,
         admission: admission(var)?,
+        wait_list_max: wait_list_max(var)?,
+        contact: contact(var)?,
         inactive_after_days: inactive_after_days(var)?,
         attachments: AttachmentQuota {
             max_file: optional(var, "TILO_ROOMS_ATTACHMENT_MAX_MIB")?,
@@ -524,6 +531,15 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         )?,
         live,
     }))
+}
+
+/// `TILO_ROOMS_TRUSTED_PROXIES`: the proxies whose `X-Forwarded-For` is believed.
+fn trusted_proxies(var: &impl Fn(&str) -> Option<String>) -> Result<TrustedProxies> {
+    var("TILO_ROOMS_TRUSTED_PROXIES")
+        .unwrap_or_default()
+        .parse::<TrustedProxies>()
+        .map_err(anyhow::Error::msg)
+        .context("TILO_ROOMS_TRUSTED_PROXIES is invalid")
 }
 
 /// What the room keeps of the files members post, in MiB, as the operator
@@ -569,6 +585,41 @@ fn admission(var: &impl Fn(&str) -> Option<String>) -> Result<Admission> {
             "TILO_ROOMS_ADMISSION is open (anyone joins as a guest) or invite (only with an invitation), not {other:?}"
         ),
     }
+}
+
+/// The most requests to be invited `TILO_ROOMS_WAIT_LIST_MAX` may keep.
+const MAX_WAIT_LIST: usize = 1_000_000;
+
+/// `TILO_ROOMS_WAIT_LIST_MAX`: 10000 unless set, up to [`MAX_WAIT_LIST`].
+fn wait_list_max(var: &impl Fn(&str) -> Option<String>) -> Result<usize> {
+    let max = parsed(var, "TILO_ROOMS_WAIT_LIST_MAX", 10_000_usize)?;
+    ensure!(
+        max <= MAX_WAIT_LIST,
+        "TILO_ROOMS_WAIT_LIST_MAX must be 0-{MAX_WAIT_LIST}"
+    );
+    Ok(max)
+}
+
+/// `TILO_ROOMS_CONTACT`: an email address or an `https://` page, if set.
+fn contact(var: &impl Fn(&str) -> Option<String>) -> Result<Option<String>> {
+    let Some(contact) = var("TILO_ROOMS_CONTACT").map(|value| value.trim().to_owned()) else {
+        return Ok(None);
+    };
+    if contact.is_empty() {
+        return Ok(None);
+    }
+    if let Some(page) = contact.strip_prefix("https://") {
+        ensure!(
+            !page.is_empty()
+                && contact.len() <= 2048
+                && !contact.chars().any(|c| c.is_whitespace() || c.is_control()),
+            "TILO_ROOMS_CONTACT is an email address or an https:// page"
+        );
+        return Ok(Some(contact));
+    }
+    tilo_relay_protocol::rooms::contact_address(&contact)
+        .map(Some)
+        .map_err(|_| anyhow::anyhow!("TILO_ROOMS_CONTACT is an email address or an https:// page"))
 }
 
 /// `TILO_ROOMS_LAYOUT`: `personal` unless set, or `shared`.
@@ -1029,6 +1080,48 @@ mod tests {
         }
         // The hour-long rule is gone, not silently ignored.
         assert!(config(&[base[0], base[1], ("TILO_ROOMS_PRUNE_AFTER_MINS", "60")]).is_err());
+    }
+
+    #[test]
+    fn the_door_keeps_ten_thousand_waiting_addresses_and_names_a_contact_only_when_told() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+        ];
+        let plain = config(&base).unwrap().persistent.unwrap();
+        assert_eq!((plain.wait_list_max, plain.contact), (10_000, None));
+        let set = config(&[
+            base[0],
+            base[1],
+            ("TILO_ROOMS_WAIT_LIST_MAX", "0"),
+            ("TILO_ROOMS_CONTACT", " Hello@Example.org "),
+        ])
+        .unwrap()
+        .persistent
+        .unwrap();
+        assert_eq!(set.wait_list_max, 0);
+        assert_eq!(set.contact.as_deref(), Some("hello@example.org"));
+        let page = config(&[
+            base[0],
+            base[1],
+            ("TILO_ROOMS_CONTACT", "https://example.org/privacy"),
+        ])
+        .unwrap();
+        assert_eq!(
+            page.persistent.unwrap().contact.as_deref(),
+            Some("https://example.org/privacy")
+        );
+        for (name, bad) in [
+            ("TILO_ROOMS_WAIT_LIST_MAX", "1000001"),
+            ("TILO_ROOMS_WAIT_LIST_MAX", "many"),
+            ("TILO_ROOMS_CONTACT", "write to us"),
+            ("TILO_ROOMS_CONTACT", "http://example.org"),
+        ] {
+            assert!(
+                config(&[base[0], base[1], (name, bad)]).is_err(),
+                "{name}={bad}"
+            );
+        }
     }
 
     #[test]

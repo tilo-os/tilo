@@ -80,6 +80,18 @@ pub enum OperatorCommand {
     /// Stop the room. A struct variant, so `deny_unknown_fields` holds for
     /// it too (serde ignores extra fields on a tagged unit variant).
     Shutdown {},
+    /// Keep the request of someone who asked at the door of a persistent
+    /// room that takes people by invitation, without one: the address
+    /// `contact` ([`crate::rooms::contact_address`]) its answer goes to. The
+    /// room lists it with its join requests for whoever may invite. The
+    /// child answers [`RoomEvent::WaitListed`] or
+    /// [`RoomEvent::WaitListRefused`] for the same `request`.
+    WaitList {
+        /// The service's name for this command's answer (hex), so two
+        /// visitors leaving one address are each answered.
+        request: String,
+        contact: String,
+    },
 }
 
 /// What the room relay reports to the room service.
@@ -174,6 +186,24 @@ pub enum RoomEvent {
         user_public_key: String,
         /// The removal is a ban.
         banned: bool,
+    },
+    /// The room keeps the request of an [`OperatorCommand::WaitList`]:
+    /// `added`, or it kept one for that address already.
+    WaitListed {
+        /// The command's `request`.
+        request: String,
+        added: bool,
+    },
+    /// An [`OperatorCommand::WaitList`] the room did not keep.
+    WaitListRefused {
+        /// The command's `request`.
+        request: String,
+        /// Why, for the operator's log.
+        reason: String,
+        /// The room keeps as many such requests as it takes already: the
+        /// door says so, rather than that it failed.
+        #[serde(default, skip_serializing_if = "is_false")]
+        full: bool,
     },
 }
 
@@ -372,6 +402,15 @@ mod tests {
                 user_public_key: "cd".repeat(32),
                 banned: true,
             },
+            RoomEvent::WaitListed {
+                request: "12".repeat(32),
+                added: true,
+            },
+            RoomEvent::WaitListRefused {
+                request: "12".repeat(32),
+                reason: "the wait list is full".into(),
+                full: true,
+            },
         ]
     }
 
@@ -403,6 +442,18 @@ mod tests {
             OperatorCommand::from_line(&spectate.to_line()).unwrap(),
             spectate
         );
+        let wait = OperatorCommand::WaitList {
+            request: "12".repeat(32),
+            contact: "ada@example.org".into(),
+        };
+        assert_eq!(
+            wait.to_line(),
+            format!(
+                "{{\"op\":\"wait_list\",\"request\":\"{}\",\"contact\":\"ada@example.org\"}}\n",
+                "12".repeat(32)
+            )
+        );
+        assert_eq!(OperatorCommand::from_line(&wait.to_line()).unwrap(), wait);
         for event in v2_events() {
             assert_eq!(RoomEvent::from_line(&event.to_line()).unwrap(), event);
         }
