@@ -16,7 +16,11 @@
  *   (`membership.requests`, `admit`, `decline`), for the owner and anyone
  *   else the host lets see who asks (whoever it lets invite). While they
  *   are in the room, each new request is also offered on a banner to let
- *   them in.
+ *   them in. A room that takes people by invitation also lists the
+ *   addresses people left at its door (its wait list, `contact`): each is
+ *   answered with an invitation of the inviter's own, a link they send to
+ *   that address, or taken off the list. Nobody is online to let in there,
+ *   so those get no banner.
  *
  * Every step is the host's decision: a refusal is said, never worked
  * around.
@@ -29,7 +33,7 @@ export const INVITE = Object.freeze({id: 'invite-someone', title: 'Invite someon
 export const INVITE_PUBLIC = Object.freeze({...INVITE, title: 'Invite people',
   subtitle: 'Copy the link: anyone can join this public workspace with it'});
 export const WAITING = Object.freeze({id: 'waiting-to-join', title: 'Waiting to join',
-  subtitle: 'Let in or turn away people who asked to join'});
+  subtitle: 'Let in people who asked to join, or invite those on the wait list'});
 const ADMIT = 'admit-request:';
 /** How often the owner's page asks who is waiting. */
 const WAITING_POLL_MS = 4000;
@@ -49,7 +53,8 @@ export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.ho
  * `ui` draws what the page shows: `askWorkspaceName(save)`,
  * `chooseMachine(origins)`, `share({title, body, link})`, `copy(text)`
  * (resolves whether it reached the clipboard),
- * `waitingList({load, admit, decline})` and `fail(text)`. `publicLink()` is
+ * `waitingList({load, admit, decline, invite})` (`invite(person)` makes
+ * the invitation for a wait-list address and shares it) and `fail(text)`. `publicLink()` is
  * the link anyone joins the room in front with when it is a public
  * workspace, else `null`. Attach the desktop with `attach(mount)`; route its
  * host actions to `perform`.
@@ -84,7 +89,8 @@ export function createWorkspaceActions({
     for (const id of offered) if (!now.has(id)) offered.delete(id);
     for (const person of people) {
       waiting.set(person.requestId, person);
-      if (offered.has(person.requestId)) continue;
+      // A wait-list address: nobody there to let in now.
+      if (person.contact || offered.has(person.requestId)) continue;
       offered.add(person.requestId);
       mount?.offerHostAction?.({action: {id: `${ADMIT}${person.requestId}`, title: `Let ${person.name} in`},
         title: `${person.name} asks to join`,
@@ -149,6 +155,17 @@ export function createWorkspaceActions({
     });
   };
 
+  /** An invitation for the address `person` left at the door, shared for
+   * the inviter to send there. It stays on the list until they take it off. */
+  const inviteContact = async person => {
+    const text = await peer.createInvitation({role: 'editor'});
+    await ui.share({
+      title: `Invite ${person.contact}`,
+      body: `Send this link to ${person.contact}. They join “${workspaceName ?? 'this workspace'}” with it, and you let them in here. Take them off the wait list once you have sent it.`,
+      link: inviteLink(text),
+    });
+  };
+
   const admit = async requestId => {
     const person = waiting.get(requestId);
     await peer.membership.admit(requestId);
@@ -191,7 +208,8 @@ export function createWorkspaceActions({
         if (id === NEW_WORKSPACE.id) await newWorkspace();
         else if (id === INVITE.id) await invite();
         else if (id === WAITING.id && lettingIn) {
-          await ui.waitingList({load: () => peer.membership.requests(), admit, decline: requestId => peer.membership.decline(requestId)});
+          await ui.waitingList({load: () => peer.membership.requests(), admit, decline: requestId => peer.membership.decline(requestId),
+            invite: inviteContact});
         } else if (id.startsWith(ADMIT) && lettingIn) await admit(id.slice(ADMIT.length));
       } catch (error) {
         say(error, 'That did not work');

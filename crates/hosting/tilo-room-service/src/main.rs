@@ -515,7 +515,14 @@ impl Service {
             .map_err(|_| Self::error(StatusCode::BAD_REQUEST, "invalid request"))
     }
 
-    fn refusal(refusal: persistent::JoinRefusal) -> Response<Body> {
+    /// What the door answers a visitor it turned away. A room taking people
+    /// by invitation says whether the visitor may leave an address to be
+    /// invited at (`waitList`), and where they ask to be taken off that
+    /// list (`contact`), so its door page offers that.
+    fn refusal(
+        refusal: persistent::JoinRefusal,
+        wait_list: Option<persistent::WaitListDoor<'_>>,
+    ) -> Response<Body> {
         use persistent::JoinRefusal;
         if let Some(ops) = ops::get() {
             ops.join_failed(match refusal {
@@ -569,10 +576,59 @@ impl Service {
             _ => None,
         };
         let mut response = if let Some(code) = code {
-            Self::json(status, &serde_json::json!({"error": message, "code": code}))
+            let mut body = serde_json::json!({"error": message, "code": code});
+            if let (JoinRefusal::InviteOnly, Some(door), Some(fields)) =
+                (refusal, wait_list, body.as_object_mut())
+            {
+                fields.insert("waitList".into(), true.into());
+                fields.insert("contact".into(), door.contact.into());
+            }
+            Self::json(status, &body)
         } else {
             Self::error(status, message)
         };
+        if let Some(seconds) = retry_after
+            && let Ok(value) = header::HeaderValue::from_str(&seconds.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        response
+    }
+
+    /// What `POST /wait-list` answers an address it did not keep: `code`
+    /// names the case for the door page, `error` says it.
+    fn wait_refusal(refusal: persistent::WaitRefusal) -> Response<Body> {
+        use persistent::WaitRefusal;
+        let (status, code, message, retry_after) = match refusal {
+            WaitRefusal::NoWaitList => (
+                StatusCode::NOT_FOUND,
+                "no-wait-list",
+                "this room keeps no wait list",
+                None,
+            ),
+            WaitRefusal::Invalid(message) => {
+                (StatusCode::BAD_REQUEST, "invalid-email", message, None)
+            }
+            WaitRefusal::TooMany { retry_after_secs } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too-many",
+                "too many addresses from your network; try again later",
+                Some(retry_after_secs),
+            ),
+            WaitRefusal::Full => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "wait-list-full",
+                "the wait list is full for now",
+                None,
+            ),
+            WaitRefusal::Unavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "the room is restarting; try again in a moment",
+                None,
+            ),
+        };
+        let mut response = Self::json(status, &serde_json::json!({"error": message, "code": code}));
         if let Some(seconds) = retry_after
             && let Ok(value) = header::HeaderValue::from_str(&seconds.to_string())
         {
@@ -687,11 +743,20 @@ impl Service {
                             }
                             Self::json(StatusCode::OK, &answer)
                         }
-                        Err(refusal) => Self::refusal(refusal),
+                        Err(refusal) => Self::refusal(refusal, persistent.wait_list()),
                     },
                     Err(response) => response,
                 },
             },
+            (&Method::POST, ["wait-list"]) => {
+                match Self::decode::<persistent::WaitListRequest>(request.into_body()).await {
+                    Ok(asked) => match persistent.wait(client, asked).await {
+                        Ok(answer) => Self::json(StatusCode::OK, &answer),
+                        Err(refusal) => Self::wait_refusal(refusal),
+                    },
+                    Err(response) => response,
+                }
+            }
             (&Method::POST, ["spectate"])
                 if ops::get().is_some_and(|ops| !ops.mode().allows_spectators()) =>
             {
@@ -703,7 +768,7 @@ impl Service {
                 match Self::decode::<persistent::SpectateRequest>(request.into_body()).await {
                     Ok(spectate) => match persistent.spectate(client, spectate).await {
                         Ok(answer) => Self::json(StatusCode::OK, &answer),
-                        Err(refusal) => Self::refusal(refusal),
+                        Err(refusal) => Self::refusal(refusal, None),
                     },
                     Err(response) => response,
                 }

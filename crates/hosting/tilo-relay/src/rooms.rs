@@ -61,6 +61,7 @@ mod topology_namespace;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
+mod wait_list;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -80,6 +81,7 @@ pub use admin::RoomAdminProtocol;
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use pages::PreAdmitRequest;
+pub use wait_list::WaitListed;
 // The administration vocabulary (the actions' names and answers, and the
 // wire door's) and the device's client, under the daemon's historic paths.
 pub use tilo_relay_session::rooms::{
@@ -206,6 +208,8 @@ struct GovernedRoom {
     stewardship: Option<Arc<stewardship::Steward>>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
+    /// The requests of people who asked at its door without an invitation.
+    wait_list: wait_list::WaitList,
     /// Admits the governance each settle retains to the host's order, after
     /// the room's lock is released.
     publisher: Arc<publisher::RoomPublisher>,
@@ -316,6 +320,7 @@ impl GovernedRoom {
         };
         let mut this = Self {
             admissions: admissions::Admissions::open(&path)?,
+            wait_list: wait_list::WaitList::open(&path)?,
             parts,
             path,
             stewardship: stewardship(dir, &room, authority, key),
@@ -370,6 +375,7 @@ impl GovernedRoom {
             .and_then(|dir| stewardship(dir, &record.room, authority, key));
         Ok(Self {
             admissions: admissions::Admissions::open(&path)?,
+            wait_list: wait_list::WaitList::open(&path)?,
             record,
             peer,
             parts,

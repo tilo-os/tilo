@@ -25,7 +25,7 @@ use anyhow::{Context, bail, ensure};
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_relay::daemon::RelayIdentity;
-use tilo_relay::rooms::{PreAdmitRequest, Rooms};
+use tilo_relay::rooms::{PreAdmitRequest, Rooms, WaitListed};
 use tilo_relay::web::WebHandle;
 use tilo_relay_protocol::room_operator::{self, OperatorCommand, RoomEvent, hex32};
 use tilo_relay_protocol::rooms::{JoinReply, JoinStep, PreAdmission, RoomRole, join_proof_digest};
@@ -110,6 +110,18 @@ pub struct PersistentArgs {
     /// Settled at every start.
     #[arg(long = "members-only")]
     pub members_only: bool,
+    /// How many requests left at the door the room keeps while it takes
+    /// people by invitation: each is an address (an email) someone who asked
+    /// without an invitation leaves, listed with the room's join requests
+    /// for whoever may invite until they decline it. `0`: the door keeps
+    /// none.
+    #[arg(
+        long = "wait-list-max",
+        value_name = "COUNT",
+        default_value_t = 0,
+        requires = "members_only"
+    )]
+    pub wait_list_max: usize,
     /// A file of more owners and moderators, `{"owners": [hex],
     /// "moderators": [hex]}`, read again whenever it changes, so a role is
     /// granted or taken back while the room runs.
@@ -820,6 +832,40 @@ async fn answer_pre_admit(
     }
 }
 
+/// Keep the request someone left at the door without an invitation, while
+/// the room takes people by invitation and keeps a wait list.
+async fn answer_wait_list(
+    context: &PersistentRoom,
+    governance: &Governance,
+    request: String,
+    contact: &str,
+) -> RoomEvent {
+    let refused = |reason: String, full: bool| RoomEvent::WaitListRefused {
+        request: request.clone(),
+        reason,
+        full,
+    };
+    if !governance.members_only || governance.wait_list_max == 0 {
+        return refused("the room keeps no wait list".into(), false);
+    }
+    match context
+        .rooms
+        .wait(&context.room, contact, governance.wait_list_max)
+        .await
+    {
+        Ok(WaitListed::Added) => RoomEvent::WaitListed {
+            request,
+            added: true,
+        },
+        Ok(WaitListed::Already) => RoomEvent::WaitListed {
+            request,
+            added: false,
+        },
+        Ok(WaitListed::Full) => refused("the wait list is full".into(), true),
+        Err(error) => refused(error.to_string(), false),
+    }
+}
+
 fn answer_spectate(context: &PersistentRoom, device_public_key: String) -> RoomEvent {
     let Some(device) = hex32(&device_public_key) else {
         return RoomEvent::SpectateRefused {
@@ -1405,6 +1451,7 @@ pub(crate) async fn run(
         inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
         state: state.clone(),
         members_only: persistent.members_only,
+        wait_list_max: persistent.wait_list_max,
     };
     let result = tokio::select! {
         result = serve_operator(&context, &governance, &mut operator) => result,
@@ -1582,6 +1629,8 @@ struct Governance {
     state: PathBuf,
     /// The room takes people by invitation (`--members-only`).
     members_only: bool,
+    /// Requests left at the door it keeps (`--wait-list-max`).
+    wait_list_max: usize,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -1900,6 +1949,9 @@ async fn serve_operator(
                 }
                 Some(Ok(OperatorCommand::Spectate { device_public_key })) => {
                     println!("{}", answer_spectate(context, device_public_key).to_line());
+                }
+                Some(Ok(OperatorCommand::WaitList { request, contact })) => {
+                    println!("{}", answer_wait_list(context, governance, request, &contact).await.to_line());
                 }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent room admits guests by pre-admission only"),
                 Some(Ok(OperatorCommand::Shutdown {})) | None => {

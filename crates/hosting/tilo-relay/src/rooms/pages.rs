@@ -8,7 +8,10 @@
 //! a device with no session yet. Unlike the workspace-join protocol, a
 //! page's verified redemption is not admitted at once: it waits, in memory,
 //! until someone the room lets invite admits or declines it. A relay restart forgets waiting
-//! requests; the person asks again.
+//! requests; the person asks again. Requests left at the door of a room that
+//! takes people by invitation, each with an address to invite
+//! ([`super::wait_list`]), are kept with the room instead and listed after
+//! them.
 
 use tilo_action_policy::roles::governance;
 use tilo_governor::Governor;
@@ -220,7 +223,7 @@ impl Rooms {
             }
             RoomsRequest::Decline { room, request_id } => {
                 self.decline_page(&room, device, request_id, now).await?;
-                RoomsReply::Requests(self.waiting(&room, now))
+                RoomsReply::Requests(self.join_requests(&room, device, now).await?)
             }
             request @ (RoomsRequest::SetRole { .. }
             | RoomsRequest::Remove { .. }
@@ -559,7 +562,7 @@ impl Rooms {
         device: &DeviceCert,
         now: u64,
     ) -> Result<Vec<JoinRequest>, CollaborationError> {
-        {
+        let left = {
             let governed = self.room(room).await?;
             let governed = governed.lock().await;
             self.authorize(
@@ -568,8 +571,36 @@ impl Rooms {
                 RoomOp::Govern(governance::INVITE),
                 now,
             )?;
-        }
-        Ok(self.waiting(room, now))
+            governed.wait_list.requests().collect::<Vec<_>>()
+        };
+        // The people whose page waits first: they are there now.
+        let mut waiting = self.waiting(room, now);
+        waiting.extend(left);
+        Ok(waiting)
+    }
+
+    /// Keep the request of someone who asked at `room`'s door without an
+    /// invitation, to be invited at `contact` (an address
+    /// [`tilo_relay_protocol::rooms::contact_address`] accepts), while the
+    /// room keeps fewer than `max`. Whoever may invite sees it with the
+    /// room's join requests until they decline it.
+    pub async fn wait(
+        &self,
+        room: &str,
+        contact: &str,
+        max: usize,
+    ) -> Result<super::WaitListed, CollaborationError> {
+        let contact = tilo_relay_protocol::rooms::contact_address(contact)
+            .map_err(CollaborationError::new)?;
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        let kept = governed
+            .wait_list
+            .keep(&contact, tilo_clock::unix_now_ns(), max)
+            .map_err(CollaborationError::new)?;
+        drop(governed);
+        tracing::info!(%room, outcome = ?kept, "a request was left at the door");
+        Ok(kept)
     }
 
     fn waiting(&self, room: &str, now: u64) -> Vec<JoinRequest> {
@@ -593,7 +624,7 @@ impl Rooms {
         let governed = self.room(room).await?;
         // Serialize with admission, which holds this lock until governance
         // publication completes and removes the waiting request.
-        let decision = governed.lock().await;
+        let mut decision = governed.lock().await;
         self.authorize(
             device,
             Some(&decision),
@@ -601,11 +632,25 @@ impl Rooms {
             now,
         )?;
         let mut joins = self.page_joins();
-        let join = joins
+        let Some(join) = joins
             .0
             .iter_mut()
             .find(|join| join.room == room && join.request.request_id == request_id)
-            .ok_or_else(|| CollaborationError::new("no such join request"))?;
+        else {
+            drop(joins);
+            // A request left at the door: declining it takes it off the
+            // room's wait list.
+            if !decision
+                .wait_list
+                .decline(request_id)
+                .map_err(CollaborationError::new)?
+            {
+                return Err(CollaborationError::new("no such join request"));
+            }
+            drop(decision);
+            tracing::info!(%room, outcome = "declined", "a request left at the door was declined");
+            return Ok(());
+        };
         join.declined_at_ns.get_or_insert(now);
         let person = join.request.user_public_key;
         drop(joins);
@@ -838,6 +883,7 @@ impl Rooms {
             name: name.to_owned(),
             role: room_role(redemption.join().grant().role),
             requested_at_ns: now,
+            contact: None,
         };
         tracing::info!(
             room = %room_id,
