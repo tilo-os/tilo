@@ -769,6 +769,7 @@ widget-screenshot-edit = Bearbeiten
 widget-screenshot-open = Öffnen
 widget-screenshot-reveal = In Dateien zeigen
 widget-screenshot-send = Senden…
+widget-capture-title = Erfassen
 widget-capture-dismiss = Schließen
 widget-capture-mode-screenshot = Bildschirmfoto
 widget-capture-mode-recording = Aufnahme

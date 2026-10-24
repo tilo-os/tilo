@@ -2702,6 +2702,24 @@ impl Widget for CaptureStudio {
         Some("shell.capture-studio")
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        self.studio_accessibility()
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        self.studio_control_rect(path)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        self.perform_studio_control(target, action)
+    }
+
     fn modal_capture(&self) -> Option<Rect> {
         self.choosing().then_some(self.rect)
     }
@@ -2756,11 +2774,7 @@ impl Widget for CaptureStudio {
                     let (Some(target), Some(rect)) = (target, menu.item_rect(index)) else {
                         continue;
                     };
-                    let name = match target {
-                        ScreenshotSendTarget::Workspace => "capture.send-to-workspace".into(),
-                        ScreenshotSendTarget::Device(id) => format!("capture.send-to-device.{id}"),
-                    };
-                    o.push((name, rect));
+                    o.push((semantics::send_target(target), rect));
                 }
             }
         } else if self.recording_finished_at.is_some() {
@@ -2792,40 +2806,16 @@ impl Widget for CaptureStudio {
         o.push(("capture.canvas".into(), self.selection_bounds()));
         o.push(("capture.bar".into(), self.setup_bar()));
         for (item, rect) in self.bar_items() {
-            let name = match item {
-                BarItem::Output(0) => "capture.output.screenshot",
-                BarItem::Output(1) => "capture.output.recording",
-                BarItem::Output(_) => "capture.output.pip",
-                BarItem::Target(0) => "capture.target.selection",
-                BarItem::Target(1) => "capture.target.window",
-                BarItem::Target(2) => "capture.target.screen",
-                BarItem::Target(_) => "capture.target.strip",
-                BarItem::Shutter => "capture.shutter",
-                BarItem::Options => "capture.options",
-                BarItem::Time | BarItem::Save => continue,
-            };
-            o.push((name.into(), rect));
+            if let Some(name) = semantics::bar_target(item) {
+                o.push((name.into(), rect));
+            }
         }
         if let Some(menu) = self.options_menu.as_ref().filter(|menu| menu.is_open()) {
             for (index, choice) in self.options_choices.iter().enumerate() {
                 let (Some(choice), Some(rect)) = (choice, menu.item_rect(index)) else {
                     continue;
                 };
-                let name = match choice {
-                    OptionChoice::Delay(seconds) => format!("capture.option.delay-{seconds}"),
-                    OptionChoice::Pointer => "capture.option.pointer".into(),
-                    OptionChoice::SystemAudio => "capture.option.system-audio".into(),
-                    OptionChoice::Microphone => "capture.option.microphone".into(),
-                    OptionChoice::KeepRecent => "capture.option.keep-recent".into(),
-                    OptionChoice::Layout(layout) => format!(
-                        "capture.option.combine-{}",
-                        match layout {
-                            PipLayout::Auto => "arranged",
-                            PipLayout::Grid => "grid",
-                            PipLayout::Stack => "stacked",
-                        }
-                    ),
-                };
+                let name = semantics::option_target(*choice);
                 o.push((name, rect));
             }
         }
@@ -3002,6 +2992,7 @@ fn leaving_opacity(shown: Instant, lasts: Duration) -> f32 {
 
 mod receipt;
 use receipt::{ReceiptAction, ReceiptWidths};
+mod semantics;
 
 #[cfg(test)]
 mod tests;
