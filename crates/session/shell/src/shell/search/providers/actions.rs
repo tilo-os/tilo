@@ -345,6 +345,7 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "quick-settings.devices",
     "quick-settings.network",
     "quick-settings.bluetooth",
+    "notifications.open",
     "projection.open",
     "projection.close",
     "capture.open",
@@ -430,7 +431,11 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.kind = ActionKind::Undoable;
             contract.reversible = true;
         }
-        "notifications.dnd.toggle"
+        // Clearing notifications is undone by bringing them back while the
+        // undo lasts.
+        "notifications.clear"
+        | "notifications.clear.undo"
+        | "notifications.dnd.toggle"
         | "appearance.theme.dark"
         | "appearance.theme.light"
         | "appearance.language" => {
@@ -2936,6 +2941,43 @@ impl Action {
             },
         ),
         chrome(
+            "notifications.open",
+            "search-action-notifications-open",
+            "search-action-notifications-open-subtitle",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Notifications);
+                Ok(())
+            },
+        ),
+        chrome(
+            "notifications.clear",
+            "search-action-notifications-clear",
+            "search-action-notifications-clear-subtitle",
+            |st, _| {
+                if st.notification_log().history().is_empty() {
+                    return Err(ActionError::Refused(
+                        "there are no notifications to clear".into(),
+                    ));
+                }
+                st.clear_notification_history();
+                Ok(())
+            },
+        ),
+        chrome(
+            "notifications.clear.undo",
+            "search-action-notifications-clear-undo",
+            "search-action-notifications-clear-undo-subtitle",
+            |st, _| {
+                if st.undo_notification_history_clear() {
+                    Ok(())
+                } else {
+                    Err(ActionError::Refused(
+                        "no cleared notifications can be brought back".into(),
+                    ))
+                }
+            },
+        ),
+        chrome(
             "appearance.theme.dark",
             "search-action-appearance-theme-dark",
             "search-action-appearance-theme-dark-subtitle",
@@ -3060,6 +3102,8 @@ fn action_available(id: &str, chrome: &ChromeState, display_waiting: bool) -> bo
         "presence.follow.stop" => chrome.search_context.following,
         DISPLAY_KEEP_ID | DISPLAY_REVERT_ID => display_waiting,
         "dictation.finish" | "dictation.cancel" => chrome.search_context.dictating,
+        "notifications.clear" => !chrome.notification_log().history().is_empty(),
+        "notifications.clear.undo" => chrome.can_undo_notification_history_clear(),
         BLUETOOTH_PAIRING_DECLINE_ID => crate::bluetooth::PairingPromptHandle::global()
             .current()
             .is_some(),
@@ -9733,6 +9777,85 @@ mod tests {
             PeerSyncRequest::ListPendingInvitations
         );
     }
+    /// The notification centre's controls are actions too: an agent or a
+    /// screen reader opens the list, clears it and brings it back as a click
+    /// on "Clear all" and its Undo do, by address, with nothing to click.
+    #[test]
+    fn notifications_open_clear_and_come_back_by_action() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let resolve = |id: &str| {
+            let document = AutoCommit::new();
+            let state = chrome.borrow();
+            provider
+                .resolve(
+                    id,
+                    SearchContext {
+                        query_scope: None,
+                        include_programmatic: true,
+                        needle: "",
+                        wanted: &[ResourceKind::Action],
+                        chrome: &state,
+                        doc: &document,
+                        doc_root: &automerge::ROOT,
+                    },
+                )
+                .unwrap_or_else(|| panic!("{id} is published"))
+        };
+        let run = |result: &crate::shell::search::SearchResult| {
+            let mut document = AutoCommit::new();
+            (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+        };
+
+        let open = resolve("notifications.open");
+        assert_eq!(open.operation_kind, tilo_actions::OperationKind::View);
+        run(&open).expect("opening the list always works");
+        {
+            let state = chrome.borrow();
+            assert!(state.overlays.quick_settings);
+            assert_eq!(
+                state.quick_settings.nav_stack.last(),
+                Some(&crate::shell::quick_settings::QsLevel::Notifications)
+            );
+        }
+
+        let clear = resolve("notifications.clear");
+        assert!(
+            matches!(run(&clear), Err(ActionError::Refused(_))),
+            "an empty list says there is nothing to clear"
+        );
+        let id = chrome.borrow_mut().push_notification("Build finished", "");
+        chrome.borrow_mut().dismiss_notification(id);
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        run(&clear).expect("a list with something in it clears");
+        assert!(chrome.borrow().notification_history().is_empty());
+        assert!(chrome.borrow().can_undo_notification_history_clear());
+
+        let undo = resolve("notifications.clear.undo");
+        run(&undo).expect("what was just cleared comes back");
+        let state = chrome.borrow();
+        assert_eq!(state.notification_history().len(), 1);
+        assert_eq!(state.notification_history()[0].title, "Build finished");
+        assert!(!state.can_undo_notification_history_clear());
+        drop(state);
+        assert!(
+            matches!(run(&undo), Err(ActionError::Refused(_))),
+            "nothing is left to bring back"
+        );
+        for id in ["notifications.clear", "notifications.clear.undo"] {
+            assert_eq!(
+                shell_action_contract(id).kind,
+                tilo_actions::ActionKind::Undoable,
+                "{id}"
+            );
+        }
+    }
+
     #[test]
     fn radio_details_navigation_actions_are_views_and_do_not_toggle_radios() {
         for (id, section) in [
