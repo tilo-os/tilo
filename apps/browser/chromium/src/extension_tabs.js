@@ -2,11 +2,11 @@
 // an offscreen embedding: its tab registry holds only the tabs of its own
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
-// click, a tab's capture, context menu items and scripts on a tab from the
-// host's tabs instead, over a request the host answers itself. A page of the
-// extension is known by its address; its worker, which has none, by a token
-// the Browser wrote with this script into the worker it runs first
-// (extensions.rs).
+// click, keyboard shortcuts, a tab's capture, context menu items and scripts
+// on a tab from the host's tabs instead, over a request the host answers
+// itself. A page of the extension is known by its address; its worker,
+// which has none, by a token the Browser wrote with this script into the
+// worker it runs first (extensions.rs).
 (() => {
   const runtime = globalThis.chrome && chrome.runtime;
   if (!runtime || !runtime.id || location.protocol !== 'chrome-extension:') return;
@@ -431,6 +431,27 @@
   };
   toolbar(action);
   toolbar(chrome.browserAction);
+
+  // Keyboard shortcuts: the host gives each command the key its manifest
+  // suggests, as Chrome does, and fires onCommand with the page it was
+  // pressed on (extension_commands.h). The toolbar button's own command acts
+  // as a click on it, and the Browser answers that.
+  if (!chrome.commands && manifest.commands) chrome.commands = {onCommand: {}};
+  const commands = chrome.commands;
+  if (commands) {
+    const button = manifest.action ? '_execute_action'
+      : manifest.browser_action ? '_execute_browser_action'
+        : manifest.page_action ? '_execute_page_action' : null;
+    const localized = (text) => (typeof text === 'string' && chrome.i18n
+      ? text.replace(/__MSG_(\w+)__/g, (whole, key) => chrome.i18n.getMessage(key) || whole) : text);
+    replace(commands, 'getAll', async () => {
+      const listed = (await call('commands.getAll')) || [];
+      // Chrome lists the button's command also when the manifest names none.
+      if (button && !listed.some(({name}) => name === button)) listed.unshift({name: button, description: '', shortcut: ''});
+      return listed.map(({name, description, shortcut}) => ({name, description: localized(description), shortcut}));
+    });
+    event(commands, 'onCommand', 'commands.onCommand');
+  }
 
   // Context menu items: the host keeps them and shows them in the page's
   // menu (extension_menus.h); a choice comes back as onClicked.

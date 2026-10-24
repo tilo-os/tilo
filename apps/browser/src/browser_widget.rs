@@ -3082,7 +3082,8 @@ impl BrowserWidget {
                 }
                 event @ (WebViewEvent::ExtensionAction { .. }
                 | WebViewEvent::ExtensionActionReset
-                | WebViewEvent::ExtensionOpenPopup { .. }) => {
+                | WebViewEvent::ExtensionOpenPopup { .. }
+                | WebViewEvent::ExtensionExecuteAction { .. }) => {
                     self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
                 }
                 WebViewEvent::CredentialResult(reply) => {
@@ -4216,9 +4217,12 @@ impl BrowserWidget {
             return false;
         };
         let modifiers = modifiers.state();
+        // Ctrl+Shift+L is not the address's: password managers suggest it
+        // for filling a login (an extension's keyboard shortcut).
         let requested = key.state == ElementState::Pressed
             && (modifiers.control_key() || modifiers.super_key())
             && !modifiers.alt_key()
+            && !modifiers.shift_key()
             && matches!(&key.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("l"));
         // F6 moves to the address bar on its own, as in every browser.
         let f6 = key.state == ElementState::Pressed

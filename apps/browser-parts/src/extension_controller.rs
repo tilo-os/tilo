@@ -344,8 +344,9 @@ impl ExtensionController {
     }
 
     /// What the engine says of extensions' toolbar buttons on this window's
-    /// page: one changed, the page's own values went with its document, or
-    /// one asks to open its popup. Returns whether the interface changed.
+    /// page: one changed, the page's own values went with its document, one
+    /// asks to open its popup, or the person pressed its keyboard shortcut.
+    /// Returns whether the interface changed.
     pub fn on_engine_event(&mut self, event: WebViewEvent, engine: &SharedEngine) -> bool {
         if !self.active {
             return false;
@@ -382,6 +383,11 @@ impl ExtensionController {
                     },
                     engine,
                 );
+                true
+            }
+            // Its button's keyboard shortcut: as a click on the button.
+            WebViewEvent::ExtensionExecuteAction { id } => {
+                self.open_action(&id, engine);
                 true
             }
             _ => false,
@@ -778,13 +784,17 @@ impl ExtensionController {
             .iter()
             .map(|extension| (extension.id.clone(), extension.access.clone()))
             .collect();
-        for (id, access) in &current {
+        // In the order they were installed: of two extensions suggesting
+        // one keyboard shortcut, the engine gives it to the one told first.
+        for extension in &self.installed {
+            let (id, access) = (&extension.id, &extension.access);
             if self.access_told.get(id) != Some(access) {
                 engine.send(WebViewCommand::ExtensionAccess {
                     id: id.clone(),
                     permissions: access.permissions.clone(),
                     hosts: access.hosts.clone(),
                     token: access.token.clone(),
+                    commands: access.commands.clone(),
                 });
             }
         }
@@ -1661,6 +1671,53 @@ mod tests {
     }
 
     #[test]
+    fn a_buttons_keyboard_shortcut_acts_as_a_click_on_it() {
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        let (clicker, opener) = ("c".repeat(32), "d".repeat(32));
+        controller.installed = vec![
+            installed(&clicker, None, toolbar::Access::default()),
+            installed(&opener, Some("popup.html"), toolbar::Access::default()),
+        ];
+        let pressed = |id: &str| WebViewEvent::ExtensionExecuteAction { id: id.into() };
+
+        // Without a popup, the extension hears of a click.
+        assert!(controller.on_engine_event(pressed(&clicker), &shared));
+        assert!(window.commands().contains(&WebViewCommand::ExtensionClick {
+            id: clicker.clone()
+        }));
+
+        // With one, its popup opens over the page, which it may script, as
+        // after a click; pressed again, it closes.
+        assert!(controller.on_engine_event(pressed(&opener), &shared));
+        let created = window.created_tabs();
+        assert_eq!(created.len(), 1);
+        let commands = created[0].commands();
+        assert!(commands.contains(&WebViewCommand::ExtensionPanel {
+            action: Some(opener.clone())
+        }));
+        assert!(commands.contains(&WebViewCommand::Navigate(format!(
+            "chrome-extension://{opener}/popup.html"
+        ))));
+        controller.on_engine_event(pressed(&opener), &shared);
+        assert!(controller.panel.is_none());
+
+        // One turned off has no button to act as.
+        controller.installed[0].enabled = false;
+        let clicks = || {
+            window
+                .commands()
+                .iter()
+                .filter(|command| matches!(command, WebViewCommand::ExtensionClick { .. }))
+                .count()
+        };
+        let before = clicks();
+        controller.on_engine_event(pressed(&clicker), &shared);
+        assert_eq!(clicks(), before);
+    }
+
+    #[test]
     fn the_toolbar_shows_what_an_extension_set_for_this_page() {
         use ui::webview::ExtensionActionChange as Change;
         let window = ui::webview::test_engine::TestEngine::new();
@@ -1862,10 +1919,12 @@ mod tests {
         let window = ui::webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
+        let shortcuts = serde_json::json!({"_execute_action": {"suggested_key": "Alt+Shift+Y"}});
         let tabs = toolbar::Access {
             permissions: vec!["tabs".into()],
             hosts: vec!["https://*/*".into()],
             token: Some("a".repeat(48)),
+            commands: Some(shortcuts.clone()),
         };
         controller.installed = vec![installed("reader", None, tabs)];
         controller.tell_access(&shared);
@@ -1889,6 +1948,7 @@ mod tests {
                 permissions: vec!["tabs".into()],
                 hosts: vec!["https://*/*".into()],
                 token: Some("a".repeat(48)),
+                commands: Some(shortcuts),
             }]
         );
         controller.tell_access(&shared);
