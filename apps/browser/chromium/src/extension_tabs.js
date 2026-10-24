@@ -772,8 +772,12 @@
   // The outcome is asked for in turns the host holds a while, and between
   // them a call to Chromium keeps a worker awake, as Chrome keeps it awake
   // while the call is under way. No one signs in to the Browser itself, so
-  // getAuthToken, which asks the Browser's account, says so.
-  if (!chrome.identity && (manifest.permissions || []).includes('identity')) chrome.identity = {};
+  // getAuthToken, which asks the Browser's account, says so. One that asks
+  // for signing in later (`optional_permissions`) gets it here too, as
+  // Chromium knows nothing of what the person granted it: the host lets it
+  // sign in once it holds the permission.
+  const signs = (manifest.permissions || []).concat(manifest.optional_permissions || []);
+  if (!chrome.identity && signs.includes('identity')) chrome.identity = {};
   const identity = chrome.identity;
   if (identity) {
     if (typeof identity.getRedirectURL !== 'function') {

@@ -333,8 +333,13 @@ class ExtensionTabs {
   // What the extension may ask for later, and what of it the person
   // granted (extension_permissions.h), as the Browser keeps it with the
   // extension.
+  // What it held before and holds no more (the person revoked it in the
+  // Library, or an update no longer offers it) is gone at once, and its
+  // worker and pages hear of it, as of what it gave up itself.
   void SetOptional(const std::string& id, PermissionSet optional, const PermissionSet& granted) {
+    const auto before = permissions_.Granted(id);
     permissions_.SetOptional(id, std::move(optional), granted);
+    if (access_.count(id)) TellPermissions(id, "permissions.onRemoved", Without(before, permissions_.Granted(id)));
   }
   // The person answered an extension's request for more access
   // (`permissions.request`): what they allowed is granted at once, and the
@@ -1052,6 +1057,16 @@ class ExtensionTabs {
   void Removed(int tab) {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
+    // A request for more access asked where this tab was goes with it, as
+    // when the person dismisses the question: the extension is told no and
+    // may ask again.
+    for (auto it = asking_.begin(); it != asking_.end();) {
+      if (it->second.tab != tab) { ++it; continue; }
+      auto refused = CefValue::Create();
+      refused->SetBool(false);
+      Succeed(it->second.reply, refused);
+      it = asking_.erase(it);
+    }
     sign_in_.Closed(tab, ExtensionSignIn::Clock::now());
     native_.erase(tab);
     worded_.erase(tab);
@@ -1816,6 +1831,12 @@ class ExtensionTabs {
       if (!Find(tabs, tab) && !tabs.empty()) tab = tabs.front().tab;
       hooks_.event(tab, "extension_permissions", fields);
     }
+    TellPermissions(extension, event, changed);
+  }
+  // The extension's worker and pages hear that what it holds changed by
+  // `changed` (`event`).
+  void TellPermissions(const std::string& extension, const std::string& event, const PermissionSet& changed) {
+    if (changed.empty()) return;
     auto name = CefValue::Create();
     name->SetString(event);
     auto args = CefListValue::Create();

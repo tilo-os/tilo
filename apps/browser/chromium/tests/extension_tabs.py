@@ -101,7 +101,9 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   clicks in its popup: the Browser is asked, and what the person allows the
   extension holds at once, reaches the page with, and hears of in its
   worker; what it gives up it loses. What it was granted in an earlier run
-  it holds from the start.
+  it holds from the start. What the person revokes in the Library it loses
+  at once and hears of; a question whose window closed unanswered lets it
+  ask again; signing in (`identity`) granted later lets it sign in.
 - An extension's download is the Browser's: the person is asked, under the
   name the extension chose; the extension learns its id, finds it, pauses,
   resumes and cancels it and hears of each change; a refusal reaches it as
@@ -967,6 +969,83 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(self.in_worker(host, permit, 'chrome.permissions.getAll()'),
                          {'permissions': ['scripting', 'storage', 'tabs'], 'origins': [f'http://127.0.0.1:{port}/*']})
         self.assertEqual(self.in_worker(host, permit, 'script()'), '/granted-before')
+
+    def test_access_the_person_revokes_goes_at_once_and_the_extension_hears_of_it(self):
+        host, ids = self.start('permit', access={'permit': (['storage', 'scripting'], [])})
+        permit = ids['permit']
+        offered = (['tabs'], ['http://127.0.0.1/*'])
+        self.grants(host, permit, offered, offered)
+        page = self.url + '/revoked'
+        host.navigate(page)
+        self.worker_value(host, permit, 'typeof heard', lambda value: value == 'object')
+        self.assertEqual(self.in_worker(host, permit, 'urls()'), [page])
+        self.assertEqual(self.in_worker(host, permit, 'script()'), '/revoked')
+        # The person revokes it in the Library: the Browser tells the engine
+        # the extension holds none of it, which the extension hears of, and
+        # its next tab calls are refused.
+        self.grants(host, permit, offered)
+        removed = {'removed': {'permissions': ['tabs'], 'origins': ['http://127.0.0.1/*']}}
+        self.worker_value(host, permit, 'JSON.stringify(heard)', lambda value: json.loads(value) == [removed])
+        self.assertEqual(self.in_worker(host, permit, 'urls()'), [None])
+        self.assertTrue(self.in_worker(host, permit, 'script()').startswith('refused: '))
+        self.assertEqual(self.in_worker(host, permit, 'chrome.permissions.getAll()'),
+                         {'permissions': ['scripting', 'storage'], 'origins': []})
+        # Told again that it holds none, it hears nothing more.
+        self.grants(host, permit, offered)
+        host.settle(0.5)
+        self.assertEqual(json.loads(self.in_worker(host, permit, 'JSON.stringify(heard)')), [removed])
+
+    def test_a_question_left_unanswered_goes_with_its_window(self):
+        host, ids = self.start('permit', access={'permit': (['storage', 'scripting'], [])})
+        permit = ids['permit']
+        self.grants(host, permit, (['tabs'], ['http://127.0.0.1/*']))
+        host.navigate(self.url + '/asked-again')
+        self.panel(host, 2, f'chrome-extension://{permit}/popup.html')
+        self.title(host, 2, 'ready:')
+        self.click_panel(host, 2)
+        first = self.told(host, lambda e: e['event'] == 'extension_permission_request')
+        # Its popup closes with the window, the question unanswered.
+        host.send(op='close_tab', tab=2)
+        host.until(lambda e: e['event'] == 'closed' and e.get('tab') == 2)
+        # Opened again, it may ask again, and the person's answer counts.
+        self.panel(host, 3, f'chrome-extension://{permit}/popup.html')
+        self.title(host, 3, 'ready:')
+        self.click_panel(host, 3)
+        second = self.told(host, lambda e: e['event'] == 'extension_permission_request')
+        self.assertNotEqual(second['request'], first['request'])
+        host.send(op='extension_permission_decision', request=first['request'], allow=True)
+        host.send(op='extension_permission_decision', request=second['request'], allow=True)
+        answered = json.loads(self.title(host, 3, 'asked:')[len('asked:'):])
+        self.assertEqual((answered['granted'], answered['error'], answered['tabs'], answered['site']),
+                         (True, None, True, True))
+
+    def test_an_extension_granted_signing_in_later_signs_in(self):
+        host, ids = self.start('latecomer', access={'latecomer': ([], [])})
+        late = ids['latecomer']
+        self.grants(host, late, (['identity'], []))
+        host.navigate(self.url + '/front')
+        host.settle(1.0)
+        read = lambda expression: self.in_worker(host, late, expression)
+        # Until the person grants it, it may not.
+        self.assertEqual(read("chrome.identity.launchWebAuthFlow({url: 'https://example.org/', interactive: true})"
+                              ".then(() => 'signed in', (e) => e.message)"),
+                         'The extension did not ask for the identity permission')
+        # Granted, as the Browser keeps it, it signs in as one whose manifest
+        # requires it.
+        self.grants(host, late, (['identity'], []), (['identity'], []))
+        back = f'https://{late}.chromiumapp.org/'
+        query = urllib.parse.urlencode({'redirect_uri': back + 'cb', 'code': 'later', 'auto': '1'})
+        url = f'{self.url}/authorize?{query}'
+        self.assertEqual(read(f'signIn({{url: {json.dumps(url)}, interactive: true}})'), 'started')
+        asked = self.told(host, lambda e: e['event'] == 'extension_sign_in')
+        self.assertEqual((asked['id'], asked['url'], asked['interactive']), (late, url, True))
+        host.send(op='create_tab', tab=2)
+        host.until(lambda e: e['event'] == 'tab_ready' and e.get('tab') == 2)
+        host.send(op='extension_sign_in_panel', tab=2, id=late, flow=asked['flow'])
+        host.send(op='resize', tab=2, width=800, height=600, scale_factor=1.0)
+        host.send(op='navigate', tab=2, url=url)
+        signed = self.worker_value(host, late, 'JSON.stringify(signIns)', lambda value: json.loads(value))
+        self.assertEqual(json.loads(signed), [{'url': back + 'cb?code=later'}])
 
     def test_a_worker_and_its_content_script_talk_both_ways_by_tab(self):
         # Its content script's site is no host permission (the Browser sends
