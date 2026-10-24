@@ -760,7 +760,7 @@ mod tests {
                 leading: vec![
                     ToolbarAction::new("previous", "chevron-left", "Previous week").navigating(),
                     ToolbarAction::new("next", "chevron-right", "Next week").navigating(),
-                    ToolbarAction::new("today", "calendar", "Today"),
+                    ToolbarAction::new("today", "calendar", "Today").labelled(),
                 ],
                 location: Some(ToolbarLocation::period(week_across_a_month())),
                 views: Some(ToolbarViews {

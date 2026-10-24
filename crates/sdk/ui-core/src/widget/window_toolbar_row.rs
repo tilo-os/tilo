@@ -131,6 +131,9 @@ pub(crate) struct Slots {
     /// Which form of its label the location shows
     /// ([`crate::window_toolbar::ToolbarLocation::form`]).
     pub form: usize,
+    /// The labelled leading actions in the row are text buttons
+    /// ([`crate::window_toolbar::ToolbarAction::labelled`]), not icons.
+    pub labelled: bool,
 }
 
 /// What the row lays out beside the toolbar: the view switcher's size and
@@ -191,10 +194,25 @@ impl LocationForms {
     }
 }
 
+/// The views, the location's forms and the labelled leading actions as
+/// the theme draws them, and what they were measured for.
+#[derive(Clone, Debug)]
+struct Measured {
+    key: MeasureKey,
+    views: ViewsSize,
+    forms: LocationForms,
+    /// Each view's tab width.
+    tabs: Vec<f64>,
+    /// Each leading action's text button width (`0.0`: not labelled).
+    leading: Vec<f64>,
+}
+
 /// What the views and the location's forms were measured for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MeasureKey {
     labels: Vec<String>,
+    /// Each leading action's name where it is labelled, else empty.
+    leading: Vec<String>,
     forms: Vec<String>,
     editable: bool,
     picker: bool,
@@ -317,11 +335,17 @@ impl Slots {
     /// menu, and that yields only where that form would not stand whole:
     /// a wider row never shows a narrower form. The location is the views'
     /// picker only where that same form stands whole beside its chevron.
+    /// The plain leading actions yield before the label shortens: they
+    /// stand only beside its widest form.
+    ///
+    /// A labelled leading action is a text button only where the row folds
+    /// nothing at all, its label included, and an icon otherwise: its label
+    /// is the first thing a narrowing row gives up.
     pub(crate) fn lay_out(
         toolbar: &WindowToolbar,
         row: Rect,
         views: ViewsSize,
-        forms: &LocationForms,
+        (forms, labels): (&LocationForms, &[f64]),
     ) -> Self {
         if row.width() <= 0.0 || row.height() <= 0.0 {
             return Self::default();
@@ -333,23 +357,75 @@ impl Slots {
             inline: 0,
             ..Kept::all(toolbar, 0)
         };
-        let room = Self::with_inline(toolbar, row, navigation, ViewsPlace::Overflow)
+        let room = Self::with_inline(toolbar, row, navigation, ViewsPlace::Overflow, &[])
             .location
             .width();
         let form = forms.fitting(room);
         let least = forms.least(form, room);
-        let mut slots = Self::arranged(toolbar, row, views, (forms.width(form), least));
+        let shown = (forms.width(form), least, form > 0);
+        let icons = Self::arranged(toolbar, row, views, shown, &[]);
+        let mut slots = if form == 0
+            && labels.iter().any(|width| *width > CONTROL_PX)
+            && icons.folds_nothing(toolbar)
+        {
+            let labelled = Self::arranged(toolbar, row, views, shown, labels);
+            if labelled.folds_as(&icons) {
+                Self {
+                    labelled: true,
+                    ..labelled
+                }
+            } else {
+                icons
+            }
+        } else {
+            icons
+        };
         slots.form = form;
         slots
     }
 
+    /// Whether these slots keep everything of `toolbar` in the row: every
+    /// leading action, every action the row can hold, the views as their
+    /// strip.
+    fn folds_nothing(&self, toolbar: &WindowToolbar) -> bool {
+        let views = toolbar
+            .views
+            .as_ref()
+            .map_or(0, |views| views.choices.len());
+        self.leading.iter().all(|rect| rect.area() > 0.0)
+            && self.actions.len()
+                == toolbar
+                    .row_actions()
+                    .min(crate::window_toolbar::MAX_ACTIONS)
+            && self.views.len() == views
+    }
+
+    /// Whether these slots keep in the row exactly what `other` keeps, and
+    /// the views in the same place.
+    fn folds_as(&self, other: &Self) -> bool {
+        let shown = |slots: &Self| -> Vec<bool> {
+            slots.leading.iter().map(|rect| rect.area() > 0.0).collect()
+        };
+        shown(self) == shown(other)
+            && self.views.len() == other.views.len()
+            && (self.views_menu.area() > 0.0) == (other.views_menu.area() > 0.0)
+            && self.views_in_location() == other.views_in_location()
+            && self.actions.len() == other.actions.len()
+            && (self.overflow.area() > 0.0) == (other.overflow.area() > 0.0)
+            && (self.location.area() > 0.0) == (other.location.area() > 0.0)
+    }
+
     /// [`Self::lay_out`] for a location showing a form `form_w` wide, which
-    /// at rest stands whole in a location `least` wide.
+    /// at rest stands whole in a location `least` wide, and leading actions
+    /// `labels` wide (none, or `0.0`: an icon). Where the form is
+    /// `shortened` the plain leading actions are in the menu: they yield
+    /// before the location's label does.
     fn arranged(
         toolbar: &WindowToolbar,
         row: Rect,
         views: ViewsSize,
-        (form_w, least): (f64, f64),
+        (form_w, least, shortened): (f64, f64, bool),
+        labels: &[f64],
     ) -> Self {
         let row_actions = toolbar
             .row_actions()
@@ -379,11 +455,14 @@ impl Slots {
             Some(m) => vec![ViewsPlace::Strip(m.strip.0, m.strip.1), folded_views(m)],
             None => vec![ViewsPlace::Overflow],
         };
-        let all = Kept::all(toolbar, row_actions);
+        let mut all = Kept::all(toolbar, row_actions);
+        if shortened {
+            all.plain = 0;
+        }
         for &place in &places {
             let mut inline = row_actions;
             loop {
-                let slots = Self::with_inline(toolbar, row, Kept { inline, ..all }, place);
+                let slots = Self::with_inline(toolbar, row, Kept { inline, ..all }, place, labels);
                 let room = if toolbar.location.is_some() {
                     slots.location.width() >= COMFORTABLE_LOCATION_PX.max(least)
                 } else {
@@ -401,14 +480,14 @@ impl Slots {
             }
         }
         let mut last = Self::default();
-        for (kept, place) in Self::yielding(toolbar, measured) {
+        for (kept, place) in Self::yielding(all, measured) {
             let inline =
                 if kept.plain == all.plain && kept.navigating == all.navigating && lone(0, place) {
                     row_actions
                 } else {
                     0
                 };
-            let slots = Self::with_inline(toolbar, row, Kept { inline, ..kept }, place);
+            let slots = Self::with_inline(toolbar, row, Kept { inline, ..kept }, place, labels);
             let located = match place {
                 ViewsPlace::InLocation(least) => slots.location.width() >= least,
                 _ => {
@@ -429,8 +508,8 @@ impl Slots {
     /// actions, the last first; then the views (the views menu's place);
     /// then the leading actions that move through the content, the last
     /// first. The location yields to none of them: it stays, elided.
-    fn yielding(toolbar: &WindowToolbar, measured: ViewsSize) -> Vec<(Kept, ViewsPlace)> {
-        let all = Kept::all(toolbar, 0);
+    fn yielding(all: Kept, measured: ViewsSize) -> Vec<(Kept, ViewsPlace)> {
+        let all = Kept { inline: 0, ..all };
         let views = measured.map_or(ViewsPlace::Overflow, folded_views);
         let plain = (0..=all.plain)
             .rev()
@@ -447,8 +526,16 @@ impl Slots {
     }
 
     /// The slots with the leading actions and the actions `kept` keeps in
-    /// the row and the rest in the overflow menu, and the views at `place`.
-    fn with_inline(toolbar: &WindowToolbar, row: Rect, kept: Kept, place: ViewsPlace) -> Self {
+    /// the row and the rest in the overflow menu, and the views at `place`;
+    /// leading action `n` is `labels[n]` wide where that is wider than an
+    /// icon.
+    fn with_inline(
+        toolbar: &WindowToolbar,
+        row: Rect,
+        kept: Kept,
+        place: ViewsPlace,
+        labels: &[f64],
+    ) -> Self {
         let mut slots = Self::default();
         let y0 = row.center().y - CONTROL_PX / 2.0;
         let square = |x0: f64| Rect::new(x0, y0, x0 + CONTROL_PX, y0 + CONTROL_PX);
@@ -466,7 +553,8 @@ impl Slots {
         let mut any = false;
         for index in 0..toolbar.leading.len() {
             if kept.shows(toolbar, index) {
-                let rect = square(x0);
+                let mut rect = square(x0);
+                rect.x1 = rect.x1.max(x0 + labels.get(index).copied().unwrap_or(0.0));
                 x0 = rect.x1 + CONTROL_GAP;
                 slots.leading.push(rect);
                 any = true;
@@ -683,7 +771,7 @@ pub(crate) struct ToolbarRow {
     menu_slot: Option<Slot>,
     /// The views' sizes as the theme draws them, and the labels and text
     /// scale they were measured for.
-    views_size: Option<(MeasureKey, ViewsSize, LocationForms, Vec<f64>)>,
+    views_size: Option<Measured>,
     /// The suggestions under the edited field, and what each commits.
     suggestions: SuggestionList,
     suggestion_values: Vec<String>,
@@ -891,8 +979,25 @@ impl ToolbarRow {
                     .collect()
             })
             .unwrap_or_default();
+        let leading: Vec<String> = self
+            .toolbar()
+            .map(|toolbar| {
+                toolbar
+                    .leading
+                    .iter()
+                    .map(|action| {
+                        if action.labelled {
+                            action.name.clone()
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let key = MeasureKey {
             labels,
+            leading,
             forms,
             editable: location.is_some_and(|location| location.editable),
             picker: location
@@ -902,7 +1007,8 @@ impl ToolbarRow {
             }),
             text_scale: theme.text_scale.to_bits(),
         };
-        if key.labels.is_empty() && key.forms.is_empty() {
+        if key.labels.is_empty() && key.forms.is_empty() && key.leading.iter().all(String::is_empty)
+        {
             let had = self.views_size.take().is_some();
             if had {
                 self.lay_out(self.row);
@@ -912,7 +1018,7 @@ impl ToolbarRow {
         if self
             .views_size
             .as_ref()
-            .is_some_and(|(measured, ..)| *measured == key)
+            .is_some_and(|measured| measured.key == key)
         {
             return false;
         }
@@ -934,10 +1040,27 @@ impl ToolbarRow {
                 menu: picker_width(widest, theme),
                 location: Some(picker_width(0.0, theme)),
             });
-            (views, forms, tabs)
+            let leading = key
+                .leading
+                .iter()
+                .map(|name| {
+                    if name.is_empty() {
+                        0.0
+                    } else {
+                        labelled_face(Rect::ZERO, name).intrinsic_width(text, theme)
+                    }
+                })
+                .collect();
+            (views, forms, tabs, leading)
         });
-        let (views, forms, tabs) = measured;
-        self.views_size = Some((key, views, forms, tabs));
+        let (views, forms, tabs, leading) = measured;
+        self.views_size = Some(Measured {
+            key,
+            views,
+            forms,
+            tabs,
+            leading,
+        });
         self.lay_out(self.row);
         true
     }
@@ -949,18 +1072,20 @@ impl ToolbarRow {
     /// Lay the slots out across `row`.
     pub(crate) fn lay_out(&mut self, row: Rect) {
         self.row = row;
-        let (views, forms) = self
+        let unmeasured = LocationForms::default();
+        let (views, forms, labels) = self
             .views_size
             .as_ref()
-            .map_or((None, None), |(_, views, forms, _)| (*views, Some(forms)));
-        let unmeasured = LocationForms::default();
+            .map_or((None, &unmeasured, &[][..]), |measured| {
+                (measured.views, &measured.forms, measured.leading.as_slice())
+            });
         self.slots = self
             .toolbar()
-            .map(|toolbar| Slots::lay_out(toolbar, row, views, forms.unwrap_or(&unmeasured)))
+            .map(|toolbar| Slots::lay_out(toolbar, row, views, (forms, labels)))
             .unwrap_or_default();
         // The views are tabs, each as wide as its label (as `ViewTabs`
         // packs them), across the strip measured to hold them.
-        if let Some((.., tabs)) = self.views_size.as_ref()
+        if let Some(Measured { tabs, .. }) = self.views_size.as_ref()
             && let Some(strip_x0) = self.slots.views.first().map(|tab| tab.x0)
             && tabs.len() == self.slots.views.len()
         {
@@ -2579,21 +2704,24 @@ fn paint_slots(
         );
     }
     for (i, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
+        let lifted = face(
+            Slot::Leading(i),
+            action.enabled,
+            shows_on(toolbar, &Slot::Leading(i)),
+        );
+        if action.labelled && slots.labelled && rect.area() > 0.0 {
+            let face = labelled_face(*rect, &action.name)
+                .hovered(lifted.hovered && lifted.enabled)
+                .pressed(lifted.pressed && lifted.enabled)
+                .toggled(lifted.on)
+                .disabled(!lifted.enabled);
+            crate::widget::Button::paint(scene, transform, tr, theme, &face);
+            continue;
+        }
         let Some(icon) = Icon::from_name(&action.icon).filter(|_| rect.area() > 0.0) else {
             continue;
         };
-        paint_icon_button(
-            scene,
-            transform,
-            tr,
-            theme,
-            (*rect, icon),
-            face(
-                Slot::Leading(i),
-                action.enabled,
-                shows_on(toolbar, &Slot::Leading(i)),
-            ),
-        );
+        paint_icon_button(scene, transform, tr, theme, (*rect, icon), lifted);
     }
     if let Some(views) = toolbar.views.as_ref()
         && !slots.views.is_empty()
@@ -2787,6 +2915,15 @@ pub(crate) fn location_shown<'a>(
         );
     }
     (location.form(form), theme.tokens.colors.text_primary)
+}
+
+/// A labelled leading action's text button in `rect`, saying `name`
+/// ([`crate::window_toolbar::ToolbarAction::labelled`]): the bar's plain
+/// face, at the size of its icon buttons.
+fn labelled_face(rect: Rect, name: &str) -> crate::widget::ButtonFace<'_> {
+    crate::widget::ButtonFace::new(rect, name)
+        .role(crate::widget::ButtonRole::Plain)
+        .control_size(crate::widget::ControlSize::Small)
 }
 
 /// How wide a picker ([`paint_picker`]) whose label is `label_w` wide
