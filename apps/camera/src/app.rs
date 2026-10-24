@@ -4033,11 +4033,13 @@ mod tests {
                     id: window_bar::PHOTOS.into(),
                 },
             );
-            let invocation = ui::widget::controls::take_control_invocation(&mut *app)
-                .expect("Photos browse emits a typed external invocation");
-            assert_eq!(invocation.address.resource, "camera.capture");
-            assert_eq!(invocation.address.action, "open-photos");
-            assert!(invocation.arguments.is_empty());
+            // The host runs the press as the live window's idle service
+            // does: the typed handoff to Photos went out, and the bar says so.
+            assert_eq!(
+                ui::window_toolbar::notice().map(|notice| notice.text),
+                Some("Opening Photos…".to_owned()),
+                "Photos browse hands off to Photos"
+            );
             assert!(
                 app.captures.len() <= 1,
                 "Camera still owns no gallery cache"
