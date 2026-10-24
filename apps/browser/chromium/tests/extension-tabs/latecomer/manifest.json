@@ -1,0 +1,3 @@
+{"manifest_version": 3, "name": "Latecomer", "version": "1.0",
+ "optional_permissions": ["identity"],
+ "background": {"service_worker": "worker.js"}}

@@ -631,7 +631,14 @@ content scripts (with `sender.tab`) work without help.
   `getAll` and `remove` (never of what the manifest requires) answer from
   the same. An API Chromium itself gives only an extension that holds it
   in Chromium's own records (`chrome.bookmarks`) stays missing when the
-  person grants it here: what the host answers follows the grant.
+  person grants it here: what the host answers follows the grant, and the
+  tab script gives `chrome.identity` to an extension that may ask for it
+  later, which signs in once granted. The person sees what they granted in
+  the extension's Library row and revokes it there or through its resource
+  (`revoke-extension-access`): the Browser sends `extension_grants` without
+  it, which holds at once, and the extension hears of what it lost
+  (`onRemoved`). A question whose tab closes unanswered, its popup or the
+  window's page, is answered no, so the extension may ask again.
 - `downloads.download` goes through the Browser's own downloads
   (`src/capabilities.h`): Chromium cancels a download an extension starts
   on none of its windows' tabs, so the host starts it on the page the call

@@ -102,6 +102,8 @@ enum Command {
     Enable(String),
     Disable(String),
     Remove(String),
+    /// Take back what the person allowed the extension after it was added.
+    Revoke(String),
     Pin(String, bool),
     OpenAction(String),
     /// Show an extension's settings page.
@@ -415,6 +417,24 @@ fn manager_url(manager: &str, switches: &[(String, bool)]) -> String {
     )
 }
 
+/// What the person allowed an extension after it was added, in their
+/// words: the access Chrome would have warned of, or that it has more when
+/// none of it is; none when it has nothing more.
+fn granted_line(granted: &ExtensionPermissionSet) -> Option<String> {
+    if granted.is_empty() {
+        return None;
+    }
+    let lines = extensions::asked_summary(granted);
+    Some(if lines.is_empty() {
+        CATALOG.t("browser-extension-granted-quiet")
+    } else {
+        CATALOG.t_args(
+            "browser-extension-granted",
+            &[("access", ui::i18n::ArgValue::Text(lines.join(", ")))],
+        )
+    })
+}
+
 /// The longest words an extension's keyword takes, as the engine carries
 /// them.
 const MAX_KEYWORD_TEXT_BYTES: usize = 2048;
@@ -518,6 +538,27 @@ impl ExtensionController {
         };
         self.change_profile(move || {
             extensions::set_granted(&info, &granted).map_err(|error| error.to_string())
+        });
+    }
+
+    /// The person takes back what they allowed the extension after it was
+    /// added: the engine holds it to what its manifest requires at once, and
+    /// the extension hears of what it lost, as when it gives access up
+    /// itself; the Browser keeps that it holds none of it.
+    fn revoke(&mut self, id: &str, engine: &SharedEngine) {
+        let Some(optional) = self
+            .installed
+            .iter()
+            .find(|extension| extension.id == id && !extension.access.granted.is_empty())
+            .map(|extension| extension.access.optional.clone())
+        else {
+            return;
+        };
+        self.keep_granted(id, ExtensionPermissionSet::default());
+        engine.send(WebViewCommand::ExtensionGrants {
+            id: id.to_owned(),
+            optional,
+            granted: ExtensionPermissionSet::default(),
         });
     }
 
@@ -1270,6 +1311,7 @@ impl ExtensionController {
                     });
                 }
             }
+            Command::Revoke(id) => self.revoke(&id, engine),
             Command::Pin(id, pinned) => {
                 let name = self
                     .installed
@@ -1856,6 +1898,11 @@ impl ExtensionController {
             |lines| lines.into_iter().next().unwrap_or_default(),
         );
         let mut buttons = Vec::new();
+        // What the person allowed it after it was added, which they can take
+        // back here.
+        let granted = granted_line(&extension.access.granted);
+        let mut lines = vec![format!("{status}. {permissions}")];
+        lines.extend(granted.clone());
         if info.manifest_version == 3 {
             let command = if extension.enabled {
                 Command::Disable(id.clone())
@@ -1896,6 +1943,15 @@ impl ExtensionController {
                 .on_effect(self.queue(Command::Pin(id.clone(), !extension.pinned))),
             );
         }
+        if granted.is_some() {
+            buttons.push(
+                Button::new(
+                    &format!("browser.extension.revoke.{id}"),
+                    &CATALOG.t("browser-extension-revoke"),
+                )
+                .on_effect(self.queue(Command::Revoke(id.clone()))),
+            );
+        }
         buttons.push(
             Button::new(
                 &format!("browser.extension.remove.{id}"),
@@ -1905,8 +1961,8 @@ impl ExtensionController {
         );
         Box::new(crate::rows::with_buttons(
             ListRow::new(format!("browser.extension.{id}"), info.name.clone())
-                .secondary(format!("{status}. {permissions}"))
-                .two_line_secondary()
+                .secondary(lines.join("\n"))
+                .secondary_lines(u8::try_from(lines.len() + 1).unwrap_or(u8::MAX))
                 .meta(info.version.clone()),
             buttons,
         ))
@@ -1936,6 +1992,7 @@ impl ExtensionController {
             .zip(&self.installed)
             .map(|(info, extension)| {
                 let id = extension.id.clone();
+                let granted = granted_line(&extension.access.granted);
                 let mut resource = Resource::new(
                     extensions::resource_id(&info.id),
                     "browser.extension",
@@ -1943,9 +2000,18 @@ impl ExtensionController {
                 )
                 .with_presentation(ResourcePresentation {
                     detail: Some(self.status(info, extension)),
+                    // What the person allowed it later, as its row says.
+                    preview: granted
+                        .as_ref()
+                        .filter(|line| line.len() <= ResourcePresentation::MAX_PREVIEW_BYTES)
+                        .cloned(),
                     ..ResourcePresentation::default()
                 })
                 .with_action(E::ShowExtensions.bound());
+                if granted.is_some() {
+                    resource =
+                        resource.with_action(E::RevokeExtensionAccess { id: id.clone() }.bound());
+                }
                 if info.manifest_version == 3 {
                     resource = resource.with_action(if extension.enabled {
                         E::TurnOffExtension { id: id.clone() }.bound()
@@ -2003,6 +2069,7 @@ impl ExtensionController {
             | ExtensionRequest::Send(id, _)
             | ExtensionRequest::OpenSidePanel(id)
             | ExtensionRequest::CloseSidePanel(id)
+            | ExtensionRequest::Revoke(id)
             | ExtensionRequest::Remove(id) => id.clone(),
         };
         let (info, extension) = self
@@ -2042,6 +2109,10 @@ impl ExtensionController {
             ExtensionRequest::OpenSidePanel(_) | ExtensionRequest::CloseSidePanel(_) => {
                 side_panel::command(request, extension)?
             }
+            ExtensionRequest::Revoke(_) if extension.access.granted.is_empty() => {
+                return Err(CATALOG.t("browser-extension-nothing-granted"));
+            }
+            ExtensionRequest::Revoke(_) => Command::Revoke(id),
             ExtensionRequest::Remove(_) => Command::Remove(id),
         };
         (self.queue(command))();
