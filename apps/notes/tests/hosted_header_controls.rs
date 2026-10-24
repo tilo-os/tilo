@@ -1,6 +1,6 @@
-//! The sidebar's "+" creates a note whether Notes is the window's root
-//! component or one tab of a desktop surface, the way the browser desktop
-//! hosts every app. Its click travels as a registered control invocation, so
+//! New note creates a note whether Notes is the window's root component
+//! (the sidebar's "+") or one tab of a desktop surface, the way the browser
+//! desktop hosts every app (the tab's window bar). Its click travels as a registered control invocation, so
 //! a tile the desktop builds after the harness bound the tree's controls must
 //! still deliver what its buttons emit.
 
@@ -33,13 +33,16 @@ impl TileSource for Arriving {
     }
 }
 
+/// Pressing New note (`press`: the sidebar's "+", or the window bar's New
+/// note where the bar hosts the window) creates a page.
 fn assert_plus_creates_a_page(
     f: &NotebookFixture,
     checkout: &ui::record::RecordCheckout,
     harness: &mut FrameHarness,
+    press: impl FnOnce(&mut FrameHarness),
 ) {
     let before = page_count(f, checkout);
-    harness.click_named("new-note").unwrap();
+    press(harness);
     for _ in 0..4 {
         harness.poll_frame().unwrap();
     }
@@ -63,7 +66,9 @@ fn hosted_header_plus_creates_a_page_as_root_component() {
     let component = component_support::component(&f, 7, component_support::existing(&checkout));
     let mut harness = component_support::component_driver(component);
     harness.relayout();
-    assert_plus_creates_a_page(&f, &checkout, &mut harness);
+    assert_plus_creates_a_page(&f, &checkout, &mut harness, |harness| {
+        harness.click_named("new-note").unwrap();
+    });
 }
 
 #[test]
@@ -110,5 +115,13 @@ fn hosted_header_plus_creates_a_page_in_a_desktop_tab_built_late() {
     }
     assert!(arriving.borrow().is_none(), "the desktop rebuilt the tab");
 
-    assert_plus_creates_a_page(&f, &checkout, &mut harness);
+    // The desktop draws the tab's bar: New note is its action there.
+    assert_plus_creates_a_page(&f, &checkout, &mut harness, |harness| {
+        let new_note = harness
+            .a11y_node_named("New note")
+            .expect("the tab's bar offers New note");
+        harness
+            .perform_a11y_action(new_note, &ui::a11y::Action::Activate)
+            .unwrap();
+    });
 }

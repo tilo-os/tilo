@@ -1977,7 +1977,14 @@ impl Widget for MainPanel {
                 self.rect.y0 + self.scroll_top_inset(),
             );
             if self.scroll_y > f64::EPSILON {
-                ui::widget::toolbar::paint_band(scene, transform, theme, pinned);
+                ui::widget::paint_rule(
+                    scene,
+                    transform,
+                    theme,
+                    pinned,
+                    ui::widget::RuleEdge::Bottom,
+                    Some(theme.tokens.colors.surfaces.content),
+                );
             }
 
             // Everything below the sticky title is one scrolling document:
