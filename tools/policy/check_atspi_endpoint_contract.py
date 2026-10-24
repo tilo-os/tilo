@@ -70,6 +70,26 @@ def adapter_registration_errors(source: str) -> list[str]:
     return errors
 
 
+def window_tree_reaches_adapter(source: str) -> bool:
+    """The window of its own's tree: the app's shared tree, with the row of
+    window-bar slots the runner draws published beside it, reaches the
+    adapter through ``slot_bar::window_tree_update``, which must build the
+    app's tree and return it through the native conversion."""
+    call = (
+        r"adapter\.update_if_active\(\|\|\s*\{?\s*"
+        r"slot_bar::window_tree_update\(\s*app_ref,\s*\w+,\s*scale,?\s*\)\s*\}?\)"
+    )
+    if not re.search(call, source):
+        return False
+    body = function_body(source, "window_tree_update")
+    if body is None:
+        return False
+    return bool(
+        re.search(r"let\s+mut\s+update\s*=\s*app\.build_a11y_tree_update\(scale\);", body)
+        and re.search(r"crate::accesskit_bridge::native_tree_update\(update\)\s*$", body)
+    )
+
+
 def audit(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     app_root = root / "apps"
@@ -119,6 +139,7 @@ def audit(root: Path = ROOT) -> list[str]:
         root / "crates/sdk/ui-core/src/app.rs",
         root / "crates/sdk/ui-core/src/app/host.rs",
         root / "crates/sdk/ui-core/src/app/native_runner.rs",
+        root / "crates/sdk/ui-core/src/app/native_runner/slot_bar.rs",
     ]
     app = "\n".join(
         path.read_text(encoding="utf-8") for path in app_paths if path.is_file()
@@ -141,7 +162,7 @@ def audit(root: Path = ROOT) -> list[str]:
         r"crate::accesskit_bridge::native_tree_update\(\s*"
         r"app_ref\.build_a11y_tree_update\(scale\),?\s*\)\s*\}\)"
     )
-    if not re.search(tree_update, app):
+    if not re.search(tree_update, app) and not window_tree_reaches_adapter(app):
         errors.append("crates/sdk/ui-core/src/app.rs: missing shared AT-SPI tree updates")
 
     bridge = (root / "crates/sdk/ui-core/src/accesskit_bridge.rs").read_text(encoding="utf-8")
