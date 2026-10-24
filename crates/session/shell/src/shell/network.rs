@@ -4929,6 +4929,19 @@ impl ShellNetwork {
         )
     }
 
+    /// The person this device acts as in `room`: the root of the
+    /// certificate it holds the room with, which is who the room's host
+    /// decides for. The session's person when it has no identity of its own.
+    fn person_in_room(&self, room: RoomId) -> crate::shell::state::UserId {
+        self.host_identity
+            .as_ref()
+            .and_then(|identity| identity.current_native_material(room_topic_id(room)).ok())
+            .and_then(|(certificate, _)| {
+                crate::shell::state::person_id_of(certificate.user_public_key)
+            })
+            .unwrap_or_else(|| crate::shell::state::local_user_id_for_room(&room))
+    }
+
     /// Have the room's host issue an invitation into `local`'s room, when the
     /// one invitation policy lets this device ask for one.
     fn issue_invite_for(
@@ -4957,7 +4970,7 @@ impl ShellNetwork {
             (room, tree.installed_native_owner())
         };
         let governor = crate::shell::invite_policy::native_governor(owner, room);
-        let local_user = crate::shell::state::local_user_id_for_room(&room);
+        let local_user = self.person_in_room(room);
         let tree = tree_handle.read();
         let ws = tree
             .desktop
