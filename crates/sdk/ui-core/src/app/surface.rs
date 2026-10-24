@@ -2090,20 +2090,29 @@ mod tests {
         };
         assert!(settle(&mut app), "the app alone comes to rest");
         // A click opens it, so it moves (a key chord would land it at once).
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-        app.open_action_palette();
-        let _ = app.surface_frame(&region, &mut Scene::new());
-        assert!(
-            app.actions
-                .action_palette
-                .as_ref()
-                .is_some_and(crate::action_palette::ActionPalette::is_moving),
-            "a palette a click opened arrives"
-        );
-        assert!(
-            app.surface_frame(&region, &mut Scene::new()),
-            "the arriving palette asks for the frame that draws it further in"
-        );
+        // Its frames run at fixed instants a frame apart, as a host presents
+        // them: how long the test machine takes between them is not the
+        // palette's time.
+        let opened = crate::time::now();
+        let next = opened + crate::time::Duration::from_millis(16);
+        crate::time::testing::with_monotonic_time(opened, || {
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            app.open_action_palette();
+            let _ = app.surface_frame(&region, &mut Scene::new());
+            assert!(
+                app.actions
+                    .action_palette
+                    .as_ref()
+                    .is_some_and(crate::action_palette::ActionPalette::is_moving),
+                "a palette a click opened arrives"
+            );
+        });
+        crate::time::testing::with_monotonic_time(next, || {
+            assert!(
+                app.surface_frame(&region, &mut Scene::new()),
+                "the arriving palette asks for the frame that draws it further in"
+            );
+        });
         let _settled = crate::motion::testing::settled();
         assert!(
             settle(&mut app),
