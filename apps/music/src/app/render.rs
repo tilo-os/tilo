@@ -1365,6 +1365,7 @@ impl Widget for MusicApp {
             .then_some(self.last_tick + super::PLAYBACK_POLL_INTERVAL)
             .into_iter()
             .chain(self.toast.deadline())
+            .chain(self.search.next_placeholder_step(ui::time::now()))
             .chain(
                 self.children()
                     .into_iter()

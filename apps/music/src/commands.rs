@@ -250,7 +250,7 @@ fn bench_search(value: &str) -> Result<(), String> {
 #[cfg(feature = "live")]
 fn bench_remote(queries: &[&str]) {
     use std::sync::Arc;
-    use ui::framework::views::{QueryEngine, QuerySpec, RemoteSource, RemoteState};
+    use ui::framework::views::{QueryEngine, QuerySpec, RemoteSource};
     let source: Arc<dyn RemoteSource> = Arc::new(crate::views::CatalogueSource::new(|| {
         crate::backend::preferred_backend(|note| println!("{note}"))
     }));
@@ -295,10 +295,7 @@ fn bench_remote(queries: &[&str]) {
                     break;
                 }
                 if let Some(section) = engine.results().remote.first()
-                    && matches!(
-                        section.state,
-                        RemoteState::Unreachable(_) | RemoteState::Idle
-                    )
+                    && (section.state.is_none() || section.failure().is_some())
                 {
                     failed += 1;
                     break;

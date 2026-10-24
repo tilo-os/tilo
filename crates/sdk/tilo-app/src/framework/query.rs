@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::de::DeserializeOwned;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{ActionHostError, InvokeArgument, RemoteActionTarget};
-use ui_core::{Followed, InvocationCall, LocalState, RemoteCall};
+use ui_core::{Arrival, Followed, LocalState};
 
 /// What a [`Query`] has read.
 #[derive(Clone, Debug, PartialEq)]
@@ -45,7 +45,9 @@ impl<T> Answer<T> {
 /// The action denial codes a provider fails a read with.
 const DENIED: &[&str] = &["not_permitted", "permission_denied"];
 
-fn answered<T: DeserializeOwned>(call: &InvocationCall) -> Option<Answer<T>> {
+fn answered<T: DeserializeOwned>(
+    call: &Arrival<InvocationUpdate, ActionHostError>,
+) -> Option<Answer<T>> {
     let decode = |value: &serde_json::Value| {
         T::deserialize(value).map_or_else(
             |error| Answer::Failed(format!("the answer was not understood: {error}")),
@@ -53,27 +55,27 @@ fn answered<T: DeserializeOwned>(call: &InvocationCall) -> Option<Answer<T>> {
         )
     };
     match call {
-        RemoteCall::Pending
-        | RemoteCall::Done(
+        Arrival::Pending { .. }
+        | Arrival::Ready(
             InvocationUpdate::Accepted { .. }
             | InvocationUpdate::Progress { .. }
             | InvocationUpdate::Cancelled { .. },
         ) => None,
-        RemoteCall::Done(InvocationUpdate::Item { value, .. }) => Some(decode(value)),
-        RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => Some(decode(
+        Arrival::Ready(InvocationUpdate::Item { value, .. }) => Some(decode(value)),
+        Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Some(decode(
             output.value.as_ref().unwrap_or(&serde_json::Value::Null),
         )),
-        RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => {
+        Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
             Some(if DENIED.contains(&error.code.as_str()) {
                 Answer::Denied(error.message.clone())
             } else {
                 Answer::Failed(error.message.clone())
             })
         }
-        RemoteCall::Refused(ActionHostError::NotPermitted) => {
+        Arrival::Failed(ActionHostError::NotPermitted) => {
             Some(Answer::Denied(ActionHostError::NotPermitted.to_string()))
         }
-        RemoteCall::Refused(error) => Some(Answer::Failed(error.to_string())),
+        Arrival::Failed(error) => Some(Answer::Failed(error.to_string())),
     }
 }
 
@@ -167,7 +169,7 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Query<T> {
         let followed = opener.follow(
             self.inner.target.clone(),
             argument,
-            move |call: &InvocationCall| {
+            move |call: &Arrival<InvocationUpdate, ActionHostError>| {
                 if current.load(Ordering::Acquire) != generation {
                     return;
                 }

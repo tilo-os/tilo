@@ -159,6 +159,8 @@ pub struct TubeApp {
     /// `None` on the hermetic offline path, where every image lookup returns
     /// `None` and the procedural gradient/initials fallback shows.
     images: Option<ui::ImageStore>,
+    /// When the videos the screens wait for were first waited for.
+    waiting: screens::Waiting,
 
     /// End (seconds) of the show-mode `SponsorBlock` segment the playhead is
     /// currently inside, if any. The on-video "Skip" overlay is shown for it.
@@ -238,6 +240,7 @@ impl TubeApp {
             player: Rc::new(RefCell::new(VideoPlayer::new())),
             player_video: None,
             images: None,
+            waiting: screens::Waiting::default(),
             show_skip_end: None,
             mpris_started: false,
             nav: ui::NavStack::new(Route::Home),
@@ -1065,11 +1068,19 @@ impl TubeApp {
             bus: &self.bus,
             imgs: crate::images::Imgs(self.images.as_ref()),
             content_width: self.content_width(theme),
+            waiting: &self.waiting,
         }
     }
 
     /// The current screen, ready for the shell's content column.
     fn build_screen(&self, theme: &Theme) -> Box<dyn Widget> {
+        self.waiting.begin_build();
+        let screen = self.build_route(theme);
+        self.waiting.end_build();
+        screen
+    }
+
+    fn build_route(&self, theme: &Theme) -> Box<dyn Widget> {
         let ui = self.ui(theme);
         let content = match &self.model.route {
             Route::Home => screens::home(ui),

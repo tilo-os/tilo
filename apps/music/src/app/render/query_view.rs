@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use ui::background::Pumped;
 use ui::framework::views::{
-    FacetOffer, Item, KeptViews, QueryEngine, QuerySpec, RemoteSource, RemoteState, ResultGroup,
+    FacetOffer, Item, KeptViews, QueryEngine, QuerySpec, RemoteError, RemoteSource, ResultGroup,
     ViewPlace, ViewStack, facet_bar,
 };
 use ui::icons::Icon;
@@ -73,6 +73,9 @@ pub(in crate::app) struct SearchView {
     /// The chips and matching controls drawn last, and what they were made
     /// of: made again only when the results or a control's state change.
     drawn: Option<Drawn>,
+    /// The remote sections' placeholder steps as painted last: a deadline
+    /// repaints when one moves on.
+    pub(in crate::app) painted_steps: Vec<Option<ui::arriving::Step>>,
 }
 
 /// What a frame of the query view derives from its results.
@@ -170,6 +173,7 @@ impl SearchView {
             highlight: None,
             drag: None,
             drawn: None,
+            painted_steps: Vec::new(),
         }
     }
 
@@ -211,6 +215,14 @@ impl SearchView {
     #[cfg(test)]
     pub(in crate::app) fn local_only() -> Self {
         Self::with_engine(QueryEngine::new(crate::views::kinds()))
+    }
+
+    /// When a remote section's placeholder next moves on a step.
+    pub(in crate::app) fn next_placeholder_step(&self, now: Instant) -> Option<Instant> {
+        if !self.engine.is_open() {
+            return None;
+        }
+        self.engine.results().next_placeholder_step(now)
     }
 
     /// Whether a frame should come to take in what is due: a capture's
@@ -371,6 +383,14 @@ impl MusicApp {
         let changed = self.search.engine.poll();
         if changed {
             self.absorb_query_results();
+            self.dirty = true;
+        }
+        let steps = self
+            .search
+            .engine
+            .results()
+            .placeholder_steps(ui::motion::frame_now());
+        if steps != self.search.painted_steps {
             self.dirty = true;
         }
         changed
@@ -754,12 +774,16 @@ impl MusicApp {
             y = self.query_group(ctx, look, body, y, group);
         }
         let remote_top = y;
+        let now = ui::motion::frame_now();
+        self.search.painted_steps = results.placeholder_steps(now);
         for section in &results.remote {
-            if section.state == RemoteState::Idle {
+            if section.state.is_none() {
                 continue;
             }
             y = Self::remote_heading(ctx, look, body, y, &section.label);
-            if let Some(text) = remote_note(section) {
+            if let Some(clock) = section.placeholder() {
+                y = Self::remote_placeholder(ctx, look, body, y, clock, now) + look.section;
+            } else if let Some(text) = remote_note(section) {
                 y = Self::note(ctx, look, body, y, &text) + look.section;
             }
             for group in &section.groups {
@@ -771,6 +795,28 @@ impl MusicApp {
             y = self.query_controls(ctx, look, span, y, &hits);
         }
         y
+    }
+
+    /// Where a remote section's first row will be, while its answer is on
+    /// the way: a row's height reserved, its skeleton after the grace
+    /// period and where the answer comes from after a while; the rows take
+    /// exactly this place.
+    fn remote_placeholder(
+        ctx: &mut PaintCtx<'_>,
+        look: &Look,
+        body: Rect,
+        y: f64,
+        clock: &ui::arriving::ArrivalClock,
+        now: Instant,
+    ) -> f64 {
+        let face = ui::widget::ArrivalFace::new(ui::widget::SkeletonShape::Row, clock, now);
+        let width = body.width() - 2.0 * look.gutter;
+        let h = face.height(ctx.text, ctx.theme, width);
+        face.paint(
+            ctx,
+            Rect::new(body.x0 + look.gutter, y, body.x1 - look.gutter, y + h),
+        );
+        y + h
     }
 
     /// A remote source's section heading: set apart from the library's
@@ -1387,23 +1433,17 @@ impl ui::widget::Queryable for MusicApp {
     }
 }
 
-/// What a remote section says in place of rows, when it has none to show:
-/// quietly that its answer is on the way (with the window's loading line;
-/// its rows take the note's place, below every row already shown), that it
-/// cannot be reached, or that it found nothing.
+/// What a remote section says in place of rows, once its answer is in and
+/// gave none: that it cannot be reached, or that it found nothing. While the
+/// answer is on the way its placeholder stands there instead.
 fn remote_note(section: &ui::framework::views::RemoteSection) -> Option<String> {
-    match &section.state {
-        RemoteState::Waiting if section.groups.is_empty() => {
-            Some(format!("Searching {}\u{2026}", section.label))
-        }
-        RemoteState::Unreachable(text) if text.is_empty() => Some(format!(
-            "{} can\u{2019}t be reached right now.",
-            section.label
-        )),
-        RemoteState::Unreachable(text) => Some(text.clone()),
-        RemoteState::Loaded if section.groups.is_empty() => {
-            Some(format!("No matches in {}.", section.label))
-        }
-        _ => None,
+    if let Some(RemoteError(text)) = section.failure() {
+        return Some(if text.is_empty() {
+            format!("{} can\u{2019}t be reached right now.", section.label)
+        } else {
+            text.clone()
+        });
     }
+    (section.is_answered() && section.groups.is_empty())
+        .then(|| format!("No matches in {}.", section.label))
 }

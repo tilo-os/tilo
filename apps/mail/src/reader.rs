@@ -604,7 +604,7 @@ impl MessageReader {
 
     fn paint_empty(&self, ctx: &mut PaintCtx<'_>, state: &MailState) {
         // Mail is still arriving: nothing to say about a selection yet.
-        if state.fetching_first && state.mailbox.messages.is_empty() {
+        if state.first_fetch.is_some() && state.mailbox.messages.is_empty() {
             return;
         }
         let count = state.selected_bulk_ids().len();
