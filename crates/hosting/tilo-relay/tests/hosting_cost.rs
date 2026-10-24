@@ -341,9 +341,6 @@ fn sorted(mut values: Vec<u64>) -> Vec<u64> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
-    // Untyped fixture documents, decided by their record: no other test's
-    // process-wide app surfaces may apply while this runs.
-    let _surfaces = crate::common::no_process_surfaces();
     let user = TestUser::fresh("Hosting cost");
     let author = user.enrol("laptop", DeviceCapabilities::primary());
     let coding = user.enrol("subscriber", DeviceCapabilities::member());

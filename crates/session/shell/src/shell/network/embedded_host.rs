@@ -26,9 +26,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::network::local_host::room_host::{self, HostConfig, HostMode, RoomHost};
-use tilo_actions::remote::{Caller, RemoteActionMessage};
+use tilo_actions::remote::RemoteActionMessage;
 use tilo_relay_session::rooms::{
-    CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+    ATTACH_HOST, CREATE_ROOM, CreatedRoom, DETACH_HOST, ENTER_ROOM, EnteredRoom,
+    HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
 };
 
 use super::{
@@ -58,6 +59,26 @@ pub(super) struct State {
     placing: Mutex<BTreeSet<RoomId>>,
     /// A placement pass is queued on the peer-sync worker and has not run.
     queued: Arc<AtomicBool>,
+    /// What a pass that left a placement failing saw ([`Placing`]): no pass
+    /// runs again until something it depends on changed.
+    failed: Mutex<Option<Placing>>,
+    /// Bumped when the host opens: a placement that failed for want of it
+    /// may succeed now.
+    host_generation: std::sync::atomic::AtomicU64,
+    /// Placement passes that ran, for tests that a failing one is not
+    /// retried on every pass.
+    #[cfg(test)]
+    passes: std::sync::atomic::AtomicU64,
+}
+
+/// Everything a placement depends on that can change: the rooms waiting,
+/// the tree's rooms (a session coming up or a room's state changing bumps
+/// its epoch), and the host.
+#[derive(Clone, PartialEq, Eq)]
+struct Placing {
+    waiting: BTreeSet<RoomId>,
+    room_epoch: u64,
+    host_generation: u64,
 }
 
 impl State {
@@ -140,6 +161,37 @@ impl ShellNetwork {
                 })
                 .unwrap_or(false)
         })
+    }
+
+    /// `channel`'s content keys from the steward of this device's own room
+    /// host, when `room` is hosted here: what this device's broker seals and
+    /// opens the room's records with. `None` for a room hosted elsewhere, or
+    /// while the host is not open. Blocks on the host: call it off the frame
+    /// loop.
+    pub(crate) fn hosted_channel_keys(
+        &self,
+        room: RoomId,
+        channel: collab_types::ChannelId,
+        route: Option<&collab_types::ChannelRoute>,
+        create: bool,
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+        let own = *self.local_peer_id.as_bytes();
+        if !self.tree.read().native_authority.hosted_on(room, &own) {
+            return None;
+        }
+        let Some(host) = self.room_host() else {
+            return Some(Err("this device's room host is not open".into()));
+        };
+        let runtime = match self.runtime_handle() {
+            Ok(runtime) => runtime,
+            Err(error) => return Some(Err(error)),
+        };
+        runtime.block_on(host.rooms().steward_channel_keys(
+            &room.to_string(),
+            channel,
+            route,
+            create,
+        ))
     }
 
     /// Whether this device's own host holds `room`, as the native owner,
@@ -233,6 +285,12 @@ impl ShellNetwork {
             .map_err(|error| format!("this device's room host did not open: {error}"))?;
         let host = handle.install(Arc::new(host));
         tracing::info!("this device's room host is open");
+        self.embedded_host
+            .host_generation
+            .fetch_add(1, Ordering::AcqRel);
+        if let Err(error) = self.install_own_governor(&host) {
+            tracing::warn!(%error, "the rooms hosted on this device are governed over the network only");
+        }
         // The rooms hosted here that the native owner holds join now.
         let _ = self.cmd_tx.try_send(NetCmd::LocalHostReady);
         Ok(host)
@@ -252,32 +310,31 @@ impl ShellNetwork {
             .host_identity
             .as_ref()
             .ok_or("native identity unavailable")?;
-        let (certificate, _) = identity.current_native_material(ws)?;
         let invoke = relay_rooms::invocation(
             HOST_ACTIONS_PROVIDER,
             HOST_ROOMS_RESOURCE.to_owned(),
             action,
             arguments,
         );
-        let caller =
-            Caller::authenticated(certificate.user_public_key, certificate.device_public_key);
-        let pending = host
-            .actions()
-            .serve_certified(
-                ws,
-                &caller,
-                &certificate,
-                RemoteActionMessage::Invoke(invoke),
-            )
-            .ok_or("this device's host does not answer its own operations")?;
-        drop(host);
-        match self.runtime_handle()?.block_on(pending) {
-            Some(RemoteActionMessage::Receipt(receipt)) => {
-                relay_rooms::receipt_value(receipt.status)
-            }
-            Some(_) => Err("this device's host answered with something else".into()),
-            None => Err("this device's host dropped the request".into()),
-        }
+        serve_in_process(&host, identity, &self.runtime_handle()?, ws, invoke)
+    }
+
+    /// Make this device's open `host` the governor of the rooms placed on
+    /// it, so a change to one of them is asked there in process, with or
+    /// without a running network.
+    fn install_own_governor(&self, host: &Arc<RoomHost>) -> Result<(), String> {
+        let identity = self
+            .host_identity
+            .clone()
+            .ok_or("native identity unavailable")?;
+        self.install_local_governor(Arc::new(OwnHostGovernor {
+            host: Arc::clone(host),
+            identity,
+            runtime: self.runtime_handle()?,
+            tree: self.tree.clone(),
+            device: *self.local_peer_id.as_bytes(),
+        }));
+        Ok(())
     }
 
     /// Whether this network places workspaces at all: it has a host of its
@@ -303,7 +360,23 @@ impl ShellNetwork {
                 tree.pending_placements
                     .iter()
                     .any(|room| !placing.contains(room))
+                    && self
+                        .embedded_host
+                        .failed
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .as_ref()
+                        != Some(&self.placing_now(&tree))
             })
+    }
+
+    /// What a placement pass would depend on now.
+    fn placing_now(&self, tree: &crate::shell::state::WorkspaceTree) -> Placing {
+        Placing {
+            waiting: tree.pending_placements.clone(),
+            room_epoch: tree.desktop.room_epoch,
+            host_generation: self.embedded_host.host_generation.load(Ordering::Acquire),
+        }
     }
 
     /// Queue a placement pass on the peer-sync worker when a workspace
@@ -333,37 +406,88 @@ impl ShellNetwork {
         if !self.places_workspaces() {
             return;
         }
-        let waiting = {
+        let (waiting, before) = {
             let tree = self.tree.read();
+            let before = self.placing_now(&tree);
+            if self
+                .embedded_host
+                .failed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                == Some(&before)
+            {
+                return;
+            }
+            #[cfg(test)]
+            self.embedded_host.passes.fetch_add(1, Ordering::AcqRel);
             let mut placing = self
                 .embedded_host
                 .placing
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
+            // A room placed and since held waits no more.
+            placing.retain(|room| tree.pending_placements.contains(room));
             let waiting = waiting(&tree, &placing);
             drop(tree);
             placing.extend(waiting.iter().map(|(room, _, _)| *room));
             drop(placing);
-            waiting
+            (waiting, before)
         };
+        let mut failed = false;
         for (room, local, name) in waiting {
             let placed = self.place(room, local, &name);
             if let Err(error) = &placed {
                 tracing::warn!(%room, %error, "a workspace was not placed on this device");
+                failed = true;
             }
-            if placed.is_ok() {
-                let mut tree = self.tree.write();
-                if tree.pending_placements.remove(&room) {
-                    tree.queue_save();
-                }
+            // Placed, the room waits until this device's native owner holds
+            // it ([`WorkspaceTree::project_native_room`]), its enrollment
+            // still being placed: it is neither placed again nor a join
+            // meanwhile. A failed placement is left to a later pass.
+            if placed.is_err() {
+                self.embedded_host
+                    .placing
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&room);
             }
-            // A failed placement is tried again on the next pass.
-            self.embedded_host
-                .placing
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&room);
         }
+        // A failed placement is tried again once something it depends on
+        // changes, never on every pass: as it was when this pass began, so
+        // a change during the pass brings the next one.
+        *self
+            .embedded_host
+            .failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = failed.then_some(before);
+    }
+
+    /// The enrollment of this device's native owner into `room` ended: a
+    /// room placed here waits for its replica when it succeeded, and is
+    /// placed again once something placement depends on changed when it
+    /// failed.
+    pub(super) fn placement_enrollment_ended(&self, room: RoomId, enrolled: bool) {
+        if enrolled {
+            return;
+        }
+        let mut placing = self
+            .embedded_host
+            .placing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !placing.remove(&room) {
+            return;
+        }
+        drop(placing);
+        let tree = self.tree.read();
+        let now = self.placing_now(&tree);
+        drop(tree);
+        *self
+            .embedded_host
+            .failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(now);
     }
 
     /// Create `room`, the workspace `local` called `name`, on this device's
@@ -445,6 +569,162 @@ impl ShellNetwork {
     }
 }
 
+impl ShellNetwork {
+    /// Have this person's home relay serve `room`, a workspace this device's
+    /// host governs, as well (their choice in Settings, Devices & Sync): the
+    /// relay then holds and serves the room while this device is off. Blocks
+    /// until the relay took the room up: call it off the frame loop.
+    ///
+    /// # Errors
+    ///
+    /// This device's host is not open or does not govern the room, the
+    /// person has no home relay, or the relay could not be reached or
+    /// refused the room.
+    pub fn add_hosting_member(&self, room: RoomId) -> Result<(), String> {
+        let (ws, relay) = self.home_relay_for(room)?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("room".into(), room.to_string().into());
+        arguments.insert(
+            "host".into(),
+            hex::encode(relay.expectation.device_public_key).into(),
+        );
+        arguments.insert(
+            "host_addr".into(),
+            serde_json::to_value(&relay.addr).map_err(|error| error.to_string())?,
+        );
+        self.local_host_action(ws, ATTACH_HOST, arguments).map(drop)
+    }
+
+    /// Take this person's home relay off as a host of `room` again: it no
+    /// longer serves the room, and is asked to stop. Blocks like
+    /// [`Self::add_hosting_member`].
+    ///
+    /// # Errors
+    ///
+    /// This device's host is not open or does not govern the room, or the
+    /// person has no home relay.
+    pub fn remove_hosting_member(&self, room: RoomId) -> Result<(), String> {
+        let (ws, relay) = self.home_relay_for(room)?;
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("room".into(), room.to_string().into());
+        arguments.insert(
+            "host".into(),
+            hex::encode(relay.expectation.device_public_key).into(),
+        );
+        arguments.insert(
+            "host_addr".into(),
+            serde_json::to_value(&relay.addr).map_err(|error| error.to_string())?,
+        );
+        self.local_host_action(ws, DETACH_HOST, arguments).map(drop)
+    }
+
+    /// The workspace this device's own host operations are asked on, and
+    /// the person's home relay to serve `room`.
+    fn home_relay_for(&self, room: RoomId) -> Result<(u64, super::RegisteredHomePeer), String> {
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("native identity unavailable")?;
+        let (certificate, _) = identity.current_native_material(room_topic_id(room))?;
+        let user = certificate.user_public_key;
+        let topics = super::relay_topics_for_home_peers(std::iter::empty(), Some(user));
+        let relay = super::registered_home_peer_addrs(Some(user), &topics)?
+            .into_iter()
+            .next()
+            .ok_or("this person has no home relay")?;
+        Ok((personal_continuity_topic_id(&user), relay))
+    }
+}
+
 #[cfg(test)]
 #[path = "embedded_host_tests.rs"]
 mod tests;
+
+/// Run `invoke` at this device's own `host` as this device on workspace
+/// `ws`, through the host's in-process caller, and answer its result.
+fn serve_in_process(
+    host: &RoomHost,
+    identity: &crate::network::actor::HostIdentity,
+    runtime: &tokio::runtime::Handle,
+    ws: u64,
+    invoke: tilo_actions::remote::InvokeRequest,
+) -> Result<serde_json::Value, String> {
+    let (certificate, _) = identity.current_native_material(ws)?;
+    let caller = room_host::local_caller(&certificate);
+    let pending = host
+        .actions()
+        .serve_certified(
+            ws,
+            &caller,
+            &certificate,
+            RemoteActionMessage::Invoke(invoke),
+        )
+        .ok_or("this device's host does not answer its own operations")?;
+    match runtime.block_on(pending) {
+        Some(RemoteActionMessage::Receipt(receipt)) => relay_rooms::receipt_value(receipt.status),
+        Some(_) => Err("this device's host answered with something else".into()),
+        None => Err("this device's host dropped the request".into()),
+    }
+}
+
+/// This device's room host as the governor of the rooms placed on it: a
+/// governance change to one of them is the host's own room governance
+/// action, asked through its in-process caller.
+struct OwnHostGovernor {
+    host: Arc<RoomHost>,
+    identity: crate::network::actor::HostIdentity,
+    runtime: tokio::runtime::Handle,
+    tree: crate::shell::state::WorkspaceTreeHandle,
+    device: [u8; 32],
+}
+
+impl super::governance_requests::LocalGovernor for OwnHostGovernor {
+    fn governs(&self, room: RoomId) -> bool {
+        self.tree
+            .read()
+            .native_authority
+            .hosted_on(room, &self.device)
+    }
+
+    fn ask(
+        &self,
+        room: RoomId,
+        route: super::governance_requests::GovernanceRoute,
+    ) -> Result<(), String> {
+        let invoke = relay_rooms::invocation(
+            tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER,
+            tilo_actions::remote::room_governance_resource(&room.to_string()),
+            route.action,
+            route.arguments,
+        );
+        serve_in_process(
+            &self.host,
+            &self.identity,
+            &self.runtime,
+            room_topic_id(room),
+            invoke,
+        )
+        .map(drop)
+    }
+
+    fn record_receipt(
+        &self,
+        room: RoomId,
+        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+    ) -> Result<(), String> {
+        let invoke = relay_rooms::invocation(
+            tilo_relay_session::rooms::MEMBER_ACTIONS_PROVIDER,
+            tilo_relay_session::rooms::member_resource(&room.to_string()),
+            tilo_relay_session::rooms::RECORD_EFFECT_RECEIPT,
+            relay_rooms::receipt_arguments(receipt)?,
+        );
+        serve_in_process(
+            &self.host,
+            &self.identity,
+            &self.runtime,
+            room_topic_id(room),
+            invoke,
+        )
+        .map(drop)
+    }
+}
