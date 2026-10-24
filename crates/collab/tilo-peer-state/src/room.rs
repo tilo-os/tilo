@@ -275,6 +275,39 @@ pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> 
             == crate::durability::governed_bytes(after)
         && crate::document_import::governed_bytes(before)
             == crate::document_import::governed_bytes(Some(after))
+        && settings_of(before) == settings_of(Some(after))
+}
+
+/// The room settings only its governor writes, as stored: the room's name
+/// and its saved grant sets. Whatever a key holds counts, so a value of
+/// another shape than the governor writes is a change too.
+fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
+    use tilo_desktop_model::projection::{ROOM_NAME_KEY, ROOM_PRESETS_KEY};
+    let Some(doc) = doc else {
+        return Vec::new();
+    };
+    let held = |value: &Value<'_>| match value {
+        Value::Scalar(value) => match value.as_ref() {
+            ScalarValue::Bytes(bytes) => bytes.clone(),
+            other => format!("{other:?}").into_bytes(),
+        },
+        Value::Object(kind) => format!("{kind:?}").into_bytes(),
+    };
+    let mut settings = Vec::new();
+    for key in [ROOM_NAME_KEY, ROOM_PRESETS_KEY] {
+        let Some((value, obj)) = doc.get(ROOT, key).ok().flatten() else {
+            continue;
+        };
+        settings.push((key.to_owned(), held(&value)));
+        if matches!(value, Value::Object(_)) {
+            for entry in doc.keys(&obj) {
+                if let Some((value, _)) = doc.get(&obj, &entry).ok().flatten() {
+                    settings.push((format!("{key}/{entry}"), held(&value)));
+                }
+            }
+        }
+    }
+    settings
 }
 /// The governance key holding effect receipts: `{invocation id → JSON receipt}`.
 const EFFECT_RECEIPTS: &str = "effect_receipts_v1";
