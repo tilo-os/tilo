@@ -423,10 +423,18 @@ content scripts (with `sender.tab`) work without help.
   (`activeTab`), which also lets it script the page until the page navigates.
 - `tabs.detectLanguage` answers the language the page declares, and
   `tabs.getZoom` the page's zoom.
-- A badge, title, popup or state an extension sets for one tab lasts until the
-  tab navigates or closes, and the toolbar shows the badge and title of the
-  page the person is on. It shows the extension's own icon, so an icon or
-  badge colour for one tab is accepted and not shown.
+- The toolbar button's look for every tab is Chromium's, and so are its
+  getters; the script tells the host of each change Chromium accepted. For
+  one tab (an ad blocker's count for the page) Chromium finds no tab and
+  refuses, so the host keeps the badge, title, popup and state until the
+  tab's next document or its close, as Chrome does, and answers for them.
+  Either way the host tells the Browser (`extension_action`), for that tab
+  alone or for every tab, a tab opened later included, and a new document
+  takes back what was set for its tab (`extension_action_reset`). The
+  toolbar shows the page's badge, title, icon, popup and state over every
+  tab's; a badge colour is taken and not shown, the toolbar's colours being
+  the system's. `action.openPopup`, which finds no window here, opens the
+  popup over the page in front (`extension_open_popup`).
 - `scripting.executeScript` runs in the extension's own world in the page,
   where its content scripts run. Where it has none, the host makes a world
   that gets a content script's `runtime`, `storage` and `i18n`

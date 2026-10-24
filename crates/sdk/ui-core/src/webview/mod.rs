@@ -213,6 +213,33 @@ pub struct Popup {
     pub height: u32,
 }
 
+/// What an extension changed of its toolbar button (`chrome.action`). Each
+/// field is `None` when it did not change; `Some(None)` takes back what it
+/// set for one tab, so that tab shows what every tab shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionActionChange {
+    pub badge: Option<Option<String>>,
+    pub title: Option<Option<String>>,
+    /// The popup's address as Chromium resolved it; empty for none, when a
+    /// click goes to the extension instead.
+    pub popup: Option<Option<String>>,
+    pub enabled: Option<Option<bool>>,
+    pub icon: Option<Option<ExtensionActionIcon>>,
+}
+
+/// An icon an extension gave its toolbar button.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionActionIcon {
+    /// A file among its own, from the extension's root (`/icons/on.png`).
+    Path(String),
+    /// Pixels it drew: RGBA rows, `width * height * 4` bytes.
+    Pixels {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     /// A DevTools command for extension management: the engine allows only
@@ -470,6 +497,22 @@ pub enum WebViewEvent {
     },
     CredentialResult(CredentialReply),
     ServiceSessionResult(ServiceSessionReply),
+    /// An extension changed its toolbar button, for this tab alone or for
+    /// every tab (`global`).
+    ExtensionAction {
+        id: String,
+        global: bool,
+        change: ExtensionActionChange,
+    },
+    /// A new document in this tab: what extensions set for their buttons on
+    /// this tab alone is gone.
+    ExtensionActionReset,
+    /// An extension asked to open its popup (`action.openPopup`) over this
+    /// tab's page: `url` is among its own pages.
+    ExtensionOpenPopup {
+        id: String,
+        url: String,
+    },
     SiteStatus(SiteStatus),
     SiteResult {
         request_id: u32,

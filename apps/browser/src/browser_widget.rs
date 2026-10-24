@@ -3080,6 +3080,11 @@ impl BrowserWidget {
                 } => {
                     self.structure_dirty |= self.extensions.on_result(request_id, ok, &body);
                 }
+                event @ (WebViewEvent::ExtensionAction { .. }
+                | WebViewEvent::ExtensionActionReset
+                | WebViewEvent::ExtensionOpenPopup { .. }) => {
+                    self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
+                }
                 WebViewEvent::CredentialResult(reply) => {
                     let requests = self.credentials.apply(reply);
                     crate::credentials::Credentials::send(&self.engine, requests);

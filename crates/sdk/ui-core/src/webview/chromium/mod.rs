@@ -1880,6 +1880,89 @@ fn valid_site_event(value: &Value, event: &str) -> bool {
         }
 }
 
+/// An `extension_action` or `extension_open_popup` event, when every part of
+/// it is what the host sends: the extension's id, its own pages, bounded
+/// text and an icon of at most 128 pixels a side.
+fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
+    // Absent: unchanged. Null: taken back. Otherwise a value `read` accepts,
+    // or the event is refused.
+    macro_rules! field {
+        ($change:ident, $key:literal, $read:expr) => {
+            match $change.get($key) {
+                None => None,
+                Some(Value::Null) => Some(None),
+                Some(value) => Some(Some($read(value)?)),
+            }
+        };
+    }
+    let id = value["id"].as_str().filter(|id| extension_id(id))?;
+    let own = |url: &str| {
+        url.len() <= 2048
+            && url
+                .strip_prefix("chrome-extension://")
+                .and_then(|rest| rest.strip_prefix(id))
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
+    if value["event"] == "extension_open_popup" {
+        let url = value["url"].as_str().filter(|url| own(url))?;
+        return Some(WebViewEvent::ExtensionOpenPopup {
+            id: id.into(),
+            url: url.into(),
+        });
+    }
+    let change = value["change"].as_object()?;
+    let text = |value: &Value| {
+        value
+            .as_str()
+            .filter(|text| text.len() <= 1024)
+            .map(str::to_owned)
+    };
+    let icon = |value: &Value| {
+        if let Some(path) = value["path"].as_str() {
+            return (path.starts_with('/') && path.len() <= 2048)
+                .then(|| super::ExtensionActionIcon::Path(path.into()));
+        }
+        let side = |key: &str| {
+            u32::try_from(value[key].as_u64()?)
+                .ok()
+                .filter(|side| (1..=128).contains(side))
+        };
+        let (width, height) = (side("width")?, side("height")?);
+        let length = usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?;
+        let rgba = decode_base64_bounded(value["data"].as_str()?, length)?;
+        (rgba.len() == length).then_some(super::ExtensionActionIcon::Pixels {
+            width,
+            height,
+            rgba,
+        })
+    };
+    let popup = |value: &Value| {
+        value
+            .as_str()
+            .filter(|url| url.is_empty() || own(url))
+            .map(str::to_owned)
+    };
+    if change.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "badge" | "title" | "popup" | "enabled" | "icon"
+        )
+    }) {
+        return None;
+    }
+    Some(WebViewEvent::ExtensionAction {
+        id: id.into(),
+        global: value["global"].as_bool()?,
+        change: super::ExtensionActionChange {
+            badge: field!(change, "badge", text),
+            title: field!(change, "title", text),
+            popup: field!(change, "popup", popup),
+            enabled: field!(change, "enabled", Value::as_bool),
+            icon: field!(change, "icon", icon),
+        },
+    })
+}
+
 fn decode_site_event(value: &Value, event: &str) -> Option<WebViewEvent> {
     Some(match event {
         "site_status" => WebViewEvent::SiteStatus(super::SiteStatus {
@@ -1992,6 +2075,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
         "service_session_result" => super::ServiceSessionReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
+        "extension_action" | "extension_open_popup" => decode_extension_event(value).is_some(),
         "devtools_result" => {
             value["request_id"]
                 .as_u64()
@@ -2412,6 +2496,8 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
         "site_status" | "site_result" => decode_site_event(value, value["event"].as_str()?)?,
+        "extension_action" | "extension_open_popup" => decode_extension_event(value)?,
+        "extension_action_reset" => WebViewEvent::ExtensionActionReset,
         "devtools_result" => WebViewEvent::DevToolsResult {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             ok: value["ok"].as_bool()?,

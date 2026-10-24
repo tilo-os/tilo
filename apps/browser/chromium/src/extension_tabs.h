@@ -233,6 +233,8 @@ class ExtensionTabs {
     // Keep the extensions' context menu items (ExtensionMenus::Save) with
     // the profile; unset for a private one.
     std::function<void(std::string)> save_menus;
+    // An event for the Browser about one of the host's tabs.
+    std::function<void(int, const std::string&, CefRefPtr<CefDictionaryValue>)> event;
     bool private_mode = false;
   };
   explicit ExtensionTabs(Hooks hooks) : hooks_(std::move(hooks)) {}
@@ -270,6 +272,8 @@ class ExtensionTabs {
     menus_.RemoveAll(id);
     MenusChanged();
     for (auto it = action_states_.begin(); it != action_states_.end();) it = it->first.first == id ? action_states_.erase(it) : std::next(it);
+    // Chromium starts it again with its button as the manifest made it.
+    buttons_.erase(id);
   }
   // The items the profile kept from an earlier run.
   void LoadMenus(const std::string& json) { menus_.Load(json); }
@@ -405,6 +409,19 @@ class ExtensionTabs {
       auto list = CefListValue::Create();
       for (const auto& tab : tabs) if (!tab.panel) list->SetDictionary(list->GetSize(), WindowObject(extension, tab, Populate(args)));
       Succeed(reply, Wrap(list));
+    } else if (method == "action.openPopup") {
+      // The extension checked that the page has a popup (`getPopup`); the
+      // Browser opens it over the page as its button would, without the
+      // access a click gives.
+      const auto* tab = ByExtensionId(tabs, IntOf(args, "tabId"));
+      const auto url = StringOf(args, "popup");
+      if (!tab) { Fail(reply, "Could not find an active browser window."); return; }
+      if (url.size() > 2048 || url.rfind("chrome-extension://" + extension + "/", 0) != 0) { Fail(reply, "Extension does not have a popup on the active tab."); return; }
+      auto fields = CefDictionaryValue::Create();
+      fields->SetString("id", extension);
+      fields->SetString("url", url);
+      if (hooks_.event) hooks_.event(tab->tab, "extension_open_popup", fields);
+      Succeed(reply, nullptr);
     } else if (method == "windows.update") {
       const auto* tab = ByExtensionId(tabs, IntOf(args, "windowId"));
       if (!tab) { Fail(reply, "No window with id: " + std::to_string(IntOf(args, "windowId").value_or(-1)) + "."); return; }
@@ -437,34 +454,7 @@ class ExtensionTabs {
       settings->SetDouble("defaultZoomFactor", 1);
       Succeed(reply, Wrap(settings));
     } else if (method == "action.set" || method == "action.get") {
-      // The button's look for one tab. Chromium finds no such tab, so the
-      // host keeps it, until the tab navigates or closes, as Chrome does.
-      const auto* tab = ByExtensionId(tabs, IntOf(args, "tabId"));
-      if (!tab) { Fail(reply, "No tab with id: " + std::to_string(IntOf(args, "tabId").value_or(0)) + "."); return; }
-      const auto key = StringOf(args, "key");
-      if (key != "text" && key != "title" && key != "popup" && key != "enabled") { Fail(reply, "Unknown action property"); return; }
-      const std::pair<std::string, int> owner{extension, tab->id};
-      auto found = action_states_.find(owner);
-      if (method == "action.get") {
-        CefRefPtr<CefValue> result;
-        if (found != action_states_.end()) if (auto entry = found->second.find(key); entry != found->second.end()) result = entry->second->Copy();
-        Succeed(reply, result);
-        return;
-      }
-      auto value = args->GetValue("value");
-      const auto type = value ? value->GetType() : VTYPE_NULL;
-      if (type == VTYPE_NULL || type == VTYPE_INVALID) {
-        if (found != action_states_.end()) {
-          found->second.erase(key);
-          if (found->second.empty()) action_states_.erase(found);
-        }
-      } else if ((type == VTYPE_STRING && key != "enabled" && value->GetString().length() <= 4096) || (type == VTYPE_BOOL && key == "enabled")) {
-        action_states_[owner][key] = value->Copy();
-      } else {
-        Fail(reply, "Invalid value for " + key);
-        return;
-      }
-      Succeed(reply, nullptr);
+      Button(extension, tabs, method == "action.get", args, reply);
     } else {
       Fail(reply, "Tilo does not support " + method + " yet");
     }
@@ -530,6 +520,14 @@ class ExtensionTabs {
     Push(extension, "action.onClicked", args, true);
   }
 
+  // The tab can be told of things: what extensions set for their buttons on
+  // every tab before it opened.
+  void Introduce(int tab) {
+    for (const auto& [extension, values] : buttons_) {
+      if (values->GetSize()) TellButton(tab, extension, true, values);
+    }
+  }
+
   // A tab's page changed: `status`, `url` or `title`.
   void Updated(int tab, CefRefPtr<CefDictionaryValue> change) {
     if (change->HasKey("url")) {
@@ -537,8 +535,6 @@ class ExtensionTabs {
       const auto known = native_.find(tab);
       const int id = known != native_.end() ? known->second : 0;
       for (auto it = granted_.begin(); it != granted_.end();) it = it->second == id ? granted_.erase(it) : std::next(it);
-      // So does the look an extension gave its button for the page.
-      for (auto it = action_states_.begin(); it != action_states_.end();) it = it->first.second == id ? action_states_.erase(it) : std::next(it);
     }
     if (!Listened("tabs.onUpdated")) return;
     Ensure([this, tab, change] { UpdatedNow(tab, change); });
@@ -561,7 +557,15 @@ class ExtensionTabs {
   }
   // The tab's main frame committed a new document: the worlds the host made
   // in the old one went with it, and so did the ports to them and from it.
-  void Navigated(int tab) { Drop(tab); }
+  // What extensions set for their buttons on this tab alone goes too, as in
+  // Chrome, and the Browser is told.
+  void Navigated(int tab) {
+    Drop(tab);
+    const auto known = native_.find(tab);
+    if (known != native_.end())
+      for (auto it = action_states_.begin(); it != action_states_.end();) it = it->first.second == known->second ? action_states_.erase(it) : std::next(it);
+    if (buttons_on_.erase(tab) && hooks_.event) hooks_.event(tab, "extension_action_reset", CefDictionaryValue::Create());
+  }
   void Focused(int tab) {
     if (!Listened("tabs.onActivated") && !Listened("windows.onFocusChanged")) return;
     Ensure([this, tab] { FocusedNow(tab); });
@@ -607,6 +611,7 @@ class ExtensionTabs {
     const auto* found = Find(tabs, tab);
     native_.erase(tab);
     Drop(tab);
+    buttons_on_.erase(tab);
     if (!found || found->panel) return;
     for (auto it = granted_.begin(); it != granted_.end();) it = it->second == found->id ? granted_.erase(it) : std::next(it);
     for (auto it = action_states_.begin(); it != action_states_.end();) it = it->first.second == found->id ? action_states_.erase(it) : std::next(it);
@@ -1679,7 +1684,91 @@ class ExtensionTabs {
     });
   }
 
+  // The toolbar button's look (`chrome.action`), which the Browser draws.
+  // For every tab, Chromium keeps it and answers for it, and the script set
+  // it there first: the host tells the Browser, every tab of it. For one
+  // tab, Chromium finds no such tab, so the host keeps it (an icon is only
+  // shown) until the tab's next document or its close, as Chrome does, and
+  // tells the Browser for that tab.
+  void Button(const std::string& extension, const std::vector<ExtensionTab>& tabs, bool get, CefRefPtr<CefDictionaryValue> args, const Reply& reply) {
+    const auto key = StringOf(args, "key");
+    if (key != "text" && key != "title" && key != "popup" && key != "enabled" && key != "icon") { Fail(reply, "Unknown action property"); return; }
+    const bool for_tab = IntOf(args, "tabId").has_value();
+    const auto* tab = for_tab ? ByExtensionId(tabs, IntOf(args, "tabId")) : nullptr;
+    if (for_tab && !tab) { Fail(reply, "No tab with id: " + std::to_string(IntOf(args, "tabId").value_or(0)) + "."); return; }
+    if (get) {
+      if (!tab) { Fail(reply, "Chromium answers for every tab"); return; }
+      CefRefPtr<CefValue> result;
+      auto found = action_states_.find({extension, tab->id});
+      if (found != action_states_.end()) if (auto entry = found->second.find(key); entry != found->second.end()) result = entry->second->Copy();
+      Succeed(reply, result);
+      return;
+    }
+    auto value = args->HasKey("value") ? args->GetValue("value") : nullptr;
+    if (!value || value->GetType() == VTYPE_INVALID) { value = CefValue::Create(); value->SetNull(); }
+    if (!ButtonValue(extension, key, value)) { Fail(reply, "Invalid value for " + key); return; }
+    // The Browser names the text the badge.
+    const std::string name = key == "text" ? "badge" : key;
+    auto change = CefDictionaryValue::Create();
+    change->SetValue(name, value->Copy());
+    if (tab) {
+      if (key != "icon") {
+        const std::pair<std::string, int> owner{extension, tab->id};
+        if (value->GetType() != VTYPE_NULL) action_states_[owner][key] = value->Copy();
+        else if (auto found = action_states_.find(owner); found != action_states_.end()) {
+          found->second.erase(key);
+          if (found->second.empty()) action_states_.erase(found);
+        }
+      }
+      buttons_on_.insert(tab->tab);
+      TellButton(tab->tab, extension, false, change);
+    } else {
+      auto& values = buttons_[extension];
+      if (!values) values = CefDictionaryValue::Create();
+      if (value->GetType() == VTYPE_NULL) values->Remove(name);
+      else values->SetValue(name, value->Copy());
+      for (const auto& each : tabs) if (!each.panel) TellButton(each.tab, extension, true, change);
+    }
+    Succeed(reply, nullptr);
+  }
+  // A value of the button's of its own kind and size, a popup only among the
+  // extension's own pages; null takes one back.
+  static bool ButtonValue(const std::string& extension, const std::string& key, CefRefPtr<CefValue> value) {
+    const auto type = value->GetType();
+    if (type == VTYPE_NULL) return true;
+    if (key == "enabled") return type == VTYPE_BOOL;
+    if (key == "icon") return type == VTYPE_DICTIONARY && ButtonIcon(value->GetDictionary());
+    if (type != VTYPE_STRING) return false;
+    const auto text = value->GetString().ToString();
+    if (key == "popup") return text.size() <= 2048 && (text.empty() || text.rfind("chrome-extension://" + extension + "/", 0) == 0);
+    return text.size() <= 1024;
+  }
+  // An icon by its path among the extension's files, or its pixels: RGBA,
+  // at most 128 pixels a side, in base64.
+  static bool ButtonIcon(CefRefPtr<CefDictionaryValue> icon) {
+    if (icon->GetSize() == 1 && icon->GetType("path") == VTYPE_STRING) {
+      const auto path = icon->GetString("path").ToString();
+      return !path.empty() && path.size() <= 2048 && path[0] == '/';
+    }
+    const auto width = IntOf(icon, "width"), height = IntOf(icon, "height");
+    if (icon->GetSize() != 3 || !width || !height || *width < 1 || *height < 1 || *width > 128 || *height > 128 || icon->GetType("data") != VTYPE_STRING) return false;
+    const size_t bytes = static_cast<size_t>(*width) * static_cast<size_t>(*height) * 4;
+    return icon->GetString("data").ToString().size() == (bytes + 2) / 3 * 4;
+  }
+  void TellButton(int tab, const std::string& extension, bool global, CefRefPtr<CefDictionaryValue> change) {
+    if (!hooks_.event) return;
+    auto fields = CefDictionaryValue::Create();
+    fields->SetString("id", extension);
+    fields->SetBool("global", global);
+    fields->SetDictionary("change", change->Copy(false));
+    hooks_.event(tab, "extension_action", fields);
+  }
+
   Hooks hooks_;
+  // What each extension set for its button on every tab, and the tabs on
+  // which one set something for that tab alone.
+  std::map<std::string, CefRefPtr<CefDictionaryValue>> buttons_;
+  std::set<int> buttons_on_;
   std::map<std::string, Access> access_;
   std::map<std::string, std::set<std::string>> listening_;
   std::set<std::pair<std::string, int>> granted_;
