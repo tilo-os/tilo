@@ -537,6 +537,9 @@ delegate_noop!(Client: ignore wayland_client::protocol::wl_shm::WlShm);
 delegate_noop!(Client: ignore wayland_client::protocol::wl_shm_pool::WlShmPool);
 delegate_noop!(Client: ignore wayland_client::protocol::wl_buffer::WlBuffer);
 
+/// Paints `id` into the process's one foreign frame store, which hands what
+/// was painted to whichever test composes a frame next: tests that draw and
+/// compose hold `serial(foreign_presentation_frame)`.
 fn draw_presentation_pixels(id: u64) -> vello::Scene {
     use ui::widget::Widget;
     let theme = ui::Theme::dark();
@@ -645,6 +648,7 @@ fn presentation_fixture() -> (
 }
 
 #[test]
+#[serial_test::serial(foreign_presentation_frame)]
 fn presentation_feedback_belongs_to_committed_pixels_and_exact_submitted_frames() {
     let (mut h, surface, presentation, old, new, id) = presentation_fixture();
     let qh = h.queue.handle();
@@ -707,6 +711,7 @@ fn presentation_feedback_belongs_to_committed_pixels_and_exact_submitted_frames(
 }
 
 #[test]
+#[serial_test::serial(foreign_presentation_frame)]
 fn presentation_failures_missing_output_and_timeouts_are_discarded_on_the_wire() {
     for mode in 0..4 {
         let (mut h, surface, presentation, buffer, _, id) = presentation_fixture();

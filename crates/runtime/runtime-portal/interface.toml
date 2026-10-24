@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 8
+version = 9
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -194,6 +194,7 @@ capnp = [
 "capnp:blobs.capnp:ReadStatus.ready" = "@0"
 "capnp:blobs.capnp:ReadStatus.unavailable" = "@2"
 "capnp:blobs.capnp:SessionBlobs" = "interface"
+"capnp:blobs.capnp:SessionBlobs.attributeWrites" = "@2 (paths:List(Text),actor:Text,label:Text,color:UInt32,ttlMs:UInt32)->()"
 "capnp:blobs.capnp:SessionBlobs.refreshPublicContent" = "@1 ()->(refreshed:UInt32)"
 "capnp:blobs.capnp:SessionBlobs.scope" = "@0 (room:Text,app:Text)->(blobs:DocumentBlobs)"
 "capnp:collab.capnp:ActionCatalogueStream" = "interface"

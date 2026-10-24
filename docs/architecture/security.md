@@ -299,6 +299,31 @@ room's verified agents when it subscribes and whenever they change
 for exactly that device stays an unknown participant. These lists are
 presentation only; nothing is admitted by them.
 
+An agent that acts through its person's own session has no key of its own:
+it invokes an app's action, and the write lands through the mount, signed by
+this device for its person like any other. Before Files writes for an
+invocation, it names the paths it is about to write and which of its own
+live invocations they are for (`runtime_collab::write_attribution`); the
+envelope cannot name an actor. The broker resolves the invocation against its
+own custody of that Files process's pending invocations, exactly as the
+clipboard does, and takes the actor from there; only an agent acting for the
+person whose session Files runs in is ever named, and anything else is
+refused. The shell's own clipboard transfers name it the same way, from the
+custody behind their command. The session then leases that attribution to
+the filesystem for those paths, for at most a minute, over
+`SessionBlobs.attributeWrites` on the document media socket, which no sandbox
+reaches (`crates/system/fs/src/write_attribution.rs`). Each
+version the mount then makes of a leased path is followed by a signed
+`RecordOperationV1::AttributeVersion` (`record_replication.rs`). The
+attribution names the agent; the person it acted for is always the version's
+own signer. Peers accept it only from the device that signed that same
+version, never for another actor's version, never naming anything but an
+agent, and never changed once made. The operation travels alone at record
+envelope version 5, so every other operation keeps its bytes and older
+devices keep reading them. Files' history read returns these attributions
+beside the versions, and the history rows name the agent, for its person.
+None of it grants anything.
+
 ### Load hints beside local records
 
 Loading a large record spends most of its time rebuilding every change to

@@ -744,6 +744,23 @@ fn not_interruptible(syscall: &str) -> Option<String> {
     }
 }
 
+/// Why thread `tid` of this process may not be interrupted, or `None` when it
+/// may: [`not_interruptible`] from its system call, or
+/// [`not_interruptible_waiting_in`] from its wait channel when the system call
+/// cannot be read. A process that holds key material makes itself
+/// undumpable, which hands its `/proc` entries to root: `syscall` (0400) can
+/// no longer be read, `wchan` (0444) still can.
+fn why_not_interruptible(tid: i32) -> Option<String> {
+    match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
+        Ok(syscall) => not_interruptible(&syscall),
+        Err(_) => not_interruptible_waiting_in(
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/wchan"))
+                .unwrap_or_default()
+                .trim(),
+        ),
+    }
+}
+
 /// [`not_interruptible`] for a thread whose system call cannot be read,
 /// from the kernel function it sleeps in (`/proc/<tid>/wchan`): only the
 /// waits a blocked thread makes on a lock, a condvar, its event loop, a timer,
@@ -846,18 +863,7 @@ pub(super) fn dump_threads() -> Vec<ThreadReport> {
     let mut signalled = 0usize;
     let mut left_alone: Vec<(i32, String)> = Vec::new();
     for &tid in tids.iter().filter(|&&tid| tid != me) {
-        // A process that holds key material makes itself undumpable, which
-        // hands its `/proc` entries to root: `syscall` (0400) can no longer
-        // be read, `wchan` (0444) still can.
-        let why = match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
-            Ok(syscall) => not_interruptible(&syscall),
-            Err(_) => not_interruptible_waiting_in(
-                std::fs::read_to_string(format!("/proc/self/task/{tid}/wchan"))
-                    .unwrap_or_default()
-                    .trim(),
-            ),
-        };
-        if let Some(why) = why {
+        if let Some(why) = why_not_interruptible(tid) {
             left_alone.push((tid, why));
             continue;
         }
@@ -936,23 +942,15 @@ fn capture_thread(tid: i32) -> Option<Backtrace> {
 fn sample_main_thread() -> ThreadReport {
     // SAFETY: `getpid` takes no arguments and cannot fail.
     let main = unsafe { libc::getpid() };
-    let syscall = std::fs::read_to_string(format!("/proc/self/task/{main}/syscall"));
-    let why = match &syscall {
-        Ok(syscall) => not_interruptible(syscall),
-        Err(_) => not_interruptible_waiting_in(
-            std::fs::read_to_string(format!("/proc/self/task/{main}/wchan"))
-                .unwrap_or_default()
-                .trim(),
-        ),
-    };
-    let frames = match why {
+    let frames = match why_not_interruptible(main) {
         Some(why) => format!("not interrupted: {why}"),
         None => capture_thread(main).map_or_else(
             || "no backtrace: the main thread did not answer the capture signal".into(),
             |backtrace| frames_of(&backtrace),
         ),
     };
-    let syscall = syscall.map_or_else(|_| "unreadable".to_string(), |line| line.trim().to_string());
+    let syscall = std::fs::read_to_string(format!("/proc/self/task/{main}/syscall"))
+        .map_or_else(|_| "unreadable".to_string(), |line| line.trim().to_string());
     report(main, format!("system call: {syscall}\n{frames}"))
 }
 
@@ -967,15 +965,7 @@ fn wait_for_captures(
 ) {
     while Instant::now() < deadline {
         if let Some(index) = left_alone.iter().position(|(tid, _)| *tid == main) {
-            let why = match std::fs::read_to_string(format!("/proc/self/task/{main}/syscall")) {
-                Ok(syscall) => not_interruptible(&syscall),
-                Err(_) => not_interruptible_waiting_in(
-                    std::fs::read_to_string(format!("/proc/self/task/{main}/wchan"))
-                        .unwrap_or_default()
-                        .trim(),
-                ),
-            };
-            if let Some(why) = why {
+            if let Some(why) = why_not_interruptible(main) {
                 if let Some((_, note)) = left_alone.get_mut(index) {
                     *note = format!("initial capture deferred; latest observation: {why}");
                 }
@@ -1402,11 +1392,7 @@ mod tests {
         // Only a thread blocked in a system call is interrupted: wait until
         // the worker is asleep in its `recv`, not still on its way there.
         tilo_test_env::wait_until("the worker to block in its recv", || {
-            not_interruptible(
-                &std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall"))
-                    .unwrap_or_default(),
-            )
-            .is_none()
+            why_not_interruptible(tid).is_none()
         });
         let threads = dump_threads();
         drop(parked);

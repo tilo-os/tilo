@@ -159,6 +159,14 @@ pub fn is_relay_address(address: IpAddr) -> bool {
     }
 }
 
+/// Whether `address` may be let through a VPN profile's block as one of its
+/// servers: the same unicast addresses a relay may have. A server on the
+/// local network is one.
+#[must_use]
+pub fn is_server_address(address: IpAddr) -> bool {
+    is_relay_address(address)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

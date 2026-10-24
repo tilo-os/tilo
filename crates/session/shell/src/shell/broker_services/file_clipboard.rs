@@ -1361,6 +1361,7 @@ impl NativeFileClipboard {
         );
         state.workers = state.workers.saturating_add(1);
         drop(state);
+        operation.attribute_writes();
         let state = self.state.clone();
         let tree = self.tree.clone();
         let executing = operation.clone();
@@ -1387,6 +1388,29 @@ impl NativeFileClipboard {
 }
 
 impl Operation {
+    /// When an agent acting for this session's person asked for the
+    /// transfer (as the broker's custody of its invocation says), name it as
+    /// the cause of what the transfer writes: the destination, and a Cut's
+    /// sources. A refusal leaves the writes the person's and never stops the
+    /// transfer.
+    fn attribute_writes(&self) {
+        let Some(agent) = self.context.attributed_agent() else {
+            return;
+        };
+        let mut paths = vec![self.destination.path.to_string_lossy().into_owned()];
+        if self.offer.public.cut {
+            paths.extend(
+                self.offer
+                    .entries
+                    .iter()
+                    .map(|source| source.path.to_string_lossy().into_owned()),
+            );
+        }
+        if let Err(error) = super::attribute_session_writes(agent, paths) {
+            tracing::debug!(%error, "clipboard transfer stays its person's in file history");
+        }
+    }
+
     fn matches_paste(
         &self,
         context: &FileClipboardContext,
@@ -2729,6 +2753,10 @@ impl FileClipboardServices for NativeFileClipboard {
             }
         }
     }
+    fn attribute_writes(&self, agent: &str, paths: Vec<String>) -> Result<(), String> {
+        super::attribute_session_writes(agent, paths)
+    }
+
     fn disconnect(&self, peer: u64) {
         if let Ok(mut state) = self.state.lock() {
             state.offers.retain(|_, offer| offer.source.peer() != peer);

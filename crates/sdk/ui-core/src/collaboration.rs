@@ -48,6 +48,8 @@ pub mod browser_service_sessions;
 #[cfg(feature = "broker-transport")]
 pub(crate) mod external_moderation;
 #[cfg(feature = "broker-transport")]
+pub(crate) mod write_attribution_lane;
+#[cfg(feature = "broker-transport")]
 pub(crate) use broker::{person_chat_command, subscribe_person_chat};
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
@@ -138,7 +140,7 @@ pub use runtime_collab::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, NetworkWakeStatus,
     PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
-pub use runtime_collab::{file_clipboard, open_selected};
+pub use runtime_collab::{file_clipboard, open_selected, write_attribution};
 
 use crate::presence::PresenceKey;
 pub use collab_types::presence::{Collaborator, PresencePayload};
