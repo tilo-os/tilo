@@ -351,6 +351,8 @@ pub struct CalendarApp {
     /// The result of the last sync, import or edit, shown as the window
     /// bar's notice for a notice's lifetime.
     status: Transient<String>,
+    /// What the person can do about the status up, when it asks them to act.
+    status_actions: status::StatusActions,
     /// A just-created blank event is a provisional draft until the user edits
     /// any event field or adds notes. Back/Escape may discard *only* this exact
     /// pristine object; every other event follows normal autosave semantics.
@@ -526,6 +528,7 @@ impl CalendarApp {
             hits: Vec::new(),
             last_mouse: Point::ZERO,
             status: Transient::new(),
+            status_actions: status::StatusActions::default(),
             fresh_draft: None,
             dirty: true,
             faces: ui::widget::FaceMotions::default(),
@@ -697,7 +700,12 @@ impl CalendarApp {
             "conflict" => {
                 "1 change also changed on the server; your version is safe and still queued".into()
             }
-            "error" => "Sync failed. Check the account in Settings, then sync again.".into(),
+            "error" => {
+                return self.show_status_with(
+                    "Sync failed. Check the account in Settings, then sync again.".into(),
+                    status::SYNC_FAILED_ACTIONS,
+                );
+            }
             _ => return,
         });
         self.dirty = true;
@@ -746,9 +754,10 @@ impl CalendarApp {
         // No account configured: answer instantly rather than spinning up a
         // worker that would only return Offline.
         if self.accounts.is_empty() {
-            self.status
-                .show("No calendar accounts yet. Add one in Settings.".into());
-            self.dirty = true;
+            self.show_status_with(
+                "No calendar accounts yet. Add one in Settings.".into(),
+                &[status::StatusAction::OpenSettings],
+            );
             return;
         }
 
@@ -899,7 +908,7 @@ impl CalendarApp {
                 // Worker panicked or dropped the sender without a reply.
                 self.sync_rx = None;
                 self.syncing = false;
-                self.status.show("Sync failed".into());
+                self.show_status_with("Sync failed".into(), &[status::StatusAction::SyncAgain]);
                 if let Some(reply) = self.sync_reply.take() {
                     reply.finish(Err(
                         "calendar synchronization stopped without a result".into()
@@ -1083,7 +1092,8 @@ impl CalendarApp {
             );
         }
         self.model.events.settle();
-        self.status.show(match outcome {
+        let actions = status::after_sync(&outcome, self.accounts.is_empty());
+        let text = match outcome {
             SyncOutcome::Synced { calendars, .. } => {
                 format!(
                     "Synced {calendars} calendars. {added} new, {updated} updated, {removed} removed."
@@ -1096,9 +1106,11 @@ impl CalendarApp {
                     "Couldn't reach the calendar server".into()
                 }
             }
-            SyncOutcome::Failed(reason) => format!("Sync failed: {reason}"),
-        });
-        self.dirty = true;
+            SyncOutcome::Failed(reason) => {
+                format!("Sync failed: {reason}. Check the account in Settings, then sync again.")
+            }
+        };
+        self.show_status_with(text, actions);
     }
 
     /// Write `event` as its server holds it, at `at`.
@@ -3978,6 +3990,7 @@ impl Widget for CalendarApp {
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
         self.apply_window_toolbar(edits);
+        self.take_status_actions();
         self.take_shell_events(edits);
         if std::mem::take(&mut self.sync_requested) {
             self.start_sync(edits);
