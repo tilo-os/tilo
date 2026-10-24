@@ -242,6 +242,7 @@ impl SlotRow {
         self.search.place_trailing(
             Rect::new(x0, y0, x0 + CONTROL_PX, y0 + CONTROL_PX),
             reach.min(x0),
+            row.x0.min(x0),
         );
     }
 
