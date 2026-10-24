@@ -167,6 +167,7 @@ impl PdfApp {
         for event in ui::window_toolbar::take_events() {
             self.run_window_bar_event(&event);
         }
+        self.take_note_action();
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 
