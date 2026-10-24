@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 import unittest
 import capabilities
-from native_regressions import Host
+from native_regressions import HANG_BOUND, Host
 from extensions import extension_page
 
 TESTS = Path(__file__).parent
@@ -52,7 +52,7 @@ class ExtensionToggle(unittest.TestCase):
     def switch(self, manager, extension, enabled):
         side = 'on' if enabled else 'off'
         self.h.navigate(f'chrome-extension://{manager}/manage.html?{side}={extension}')
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + HANG_BOUND
         while self.h.latest_title() == 'managing' and time.monotonic() < deadline:
             self.h.settle(.2)
         self.assertEqual(self.h.latest_title(), 'done')
