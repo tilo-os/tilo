@@ -104,6 +104,7 @@ impl ShellDriver {
         "desktop-control-menu",
         "workspace-menu",
         "window-menu",
+        "tab-rename",
         "profile-card",
         "dictation-consent",
         "dictation-listening",

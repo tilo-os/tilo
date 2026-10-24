@@ -568,6 +568,7 @@ fn notes_tab(id: u64) -> Tab {
             kind: AppKind::Other("so.tilo.notes".into()),
             label: "Notes".into(),
         },
+        app_title: None,
     }
 }
 

@@ -58,6 +58,7 @@ impl Desk {
                     app_id: "so.tilo.terminal".into(),
                     surface_id,
                 },
+                app_title: None,
             };
             // Alone in the strip, so its bar is on screen.
             strip.window_groups.clear();

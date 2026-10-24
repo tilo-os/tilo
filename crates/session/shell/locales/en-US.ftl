@@ -1131,6 +1131,7 @@ window-tab-action-no-tab = There is no tab to act on.
 window-tab-action-unknown-tab = That tab is no longer open.
 window-tab-action-only-tab = This is the window's only tab; there is nothing to split it from.
 window-tab-action-document-refused = Couldn't move the tab. Try again.
+window-tab-action-not-renamable = Only a window from outside Tilo running on this device can be renamed here.
 
 # Tab context menu, workspace toasts and placeholder tiles
 shell-workspace-renamed = Workspace renamed
@@ -1144,6 +1145,8 @@ shell-window-menu-restore = Restore
 shell-window-menu-move-to-strip = Move to strip
 shell-window-menu-move-to-workspace = Move to workspace
 shell-window-menu-new-tab = New tab
+shell-window-menu-rename-tab = Rename tab
+shell-tab-rename-field = Tab name
 shell-window-menu-close-window = Close window
 shell-window-menu-unnamed-strip = Strip { $number }
 shell-window-menu-tell-agent = Tell an agent…
@@ -1528,6 +1531,8 @@ search-action-tab-duplicate = Duplicate this tab
 search-action-tab-duplicate-subtitle = Open a second instance of the focused app beside it
 search-action-tab-close = Close this tab
 search-action-tab-close-subtitle = Close the focused tab; its window closes with it if it was the last
+search-action-tab-rename = Rename this tab
+search-action-tab-rename-subtitle = Give the focused window a name of your own; an empty name gives back its own title
 search-action-tab-reopen = Reopen closed tab
 search-action-tab-reopen-subtitle = Bring back the tab closed most recently in this workspace, where it was
 search-action-tab-open-beside = Open an app in a new tab
@@ -1708,6 +1713,7 @@ search-action-permission-roles-subtitle = Manage reusable least-privilege worksp
 
 # Search: what a shell action did
 search-action-tab-close-failed = Can't close this tab
+search-action-tab-rename-failed = Can't rename this tab
 search-action-tab-split-failed = Can't split this tab
 search-action-device-list-copied = Device list copied
 search-action-enrollment-copied = Device setup code copied. It expires in { $minutes } min.
@@ -3058,6 +3064,7 @@ search-kw-tab-open-beside = open app, new tab, launch, start app
 search-kw-tab-menu = tab menu, context menu, right click
 search-kw-tab-drag-cancel = cancel drag, abort drag
 search-kw-tab-close = close, close tab, close window, quit, exit, kill
+search-kw-tab-rename = rename, name tab, tab name, title, label
 search-kw-tab-reopen = reopen, undo close, restore tab, closed tab, bring back
 search-kw-tab-split-right = split, side by side, tile, split view, split screen
 search-kw-window-focus-previous = previous window, switch window, alt tab, back

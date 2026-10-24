@@ -62,6 +62,7 @@ fn stub_group(id: u64) -> WindowGroup {
                 kind: AppKind::Other("Test".into()),
                 label: format!("G{id}"),
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,

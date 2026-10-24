@@ -44,6 +44,7 @@ fn terminal_with_a_bar_action() -> (FrameBuilder, std::sync::mpsc::Receiver<Vec<
                     kind: crate::shell::state::AppKind::Terminal,
                     label: "Terminal".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab,
             width: crate::shell::state::WindowWidth::Normal,

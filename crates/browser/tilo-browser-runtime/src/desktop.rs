@@ -1174,6 +1174,7 @@ impl TileSource for Tiles {
                     note: String::new(),
                     missing: None,
                 },
+                app_title: None,
             };
             self.shared.peer_windows.borrow_mut().insert(id, window);
             return Some(tab);
@@ -1216,6 +1217,7 @@ fn app_tab(id: TabId, app: &str, title: &str) -> Tab {
             label: title.into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 

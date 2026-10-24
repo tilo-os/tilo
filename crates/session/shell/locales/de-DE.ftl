@@ -1130,6 +1130,7 @@ window-tab-action-no-tab = Es gibt keinen Tab für diese Aktion.
 window-tab-action-unknown-tab = Dieser Tab ist nicht mehr geöffnet.
 window-tab-action-only-tab = Das ist der einzige Tab dieses Fensters; er kann nicht abgetrennt werden.
 window-tab-action-document-refused = Der Tab konnte nicht verschoben werden. Versuche es erneut.
+window-tab-action-not-renamable = Hier lässt sich nur ein Fenster von außerhalb von Tilo umbenennen, das auf diesem Gerät läuft.
 
 # Tab-Kontextmenü, Arbeitsbereichsmeldungen und Platzhalterkacheln
 shell-workspace-renamed = Arbeitsbereich umbenannt
@@ -1143,6 +1144,8 @@ shell-window-menu-restore = Wiederherstellen
 shell-window-menu-move-to-strip = In Leiste verschieben
 shell-window-menu-move-to-workspace = In Arbeitsbereich verschieben
 shell-window-menu-new-tab = Neuer Tab
+shell-window-menu-rename-tab = Tab umbenennen
+shell-tab-rename-field = Tab-Name
 shell-window-menu-close-window = Fenster schließen
 shell-window-menu-unnamed-strip = Leiste { $number }
 shell-window-menu-tell-agent = Einem Agenten sagen…
@@ -1508,6 +1511,8 @@ search-action-tab-duplicate = Diesen Tab duplizieren
 search-action-tab-duplicate-subtitle = Eine zweite Instanz der fokussierten App daneben öffnen
 search-action-tab-close = Diesen Tab schließen
 search-action-tab-close-subtitle = Den fokussierten Tab schließen; war er der letzte, schließt sich auch sein Fenster
+search-action-tab-rename = Diesen Tab umbenennen
+search-action-tab-rename-subtitle = Dem fokussierten Fenster einen eigenen Namen geben; ein leerer Name stellt seinen eigenen Titel wieder her
 search-action-tab-reopen = Geschlossenen Tab wieder öffnen
 search-action-tab-reopen-subtitle = Den zuletzt in diesem Arbeitsbereich geschlossenen Tab an seinem alten Platz zurückholen
 search-action-tab-open-beside = App in neuem Tab öffnen
@@ -1688,6 +1693,7 @@ search-action-permission-roles-subtitle = Wiederverwendbare Arbeitsbereichsrolle
 
 # Suche: was eine Shell-Aktion getan hat
 search-action-tab-close-failed = Dieser Tab kann nicht geschlossen werden
+search-action-tab-rename-failed = Dieser Tab kann nicht umbenannt werden
 search-action-tab-split-failed = Dieser Tab kann nicht geteilt werden
 search-action-device-list-copied = Geräteliste kopiert
 search-action-enrollment-copied = Geräte-Einrichtungscode kopiert. Er läuft in { $minutes } Min. ab.
@@ -3013,6 +3019,7 @@ search-kw-tab-open-beside = app öffnen, neuer tab, starten, app starten
 search-kw-tab-menu = tab-menü, kontextmenü, rechtsklick
 search-kw-tab-drag-cancel = ziehen abbrechen
 search-kw-tab-close = schließen, tab schließen, fenster schließen, beenden
+search-kw-tab-rename = umbenennen, tab benennen, tab-name, titel, bezeichnung
 search-kw-tab-reopen = wieder öffnen, wiederherstellen, geschlossenen tab, rückgängig
 search-kw-tab-split-right = teilen, nebeneinander, geteilte ansicht, aufteilen
 search-kw-window-focus-previous = vorheriges fenster, fenster wechseln, zurück

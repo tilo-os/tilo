@@ -240,6 +240,7 @@ mod tests {
                             kind: AppKind::Terminal,
                             label: "t".into(),
                         },
+                        app_title: None,
                     })
                     .collect();
                 WindowGroup {
@@ -395,6 +396,7 @@ mod tests {
                     kind: AppKind::Terminal,
                     label: "a".into(),
                 },
+                app_title: None,
             }],
             width: WindowWidth::Normal,
             maximized: false,

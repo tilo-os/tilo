@@ -1537,6 +1537,7 @@ fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
                     kind: shell::shell::state::AppKind::Other(app.to_string()),
                     label: title.to_string(),
                 },
+                app_title: None,
             });
             group.active_tab = id;
             added = Some(id);

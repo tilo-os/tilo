@@ -583,6 +583,7 @@ mod tests {
             id: 7,
             title: "Files".into(),
             tile: files_tile(),
+            app_title: None,
         };
         let request = tilo_desktop::resolver::TileRequest {
             room: crate::shell::state::RoomId::new(),

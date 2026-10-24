@@ -74,6 +74,7 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
             kind: AppKind::Other("Test".into()),
             label: label.into(),
         },
+        app_title: None,
     };
 
     let window_groups = groups
@@ -374,6 +375,7 @@ fn two_strip_harness() -> (Harness, StripId, StripId, GroupId, Vec<GroupId>) {
                         kind: AppKind::Other("Test".into()),
                         label: format!("Below {id}"),
                     },
+                    app_title: None,
                 })
                 .collect(),
             active_tab: 91,

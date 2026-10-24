@@ -265,6 +265,7 @@ pub fn adopt_toplevel_at(
             app_id: resolved_id,
             surface_id,
         },
+        app_title: None,
     };
     let tab_id = place_tab(tree, new_tab, placement);
     mark_tree_changed(tree);
@@ -315,6 +316,7 @@ pub fn open_hosted_app(
         id: next_id(),
         title: title.clone(),
         tile: TileContent::AppPlaceholder { kind, label: title },
+        app_title: None,
     };
     let tab_id = place_tab(tree, new_tab, placement);
     // Hosted apps have no Wayland surface whose later adoption can write the
@@ -349,6 +351,7 @@ pub fn hold_place_for_launch(
             label: label.to_owned(),
             note: crate::shell::peer_windows::OPENING.to_owned(),
         },
+        app_title: None,
     };
     let tab = place_tab(tree, new_tab, placement);
     crate::shell::launcher::set_pending_placement(package_id, Placement::IntoTab(tab));
@@ -573,6 +576,7 @@ pub fn open_workspace_activity(tree: &mut WorkspaceTree) -> TabId {
         id: next_id(),
         title: crate::shell::i18n::t("shell-activity-title"),
         tile: TileContent::WorkspaceActivity,
+        app_title: None,
     };
     let tab_id = place_tab(tree, tab, Placement::NewGroup);
     // The local cache intentionally retains the window; room projection
@@ -800,7 +804,7 @@ pub fn rename_tab_for_app_id_with_title(
                         && *s == surface_id
                     {
                         new_app_id.clone_into(app_id);
-                        tab.title.clone_from(&new_title);
+                        tab.set_window_title(&new_title);
                         true
                     } else {
                         false
@@ -908,7 +912,10 @@ pub fn relocate_foreign_toplevel(
                     .find(|tab| {
                         matches!(&tab.tile, TileContent::Foreign { surface_id: id, .. } if *id == surface_id)
                     })
-                    .map(|tab| (tab.id, group.id, group.tabs.len() == 1))
+                    .map(|tab| {
+                        let name = tab.is_named().then(|| tab.title.clone());
+                        (tab.id, group.id, group.tabs.len() == 1, name)
+                    })
             })
     };
     if !close_tab_for_destroyed_surface(tree, surface_id) {
@@ -925,7 +932,11 @@ pub fn relocate_foreign_toplevel(
                 };
                 tab.title = title.to_string();
                 titled = true;
-                if let Some((old_tab, old_group, was_alone)) = previous {
+                if let Some((old_tab, old_group, was_alone, name)) = previous.clone() {
+                    // A name the person gave the window stays through the move.
+                    if let Some(name) = name {
+                        tab.rename(&name);
+                    }
                     tab.id = old_tab;
                     if group.active_tab == tab_id {
                         group.activate_tab(old_tab);
@@ -972,11 +983,11 @@ pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: &s
                     };
                     // Terminals re-send their title continuously; an identical
                     // one is not a change, and must not bump the tree revision
-                    // (a chrome rebuild and repaint per event).
-                    if tab.title == location {
+                    // (a chrome rebuild and repaint per event). While a person's
+                    // name stands, the window's title is kept behind it.
+                    if !tab.set_window_title(&location) {
                         return true;
                     }
-                    tab.title = location;
                     true
                 } else {
                     false
@@ -989,6 +1000,60 @@ pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: &s
         }
     }
     false
+}
+
+/// Whether a person at this machine may rename `tab`: it shows a host
+/// (non-Tilo) window, whose title is the window's own rather than an app's
+/// resource, and it is in this device's id namespace (the single writer that
+/// projects it to the room) or in none. A window hosted by another device is
+/// that device's to rename, as a strip is
+/// ([`WorkspaceTree::may_rename_strip`]).
+pub fn may_rename_tab(tree: &WorkspaceTree, tab_id: TabId) -> bool {
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find(|tab| tab.id == tab_id)
+        .is_some_and(|tab| {
+            let host_window = match &tab.tile {
+                TileContent::Foreign { app_id, .. } => {
+                    tree.package_launches.get(&tab.id) != Some(app_id)
+                }
+                TileContent::HostedWindow { .. } => true,
+                _ => false,
+            };
+            let salt = crate::shell::state::peer_salt_of(tab.id);
+            host_window && (salt == 0 || salt == tree.local_salt())
+        })
+}
+
+/// A person names host window `tab_id` `name` ([`Tab::rename`]); a blank
+/// name clears theirs, and the tab shows its window's latest title again.
+/// The change is recorded like any other change to the tree: the desktop
+/// document, the room on the next push, and the restart snapshot. `None`
+/// when the tab may not be renamed here ([`may_rename_tab`]), else whether
+/// anything changed.
+pub fn rename_host_tab(tree: &mut WorkspaceTree, tab_id: TabId, name: &str) -> Option<bool> {
+    if !may_rename_tab(tree, tab_id) {
+        return None;
+    }
+    let changed = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| workspace.strips.iter_mut())
+        .flat_map(|strip| strip.window_groups.iter_mut())
+        .flat_map(|group| group.tabs.iter_mut())
+        .find(|tab| tab.id == tab_id)
+        .is_some_and(|tab| tab.rename(name));
+    if changed {
+        tree.seed_doc_from_cache();
+        mark_tree_changed(tree);
+        tree.queue_save();
+    }
+    Some(changed)
 }
 
 /// What a foreign window's title says about where it is, without the app's
@@ -1679,6 +1744,7 @@ mod tests {
                             note: "Opening here…".into(),
                             missing: None,
                         },
+                        app_title: None,
                     };
                     let id = tab.id;
                     group.tabs.push(tab);
@@ -3403,3 +3469,7 @@ mod location_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tab_binding_name_tests.rs"]
+mod host_tab_name_tests;

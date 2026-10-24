@@ -147,6 +147,7 @@ fn a_window_of(
                         label: "Notes".into(),
                         note: String::new(),
                     },
+                    app_title: None,
                 }],
                 active_tab: tab,
                 width: crate::shell::state::WindowWidth::Normal,

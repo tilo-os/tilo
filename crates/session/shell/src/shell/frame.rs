@@ -6279,6 +6279,7 @@ mod tests {
                 note: String::new(),
                 missing: None,
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let mut strip = Strip::new(StripId::from(next_id()), "main");
@@ -7642,6 +7643,7 @@ mod tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "Notes".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: 84,
                     width: WindowWidth::Fraction(667),
@@ -7904,6 +7906,7 @@ mod tests {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         };
 
         let window_groups = groups
@@ -9769,6 +9772,7 @@ mod tests {
                         // a real process from this frame-builder regression.
                         note: crate::shell::peer_windows::OPENING.into(),
                     },
+                    app_title: None,
                 },
                 Placement::NewGroup,
             );
