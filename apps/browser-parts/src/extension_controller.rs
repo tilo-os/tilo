@@ -482,6 +482,24 @@ impl ExtensionController {
             }
             self.switches.push((id, enabled));
         }
+        // A page of an extension turned off or removed closes with it, and
+        // an update waits for the person only while its extension is off.
+        if let Some(Panel::Popup { id, .. }) = &self.panel {
+            let owner = id.strip_prefix("settings:").unwrap_or(id);
+            if !profile
+                .installed
+                .iter()
+                .any(|extension| extension.id == owner && extension.enabled)
+            {
+                self.panel = None;
+            }
+        }
+        self.awaiting.retain(|name| {
+            profile
+                .installed
+                .iter()
+                .any(|extension| &extension.name == name && !extension.enabled)
+        });
         self.icons
             .retain(|id, _| profile.installed.iter().any(|e| &e.id == id));
         self.icons.extend(profile.icons);
@@ -1536,6 +1554,34 @@ mod tests {
                 .is_err(),
             "a private window has no extensions"
         );
+    }
+
+    #[test]
+    fn a_removed_extensions_page_and_update_notice_go_with_it() {
+        let mut controller = ExtensionController::new(true);
+        controller.panel = Some(Panel::Popup {
+            id: "settings:abc".into(),
+            engine: ui::webview::test_engine::TestEngine::new(),
+            size: None,
+        });
+        controller.awaiting = vec!["abc".into()];
+        let profile = |installed: Vec<Installed>| Profile {
+            infos: Vec::new(),
+            installed,
+            wanted: Vec::new(),
+            icons: Vec::new(),
+        };
+        let off = Installed {
+            enabled: false,
+            ..installed("abc", None, toolbar::Access::default())
+        };
+        // Still there, but off: its page closes, its update still waits.
+        controller.apply_profile(profile(vec![off]));
+        assert!(controller.panel.is_none());
+        assert_eq!(controller.awaiting, ["abc"]);
+        // Removed: nothing is left waiting for it.
+        controller.apply_profile(profile(Vec::new()));
+        assert!(controller.awaiting.is_empty());
     }
 
     #[test]
