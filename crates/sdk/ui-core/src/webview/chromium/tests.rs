@@ -555,7 +555,7 @@ const PROFILE_FROM_ARGUMENTS: &str =
     "for argument; do case $argument in --profile=*) profile=${argument#--profile=};; esac; done\n";
 
 #[cfg(unix)]
-fn helper_fixture(trailing: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+pub(super) fn helper_fixture(trailing: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("helper");
     let mut bytes = Vec::new();

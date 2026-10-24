@@ -347,3 +347,117 @@ fn a_client_tabs_damage_folds_into_what_the_owner_queued_for_it() {
     deliver_damage(&routes, 2, wire_damage(vec![caret()], [6, 6, 6, 255]), &tx);
     assert!(outbox.take_damage().is_some(), "changes flow again");
 }
+
+/// Two of a client's tabs painting every frame both reach it: the outbox
+/// takes their frames in turn rather than always the lowest tab's first.
+#[test]
+fn two_streaming_client_tabs_both_make_progress() {
+    let outbox = shared::Outbox::default();
+    let frame = |shade: u8| protocol::WireFrame {
+        bgra: vec![shade; 4],
+        width: 1,
+        height: 1,
+    };
+    let mut sent = HashMap::<u32, usize>::new();
+    outbox.frame(2, frame(0));
+    outbox.frame(3, frame(0));
+    for shade in 1..=20 {
+        let (tab, _) = outbox.take_frame().expect("a frame is queued");
+        *sent.entry(tab).or_default() += 1;
+        // The tab paints again before the next frame is sent.
+        outbox.frame(tab, frame(shade));
+    }
+    assert_eq!(sent.get(&2), Some(&10), "sent {sent:?}");
+    assert_eq!(sent.get(&3), Some(&10), "sent {sent:?}");
+}
+
+mod shared_memory {
+    use super::super::frame_memory::FrameMemory;
+    use super::*;
+
+    fn notice(tab: u32, slot: u32) -> protocol::SharedFrame {
+        protocol::SharedFrame {
+            tab,
+            width: 2,
+            height: 1,
+            slot,
+        }
+    }
+
+    /// A frame drawn here comes out of its slot converted, and the slot is
+    /// the host's again; a client tab's goes on as the host wrote it; a
+    /// closed tab's frees its slot all the same.
+    #[test]
+    fn frames_in_memory_reach_their_tab_and_free_their_slot() {
+        let memory = FrameMemory::create().unwrap();
+        let drawn = Arc::new(Shared::default());
+        let outbox = Arc::new(shared::Outbox::default());
+        let client = Arc::new(Shared {
+            remote: Some(outbox.clone()),
+            ..Shared::default()
+        });
+        let routes = Arc::new(Mutex::new(HashMap::from([
+            (1, Arc::downgrade(&drawn)),
+            (2, Arc::downgrade(&client)),
+        ])));
+        let bgra = [10, 20, 30, 255, 40, 50, 60, 255];
+
+        memory.publish(0, &bgra);
+        memory.publish(1, &bgra);
+        super::super::frame_memory::deliver(&routes, &memory, &notice(1, 0)).unwrap();
+        assert!(memory.is_free(0) && !memory.is_free(1));
+        let frame = drawn
+            .frames
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the frame is shown");
+        assert_eq!((frame.width, frame.height), (2, 1));
+        assert_eq!(&*frame.rgba, &[30, 20, 10, 255, 60, 50, 40, 255]);
+
+        super::super::frame_memory::deliver(&routes, &memory, &notice(2, 1)).unwrap();
+        assert!(memory.is_free(1));
+        let (tab, forwarded) = outbox.take_frame().expect("the client's frame is queued");
+        assert_eq!((tab, forwarded.width, forwarded.height), (2, 2, 1));
+        assert_eq!(forwarded.bgra, bgra, "a client converts its own frames");
+        assert!(client.frames.lock().unwrap().is_none());
+
+        memory.publish(0, &bgra);
+        super::super::frame_memory::deliver(&routes, &memory, &notice(9, 0)).unwrap();
+        assert!(
+            memory.is_free(0),
+            "a closed tab's frame still frees its slot"
+        );
+    }
+
+    /// A notice for a slot the host never filled, or one past the memory,
+    /// is the host breaking the protocol.
+    #[test]
+    fn a_notice_for_an_unready_or_missing_slot_is_refused() {
+        let memory = FrameMemory::create().unwrap();
+        let shown = Arc::new(Shared::default());
+        let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shown))])));
+        assert!(super::super::frame_memory::deliver(&routes, &memory, &notice(1, 0)).is_err());
+        assert!(super::super::frame_memory::deliver(&routes, &memory, &notice(1, 2)).is_err());
+        assert!(shown.frames.lock().unwrap().is_none());
+    }
+
+    /// The engine hands its host the frame memory: the host is told the
+    /// descriptor, which is open in it. (`tilo-process` shows a child
+    /// writing through such a descriptor.)
+    #[test]
+    fn a_host_inherits_its_frame_memory() {
+        let (dir, host) = super::super::tests::helper_fixture(
+            "for argument; do case $argument in --frame-memory-fd=*) fd=${argument#--frame-memory-fd=};; esac; done\n\
+             if [ -n \"$fd\" ] && [ -e /dev/fd/$fd ]; then held=yes; else held=no; fi\n\
+             printf '%s' $held > \"$0.looked\" && mv \"$0.looked\" \"$0.memory\"\n\
+             exec 3>&1; exec cat >/dev/null",
+        );
+        let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+        let held = tilo_test_env::wait_for("the host to look for its frame memory", || {
+            std::fs::read_to_string(dir.path().join("helper.memory")).ok()
+        });
+        assert_eq!(held, "yes", "the host was not handed its frame memory");
+        assert!(!engine.shared.failed.load(Ordering::Acquire));
+    }
+}

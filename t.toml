@@ -1407,6 +1407,9 @@ printf '#!/bin/sh\\nexec /tmp/host-test/web_engine_sandbox %s/target/chromium/ti
 chmod a+rx /tmp/host-test/sandboxed-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/document_size.py /tmp/host-test/sandboxed-host
+# Frames reach the app through the memory it hands the sandboxed engine.
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/frame_transport.py --transport memory /tmp/host-test/sandboxed-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/resize_frames.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \

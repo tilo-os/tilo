@@ -59,6 +59,18 @@ rect count, then each rect's u32 x, y, width and height, then each rect's rows
 of BGRA pixels in turn.
 The limit is 64 MiB per packet, with dimensions 1–8192 and checked frame sizes.
 
+Whole frames need not go down the pipe. Started with `--frame-memory-fd=N`, the
+host maps the memory that descriptor names (`src/frame_memory.h`: a header page
+of per-slot state words, then two 64 MiB slots), closes it before anything else
+opens a descriptor, and copies each whole frame's BGRA pixels into a free slot.
+It marks the slot ready and sends kind 5: u32 tab, width, height and slot.
+Damage packets stay in the pipe: they are small. The
+reader copies the pixels out and marks the slot free; while both slots are
+being read the writer waits for one, still sending events. The app creates the
+memory, a memfd sealed against resizing on Linux and an unlinked POSIX shared
+memory object on macOS, and the host inherits it at spawn; a host without
+the flag, or given a descriptor of any other size, pipes its frames.
+
 JSON commands use `op`; events use `event`. Supported operations are navigate,
 back, forward, reload, stop, resize, focus, mouse_move, mouse_button, scroll,
 key, scripts, filter_rules, clear_data, devtools, page, shutdown. `filter_rules` takes
@@ -149,10 +161,12 @@ callback. Dropdown popup pixels are composited into a copy of the main image
 before emission. A blocked consumer cannot stall the CEF UI thread; a closed
 pipe triggers browser shutdown. In a shared host the owning process passes a
 client tab's frame on as it arrived, BGRA in the buffer it was read into; only
-the process that draws a frame converts it. `tests/frame_transport.py` prints
-what the host's process spends per frame of a full-screen animation, for the
-first tab and a routed one, and checks that every change of a still tab beside
-it arrives.
+the process that draws a frame converts it, as it copies the frame out of the
+frame memory; the owner's outbox, too, serves its client's tabs in turn.
+`tests/frame_transport.py` prints what the host's process and the reader spend
+per frame of a full-screen animation, through the pipe and through frame
+memory, for the first tab and a routed one, and checks that every change of a
+still tab beside it arrives and that two animating tabs both get their frames.
 
 With `--tilo-frame-damage`, which the toolkit always passes, a paint after a
 tab's first goes as a damage packet (kind 4): the rects Chromium repainted

@@ -79,12 +79,31 @@ struct OutboxState {
     /// Tabs whose frame the host was asked for whole: what changed of them
     /// waits for it.
     awaiting: BTreeSet<u32>,
+    /// The tab whose frame went last.
+    last_frame_tab: u32,
     closed: bool,
 }
 
 enum Queued {
     Whole(protocol::WireFrame),
     Damage(damage::WireDamage),
+}
+
+impl OutboxState {
+    /// The next tab's queued frame or changes. Tabs take turns, so a tab
+    /// painting every frame cannot starve another: always serving the
+    /// lowest-numbered tab first sent a busy first tab's frames and none of
+    /// the rest.
+    fn next_frame(&mut self) -> Option<(u32, Queued)> {
+        let tab = self
+            .frames
+            .range(self.last_frame_tab.saturating_add(1)..)
+            .next()
+            .or_else(|| self.frames.iter().next())
+            .map(|(tab, _)| *tab)?;
+        self.last_frame_tab = tab;
+        self.frames.remove(&tab).map(|frame| (tab, frame))
+    }
 }
 
 enum Outgoing {
@@ -176,7 +195,7 @@ impl Outbox {
     /// What is queued of a tab's frame's changes, without waiting.
     #[cfg(test)]
     pub(super) fn take_damage(&self) -> Option<(u32, damage::WireDamage)> {
-        match self.state.lock_recover().frames.pop_first()? {
+        match self.state.lock_recover().next_frame()? {
             (tab, Queued::Damage(damage)) => Some((tab, damage)),
             (_, Queued::Whole(_)) => None,
         }
@@ -185,7 +204,7 @@ impl Outbox {
     /// The next queued whole frame, without waiting.
     #[cfg(test)]
     pub(super) fn take_frame(&self) -> Option<(u32, protocol::WireFrame)> {
-        match self.state.lock_recover().frames.pop_first()? {
+        match self.state.lock_recover().next_frame()? {
             (tab, Queued::Whole(frame)) => Some((tab, frame)),
             (_, Queued::Damage(_)) => None,
         }
@@ -209,7 +228,7 @@ impl Outbox {
             if let Some(value) = state.events.pop_front() {
                 return Some(Outgoing::Json(value));
             }
-            match state.frames.pop_first() {
+            match state.next_frame() {
                 Some((tab, Queued::Whole(frame))) => return Some(Outgoing::Frame(tab, frame)),
                 Some((tab, Queued::Damage(damage))) => return Some(Outgoing::Damage(tab, damage)),
                 None => {}
@@ -914,7 +933,8 @@ fn receive_events(
                     break;
                 }
             }
-            Ok(Some(protocol::Packet::Frame(_)) | None) | Err(_) => break,
+            Ok(Some(protocol::Packet::Frame(_) | protocol::Packet::SharedFrame(_)) | None)
+            | Err(_) => break,
         }
     }
     pending.lock_recover().clear();

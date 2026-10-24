@@ -1,5 +1,6 @@
 #include "host.h"
 #include "protocol.h"
+#include "frame_memory.h"
 #include "view_geometry.h"
 #include "key_mapping.h"
 #include "request_filter.h"
@@ -77,7 +78,10 @@ bool frame_damage=false;
 // CEF callbacks only enqueue: a slow UI must never block Chromium's UI thread.
 class Output {
  public:
-  Output():thread_([this]{ Run(); }) {}
+  // With `memory`, a whole frame's pixels go into it and only a notice down
+  // the pipe (frame_memory.h); without it, the whole frame goes down the
+  // pipe. Changed rects (--tilo-frame-damage) go down the pipe either way.
+  explicit Output(std::unique_ptr<tilo::FrameMemory> memory):memory_(std::move(memory)),thread_([this]{ Run(); }) {}
   ~Output() { Stop(); }
   // Page audio is real time: its own lane, ordered with itself (start, packets,
   // stop) but never allowed to fail the host or hold up its events. Past
@@ -127,21 +131,38 @@ class Output {
   void Run() {
     int flags=fcntl(STDOUT_FILENO,F_GETFL,0); fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK);
     for(;;) {
-      std::string owned;std::shared_ptr<const std::string> frame;PendingFrame damaged;uint32_t damaged_tab=0;
+      std::string owned;std::shared_ptr<const std::string> frame;PendingFrame damaged;uint32_t damaged_tab=0;int slot=-1;
       { std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock,[&]{ return stopping_ || !events_.empty() || !audio_.empty() || !frames_.empty(); });
-        if(!events_.empty()) { owned=std::move(events_.front()); events_.pop_front(); }
-        else if(!audio_.empty()) { owned=std::move(audio_.front().second); audio_.pop_front(); }
-        else if(!frames_.empty()) {
-          // Tabs take turns, so a tab painting every frame cannot starve another.
-          auto next=frames_.upper_bound(last_frame_tab_);if(next==frames_.end())next=frames_.begin();
-          last_frame_tab_=next->first;PendingFrame pending=std::move(next->second);frames_.erase(next);
-          // Only rects of the frame the app was sent last apply to it.
-          auto& sent=sent_[last_frame_tab_];
-          if(frame_damage && !pending.whole && sent.first==pending.width && sent.second==pending.height) {damaged=pending;damaged_tab=last_frame_tab_;}
-          sent={pending.width,pending.height};frame=std::move(pending.packet);
+        bool next=false;
+        while(!next) {
+          if(!events_.empty()) { owned=std::move(events_.front()); events_.pop_front(); next=true; }
+          else if(!audio_.empty()) { owned=std::move(audio_.front().second); audio_.pop_front(); next=true; }
+          else if(!frames_.empty()) {
+            // Tabs take turns, so a tab painting every frame cannot starve another.
+            auto turn=frames_.upper_bound(last_frame_tab_);if(turn==frames_.end())turn=frames_.begin();
+            // Only rects of the frame the app was sent last apply to it.
+            auto& sent=sent_[turn->first];
+            const bool damage=frame_damage && !turn->second.whole && sent.first==turn->second.width && sent.second==turn->second.height;
+            if(!damage && memory_ && (slot=memory_->FreeSlot(last_slot_))<0) {
+              if(stopping_) break;
+              // A whole frame waits for the app to finish copying out a
+              // slot: that takes a copy's time, and no wakeup announces it,
+              // so look again shortly.
+              cv_.wait_for(lock,std::chrono::milliseconds(1));continue;
+            }
+            last_frame_tab_=turn->first;PendingFrame pending=std::move(turn->second);frames_.erase(turn);
+            if(damage) {damaged=pending;damaged_tab=last_frame_tab_;}
+            sent={pending.width,pending.height};frame=std::move(pending.packet);next=true;
+          }
+          else if(stopping_) break;
+          else cv_.wait(lock);
         }
-        else break;
+        if(!next) break;
+      }
+      if(frame && slot>=0) {
+        last_slot_=static_cast<uint32_t>(slot);
+        owned=memory_->Publish(last_slot_,last_frame_tab_,*frame);frame.reset();
+        if(owned.empty()) continue;
       }
       if(damaged_tab) {
         const size_t offset=tilo::FramePixelOffset(damaged_tab);
@@ -171,7 +192,8 @@ class Output {
   std::atomic<bool> stopping_{false},failed_{false};
   std::mutex mutex_; std::condition_variable cv_; std::deque<std::string> events_; std::deque<std::pair<bool,std::string>> audio_; std::map<uint32_t,PendingFrame> frames_;
   // The dimensions of the frame last written for each tab.
-  std::map<uint32_t,std::pair<uint32_t,uint32_t>> sent_; uint32_t last_frame_tab_=0; std::thread thread_;
+  std::map<uint32_t,std::pair<uint32_t,uint32_t>> sent_; uint32_t last_frame_tab_=0;
+  std::unique_ptr<tilo::FrameMemory> memory_; uint32_t last_slot_=tilo::kFrameSlots-1; std::thread thread_;
 };
 Output* output=nullptr;
 // Page audio goes to the app (`--tilo-audio-bridge`) because its sandbox has no audio device; without it Chromium plays on its own.
@@ -2404,6 +2426,10 @@ void CloseHost() {
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);
   std::string profile;
+  // The frame memory is mapped and its descriptor closed before anything
+  // else opens one: Chromium's pipe handler below takes 3 and 4 only when free.
+  std::unique_ptr<tilo::FrameMemory> frame_memory;
+  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--frame-memory-fd=",0)==0 && !frame_memory) {char* end=nullptr;const long fd=std::strtol(arg.c_str()+18,&end,10);if(end && !*end && fd>2 && fd<=INT32_MAX)frame_memory=tilo::FrameMemory::Map(static_cast<int>(fd));if(!frame_memory)std::cerr<<"Frame memory unavailable; frames go down the pipe\n";} }
   for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true;if(arg=="--tilo-sealed-documents") sealed_documents=true;if(arg=="--tilo-audio-bridge") audio_bridge=true;if(arg=="--tilo-frame-damage") frame_damage=true;if(arg.rfind("--service-session=",0)==0) {service_session_id=arg.substr(18);if(!tilo::ServiceSessionId(service_session_id))return 2;} }
   if(private_mode && !service_session_id.empty())return 2;
   if(profile.empty() || profile[0]!='/') {std::cerr<<"--profile requires an absolute directory\n";return 2;}
@@ -2411,7 +2437,7 @@ int RunHost(int argc,char** argv) {
   profile=std::filesystem::canonical(profile).string();
   if(downloads_directory.empty()) downloads_directory=profile+"/downloads";
   extension_menus_file=profile+"/Extension Menus.json";
-  Output writer;output=&writer;
+  Output writer(std::move(frame_memory));output=&writer;
 #if defined(OS_LINUX) || defined(OS_MAC)
   // Chromium's pipe handler reads commands on fd 3 and replies on fd 4. Use
   // them only when nothing else holds those descriptors. Extensions are
