@@ -133,6 +133,12 @@ pub(crate) fn route(
 struct Job {
     id: String,
     settings: AgentExportSettings,
+    /// What the timeline rendered holds ([`video_editor::facts`]) and the
+    /// version of the record it was rendered from: an export's answer
+    /// carries both, so a later check compares the cut with what this render
+    /// made, and a `facts` read at that version states an export's again.
+    facts: serde_json::Value,
+    version: String,
     /// Frames written, of how many.
     progress: Mutex<(u64, u64)>,
     cancelled: std::sync::atomic::AtomicBool,
@@ -288,6 +294,8 @@ impl RenderService {
         let job = Arc::new(Job {
             id,
             settings,
+            facts: video_editor::facts::of(&snapshot.project),
+            version: snapshot.heads.join("+"),
             progress: Mutex::new((0, 0)),
             cancelled: std::sync::atomic::AtomicBool::new(false),
             outcome: Mutex::new(None),
@@ -404,15 +412,18 @@ impl RenderService {
                 .0;
         }
         match outcome.as_ref() {
-            Some(Ok(made)) => ActionOutput {
-                value: Some(done_answer(
-                    &made.address,
-                    made.rendered,
-                    job.settings,
-                    made.bytes,
-                )),
-                resources: vec![made.address.clone()],
-            },
+            Some(Ok(made)) => {
+                let mut answer =
+                    done_answer(&made.address, made.rendered, job.settings, made.bytes);
+                if let Some(answer) = answer.as_object_mut() {
+                    answer.insert("version".into(), job.version.clone().into());
+                    answer.insert(crate::facts::FACTS.into(), job.facts.clone());
+                }
+                ActionOutput {
+                    value: Some(answer),
+                    resources: vec![made.address.clone()],
+                }
+            }
             Some(Err(error)) => value(failed_answer(&job.id, error)),
             None => {
                 let (done, total) = *job.progress.lock_recover();

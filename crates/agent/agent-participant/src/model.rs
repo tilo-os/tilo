@@ -131,6 +131,23 @@ pub trait PlanReads {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Seen, String>;
 
+    /// Run the read `id` names twice, with `arguments` and with `against`,
+    /// answering with what the first found and what differs from the second
+    /// answer to it ([`crate::facts::changes`]).
+    ///
+    /// # Errors
+    ///
+    /// Why either was not run.
+    fn compare(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        against: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Seen, String> {
+        let _ = (id, arguments, against);
+        Err("no document can be read here".into())
+    }
+
     /// The picture kept as content at `address`, as the model is shown it.
     ///
     /// # Errors
@@ -900,16 +917,15 @@ impl<'a> PlanningReads<'a> {
     }
 }
 
-impl PlanReads for PlanningReads<'_> {
-    /// Run the read `id` names with `arguments`: only on an open record,
-    /// only an operation that only reads ([`readable`]), and at most
-    /// [`MOST_READS`] a plan. Answers with what it found, summarised, and
-    /// the picture it rendered (a canvas look) when the model sees.
-    fn read(
+impl PlanningReads<'_> {
+    /// The record `id` names a read of, and the read's answer to
+    /// `arguments`: only on an open record, only an operation that only
+    /// reads ([`readable`]), and at most [`MOST_READS`] a plan.
+    fn run(
         &mut self,
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Seen, String> {
+    ) -> Result<(DocumentRoute, ActionAddress, tilo_actions::ActionOutput), String> {
         let Some(Target::Record(route)) = self.targets.get(id) else {
             return Err(format!(
                 "{id} is not an operation of a document open now; plan it as a step"
@@ -941,6 +957,20 @@ impl PlanReads for PlanningReads<'_> {
         }
         self.left = self.left.saturating_sub(1);
         let output = self.reads.read(route, &address, arguments)?;
+        Ok((route.clone(), address, output))
+    }
+}
+
+impl PlanReads for PlanningReads<'_> {
+    /// Run the read `id` names with `arguments` ([`PlanningReads::run`]).
+    /// Answers with what it found, summarised, and the picture it rendered
+    /// (a canvas look) when the model sees.
+    fn read(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Seen, String> {
+        let (route, address, output) = self.run(id, arguments)?;
         let mut text = observation_within(&route.app_id, &address, &output, MOST_READ_CHARS)
             .unwrap_or_else(|| format!("{id} answered nothing"));
         let mut pictures = Vec::new();
@@ -964,6 +994,29 @@ impl PlanReads for PlanningReads<'_> {
             }
         }
         Ok(Seen { text, pictures })
+    }
+
+    /// Run the read `id` names with `arguments` and with `against`: what
+    /// the first found, and what differs from the second's answer to it.
+    fn compare(
+        &mut self,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        against: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Seen, String> {
+        let (route, address, output) = self.run(id, arguments)?;
+        let (_, _, other) = self.run(id, against)?;
+        let null = serde_json::Value::Null;
+        let changed = crate::facts::changes_text(
+            other.value.as_ref().unwrap_or(&null),
+            output.value.as_ref().unwrap_or(&null),
+        );
+        let text = observation_within(&route.app_id, &address, &output, MOST_READ_CHARS)
+            .unwrap_or_else(|| format!("{id} answered nothing"));
+        let against = serde_json::Value::Object(against.clone());
+        Ok(Seen::from(format!(
+            "{text}\nChanged from its answer to {against} to this one: {changed}"
+        )))
     }
 
     /// The picture at `address`: one an app rendered for this task, or —

@@ -1409,6 +1409,7 @@ inputs = [
 readers = [
   "crates/agent/agent-participant/tests/asking_first.rs",
   "crates/agent/agent-participant/tests/campaign_bench.rs",
+  "crates/agent/agent-participant/tests/check_facts.rs",
   "crates/agent/agent-participant/tests/room_actions.rs",
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",

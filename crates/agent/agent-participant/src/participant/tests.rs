@@ -1500,3 +1500,67 @@ fn a_reminder_that_cannot_plan_leaves_the_task_done() {
     assert!(!running.remind_open(), "the reminder closed nothing");
     assert!(running.done().ends_with("Left undone: 1. post A."));
 }
+
+fn boxed(kind: [u8; 4], payload: &[u8]) -> Vec<u8> {
+    let size = u32::try_from(payload.len().saturating_add(8)).unwrap();
+    let mut bytes = size.to_be_bytes().to_vec();
+    bytes.extend_from_slice(&kind);
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+/// An MP4 header of a 6 s, 320×180 video at 30 fps: what its probe reads.
+fn mp4_header() -> Vec<u8> {
+    let mut movie = vec![0_u8; 20];
+    movie[12..16].copy_from_slice(&1000_u32.to_be_bytes());
+    movie[16..20].copy_from_slice(&6000_u32.to_be_bytes());
+    let mut track = vec![0_u8; 84];
+    track[76..80].copy_from_slice(&(320_u32 << 16).to_be_bytes());
+    track[80..84].copy_from_slice(&(180_u32 << 16).to_be_bytes());
+    let mut handler = vec![0_u8; 12];
+    handler[8..12].copy_from_slice(b"vide");
+    let mut codec = vec![0, 0, 0, 0];
+    codec.extend_from_slice(&1_u32.to_be_bytes());
+    codec.extend_from_slice(&16_u32.to_be_bytes());
+    codec.extend_from_slice(b"avc1");
+    let mut timing = vec![0, 0, 0, 0];
+    for word in [1_u32, 180, 1000] {
+        timing.extend_from_slice(&word.to_be_bytes());
+    }
+    let mut clock = vec![0_u8; 20];
+    clock[12..16].copy_from_slice(&30_000_u32.to_be_bytes());
+    clock[16..20].copy_from_slice(&180_000_u32.to_be_bytes());
+    let table = boxed(
+        *b"stbl",
+        &[boxed(*b"stsd", &codec), boxed(*b"stts", &timing)].concat(),
+    );
+    let media = boxed(
+        *b"mdia",
+        &[
+            boxed(*b"mdhd", &clock),
+            boxed(*b"hdlr", &handler),
+            boxed(*b"minf", &table),
+        ]
+        .concat(),
+    );
+    let tracks = boxed(*b"trak", &[boxed(*b"tkhd", &track), media].concat());
+    let mut file = boxed(*b"ftyp", b"isom\0\0\0\0isom");
+    file.extend(boxed(*b"moov", &[boxed(*b"mvhd", &movie), tracks].concat()));
+    file
+}
+
+/// A video a task names is stated by its length, frame, rate and sound
+/// beside a picture's size, so a check of an export needs no look at it.
+#[test]
+fn a_video_the_task_names_is_stated_by_what_its_container_says() {
+    let content = tilo_content::ContentStore::memory();
+    let video = mp4_header();
+    let hash = content.put(&video).unwrap();
+    let facts = super::context::content_facts(&format!("check tilo.content:{hash}"), &content);
+    let expected = format!(
+        "tilo.content:{hash} is a video of 6.00 s, 320×180 at 30 fps, without sound, {}.",
+        ui::format::size(u64::try_from(video.len()).unwrap())
+    );
+    assert_eq!(facts, vec![expected]);
+    assert_eq!(super::context::video_facts(b"not a video"), None);
+}
