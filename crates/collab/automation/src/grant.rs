@@ -599,6 +599,7 @@ mod tests {
             grant: vec![post, delete.clone()],
             triggers: vec![],
             saved_by: None,
+            saved_proof: None,
         };
         assert_eq!(unused_rules(&shortcut), vec![delete]);
     }
@@ -651,6 +652,7 @@ mod tests {
             grant: settles,
             triggers: vec![],
             saved_by: None,
+            saved_proof: None,
         };
         assert!(unused_rules(&shortcut).is_empty());
     }

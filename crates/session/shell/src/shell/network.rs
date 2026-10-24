@@ -87,6 +87,7 @@ mod room_gate;
 mod room_gate_tests;
 #[cfg(test)]
 mod same_person_room_tests;
+mod shortcut_saves;
 mod site_join;
 #[cfg(test)]
 mod site_join_tests;

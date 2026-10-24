@@ -727,6 +727,16 @@ pub enum GovernanceRequest {
     Command(tilo_desktop_model::commands::DesktopCommand),
 }
 
+/// A governance change its room's governor refused
+/// ([`WorkspaceTree::refuse_governance`]), for the chrome to say.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GovernanceRefusal {
+    pub room: RoomId,
+    pub request: GovernanceRequest,
+    /// The governor's reason, worded for the person.
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
     /// Native authority is never re-derived from desktop caches.
@@ -789,6 +799,10 @@ pub struct WorkspaceTree {
     /// restart, is still asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub governance_requests: Vec<(RoomId, GovernanceRequest)>,
+    /// Changes made here whose governor refused them, until the chrome
+    /// says so ([`Self::take_governance_refusals`]).
+    #[serde(skip)]
+    pub governance_refusals: Vec<GovernanceRefusal>,
     /// Strips a person made here, waiting for their room's next projection
     /// to publish them kept while empty: a made strip reaches the others at
     /// once, not with its first window. Persisted, so a strip made just
@@ -917,6 +931,7 @@ impl Default for WorkspaceTree {
             room_docs: HashMap::new(),
             pending_placements: BTreeSet::new(),
             governance_requests: Vec::new(),
+            governance_refusals: Vec::new(),
             strips_to_retain: BTreeSet::new(),
             continuation_tabs: BTreeSet::new(),
             local_person: None,
@@ -1104,6 +1119,22 @@ impl WorkspaceTree {
         self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
         self.queue_save();
         Some(id)
+    }
+
+    /// Whether `room` is on this device only: a room of a workspace here that
+    /// no host holds, none is joining and none waits to create. A room from
+    /// before rooms had hosts: its windows and layout are here, and nothing
+    /// else is, so no app opens a document in it.
+    pub fn on_this_device_only(&self, room: RoomId) -> bool {
+        !room.is_nil()
+            && !self.native_authority.holds(room)
+            && !self.is_joining(room)
+            && !self.pending_placements.contains(&room)
+            && self
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room() == room)
     }
 
     /// Whether `room`'s workspace is waiting for its replica: a join through
@@ -2283,37 +2314,15 @@ impl WorkspaceTree {
         )
     }
 
-    /// Save `shortcut` in `workspace_id`, replacing the shortcut with the
-    /// same id. `false` when the workspace is not held here.
-    pub fn save_workspace_shortcut(
-        &mut self,
-        workspace_id: WorkspaceId,
-        shortcut: &tilo_automation::Shortcut,
-    ) -> bool {
-        let Some(workspace) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
-        else {
-            return false;
-        };
-        match workspace
-            .shortcuts
-            .iter_mut()
-            .find(|saved| saved.id == shortcut.id)
-        {
-            Some(saved) => *saved = shortcut.clone(),
-            None => workspace.shortcuts.push(shortcut.clone()),
-        }
-        workspace
-            .shortcuts
-            .sort_by(|left, right| left.id.cmp(&right.id));
-        if tilo_desktop_model::desktop_doc::upsert_shortcut(&mut self.doc, workspace_id, shortcut) {
-            self.commit_room_change();
-        }
-        self.queue_save();
-        true
+    /// The device revocations the room document of `room` records, against
+    /// which a saved shortcut's proof is judged each time it arms
+    /// ([`tilo_peer_state::room::proven_saver`]). `None` when this device
+    /// holds no document of the room: nothing saved there arms.
+    #[must_use]
+    pub fn room_revocations(&self, room: RoomId) -> Option<tilo_user_identity::RevocationList> {
+        self.room_docs
+            .get(&room)
+            .map(tilo_peer_state::room::room_revocations)
     }
 
     /// Record that `claim.device` takes a fire time of one of the shortcuts
@@ -2360,39 +2369,6 @@ impl WorkspaceTree {
             &mut self.doc,
             workspace_id,
             claim,
-        ) {
-            self.commit_room_change();
-        }
-        self.queue_save();
-        true
-    }
-
-    /// Delete shortcut `shortcut_id` from `workspace_id`. `false` when there
-    /// was no such shortcut.
-    pub fn remove_workspace_shortcut(
-        &mut self,
-        workspace_id: WorkspaceId,
-        shortcut_id: &str,
-    ) -> bool {
-        let Some(workspace) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
-        else {
-            return false;
-        };
-        let before = workspace.shortcuts.len();
-        workspace
-            .shortcuts
-            .retain(|shortcut| shortcut.id != shortcut_id);
-        if workspace.shortcuts.len() == before {
-            return false;
-        }
-        if tilo_desktop_model::desktop_doc::remove_shortcut(
-            &mut self.doc,
-            workspace_id,
-            shortcut_id,
         ) {
             self.commit_room_change();
         }
@@ -2618,6 +2594,42 @@ impl WorkspaceTree {
         (self.append_workspace_for_room(name, room), room)
     }
 
+    /// Claim this device's own rooms that no host holds yet: workspaces
+    /// made here, or before rooms had hosts, that were not joined from
+    /// elsewhere and that no enrollment holds. Each is its creator's, the
+    /// person this device acts as in it (`identity_for_room(room)`), who is
+    /// the one its host records as owner when it creates the room
+    /// ([`Self::pending_placements`]), whose admitted document then says
+    /// who owns it. Until then the desktop works in it as its owner, with
+    /// no host and no network. Places nothing: a workspace waits for a host
+    /// only when it was made to ([`Self::create_hosted_workspace`]). Asked
+    /// again when the person this device acts as changes (first-login
+    /// setup), so a room claimed under the account's name belongs to the
+    /// new identity. Changes no id, removes nothing and writes nothing.
+    /// Answers the workspaces given an owner.
+    pub fn claim_own_unhosted_rooms(
+        &mut self,
+        identity_for_room: impl Fn(&RoomId) -> UserId,
+    ) -> Vec<WorkspaceId> {
+        let mut owned = Vec::new();
+        for workspace in &mut self.desktop.workspaces {
+            let room = workspace.room();
+            let joined_from_elsewhere =
+                self.joining_rooms.contains(&room) && !self.pending_placements.contains(&room);
+            if self.native_authority.requires(room) || joined_from_elsewhere {
+                continue;
+            }
+            let creator = identity_for_room(&room);
+            if workspace.owner() != Some(&creator) {
+                workspace.set_owner(creator);
+                owned.push(workspace.id);
+            }
+        }
+        // The owner is what this device acts as, not something it learned:
+        // it is claimed again on every start, and nothing is written for it.
+        owned
+    }
+
     /// Give every ownerless workspace to `identity_for_room(room)`, as the
     /// projection of a room's admitted document does once its host created
     /// the room for its creator. For shots and tests that need an owned
@@ -2821,12 +2833,16 @@ impl WorkspaceTree {
         actor: &UserId,
         changes: Vec<tilo_action_policy::Change>,
     ) -> Result<PolicyEdit, tilo_action_policy::Refusal> {
-        self.desktop
+        let edit = self
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == workspace_id)
             .ok_or_else(|| tilo_action_policy::Refusal::NotPermitted("no such workspace".into()))?
-            .govern_all_at(actor, changes, tilo_clock::unix_now())
+            .govern_all_at(actor, changes, tilo_clock::unix_now())?;
+        // An admitted projection reaches the authority exports.
+        self.export_fs_capabilities();
+        Ok(edit)
     }
 
     /// Make `person` a member of `workspace_id` holding `role` here, as
@@ -2866,7 +2882,8 @@ impl WorkspaceTree {
         grantor: &UserId,
         cap: CapOverride,
     ) -> Option<String> {
-        self.desktop
+        let granted = self
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == workspace_id)?
@@ -2874,7 +2891,9 @@ impl WorkspaceTree {
             .ok()?
             .sandbox_granted
             .first()
-            .cloned()
+            .cloned();
+        self.export_fs_capabilities();
+        granted
     }
 
     /// Take the policy changes asked of governors as their governor would,
@@ -2983,6 +3002,48 @@ impl WorkspaceTree {
             self.queue_save();
         }
         taken
+    }
+
+    /// `room`'s governor refused `request` for `reason`. What this device
+    /// showed ahead of the governor's answer (a rename, a sandbox
+    /// capability taken back) returns to what the room's admitted document
+    /// says, and the refusal waits for the chrome to say it. Other changes
+    /// to the room still waiting show as the room has them until they are
+    /// answered.
+    pub fn refuse_governance(&mut self, room: RoomId, request: GovernanceRequest, reason: String) {
+        if let Some(document) = self.room_docs.get(&room)
+            && let Some(workspace) = self
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room() == room)
+        {
+            // This device's own sandbox capabilities (a files-home consent)
+            // are not the room's, and stay.
+            let held = workspace.sandbox.clone();
+            tilo_peer_state::room::adopt_room(workspace, document, &[]);
+            let own: Vec<_> = held
+                .into_iter()
+                .filter(|cap| {
+                    !workspace
+                        .sandbox
+                        .iter()
+                        .any(|room_cap| room_cap.id == cap.id)
+                })
+                .collect();
+            workspace.sandbox.extend(own);
+            self.queue_save();
+        }
+        self.governance_refusals.push(GovernanceRefusal {
+            room,
+            request,
+            reason,
+        });
+    }
+
+    /// The refusals of governance changes made here, taken.
+    pub fn take_governance_refusals(&mut self) -> Vec<GovernanceRefusal> {
+        std::mem::take(&mut self.governance_refusals)
     }
 
     /// The rooms of workspaces made here that wait to be created on a host,
@@ -4098,6 +4159,10 @@ pub(crate) fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
         workspace.collaborators.iter().filter(present).count()
     })
 }
+
+#[cfg(test)]
+#[path = "state/own_room_tests.rs"]
+mod own_room_tests;
 
 #[cfg(test)]
 mod bootstrap_tests {
