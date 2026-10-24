@@ -68,22 +68,8 @@ const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 /// The group "Search in" rows are listed under.
 const SCOPES_KIND: &str = "Search in";
 
-/// Card geometry, matched to the shared search surface (`search_showcase`).
-/// The query field is a large control: the palette exists to be typed into.
-/// Where the palette's card stands in `window`, the window it belongs to:
-/// its top-left corner and its width. Centred across the window, a little
-/// below its top, and never wider than the window, so a palette of an app
-/// in a window narrower than the screen stays inside that window.
-#[must_use]
-pub fn placement(window: Rect) -> (Point, f64) {
-    const EDGE: f64 = 8.0;
-    let width = (window.width() * 0.6)
-        .clamp(360.0, 640.0)
-        .min((window.width() - 2.0 * EDGE).max(1.0));
-    let x0 = window.x0 + ((window.width() - width) / 2.0).max(0.0);
-    let y0 = window.y0 + (window.height() * 0.12).max(24.0);
-    (Point::new(x0, y0), width)
-}
+mod window_place;
+pub use window_place::placement;
 
 /// The window a palette was asked for from, when a host lays several app
 /// tiles out in one tree (the desktop's strip of windows): the innermost
@@ -432,6 +418,12 @@ pub struct ActionPalette {
     /// Its arrival (`motion::Appear`, from its centre): a shortcut opens it
     /// at once, a click brings it in.
     appear: crate::motion::Appearing,
+    /// The window it stands in, under the window's bar, which its modal
+    /// scrim dims ([`Self::place_in`]); `None` where a host lays it out as
+    /// a widget of its own.
+    scrim: Option<Rect>,
+    /// Where the pointer last was, for a press on the scrim.
+    scrim_pointer: Point,
 }
 
 enum PaletteFieldSource {
@@ -626,6 +618,8 @@ impl ActionPalette {
             controls_node: None,
             command,
             appear: crate::motion::Appearing::closed(),
+            scrim: None,
+            scrim_pointer: Point::new(f64::NAN, f64::NAN),
         }
     }
 
@@ -865,6 +859,9 @@ impl ActionPalette {
                 Some(SheetResponse::Action(_) | SheetResponse::Dismiss) => self.close(),
                 None => {}
             }
+            return true;
+        }
+        if self.dismissed_on_scrim(event, scale) {
             return true;
         }
         let mut handled = false;
@@ -2620,6 +2617,7 @@ impl ActionPalette {
             self.draw_confirmation(scene, transform, text_renderer, theme, presence);
             return;
         }
+        self.paint_scrim(scene, transform, theme);
         // It arrives from its centre (`motion::Appear`).
         let pose = self.appear.pose(self.rect, self.rect.center());
         let bounds = crate::widget::floating_surface::painted_bounds(self.rect, theme);
@@ -2691,6 +2689,9 @@ impl ActionPalette {
             return self.route_event(event, scale, modifiers, doc, root);
         }
         if self.handle_key(event, &modifiers, doc, root) {
+            return true;
+        }
+        if self.dismissed_on_scrim(event, scale) {
             return true;
         }
         let normalized;
@@ -3503,7 +3504,7 @@ mod tests {
             Rect::new(480.0, 40.0, 1440.0, 900.0),
             Rect::new(100.0, 40.0, 420.0, 600.0),
         ] {
-            let (origin, width) = placement(window);
+            let (origin, width) = placement(window, &Theme::dark());
             assert!(
                 (origin.x + width / 2.0 - window.center().x).abs() < 1e-9,
                 "centred across {window:?}"

@@ -4307,7 +4307,7 @@ impl FrameHarness {
                 .map(|window| window.intersect(surface))
                 .filter(|window| window.width() > 0.0 && window.height() > 0.0)
                 .unwrap_or(surface);
-            let (origin, card) = crate::action_palette::placement(window);
+            let (origin, card) = palette.place_in(window, &self.theme);
             palette.layout_with_text(&self.theme, origin, card, &mut self.text);
             palette.draw(
                 &mut self.scene,
