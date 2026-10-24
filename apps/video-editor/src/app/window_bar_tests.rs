@@ -541,15 +541,71 @@ fn timeline_empty_button(
         .unwrap_or_else(|| panic!("{label} is in the tree where it is drawn"))
 }
 
-/// An empty timeline says to import media, so it carries Import media,
-/// which asks for files as the Media pane's Import does, wide and compact,
-/// by pointer and through its semantic action.
+/// Fold the Media pane in or out, as its toggle in the bar does, and let
+/// it land.
+fn toggle_media_pane(app: &mut TestApp<crate::VideoEditor>) {
+    let editor = app.surface_mut::<VideoEditorApp>();
+    editor.toggle_bin();
+    let layout = editor.bin_layout();
+    editor.bin_flap.settle(layout);
+    app.settle();
+}
+
+/// Whether the empty timeline offers its own button now, drawn and in the
+/// tree: a Button inside the timeline's empty state.
+fn timeline_offers_a_button(app: &mut TestApp<crate::VideoEditor>) -> bool {
+    let (drawn, content) = app
+        .with_surface::<VideoEditorApp, _>(|editor| {
+            let r = editor.regions();
+            (
+                editor.timeline_empty_action_rect(&r).is_some(),
+                editor.timeline_content_area(&r),
+            )
+        })
+        .expect("the editor surface");
+    let described = app.harness().a11y_nodes().into_iter().any(|(_, node)| {
+        node.role() == ui::accesskit::Role::Button
+            && node.bounds().is_some_and(|b| {
+                content.contains(vello::kurbo::Point::new(
+                    f64::midpoint(b.x0, b.x1),
+                    f64::midpoint(b.y0, b.y1),
+                ))
+            })
+    });
+    assert_eq!(drawn, described, "what is drawn is what the tree says");
+    drawn
+}
+
+/// One button per job: while the Media pane is shown, its Import answers
+/// the empty timeline's words and the timeline carries no button of its
+/// own; hidden, at any width, the timeline carries Import media, which
+/// asks for files as the pane's Import does, by pointer and through its
+/// semantic action. The button comes and goes as the pane is toggled.
 #[test]
-fn the_empty_timelines_import_media_asks_for_media() {
+fn the_empty_timelines_import_media_stands_in_for_a_hidden_media_pane() {
+    let mut wide = blank_at(1280);
+    assert!(
+        !timeline_offers_a_button(&mut wide),
+        "the pane is shown wide"
+    );
+    toggle_media_pane(&mut wide);
+    assert!(
+        timeline_offers_a_button(&mut wide),
+        "hidden, the button shows"
+    );
+    toggle_media_pane(&mut wide);
+    assert!(!timeline_offers_a_button(&mut wide), "shown again, it goes");
+
     for (width, semantic) in [(1280, false), (1280, true), (420, false), (420, true)] {
         let (services, recorder) = ui::host::HostServices::recording();
         let _host = ui::host::enter(&services);
         let mut app = blank_at(width);
+        if app
+            .with_surface::<VideoEditorApp, _>(|editor| editor.media_pane_shown())
+            .expect("the editor surface")
+        {
+            toggle_media_pane(&mut app);
+        }
         let (node, bounds) = timeline_empty_button(&mut app, "Import media");
         let asked = recorder.pick_requests().len();
         if semantic {
@@ -604,4 +660,62 @@ fn the_empty_timeline_shows_the_media_it_asks_to_drag() {
         wide.timeline_empty_action_rect(&r).is_none(),
         "beside the Media pane the words point at it"
     );
+}
+
+/// On an empty timeline the playhead stays in the ruler, clear of the
+/// add-track row and the empty state, which is centred on the tracks'
+/// content beside the header column; with a clip it crosses the tracks.
+#[test]
+fn an_empty_timelines_playhead_stays_in_the_ruler() {
+    for width in [420.0, 1280.0] {
+        let mut app = sample(width);
+        let r = app.regions();
+        assert!(
+            (app.playhead_bottom(&r) - r.timeline.y1).abs() < 1e-9,
+            "{width} px: with clips the playhead spans the tracks"
+        );
+
+        app.project.clips.clear();
+        app.project.media.clear();
+        if app.media_pane_shown() {
+            app.toggle_bin();
+            let layout = app.bin_layout();
+            app.bin_flap.settle(layout);
+        }
+        let r = app.regions();
+        let bottom = app.playhead_bottom(&r);
+        assert!(
+            (bottom - r.ruler.y1).abs() < 1e-9,
+            "{width} px: the playhead ends at the ruler"
+        );
+        let buttons = app.add_track_buttons(&r);
+        assert!(!buttons.is_empty(), "{width} px: the add-track row shows");
+        for (_, button) in &buttons {
+            assert!(
+                bottom <= button.y0,
+                "{width} px: the playhead stays clear of {button:?}"
+            );
+        }
+        let empty = app.timeline_empty(&r).expect("the empty state shows");
+        let content = app.timeline_content_area(&r);
+        assert_eq!(empty.area, content, "{width} px: centred on the content");
+        assert!(
+            content.x0 >= r.gutter.x1 - 1e-9,
+            "{width} px: the header column is not counted"
+        );
+        assert!(bottom <= content.y0, "{width} px: clear of the empty state");
+        for (_, button) in &buttons {
+            assert!(
+                button.y1 <= content.y0,
+                "{width} px: the add-track row stands above the empty state"
+            );
+        }
+        let (action, _) = app
+            .timeline_empty_action_rect(&r)
+            .expect("the empty state carries Import media");
+        assert!(
+            (action.center().x - content.center().x).abs() < 1.0,
+            "{width} px: the empty state is centred on the content, {action:?} in {content:?}"
+        );
+    }
 }
