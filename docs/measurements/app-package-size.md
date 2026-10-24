@@ -7,7 +7,7 @@ budget in `tools/perf/tapp-size-budget/budget.toml`, set at its measured size
 plus 1 % headroom, rounded up to 64 KiB. `tools/perf/tapp_size_ratchet.py`
 enforces the budgets in these places:
 
-- **One app's size, on each main commit that changes it** (`app-size/<app>-<arch>` in t, for example
+- **One app's size, before a change lands** (`app-size/<app>-<arch>` in t, for example
   `t test app-size/notes-aarch64`): compiles that app in the default collection's graph as a
   release does, packages it with throwaway keys (`tools/apps/t-release.sh app-size`) and holds
   its tapp to its budget. What every app's check builds alike, the shared runtime, its engines
@@ -18,15 +18,19 @@ enforces the budgets in these places:
   scripts, and the key of `thin-runtime-<arch>` (the runtime, its engines and the packing
   tools; the tapp names the signed runtime bundle, which covers them). A change elsewhere,
   another app's code included, leaves its result standing. `runtime-size-<arch>` does the same for the shared
-  runtime (docs/measurements/runtime-size.md). Each `app-size` check runs on main for the
-  commits that change its app or what it is built from, so t names the commit that crosses a
-  budget. None runs on pre-push: run the ones for the apps your change touches before you push.
-  `tools/ci/t_toml.py` generates one per app of the default collection, so a new app has its own.
+  runtime (docs/measurements/runtime-size.md). The push gate runs the aarch64 one of each app whose
+  files a commit changes, when t has the commit's shared runtime built; main keeps it built for
+  its newest head (`thin-runtime-<arch>` runs `idle`). A commit that changes what the runtime is
+  built from skips it, says so and records the skip; run the ones you need before you push. `tools/ci/t_toml.py` generates one per app of the default
+  collection, so a new app has its own.
 - **The whole collection** (`app-sizes-x86_64`, `app-sizes-aarch64` in t) compiles the
   default collection as a release does, packages it with throwaway keys
-  (`tools/apps/t-release.sh sizes`) and holds every tapp and the runtime to its budget. It reads
-  every app, so it runs on each new head of `stable` and when dispatched
-  (`t dispatch app-sizes-x86_64 --ref main`), not on every commit of `main`.
+  (`tools/apps/t-release.sh sizes`) and holds every tapp and the runtime to its budget. It runs
+  on each new head of `stable`, when dispatched (`t dispatch app-sizes-x86_64 --ref main`), and
+  on `main`'s newest head whenever t has room left (`idle`). There a failure is on `t main`, and
+  t bisects it to the commit that took an app over its budget and tells that commit's session,
+  before an image build packs the app. It does not run on every push to `main`: each run builds
+  the whole collection.
 - **Release / apps** (`Shipped tapps within their size budget`) measures each
   tapp it has just packaged and signed, which is the affected apps only. It
   fails when an app is over its budget or has none, so nothing is published.
@@ -52,7 +56,12 @@ The OS image's app store holds each app to the same budgets when it packs it:
 `os/scripts/pack-apps.sh` reads `budget.toml` and the raise files and refuses
 a package over its budget for the build's architecture, naming the app, its
 size and its budget, before it applies the format's 8 MB ceiling
-(`crates/packaging/tilo-app-package/max-app-bytes`). A build whose binaries are
+(`crates/packaging/tilo-app-package/max-app-bytes`). Both build the app the same way. The
+release package the size checks measure also carries the app's search entries and its
+instruction-set note, which makes it the larger by about 1 KB (at e82aadce5c on aarch64: Code
+Editor 2625536 bytes against 2625024, Messages 1332224 against 1331712, Store 2721792 against
+2720768), so an app within its budget in a size check is within it when the image packs it.
+A build whose binaries are
 not the release profile the budgets measure (`TILO_RUST_LTO=off`) reports the
 app instead of refusing it (`TAPP_BUDGET=report`).
 

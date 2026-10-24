@@ -28,7 +28,7 @@ provide one before the library loads.
   built (`tools/apps/t-release.sh runtime-size`), and holds the dylib, its engines and those
   apps' loaded libraries to the budget. It is keyed by what those are built from, and runs when named,
   not on main's commits; the whole collection's `app-sizes-<arch>` measures it too, on each new
-  head of `stable`.
+  head of `stable` and on `main`'s newest head when t has room.
 - **Release / apps** (`Shared runtime within its size budget`) measures the
   dylib it has just built, and the closures above. Its next steps report the
   loader's cost for an app without media (statistics, the objects it loads,

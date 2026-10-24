@@ -4597,7 +4597,7 @@ requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 5400
-on = ["stable", "dispatch"]
+on = ["stable", "dispatch", "idle"]
 default = false
 
 [check.matrix]
@@ -4693,6 +4693,7 @@ requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 5400
+on = ["idle"]
 default = false
 
 [check.matrix]
@@ -4725,7 +4726,6 @@ requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
-on = ["main"]
 default = false
 
 [check.matrix]
@@ -4744,7 +4744,6 @@ requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
-on = ["main"]
 default = false
 
 [check.matrix]
@@ -4762,7 +4761,6 @@ requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
-on = ["main"]
 default = false
 
 [check.matrix]
@@ -4780,7 +4778,6 @@ requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
-on = ["main"]
 default = false
 
 [check.matrix]
@@ -4798,7 +4795,6 @@ requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
-on = ["main"]
 default = false
 
 [check.matrix]
@@ -4816,7 +4812,6 @@ requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
-on = ["main"]
 default = false
 
 [check.matrix]
