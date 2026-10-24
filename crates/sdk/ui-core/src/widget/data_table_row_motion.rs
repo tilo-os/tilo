@@ -90,10 +90,11 @@ impl DataTableCore {
             .capture(self.moving.drawn.iter().copied(), inserts, source);
     }
 
-    /// Before a sort: note where the shown rows stand. Every row shown
-    /// after it that was not shown before came from off-screen and fades
-    /// in at its slot.
-    pub(super) fn capture_sort_motion(&mut self) {
+    /// Before a sort, or a keyed table's rows replaced by its host: note
+    /// where the shown rows stand. Every row shown after it that was not
+    /// shown before came from off-screen (or is new) and fades in at its
+    /// slot.
+    pub(super) fn capture_reorder_motion(&mut self) {
         let source = crate::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
             crate::motion::frame_now(),
             self.reduce_motion,
