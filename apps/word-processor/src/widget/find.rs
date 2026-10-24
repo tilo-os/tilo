@@ -16,7 +16,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{FindMatch, FindOptions, Findable};
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::{Affine, Point, Rect};
 
 use super::pagination::flow_to_page_stack;
 use super::{
@@ -39,6 +39,12 @@ impl Findable for WordProcessorWidget {
         if self.find.reveal(index) {
             self.select_current_match();
         }
+        self.lifecycle.dirty = true;
+    }
+
+    fn set_find_cover(&mut self, cover: Option<Rect>) {
+        self.find_cover = cover;
+        self.follow_find_cover();
         self.lifecycle.dirty = true;
     }
 
@@ -136,8 +142,68 @@ impl WordProcessorWidget {
                 block: bid.clone(),
                 offset: e,
             });
-            self.scroll_to_block(&bid);
+            self.scroll_to_match(&bid, s);
         }
+    }
+
+    /// Scroll so the line holding char `offset` of `bid` stands a third of
+    /// the way down what the canvas shows clear of the window's search (all
+    /// of the canvas when the search covers none of it).
+    fn scroll_to_match(&mut self, bid: &str, offset: usize) {
+        let Some(top) = self.line_top(bid, offset) else {
+            self.scroll_to_block(bid);
+            return;
+        };
+        let canvas_top = self
+            .zoom
+            .screen_to_content(Point::new(self.zoom_viewport.x0, self.zoom_viewport.y0))
+            .y;
+        let clear = (self.scroll_viewport - self.find_inset).max(0.0);
+        let stand = canvas_top + self.find_inset + clear / 3.0;
+        self.scroll_y = (top + self.scroll_y - stand).clamp(self.scroll_floor(), self.max_scroll);
+    }
+
+    /// The on-screen top (content px, post-scroll) of the laid-out line
+    /// holding char `offset` of `bid`.
+    fn line_top(&self, bid: &str, offset: usize) -> Option<f64> {
+        let block = self.blocks.iter().find(|block| block.id == bid)?;
+        let (_, layout) = self.layout_cache.get(bid)?;
+        let byte = crate::text_offsets::char_to_byte(&block.text, offset);
+        // A block split across pages is laid out once per page: the line
+        // is in the slice whose band holds it.
+        self.laid
+            .iter()
+            .filter(|laid| laid.id == bid && laid.text == block.text)
+            .find_map(|laid| {
+                let (_, y, height) = layout.caret_geometry_bounded(laid.shown(byte))?;
+                let top = laid.layout_y + f64::from(y);
+                (top + f64::from(height) > laid.y_top && top < laid.y_top + laid.height)
+                    .then_some(top)
+            })
+    }
+
+    /// Let the document scroll before its start by as much of the canvas as
+    /// the window's search covers; what is shown stays where it is until
+    /// the cover goes, when the document comes back to its start.
+    pub(super) fn follow_find_cover(&mut self) {
+        let canvas = self.zoom_viewport;
+        let zoom = self.zoom.factor();
+        let inset = self
+            .find_cover
+            .filter(|cover| cover.x0 < canvas.x1 && cover.x1 > canvas.x0 && cover.y0 < canvas.y1)
+            .map_or(0.0, |cover| {
+                ((cover.y1 - canvas.y0) / zoom).clamp(0.0, canvas.height() / zoom)
+            });
+        if inset.to_bits() != self.find_inset.to_bits() {
+            self.find_inset = inset;
+            self.scroll_y = self.scroll_y.clamp(self.scroll_floor(), self.max_scroll);
+        }
+    }
+
+    /// The least the document scrolls to: before its start while the
+    /// window's search covers the canvas.
+    pub(super) fn scroll_floor(&self) -> f64 {
+        -self.find_inset
     }
 
     /// Navigate a resource-addressed body range after checking it still exists
@@ -185,7 +251,7 @@ impl WordProcessorWidget {
         if let Some(l) = self.laid.iter().find(|l| l.id == bid) {
             // l.y_top is screen-space (post-scroll); recover content space.
             let content_y = l.y_top + self.scroll_y;
-            self.scroll_y = (content_y - 180.0).clamp(0.0, self.max_scroll);
+            self.scroll_y = (content_y - 180.0).clamp(self.scroll_floor(), self.max_scroll);
         } else if let Some(index) = self.body_order.position(bid) {
             // Find can target an offscreen block that is intentionally absent
             // from the bounded render cache. Its stable canonical position gives
@@ -198,7 +264,7 @@ impl WordProcessorWidget {
                     MAX_PAGE_W * LETTER_RATIO,
                     self.margins,
                 );
-            self.scroll_y = (content_y - 180.0).clamp(0.0, self.max_scroll);
+            self.scroll_y = (content_y - 180.0).clamp(self.scroll_floor(), self.max_scroll);
         }
     }
 

@@ -67,7 +67,7 @@ impl Widget for WordProcessorWidget {
             if doc.styles_panel_full_window() {
                 doc.panel_scroll = next;
             } else {
-                doc.scroll_y = next;
+                doc.scroll_y = next - doc.find_inset;
             }
             doc.lifecycle.dirty = true;
         })

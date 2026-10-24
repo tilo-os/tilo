@@ -66,6 +66,8 @@ mod damage_tests;
 mod dispatch;
 mod find;
 #[cfg(test)]
+mod find_cover_tests;
+#[cfg(test)]
 mod format_click_tests;
 mod image_layout;
 mod images;
@@ -1087,6 +1089,13 @@ pub struct WordProcessorWidget {
     scroll_y: f64,
     scroll_viewport: f64,
     max_scroll: f64,
+    /// How much of the canvas the window's search covers from its top, in
+    /// content px: the document scrolls that far before its start, so a
+    /// match near the start can be shown clear of the search's options.
+    find_inset: f64,
+    /// What the window's search covers of the editor
+    /// ([`ui::widget::Findable::set_find_cover`]).
+    find_cover: Option<Rect>,
     /// The document's stylesheet (component-instance styles). Authoritative copy
     /// in the widget; reloaded from the doc when not mid-drag, persisted on edit.
     sheet: crate::styles::StyleSheet,
@@ -1393,6 +1402,8 @@ impl WordProcessorWidget {
             scroll_y: 0.0,
             scroll_viewport: 0.0,
             max_scroll: 0.0,
+            find_inset: 0.0,
+            find_cover: None,
             sheet: crate::styles::StyleSheet::default(),
             margins: Edges::uniform(72.0),
             layout_mode: LayoutMode::None,
