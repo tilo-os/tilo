@@ -2070,7 +2070,7 @@ impl ShellDriver {
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
             "secret-prompt-authentication" => {
-                self.scene_secret_prompt_authentication(&["quinn"], None)
+                self.scene_secret_prompt_authentication(&["quinn"], None);
             }
             "secret-prompt-authentication-rejected" => self.scene_secret_prompt_authentication(
                 &["quinn"],
@@ -2081,10 +2081,10 @@ impl ShellDriver {
             }
             "secret-prompt-wifi" => self.scene_secret_prompt_network(SecretPromptNetwork::Wifi),
             "secret-prompt-sign-in" => {
-                self.scene_secret_prompt_network(SecretPromptNetwork::SignIn)
+                self.scene_secret_prompt_network(SecretPromptNetwork::SignIn);
             }
             "secret-prompt-sim-pin" => {
-                self.scene_secret_prompt_network(SecretPromptNetwork::SimPin)
+                self.scene_secret_prompt_network(SecretPromptNetwork::SimPin);
             }
             "desktop-control-ask" => self.scene_desktop_control_ask(),
             "desktop-control-chip" => self.scene_desktop_control_chip(),
@@ -3100,7 +3100,7 @@ impl ShellDriver {
         self.step_frames(2);
     }
 
-    /// The compositor's password sheet as NetworkManager raises it.
+    /// The compositor's password sheet as the network daemon raises it.
     fn scene_secret_prompt_network(&mut self, kind: SecretPromptNetwork) {
         use shell::shell::portal_dialog::{
             NetworkSecretsRequest, SecretFieldRule, SecretFieldSpec,

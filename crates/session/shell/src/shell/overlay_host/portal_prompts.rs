@@ -49,7 +49,7 @@ impl ShellOverlayHost {
     }
 
     /// The queue the compositor's sheets come from, for a harness that
-    /// raises one the way a polkit or NetworkManager request does.
+    /// raises one the way a request from polkit or the network daemon does.
     pub fn portal_dialog_queue(&self) -> crate::shell::portal_dialog::PortalDialogQueue {
         self.portal_dialogs.queue().clone()
     }

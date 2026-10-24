@@ -5146,8 +5146,7 @@ impl FrameBuilder {
         }
         self.layout_osk_overlay();
         let cover = self.osk_overlay.as_ref().filter(|_| active);
-        self.host
-            .set_keyboard_cover(cover.map(|keyboard| keyboard.get_rect()));
+        self.host.set_keyboard_cover(cover.map(Widget::get_rect));
     }
 
     /// Reconcile exact authenticated interactive bounds separately from the
