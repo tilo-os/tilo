@@ -7,8 +7,7 @@ use ui::tokens::TextRole;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Badge, ChipStyle, Column, ControlSize, Element, EmptyState, Row, Scrollable, Spacer, Text,
-    ToggleGroup, Tone,
+    Badge, ChipStyle, Column, ControlSize, Element, EmptyState, Row, Scrollable, Spacer, Text, Tone,
 };
 
 use crate::commands::{Cmd, Sink};
@@ -80,7 +79,7 @@ fn caption(text: &str) -> Element {
 /// The status, timing and size, and the switch between views of the body.
 pub(crate) fn response(data: &ResponseData, view: ResponseView, sink: &Sink) -> Built {
     let view_sink = sink.clone();
-    let switch = ToggleGroup::new(
+    let switch = ui::widget::ViewTabs::new(
         ResponseView::ALL
             .iter()
             .map(|v| Segment::new(v.label()))

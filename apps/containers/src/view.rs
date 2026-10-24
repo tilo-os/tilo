@@ -18,8 +18,7 @@ use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Badge, Button, ButtonRole, ChipStyle, Column, Container as Well, Element, EmptyState, ListRow,
     ModelView, NavItem, NavList, NavSection, ProgressBar, Property, PropertyColumn, PropertyList,
-    Row, Scrollable, Section, SegmentedStyle, Spacer, Spinner, StatGroup, StatTile, StatusLine,
-    Text, ToggleGroup, Tone, Widget,
+    Row, Scrollable, Section, Spacer, Spinner, StatGroup, StatTile, StatusLine, Text, Tone, Widget,
 };
 
 use crate::model::{
@@ -558,20 +557,19 @@ fn detail_verbs(model: &DetailModel<'_>, intents: &Intents) -> Vec<Button> {
         .collect()
 }
 
-fn tabs(selected: DetailTab, intents: &Intents) -> ToggleGroup {
+fn tabs(selected: DetailTab, intents: &Intents) -> ui::widget::ViewTabs {
     let intents = intents.clone();
     let index = DetailTab::ALL
         .iter()
         .position(|tab| *tab == selected)
         .unwrap_or(0);
-    ToggleGroup::new(
+    ui::widget::ViewTabs::new(
         DetailTab::ALL
             .iter()
             .map(|tab| Segment::new(tab.label()))
             .collect(),
         index,
     )
-    .with_style(SegmentedStyle::Tabs)
     .on_view("container-tabs", move |i| {
         if let Some(tab) = DetailTab::ALL.get(i) {
             intents.push(Intent::ShowTab(*tab));

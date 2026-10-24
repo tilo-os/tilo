@@ -199,15 +199,20 @@ impl PlayerApp {
             Some(ui::num::f32_of_f64((title_end - header.x0).max(0.0))),
         );
 
-        // Tabs: one strip across the sheet.
+        // The library's views: tabs, each as wide as its label.
         let tab_h = SegmentedFace::height(ControlSize::Regular, theme);
         let tabs_y0 = header.y1 + sibling;
-        let third = inner.width() / 3.0;
-        let tab_rects: [Rect; 3] = std::array::from_fn(|i| {
-            #[allow(clippy::cast_precision_loss, reason = "i is at most 3")]
-            let edge = |n: usize| inner.x0 + third * n as f64;
-            Rect::new(edge(i), tabs_y0, edge(i + 1), tabs_y0 + tab_h)
-        });
+        let segments = LibraryTab::LABELS.map(ui::widget::Segment::new);
+        let packed = SegmentedFace::partition_segments(
+            Rect::new(inner.x0, tabs_y0, inner.x1, tabs_y0 + tab_h),
+            &segments,
+            ui::widget::SegmentedStyle::Tabs,
+            ControlSize::Regular,
+            text,
+            theme,
+        );
+        let tab_rects: [Rect; 3] =
+            std::array::from_fn(|i| packed.get(i).copied().unwrap_or_default());
         [
             self.library_queue_tab_rect,
             self.library_recent_tab_rect,
@@ -224,6 +229,7 @@ impl PlayerApp {
             text,
             theme,
             &SegmentedFace::new(&tab_rects, &LibraryTab::LABELS, self.library_tab.index())
+                .style(ui::widget::SegmentedStyle::Tabs)
                 .hovered(hovered_tab)
                 .focused(tab_focus),
         );
