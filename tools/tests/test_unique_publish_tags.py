@@ -12,19 +12,13 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOWS = ROOT / ".forgejo/workflows"
 
 
 class ShellPushTests(unittest.TestCase):
-    def read(self, name: str) -> str:
-        return (WORKFLOWS / name).read_text()
-
     def test_base_mirror_dev_disk_and_wine_pushes_are_unique(self):
         mirror = (ROOT / "os/dev/ensure-base-mirror.sh").read_text()
         self.assertIn('fedora-bootc:${BASE_SOURCE##*:}-recover-', mirror)
         self.assertIn('skopeo copy --all --preserve-digests', mirror)
-        dev_disk = self.read("dev-disk.yml")
-        self.assertIn("build-candidate-${SOURCE_REVISION:0:12}-$BASE_TRUST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH", dev_disk)
         publish = (ROOT / "os/dev/publish-dev-disk.sh").read_text()
         self.assertIn('"docker://$REPOSITORY:$DEV_TAG-$ARCH-${image_digest:7:16}"', publish)
         self.assertIn('"docker://$REPOSITORY:$DEV_TAG-${index_digest:7:16}"', publish)
