@@ -289,13 +289,15 @@ class Lanes(unittest.TestCase):
         script = SCHEDULED.read_text().replace("\\\n", " ")
         filters = re.findall(r"cargo test [^\n]*?--lib\s+([\w:]+)\s+--", script)
         self.assertIn("native_task_benchmark", [name.rsplit("::", 1)[-1] for name in filters])
-        sources = "\n".join(path.read_text(errors="replace")
-                             for top in ("apps", "crates") for path in (ROOT / top).rglob("*.rs"))
-        for name in filters:
-            # Cargo selects every test whose name contains the filter.
-            leaf = name.rsplit("::", 1)[-1]
-            self.assertTrue(re.search(rf"\bfn \w*{leaf}\w*\(", sources),
-                            f"perf-scheduled.sh runs `{name}`, which no test defines")
+        # Cargo selects every test whose name contains the filter. One file
+        # at a time: the whole tree's sources at once do not fit the check.
+        missing = {name: re.compile(rf"\bfn \w*{name.rsplit('::', 1)[-1]}\w*\(") for name in filters}
+        for path in (path for top in ("apps", "crates") for path in (ROOT / top).rglob("*.rs")):
+            if not missing:
+                break
+            text = path.read_text(errors="replace")
+            missing = {name: pattern for name, pattern in missing.items() if not pattern.search(text)}
+        self.assertEqual(sorted(missing), [], "perf-scheduled.sh runs test filters that no test defines")
 
     def test_perf_scheduled_selects_exactly_its_lanes_groups(self):
         budgets = compare.load_budgets(compare.BUDGETS)
