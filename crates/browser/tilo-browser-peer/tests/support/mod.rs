@@ -476,7 +476,7 @@ pub async fn door(
     room: &str,
     person: [u8; 32],
 ) -> (Vec<u8>, Vec<u8>) {
-    let token: [u8; 32] = rand::random();
+    let token = random_bytes();
     let token_sha256: [u8; 32] = Sha256::digest(token).into();
     let mut grant = PreAdmission {
         room: room.to_owned(),
@@ -521,7 +521,7 @@ pub async fn redeem(
         &invitation,
         cert,
         key,
-        rand::random(),
+        random_bytes(),
         "Guest",
         &token,
     )
@@ -566,4 +566,11 @@ pub async fn in_room(peer: &PeerHandle, workspace_id: u64) {
         (peer.status().rooms.get(&workspace_id) == Some(&true)).then_some(())
     })
     .await;
+}
+
+/// 32 bytes from the operating system's randomness.
+fn random_bytes() -> [u8; 32] {
+    let mut bytes = [0; 32];
+    getrandom::fill(&mut bytes).unwrap();
+    bytes
 }

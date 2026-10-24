@@ -2,28 +2,9 @@ use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
-    admit_view_reader, governor, governor_with, restricted_until, test_host,
+    admit_view_reader, door_join, governor, governor_with, restricted_until, signed_pre_admission,
+    test_host,
 };
-
-pub(crate) fn signed_pre_admission(
-    room: &str,
-    token: &[u8],
-) -> tilo_relay_protocol::rooms::PreAdmission {
-    use ed25519_dalek::Signer as _;
-    use sha2::Digest as _;
-    let owner = SigningKey::from_bytes(&[1; 32]);
-    let mut grant = tilo_relay_protocol::rooms::PreAdmission {
-        room: room.to_owned(),
-        role: tilo_relay_protocol::rooms::RoomRole::Editor,
-        token_sha256: sha2::Sha256::digest(token).into(),
-        label: "Ada".into(),
-        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
-        owner_user_public_key: owner.verifying_key().to_bytes(),
-        signature: [0; 64],
-    };
-    grant.signature = owner.sign(&grant.digest().unwrap()).to_bytes();
-    grant
-}
 
 #[tokio::test]
 async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {
@@ -2551,72 +2532,6 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
     assert_eq!(titles_shared(&rooms, &room).await.len(), 2);
     drop(rooms);
     relay.shutdown().await;
-}
-
-/// One person's device joining `room` through its door, as a Tilo computer
-/// does: the challenge, the door's admission spent with the proof, then the
-/// Complete. Answers the Complete it sent and the host's answer.
-pub(crate) async fn door_join(
-    rooms: &Rooms,
-    host: &DeviceCert,
-    room: &str,
-    (device, device_cert): (&SigningKey, &DeviceCert),
-    seed: u8,
-) -> (
-    tilo_peer_state::join::JoinTransportRequest,
-    tilo_peer_state::join::JoinTransportResponse,
-) {
-    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
-    use tilo_peer_state::join::{
-        JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
-        sign_join_proof,
-    };
-    use tilo_relay_protocol::rooms::{JoinReply, JoinStep};
-    let token = [seed; 8];
-    let issued = rooms
-        .pre_admit(
-            host,
-            PreAdmitRequest {
-                request_id: [seed; 32],
-                grant: signed_pre_admission(room, &token),
-                recipient_user_public_key: Some(device_cert.user_public_key),
-                inviter_name: None,
-            },
-        )
-        .await
-        .unwrap();
-    let service = rooms.join_service();
-    let endpoint = device_cert.device_public_key;
-    let JoinTransportResponse::Challenge(answer) = service
-        .handle(
-            endpoint,
-            JoinTransportRequest::Challenge(JoinChallengeRequest {
-                signed_invitation: issued.signed_invitation,
-                device_cert: device_cert.clone(),
-                request_id: [seed.wrapping_add(100); 32],
-            }),
-        )
-        .await
-    else {
-        panic!("no challenge");
-    };
-    let proof = sign_join_proof(answer.challenge, device).unwrap();
-    let admitted = rooms
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge: postcard::to_stdvec(&proof.challenge).unwrap(),
-            signature: proof.signature,
-            name: "Ada".into(),
-            token: token.to_vec(),
-        })
-        .await;
-    assert!(
-        matches!(admitted, JoinReply::Admitted { .. }),
-        "{admitted:?}"
-    );
-    let complete = JoinTransportRequest::Complete(JoinCompleteRequest { proof });
-    let response = service.handle(endpoint, complete.clone()).await;
-    drop(service);
-    (complete, response)
 }
 
 /// The Lounge, 2026-10-20: a laptop's join completed at the host, but the

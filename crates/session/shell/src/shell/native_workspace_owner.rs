@@ -410,7 +410,9 @@ pub(crate) fn test_chrome_governing_its_room()
     use crate::shell::invite_policy::{native_governor, tests::grant_invite};
     let (directory, owner, room, _now, _key) = test_enrolled_owner();
     let governor = crate::shell::state::person_id_of(
-        native_governor(Some(owner.clone()), room).expect("the room's admitted governor"),
+        native_governor(Some(owner.clone()), room)
+            .expect("the room's admitted governor")
+            .person,
     )
     .expect("person id");
     let handle = test_tree_of(&owner);

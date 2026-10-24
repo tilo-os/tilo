@@ -17,7 +17,7 @@ use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 use super::*;
 use crate::room_bots::{membership, tests as bots};
-use crate::rooms::tests::{door_join, governor};
+use crate::rooms::fixtures::{self, door_join, governor};
 
 /// Discord as the worker shows it: who is in its voice channels, what they
 /// say, and what the bridge asks of it and hands it. Asked into a channel,
@@ -155,8 +155,7 @@ impl Member {
     /// `peer` joins `call` and opens its carrier.
     async fn joins(rooms: &Rooms, room: &str, peer: AuthenticatedPeer, call: [u8; 32]) -> Self {
         let (outbound, grants) = mpsc::channel(64);
-        let grant = rooms
-            .voice_join(room, &peer, call, None, outbound.clone())
+        let grant = fixtures::voice_join(rooms, room, &peer, call, None, outbound.clone())
             .await
             .unwrap();
         let client = Client::start(
@@ -186,15 +185,15 @@ impl Member {
 
     /// The latest grant the relay sent, after a heartbeat.
     async fn current(&mut self, rooms: &Rooms, room: &str) -> &VoiceGrant {
-        if let Ok(grant) = rooms
-            .voice_join(
-                room,
-                &self.peer,
-                self.grant.call,
-                Some(self.grant.participation),
-                self.outbound.clone(),
-            )
-            .await
+        if let Ok(grant) = fixtures::voice_join(
+            rooms,
+            room,
+            &self.peer,
+            self.grant.call,
+            Some(self.grant.participation),
+            self.outbound.clone(),
+        )
+        .await
         {
             self.grant = grant;
         }
@@ -243,7 +242,9 @@ async fn until<T, F: Future<Output = Option<T>>>(what: &str, mut done: impl FnMu
 /// The room's calls as a member's device lists them.
 async fn listed(rooms: &Rooms, room: &str, peer: &AuthenticatedPeer) -> Vec<CallSummary> {
     let (outbound, _) = mpsc::channel(4);
-    rooms.voice_calls(room, peer, outbound).await.unwrap()
+    fixtures::voice_calls(rooms, room, peer, outbound)
+        .await
+        .unwrap()
 }
 
 /// Who is in the call on Tilo voice channel `channel`, as members see it.
@@ -352,13 +353,31 @@ async fn bridged_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
     (room, voice)
 }
 
-/// A relay serving its rooms' voice carrier on a local listener.
+/// A relay serving its rooms' voice carrier on a local listener, deciding
+/// what members and bots change against the surfaces of the apps it runs.
 async fn voice_host(
     state: &std::path::Path,
     key: &SigningKey,
     cert: &DeviceCert,
 ) -> (crate::Relay, crate::web::WebHandle) {
-    let relay = bots::bot_host(state, key, cert).await;
+    // The native apps name their surfaces as the host first runs them.
+    let _ = AppCatalogue::native();
+    crate::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
+    let relay = crate::Relay::start(
+        crate::RelayConfig {
+            state_root: state.join("relay"),
+            identity_root: state.join("identity"),
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key.clone(),
+            device_cert: cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
     let web = relay
         .serve_web(crate::web::WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
@@ -616,7 +635,7 @@ async fn the_bridge_carries_a_voice_channel_both_ways_while_anyone_is_in_it() {
         }
     })
     .await;
-    rooms.voice_leave(&ada, call, ada_in.grant.participation);
+    fixtures::voice_leave(&rooms, &ada, call, ada_in.grant.participation);
     until("the bridge leaves both sides", || {
         let asked = discord.asked.borrow().clone();
         let (rooms, room, ada, voice) = (&rooms, &room, &ada, &voice);

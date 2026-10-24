@@ -107,6 +107,30 @@ async fn answer(peer: &PeerHandle) -> Answer {
     .await
 }
 
+/// Pin notes on `app`'s board, each sent over `peer` as the page sends a
+/// record's changes, until the host refuses one: which note it was, the
+/// changes refused and why.
+async fn pin_until_refused(
+    app: &mut TestApp<BoardApp>,
+    peer: &PeerHandle,
+    route: &tilo_browser_peer::DocumentRoute,
+) -> (usize, Vec<[u8; 32]>, String) {
+    let mut refused = None;
+    for pinned in 0..16 {
+        let heads = app.read_document(|doc| doc.clone().get_heads());
+        app.invoke(Board::PIN.with(format!("note {pinned}")))
+            .unwrap();
+        let delta = app.read_document(|doc| doc.clone().save_after(&heads));
+        peer.publish(route.clone(), &DocumentMutation::Incremental(delta))
+            .unwrap();
+        if let Answer::Refused { changes, reason } = answer(peer).await {
+            refused = Some((pinned, changes, reason));
+            break;
+        }
+    }
+    refused.expect("the budget refuses a change in time")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
     // Alice's host governs the room and holds guests to a change budget;
@@ -173,23 +197,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
     // Bob pins notes on his board, each sent as the page sends a record's
     // changes, until the host stops taking them.
     let mut app = TestApp::<BoardApp>::new().unwrap();
-    let mut refused = None;
-    for pinned in 0..16 {
-        let heads = app.read_document(|doc| doc.clone().get_heads());
-        app.invoke(Board::PIN.with(format!("note {pinned}")))
-            .unwrap();
-        let delta = app.read_document(|doc| doc.clone().save_after(&heads));
-        peer.publish(route.clone(), &DocumentMutation::Incremental(delta))
-            .unwrap();
-        match answer(&peer).await {
-            Answer::Committed => {}
-            Answer::Refused { changes, reason } => {
-                refused = Some((pinned, changes, reason));
-                break;
-            }
-        }
-    }
-    let (pinned, changes, reason) = refused.expect("the budget refuses a change in time");
+    let (pinned, changes, reason) = pin_until_refused(&mut app, &peer, &route).await;
     assert_eq!(reason, tilo_relay_protocol::refusal::TOO_MANY_CHANGES);
     assert!(!changes.is_empty(), "the refusal names the change it was");
     assert_eq!(
