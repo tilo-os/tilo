@@ -1276,6 +1276,7 @@ mod tests {
             g.tabs.push(Tab {
                 id,
                 title: "~".into(),
+                app_title: None,
                 tile: TileContent::Foreign {
                     app_id: "ExampleTerm".into(),
                     surface_id: 7,
