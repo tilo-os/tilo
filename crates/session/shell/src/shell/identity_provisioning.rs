@@ -625,6 +625,29 @@ pub struct DiskIdentityStore {
 /// recovery surface, but no environment value can bypass identity checks.
 pub const IDENTITY_RECOVERY_ENV: &str = "TILO_IDENTITY_RECOVERY";
 
+/// What startup found when the existing identity's certificate was refused
+/// for the clock's reading alone: the identity is intact and the session
+/// waits for the clock rather than offering recovery. Set once, before the
+/// compositor starts, by the same probe that decides recovery.
+static IDENTITY_CLOCK_REFUSAL: std::sync::Mutex<Option<tilo_user_identity::CertificateClockError>> =
+    std::sync::Mutex::new(None);
+
+/// Record that the existing identity waits for the clock (see
+/// [`identity_clock_refusal`]).
+pub fn await_clock_for_identity(refusal: tilo_user_identity::CertificateClockError) {
+    *IDENTITY_CLOCK_REFUSAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(refusal);
+}
+
+/// The clock refusal startup recorded for the existing identity, if any.
+pub fn identity_clock_refusal() -> Option<tilo_user_identity::CertificateClockError> {
+    IDENTITY_CLOCK_REFUSAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 /// Whether an existing schema-2 identity should be recovered interactively.
 ///
 /// A locked/missing Secret Service is recoverable only through the trusted

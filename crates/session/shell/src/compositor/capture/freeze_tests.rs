@@ -60,6 +60,7 @@ fn tree() -> WorkspaceTree {
                     kind: AppKind::Other("Test".into()),
                     label: "Stub".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab,
             width: WindowWidth::Fraction(700),

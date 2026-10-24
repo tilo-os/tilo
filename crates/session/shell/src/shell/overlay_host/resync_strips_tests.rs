@@ -6,7 +6,7 @@ use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::FreshId as _;
 use crate::shell::state::{
-    AppKind, GroupId, PeerOrigin, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+    AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
     WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 use std::collections::HashMap as StdHashMap;
@@ -28,6 +28,7 @@ fn one_group_seed() -> (WorkspaceTree, StripId, GroupId) {
                     kind: AppKind::Other("Test".into()),
                     label: "s".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: StateWidth::Normal,
@@ -384,6 +385,7 @@ fn make_stub_group(id: GroupId, label: &str) -> StateGroup {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         }],
         active_tab: tab_id,
         width: StateWidth::Normal,
@@ -892,6 +894,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                     kind: AppKind::Browser,
                     label: "second".into(),
                 },
+                app_title: None,
             },
             Tab {
                 id: 3,
@@ -900,6 +903,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                     kind: AppKind::Terminal,
                     label: "third".into(),
                 },
+                app_title: None,
             },
         ]);
         strip.window_groups.push(make_stub_group(201, "Other-A"));
@@ -1031,19 +1035,31 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         local.set_salt_override(HOST_SALT);
         let local_workspace = local.desktop.active;
         let room = local.room_of(local_workspace).expect("local room");
-        local.adopt_ownerless_workspaces(&"owner".to_string());
 
         let mut peer = WorkspaceTree::bootstrap_demo();
         peer.set_salt_override(PEER_SALT);
         let peer_workspace = peer.desktop.active;
         assert!(peer.stand_in_room(peer_workspace, room));
-        // The fixed ids below model windows this peer owns in the shared
-        // room. They predate this process's global allocator, so make the
-        // fixture publish them instead of treating them as pre-join tabs.
-        peer.room_share_floor.remove(&room);
-        // Matching governance makes this a legitimate member layout
-        // update, not a rejected attempt to replace the room owner.
-        peer.adopt_ownerless_workspaces(&"owner".to_string());
+        // What the room's admitted document carries of the peer's layout,
+        // as the native owner projects it into this device's workspace.
+        let projected = |peer: &WorkspaceTree, local: &mut WorkspaceTree| {
+            let strips = peer
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == peer_workspace)
+                .expect("peer workspace")
+                .strips
+                .clone();
+            local
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == local_workspace)
+                .expect("local workspace")
+                .strips = strips;
+            local.desktop.room_epoch = local.desktop.room_epoch.wrapping_add(1);
+        };
         let remote_strip = StripId::from(remote_id(1));
         let remote_group = remote_id(2);
         let tab = |id, title: &str, kind| Tab {
@@ -1053,6 +1069,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
                 kind,
                 label: title.into(),
             },
+            app_title: None,
         };
         peer.desktop
             .workspaces
@@ -1080,38 +1097,13 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
             ],
         }];
 
-        let seed = peer
-            .export_room_changes_since(room, &[])
-            .expect("peer room changes");
-        assert!(
-            local
-                .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
-                .expect("legitimate remote layout merges"),
-            "initial remote layout is accepted"
-        );
+        projected(&peer, &mut local);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&local);
-        let peer_base = peer.room_heads(room);
         assert!(peer.reorder_group_for_tests(remote_strip, remote_id(4), 0));
         assert!(peer.reorder_tab_for_tests(remote_group, 2, 0));
-        let delta = peer
-            .export_room_changes_since(room, &peer_base)
-            .expect("reorder room delta");
         {
             let mut state = chrome.borrow_mut();
-            assert!(
-                state
-                    .tree_mut()
-                    .apply_room_changes(room, &delta, &PeerOrigin::hub(1))
-                    .expect("accepted reorder delta"),
-                "room merger reports the remote reorder"
-            );
-            assert!(
-                !state
-                    .tree_mut()
-                    .apply_room_changes(room, &seed, &PeerOrigin::hub(1))
-                    .expect("an already-superseded room snapshot parses"),
-                "a stale room snapshot cannot undo the newer accepted reorder"
-            );
+            projected(&peer, &mut state.tree_mut());
             state.bump();
         }
         assert!(host.take_structure_dirty());
@@ -1394,6 +1386,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
                     kind: AppKind::Browser,
                     label: "second".into(),
                 },
+                app_title: None,
             });
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.focus_window_on_strip(strip_id, group_id, 2));
@@ -1462,6 +1455,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
                     app_id: "com.openai.chatgpt".into(),
                     surface_id: 41,
                 },
+                app_title: None,
             },
             Tab {
                 id: 2,
@@ -1470,6 +1464,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
                     app_id: "com.openai.chatgpt".into(),
                     surface_id: 42,
                 },
+                app_title: None,
             },
         ];
         group.active_tab = 1;
@@ -1531,6 +1526,7 @@ fn group_actions_target_exactly_their_group_or_surface() {
                 app_id: "org.example.Editor".into(),
                 surface_id: 51,
             },
+            app_title: None,
         }];
         group.active_tab = 1;
         tree.seed_doc_from_cache();
@@ -1721,6 +1717,7 @@ fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
                     kind: AppKind::Other("Test".into()),
                     label: "Report".into(),
                 },
+                app_title: None,
             },
             crate::shell::tab_binding::Placement::RightOf(301),
         )

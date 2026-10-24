@@ -90,20 +90,14 @@ struct TreeCell {
 
 /// The parts of the tree an authorization decision reads: each
 /// workspace's room, owner, roster, grants, permission profiles, tasks and
-/// pending ownership transfer, and the session's room authorities, admitted
-/// devices, authenticated persons and stewarded rooms. Strips, records,
+/// pending ownership transfer, and the session's person and stewarded
+/// rooms. Strips, records,
 /// presence and effect receipts are written on every frame or by the broker
 /// itself and decide nothing.
 #[derive(Default, PartialEq)]
 struct PolicySnapshot {
     workspaces: Vec<WorkspacePolicy>,
-    room_authority: std::collections::HashMap<tilo_desktop_model::RoomId, super::RoomAuthority>,
-    room_peer_identities: std::collections::HashMap<
-        tilo_desktop_model::RoomId,
-        std::collections::BTreeMap<String, super::GovernedPeerIdentity>,
-    >,
     local_person: Option<[u8; 32]>,
-    authenticated_persons: std::collections::HashMap<super::PeerOrigin, [u8; 32]>,
     stewarded_rooms: std::collections::BTreeSet<tilo_desktop_model::RoomId>,
 }
 
@@ -135,10 +129,7 @@ impl PolicySnapshot {
                     pending_ownership_transfer: workspace.pending_ownership_transfer.clone(),
                 })
                 .collect(),
-            room_authority: tree.room_authority.clone(),
-            room_peer_identities: tree.room_peer_identities.clone(),
             local_person: tree.local_person,
-            authenticated_persons: tree.authenticated_persons.clone(),
             stewarded_rooms: tree.stewarded_rooms.clone(),
         }
     }
@@ -160,10 +151,7 @@ impl PolicySnapshot {
                         && seen.sandbox == workspace.sandbox
                         && seen.pending_ownership_transfer == workspace.pending_ownership_transfer
                 })
-            && self.room_authority == tree.room_authority
-            && self.room_peer_identities == tree.room_peer_identities
             && self.local_person == tree.local_person
-            && self.authenticated_persons == tree.authenticated_persons
             && self.stewarded_rooms == tree.stewarded_rooms
     }
 }
@@ -199,22 +187,31 @@ impl WorkspaceTreeHandle {
 
     /// Shared read access. A wait of [`SLOW_TREE_WAIT`] or more is reported
     /// with the writer that held the tree.
+    ///
+    /// Reads are recursive: a thread already reading the tree reads it again
+    /// even while a writer on another thread waits for it. The compositor
+    /// holds the tree across helpers that read it themselves, and the peer
+    /// sync worker writes it from its own thread; a plain read queues behind
+    /// that waiting writer, which waits for the first read to end, and the
+    /// compositor freezes. A writer still gets the tree as soon as no read
+    /// is held.
     #[track_caller]
     pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, WorkspaceTree> {
-        if let Some(guard) = self.0.lock.try_read() {
+        if let Some(guard) = self.0.lock.try_read_recursive() {
             return guard;
         }
         let waiter = Location::caller();
         let holder = self.holder_now();
         let started = Instant::now();
-        let guard = self.0.lock.read();
+        let guard = self.0.lock.read_recursive();
         Self::report_wait("read", waiter, started.elapsed(), holder);
         guard
     }
 
-    /// Shared read access, if no writer holds the tree.
+    /// Shared read access, if no writer holds the tree; recursive like
+    /// [`Self::read`].
     pub fn try_read(&self) -> Option<parking_lot::RwLockReadGuard<'_, WorkspaceTree>> {
-        self.0.lock.try_read()
+        self.0.lock.try_read_recursive()
     }
 
     /// Exclusive access. The generation advances when the guard is dropped,
@@ -471,6 +468,36 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_reading_the_tree_reads_it_again_while_a_writer_waits() {
+        let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
+        let (done, finished) = std::sync::mpsc::channel();
+        let reader = handle.clone();
+        std::thread::spawn(move || {
+            let held = reader.read();
+            let writer = {
+                let handle = reader.clone();
+                std::thread::spawn(move || handle.write().desktop.external_revision = 3)
+            };
+            let started = Instant::now();
+            while !reader.0.lock.is_locked_exclusive() {
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "the writer never queued"
+                );
+                std::thread::yield_now();
+            }
+            drop(reader.read());
+            drop(held);
+            writer.join().unwrap();
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a second read on the reading thread waited for the queued writer");
+        assert_eq!(handle.read().desktop.external_revision, 3);
+    }
+
+    #[test]
     fn only_a_released_write_advances_the_generation() {
         let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
         let start = handle.generation();
@@ -501,7 +528,7 @@ mod tests {
             start,
             "a layout write is no new policy"
         );
-        let _ = handle.write().append_empty_workspace("Granted");
+        let _ = handle.write().create_hosted_workspace("Granted").0;
         let first = handle.policy_revision();
         assert!(first > start, "a new workspace is a new policy");
         handle.write().desktop.workspaces[0]
@@ -524,7 +551,7 @@ mod tests {
     #[test]
     fn a_write_announces_a_policy_change_only_when_it_changed_policy() {
         let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
-        let workspace = handle.write().append_empty_workspace("Shared");
+        let workspace = handle.write().create_hosted_workspace("Shared").0;
         let (woke, wakes) = std::sync::mpsc::channel();
         let woke = std::sync::Mutex::new(woke);
         let watch = tilo_identity_host::policy_change::Watch::new(move || {
@@ -622,7 +649,7 @@ mod tests {
                 .unwrap();
             reader.policy_revision()
         });
-        let _ = guard.append_empty_workspace("Granted");
+        let _ = guard.create_hosted_workspace("Granted").0;
         let tid = tilo_test_env::recv("the reader's thread id", &tid_rx);
         // Release only once the reader has blocked on the held write.
         tilo_test_env::wait_until("the reader to block on the held write", || {

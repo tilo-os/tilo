@@ -164,10 +164,20 @@ impl Addr {
         self.email.clone()
     }
 
-    /// RFC 5322 mailbox rendering: `Name <email>` or bare `email`.
+    /// RFC 5322 mailbox rendering: `Name <email>` or bare `email`. A name
+    /// holding a separator, a quote or other punctuation the address
+    /// grammar reserves is quoted, so "Lovelace, Ada" reads back as one
+    /// recipient rather than two.
     pub fn rfc5322(&self) -> String {
         match &self.name {
-            Some(n) if !n.is_empty() => format!("{} <{}>", n, self.email),
+            Some(n) if !n.is_empty() => {
+                if n.chars().any(|ch| "()<>[]:;@\\,.\"".contains(ch)) {
+                    let escaped = n.replace('\\', "\\\\").replace('"', "\\\"");
+                    format!("\"{escaped}\" <{}>", self.email)
+                } else {
+                    format!("{n} <{}>", self.email)
+                }
+            }
             _ => self.email.clone(),
         }
     }
@@ -949,6 +959,36 @@ mod tests {
                 .contains("private-mail-password")
         );
         assert!(!format!("{config:?}").contains("private-mail-password"));
+    }
+
+    /// A reply's `To`, a reply-all's `Cc` and a picked contact are written
+    /// as `Name <address>` and read back as recipients. A name written
+    /// "Last, First" (or holding any other separator or quote) stays one
+    /// recipient with its whole name, not a stray "Last" beside "First".
+    #[test]
+    fn a_written_recipient_reads_back_as_the_same_one() {
+        for name in [
+            "Ada Lovelace",
+            "Lovelace, Ada",
+            "Ada \"Countess\" Lovelace",
+            "Dr. Ada Lovelace",
+            "Ada (Analytical) Lovelace",
+            "Back\\slash",
+        ] {
+            let addr = Addr::new(name, "ada@analytical.example");
+            assert_eq!(
+                crate::transport::parse_addr_list(&addr.rfc5322()),
+                vec![addr.clone()],
+                "{name:?} written as {:?}",
+                addr.rfc5322()
+            );
+        }
+        let two = [
+            Addr::new("Lovelace, Ada", "ada@analytical.example"),
+            Addr::new("Babbage, Charles", "charles@engine.example"),
+        ];
+        let written = two.iter().map(Addr::rfc5322).collect::<Vec<_>>().join(", ");
+        assert_eq!(crate::transport::parse_addr_list(&written), two.to_vec());
     }
 
     fn msg(subject: &str, ts: i64, folder: Folder) -> Message {

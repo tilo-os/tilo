@@ -460,9 +460,9 @@ fn suspend_change(
         ));
     }
     let on_battery = match args.text("power") {
-        None => st.quick_settings.battery.runs_on_battery(),
+        None => st.quick_settings.battery().runs_on_battery(),
         Some(PLUGGED_IN) => false,
-        Some(ON_BATTERY) if st.quick_settings.battery.present => true,
+        Some(ON_BATTERY) if st.quick_settings.battery().present => true,
         Some(ON_BATTERY) => return Err(refuse("this device has no battery")),
         Some(other) => return Err(refuse(format!("{other:?} is not a power source"))),
     };
@@ -1071,11 +1071,12 @@ mod tests {
                 "no battery timer without a battery"
             );
             // On battery: its own timer, the other source still named.
-            chrome.borrow_mut().quick_settings.battery = tilo_power_mgmt::BatterySnapshot {
-                present: true,
-                percent: 50,
-                state: tilo_power_mgmt::BatteryState::Discharging,
-            };
+            chrome.borrow_mut().quick_settings.status.battery =
+                Some(tilo_power_mgmt::BatterySnapshot {
+                    present: true,
+                    percent: 50,
+                    state: tilo_power_mgmt::BatteryState::Discharging,
+                });
             suspend(5, None).unwrap();
             suspend(60, Some("plugged-in")).unwrap();
             assert_eq!((timers().on_battery(), timers().plugged_in()), (5, 60));

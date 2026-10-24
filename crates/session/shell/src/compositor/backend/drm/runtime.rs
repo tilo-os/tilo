@@ -58,6 +58,9 @@ use super::scanout::{
 };
 use super::session::{SeatTick, SessionAction, SessionState};
 use super::topology;
+
+#[path = "runtime_wake.rs"]
+mod wake;
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
@@ -298,6 +301,10 @@ pub struct DrmDispatchState {
     /// Every libinput device currently attached — libinput has no "list
     /// your devices" call, so keeping handles (cheap refcounted clones) is the only way to re-apply a changed setting to hardware already plugged in.
     pub devices: Vec<smithay::reexports::input::Device>,
+    /// The last wake ([`Self::note_wake`]) and when it happened, until the
+    /// first input event after it: the flight record says whether input
+    /// came back with the display.
+    input_wake: Option<(&'static str, std::time::Instant)>,
     /// Libinput's optional per-touch-device output binding, keyed by its
     /// short-lived device id. Connector names, rather than [`OutputId`]s,
     /// survive an output being unplugged and later reconnected; each touch
@@ -837,6 +844,10 @@ pub enum ScanoutCommand {
         output: OutputId,
         light: f32,
     },
+    /// Take this stage as failed in every output's next wake: the
+    /// test-control fault that proves the wake's recovery
+    /// ([`super::wake_check`]).
+    WakeFault(super::wake_check::WakeStage),
 }
 
 /// The ownership state for one card across a udev remove/re-add race.  This
@@ -1236,6 +1247,7 @@ impl DrmDispatchState {
             mouse_keys: MouseKeys::default(),
             physical_modifiers: ModifiersState::empty(),
             key_repeat: KeyRepeat::default(),
+            input_wake: None,
             devices: Vec::new(),
             touch_output_bindings: HashMap::new(),
             scale_override,
@@ -1958,14 +1970,41 @@ impl DrmDispatchState {
     /// and bring the pointer and cursor planes back onto a live output.
     /// Called after any change to the connector set or display plan.
     fn relayout_outputs(&mut self) {
-        let config = settings_store::hardware::DisplayConfig::load_effective(&self.display_set);
-        self.relayout_with(&config);
+        let (config, last_shown) =
+            settings_store::hardware::DisplayConfig::load_effective_remembering(&self.display_set);
+        self.relayout_recalling(&config, &last_shown);
+    }
+
+    /// [`Self::relayout_with`], after an output `config` does not name that
+    /// keeps nothing yet — a monitor that just arrived in a set never
+    /// arranged before, or was lit at startup in one — takes the scale and
+    /// rotation its monitor was last shown at (`last_shown`), so a 1.25x
+    /// panel does not snap to its density's default the first time it is
+    /// docked. Once kept, a later scale override or set change governs it
+    /// like any survivor (see [`hotplug::retained_presentation`]).
+    fn relayout_recalling(
+        &mut self,
+        config: &settings_store::hardware::DisplayConfig,
+        last_shown: &BTreeMap<String, settings_store::hardware::MonitorLast>,
+    ) {
+        for entry in &mut self.live {
+            if entry.kept.is_none() && !config.outputs.contains_key(&entry.config_key) {
+                entry.kept = last_shown
+                    .get(&entry.config_key)
+                    .map(|last| hotplug::Presentation {
+                        scale: last.scale,
+                        transform: last.transform,
+                    });
+            }
+        }
+        self.relayout_with(config);
     }
 
     /// Lay out the live outputs from `config`. An output it does not
     /// mention — every output of a set never arranged before — is placed
     /// side by side, built-in panel first on the left and externals to its
-    /// right, at the scale its pixel density calls for.
+    /// right, at the scale and rotation it keeps (`LiveEntry::kept`) or,
+    /// keeping none, at the scale its pixel density calls for.
     fn relayout_with(&mut self, config: &settings_store::hardware::DisplayConfig) {
         self.live.sort_by_key(|l| {
             (
@@ -2196,7 +2235,7 @@ impl DrmDispatchState {
                 tracing::warn!(
                     connector = %key,
                     ?reason,
-                    "DRM display: the output could not be lit; it stays dark until it is replugged or the display settings change"
+                    "DRM display: the output could not be lit; it stays dark until it is replugged, the display settings change, the display wakes or the power key is pressed"
                 );
                 let mut record = LinkFailureRecord::of(snapshot, reason);
                 record.config_key.clone_from(&key);
@@ -2487,6 +2526,9 @@ impl DrmDispatchState {
             None => Vec::new(),
         };
         self.perform_all(actions);
+        // The machine was powered down: an output that could not be lit
+        // before sleep gets another attempt with the rest.
+        self.retry_failed_outputs("woke from sleep");
     }
 
     /// Run a whole sequence in order.
@@ -3272,6 +3314,7 @@ impl DrmDispatchState {
     /// reason as [`Self::handle_session_event`]; this one dwarfed the rest
     /// of the constructor at ~160 lines on its own.
     fn handle_libinput_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        self.note_input_after_wake(&event);
         match event {
             InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } => {
                 self.handle_libinput_device_event(event);
@@ -3672,11 +3715,19 @@ impl DrmDispatchState {
                     }
                     self.push(BackendEvent::TabletPadAdded(pad_description(&device)));
                 }
+                eprintln!(
+                    "tilo compositor: DRM input: device added name={:?} kind={:?}",
+                    device.name(),
+                    device_caps(&device).kind()
+                );
                 self.devices.push(device);
                 self.publish_input_snapshot();
             }
             InputEvent::DeviceRemoved { device } => {
-                tracing::info!(device = device.name(), "DRM input: device removed");
+                eprintln!(
+                    "tilo compositor: DRM input: device removed name={:?}",
+                    device.name()
+                );
                 // libinput cannot deliver a release after the keyboard that
                 // owned the key disappears. Never let a held editing key keep
                 // firing into whichever field receives focus next.
@@ -7296,7 +7347,7 @@ pub(super) mod tests {
     }
 
     /// A dispatch state with a command channel attached, plus the receiving end so a test can assert on what was sent.
-    fn dispatch_with_channel() -> (DrmDispatchState, Receiver<ScanoutCommand>) {
+    pub(super) fn dispatch_with_channel() -> (DrmDispatchState, Receiver<ScanoutCommand>) {
         let (tx, rx) = channel();
         let state = DrmDispatchState {
             commands: Some(tx),
@@ -7670,11 +7721,11 @@ pub(super) mod tests {
     const IGPU: u64 = 0xe201;
     /// The discrete GPU's. Card ranking puts it first whenever it has more
     /// connected outputs, so its outputs are adopted (and numbered) first.
-    const DGPU: u64 = 0xe200;
+    pub(super) const DGPU: u64 = 0xe200;
 
     /// Adopt one output the way `adopt_builds` does: the id is interned
     /// from its card-scoped key, so a replug gets its old id back.
-    fn adopt_on(
+    pub(super) fn adopt_on(
         state: &mut DrmDispatchState,
         device: u64,
         connector: u32,
@@ -7926,6 +7977,49 @@ pub(super) mod tests {
             state.relayout_with(&settings_store::hardware::DisplayConfig::default());
             assert_eq!(state.live[0].scale, 1.25);
             assert_eq!(state.output_table()[0].logical_size(), (1024, 640));
+        }
+        // Phase `a_monitor_lit_in_a_set_never_arranged_keeps_its_last_scale`.
+        {
+            // Two outputs arranged with the 1280x800 one at 1.25x; the
+            // session starts (or the monitor arrives) with only that one
+            // attached. Nothing live kept a scale, yet its monitor was last
+            // shown at 1.25x, and a virtual connector reports no size.
+            use settings_store::hardware::{
+                AttachedOutput, DisplayConfig, DisplayProfiles, DisplaySet, OutputConfig,
+            };
+            let attached = |connector| AttachedOutput {
+                connector,
+                connector_label: connector,
+                monitor: None,
+            };
+            let mut arranged = DisplayConfig::default();
+            arranged
+                .outputs
+                .insert("Virtual-3".into(), OutputConfig::default());
+            arranged
+                .outputs
+                .insert("Virtual-4".into(), OutputConfig::at_scale(1.25));
+            let mut profiles = DisplayProfiles::default();
+            profiles.remember(
+                &DisplaySet::of([attached("Virtual-3"), attached("Virtual-4")]),
+                &arranged,
+            );
+            let alone = DisplaySet::of([attached("Virtual-4")]);
+            let config = profiles.layout_for(&alone).unwrap_or_default();
+
+            let (mut state, _rx) = dispatch_with_channel();
+            state.live = vec![named(entry(1, 11, (1280, 800), None), "Virtual-4")];
+            state.relayout_recalling(&config, &profiles.last_shown_in(&alone));
+            assert_eq!(state.live[0].scale, 1.25);
+            assert_eq!(state.output_table()[0].logical_size(), (1024, 640));
+
+            // A layout saved for exactly this set still wins.
+            let mut chosen = DisplayConfig::default();
+            chosen
+                .outputs
+                .insert("Virtual-4".into(), OutputConfig::at_scale(2.0));
+            state.relayout_recalling(&chosen, &profiles.last_shown_in(&alone));
+            assert_eq!(state.live[0].scale, 2.0);
         }
         // Phase `synthesize_for_tests_publishes_its_outputs`.
         {
@@ -9296,7 +9390,7 @@ pub(super) mod tests {
         )));
     }
 
-    fn edid(serial: &str) -> settings_store::hardware::MonitorIdentity {
+    pub(super) fn edid(serial: &str) -> settings_store::hardware::MonitorIdentity {
         settings_store::hardware::MonitorIdentity {
             serial: serial.into(),
             ..settings_store::hardware::MonitorIdentity::default()

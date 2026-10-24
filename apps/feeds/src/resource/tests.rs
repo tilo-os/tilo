@@ -905,11 +905,11 @@ fn captures_stage_through_actions_and_the_reader() {
     assert_eq!(detail.harness().inspection().viewport, [560, 800]);
     assert!(!detail.state().feeds.is_empty());
     assert!(
-        detail
-            .harness()
-            .inspection_json()
-            .unwrap()
-            .contains("nav-shell-back")
+        ui::window_toolbar::declared().is_some_and(|bar| bar
+            .leading
+            .iter()
+            .any(|action| action.id == "nav-shell-back")),
+        "the narrow article offers Back in the window bar"
     );
 
     let settings = TestApp::<FeedsShell>::capture(Some("reader-settings")).unwrap();

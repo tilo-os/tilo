@@ -147,6 +147,7 @@ pub(super) fn propose(
                 label: plan.title.clone(),
                 note: t_args("window-transfer-awaiting-owner", &[("to", to.into())]),
             },
+            app_title: None,
         },
     );
     let wait = Wait::Sending(hosted.propose(
@@ -536,7 +537,6 @@ pub(super) fn consent(st: &mut ChromeState, transfers: &mut WindowTransfers) {
             tree.desktop
                 .workspaces
                 .iter()
-                .filter(|ws| tree.requires_native_owner(ws.room()) || hosted.hosts(ws.room()))
                 .map(|ws| (ws.room(), ws.name.clone()))
                 .collect()
         };

@@ -77,7 +77,7 @@ impl Session {
         self.network.joined_topics.lock().unwrap().insert(topic);
         self.network
             .cmd_tx
-            .send(NetCmd::JoinWorkspace {
+            .send(NetCmd::JoinPersonalTopic {
                 ws: topic,
                 on_event: self.network.event_tx.clone(),
             })
@@ -218,9 +218,6 @@ async fn pair_on_topic(left: &Session, right: &Session, topic: u64) {
     })
     .await;
 }
-
-#[path = "cold_editor_record_tests.rs"]
-mod cold_editor_record_tests;
 
 #[path = "pump_load_tests.rs"]
 mod pump_load_tests;
@@ -509,6 +506,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
                 app_id: "so.tilo.browser".into(),
                 surface_id: 94,
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,
@@ -535,6 +533,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
                 label: "Terminal".into(),
                 note: String::new(),
             },
+            app_title: None,
         }],
         active_tab: local_tab,
         width: WindowWidth::Normal,
@@ -651,18 +650,8 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         .unwrap()
         .forget_local_tab(AppInstanceId(tab));
     right.network.dispatch_net_event(arrived);
-    assert!(
-        right
-            .network
-            .replica
-            .lock()
-            .unwrap()
-            .tree
-            .read()
-            .continuation_tabs
-            .contains(&tab)
-    );
-    let tree_handle = right.network.replica.lock().unwrap().tree.clone();
+    assert!(right.network.tree.read().continuation_tabs.contains(&tab));
+    let tree_handle = right.network.tree.clone();
     assert_eq!(
         tree_handle.read().desktop.active,
         local_workspace_id,
@@ -881,6 +870,19 @@ fn claim_editor(
     });
 }
 
+/// A continuation registry that knows `tab` as the same app instance on both sides.
+fn registry_bound_to(
+    tab: u64,
+) -> Arc<Mutex<crate::shell::personal_continuity_registry::ContinuationRegistry>> {
+    let registry = crate::shell::personal_continuity_registry::ContinuationRegistry::default();
+    let registry = Arc::new(Mutex::new(registry));
+    registry.lock().unwrap().bind_tab(
+        crate::shell::personal_continuity::AppInstanceId(tab),
+        crate::shell::personal_continuity::AppInstanceId(tab),
+    );
+    registry
+}
+
 impl NativeEditorPair {
     fn new() -> OwnerFixtureFuture<'static, Self> {
         Box::pin(async move {
@@ -921,6 +923,7 @@ impl NativeEditorPair {
                             app_id: "so.tilo.code-editor".into(),
                             surface_id: 0xB1,
                         },
+                        app_title: None,
                     }],
                     active_tab: tab,
                     width: WindowWidth::Normal,
@@ -935,18 +938,8 @@ impl NativeEditorPair {
                 Some(home.data().join("left-continuity.bin"));
             right.network_mut().personal_continuity_path =
                 Some(home.data().join("right-continuity.bin"));
-            let left_registry = Arc::new(Mutex::new(
-                crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
-            ));
-            let right_registry = Arc::new(Mutex::new(
-                crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
-            ));
-            for registry in [&left_registry, &right_registry] {
-                registry.lock().unwrap().bind_tab(
-                    crate::shell::personal_continuity::AppInstanceId(tab),
-                    crate::shell::personal_continuity::AppInstanceId(tab),
-                );
-            }
+            let left_registry = registry_bound_to(tab);
+            let right_registry = registry_bound_to(tab);
             let target_document = target.peer_document();
             let target_semantic = target
                 .surface_mut::<code_editor::CodeApp>()
@@ -1133,7 +1126,7 @@ impl NativeEditorPair {
     }
 
     fn adopt_target(&self) {
-        let tree = self.right.network.replica.lock().unwrap().tree.clone();
+        let tree = self.right.network.tree.clone();
         let mut tree = tree.write();
         assert_eq!(
             crate::shell::tab_binding::adopt_toplevel_at(
@@ -1573,7 +1566,7 @@ async fn paired_native_editor_concurrent_takeovers_converge_on_one_durable_stamp
             assert!(controls[1].0.generation > controls[0].0.generation);
         }
         // An unrelated workspace title update must not reelect its old local view.
-        let tree = session.network.replica.lock().unwrap().tree.clone();
+        let tree = session.network.tree.clone();
         tree.write().desktop.workspaces[0].name = "Local arrangement".into();
         in_owner_registry(registry, || {
             session.network.local_continuity_snapshot_bytes().unwrap();

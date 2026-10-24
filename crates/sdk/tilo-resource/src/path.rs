@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::collection::Id;
 use crate::model::Model;
+pub use crate::upsert::At;
 
 /// One step of a [`Path`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -604,7 +605,7 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
     pub fn insert(&self, at: usize, value: &T) -> Edit<R> {
         self.edit(EditOp::InsertItem {
             id: None,
-            at,
+            at: At::Index(at),
             value: crate::shape::without_absent::<T>(value.to_json()),
         })
     }
@@ -614,7 +615,7 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
     pub fn insert_as(&self, id: &Id, at: usize, value: &T) -> Edit<R> {
         self.edit(EditOp::InsertItem {
             id: Some(id.clone()),
-            at,
+            at: At::Index(at),
             value: crate::shape::without_absent::<T>(value.to_json()),
         })
     }
@@ -628,7 +629,25 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
     /// Move the item `id` to `at` (clamped to the end).
     #[must_use]
     pub fn move_to(&self, id: &Id, at: usize) -> Edit<R> {
-        self.edit(EditOp::MoveTo { id: id.clone(), at })
+        self.edit(EditOp::MoveTo {
+            id: id.clone(),
+            at: At::Index(at),
+        })
+    }
+
+    /// Update the one item whose fields hold `matching` with the fields of
+    /// `value`, else append `value` with them ([`EditOp::UpsertItem`]).
+    #[must_use]
+    pub fn upsert_by(
+        &self,
+        matching: serde_json::Map<String, serde_json::Value>,
+        value: serde_json::Value,
+    ) -> Edit<R> {
+        self.edit(EditOp::UpsertItem {
+            matching,
+            value,
+            id: None,
+        })
     }
 }
 
@@ -746,8 +765,20 @@ pub enum EditOp {
     InsertItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<Id>,
-        at: usize,
+        at: At,
         value: serde_json::Value,
+    },
+    /// Update the one item of a collection whose fields hold `matching`
+    /// with the fields of `value`, else append `value` (with `matching`'s
+    /// fields) as a new item, under `id` when given. Resolved against the
+    /// document as it is when the edit applies; refused when more than one
+    /// item matches.
+    UpsertItem {
+        #[serde(rename = "match")]
+        matching: serde_json::Map<String, serde_json::Value>,
+        value: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<Id>,
     },
     /// Remove an item from a collection.
     RemoveItem {
@@ -756,7 +787,7 @@ pub enum EditOp {
     /// Move an item within a collection.
     MoveTo {
         id: Id,
-        at: usize,
+        at: At,
     },
     /// Remove an entry of a map.
     RemoveKey {
@@ -842,15 +873,24 @@ enum EditOpWire {
     InsertItem {
         #[serde(default)]
         id: Option<Id>,
-        at: usize,
+        #[serde(default)]
+        at: At,
         value: serde_json::Value,
+    },
+    UpsertItem {
+        #[serde(rename = "match")]
+        matching: serde_json::Map<String, serde_json::Value>,
+        value: serde_json::Value,
+        #[serde(default)]
+        id: Option<Id>,
     },
     RemoveItem {
         id: Id,
     },
     MoveTo {
         id: Id,
-        at: usize,
+        #[serde(default)]
+        at: At,
     },
     RemoveKey {
         key: String,
@@ -899,6 +939,15 @@ impl From<EditOpWire> for EditOp {
             EditOpWire::Insert { value } => Self::Insert { value },
             EditOpWire::Remove { value } => Self::Remove { value },
             EditOpWire::InsertItem { id, at, value } => Self::InsertItem { id, at, value },
+            EditOpWire::UpsertItem {
+                matching,
+                value,
+                id,
+            } => Self::UpsertItem {
+                matching,
+                value,
+                id,
+            },
             EditOpWire::RemoveItem { id } => Self::RemoveItem { id },
             EditOpWire::MoveTo { id, at } => Self::MoveTo { id, at },
             EditOpWire::RemoveKey { key } => Self::RemoveKey { key },
@@ -943,6 +992,7 @@ impl EditOp {
             Self::Insert { .. } => "insert",
             Self::Remove { .. } => "remove",
             Self::InsertItem { .. } => "insert-item",
+            Self::UpsertItem { .. } => "upsert-item",
             Self::RemoveItem { .. } => "remove-item",
             Self::MoveTo { .. } => "move-to",
             Self::RemoveKey { .. } => "remove-key",
@@ -1238,7 +1288,7 @@ fn edit_schema() -> serde_json::Value {
             },
             "op": {"type": "string", "enum": [
                 "set", "splice", "replace", "add", "insert", "remove", "insert-item",
-                "remove-item", "move-to", "remove-key", "set-cell", "insert-row",
+                "upsert-item", "remove-item", "move-to", "remove-key", "set-cell", "insert-row",
                 "insert-column", "remove-row", "remove-column", "settle", "rich",
             ]},
         },

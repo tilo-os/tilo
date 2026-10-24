@@ -41,6 +41,8 @@ mod member_records;
 pub use member_records::PreparedRecord;
 mod hosts;
 mod layout_scope;
+mod owner_commands;
+pub use owner_commands::{AppAction, OwnerCommand, app_action_lifetime};
 mod pages;
 mod peer_parts;
 mod private;
@@ -94,7 +96,8 @@ pub use tilo_relay_session::rooms::{
     IssueInvitationRequest, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
     MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT,
     ROOM_ADMIN_ALPN, RemoveMemberRequest, RoomAdminClient, RoomAdminError, RoomCommand,
-    RoomListing, RoomReply, RoomSummary, SetMemberRoleRequest, UNHOST_ROOM, member_resource,
+    RoomListing, RoomReply, RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM,
+    member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;

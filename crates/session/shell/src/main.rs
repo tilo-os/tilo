@@ -151,7 +151,7 @@ mod macos_tests {
                     prepare(&options).is_err(),
                     "a second session must not overwrite this profile"
                 );
-                session.tree.write().append_empty_workspace("Mac work");
+                session.tree.write().create_hosted_workspace("Mac work");
                 session.tree.read().queue_save();
             }
             let session = prepare(&options).unwrap();
@@ -362,6 +362,7 @@ mod macos_tests {
                     kind: shell::shell::state::AppKind::FileExplorer,
                     label: "Files".into(),
                 },
+                app_title: None,
             };
             let request = tilo_desktop::resolver::TileRequest {
                 room: shell::shell::state::RoomId::new(),

@@ -71,8 +71,7 @@ fn a_destructive_verb_confirmed_later_still_applies() {
     );
     // The person reads the prompt before confirming it.
     std::thread::sleep(std::time::Duration::from_millis(20));
-    app.harness().type_text("CONFIRM");
-    app.harness().key("Enter");
+    assert!(app.confirm_asked().is_some(), "the host asks");
     assert!(
         app.state().notes.is_empty(),
         "the confirmed verb applied: {:?}",
@@ -91,8 +90,7 @@ fn a_destructive_verb_without_arguments_asks_and_applies() {
         2,
         "nothing happens before confirming"
     );
-    app.harness().type_text("CONFIRM");
-    app.harness().key("Enter");
+    assert!(app.confirm_asked().is_some(), "the host asks");
     assert!(
         app.state().notes.is_empty(),
         "the confirmed verb applied: {:?}",

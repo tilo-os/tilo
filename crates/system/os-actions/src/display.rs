@@ -99,6 +99,19 @@ fn backlight_state_in(root: &Path) -> Option<String> {
     ))
 }
 
+/// Whether the panel backlight is powered, as the kernel holds it:
+/// `Some(true)` for `bl_power` 0 (`FB_BLANK_UNBLANK`), `Some(false)` for any
+/// blank level, `None` when there is no backlight or it says nothing. A wake
+/// that leaves the backlight blanked has not lit the panel, whatever the CRTC
+/// scans out.
+pub fn backlight_powered() -> Option<bool> {
+    backlight_powered_in(Path::new(BACKLIGHT))
+}
+
+fn backlight_powered_in(root: &Path) -> Option<bool> {
+    read_u32(&preferred_device(root)?, "bl_power").map(|power| power == 0)
+}
+
 /// Whether this machine has a controllable backlight at all. Desktops and most VMs do not,
 /// and the quick-settings panel uses this to leave the slider out rather than show a dead one.
 pub fn has_backlight() -> bool {
@@ -353,6 +366,23 @@ mod tests {
         );
         let none = tempfile::tempdir().unwrap();
         assert_eq!(backlight_state_in(none.path()), None);
+    }
+
+    #[test]
+    fn the_backlight_is_powered_only_while_bl_power_is_unblank() {
+        let dir = tree(&[("dp_aux_backlight", 2047, 2047)]);
+        let dev = dir.path().join("dp_aux_backlight");
+        assert_eq!(
+            backlight_powered_in(dir.path()),
+            None,
+            "no bl_power says nothing"
+        );
+        fs::write(dev.join("bl_power"), "4\n").unwrap();
+        assert_eq!(backlight_powered_in(dir.path()), Some(false));
+        fs::write(dev.join("bl_power"), "0\n").unwrap();
+        assert_eq!(backlight_powered_in(dir.path()), Some(true));
+        let none = tempfile::tempdir().unwrap();
+        assert_eq!(backlight_powered_in(none.path()), None);
     }
 
     #[test]

@@ -240,6 +240,9 @@ struct CacheFingerprint {
     /// How far the centre's cross-fade between the time and a live activity
     /// has come, in thousandths; `None` at rest.
     center_fade: Option<u16>,
+    /// The centre selector's width while it morphs between the time and a
+    /// live activity, in quarter pixels; `None` at rest.
+    center_width: Option<u32>,
     app_tray_revision: u64,
     continuity: Option<String>,
     avatar_ask: Option<crate::chrome::AvatarAsk>,
@@ -685,6 +688,11 @@ pub struct TopBarChrome {
     /// The centre swapping the time for a live activity and back: a
     /// cross-fade (`ui::motion::CrossFade`, `true` is the activity).
     center_fade: ui::motion::CrossFade<bool>,
+    /// The centre selector's width following its content (the time, or a
+    /// live activity filling the lane) on the standard expand/collapse
+    /// motion (`ui::motion::Extent`), so the selector grows into the lane
+    /// and shrinks back to the time rather than jumping.
+    center_width: ui::motion::Extent,
     /// The centre selector as painted and hit-tested: as wide as its
     /// content needs, never wider than [`Self::center_lane`].
     center_rect: Rect,
@@ -982,6 +990,7 @@ impl TopBarChrome {
             activity_pulse: 0,
             activity_started: None,
             center_fade: ui::motion::CrossFade::new(false),
+            center_width: ui::motion::Extent::default(),
             center_rect: Rect::ZERO,
             center_lane: Rect::ZERO,
             last_cursor: None,
@@ -1054,6 +1063,7 @@ impl TopBarChrome {
                     .map(|a| (a.label.clone(), a.remaining_secs, a.overlay, a.paused))
             }),
             center_fade: self.center_fade_key(),
+            center_width: self.center_width_key(),
             app_tray_revision: self.app_tray_revision(),
             continuity: self.continuity_label(),
             avatar_ask: self.chrome_avatar_ask(),
@@ -2211,7 +2221,21 @@ impl TopBarChrome {
         center_y: f64,
     ) -> f64 {
         let lane_w = self.center_band_width(theme);
-        let band_w = self.center_pill_width(theme, text_renderer, lane_w);
+        let target_w = self.center_pill_width(theme, text_renderer, lane_w);
+        let now = ui::time::now();
+        if (self.center_lane.width() - lane_w).abs() > 0.5 {
+            // A new lane (the bar's first paint, a resized display): the
+            // selector takes its width as it is.
+            self.center_width.snap(target_w);
+        } else if (self.center_width.target() - target_w).abs() > 0.25 {
+            self.center_width.follow(
+                target_w,
+                theme.motion(),
+                ui::tokens::MotionSource::Pointer,
+                now,
+            );
+        }
+        let band_w = self.center_width.get(now).clamp(0.0, lane_w);
         // The same height as every other bar control, so the band's top
         // and bottom edges line up with the pills either side of it.
         let band_h = BAR_CONTROL_PX;
@@ -2230,7 +2254,7 @@ impl TopBarChrome {
             band.y1,
         );
         // The quiet selector pill comes and goes with the activity.
-        let pill = self.center_activity_opacity(ui::time::now());
+        let pill = self.center_activity_opacity(now);
         if pill > 0.0 {
             let band_rr = RoundedRect::from_rect(
                 band,
@@ -3246,6 +3270,38 @@ impl TopBarChrome {
         })
     }
 
+    /// The centre selector's width as the cache sees it while it morphs:
+    /// in quarter pixels, so each of its frames draws anew.
+    fn center_width_key(&self) -> Option<u32> {
+        let now = ui::time::now();
+        self.center_width.is_moving(now).then(|| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a bar's width in quarter pixels, clamped non-negative"
+            )]
+            let quarters = (self.center_width.get(now) * 4.0).round().max(0.0) as u32;
+            quarters
+        })
+    }
+
+    /// Whether the centre is moving: the time and an activity cross-fading,
+    /// or the selector morphing between their widths.
+    fn center_is_moving(&self) -> bool {
+        let now = ui::motion::frame_now();
+        self.center_fade.is_moving(now) || self.center_width.is_moving(now)
+    }
+
+    /// When the centre's motion settles, if it is moving.
+    #[cfg(test)]
+    fn center_settles_at(&self) -> Option<Instant> {
+        self.center_fade
+            .settles_at()
+            .into_iter()
+            .chain(self.center_width.settles_at())
+            .max()
+    }
+
     /// Whether the centre on screen is not the centre as it is now: the
     /// cached frame was painted part-way through a cross-fade that has
     /// since settled, or the activity came or went since. Without this the
@@ -3261,6 +3317,7 @@ impl TopBarChrome {
             return false;
         }
         self.center_fade_key() != self.cache_fp.center_fade
+            || self.center_width_key() != self.cache_fp.center_width
             || self.activity_is_visible() != self.cache_fp.activity_visible
     }
 
@@ -4680,11 +4737,11 @@ impl Widget for TopBarChrome {
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
     fn needs_animation_frame(&self) -> bool {
-        self.center_fade.is_moving(ui::motion::frame_now()) || self.center_frame_stale()
+        self.center_is_moving() || self.center_frame_stale()
     }
 
     fn needs_redraw(&self) -> bool {
-        if self.center_fade.is_moving(ui::motion::frame_now()) || self.center_frame_stale() {
+        if self.center_is_moving() || self.center_frame_stale() {
             return true;
         }
         if self.presence() != self.cache_fp.presence {
@@ -6199,8 +6256,8 @@ mod tests {
                 at += Duration::from_millis(40);
             }
             // Then the fade settles with no other reason to paint.
-            let settled = bar.center_fade.settles_at().map_or(at, |end| end.max(at))
-                + Duration::from_millis(1);
+            let settled =
+                bar.center_settles_at().map_or(at, |end| end.max(at)) + Duration::from_millis(1);
             ui::time::testing::with_monotonic_time(settled, || {
                 assert!(
                     bar.needs_redraw(),
@@ -6225,6 +6282,96 @@ mod tests {
                 assert_eq!(*bar.center_fade.shown(), unread > 0, "round {round}");
             });
             at = settled + Duration::from_millis(1);
+        }
+    }
+
+    // The centre selector jumped from the time's width to the whole lane
+    // when an activity arrived; it grows into the lane on the standard
+    // expand/collapse motion and shrinks back to the time when it goes.
+    #[test]
+    fn the_centre_selector_grows_into_the_lane_and_back() {
+        let mut tree = DesktopTree {
+            workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let vp = taffy
+            .new_with_children(
+                Style {
+                    size: Size::from_lengths(1600.0, TOPBAR_HEIGHT_PX),
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                vp,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut paint_at = |bar: &mut TopBarChrome, at: Instant| {
+            ui::time::testing::with_monotonic_time(at, || {
+                bar.refresh_status_and_media_state();
+                let mut scene = Scene::new();
+                bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            });
+        };
+        let start = ui::time::now();
+        paint_at(&mut bar, start);
+        let time_w = bar.center_rect.width();
+        let lane_w = bar.center_lane.width();
+        assert!(time_w + 1.0 < lane_w, "the time is narrower than its lane");
+
+        for (shown, from, to) in [(3_usize, time_w, lane_w), (0, lane_w, time_w)] {
+            let at = bar.center_settles_at().unwrap_or(start).max(start) + Duration::from_secs(1);
+            chrome.borrow_mut().publish_activity_glance(
+                Some("Ada prepared the launch brief".to_owned()),
+                shown,
+                100 + shown as u64,
+                None,
+            );
+            paint_at(&mut bar, at);
+            assert!(
+                (bar.center_rect.width() - from).abs() < 0.5,
+                "the selector starts from where it was: {} vs {from}",
+                bar.center_rect.width()
+            );
+            let mid = at + Duration::from_millis(60);
+            ui::time::testing::with_monotonic_time(mid, || {
+                assert!(bar.needs_animation_frame(), "the morph asks for frames");
+                assert!(bar.needs_redraw(), "and draws each of them");
+            });
+            paint_at(&mut bar, mid);
+            let drawn = bar.center_rect.width();
+            assert!(
+                drawn > from.min(to) + 0.5 && drawn < from.max(to) - 0.5,
+                "part of the way from {from} to {to}: {drawn}"
+            );
+            let settled = bar.center_settles_at().expect("morphing") + Duration::from_millis(1);
+            paint_at(&mut bar, settled);
+            assert!(
+                (bar.center_rect.width() - to).abs() < 0.5,
+                "it lands on {to}: {}",
+                bar.center_rect.width()
+            );
+            ui::time::testing::with_monotonic_time(settled, || {
+                assert!(!bar.needs_animation_frame(), "then it asks for nothing");
+                assert!(!bar.needs_redraw(), "and is quiet");
+            });
         }
     }
 
@@ -6269,6 +6416,7 @@ mod tests {
                         app_id: "so.tilo.editor".into(),
                         surface_id: *surface,
                     },
+                    app_title: None,
                 }],
                 active_tab: *surface,
                 width: WindowWidth::Normal,
@@ -6444,6 +6592,7 @@ mod tests {
                     app_id: "so.tilo.editor".into(),
                     surface_id: 42,
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,

@@ -514,6 +514,41 @@ impl ShellOverlayHost {
         self.qs_refresh.kick_field(field);
     }
 
+    /// The volume icon: flip mute on the sink the panel shows, at its level.
+    /// The bar and the panel read the same status, so both answer at once.
+    pub(super) fn toggle_quick_settings_mute(&mut self, chrome: &Chrome) {
+        let Some(previous) = chrome.borrow().quick_settings.status.volume else {
+            return;
+        };
+        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+            self.qs_actions.as_ref(),
+        );
+        let result = crate::shell::media_keys::commit_mute(
+            &crate::shell::media_keys::DispatcherAudio(&actions),
+            self.status_bridge.as_ref(),
+            previous,
+            !previous.muted,
+        );
+        {
+            let mut st = chrome.borrow_mut();
+            match result {
+                Ok((committed, osd)) => {
+                    st.quick_settings.status.volume = Some(committed);
+                    st.show_osd(osd);
+                }
+                Err(error) => {
+                    tracing::warn!(target: "tilo::os_actions", op = "mute", %error, "quick setting failed");
+                    st.push_notification(
+                        t("host-qs-change-failed-volume"),
+                        t("host-qs-change-failed-value-restored"),
+                    );
+                }
+            }
+            st.bump();
+        }
+        self.qs_refresh.kick_field(QsField::Volume);
+    }
+
     /// Close quick settings and open Settings, at `link` when it names a
     /// page or a setting (`settings://speakers`). A link goes through the
     /// same door as a palette hit on that page, so placement, duplicate
@@ -651,6 +686,7 @@ impl ShellOverlayHost {
                 }
                 self.execute_session_action(os_actions::SessionAction::Lock);
             }
+            RootAction::ToggleMute => self.toggle_quick_settings_mute(chrome),
             RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
                 self.layers.power_menu.open();

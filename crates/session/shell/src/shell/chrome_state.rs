@@ -25,10 +25,6 @@ use tilo_desktop::notifications::{
 };
 pub use tilo_desktop::workspace_settings::{GrantDraft, WsTab};
 
-/// The place a deletion toast's workspace goes back to when it was archived:
-/// among the archived ones, not into the switcher's list.
-const ARCHIVED_UNDO: usize = usize::MAX;
-
 /// An action-owned request to initialize only this freshly minted scratch tab.
 /// It is intentionally session-local; reopening a saved tab never recreates it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -523,8 +519,6 @@ pub struct QuickSettingsState {
     /// spans several: what "brighter" and "dimmer" adjust. The overlay host
     /// keeps it current whenever search refreshes.
     pub focused_display: Option<String>,
-    /// 0.0..=1.0.
-    pub volume: f32,
     /// False after the audio service cannot provide a sink reading.
     pub volume_available: bool,
     pub wifi: bool,
@@ -535,11 +529,10 @@ pub struct QuickSettingsState {
     pub bluetooth_available: bool,
     /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
-    /// The top bar's battery reading — same type, same sysfs parser — so
-    /// the panel and the tray cannot disagree about the charge.
-    pub battery: tilo_power_mgmt::BatterySnapshot,
-    /// Time to empty or to full, when the battery reports its rate.
-    pub battery_time: Option<tilo_power_mgmt::BatteryTime>,
+    /// Battery, link and volume: the one copy the top bar draws too, taken
+    /// each frame from [`crate::shell::status::StatusBridge`] with no lock
+    /// held across a draw; `None` fields until a reading lands.
+    pub status: crate::shell::status::SystemStatus,
     /// `None` when fwupd is unavailable, otherwise the offered update count.
     pub firmware_updates: Option<usize>,
     pub radios: os_actions::RadioState,
@@ -564,9 +557,6 @@ pub struct QuickSettingsState {
     /// Quick Settings. Cleared whenever Quick Settings opens another way.
     pub paste_origin: Option<PasteOrigin>,
     pub wifi_networks: Vec<WifiNetwork>,
-    /// The primary link the status poller last observed: what Wi-Fi is
-    /// connected to even when discovery failed or has not answered yet.
-    pub link: Option<os_actions::LinkStatus>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
     /// A typed radio mutation is admitted but has not completed.
@@ -663,14 +653,12 @@ impl Default for QuickSettingsState {
             brightness_available: false,
             displays: Vec::new(),
             focused_display: None,
-            volume: 0.4,
             volume_available: true,
             wifi: true,
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: tilo_power_mgmt::BatterySnapshot::absent(),
-            battery_time: None,
+            status: crate::shell::status::SystemStatus::default(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -684,7 +672,6 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
-            link: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -713,14 +700,18 @@ impl QuickSettingsState {
             brightness_available: true,
             displays: Vec::new(),
             focused_display: None,
-            volume: 0.4,
             volume_available: true,
             wifi: true,
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: tilo_power_mgmt::BatterySnapshot::absent(),
-            battery_time: None,
+            status: crate::shell::status::SystemStatus {
+                volume: Some(os_actions::VolumeState {
+                    level: 0.4,
+                    muted: false,
+                }),
+                ..crate::shell::status::SystemStatus::default()
+            },
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -734,7 +725,6 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
-            link: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -876,10 +866,6 @@ pub struct ChromeState {
     pub open_target: OpenTarget,
     /// What the overlay host publishes for search as it changes.
     pub search_context: SearchContextState,
-    /// Copied here once per frame from
-    /// [`crate::shell::status::StatusBridge`] with no lock held across
-    /// a draw. `None` until a poller publishes.
-    pub status: crate::shell::status::SystemStatus,
     /// Session-local projection from Clocks; schedules never enter chrome.
     pub clock_activity: Option<ClockActivity>,
     /// At most one — an OSD counts a value up, so eight volume presses
@@ -923,10 +909,10 @@ pub struct ChromeState {
     pub activity_glance: ActivityGlance,
     /// The last wave at this person, which the top bar says for a moment.
     pub(crate) wave_notice: Option<tilo_desktop::chrome::WaveNotice>,
-    /// The calls in progress in the workspace in front that this device is
-    /// not in, as the people panel reads them from presence: what search's
-    /// Happening now offers to join ([`Self::publish_calls_here`]).
-    pub calls_here: Vec<crate::shell::search::providers::happening_now::LiveCall>,
+    /// The calls in progress in each workspace that this device is not in,
+    /// as the people panel reads them from presence: what search's
+    /// Happening now offers to join ([`Self::publish_live_calls`]).
+    pub live_calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
     activity_focus_request: Option<ActivityFocus>,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     history_action_request: Option<String>,
@@ -1017,7 +1003,9 @@ pub struct ChromeState {
     /// NOT persisted — the compositor sets it from live state each
     /// frame via [`Self::set_fullscreen_group`]. Client fullscreen is a
     /// per-output overlay, so the native loop writes `None` here every
-    /// tick; do not park Super+F in this slot (W07).
+    /// tick except while the shell takes the input over it
+    /// (`FrameBuilder::set_client_fullscreen_group`); do not park Super+F
+    /// in this slot (W07).
     fullscreen_group: Option<u64>,
     /// Super+F (and the action door) park the focused group here. Kept
     /// separate from [`Self::fullscreen_group`], which the compositor
@@ -1053,6 +1041,10 @@ pub struct ChromeState {
     /// `None` is working; `Some(reason)` means every app runs alone —
     /// the one collaboration failure an app can't report for itself.
     pub collab_unavailable: Option<String>,
+    /// While this device's certificate is refused for the clock's reading
+    /// alone, the notice that says so: the identity is intact, and the
+    /// workspaces connect once the clock is right.
+    pub identity_clock_notice: Option<u64>,
     /// The documents open tabs are showing. Held here because chrome
     /// is what everything outside the widget tree already reaches
     /// through. Starts in-memory so tests write nothing to disk.
@@ -1129,6 +1121,8 @@ pub struct ChromeState {
     /// Someone asked to rename the focused strip without saying the name:
     /// the overlay host opens the switcher's name field for it.
     strip_rename_requested: bool,
+    /// A tab whose name field in its pill was asked for, for the overlay host.
+    pub(crate) tab_rename_request: Option<crate::shell::state::TabId>,
     strip_switcher_requested: bool,
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
@@ -1140,9 +1134,6 @@ pub struct ChromeState {
     /// Recently closed tabs, for the Reopen Closed Tab action.
     closed_tabs: crate::shell::closed_tabs::ClosedTabStack,
     pending_closed_tabs: Vec<crate::shell::closed_tabs::ClosedTab>,
-    /// Toasts that undo a workspace deletion, by toast id: where the
-    /// workspace was and what it held.
-    workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
     /// Notices of an app that ran out of memory, by toast id: the closed-tab
     /// serials of its windows, which Reopen puts back where they were.
     memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
@@ -1164,15 +1155,9 @@ enum IdentitySource {
 }
 
 impl IdentitySource {
-    fn local_user_for_room(&self, room: &crate::shell::state::RoomId) -> String {
-        match self {
-            Self::SessionRegistry => crate::shell::state::local_user_id_for_room(room),
-            Self::Explicit(principal) => principal.clone(),
-        }
-    }
-
-    /// [`Self::local_user_for_room`] for callers on the input and frame loop,
-    /// which ask on every key and frame: it never waits for the identity
+    /// The identity this session acts as in `room`, for callers on the
+    /// input and frame loop, which ask on every key and frame: it never
+    /// waits for the identity
     /// directory after the first answer, and a room with no identity of its
     /// own presents `session_user`, the session's identity chrome holds,
     /// rather than reading it from the disk again. Whoever records
@@ -1255,7 +1240,6 @@ impl ChromeState {
             search_resource_scope: None,
             open_target: OpenTarget::default(),
             search_context: SearchContextState::default(),
-            status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
@@ -1270,7 +1254,7 @@ impl ChromeState {
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             wave_notice: None,
-            calls_here: Vec::new(),
+            live_calls: Vec::new(),
             activity_focus_request: None,
             workspace_view_request: None,
             history_action_request: None,
@@ -1308,12 +1292,14 @@ impl ChromeState {
             single_strip: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
+            identity_clock_notice: None,
             peer_sync_requests: Vec::new(),
             publications: BTreeMap::new(),
             presence_requests: Vec::new(),
             screenshot_sends: Vec::new(),
             strip_switcher_open: false,
             strip_rename_requested: false,
+            tab_rename_request: None,
             strip_switcher_requested: false,
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
@@ -1339,7 +1325,6 @@ impl ChromeState {
                 crate::shell::continuity_suggestion::ContinuitySuggestions::default(),
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
-            workspace_undo_toasts: BTreeMap::new(),
             memory_reopen_toasts: BTreeMap::new(),
             device_asking_toasts: BTreeMap::new(),
             consent_notices: BTreeMap::new(),
@@ -1713,6 +1698,13 @@ impl ChromeState {
         self.user_fullscreen_group.or(self.fullscreen_group)
     }
 
+    /// The group of a client in its own full screen while it is laid out
+    /// in the desktop beneath the shell's surfaces (the search palette or a
+    /// sheet is open over it), apart from the person's Super+F.
+    pub fn client_fullscreen_group(&self) -> Option<u64> {
+        self.fullscreen_group
+    }
+
     /// The group the person expanded to full screen (Super+F), apart from
     /// any client's own full screen.
     pub fn user_fullscreen_group(&self) -> Option<u64> {
@@ -1866,37 +1858,52 @@ impl ChromeState {
             .local_user_for_room_prompt(room, &self.local_user_id)
     }
 
-    /// Hand the workspaces made before this session had an identity to the
-    /// identity first-login setup just provisioned. Until then the session
-    /// acted as the OS `account` name; the new key-derived principal is no
-    /// member of a workspace that name owns, so every app opened there would
-    /// be refused its collaboration route. Boot does the same for a session
-    /// that starts with an identity already in place.
-    pub fn adopt_provisioned_identity(&mut self, account: &str) -> usize {
+    /// Act as the identity first-login setup just provisioned. A room a
+    /// host holds names its owner as the host created it, which the
+    /// projection carries here; one no host holds yet is the new
+    /// identity's ([`crate::shell::state::WorkspaceTree::claim_own_unhosted_rooms`]).
+    pub fn adopt_provisioned_identity(&mut self) {
         if matches!(self.identity_source, IdentitySource::SessionRegistry) {
             self.local_user_id = crate::shell::state::local_user_id();
-        }
-        let rebound = self
-            .tree_mut()
-            .rebind_account_owned_workspaces(account, |room| {
-                self.identity_source.local_user_for_room(room)
-            })
-            .len();
-        if rebound > 0 {
-            tracing::info!(
-                "capabilities: {rebound} workspace(s) created before first-login setup now belong to its identity"
-            );
+            // The rooms no host holds yet are this identity's now.
+            self.tree_mut()
+                .claim_own_unhosted_rooms(|room| self.local_user_for_room(room));
             self.bump();
         }
-        rebound
     }
 
     /// Person principal selected for the active workspace, or the session
     /// fallback when no workspace is active.
+    ///
+    /// Reads the tree, so a caller already holding a [`Self::tree`] guard
+    /// asks [`Self::active_local_user_in`] with it instead: a second read on
+    /// the same thread waits behind any writer queued since the first, and
+    /// that writer waits for the first read, so neither moves.
     pub fn active_local_user(&self) -> crate::shell::state::UserId {
-        self.tree().desktop.active_workspace().map_or_else(
+        let room = self
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::room);
+        self.local_user_for_active_room(room)
+    }
+
+    /// [`Self::active_local_user`] for a caller that holds the tree.
+    pub fn active_local_user_in(&self, tree: &WorkspaceTree) -> crate::shell::state::UserId {
+        self.local_user_for_active_room(
+            tree.desktop
+                .active_workspace()
+                .map(crate::shell::state::Workspace::room),
+        )
+    }
+
+    fn local_user_for_active_room(
+        &self,
+        room: Option<crate::shell::state::RoomId>,
+    ) -> crate::shell::state::UserId {
+        room.map_or_else(
             || self.local_user_id.clone(),
-            |workspace| self.local_user_for_room(&workspace.room()),
+            |room| self.local_user_for_room(&room),
         )
     }
 
@@ -2066,9 +2073,6 @@ impl ChromeState {
         let user = self.active_local_user();
         let tree = self.tree();
         tree.desktop.active_workspace().is_some_and(|workspace| {
-            if !tree.governs_room(workspace.room()) {
-                return false;
-            }
             let role = if workspace.owner().is_none() {
                 Some(tilo_action_policy::Role::Owner)
             } else {
@@ -2096,57 +2100,38 @@ impl ChromeState {
 
     /// Empty buffers are a cancel — never overwrite the name with "". A
     /// guest can never turn an inline field into an apparent local rename.
+    /// The name shows here at once and goes to the room's governor, whose
+    /// admitted answer is what every member, this one too, keeps.
     pub fn commit_workspace_name(&mut self) {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
-            // A locally-created or first-boot workspace can still be
-            // ownerless when the inline editor commits before the boot
-            // adoption pass. Claim only locally-governed rooms here; a
-            // foreign room remains closed to local mutation.
-            if !trimmed.is_empty() {
-                let claimant = self.local_user_id.clone();
-                let mut tree = self.tree_mut();
-                if let Some(active_room) = tree
-                    .desktop
-                    .active_workspace()
-                    .filter(|workspace| workspace.owner().is_none())
-                    .map(crate::shell::state::Workspace::room)
-                {
-                    tree.adopt_ownerless_workspaces_with(|room| {
-                        if *room == active_room {
-                            claimant.clone()
-                        } else {
-                            self.identity_source.local_user_for_room(room)
-                        }
-                    });
-                }
-            }
             if self.can_rename_active_workspace() && !trimmed.is_empty() {
-                let mut tree = self.tree_mut();
                 let command = tilo_desktop_model::commands::DesktopCommand::RenameWorkspace {
                     name: trimmed.to_owned(),
                 };
-                let room = tree
-                    .desktop
-                    .active_workspace()
-                    .filter(|ws| ws.name != trimmed)
-                    .map(crate::shell::state::Workspace::room)
-                    .filter(|_| {
-                        tilo_desktop_model::commands::apply_to_active_workspace(
-                            &mut tree.desktop,
-                            &command,
-                            &mut || Err("renaming mints nothing".into()),
-                        )
-                        .is_ok()
-                    });
-                if let Some(room) = room {
-                    // A workspace name is both local restart state and room
-                    // metadata. Commit both authorities at the same mutation
-                    // boundary so a crash/restart cannot restore the old
-                    // label and a peer cannot immediately write it back.
-                    tree.sync_room_doc(room);
-                    tree.seed_doc_from_cache();
-                    tree.queue_save();
+                {
+                    let mut tree = self.tree_mut();
+                    let room = tree
+                        .desktop
+                        .active_workspace()
+                        .filter(|ws| ws.name != trimmed)
+                        .map(crate::shell::state::Workspace::room)
+                        .filter(|_| {
+                            tilo_desktop_model::commands::apply_to_active_workspace(
+                                &mut tree.desktop,
+                                &command,
+                                &mut || Err("renaming mints nothing".into()),
+                            )
+                            .is_ok()
+                        });
+                    if let Some(room) = room {
+                        tree.seed_doc_from_cache();
+                        tree.queue_save();
+                        tree.request_governance(
+                            room,
+                            crate::shell::state::GovernanceRequest::Command(command),
+                        );
+                    }
                 }
             }
             self.bump();
@@ -2251,14 +2236,14 @@ impl ChromeState {
         }
     }
 
-    /// Publish the calls of the workspace in front ([`Self::calls_here`]).
-    /// The same calls again change nothing, so a resting frame stays cached.
-    pub fn publish_calls_here(
+    /// Publish the calls of every workspace ([`Self::live_calls`]). The
+    /// same calls again change nothing, so a resting frame stays cached.
+    pub fn publish_live_calls(
         &mut self,
         calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
     ) {
-        if self.calls_here != calls {
-            self.calls_here = calls;
+        if self.live_calls != calls {
+            self.live_calls = calls;
             self.bump();
         }
     }
@@ -2628,11 +2613,8 @@ impl ChromeState {
     }
 
     /// Delete the workspace on screen, here and on the person's other
-    /// devices, and offer to undo it. The last workspace stays. Returns
-    /// whether it was deleted.
+    /// devices. The last workspace stays. Returns whether it was deleted.
     pub fn delete_active_workspace(&mut self) -> bool {
-        use crate::shell::i18n::{t, t_args};
-
         let active = self
             .tree()
             .desktop
@@ -2641,49 +2623,30 @@ impl ChromeState {
         let Some((room, name)) = active else {
             return false;
         };
-        // The workspace and its room go together: a host's room leaves this
+        // The workspace and its room go together: the room leaves this
         // device's record in the same step, and is joined again through its
         // host rather than undone.
-        let removed = match crate::shell::native_workspace_owner::release_workspace_room(
-            &self.tree_handle(),
-            room,
-        ) {
-            Ok(removed) => removed,
-            Err(error) => {
-                tracing::warn!(%room, %error, "the workspace was not deleted");
-                return false;
-            }
-        };
-        let Some((index, workspace)) = removed else {
-            let toast = Notification::new(
-                t_args("workspace-left-toast", &[("name", name.into())]),
-                String::new(),
-            )
-            .with_severity(NotificationSeverity::Info)
-            .with_icon_kind(NotificationIconKind::Generic);
-            self.push_notification_full(toast);
-            self.bump();
-            return true;
-        };
-        let mut toast = Notification::new(
-            t_args(
-                "workspace-deleted-toast",
-                &[("name", workspace.name.clone().into())],
-            ),
-            // The Undo button says what selecting the toast does.
+        if let Err(error) =
+            crate::shell::native_workspace_owner::release_workspace_room(&self.tree_handle(), room)
+        {
+            tracing::warn!(%room, %error, "the workspace was not deleted");
+            return false;
+        }
+        self.push_left_toast(name);
+        true
+    }
+
+    /// Tell the person the workspace `name` left this device.
+    fn push_left_toast(&mut self, name: String) {
+        use crate::shell::i18n::t_args;
+        let toast = Notification::new(
+            t_args("workspace-left-toast", &[("name", name.into())]),
             String::new(),
         )
         .with_severity(NotificationSeverity::Info)
         .with_icon_kind(NotificationIconKind::Generic);
-        toast.dismiss_after = crate::shell::closed_tabs::UNDO_WINDOW;
-        toast.actions = vec![("default".into(), t("workspace-deleted-undo"))];
-        toast.bypass_dnd = true;
-        toast.show_on_lock_screen = false;
-        self.workspace_undo_toasts
-            .insert(toast.id, (index, workspace));
         self.push_notification_full(toast);
         self.bump();
-        true
     }
 
     /// Tell the person memory ended an app or one of its jobs (`notice`
@@ -2860,21 +2823,6 @@ impl ChromeState {
         std::mem::take(&mut self.device_answers)
     }
 
-    /// The deletion toast's Undo: put the workspace back where it was, on
-    /// screen. The person's other devices get it back with the next list.
-    pub fn undo_deleted_workspace(&mut self, toast: u64) -> bool {
-        let Some((index, workspace)) = self.workspace_undo_toasts.remove(&toast) else {
-            return false;
-        };
-        let restored = if index == ARCHIVED_UNDO {
-            self.tree_mut().keep_archived(workspace)
-        } else {
-            self.tree_mut().restore_workspace(index, workspace)
-        };
-        self.bump();
-        restored
-    }
-
     /// Bring the archived workspace that is `room` back to the switcher, on
     /// screen. Answers whether there was one.
     pub fn restore_archived_workspace(&mut self, room: crate::shell::state::RoomId) -> bool {
@@ -2886,11 +2834,8 @@ impl ChromeState {
     }
 
     /// Delete the archived workspace that is `room` with its room, as a
-    /// shown one is deleted: a room of this device's own engine can be put
-    /// back from the toast; a host's room is left. Answers whether it went.
+    /// shown one is deleted. Answers whether it went.
     pub fn delete_archived_workspace(&mut self, room: crate::shell::state::RoomId) -> bool {
-        use crate::shell::i18n::{t, t_args};
-
         let name = self
             .tree()
             .archived_workspaces
@@ -2900,35 +2845,14 @@ impl ChromeState {
         let Some(name) = name else {
             return false;
         };
-        let removed = match crate::shell::native_workspace_owner::delete_archived_workspace(
+        if let Err(error) = crate::shell::native_workspace_owner::delete_archived_workspace(
             &self.tree_handle(),
             room,
         ) {
-            Ok(removed) => removed,
-            Err(error) => {
-                tracing::warn!(%room, %error, "the archived workspace was not deleted");
-                return false;
-            }
-        };
-        let mut toast = Notification::new(
-            match removed {
-                Some(_) => t_args("workspace-deleted-toast", &[("name", name.into())]),
-                None => t_args("workspace-left-toast", &[("name", name.into())]),
-            },
-            String::new(),
-        )
-        .with_severity(NotificationSeverity::Info)
-        .with_icon_kind(NotificationIconKind::Generic);
-        if let Some(workspace) = removed {
-            toast.dismiss_after = crate::shell::closed_tabs::UNDO_WINDOW;
-            toast.actions = vec![("default".into(), t("workspace-deleted-undo"))];
-            toast.bypass_dnd = true;
-            toast.show_on_lock_screen = false;
-            self.workspace_undo_toasts
-                .insert(toast.id, (ARCHIVED_UNDO, workspace));
+            tracing::warn!(%room, %error, "the archived workspace was not deleted");
+            return false;
         }
-        self.push_notification_full(toast);
-        self.bump();
+        self.push_left_toast(name);
         true
     }
 
@@ -3159,13 +3083,9 @@ impl ChromeState {
     pub fn add_workspace(&mut self, name: impl Into<String>) -> crate::shell::state::WorkspaceId {
         let id = {
             let mut tree = self.tree_mut();
-            let id = tree.append_empty_workspace(&name.into());
+            let id = tree.create_hosted_workspace(&name.into()).0;
+            tree.claim_own_unhosted_rooms(|room| self.local_user_for_room(room));
             tree.set_active(id);
-            // A room with no owner has no administrators, so nobody can
-            // grant anything in it, including the person who just made it.
-            tree.adopt_ownerless_workspaces_with(|room| {
-                self.identity_source.local_user_for_room(room)
-            });
             id
         };
         self.bump();
@@ -3677,10 +3597,6 @@ impl ChromeState {
     /// Every path that removes a toast (and the DND-suppression path)
     /// funnels through here, so history is the single complete record.
     fn record_history(&mut self, n: Notification) {
-        // An Undo that has lapsed is not something to find later.
-        if self.workspace_undo_toasts.remove(&n.id).is_some() {
-            return;
-        }
         self.device_asking_toasts.remove(&n.id);
         // The windows stay among the closed tabs; only the notice's offer lapses.
         self.memory_reopen_toasts.remove(&n.id);
@@ -3758,10 +3674,6 @@ impl ChromeState {
         let Some(removed) = self.notification_log.take_active(id) else {
             return false;
         };
-        if self.workspace_undo_toasts.contains_key(&id) {
-            self.undo_deleted_workspace(id);
-            return true;
-        }
         if let Some(key) = removed.default_action_key()
             && let Some(handle) = key.strip_prefix(crate::shell::app_action_consent::ANSWER_PREFIX)
         {
@@ -4877,6 +4789,7 @@ mod active_tab_tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "first".into(),
                         },
+                        app_title: None,
                     },
                     Tab {
                         id: 200,
@@ -4885,6 +4798,7 @@ mod active_tab_tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "second".into(),
                         },
+                        app_title: None,
                     },
                 ],
                 active_tab: active_tab_id,
@@ -5047,6 +4961,7 @@ mod active_tab_tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "third".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: 300,
                     width: StateWidth::Normal,
@@ -5079,32 +4994,14 @@ mod active_tab_tests {
             );
         }
 
-        fn committed_workspace_name_survives_restart_and_replicates_to_a_room_peer() {
+        fn committed_workspace_name_survives_restart_and_is_asked_of_the_governor() {
             let dir = tempfile::tempdir().expect("state dir");
             let path = dir.path().join("workspace.json");
             let mut tree = tree_with(100);
             let room = tree.desktop.workspaces[0].room();
             tree.persist_path = Some(path.clone());
-            tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
+            tree.own_workspaces_for_test(|_| "shell-fixture".to_string());
             tree.queue_save();
-
-            // Establish a real shared-room lineage before the rename. Merely
-            // assigning the same RoomId to two independently-seeded documents
-            // creates concurrent `name` values; that is not how a peer joins and
-            // cannot prove which later edit should win.
-            let mut replica = tree_with(100);
-            let replica_workspace = replica.join_room("Joining", room).expect("joins the room");
-            replica.desktop.active = replica_workspace;
-            // The host's invite pins it (hub 1) as the room's governor.
-            assert!(replica.pin_room_authority(room, crate::shell::state::PeerOrigin::hub(1)));
-            let baseline = tree
-                .export_room_changes_since(room, &[])
-                .expect("host room baseline");
-            replica
-                .apply_room_changes(room, &baseline, &crate::shell::state::PeerOrigin::hub(1))
-                .expect("guest joins host room");
-            assert_eq!(replica.desktop.active_workspace().unwrap().name, "Home");
-            let replica_heads = replica.room_heads(room);
 
             let chrome = ChromeState::new_with_fixture_handle(
                 tree.shared(),
@@ -5123,31 +5020,23 @@ mod active_tab_tests {
                 restarted.desktop.active_workspace().unwrap().name,
                 "Project Aurora"
             );
-            let changes = chrome
-                .borrow()
-                .tree_mut()
-                .export_room_changes_since(room, &replica_heads)
-                .expect("room rename delta");
+            let asked = chrome.borrow().tree_mut().take_governance_requests();
             assert!(
-                !changes.is_empty(),
-                "the rename must enter the room document"
-            );
-            replica
-                .apply_room_changes(room, &changes, &crate::shell::state::PeerOrigin::hub(1))
-                .expect("room merge");
-            assert_eq!(
-                replica
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.id == replica_workspace)
-                    .map(|workspace| workspace.name.as_str()),
-                Some("Project Aurora")
+                matches!(
+                    asked.as_slice(),
+                    [(
+                        asked_room,
+                        crate::shell::state::GovernanceRequest::Command(
+                            tilo_desktop_model::commands::DesktopCommand::RenameWorkspace { name }
+                        )
+                    )] if *asked_room == room && name == "Project Aurora"
+                ),
+                "the rename is asked of the room's governor, which every member reads it from"
             );
         }
 
         focus_tab_and_strip_focus_survive_restart();
-        committed_workspace_name_survives_restart_and_replicates_to_a_room_peer();
+        committed_workspace_name_survives_restart_and_is_asked_of_the_governor();
     }
 
     /// A tree with one strip/group holding `tile`, plus the ids to
@@ -5166,6 +5055,7 @@ mod active_tab_tests {
                     id: tab_id,
                     title: "Dropped".into(),
                     tile,
+                    app_title: None,
                 }],
                 active_tab: tab_id,
                 width: StateWidth::Normal,
@@ -5390,71 +5280,5 @@ mod active_tab_tests {
 }
 
 #[cfg(test)]
-mod provisioned_identity_tests {
-    use super::*;
-    use crate::shell::state::{CapRole, Workspace, WorkspaceId};
-
-    #[test]
-    fn first_login_setup_hands_account_owned_workspaces_to_the_new_identity() {
-        let mut tree = WorkspaceTree::default();
-        let mut workspace = Workspace::new(WorkspaceId(5), "Home");
-        workspace.set_owner("tester".to_string());
-        let room = workspace.room();
-        tree.desktop.workspaces.push(workspace);
-        let chrome = ChromeState::new(tree);
-        let person = "ab".repeat(32);
-        chrome.borrow_mut().act_as(person.clone());
-
-        assert_eq!(
-            chrome.borrow_mut().adopt_provisioned_identity("tester"),
-            1
-        );
-
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let workspace = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|w| w.room() == room)
-            .expect("workspace");
-        assert_eq!(workspace.owner().map(String::as_str), Some(person.as_str()));
-        assert_eq!(workspace.role_of(&person), Some(CapRole::Owner));
-        assert_eq!(workspace.role_of("tester"), None);
-        drop(tree);
-        drop(state);
-        assert_eq!(
-            chrome.borrow_mut().adopt_provisioned_identity("tester"),
-            0
-        );
-    }
-}
-
-#[cfg(test)]
-mod new_workspace_tests {
-    use super::*;
-
-    /// A workspace the person makes holds nothing but its first empty strip,
-    /// so it shows the empty-workspace launchpad.
-    #[test]
-    fn a_new_workspace_is_empty_and_shows_its_launchpad() {
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-        let id = chrome.borrow_mut().add_workspace("Fresh");
-        let state = chrome.borrow();
-        let tree = state.tree();
-        assert_eq!(tree.desktop.active, id);
-        let workspace = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == id)
-            .expect("the workspace was added");
-        assert_eq!(workspace.strips.len(), 1, "only its first strip");
-        assert!(
-            workspace.strips[0].window_groups.is_empty(),
-            "and nothing in it"
-        );
-        assert!(!workspace.has_windows(), "so the launchpad shows");
-        drop(tree);
-    }
-}
+#[path = "chrome_state_new_workspace_tests.rs"]
+mod new_workspace_tests;

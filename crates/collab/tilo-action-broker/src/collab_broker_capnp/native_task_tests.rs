@@ -469,9 +469,11 @@ impl Fixture {
             directories: self.directories.clone(),
             channel_id: route.channel_key(),
             peer_id: peer,
+            connection_id: peer,
             verified_identity: admitted,
             record_kind: None,
             lease: None,
+            _hold: None,
         })
     }
 }

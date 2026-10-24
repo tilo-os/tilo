@@ -131,7 +131,7 @@ impl Harness {
         let mut owned = tree.clone();
         // Rooms need recorded access, or access-reporting surfaces assert against
         // a state no user has ever been in.
-        owned.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
+        owned.own_workspaces_for_test(|_| shell::shell::state::local_user_id());
         let (mut host, chrome) = build_tilo_overlay_host_with_inputs(
             owned.clone().shared(),
             false,

@@ -23,11 +23,8 @@ impl CodeApp {
             .map(ui::widget::WindowBarLink::slots)
             .unwrap_or_default();
         toolbar.location = self.session.active_buffer().map(|buffer| ToolbarLocation {
-            label: if buffer.dirty {
-                format!("{} \u{2022}", buffer.name)
-            } else {
-                buffer.name.clone()
-            },
+            label: buffer.name.clone(),
+            edited: buffer.dirty,
             ..ToolbarLocation::default()
         });
         let panel = if self.panel_visible {

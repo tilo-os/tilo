@@ -57,7 +57,7 @@ fn graphics_notices(desktop: &Desktop) -> Vec<Value> {
 #[test]
 fn a_gpu_that_dies_mid_session_gives_way_to_software_and_the_person_is_told() {
     let mut tree = WorkspaceTree::bootstrap_demo();
-    tree.append_empty_workspace("Elsewhere");
+    tree.create_hosted_workspace("Elsewhere");
     let desktop = Desktop::start_with_env((640, 400), &tree, &[("TILO_HEADLESS_VBLANK_HZ", "60")]);
     let home = desktop.active_workspace();
     desktop.wait_for("the simulated panel to present", || presented(&desktop) > 0);

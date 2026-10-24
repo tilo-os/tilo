@@ -954,6 +954,10 @@ pub struct TreeView<T, M = TreeNode<T>> {
     drawn_rename_paint: Option<Rect>,
     /// Set by `NavList`: rows paint as navigation rows.
     nav: Option<NavPresentation<M>>,
+    /// Counts the changes to what a navigation row is read from beyond its
+    /// own inputs: the model, the presentation and the checks it shows
+    /// ([`Self::changed_nav_presentation`]).
+    nav_revision: u64,
     /// The tree has been laid out at least once. Until then it has no rows
     /// on screen to move from, so model changes do not animate.
     laid_out: bool,
@@ -1053,6 +1057,7 @@ impl<T> TreeView<T, TreeNode<T>> {
     pub fn update_model<R>(&mut self, update: impl FnOnce(&mut TreeNode<T>) -> R) -> R {
         let anchor = self.capture_view_anchor();
         let result = update(&mut self.model);
+        self.changed_nav_presentation();
         self.invalidate_all_delegates();
         self.reconcile_model_state(anchor.as_ref());
         result
@@ -1172,6 +1177,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             rename_paint: None,
             drawn_rename_paint: None,
             nav: None,
+            nav_revision: 0,
             laid_out: false,
             staged_drag: None,
             access_rows: std::cell::RefCell::default(),
@@ -1675,6 +1681,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let reconcile = Self::changes_require_reconcile(changes);
         let anchor = reconcile.then(|| self.capture_view_anchor()).flatten();
         let result = update(&mut self.model);
+        self.changed_nav_presentation();
         self.affordance_focus_valid = false;
         self.paint_dirty = true;
         self.invalidate_changed_delegates(changes);
@@ -1691,6 +1698,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     pub fn notify_model_changes(&mut self, changes: &[TreeModelChange]) {
         if !changes.is_empty() {
             self.affordance_focus_valid = false;
+            self.changed_nav_presentation();
         }
         self.paint_dirty = true;
         self.invalidate_changed_slots(changes);
@@ -3838,41 +3846,17 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         false
     }
 
+    /// The tree's own node, without building its rows.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        Some(self.access_root())
+    }
+
     /// The tree, its rows shared with the last walk where nothing they are
     /// built from changed ([`Self::access_rows`]): a walk while the tree
     /// is unchanged (a keystroke in the editor beside it) builds no row.
     fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
         use std::sync::Arc;
-        // Labels are runtime strings supplied by the host, not FTL keys.
-        let value = self
-            .selected()
-            .and_then(|id| self.model.label(id))
-            .map(str::to_owned);
-        let mut node = AccessNode::new(Role::Tree)
-            .with_optional_name(
-                self.accessible_name
-                    .as_deref()
-                    .map(crate::i18n::I18nManager::lookup_plain)
-                    .or_else(|| self.heading.clone()),
-            )
-            .with_optional_value(value)
-            .with_state(
-                AccessState::new()
-                    .focusable(self.is_focusable())
-                    .focused(self.is_focused())
-                    .disabled(!self.is_enabled()),
-            );
-        if let Some(key) = &self.semantic_key {
-            node = node.with_semantic_key(key.clone());
-        }
-        if let Some(sel) = self.selected()
-            && let Some(idx) = self.visible_index_of(sel)
-            && let Some((TreeRowKey::Node(_), depth)) = self.index.row_at(&self.model, idx)
-        {
-            node = node.with_position(idx.saturating_add(1), self.index.len());
-            node = node.with_level(depth.saturating_add(1));
-        }
+        let node = self.access_root();
         // Keep the semantic tree bounded exactly like painting. Absolute
         // positions retain useful "N of M" announcements even though rows
         // outside the viewport have no synthetic node this frame.

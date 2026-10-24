@@ -7,6 +7,7 @@ use ui::headless::Framed;
 use ui::portal::PortalOutcome;
 use ui::tilo_resource::Resource as _;
 use ui::widget::Widget;
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent};
 use winit::event::MouseScrollDelta;
 
 /// The sample library: the only place demo feeds come from.
@@ -196,38 +197,52 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
     assert_eq!(loaded(&doc).feeds.len(), demo.core().store.feeds.len());
 }
 
+/// The reader's commands as the window's bar holds them.
+fn bar_actions() -> Vec<ToolbarAction> {
+    ui::window_toolbar::declared()
+        .map(|bar| bar.actions)
+        .unwrap_or_default()
+}
+
+fn bar_action(name: &str) -> ToolbarAction {
+    bar_actions()
+        .into_iter()
+        .find(|action| action.name == name)
+        .unwrap_or_else(|| panic!("{name} is in the window bar: {:?}", bar_actions()))
+}
+
 /// The empty library disables what has nothing to act on and offers one
-/// action in its empty state; the reader shows nothing beside it, not even
-/// commands for an article that is not there.
+/// action in its empty state; the bar offers no commands for an article
+/// that is not there.
 #[test]
 fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
     let mut mounted = framed(FeedsApp::new());
+    Framed::harness_mut(&mut mounted).present_in_window_bar();
     settle(&mut mounted);
-    let controls = Framed::harness(&mounted).controls();
-    let control = |name: &str| {
-        controls
-            .iter()
-            .find(|c| c.name.as_deref() == Some(name))
-            .unwrap_or_else(|| panic!("{name} is a control"))
-    };
     // Disabled, Refresh says why rather than doing nothing on a press.
-    let refresh = control("There are no subscriptions to refresh");
-    assert!(refresh.disabled);
+    let refresh = bar_action("There are no subscriptions to refresh");
+    assert!(!refresh.enabled);
     assert!(
-        controls
+        bar_actions()
             .iter()
-            .all(|c| c.name.as_deref() != Some("Refresh all feeds")),
+            .all(|action| action.name != "Refresh all feeds"),
         "with nothing subscribed, Refresh is not offered as if it could run"
     );
-    assert!(control("Mark all as read").disabled);
-    assert!(!control("Add subscription").disabled);
+    assert!(!bar_action("Mark all as read").enabled);
+    assert!(bar_action("Add subscription").enabled);
     for absent in ["Star article", "Open original article", "Reading settings"] {
         assert!(
-            controls.iter().all(|c| c.name.as_deref() != Some(absent)),
+            bar_actions().iter().all(|action| action.name != absent),
             "{absent} is not offered without an article"
         );
     }
-    let add = control("Add feed").bounds.expect("placed").center();
+    let controls = Framed::harness(&mounted).controls();
+    let add = controls
+        .iter()
+        .find(|c| c.name.as_deref() == Some("Add feed"))
+        .and_then(|c| c.bounds)
+        .expect("the empty state offers Add feed")
+        .center();
     Framed::harness_mut(&mut mounted).click_at(add.x, add.y);
     settle(&mut mounted);
     let (a, _) = Framed::split(&mut mounted);
@@ -241,15 +256,143 @@ fn an_empty_library_disables_its_commands_and_offers_to_add_a_feed() {
 #[test]
 fn an_open_article_offers_its_commands() {
     let mut mounted = framed(FeedsApp::new_demo());
+    Framed::harness_mut(&mut mounted).present_in_window_bar();
     settle(&mut mounted);
-    let controls = Framed::harness(&mounted).controls();
-    let star = controls
-        .iter()
-        .find(|c| {
-            c.name.as_deref() == Some("Star article") || c.name.as_deref() == Some("Remove star")
-        })
+    let star = bar_actions()
+        .into_iter()
+        .find(|action| action.name == "Star article" || action.name == "Remove star")
         .expect("the open article can be starred");
-    assert!(!star.disabled);
+    assert!(star.enabled);
+}
+
+/// New folder heads the sidebar's Feeds, where folders are made, not the
+/// window bar, and opens its dialog from there.
+#[test]
+fn new_folder_heads_the_sidebars_feeds_and_opens_its_dialog() {
+    let mut mounted = framed(FeedsApp::new_demo());
+    Framed::harness_mut(&mut mounted).present_in_window_bar();
+    settle(&mut mounted);
+    let names: Vec<String> = bar_actions()
+        .iter()
+        .map(|action| action.name.clone())
+        .collect();
+    let drawn = Framed::harness(&mounted).controls();
+    assert!(
+        names.iter().all(|name| *name != "New folder"),
+        "New folder is the sidebar's, not the bar's: {names:?}"
+    );
+    let new_folder = drawn
+        .iter()
+        .find(|c| c.name.as_deref() == Some("New folder Feeds"))
+        .expect("the sidebar's Feeds heading holds New folder")
+        .id
+        .clone();
+    Framed::harness_mut(&mut mounted)
+        .operate_control(&new_folder, &ui::headless::ControlInput::Press)
+        .expect("New folder takes a press");
+    settle(&mut mounted);
+    assert_eq!(
+        mounted.modal.as_ref().map(|m| m.intent.clone()),
+        Some(ModalIntent::AddFolder),
+        "the sidebar's New folder opens its dialog"
+    );
+}
+
+/// The reader's commands are the window bar's: the window draws no header
+/// row of its own, the open article's commands lead, the library's follow
+/// in the bar's menu, and each runs from there.
+#[test]
+fn the_readers_commands_are_the_window_bars_and_run_from_it() {
+    let mut mounted = framed(FeedsApp::new_demo());
+    Framed::harness_mut(&mut mounted).present_in_window_bar();
+    settle(&mut mounted);
+    let names: Vec<String> = bar_actions()
+        .iter()
+        .map(|action| action.name.clone())
+        .collect();
+    let row: Vec<String> = bar_actions()
+        .into_iter()
+        .filter(|action| !action.menu)
+        .map(|action| action.name)
+        .collect();
+    let starred = mounted.core().open_article().is_some_and(|a| a.starred);
+    let star = if starred {
+        "Remove star"
+    } else {
+        "Star article"
+    };
+    assert_eq!(
+        row,
+        [star, "Open original article", "Reading settings"]
+            .map(str::to_owned)
+            .to_vec(),
+        "the open article's commands lead: {names:?}"
+    );
+    for in_menu in [
+        "Mark as read",
+        "Edit tags…",
+        "Refresh all feeds",
+        "Mark all as read",
+        "Add subscription",
+        "Import OPML…",
+        "Export OPML…",
+    ] {
+        let action = bar_action(in_menu);
+        assert!(action.menu, "{in_menu} is in the bar's menu");
+    }
+    assert!(
+        names.iter().all(|name| !name.contains("Search")),
+        "the bar's own search is the only one: {names:?}"
+    );
+    let drawn = Framed::harness(&mounted).controls();
+    for command in [
+        "Star article",
+        "Reading settings",
+        "Mark all as read",
+        "More",
+    ] {
+        assert!(
+            drawn.iter().all(|c| c.name.as_deref() != Some(command)),
+            "the window draws no {command} of its own"
+        );
+    }
+
+    // Reading settings opens its panel from the bar.
+    Framed::harness_mut(&mut mounted).press_window_slot(ToolbarEvent::Action {
+        id: bar_action("Reading settings").id,
+    });
+    settle(&mut mounted);
+    assert!(
+        mounted.settings_panel_open(),
+        "the bar opened the reading settings"
+    );
+
+    // Star flips the open article and the bar names what a press does now.
+    let starred = mounted.core().open_article().is_some_and(|a| a.starred);
+    let star = if starred {
+        "Remove star"
+    } else {
+        "Star article"
+    };
+    Framed::harness_mut(&mut mounted).press_window_slot(ToolbarEvent::Action {
+        id: bar_action(star).id,
+    });
+    settle(&mut mounted);
+    // The library presents the edit the press made, as it does each one.
+    let (a, st) = Framed::split(&mut mounted);
+    present(a, &st.doc);
+    settle(&mut mounted);
+    assert_eq!(
+        mounted.core().open_article().map(|a| a.starred),
+        Some(!starred),
+        "the bar's star flipped the article"
+    );
+    let now = if starred {
+        "Star article"
+    } else {
+        "Remove star"
+    };
+    assert_eq!(bar_action(now).on, !starred);
 }
 
 /// Refresh runs on a worker, drains without blocking the frame, persists in
@@ -973,7 +1116,13 @@ fn sidebar_counts_and_titles_follow_the_library() {
     a.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
     assert_eq!(a.active_filter(), Filter::Feed(feed.clone()));
     let title = a.core().store.feed(&feed).unwrap().title.clone();
-    assert_eq!(a.titles.0, title);
+    assert_eq!(
+        ui::window_toolbar::declared()
+            .and_then(|bar| bar.location)
+            .map(|location| location.label),
+        Some(title),
+        "the window bar names the chosen feed"
+    );
 }
 
 #[test]
@@ -1201,19 +1350,6 @@ fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
     assert!(host.state().folders.is_empty());
 }
 
-fn control_center(
-    host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>,
-    name: &str,
-) -> Point {
-    host.harness()
-        .controls()
-        .into_iter()
-        .find(|control| control.name.as_deref() == Some(name))
-        .and_then(|control| control.bounds)
-        .unwrap_or_else(|| panic!("the {name} control is placed"))
-        .center()
-}
-
 /// Draw frames the way a window's host does after input: the frame the
 /// input asked for, then one more only while the app asks for it.
 fn pump_frames(host: &mut ui::prelude::TestApp<crate::resource::FeedsShell>) {
@@ -1239,22 +1375,33 @@ fn the_collapse_button_collapses_and_expands_the_sidebar() {
     // whole time (a busy device), where the collapse lands in one tick.
     let _arrived = ui::motion::testing::settled();
     let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
+    host.harness().present_in_window_bar();
     pump_frames(&mut host);
     let open = sidebar_width(&mut host);
     assert!(open > 0.0, "a wide window docks its sidebar");
-    let hide = control_center(&mut host, "Hide sidebar");
-    host.harness().click_at(hide.x, hide.y);
+    assert_eq!(
+        ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
+        Some(true),
+        "the window bar offers Hide sidebar"
+    );
+    host.harness()
+        .press_window_slot(ToolbarEvent::ToggleSidebar);
     pump_frames(&mut host);
     assert!(
         sidebar_width(&mut host) < 0.5,
-        "the collapse button collapsed the sidebar on screen"
+        "the bar's Hide sidebar collapsed the sidebar on screen"
     );
-    let show = control_center(&mut host, "Show sidebar");
-    host.harness().click_at(show.x, show.y);
+    assert_eq!(
+        ui::window_toolbar::declared().and_then(|bar| bar.sidebar),
+        Some(false),
+        "the window bar offers Show sidebar"
+    );
+    host.harness()
+        .press_window_slot(ToolbarEvent::ToggleSidebar);
     pump_frames(&mut host);
     assert!(
         (sidebar_width(&mut host) - open).abs() < 0.5,
-        "the button expanded the sidebar again"
+        "the bar's Show sidebar expanded it again"
     );
 }
 
@@ -1262,16 +1409,17 @@ fn the_collapse_button_collapses_and_expands_the_sidebar() {
 fn the_sidebar_shortcut_collapses_and_expands_the_sidebar() {
     let _arrived = ui::motion::testing::settled();
     let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
+    host.harness().present_in_window_bar();
     pump_frames(&mut host);
     let open = sidebar_width(&mut host);
     assert!(open > 0.0);
-    let hide = control_center(&mut host, "Hide sidebar");
-    host.harness().click_at(hide.x, hide.y);
+    host.harness()
+        .press_window_slot(ToolbarEvent::ToggleSidebar);
     pump_frames(&mut host);
     // The sidebar's shortcut is Command+Shift+L: Cmd on macOS, Ctrl elsewhere.
     host.harness()
         .set_modifiers(&["command".to_owned(), "shift".to_owned()]);
-    // Collapsed by the click; the shortcut brings it back and takes it away.
+    // Collapsed from the bar; the shortcut brings it back and takes it away.
     host.harness().key("L");
     pump_frames(&mut host);
     assert!(

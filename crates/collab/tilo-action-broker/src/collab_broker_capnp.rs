@@ -38,6 +38,7 @@ mod durable_local_invocation;
 mod file_clipboard;
 #[cfg(test)]
 mod history_agents_tests;
+mod host_workers;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
@@ -57,6 +58,7 @@ mod private_draft;
 mod process_binding;
 mod published_invocation;
 mod resolved_invocation;
+mod route_holds;
 mod tracker_runs;
 #[path = "workspace_checkpoints.rs"]
 mod workspace_checkpoints;
@@ -3475,8 +3477,11 @@ pub struct CapnpBrokerState {
     /// was asked and when the app was handed it.
     offloaded_here:
         Mutex<HashMap<u64, (tilo_actions::offload::OffloadRequest, std::time::Instant)>>,
-    /// Signed joins on actual private host-worker descriptors; never reconstructed from surfaces.
-    host_workers: Mutex<HashMap<u64, AdmittedJoinIdentity>>,
+    /// The worker connections' admitted joins, by connection and route
+    /// ([`host_workers`]); never reconstructed from surfaces.
+    host_workers: Mutex<host_workers::HostWorkers>,
+    /// The connection each further route hold belongs to ([`route_holds`]).
+    route_holders: Mutex<route_holds::RouteHolders>,
     /// Peer ids of the broker's own services on its thread's runtime.
     service_peers: Mutex<Vec<u64>>,
     /// How often the broker thread unwound and started again.
@@ -3485,99 +3490,7 @@ pub struct CapnpBrokerState {
     thread_callbacks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
 
-/// Bound on live host-worker provenance entries (`host_workers`): one per
-/// connected RPC session whose join carries a private host-worker scope or a
-/// registered private worker, removed when that connection drops.
-///
-/// Measured use (Cloud host): one headless worker per hosted app record, and
-/// every record ever opened in the room stays hosted (each "Open Notes"
-/// creates a record), plus one registered connection per managed agent. A
-/// workspace with 16 agents and a few dozen records per app must fit: the
-/// former bound of 32 refused the 33rd record, which failed the whole worker
-/// mount and so every agent. Each entry is a small admitted identity (two
-/// certificates and a few ids, under 2 KiB), so this keeps memory bounded
-/// (well under 1 MiB) while leaving room for real workspaces.
-const MAX_HOST_WORKERS: usize = 256;
-
 impl CapnpBrokerState {
-    /// Host-local observation only; this predicate is never a wire proof.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the host worker registry is unavailable.
-    pub fn is_current_host_worker(
-        &self,
-        peer: u64,
-        route: &CrdtRoute,
-        certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<bool, String> {
-        if !self.is_accepting() {
-            return Ok(false);
-        }
-        let admitted = self
-            .host_workers
-            .lock()
-            .map_err(|_| "host worker provenance unavailable")?
-            .get(&peer)
-            .cloned();
-        let Some(admitted) = admitted else {
-            return Ok(false);
-        };
-        if !admitted
-            .host_scope
-            .as_ref()
-            .is_some_and(|scope| &scope.route == route && &scope.certificate == certificate)
-        {
-            return Ok(false);
-        }
-        // The current owner callback may open Store. Never call it under the registry lock.
-        if self.revalidate_admission(route, &admitted).is_err() {
-            return Ok(false);
-        }
-        let workers = self
-            .host_workers
-            .lock()
-            .map_err(|_| "host worker provenance unavailable")?;
-        let unchanged = workers.get(&peer) == Some(&admitted);
-        drop(workers);
-        Ok(self.is_accepting() && unchanged)
-    }
-
-    fn retain_host_worker(
-        &self,
-        peer: u64,
-        admitted: &AdmittedJoinIdentity,
-    ) -> Result<(), capnp::Error> {
-        if admitted.host_scope.is_none() && admitted.worker_registration.is_none() {
-            return Ok(());
-        }
-        if !self.is_accepting() {
-            return Err(capnp::Error::failed("broker unavailable".into()));
-        }
-        let mut workers = self
-            .host_workers
-            .lock()
-            .map_err(|_| capnp::Error::failed("host worker provenance unavailable".into()))?;
-        if let Some(previous) = workers.get(&peer) {
-            if previous.host_scope != admitted.host_scope
-                || previous.worker_registration != admitted.worker_registration
-            {
-                return Err(capnp::Error::failed(
-                    "host worker scope replacement rejected".into(),
-                ));
-            }
-        } else {
-            if workers.len() >= MAX_HOST_WORKERS {
-                return Err(capnp::Error::failed(
-                    "host worker connection capacity reached".into(),
-                ));
-            }
-            workers.insert(peer, admitted.clone());
-        }
-        drop(workers);
-        Ok(())
-    }
-
     pub(crate) fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }
@@ -3654,6 +3567,7 @@ impl CapnpBrokerState {
         };
         self.execution_activity.close();
         clear!(self.host_workers);
+        clear!(self.route_holders);
         clear!(self.channels);
         clear!(self.surfaces);
         clear!(self.witness_publications);
@@ -4294,7 +4208,8 @@ impl CapnpBrokerState {
                 local_turn,
                 offloads: Mutex::default(),
                 offloaded_here: Mutex::default(),
-                host_workers: Mutex::new(HashMap::new()),
+                host_workers: Mutex::default(),
+                route_holders: Mutex::default(),
                 service_peers: Mutex::new(Vec::new()),
                 thread_restarts: AtomicU64::new(0),
                 #[cfg(test)]
@@ -6986,11 +6901,30 @@ impl CapnpBrokerState {
         }
     }
 
+    /// A connection ended: every route it held is withdrawn, then what the
+    /// connection itself owned.
     fn remove_connection(&self, peer_id: u64) {
+        for hold in self.connection_holds(peer_id) {
+            self.withdraw_route_hold(hold);
+        }
         self.launch_disconnected(peer_id);
         if let Ok(mut windows) = self.window_instances.lock() {
             windows.remove(&peer_id);
         }
+        self.disconnect_device_media(peer_id);
+        if let Some(realtime) = self.services.realtime.as_ref() {
+            realtime.disconnect(peer_id);
+        }
+        self.disconnect_file_transfers(peer_id);
+        if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
+            subscribers.remove(&peer_id);
+        }
+    }
+
+    /// One route hold ended ([`route_holds`]): withdraw what it published
+    /// and worked as there, and fail what was still pending on it.
+    fn withdraw_route_hold(&self, peer_id: u64) {
+        self.release_route_hold(peer_id);
         self.witness_publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -6998,20 +6932,11 @@ impl CapnpBrokerState {
         if let Ok(mut directories) = self.canonical_directories.lock() {
             directories.remove(peer_id);
         }
-        self.disconnect_device_media(peer_id);
         // Withdraw provenance before any stale surface can be observed during cleanup.
         match self.host_workers.lock() {
-            Ok(mut workers) => {
-                workers.remove(&peer_id);
-            }
-            Err(poisoned) => {
-                poisoned.into_inner().remove(&peer_id);
-            }
+            Ok(mut workers) => workers.remove(peer_id),
+            Err(poisoned) => poisoned.into_inner().remove(peer_id),
         }
-        if let Some(realtime) = self.services.realtime.as_ref() {
-            realtime.disconnect(peer_id);
-        }
-        self.disconnect_file_transfers(peer_id);
         if let Ok(mut tables) = self.surface_tables.lock() {
             tables.remove(&peer_id);
         }
@@ -7035,9 +6960,6 @@ impl CapnpBrokerState {
         {
             drop(subscribers);
             self.invocation_streams_changed();
-        }
-        if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
-            subscribers.remove(&peer_id);
         }
         self.disconnect_native_task_stream(peer_id);
         self.fail_pending_invocations_of(peer_id);
@@ -8258,12 +8180,19 @@ fn default_pointer_key_bytes() -> Vec<u8> {
 /// Root capability server. One instance per connected RPC session.
 struct CapnpCollabService {
     worker: Option<WorkerBinding>,
+    /// The worker registration of a connection its launcher authenticated,
+    /// minted at connect for the app the shell launched: each route of
+    /// that app the connection joins as its person is one of its worker
+    /// routes ([`host_workers`]).
+    app_worker: Option<(uuid::Uuid, String)>,
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     /// Peer id assigned at accept time. Fanout uses it to skip the
     /// author when replaying its own frames back at itself.
     peer_id: u64,
     lease: Rc<ConnectionLease>,
+    /// The routes this connection holds ([`route_holds`]).
+    holds: route_holds::ConnectionHolds,
 }
 
 struct ConnectionLease {
@@ -8295,8 +8224,11 @@ struct ConnectionExit {
 
 impl Drop for ConnectionExit {
     fn drop(&mut self) {
+        let holds = self.state.connection_holds(self.peer_id);
         self.state.remove_connection(self.peer_id);
-        self.directories.remove(self.peer_id);
+        for hold in holds {
+            self.directories.remove(hold);
+        }
     }
 }
 
@@ -8305,8 +8237,11 @@ impl Drop for ConnectionLease {
         if let Some(local) = self.local_media.as_ref() {
             local.stop();
         }
+        let holds = self.state.connection_holds(self.peer_id);
         self.state.remove_connection(self.peer_id);
-        self.directories.remove(self.peer_id);
+        for hold in holds {
+            self.directories.remove(hold);
+        }
     }
 }
 
@@ -8314,6 +8249,10 @@ impl collab_service::Server for CapnpCollabService {
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered join admission: identity, route, custody and channel handle"
+    )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the route hold moves into the channel handle it lives as long as; the join never drops it"
     )]
     fn join_channel(
         self: Rc<Self>,
@@ -8347,6 +8286,14 @@ impl collab_service::Server for CapnpCollabService {
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
+            if let Some(reason) = state
+                .services
+                .workspace_memberships
+                .as_ref()
+                .and_then(|memberships| memberships.room_unavailable(&route.cluster_id))
+            {
+                return Err(capnp::Error::failed(reason));
+            }
             if let Some(app) = self.lease.local_media.as_ref()
                 && verified_identity
                     .verified
@@ -8465,23 +8412,39 @@ impl collab_service::Server for CapnpCollabService {
                 },
                 "PROBE join_channel",
             );
-            state.retain_host_worker(peer_id, &verified_identity)?;
-            state.ensure_channel(&channel_id);
-            state
-                .publisher()
-                .local_route(&crate::route::CrdtRoute::from_channel_key(&channel_id));
-
+            if self.worker.is_none()
+                && matches!(participant_kind, "" | "person")
+                && let Some(registration) = host_workers::packaged_app_registration(
+                    self.app_worker.as_ref(),
+                    &route,
+                    &verified_identity,
+                )
+            {
+                verified_identity.worker_registration = Some(registration);
+            }
+            let ensured = channel_id.clone();
+            let retained = verified_identity.clone();
+            let hold = self.holds.hold(&state, &self.directories, peer_id, &route);
+            let hold_id = hold.id();
             let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: state.clone(),
                 directories: Rc::clone(&self.directories),
                 channel_id,
-                peer_id,
+                peer_id: hold_id,
+                connection_id: peer_id,
                 verified_identity,
                 record_kind,
                 lease: Some(Rc::clone(&self.lease)),
+                _hold: Some(hold),
             });
+            // Refused, the handle and its hold drop here and withdraw again.
+            state.retain_host_worker(hold_id, &route, &retained)?;
+            state.ensure_channel(&ensured);
+            state
+                .publisher()
+                .local_route(&crate::route::CrdtRoute::from_channel_key(&ensured));
             results.get().set_handle(client);
             Ok(())
         })
@@ -8513,13 +8476,20 @@ struct CapnpChannelHandle {
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     channel_id: String,
+    /// The route hold this channel publishes and works as ([`route_holds`]).
     peer_id: u64,
+    /// The connection: its transport identity for document fanout,
+    /// presence, media and transfers.
+    connection_id: u64,
     verified_identity: AdmittedJoinIdentity,
     /// The resource kind the app named for this channel's record, if any.
     record_kind: Option<String>,
     /// Production handles share the root RPC connection lease. Direct unit
     /// fixtures use `None` and retain the legacy one-handle cleanup behavior.
     lease: Option<Rc<ConnectionLease>>,
+    /// Production handles share their route's hold, kept for its drop;
+    /// fixtures use `None`.
+    _hold: Option<Rc<route_holds::RouteHold>>,
 }
 
 impl Drop for CapnpChannelHandle {
@@ -8548,7 +8518,7 @@ impl CapnpChannelHandle {
             ));
         }
         Ok(crate::services::RealtimeRequestContext::authenticated(
-            self.peer_id,
+            self.connection_id,
             route.app_id,
             route.cluster_id,
         ))
@@ -8675,11 +8645,7 @@ fn private_display_control(
                         .lock()
                         .map_err(|_| "Settings worker registry is unavailable.")?;
                     let peer = workers
-                        .iter()
-                        .find_map(|(peer, worker)| {
-                            (worker.worker_registration.as_ref() == Some(&registration))
-                                .then_some(*peer)
-                        })
+                        .peer_of(&registration)
                         .ok_or("The admitted Settings worker has closed.")?;
                     drop(workers);
                     let pending = state
@@ -9058,7 +9024,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             return Promise::err(error);
         }
         let context = crate::services::NearbyTransferRequestContext::authenticated(
-            self.peer_id,
+            self.connection_id,
             route.app_id.clone(),
             route.cluster_id.clone(),
             route.channel_key(),
@@ -9488,7 +9454,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
         let _ = self
             .state
-            .request_document_snapshot(&self.channel_id, self.peer_id);
+            .request_document_snapshot(&self.channel_id, self.connection_id);
         Promise::ok(())
     }
 
@@ -9716,7 +9682,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             }
             let read = self.document_read_context().map_err(|_| refused())?;
             let context = crate::services::BrowserServiceSessionRequestContext::authenticated(
-                self.peer_id,
+                self.connection_id,
                 self.verified_identity.principal_id.clone(),
                 read,
             );
@@ -9744,7 +9710,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             return Promise::err(error);
         }
         let context = crate::services::NearbyTransferRequestContext::authenticated(
-            self.peer_id,
+            self.connection_id,
             route.app_id.clone(),
             route.cluster_id.clone(),
             route.channel_key(),
@@ -10125,7 +10091,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         _results: channel_handle::SendResults,
     ) -> Promise<(), capnp::Error> {
         let state = self.state.clone();
-        let peer_id = self.peer_id;
+        let peer_id = self.connection_id;
         let route = self.route();
         let verified_identity = self.verified_identity.clone();
         let record_kind = self.record_kind.clone();
@@ -10190,7 +10156,9 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        let rx = self.state.subscribe_ops(&self.channel_id, self.peer_id);
+        let rx = self
+            .state
+            .subscribe_ops(&self.channel_id, self.connection_id);
         let client: stream::Client = capnp_rpc::new_client(OpStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -10217,7 +10185,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         let client: presence_handle::Client = capnp_rpc::new_client(CapnpPresenceHandle {
             state: self.state.clone(),
             channel_id: self.channel_id.clone(),
-            peer_id: self.peer_id,
+            peer_id: self.connection_id,
             verified_identity: self.verified_identity.clone(),
             interaction_sequences: Mutex::new(HashMap::new()),
         });
@@ -10274,7 +10242,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let rx = self
             .state
-            .subscribe_context(&self.channel_id, self.peer_id, native.clone());
+            .subscribe_context(&self.channel_id, self.connection_id, native.clone());
         if let Some(instance) = instance {
             let alias = CrdtRoute::record(
                 &route.app_id,
@@ -10283,7 +10251,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             )
             .channel_key();
             self.state
-                .alias_private_context(&self.channel_id, &alias, self.peer_id);
+                .alias_private_context(&self.channel_id, &alias, self.connection_id);
         }
         let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
@@ -11290,7 +11258,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         );
         let (tx, rx) = watch::channel(Some(initial));
         if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
-            subscribers.insert(self.peer_id, (cluster, actor, tx));
+            subscribers.insert(self.connection_id, (cluster, actor, tx));
         } else {
             return Promise::err(capnp::Error::failed(
                 "action catalogue subscriber registry unavailable".into(),
@@ -14555,8 +14523,12 @@ async fn drive_connection(
     let handed_descriptors = local_media
         .as_ref()
         .and_then(|local| local.descriptors.clone());
+    let app_worker = local_media
+        .as_ref()
+        .map(|app| (uuid::Uuid::new_v4(), app.app_id.clone()));
     let client: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
         worker,
+        app_worker,
         lease: Rc::new(ConnectionLease {
             local_media,
             state: Arc::clone(&state),
@@ -14566,6 +14538,7 @@ async fn drive_connection(
         state,
         directories,
         peer_id,
+        holds: route_holds::ConnectionHolds::default(),
     });
     // Files hands over the objects it selects on its own connection; the
     // broker keeps them for the request naming them. Every other peer's
@@ -15950,6 +15923,7 @@ pub mod tests {
                 directories: Rc::clone(&self.directories),
                 channel_id: route.channel_key(),
                 peer_id,
+                connection_id: peer_id,
                 verified_identity: self.source_identity.clone().unwrap_or_else(|| {
                     AdmittedJoinIdentity {
                         host_scope: None,
@@ -15969,6 +15943,7 @@ pub mod tests {
                 }),
                 record_kind: None,
                 lease: None,
+                _hold: None,
             })
         }
 
@@ -17062,10 +17037,12 @@ pub mod tests {
             });
             let raw: collab_service::Client = capnp_rpc::new_client(CapnpCollabService {
                 worker: None,
+                app_worker: None,
                 state: Arc::clone(&state),
                 directories,
                 peer_id,
                 lease,
+                holds: route_holds::ConnectionHolds::default(),
             });
             let presentation = certified_join(&route.cluster_id, &root, &device)
                 .encode()
@@ -20381,9 +20358,11 @@ pub mod tests {
                             directories: fixture.directories.clone(),
                             channel_id: fixture.route.channel_key(),
                             peer_id: fixture.peer_id,
+                            connection_id: fixture.peer_id,
                             verified_identity: caller.admitted.clone(),
                             record_kind: None,
                             lease: None,
+                            _hold: None,
                         });
                     let legacy = client
                         .subscribe_invocations_request()
@@ -20429,10 +20408,10 @@ pub mod tests {
                     person_chat_views: RefCell::default(),
                     committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                     state: fixture.state.clone(), directories: fixture.directories.clone(),
-                    channel_id: fixture.route.channel_key(), peer_id: 999,
+                    channel_id: fixture.route.channel_key(), peer_id: 999, connection_id: 999,
                     verified_identity: caller.admitted.clone(),
                     record_kind: None,
-                    lease: None,
+                    lease: None, _hold: None,
                 });
                 assert!(update_app(&foreign, admitted.wire_id, &tilo_actions::InvocationUpdate::Succeeded {
                     invocation: request.invocation, output: tilo_actions::ActionOutput::default(),
@@ -20965,6 +20944,11 @@ mod host_worker_capacity_tests {
     fn retained(state: &CapnpBrokerState) -> usize {
         state.host_workers.lock().unwrap().len()
     }
+    fn retain(state: &CapnpBrokerState, peer: u64, record: usize) -> Result<(), capnp::Error> {
+        let worker = host_worker(record);
+        let route = worker.host_scope.clone().unwrap().route;
+        state.retain_host_worker(peer, &route, &worker)
+    }
 
     /// Repeated worker mounts (connect, then drop every connection) never
     /// grow the provenance registry: each disconnect withdraws its entry.
@@ -20976,9 +20960,7 @@ mod host_worker_capacity_tests {
             let first = peer;
             for record in 0..40 {
                 peer += 1;
-                state
-                    .retain_host_worker(peer, &host_worker(record))
-                    .unwrap();
+                retain(&state, peer, record).unwrap();
             }
             assert_eq!(retained(&state), 40);
             for connection in first + 1..=peer {
@@ -20988,37 +20970,25 @@ mod host_worker_capacity_tests {
         }
     }
 
-    /// A workspace with 16 agents and dozens of hosted records per app fits;
-    /// the bound still refuses one connection beyond it.
+    /// Workers are counted per connection, never across them: a Cloud host
+    /// mounting a worker per record for every app and agent, far past any
+    /// former global bound, keeps every one, and closing one withdraws only
+    /// its own.
     #[test]
-    fn host_worker_capacity_fits_sixteen_agents_with_all_apps_and_stays_bounded() {
+    fn host_workers_are_owned_by_their_connections_not_a_global_count() {
         let state = state();
         let agents = 16;
-        let records = 5 * 40; // five hosted apps with 40 records each
+        let records = 8 * 64; // eight hosted apps with 64 records each
         for peer in 0..(agents + records) {
-            state
-                .retain_host_worker(peer as u64 + 1, &host_worker(peer))
-                .unwrap();
+            retain(&state, peer as u64 + 1, peer).unwrap();
         }
-        for peer in (agents + records)..MAX_HOST_WORKERS {
-            state
-                .retain_host_worker(peer as u64 + 1, &host_worker(peer))
-                .unwrap();
-        }
-        assert_eq!(retained(&state), MAX_HOST_WORKERS);
-        assert!(
-            state
-                .retain_host_worker(MAX_HOST_WORKERS as u64 + 1, &host_worker(MAX_HOST_WORKERS))
-                .is_err()
-        );
+        assert_eq!(retained(&state), agents + records);
         // A reconnect of an already admitted peer with the same scope is idempotent.
-        assert!(state.retain_host_worker(1, &host_worker(0)).is_ok());
+        assert!(retain(&state, 1, 0).is_ok());
+        assert_eq!(retained(&state), agents + records);
         state.remove_connection(1);
-        assert!(
-            state
-                .retain_host_worker(MAX_HOST_WORKERS as u64 + 1, &host_worker(MAX_HOST_WORKERS))
-                .is_ok()
-        );
+        assert_eq!(retained(&state), agents + records - 1);
+        assert!(retain(&state, (agents + records) as u64 + 1, agents + records).is_ok());
     }
 }
 

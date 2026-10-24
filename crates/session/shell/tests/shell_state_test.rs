@@ -26,7 +26,7 @@ fn default_tree_builds_three_workspaces_and_a_shell_root() {
     // Phase `append_workspace_sets_active`.
     {
         let mut t = WorkspaceTree::bootstrap_demo();
-        let new_id = t.append_empty_workspace("New");
+        let new_id = t.create_hosted_workspace("New").0;
         t.set_active(new_id);
         assert_eq!(t.desktop.active, new_id);
     }

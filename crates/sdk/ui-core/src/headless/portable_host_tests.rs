@@ -952,3 +952,69 @@ fn history_composition_keeps_app_modal_typing_and_focus_inside_the_dialog() {
         .unwrap();
     assert!(focused(&frame, "background"));
 }
+
+/// A layout that does not settle skips its frame and nothing else, as the
+/// browser host and the native one run it: the failure is reported once
+/// rather than on every frame that fails again, input still reaches the
+/// controls, and the next frame whose layout settles paints.
+#[test]
+fn a_frame_whose_layout_does_not_settle_is_skipped_and_the_next_paints() {
+    let looping = Rc::new(Cell::new(false));
+    let policy = {
+        let looping = looping.clone();
+        move |ctx: &mut crate::widget::ManualContext<'_>| {
+            // While looping, a size that flips with the space offered.
+            let short = looping.get() && ctx.available().height > 75.0;
+            Ok(taffy::Size {
+                width: ctx.available().width,
+                height: if short { 50.0 } else { 100.0 },
+            })
+        }
+    };
+    let mut frame = frame(Box::new(
+        Column::new()
+            .push(Box::new(Button::new("target", "Target")))
+            .push(Box::new(crate::widget::Manual::new(policy))),
+    ));
+    frame.relayout_at((400, 240)).expect("a settled frame");
+
+    looping.set(true);
+    let error = frame
+        .recompose()
+        .expect_err("the flipping size never settles");
+    assert!(
+        matches!(error, crate::widget::WidgetLayoutError::DidNotSettle { .. }),
+        "{error}"
+    );
+    let report = frame
+        .skip_frame(&error)
+        .expect("the first failure is reported");
+    assert!(report.contains("did not settle"), "{report}");
+    let again = frame.recompose().expect_err("it still does not settle");
+    assert_eq!(
+        frame.skip_frame(&again),
+        None,
+        "a failure on the next frame is not reported again at once"
+    );
+
+    frame
+        .click_named("target")
+        .expect("the button is still there");
+    assert!(
+        focused(&frame, "target"),
+        "a press still lands while frames are skipped"
+    );
+
+    looping.set(false);
+    frame.recompose().expect("the layout settles again");
+    assert!(
+        !frame
+            .frame_render_input()
+            .scene
+            .encoding()
+            .draw_tags
+            .is_empty(),
+        "the frame after paints"
+    );
+    assert!(focused(&frame, "target"));
+}

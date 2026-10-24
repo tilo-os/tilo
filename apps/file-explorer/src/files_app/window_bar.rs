@@ -62,8 +62,7 @@ fn action(id: &str, icon: &str, name: String, enabled: bool, on: bool) -> Toolba
         name,
         enabled,
         on,
-        menu: false,
-        items: Vec::new(),
+        ..ToolbarAction::default()
     }
 }
 
@@ -139,6 +138,7 @@ impl FileExplorerWidget {
             }),
             location: Some(ToolbarLocation {
                 label,
+                shorter: Vec::new(),
                 value: crate::model::format_path(&self.current_path, home),
                 placeholder: t("files-path-placeholder"),
                 icon: None,
@@ -150,6 +150,7 @@ impl FileExplorerWidget {
                 suggestions: self.bar_suggestions(),
                 choices: Vec::new(),
                 anchor: None,
+                edited: false,
             }),
             actions,
             ..WindowToolbar::default()

@@ -592,253 +592,6 @@ fn picked_covers_normalise_to_portable_values() {
     }
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn continuation_and_media_handoff_restore_known_tracks_locally() {
-    // Phase `continuation_round_trip_reopens_a_known_track_paused_at_its_position`.
-    {
-        let (mut sender, source) = app_with_doc();
-        sender.pb.current = Some("tk_g1".into());
-        sender.pb.playing = true;
-        sender.playhead_ms = 12_345.0;
-        let metadata = sender
-            .continuation_metadata(&source, &automerge::ROOT)
-            .expect("a selected library track has a portable continuation");
-
-        let (mut receiver, mut target) = app_with_doc();
-        assert!(receiver.restore_continuation_metadata(
-            &metadata,
-            &mut ui::widget::Edits::lend(&mut target),
-            &automerge::ROOT,
-        ));
-        assert_eq!(receiver.pb.current.as_deref(), Some("tk_g1"));
-        assert_eq!(receiver.pb.position_ms, 12_345);
-        assert!(
-            !receiver.pb.playing,
-            "continuation restore must never autoplay"
-        );
-    }
-
-    // Phase `media_handoff_resolves_synced_track_and_restores_transport`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        let arguments = [crate::search_type::SearchHit::track_link("tk_g1")];
-        app.open_launch(
-            &ui::framework::LaunchInput::new(&arguments, None).with_handoff(Some(
-                &ui::application::PlaybackHandoff {
-                    position_ms: 12_345,
-                    resume_playing: true,
-                    title: None,
-                },
-            )),
-        );
-        let before = (
-            doc.base_heads(),
-            automerge::transaction::Transactable::pending_ops(&doc),
-        );
-        app.sync(&doc, &automerge::ROOT);
-        assert_eq!(
-            (
-                doc.base_heads(),
-                automerge::transaction::Transactable::pending_ops(&doc)
-            ),
-            before
-        );
-        assert!(
-            app.pb.current.is_none(),
-            "sync leaves the pending handoff for authored settlement"
-        );
-        assert!(app.pending_media_handoff.is_some());
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
-        assert_eq!(app.pb.position_ms, 12_345);
-        assert_eq!(app.playhead_ms, 12_345.0);
-        assert!(app.pb.playing);
-        assert!(app.pending_media_handoff.is_none());
-    }
-
-    // Phase `media_handoff_waits_for_its_synced_resource`.
-    {
-        let mut app = MusicApp::without_profile();
-        let arguments = [crate::search_type::SearchHit::track_link(
-            "not-hydrated-yet",
-        )];
-        app.open_launch(
-            &ui::framework::LaunchInput::new(&arguments, None).with_handoff(Some(
-                &ui::application::PlaybackHandoff {
-                    position_ms: 42,
-                    resume_playing: true,
-                    title: None,
-                },
-            )),
-        );
-        let mut doc = AutoCommit::new();
-        app.sync(&doc, &automerge::ROOT);
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        assert!(app.pb.current.is_none());
-        assert!(app.pending_media_handoff.is_some());
-    }
-
-    // Phase `shared_library_sync_never_adopts_remote_playback`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.sync(&doc, &automerge::ROOT);
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        let before = app.pb.clone();
-        // A peer can still edit a collaborative playlist. It refreshes the
-        // library but must leave this device's transport untouched.
-        app.perform_action(
-            &mut ui::widget::Edits::lend(&mut doc),
-            Library::paths().playlists.insert_as(
-                &ui::tilo_resource::Id::from_raw("pl_peer_library"),
-                0,
-                &crate::model::Playlist::named("pl_peer_library", "Peer library edit"),
-            ),
-        );
-        app.sync(&doc, &automerge::ROOT);
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        assert_eq!(app.pb, before, "transport remains device-local");
-        assert!(
-            app.lib.playlist("pl_peer_library").is_some(),
-            "collaborative library edits still arrive"
-        );
-    }
-}
-
-#[test]
-#[cfg(feature = "audio")]
-#[serial_test::serial(audio_backend)]
-fn metadata_duration_does_not_cut_off_real_audio_before_eos() {
-    let (mut app, _) = app_with_doc();
-    app.lib.tracks.get_mut("tk_g1").unwrap().duration_s = 1;
-    app.pb.queue = vec!["tk_g1".into()];
-    app.pb.current = Some("tk_g1".into());
-    app.pb.playing = true;
-
-    // The real two-second PCM source outlasts its one-second catalogue entry.
-    // Unit-test output captures decoded PCM without opening a sound device.
-    let scratch = tempfile::tempdir().unwrap();
-    let path = scratch.path().join("longer-than-metadata.wav");
-    let mut wav = Vec::new();
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&32036u32.to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&8000u32.to_le_bytes());
-    wav.extend_from_slice(&16000u32.to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&32000u32.to_le_bytes());
-    wav.resize(32044, 0);
-    std::fs::write(&path, wav).unwrap();
-    app.audio
-        .load(&media::source::path_to_file_uri(&path).unwrap());
-    app.audio.play();
-
-    let deadline = tilo_test_env::hang_deadline();
-    let mut furthest_position = 0.0_f64;
-    while app.pb.playing {
-        app.tick();
-        assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
-        furthest_position = furthest_position.max(app.playhead_ms);
-        assert!(
-            ui::time::now() < deadline,
-            "the real source must reach EOS: {}",
-            app.audio.diagnostics()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(
-        furthest_position >= 1800.0,
-        "metadata must not stop the two-second decoder at {furthest_position}ms"
-    );
-    assert_eq!(app.pb.queue_index, 0);
-}
-
-#[test]
-#[cfg(feature = "audio")]
-#[serial_test::serial(audio_backend)]
-fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
-    let (mut app, _) = app_with_doc();
-    let title = format!("handoff-init-{}", uuid::Uuid::new_v4());
-    app.lib
-        .tracks
-        .get_mut("tk_g1")
-        .unwrap()
-        .title
-        .clone_from(&title);
-    app.pb.current = Some("tk_g1".into());
-    app.pb.playing = false;
-    app.pb.volume = 50;
-    // A real, silent PCM file avoids both network access and audible noise.
-    let scratch = tempfile::tempdir().unwrap();
-    let path = scratch.path().join("paused.wav");
-    let mut wav = Vec::new();
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&16036u32.to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&8000u32.to_le_bytes());
-    wav.extend_from_slice(&16000u32.to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&16000u32.to_le_bytes());
-    wav.resize(16044, 0);
-    std::fs::write(&path, wav).unwrap();
-    app.audio
-        .load(&media::source::path_to_file_uri(&path).unwrap());
-    app.audio.pause();
-    app.publish_handoff();
-    assert!(
-        media::handoff::playback_sessions()
-            .iter()
-            .all(|session| session.title != title)
-    );
-    assert!(
-        app.needs_animation_frame(),
-        "paused initialization needs ticks"
-    );
-
-    let deadline = tilo_test_env::hang_deadline();
-    while app.audio.frames_rendered() == 0 || app.audio.needs_poll() {
-        app.tick();
-        assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
-        assert!(
-            ui::time::now() < deadline,
-            "paused decoder failed to preroll: {}",
-            app.audio.diagnostics()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(!app.audio.is_playing_real());
-    app.publish_handoff();
-    let session = media::handoff::playback_sessions()
-        .into_iter()
-        .find(|session| session.title == title)
-        .expect("a decoded paused source can acknowledge handoff");
-    assert!(!session.playing);
-    app.audio.stop();
-    app.publish_handoff();
-    assert!(
-        media::handoff::playback_sessions()
-            .iter()
-            .all(|session| session.title != title)
-    );
-}
-
 // ---- synthetic winit events (drive `handle_event` like the real loop) --
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::NamedKey;
@@ -1840,7 +1593,10 @@ fn the_shell_shows_musics_places_and_transport_and_runs_what_is_chosen() {
             ui::widget::NavList::new(Vec::new()).fed_by(&app.places),
         ))
         .content(Box::new(ui::widget::Spacer::new()))
-        .bottom_band(Box::new(ui::widget::MediaTransport::new(&app.transport)));
+        .bottom_band(Box::new(ui::widget::MediaTransport::new(
+            &app.transport,
+            ui::widget::TransportActions::default(),
+        )));
     let size = (1280, 800);
     let mut harness =
         ui::headless::FrameHarness::for_root(ui::State::new(), shell, size, Theme::dark());
@@ -1854,15 +1610,78 @@ fn the_shell_shows_musics_places_and_transport_and_runs_what_is_chosen() {
         .and_then(|list| list.row_rect(&place))
         .expect("the playlist is a row");
     harness.click_at(row.center().x, row.center().y);
-    let play = widget_rect(harness.root::<ui::widget::NavShell>(), "transport.play")
-        .expect("the transport is in the band");
-    harness.click_at(play.center().x, play.center().y);
     app.take_shell_events(&mut ui::widget::Edits::lend(&mut doc));
     assert_eq!(app.view, View::Playlist("pl_drive".into()));
-    assert!(app.pb.playing, "play reached the player");
     let (_, selected) = app.places.shown().expect("the places are shown");
     assert_eq!(selected, Some(place), "the chosen place is the open one");
-    assert!(app.transport.shown().playing, "and the transport shows it");
+}
+
+/// The transport's controls run Music's own playback effects through the
+/// action door, as an agent's invocation does: shuffle and repeat reach
+/// this device's player, and the transport shows what the player has.
+#[test]
+fn the_transport_steers_the_player_through_its_effects() {
+    let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
+    let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+    app.surface_mut::<MusicApp>()
+        .absorb_album(&crate::backend::AlbumPage {
+            id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
+            tracks: vec![crate::backend::TrackHit {
+                video_id: track.into(),
+                title: "Transport fixture".into(),
+                artist: "Fixture artist".into(),
+                artist_id: None,
+                album: Some("Fixture album".into()),
+                album_id: Some("spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into()),
+                duration_s: 213,
+                cover_url: String::new(),
+            }],
+            ..Default::default()
+        });
+    app.settle();
+    app.effect_on(
+        &crate::actions::track_resource_id(track),
+        &crate::actions::MusicEffect::AddToQueue {
+            track: track.into(),
+        },
+    )
+    .unwrap();
+    app.settle();
+    // Wide enough for shuffle and repeat to stand beside the transport.
+    for _ in 0..3 {
+        app.harness()
+            .relayout_at((1600, 900))
+            .expect("the window lays out");
+    }
+    for id in ["transport.shuffle", "transport.repeat"] {
+        let rect = widget_rect(app.harness().root_widget(), id)
+            .unwrap_or_else(|| panic!("{id} is in the band"));
+        app.harness().click_at(rect.center().x, rect.center().y);
+        app.settle();
+    }
+    let player = &app.surface_mut::<MusicApp>().pb;
+    assert!(player.shuffle, "shuffle reached the player");
+    assert_eq!(player.repeat, RepeatMode::All, "and repeat");
+    let shown = app.surface_mut::<MusicApp>().transport.shown();
+    assert_eq!(shown.shuffle, Some(true), "the transport shows it");
+
+    // The heart likes the song that plays when it is pressed.
+    app.surface_mut::<MusicApp>().pb.current = Some(track.into());
+    app.surface_mut::<MusicApp>().dirty = true;
+    app.settle();
+    for _ in 0..3 {
+        app.harness()
+            .relayout_at((1600, 900))
+            .expect("the window lays out");
+    }
+    let heart = widget_rect(app.harness().root_widget(), "transport.like")
+        .expect("the heart is in the band while a song plays");
+    app.harness().click_at(heart.center().x, heart.center().y);
+    app.settle();
+    assert!(
+        app.surface_mut::<MusicApp>().lib.is_liked(track),
+        "the playing song is liked"
+    );
 }
 
 // ---- text truncation --------------------------------------------------
@@ -2800,21 +2619,19 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             track: "tk_g2".into(),
             queued: None,
         });
+        // A newer start supersedes it: the old one settles once, as failed.
+        let newer = tilo_actions::InvocationId::new();
+        app.start_effect(newer, &competing).unwrap();
+        let failed = |update| matches!(update, Some(tilo_actions::InvocationUpdate::Failed { .. }));
+        assert!(failed(app.take_effect_result(invocation)));
+        app.apply_resolve_failure("tk_g1", request_id, "stale failure");
         assert!(
-            app.start_effect(tilo_actions::InvocationId::new(), &competing)
-                .is_err(),
-            "concurrent stream start is refused deterministically"
+            app.take_effect_result(newer).is_none(),
+            "a stale worker result cannot settle the newer invocation"
         );
-        app.apply_resolve_failure("tk_g1", request_id + 1, "stale failure");
-        assert!(
-            app.take_effect_result(invocation).is_none(),
-            "a stale worker result cannot settle this invocation"
-        );
-        app.apply_resolve_failure("tk_g1", request_id, "backend unavailable");
-        assert!(matches!(
-            app.take_effect_result(invocation),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ));
+        let newer_request = app.active_resolve_request.unwrap();
+        app.apply_resolve_failure("tk_g2", newer_request, "backend unavailable");
+        assert!(failed(app.take_effect_result(newer)));
     }
 
     // Phase `stream_operation_times_out_once_and_late_resolution_is_ignored`.
@@ -4976,3 +4793,6 @@ fn without_an_online_catalogue_home_says_why_and_offers_no_search() {
 
 #[path = "query_view_tests.rs"]
 mod query_view_tests;
+
+#[path = "handoff_tests.rs"]
+mod handoff_tests;

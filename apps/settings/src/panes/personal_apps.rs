@@ -444,9 +444,12 @@ impl PersonalAppsPane {
 /// trip to the shell, so it runs off the UI thread.
 fn open_workspace_defaults() -> Result<(), String> {
     crate::device_read::off_ui_thread();
-    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-        route: os_actions::WorkspaceSettingsRoute::AppsFiles,
-    })
+    os_actions::open_tool(
+        os_actions::ToolIntent::WorkspaceSettings {
+            route: os_actions::WorkspaceSettingsRoute::AppsFiles,
+        },
+        None,
+    )
 }
 
 /// Read real installed manifests. A type only appears if an installed GUI app

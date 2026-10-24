@@ -61,6 +61,8 @@ pub(super) struct LayoutRuntime {
     /// itself with the last one) was described: that host keeps the frame's
     /// damage instead of repainting whole.
     pub(super) frame_rebuilds_described: bool,
+    /// Frames whose layout failed, skipped, and when that was last logged.
+    pub(super) skipped_frames: crate::widget::SkippedFrames,
 }
 
 impl LayoutRuntime {
@@ -80,6 +82,7 @@ impl LayoutRuntime {
             rebuilds: 0,
             rebuild_described: true,
             frame_rebuilds_described: false,
+            skipped_frames: crate::widget::SkippedFrames::default(),
         }
     }
 

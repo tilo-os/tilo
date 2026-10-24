@@ -167,6 +167,60 @@ async function publisher({getStats} = {}) {
   return {session, datagrams, send};
 }
 
+test('a reset group loses its frames, not the publisher: the next group is heard', async () => {
+  const {encodeVoiceObject, encodeVoiceBundle} = await import('./voice-profile.mjs');
+  let announce;
+  const groups = [];
+  let waiting;
+  const track = {
+    recvDatagram: () => new Promise(() => {}),
+    recvGroup: () => groups.length ? Promise.resolve(groups.shift()) : new Promise(resolve => {waiting = resolve;}),
+    tryRecvGroup: () => undefined,
+    close() {},
+  };
+  const send = group => {if (waiting) {const resolve = waiting; waiting = undefined; resolve(group);} else groups.push(group);};
+  // A native publisher's group of objects; `reset` fails its next read as
+  // the relay's reset of that group's stream does.
+  const group = (sequence, {reset} = {}) => {
+    let read = 0;
+    return {
+      readFrame: async () => {
+        if (reset) throw new Error('remote error: 1');
+        if (read++) return undefined;
+        return {payload: encodeVoiceBundle([encodeVoiceObject({sequence, timestamp: sequence * 960n, duration: 960, payload: new Uint8Array([0xf8, 0xff, 0xfe])})])};
+      },
+      close() {},
+    };
+  };
+  class Producer {
+    announced() {return {next: () => new Promise(resolve => {announce = resolve;}), close() {announce?.();}};}
+    request() {return {active: {peek: () => ({track: () => ({subscribe: () => track})}), changed: () => new Promise(() => {})}, close() {}};}
+    close() {}
+  }
+  const library = {Origin: {Producer}, Path: {from: (...parts) => parts.join('/'), Pattern: {subtree: path => path}, stripPrefix: (prefix, path) => path.slice(prefix.length + 1)},
+    Connection: {connect: async () => ({version: 'moq-lite-06', transport: 'webtransport', closed: new Promise(() => {}), close() {}})}};
+  const reports = [];
+  const transport = createVoiceTransport({library, carrier: async () => ({transport: {}, revoked: new Promise(() => {}), close() {}}), onReport: report => reports.push(report)});
+  const session = await transport.connect({grant: {call: CALL, participation: SELF, token: '01', endpoint: 'https://localhost/moq/voice', directions: {publish: false, subscribe: true}}});
+  const frames = [];
+  const publishers = [];
+  session.subscribe({onFrame: frame => frames.push(frame), onPublisher: (publisher, active) => publishers.push([publisher, active])});
+  announce({kind: 'announced', prefix: `${CALL}/${REMOTE}`});
+  await drain();
+  send(group(0n));
+  await drain();
+  assert.equal(frames.length, 1);
+  send(group(5n, {reset: true}));
+  await drain();
+  send(group(10n));
+  await drain();
+  assert.deepEqual(frames.map(frame => frame.sequence), [0n, 10n], 'the group after the reset one is heard');
+  assert.deepEqual(publishers, [[REMOTE, true]], 'the publisher never left the call');
+  assert.ok(reports.some(report => report.type === 'voice-receive-drop' && report.reason === 'group-reset'));
+  assert.ok(!reports.some(report => report.type === 'voice-subscription-error'), 'a lost group is no subscription error');
+  session.close();
+});
+
 test('a clean uplink sends each frame once; measured loss adds up to two earlier frames', async () => {
   const counters = {packetsSent: 0, packetsLost: 0};
   const {session, datagrams, send} = await publisher({getStats: async () => ({...counters})});

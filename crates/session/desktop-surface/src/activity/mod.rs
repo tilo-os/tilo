@@ -227,6 +227,7 @@ mod admitted_history_tests {
                         kind: AppKind::Other("so.tilo.notes".into()),
                         label: "Notes".into(),
                     },
+                    app_title: None,
                 }],
             }],
         }];

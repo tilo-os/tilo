@@ -510,8 +510,8 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
     home.env().set("TILO_USER_ID", &person);
 
     let mut first_tree = WorkspaceTree::default();
-    let home_workspace = first_tree.append_empty_workspace("Home");
-    first_tree.adopt_ownerless_workspaces(&person);
+    let home_workspace = first_tree.create_hosted_workspace("Home").0;
+    first_tree.own_workspaces_for_test(|_| person.clone());
     // The pointer is said in the room on screen.
     first_tree.desktop.active = home_workspace;
     let room = first_tree.room_of(home_workspace).unwrap();
@@ -687,8 +687,8 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
     };
     home.env().set("TILO_USER_ID", &person);
     let mut tree = WorkspaceTree::default();
-    let workspace = tree.append_empty_workspace("Home");
-    tree.adopt_ownerless_workspaces(&person);
+    let workspace = tree.create_hosted_workspace("Home").0;
+    tree.own_workspaces_for_test(|_| person.clone());
     tree.desktop.active = workspace;
     let net = device_reaching(
         tree.shared(),

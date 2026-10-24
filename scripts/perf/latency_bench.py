@@ -173,6 +173,19 @@ def session_env(root: Path, args: argparse.Namespace, ctl_path: Path, trace: Pat
     return env
 
 
+def scratch_profile() -> Path:
+    """A disposable profile for the session, with the directories it must find.
+
+    The compositor resolves the person's settings against `HOME` and refuses
+    to start when it is not there, as a real login always has one; the
+    runtime directory holds the control socket and is the person's alone.
+    """
+    root = Path(tempfile.mkdtemp(prefix="tilo-latency-bench-"))
+    for name in ("run", "home"):
+        (root / name).mkdir(mode=0o700)
+    return root
+
+
 def observation_dir() -> Path:
     """Where the compositor's log and frame trace are written while it runs.
 
@@ -196,8 +209,7 @@ def measure(args: argparse.Namespace) -> dict[str, Any]:
     observe = observation_dir()
     log = observe / "compositor.log"
     trace = observe / "frame-trace.csv"
-    root = Path(tempfile.mkdtemp(prefix="tilo-latency-bench-"))
-    (root / "run").mkdir(mode=0o700)
+    root = scratch_profile()
     ctl_path = root / "run" / "test-control.sock"
     env = session_env(root, args, ctl_path, trace)
     proc = None

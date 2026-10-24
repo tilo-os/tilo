@@ -40,6 +40,7 @@ fn tree() -> DesktopTree {
                     kind: AppKind::Other("so.tilo.word-processor".into()),
                     label: "Renamed".into(),
                 },
+                app_title: None,
             }],
             active_tab: 9_007_199_254_741_001,
             width: WindowWidth::Normal,

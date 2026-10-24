@@ -48,9 +48,13 @@ impl ChatPermissions {
         }
     }
 
-    /// Adopt the context the compositor passed into `draw`.
+    /// Adopt the context the window acts under this frame.
     pub fn from_context(ctx: PermissionContext) -> Self {
         Self { ctx }
+    }
+
+    pub fn context(&self) -> &PermissionContext {
+        &self.ctx
     }
 
     /// May this peer hydrate + render the bytes behind an attachment `blob`?

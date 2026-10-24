@@ -1,3 +1,4 @@
+use super::strip_menu::StripHost;
 #[allow(
     clippy::wildcard_imports,
     reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
@@ -39,8 +40,8 @@ impl VideoEditorApp {
         }
         if self.presentation.export_open {
             if matches!(key, Key::Named(NamedKey::Escape)) {
-                // Esc closes the dialog, not the render: the chip under the
-                // Export button carries the job on.
+                // Esc closes the dialog, not the render: the window bar's
+                // Export carries the job on.
                 self.presentation.export_open = false;
                 return true;
             }
@@ -462,7 +463,9 @@ impl VideoEditorApp {
             return;
         }
         if self.presentation.export_open {
-            self.press_export(state, p);
+            if !self.open_folded_strip(StripHost::Export, p) {
+                self.press_export(p);
+            }
             return;
         }
         // The shortcut sheet and the go-to-timecode field paint the same
@@ -494,57 +497,20 @@ impl VideoEditorApp {
         if self.press_scrollbars(r, p) {
             return;
         }
-        // The export chip floats over whatever pane is under it, so it is hit
-        // first. It is the way back into the render it is reporting: the full
-        // path, the failure's own words and Cancel all live in the dialog.
-        if self.export_chip_is_shown() && r.export_chip.contains(p) {
-            self.presentation.export_open = true;
-            return;
-        }
-        // The media bin's show/hide toggle, in every layout.
-        if r.menu_btn.contains(p) {
-            self.toggle_bin();
-            return;
-        }
-        // An open bin overlay owns every click outside its flap. This check
-        // must precede the other top-bar controls: otherwise the scrim could
-        // look modal while Import, Export, or the inspector still changed
-        // behind it.
+        // An open bin overlay owns every click outside its flap: the scrim
+        // must not look modal while the preview or timeline behind it still
+        // changed.
         let bin_visible = self.bin_is_visible(r);
-        if r.bin_overlay && bin_visible && !r.bin.contains(p) && !r.menu_btn.contains(p) {
+        if r.bin_overlay && bin_visible && !r.bin.contains(p) {
             self.close_bin_overlay();
-            return;
-        }
-        // The inspector's show/hide toggle, in every layout.
-        if r.inspector_btn.contains(p) {
-            self.toggle_inspector();
             return;
         }
         // An open inspector overlay owns its own rect, before the preview and
         // timeline underneath it get a look.
         if r.inspector_overlay && self.inspector_is_visible(r) && r.inspector.contains(p) {
-            self.press_inspector(r, p);
-            return;
-        }
-        // Top bar buttons.
-        if r.project_btn.width() > 0.0 && r.project_btn.contains(p) {
-            if self.project_menu.is_open() {
-                self.project_menu.close();
-            } else {
-                self.open_project_menu(Point::new(r.project_btn.x0, r.project_btn.y1 + 4.0));
+            if !self.open_folded_strip(StripHost::Inspector, p) {
+                self.press_inspector(r, p);
             }
-            return;
-        }
-        if r.export_btn.contains(p) {
-            self.presentation.export_open = true;
-            return;
-        }
-        if r.import_btn.contains(p) {
-            self.trigger_import();
-            return;
-        }
-        if r.split_btn.contains(p) {
-            self.split_selected();
             return;
         }
         // Empty-bin "Import media" affordance.
@@ -612,7 +578,9 @@ impl VideoEditorApp {
         }
         // Inspector controls.
         if self.inspector_is_visible(r) && r.inspector.contains(p) {
-            self.press_inspector(r, p);
+            if !self.open_folded_strip(StripHost::Inspector, p) {
+                self.press_inspector(r, p);
+            }
             return;
         }
         // Transport controls.
@@ -1257,23 +1225,22 @@ impl VideoEditorApp {
         self.drag = Some(Drag::CurvePoint { channel: ch, idx });
     }
 
-    pub(super) fn press_export(&mut self, state: &AutoCommit, p: Point) {
+    pub(super) fn press_export(&mut self, p: Point) {
         // Laid out from the current state, as the next frame will paint it —
         // see `chrome_theme`.
         let l = self.with_dialog_layout(super::VideoEditorApp::export_layout);
         match l.modal.hit(p) {
             // The close control, or a click outside the card, dismisses. A
             // render in flight is not abandoned by that: it keeps reporting
-            // from the topbar chip and its own live region, and the chip is
-            // the way back in here.
+            // from the window bar's Export and its own live region, and
+            // Export is the way back in here.
             Some(ModalHit::Close | ModalHit::Scrim) => {
                 self.presentation.export_open = false;
             }
             Some(ModalHit::Action(0)) => {
                 if self.export_running() {
                     // A render in flight: this is Cancel, not Close. Stop it
-                    // and leave the dialog up so the outcome is visible here
-                    // as well as in the chip.
+                    // and leave the dialog up so the outcome is visible here.
                     if let Some(job) = self.export_job.as_ref() {
                         job.cancel();
                     }
@@ -1287,7 +1254,6 @@ impl VideoEditorApp {
                 if self.export_is_offered() {
                     self.request_export();
                 }
-                let _ = state;
             }
             Some(ModalHit::Card) => {
                 // Only an option the body shows can be chosen: on a window too

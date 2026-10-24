@@ -13,7 +13,7 @@
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::search::action_api::ActionError;
-use crate::shell::state::{CapRole, PolicyEdit, UserId, Workspace};
+use crate::shell::state::{CapRole, GovernanceRequest, PolicyEdit, UserId, Workspace};
 
 pub(crate) use tilo_action_broker::collaboration_admin::{REMOVE_ACTION, SET_ROLE_ACTION};
 
@@ -25,8 +25,6 @@ pub(crate) const AGENT_REMOVE_ACTION: &str = "agent.remove";
 pub(crate) enum MembershipError {
     /// There is no active workspace to edit.
     NoWorkspace,
-    /// This machine does not govern the active workspace's room.
-    NotGoverned,
     /// The local user may not invoke this membership action here.
     Unauthorized(&'static str),
     /// The participant is not a member of the active workspace.
@@ -41,7 +39,6 @@ impl std::fmt::Display for MembershipError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoWorkspace => f.write_str("there is no active workspace"),
-            Self::NotGoverned => f.write_str("this device does not govern the active workspace"),
             Self::Unauthorized(action) => {
                 write!(f, "current workspace authority does not permit {action}")
             }
@@ -103,8 +100,11 @@ pub(crate) fn set_member_role(
     .map(drop)
 }
 
-/// Remove `member` from the active workspace, revoking every grant
-/// they hold there.
+/// Remove `member` from the active workspace: the room's host takes the
+/// person out, and every grant, role and device of theirs goes with them;
+/// what this device's sandbox let them reach goes here.
+/// The one way a member is removed; the workspace's own rules are asked
+/// first, so a removal they refuse is never sent.
 ///
 /// # Errors
 ///
@@ -112,10 +112,30 @@ pub(crate) fn set_member_role(
 pub(crate) fn remove_member(st: &mut ChromeState, member: &UserId) -> Result<(), MembershipError> {
     authorize(st, REMOVE_ACTION)?;
     active_role_of(st, member)?;
-    edit_active_workspace_policy(st, |ws, actor| {
-        tilo_desktop::workspace_settings::remove_member(ws, actor, member)
-    })
-    .map(drop)
+    let actor = st.active_local_user();
+    let mut tree = st.tree_mut();
+    let mut edited = tree
+        .desktop
+        .active_workspace()
+        .cloned()
+        .ok_or(MembershipError::NoWorkspace)?;
+    let edit = tilo_desktop::workspace_settings::remove_member(&mut edited, &actor, member);
+    if edit.is_empty() {
+        return Err(MembershipError::Refused);
+    }
+    tree.request_governance(
+        edited.room(),
+        GovernanceRequest::Policy(tilo_action_policy::Change::RemoveMember {
+            person: member.clone(),
+        }),
+    );
+    // The sandbox is this device's own reach, not the room's policy.
+    for id in &edit.sandbox_revoked {
+        tree.narrow_sandbox(edited.id, &actor, id);
+    }
+    drop(tree);
+    st.bump();
+    Ok(())
 }
 
 /// Take `agent` out of the active workspace: revoke every grant naming it,
@@ -149,16 +169,15 @@ pub(crate) fn remove_agent(st: &mut ChromeState, agent: &str) -> Result<(), Memb
     .map(drop)
 }
 
-/// Apply a permission edit to the active workspace, then mirror it into the
-/// replicated doc and flush. Without the mirror an edit would change only
-/// the in-memory cache and the next boot would read the old answer back off
-/// disk. `edit` runs with the local user as actor and does its own authority
-/// check; an empty [`PolicyEdit`] is reported as [`MembershipError::Refused`].
+/// Work a permission edit out on a copy of the active workspace and ask the
+/// room's governor for it. `edit` runs with the local user as actor and
+/// does its own authority check; an empty [`PolicyEdit`] is reported as
+/// [`MembershipError::Refused`]. The change shows once the room's admitted
+/// document carries it.
 ///
 /// # Errors
 ///
-/// [`MembershipError::NoWorkspace`], [`MembershipError::NotGoverned`] or
-/// [`MembershipError::Refused`].
+/// [`MembershipError::NoWorkspace`] or [`MembershipError::Refused`].
 pub(crate) fn edit_active_workspace_policy<F>(
     st: &mut ChromeState,
     edit: F,
@@ -168,26 +187,16 @@ where
 {
     let actor = st.active_local_user();
     let mut tree = st.tree_mut();
-    let (ws_id, room) = tree
+    let mut edited = tree
         .desktop
         .active_workspace()
-        .map(|workspace| (workspace.id, workspace.room()))
+        .cloned()
         .ok_or(MembershipError::NoWorkspace)?;
-    if !tree.governs_room(room) {
-        return Err(MembershipError::NotGoverned);
-    }
-    let ws = tree
-        .desktop
-        .workspaces
-        .iter_mut()
-        .find(|workspace| workspace.id == ws_id)
-        .ok_or(MembershipError::NoWorkspace)?;
-    let changed = edit(ws, &actor);
+    let changed = edit(&mut edited, &actor);
     if changed.is_empty() {
         return Err(MembershipError::Refused);
     }
-    tree.doc_write_policy(ws_id, &changed);
-    tree.queue_save();
+    tree.request_policy_edit(edited.id, &actor, &edited, &changed);
     drop(tree);
     st.bump();
     Ok(changed)

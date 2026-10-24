@@ -574,6 +574,30 @@ impl BrowsingHistory {
         Ok(())
     }
 
+    /// Name a visited page recorded before its title was known: a page a
+    /// web app moved to without loading one, or one that names itself once
+    /// it has loaded. A page that has a title keeps it.
+    ///
+    /// Like recording the visit, this is the browser keeping its history,
+    /// not an edit of the person's to take back.
+    #[action(housekeeping)]
+    pub fn name_visit(
+        &mut self,
+        #[param("The page's address")] url: String,
+        #[param("The page's title")] title: String,
+    ) -> Result<(), Refusal> {
+        let title = bounded_text(&title, MAX_HISTORY_TITLE_BYTES);
+        if title.trim().is_empty() {
+            return Err(Refusal::new("a page is named by a title"));
+        }
+        if let Some(visit) = self.visits.get_mut(url.trim())
+            && visit.title.0.trim().is_empty()
+        {
+            visit.title = Atom(title);
+        }
+        Ok(())
+    }
+
     /// Forget one page.
     #[action]
     pub fn forget(&mut self, #[param("The page's address")] url: String) {

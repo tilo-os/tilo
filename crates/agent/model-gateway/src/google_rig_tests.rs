@@ -92,6 +92,7 @@ async fn google_billing_and_gemini_signatures_survive_unary_and_streamed_tool_hi
                 profile: profile.clone(),
                 model: "checked-model".into(),
                 streaming: true,
+                api: None,
                 target: crate::openai::Target::Standard,
                 retry_refusals: false,
                 stream_end: Arc::default(),
