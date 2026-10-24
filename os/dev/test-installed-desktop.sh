@@ -65,8 +65,9 @@ install -d -m 0700 "$TILO_RUN"
 cleanup() {
   local rc=$?
   trap - EXIT
+  kill "$sampler" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
-    "$vm" ssh 'systemctl --failed --no-pager; journalctl -b --no-pager -o short-monotonic -p warning -n 200' || true
+    TILO_SSH_BOUND=60 "$vm" ssh 'systemctl --failed --no-pager; journalctl -b --no-pager -o short-monotonic -p warning -n 200' || true
   fi
   "$vm" stop >/dev/null 2>&1 || true
   cp -f "$TILO_RUN/qemu.log" "$TILO_RUN/serial.log" "$TILO_RUN"/*.png "$out/" 2>/dev/null || true
@@ -74,10 +75,28 @@ cleanup() {
   printf '%s\n' "$rc" > "$out/exit-status.txt"
   exit "$rc"
 }
+sampler=
 trap cleanup EXIT
 
 "$vm" tool qemu-img create -f qcow2 -F qcow2 -b "$base" "$TILO_DISK" >/dev/null
 "$vm" boot "--$display"
+# The boot gate below counts the time the boot waited on this host (its disk,
+# its CPUs) apart from the image's own, from what the guest records while it
+# boots: from as soon as it answers SSH until five minutes after it started,
+# twice a second, its uptime, I/O pressure total and CPU steal.
+host_samples=/tmp/tilo-boot-host-samples
+sample_host_wait() {
+  local attempt
+  for attempt in $(seq 1 150); do
+    "$vm" ssh "while read -r up _ < /proc/uptime && [ \${up%.*} -lt 300 ]; do
+        printf '%s %s %s\n' \$up \$(sed -n 's/^full .*total=//p' /proc/pressure/io) \
+          \$(awk '\$1 == \"cpu\" { print \$9 }' /proc/stat) >> $host_samples; sleep 0.5; done" \
+      >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+}
+sample_host_wait >/dev/null 2>&1 &
+sampler=$!
 "$vm" wait
 for attempt in $(seq 1 60); do
   "$vm" ssh true >/dev/null 2>&1 && break
@@ -95,7 +114,7 @@ python3 "$dev_dir/probe-kvm.py" "$arch" >/dev/null 2>&1 && kvm=1
 # network wait, initramfs stall, or service timeout. Before the login: it
 # checks the greeter's login endpoint, which greetd removes once the session
 # has started.
-"$vm" with-tests 'TILO_BOOT_USERSPACE_BUDGET_SEC=20 "$TILO_GUEST_TESTS/boot-performance-gate.sh"'
+"$vm" with-tests "TILO_BOOT_USERSPACE_BUDGET_SEC=20 TILO_BOOT_HOST_SAMPLES=$host_samples \"\$TILO_GUEST_TESTS/boot-performance-gate.sh\""
 
 # The sign-in screen as a person meets it, judged from the frames QEMU scans
 # out: whole before any input and while the pointer moves, each keystroke on
