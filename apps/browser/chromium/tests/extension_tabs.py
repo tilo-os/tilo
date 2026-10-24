@@ -102,11 +102,21 @@ def prologue_end(text):
             else:
                 i += 1
         i += 1
-        while text[i:i + 1] in (b' ', b'\t'):
-            i += 1
+        while True:
+            if text[i:i + 1] in (b' ', b'\t'):
+                i += 1
+            elif text[i:i + 2] == b'/*':
+                close = text.find(b'*/', i + 2)
+                if close < 0:
+                    return end
+                if b'\n' in text[i + 2:close] or b'\r' in text[i + 2:close]:
+                    break
+                i = close + 2
+            else:
+                break
         if text[i:i + 1] == b';':
             end = i + 1
-        elif text[i:i + 1] in (b'', b'\n', b'\r'):
+        elif text[i:i + 1] in (b'', b'\n', b'\r') or text[i:i + 2] in (b'//', b'/*'):
             end = i
         else:
             return end
