@@ -64,10 +64,6 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             &service,
             &room.to_string()
         ));
-        assert!(!OwnerCommitService::requires_room(
-            &service,
-            &uuid::Uuid::new_v4().to_string()
-        ));
         let request = OwnerCommitRequest {
             room: room.to_string(),
             operation: CommitOperation::Document {
@@ -77,6 +73,25 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             },
         };
         let before = std::fs::read(&path).unwrap();
+        // Every room's documents are the native owner's: a room this device
+        // holds no enrollment for is never left to app storage, and a
+        // commit into it is refused without touching the state file.
+        let unheld = uuid::Uuid::new_v4().to_string();
+        assert!(OwnerCommitService::requires_room(&service, &unheld));
+        let refused = service
+            .commit(OwnerCommitRequest {
+                room: unheld,
+                ..request.clone()
+            })
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("no committed native enrollment")),
+            "a room this device holds no enrollment for commits nothing: {:?}",
+            refused.map(|_| ())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
         let result = if fail {
             // The adapter's future has no await; poll it inside the real storage failure scope.
             tilo_files::native::atomic::test_support::with_failure(

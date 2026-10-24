@@ -166,9 +166,10 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
     }
 
     fn invite_card_opens_the_existing_signed_invite_composer() {
-        let mut tree = WorkspaceTree::bootstrap_default();
-        tree.own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
-        let (mut host, _) = build_tilo_overlay_host_with_chrome(&tree);
+        let tree = WorkspaceTree::bootstrap_default();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        // First boot's Home once it is placed on this device's host.
+        let _room = super::tests::host_active_room(&chrome);
         host.set_peer_sync_enabled(true);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
