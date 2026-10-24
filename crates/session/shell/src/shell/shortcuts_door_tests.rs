@@ -64,6 +64,9 @@ use ui::collaboration::{
 #[path = "shortcuts_door_tests/unhosted.rs"]
 mod unhosted;
 
+#[path = "shortcuts_door_tests/hosted_writes.rs"]
+mod hosted_writes;
+
 use crate::shell::network::one_host_tests::{Device, Person, Wakes, hosted_workspace, until};
 
 const FIXTURE: &str = "so.tilo.fixture-drafts";
@@ -82,6 +85,8 @@ const INVOKER_HANDLE: &str = "invoker-app";
 const SILENT_APP: &str = "so.tilo.fixture-silent";
 const INVOKER_APP: &str = "so.tilo.fixture-invoker";
 /// The seed of the root of Bob, a member of the room who is not its owner.
+/// The resource kind the fixture declares for its records.
+const RECORD_KIND: &str = "fixture.drafts";
 const BOB_SEED: u8 = 0xB0;
 
 fn person_of(root: [u8; 32]) -> String {
@@ -247,20 +252,12 @@ impl HostedRoom {
         );
     }
 
-    /// Let `app` keep records in the room and have the room's host make
-    /// its record `record`, as opening the app there first does.
+    /// Let `app` keep records in the room and make its record `record`
+    /// where the session makes it, as opening the app there first does.
     fn open_first(&self, app: &str, record: &str) {
+        self.device
+            .open_app_first(self.room, app, record, RECORD_KIND);
         let net = self.network();
-        let certificate = self.device.cert();
-        let runtime = net.runtime_handle().expect("the network's runtime");
-        runtime
-            .block_on(net.grant_app_authorship_at_host(self.room, &certificate, app))
-            .expect("the room's host answers for the app's authorship")
-            .unwrap_or_else(|error| panic!("the host lets {app} author: {error}"));
-        runtime
-            .block_on(net.prepare_application_record_at_host(self.room, &certificate, app, record))
-            .expect("the room's host answers for the app's record")
-            .unwrap_or_else(|error| panic!("the host makes {app}'s record: {error}"));
         let owner = net.native_owner().expect("the room's native owner");
         until(
             &[&self.device],
@@ -446,6 +443,7 @@ impl FixtureApp {
             .and_then(|json| serde_json::from_str(json).ok())
             .unwrap_or_default();
         self.served.push((action.to_string(), arguments.clone()));
+        let before = self.doc.get_heads();
         let text = |name: &str| {
             arguments
                 .get(name)
@@ -483,6 +481,10 @@ impl FixtureApp {
             None => CommitOptions::default(),
         };
         self.doc.commit_with(options);
+        // The edit goes to the room as the app's change to its record.
+        let changes = self.doc.save_after(&before);
+        self.manager
+            .send(CollabRequest::document_incremental(changes));
         InvocationUpdate::Succeeded { invocation, output }
     }
 }
@@ -561,9 +563,10 @@ impl Door {
         let (_, certificate) =
             tilo_identity_host::broker::trusted_current_device(&room.to_string())
                 .expect("this device's identity in the room");
+        let held = hosted.device.cert();
         assert_eq!(
-            certificate,
-            hosted.device.cert(),
+            (certificate.user_public_key, certificate.device_public_key),
+            (held.user_public_key, held.device_public_key),
             "the broker's device is the one the network holds"
         );
         hosted.open_first(FIXTURE, RECORD);
@@ -696,8 +699,36 @@ impl Door {
         if self.bob.is_none() {
             self.bob = Some(self.hosted.bob_joins(&self.dir.path().join("bob")));
         }
-        self.save_as(&Caller::local_person(bob()), shortcut)
-            .expect("a member saves a scheduled shortcut");
+        let device = self.bob.as_ref().expect("Bob's device");
+        let saved = Shortcut {
+            saved_by: Some(bob()),
+            ..shortcut.clone()
+        };
+        let net = std::sync::Arc::clone(device.net());
+        let runtime = net.runtime_handle().expect("the network's runtime");
+        runtime
+            .block_on(
+                crate::shell::broker_services::NativeShortcutLibrary::commit(
+                    device.tree.clone(),
+                    Some(std::sync::Arc::clone(&net)),
+                    self.room,
+                    bob(),
+                    tilo_automation::ShortcutChange::Save(Box::new(saved)),
+                ),
+            )
+            .expect("a member saves a scheduled shortcut from his device");
+        let id = shortcut.id.clone();
+        until(
+            &[&self.hosted.device, device],
+            "Bob's shortcut to reach the room",
+            || {
+                room_workspace(&self.membership.read(), self.room)
+                    .shortcuts
+                    .iter()
+                    .any(|saved| saved.id == id)
+                    .then_some(())
+            },
+        );
     }
 
     /// The room's owner removes `person` from the room at its host, and
@@ -879,6 +910,7 @@ fn publish_draft(id: &str, granted: &[&str]) -> Shortcut {
             .collect(),
         triggers: Vec::new(),
         saved_by: None,
+        saved_proof: None,
     }
 }
 
@@ -919,6 +951,7 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
     }
     let stored = Shortcut {
         saved_by: Some(owner_principal()),
+        saved_proof: None,
         ..shortcut
     };
     assert_eq!(
@@ -1062,7 +1095,12 @@ fn utc_clock(now: &str) -> std::sync::Arc<ManualClock> {
 /// the loop does once the write wakes it.
 fn tick(triggers: &mut TriggerHost, door: &Door, person: &str) -> Vec<Firing> {
     let tree = door.membership.read();
-    let armed = armed(&tree.desktop.workspaces, |_| person.to_string());
+    let armed = armed(
+        &tree.desktop.workspaces,
+        |_| person.to_string(),
+        |ws| tree.room_revocations(ws.room()),
+        tilo_clock::unix_now_ns(),
+    );
     let mut fired = triggers.observe(TriggerEvent::Tick, &armed);
     drop(tree);
     crate::shell::durable_writer::global().flush();
@@ -1254,7 +1292,12 @@ fn an_app_opening_runs_the_shortcut_with_the_app_bound_as_its_input() {
         let running: std::collections::BTreeSet<String> =
             running.iter().map(ToString::to_string).collect();
         let tree = door.membership.read();
-        let armed = armed(&tree.desktop.workspaces, |_| owner.clone());
+        let armed = armed(
+            &tree.desktop.workspaces,
+            |_| owner.clone(),
+            |ws| tree.room_revocations(ws.room()),
+            tilo_clock::unix_now_ns(),
+        );
         let fired = triggers.observe(TriggerEvent::Apps(&running), &armed);
         drop(tree);
         fired
