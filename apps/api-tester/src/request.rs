@@ -201,7 +201,7 @@ pub(crate) fn section(
     sink: &Sink,
 ) -> Built {
     let tab_sink = sink.clone();
-    let tabs = ToggleGroup::new(
+    let tabs = ui::widget::ViewTabs::new(
         RequestTab::ALL
             .iter()
             .map(|t| Segment::new(t.label()))
