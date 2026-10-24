@@ -277,6 +277,7 @@ impl BrowserWidget {
             navigation: Some(self.bar_navigation()),
             location: Some(ToolbarLocation {
                 label: site_label(&self.current_uri),
+                shorter: Vec::new(),
                 value: self.current_uri.clone(),
                 placeholder: t("browser-address-placeholder"),
                 icon,

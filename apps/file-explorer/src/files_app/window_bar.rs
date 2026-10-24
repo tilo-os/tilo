@@ -138,6 +138,7 @@ impl FileExplorerWidget {
             }),
             location: Some(ToolbarLocation {
                 label,
+                shorter: Vec::new(),
                 value: crate::model::format_path(&self.current_path, home),
                 placeholder: t("files-path-placeholder"),
                 icon: None,
