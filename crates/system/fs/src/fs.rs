@@ -1658,12 +1658,18 @@ impl QuickFS {
         let (offset, size) = range;
         let hydrator = Arc::clone(&self.hydrator);
         let rt = hydrator.runtime_handle.clone();
+        let note = self.unavailable_note(ino, Some(hash));
         if nonblocking {
             // A non-blocking reader gets EAGAIN at once; the range keeps
             // hydrating so a retry finds it local.
             rt.spawn(async move {
-                if let Err(error) = hydrator.read(hash, offset, size).await {
-                    eprintln!("content hydration failed for {hash}: {error:#}");
+                match hydrator.read(hash, offset, size).await {
+                    Ok(_) => {
+                        if let Some(note) = note {
+                            note.arrived().await;
+                        }
+                    }
+                    Err(error) => eprintln!("content hydration failed for {hash}: {error:#}"),
                 }
             });
             reply.error(to_errno(libc::EAGAIN));
@@ -1672,8 +1678,7 @@ impl QuickFS {
         // The kernel holds the page locked while the read waits, so anyone
         // else touching it waits too: the read fails at its bound rather
         // than wait on a peer that went quiet, and the file's record says it
-        // is unavailable until bytes arrive.
-        let note = self.unavailable_note(ino);
+        // is unavailable until bytes arrive, and stored once it is whole.
         rt.spawn(async move {
             let read = async move { hydrator.read(hash, offset, size).await };
             let bound = crate::hydration::BLOCKED_READ_BOUND;
@@ -1688,13 +1693,33 @@ impl QuickFS {
     }
 
     /// Where a blocked read of `ino`'s bytes notes whether they arrived:
-    /// its availability record, when this mount keeps them.
-    fn unavailable_note(&self, ino: u64) -> Option<unavailable::UnavailableNote> {
+    /// its availability record, when this mount keeps them. `hash` is the
+    /// committed content the read fetches, if it does: when it is the
+    /// file's current version, the record says the file is stored once
+    /// every byte of it is local.
+    fn unavailable_note(
+        &self,
+        ino: u64,
+        hash: Option<Hash>,
+    ) -> Option<unavailable::UnavailableNote> {
         let registry = Arc::clone(self.availability.as_ref()?);
-        let record_id = self.ns().record_id_for(ino)?;
+        let (record_id, revision) = {
+            let ns = self.ns();
+            (ns.record_id_for(ino)?, ns.content_revision_for(ino))
+        };
+        let content = hash.zip(revision).and_then(|(hash, revision)| {
+            (revision.content_hash.map(|content| content.0) == Some(*hash.as_bytes())).then(|| {
+                unavailable::NotedContent {
+                    hydrator: Arc::clone(&self.hydrator),
+                    hash,
+                    version: revision.version_id,
+                }
+            })
+        });
         Some(unavailable::UnavailableNote {
             registry,
             record_id,
+            content,
         })
     }
 
@@ -1708,7 +1733,7 @@ impl QuickFS {
             BufferedRead::Staged(Ok(StagedRead::Missing(missing))) => {
                 let hydrator = Arc::clone(&self.hydrator);
                 let rt = hydrator.runtime_handle.clone();
-                let note = self.unavailable_note(ino);
+                let note = self.unavailable_note(ino, None);
                 rt.spawn(async move {
                     let read = async move { Ok(missing.finish(&hydrator).await?) };
                     let bound = crate::hydration::BLOCKED_READ_BOUND;
