@@ -37,10 +37,10 @@ instead: `tilo device vm upgrade --from sha:<commit>` for any commit CI has buil
 `--from local` for one that is not pushed yet (`tilo device guide images`). t
 builds the OS and dev images of any tree (`t test os-dev-image-x86_64`, likewise
 `os-image-<arch>` and `os-board-<board>`) and gates installed images in
-`os-acceptance-<arch>`. `t dispatch publish-os-dev-x86_64 --ref main` (likewise
-`aarch64`) publishes main's head once that gate passed: `tilo-ci:main-<sha7>-<arch>`, the
-dev image `tilo-vm:main-<sha7>-ci` and its disk, and moves `tilo-vm:main-ci` and
-`tilo-vm:latest` forward.
+`os-acceptance-<arch>`. Every night `publish-os-dev-<arch>` publishes main's head once that
+gate passed (`t dispatch publish-os-dev-x86_64 --ref main` does it now):
+`tilo-ci:main-<sha7>-<arch>`, the dev image `tilo-vm:main-<sha7>-ci` and its disk, and moves
+`tilo-vm:main-ci` and `tilo-vm:latest` forward.
 
 To run a main dev image on a physical x86_64 (or generic aarch64) machine, write its
 published disk to a disk of at least 64 GB and boot it; it follows `tilo-vm:main-ci`,
@@ -64,10 +64,10 @@ does; `tilo device guide fedora-loop` maps its commands.
 A board dev image is the board layer (`os/Containerfile.board`: firmware, device
 tree, initramfs) on the same commit's aarch64 dev image. It is sealed: bootc hands
 the kernel a device tree only from a UKI's `.dtb` section, so the image carries a
-UKI, which keeps the device tree across updates. t builds and publishes one for main's
-head when asked (`publish-os-board-<board>` in `t.toml`; it builds
-`os-image-aarch64`, `os-dev-image-aarch64` and `os-board-<board>` first, a few hours from
-cold):
+UKI, which keeps the device tree across updates. Every night t builds main's head and
+publishes it once `os-board-<board>`, `os-board-size-<board>` and `os-acceptance-aarch64`
+pass (`publish-os-board-<board>` in `t.toml`); a dispatch does it now, a few hours from
+cold:
 
 ```sh
 t dispatch publish-os-board-lenovo-83ed --ref main

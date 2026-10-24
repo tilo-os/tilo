@@ -8,18 +8,20 @@
 # images and their boots, VM, micro-VM and FUSE suites, the whole-workspace nightly-* and
 # weekly-* sets, the perf runs, size budgets, certification, the full web and SDK suites,
 # Android, the goldens, development signing. Those say `on = ["stable", "dispatch"]` and `default
-# = false`; `t test <name>` runs one for a working tree, `t dispatch <name>` on a branch. Nothing
-# heavy runs on a schedule on main's head either; what does is cheap and watches something
-# outside the tree (certificate expiry, live third-party services, loop devices, mirrors,
-# extension manifests). A few checks also say `idle`: main's newest head runs them when CI has
-# room left, at the lowest priority, and t bisects their failures like a default check's. Their
-# runs and bisection probes wait behind all other work and restart whenever pre-empted, so a
+# = false`; `t test <name>` runs one for a working tree, `t dispatch <name>` on a branch. The one
+# heavy schedule on main's head is the nightly development OS: its dev images and board images
+# (publish-os-dev-*, publish-os-board-*), which development VMs and boards update from, each
+# published only once its gates pass. Everything else on a schedule is cheap and watches
+# something outside the tree (certificate expiry, live third-party services, loop devices,
+# mirrors, extension manifests). A few checks also say `idle`: main's newest head runs them when
+# CI has room left, at the lowest priority, and t bisects their failures like a default check's.
+# Their runs and bisection probes wait behind all other work and restart whenever pre-empted, so a
 # check should say it only if a run is cheap and its inputs change rarely (release-trust).
 # Publishing steps stay on main where something consumes main's development tags (the builder pin
 # below, the CI images, the mirrors); those only a release or a person uses (the services'
-# development tags, the release rehearsal and tools, the board images) are dispatched. Most of
-# the extensive checks are keyed by the packages they build (`cargo_packages`) and the files they
-# read, so running one for a change that doesn't touch them takes its cached result: run those
+# development tags, the release rehearsal and tools) are dispatched. Most of the extensive checks
+# are keyed by the packages they build (`cargo_packages`) and the files they read, so running one
+# for a change that doesn't touch them takes its cached result: run those
 # your change reaches (sdk-web for the web runtime, real-fuse for the filesystem, render-counters
 # for the toolkit's renderer, the goldens of the packages whose pixels you changed). Each still
 # builds tilo-app, the shell or the toolkit, which most commits reach, so none of them is cheap
@@ -6453,8 +6455,9 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 # OS image), registry.tilo.so/tilo/tilo-vm:main-<commit7>-ci (an index of the architectures
 # published so far) and its disk in the tilo-vm-disk package, which `tilo-vm vm create` and `vm
 # upgrade --from sha:<commit>` take; tilo-vm:latest and, with both architectures, tilo-vm:main-ci
-# move forward to it. Dispatched on main (`t dispatch publish-os-dev-x86_64 --ref main`): it builds
-# the whole OS image, so main doesn't run it on its own.
+# move forward to it. Main's head publishes it every night (and when dispatched: `t dispatch
+# publish-os-dev-x86_64 --ref main`); a night whose image fails os-acceptance-{arch} publishes
+# nothing.
 [[check]]
 name = "publish-os-dev-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
@@ -6467,7 +6470,7 @@ requires = ["{node}", "disk-100g"]
 isolation = "vm"
 requirement = { cores = 2, memory = "4GiB" }
 timeout_secs = 3600
-on = ["dispatch"]
+on = ["schedule:30 1 * * *", "dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 
 [check.matrix]
@@ -6664,9 +6667,9 @@ on = ["dispatch"]
 
 # Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 # firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
-# since bootc takes a device tree only from one. When dispatched (`t dispatch
-# publish-os-board-lenovo-83ed --ref main`; it builds the whole aarch64 OS image, so main
-# doesn't run it on its own), main's head is built and pushed as
+# since bootc takes a device tree only from one. Every night (and when dispatched: `t dispatch
+# publish-os-board-lenovo-83ed --ref main`), main's head is built and, once os-board-<board>,
+# os-board-size-<board> and os-acceptance-aarch64 (the dev image it is built on) pass, pushed as
 # registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
 # sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 # follow on their own; its flashable disk, which os-board-<board> installs (with the Lenovo's audio
@@ -6716,11 +6719,11 @@ name = "publish-os-board-{board}"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh"]
-needs = ["os-board-{board}", "os-board-size-{board}"]
+needs = ["os-board-{board}", "os-board-size-{board}", "os-acceptance-aarch64"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["dispatch"]
+on = ["schedule:30 1 * * *", "dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 
 [check.matrix]

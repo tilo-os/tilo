@@ -1318,8 +1318,9 @@ Main's dev VM image and its gated disk, once os-acceptance-{arch} passed on them
 OS image), registry.tilo.so/tilo/tilo-vm:main-<commit7>-ci (an index of the architectures
 published so far) and its disk in the tilo-vm-disk package, which `tilo-vm vm create` and `vm
 upgrade --from sha:<commit>` take; tilo-vm:latest and, with both architectures, tilo-vm:main-ci
-move forward to it. Dispatched on main (`t dispatch publish-os-dev-x86_64 --ref main`): it builds
-the whole OS image, so main doesn't run it on its own."""
+move forward to it. Main's head publishes it every night (and when dispatched: `t dispatch
+publish-os-dev-x86_64 --ref main`); a night whose image fails os-acceptance-{arch} publishes
+nothing."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-publish.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh"]
@@ -1331,7 +1332,7 @@ requires = ["{node}", "disk-100g"]
 isolation = "vm"
 requirement = { cores = 2, memory = "4GiB" }
 timeout_secs = 3600
-on = ["dispatch"]
+on = ["schedule:30 1 * * *", "dispatch"]
 
 [[matrix]]
 family = "os"
@@ -1522,9 +1523,9 @@ family = "os"
 about = """
 Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
-since bootc takes a device tree only from one. When dispatched (`t dispatch
-publish-os-board-lenovo-83ed --ref main`; it builds the whole aarch64 OS image, so main
-doesn't run it on its own), main's head is built and pushed as
+since bootc takes a device tree only from one. Every night (and when dispatched: `t dispatch
+publish-os-board-lenovo-83ed --ref main`), main's head is built and, once os-board-<board>,
+os-board-size-<board> and os-acceptance-aarch64 (the dev image it is built on) pass, pushed as
 registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
 sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 follow on their own; its flashable disk, which os-board-<board> installs (with the Lenovo's audio
@@ -1571,12 +1572,12 @@ name = "publish-os-board-{board}"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh"]
-needs = ["os-board-{board}", "os-board-size-{board}"]
+needs = ["os-board-{board}", "os-board-size-{board}", "os-acceptance-aarch64"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 requires = ["arch=any"]
-on = ["dispatch"]
+on = ["schedule:30 1 * * *", "dispatch"]
 
 [[matrix]]
 family = "extension-manifests"
