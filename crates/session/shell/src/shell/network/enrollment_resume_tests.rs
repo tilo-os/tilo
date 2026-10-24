@@ -354,8 +354,10 @@ fn leave_a_join_pending(left: Left) -> Shape {
         pending["id"]["generation"] = 5.into();
         pending["target"]["prior_room"] = prior.to_string().into();
         authority["revision"] = 5.into();
+        // The room enrolled for the archived workspace, beside this
+        // device's own first workspace, which its host holds.
         assert!(authority["rooms"].get(enrolled.to_string()).is_some());
-        assert_eq!(authority["rooms"].as_object().unwrap().len(), 1);
+        assert!(authority["rooms"].get(&room).is_none());
     }
     assert!(
         state["joining_rooms"]
