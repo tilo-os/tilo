@@ -533,6 +533,11 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
         DeviceCapabilities::member(),
     );
     assert!(second_net.join_default_workspace());
+    // What each person chose to show there, as the desktop says on start:
+    // until it does, nothing of them leaves.
+    for net in [&first_net, &second_net] {
+        net.set_presence_visibility(&room.to_string(), ui::PresenceVisibility::WhereIAm);
+    }
 
     let mut first = Desktop::new(Arc::clone(&first_net), first_tree);
     let mut second = Desktop::new(Arc::clone(&second_net), second_tree.clone());
