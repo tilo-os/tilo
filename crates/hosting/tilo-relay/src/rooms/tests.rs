@@ -2686,7 +2686,7 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
 /// One person's device joining `room` through its door, as a Tilo computer
 /// does: the challenge, the door's admission spent with the proof, then the
 /// Complete. Answers the Complete it sent and the host's answer.
-async fn door_join(
+pub(crate) async fn door_join(
     rooms: &Rooms,
     host: &DeviceCert,
     room: &str,
