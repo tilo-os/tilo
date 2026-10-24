@@ -12,7 +12,7 @@ use super::{Action, Scenario};
 
 /// Where the pointer rests between motions: over a window, clear of the bar,
 /// the ribbon and the rail.
-const REST: Point = Point::new(800.0, 500.0);
+pub(super) const REST: Point = Point::new(800.0, 500.0);
 
 /// Beside search's card and below it, over a window: a click outside it.
 const OUTSIDE_SEARCH: Point = Point::new(300.0, 780.0);
@@ -21,26 +21,26 @@ const OUTSIDE_SEARCH: Point = Point::new(300.0, 780.0);
 /// pointer to dwell before it lays its strips out.
 const DWELL_FRAMES: u32 = 90;
 
-const NONE: ModifiersState = ModifiersState::empty();
-const SUPER: ModifiersState = ModifiersState::SUPER;
+pub(super) const NONE: ModifiersState = ModifiersState::empty();
+pub(super) const SUPER: ModifiersState = ModifiersState::SUPER;
 const SUPER_CTRL: ModifiersState = ModifiersState::SUPER.union(ModifiersState::CONTROL);
 const SUPER_SHIFT: ModifiersState = ModifiersState::SUPER.union(ModifiersState::SHIFT);
 const CTRL_ALT: ModifiersState = ModifiersState::CONTROL.union(ModifiersState::ALT);
 
-fn ch(c: &str) -> Key {
+pub(super) fn ch(c: &str) -> Key {
     Key::Character(c.into())
 }
 
-fn named(key: NamedKey) -> Key {
+pub(super) fn named(key: NamedKey) -> Key {
     Key::Named(key)
 }
 
-fn step(step: Step) -> Action {
+pub(super) fn step(step: Step) -> Action {
     Action::Step(step)
 }
 
 /// The pointer at rest and the scene settled, before a film.
-fn rest(actions: &mut Vec<Action>) {
+pub(super) fn rest(actions: &mut Vec<Action>) {
     actions.extend([
         Action::MoveCursor(REST),
         Action::Wait(20),
@@ -49,14 +49,14 @@ fn rest(actions: &mut Vec<Action>) {
 }
 
 /// Settle, then film `film`.
-fn then_film(actions: &mut Vec<Action>, film: Film) {
+pub(super) fn then_film(actions: &mut Vec<Action>, film: Film) {
     rest(actions);
     actions.push(Action::Film(film));
 }
 
 /// Settle with the pointer already on `target` (so its hover is not in the
 /// film), then film a click on it.
-fn click_film(actions: &mut Vec<Action>, prefix: &'static str, target: &'static str) {
+pub(super) fn click_film(actions: &mut Vec<Action>, prefix: &'static str, target: &'static str) {
     rest(actions);
     actions.extend([
         Action::MoveCursorNamed(target),
@@ -66,11 +66,20 @@ fn click_film(actions: &mut Vec<Action>, prefix: &'static str, target: &'static 
     actions.push(Action::Film(act_film(prefix, Action::ClickNamed(target))));
 }
 
-fn key(actions: &mut Vec<Action>, prefix: &'static str, modifiers: ModifiersState, k: Key) {
+pub(super) fn key(
+    actions: &mut Vec<Action>,
+    prefix: &'static str,
+    modifiers: ModifiersState,
+    k: Key,
+) {
     then_film(actions, key_film(prefix, modifiers, k));
 }
 
-fn scenario(name: &'static str, description: &'static str, actions: Vec<Action>) -> Scenario {
+pub(super) fn scenario(
+    name: &'static str,
+    description: &'static str,
+    actions: Vec<Action>,
+) -> Scenario {
     Scenario {
         name,
         description,

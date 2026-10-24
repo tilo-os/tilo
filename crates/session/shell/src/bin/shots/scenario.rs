@@ -33,6 +33,7 @@ use super::driver::ShellDriver;
 mod file_chooser;
 pub mod film;
 mod launcher;
+mod motion_gallery;
 mod motion_review;
 mod window_search;
 
@@ -5707,8 +5708,14 @@ fn identify_snapshot(
 
 pub fn scenarios() -> &'static [Scenario] {
     use std::sync::LazyLock;
-    static TABLE: LazyLock<Vec<Scenario>> =
-        LazyLock::new(|| [build_scenarios(), motion_review::all()].concat());
+    static TABLE: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
+        [
+            build_scenarios(),
+            motion_review::all(),
+            motion_gallery::all(),
+        ]
+        .concat()
+    });
     &TABLE
 }
 
