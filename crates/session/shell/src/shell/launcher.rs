@@ -18,7 +18,7 @@ mod recorded_use;
 #[cfg(target_os = "linux")]
 pub(crate) mod retained_home;
 #[cfg(any(test, target_os = "linux"))]
-pub(crate) mod room_hold;
+pub mod room_hold;
 #[cfg(test)]
 mod room_hold_tests;
 #[cfg(target_os = "linux")]
