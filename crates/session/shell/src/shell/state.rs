@@ -14,7 +14,8 @@ use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
 pub(crate) use room_binding::room_holds_files;
 pub use tree_handle::{
-    WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard, next_policy_revision,
+    RoomReadiness, UnreadyRooms, WeakWorkspaceTreeHandle, WorkspaceTreeHandle,
+    WorkspaceTreeWriteGuard, next_policy_revision,
 };
 pub use window_hosting::WindowHosting;
 
@@ -1218,6 +1219,22 @@ impl WorkspaceTree {
         }
         (self.is_joining(room) || self.pending_placements.contains(&room))
             .then_some("workspace-not-ready-no-documents")
+    }
+
+    /// Every room apps cannot open documents in yet, with why
+    /// ([`Self::documents_unavailable`]): what a wait for a room compares
+    /// to learn that it may have changed.
+    pub(crate) fn unready_rooms(&self) -> UnreadyRooms {
+        self.desktop
+            .workspaces
+            .iter()
+            .chain(&self.archived_workspaces)
+            .map(Workspace::room)
+            .chain(self.joining_rooms.iter().copied())
+            .chain(self.pending_placements.iter().copied())
+            .chain(self.native_authority.joins().map(|(room, _)| room))
+            .filter_map(|room| Some((room, self.documents_unavailable(room)?)))
+            .collect()
     }
 
     /// Presentation projection from the actual admitted owner, never a second admission.
