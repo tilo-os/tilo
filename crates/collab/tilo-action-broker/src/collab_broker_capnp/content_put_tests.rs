@@ -292,3 +292,27 @@ fn a_put_whose_session_ended_before_finish_stores_nothing() {
     assert!(shelf.stored.is_empty());
     assert_eq!(shelf.aborted, 1);
 }
+
+/// The put is recorded before the room references its content: when the
+/// record cannot be written, the put is refused and the room holds nothing.
+#[test]
+fn a_put_whose_attribution_cannot_be_written_is_refused_and_tags_nothing() {
+    let fixture = fixture();
+    // Where the attribution line goes, something that takes no line.
+    std::fs::create_dir_all(
+        fixture
+            .journal
+            .join(super::super::invocation_journal::CONTENT_PUTS_FILE),
+    )
+    .unwrap();
+    let mut upload = fixture.puts.begin(&owner(&fixture.room), 3).unwrap();
+    upload.append(0, b"abc").unwrap();
+    let refused = upload.finish().expect_err("an unrecorded put is refused");
+    assert!(
+        reason(&refused).contains("content put attribution"),
+        "{refused:?}"
+    );
+    let shelf = fixture.shelf.lock().unwrap();
+    assert!(shelf.stored.is_empty(), "nothing is kept or tagged");
+    assert_eq!(shelf.aborted, 1, "the store's upload is dropped");
+}

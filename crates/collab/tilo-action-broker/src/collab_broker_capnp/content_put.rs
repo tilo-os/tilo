@@ -143,6 +143,7 @@ impl ContentPuts for BrokerContentPuts {
             room,
             size,
             written: 0,
+            hasher: blake3::Hasher::new(),
             sink: Some(sink),
         }))
     }
@@ -155,6 +156,9 @@ struct BrokerContentPut {
     room: String,
     size: u64,
     written: u64,
+    /// The digest of what was appended, known before the store keeps it, so
+    /// the put is recorded before the room references the content.
+    hasher: blake3::Hasher,
     /// `None` once the store refused a chunk: the upload is over.
     sink: Option<Box<dyn ContentSink>>,
 }
@@ -197,6 +201,7 @@ impl ContentPut for BrokerContentPut {
             self.sink = None;
             return Err(ActionHostError::Refused { reason });
         }
+        self.hasher.update(chunk);
         self.written = end;
         Ok(end)
     }
@@ -210,17 +215,23 @@ impl ContentPut for BrokerContentPut {
         let sink = self.sink.take().ok_or_else(Self::ended)?;
         // Decided again: a grant withdrawn while the bytes arrived stores
         // nothing.
-        let at = broker(&self.state)?.may_put_content(&self.caller, &self.room)?;
-        let (hash, len) = sink
+        let hash = self.hasher.finalize().to_hex().to_string();
+        let broker = broker(&self.state)?;
+        let at = broker.may_put_content(&self.caller, &self.room)?;
+        // Recorded before the store keeps the bytes and tags them for the
+        // room: content the room references is never unrecorded. A record
+        // whose store then fails names content the room never got, which is
+        // invisible; a failed record drops the upload, which keeps nothing.
+        broker.attribute_content_put(&self.caller, &self.room, at, (&hash, self.size))?;
+        drop(broker);
+        let (stored, len) = sink
             .finish()
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
-        let reference = tilo_actions::content_resource(&hash)
-            .filter(|_| is_content_hash(&hash) && len == self.size)
+        tilo_actions::content_resource(&hash)
+            .filter(|_| stored == hash && is_content_hash(&stored) && len == self.size)
             .ok_or_else(|| ActionHostError::Unavailable {
                 reason: "the content store answered a reference for other content".into(),
-            })?;
-        broker(&self.state)?.attribute_content_put(&self.caller, &self.room, at, (&hash, len))?;
-        Ok(reference)
+            })
     }
 }
 
