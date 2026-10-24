@@ -68,6 +68,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 mod host;
 mod member;
+mod owner;
 
 use super::authority::RoomOp;
 use super::{
@@ -879,7 +880,7 @@ impl Rooms {
                 let resource = room_governance_resource(room.room());
                 let owner = device.user_public_key == self.inner.host.cert.user_public_key;
                 let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
-                let rows = VERBS
+                let mut rows: Vec<CatalogueRow> = VERBS
                     .iter()
                     .chain(confirmed)
                     .filter(|verb| {
@@ -887,6 +888,7 @@ impl Rooms {
                     })
                     .map(|verb| verb.row(GOVERNANCE, &resource, &room.record.name))
                     .collect();
+                rows.extend(self.owner_rows(&room, &device, &resource, now));
                 offer.add(GOVERNANCE, room.room(), rows);
             }
             if wants(MEMBER_ACTIONS_PROVIDER) {
@@ -911,6 +913,9 @@ impl Rooms {
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
         match request.target.provider.as_str() {
+            ROOM_GOVERNANCE_PROVIDER if owner::serves(&request.target.address.action) => {
+                self.owner_invoke(workspace_id, caller, request).await
+            }
             ROOM_GOVERNANCE_PROVIDER => self.governance_invoke(workspace_id, caller, request).await,
             MEMBER_ACTIONS_PROVIDER => self.member_invoke(workspace_id, caller, request).await,
             HOST_ACTIONS_PROVIDER => {
