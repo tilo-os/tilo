@@ -1840,11 +1840,18 @@ pub fn child_by_id<R: Resource>(
         return Some(child);
     }
     let mut fresh = R::read(doc).ok()?;
+    R::load(&mut fresh, doc, &child_demand(id)).ok()?;
+    R::child(&fresh, id)
+}
+
+/// What reading the child published at `id` demands: compiled once rather
+/// than for every resource.
+#[inline(never)]
+fn child_demand(id: &str) -> Demand {
     // A child is published as `<kind>/<field>/<key>`; its record knows
     // it by the key.
     let key = id.rsplit('/').next().unwrap_or(id);
-    R::load(&mut fresh, doc, &Demand::none().with_keys([id, key])).ok()?;
-    R::child(&fresh, id)
+    Demand::none().with_keys([id, key])
 }
 
 /// An action whose payload cannot be decoded, so the host refuses it with

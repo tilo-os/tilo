@@ -136,8 +136,17 @@ pub(crate) struct ResourceHistoryEdit<R> {
 
 impl<R> std::fmt::Debug for ResourceHistoryEdit<R> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.edit.fmt(formatter)
+        fmt_history_edit(&self.edit, formatter)
     }
+}
+
+/// `edit` as `Debug` writes it, by one function for every resource.
+#[inline(never)]
+fn fmt_history_edit(
+    edit: &HistoryEdit,
+    formatter: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    std::fmt::Debug::fmt(edit, formatter)
 }
 
 impl<'de, R> Deserialize<'de> for ResourceHistoryEdit<R> {

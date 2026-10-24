@@ -1077,46 +1077,11 @@ impl<R> Edit<R> {
     where
         R: Model,
     {
-        if self.path != next.path {
-            return false;
-        }
-        match (&self.op, &next.op) {
-            (EditOp::Rich { rich: previous }, EditOp::Rich { rich: next }) => {
-                R::op_coalesces(&self.path, previous, next).unwrap_or(false)
-            }
-            (EditOp::Set { .. }, EditOp::Set { .. }) | (EditOp::Add { .. }, EditOp::Add { .. }) => {
-                true
-            }
-            (EditOp::Replace { text: previous }, EditOp::Replace { text: next }) => {
-                replace_continues(previous, next)
-            }
-            (
-                EditOp::Splice {
-                    at, delete, insert, ..
-                },
-                EditOp::Splice {
-                    at: next_at,
-                    delete: next_delete,
-                    insert: next_insert,
-                },
-            ) => {
-                let typed = insert.chars().count();
-                // Typing on after the previous insertion, within one word:
-                // a space ends the word it follows, so undo takes back
-                // `world` and leaves `hello `.
-                let typing = *delete == 0
-                    && *next_delete == 0
-                    && !next_insert.is_empty()
-                    && *next_at == at.saturating_add(typed)
-                    && !insert.ends_with(char::is_whitespace);
-                // Deleting backwards from where the previous deletion was.
-                let erasing = insert.is_empty()
-                    && next_insert.is_empty()
-                    && next_at.saturating_add(*next_delete) == *at;
-                typing || erasing
-            }
-            _ => false,
-        }
+        edits_coalesce(
+            (&self.path, &self.op),
+            (&next.path, &next.op),
+            R::op_coalesces,
+        )
     }
 
     /// How much harm this edit can do: removing an item of a collection is
@@ -1194,6 +1159,55 @@ impl<R> Edit<R> {
         R: crate::Fields,
     {
         R::edit_fields(doc, &automerge::ROOT, &self.path, &self.op, cx)
+    }
+}
+
+/// [`Edit::coalesces`] of the edit `previous` (its path and operation) and
+/// `next`, an edit in a type's own vocabulary continuing as `rich` says:
+/// compiled once rather than for every record type.
+#[inline(never)]
+fn edits_coalesce(
+    (previous_path, previous_op): (&[Segment], &EditOp),
+    (next_path, next_op): (&[Segment], &EditOp),
+    rich: fn(&[Segment], &serde_json::Value, &serde_json::Value) -> Option<bool>,
+) -> bool {
+    if previous_path != next_path {
+        return false;
+    }
+    match (previous_op, next_op) {
+        (EditOp::Rich { rich: previous }, EditOp::Rich { rich: next }) => {
+            rich(previous_path, previous, next).unwrap_or(false)
+        }
+        (EditOp::Set { .. }, EditOp::Set { .. }) | (EditOp::Add { .. }, EditOp::Add { .. }) => true,
+        (EditOp::Replace { text: previous }, EditOp::Replace { text: next }) => {
+            replace_continues(previous, next)
+        }
+        (
+            EditOp::Splice {
+                at, delete, insert, ..
+            },
+            EditOp::Splice {
+                at: next_at,
+                delete: next_delete,
+                insert: next_insert,
+            },
+        ) => {
+            let typed = insert.chars().count();
+            // Typing on after the previous insertion, within one word:
+            // a space ends the word it follows, so undo takes back
+            // `world` and leaves `hello `.
+            let typing = *delete == 0
+                && *next_delete == 0
+                && !next_insert.is_empty()
+                && *next_at == at.saturating_add(typed)
+                && !insert.ends_with(char::is_whitespace);
+            // Deleting backwards from where the previous deletion was.
+            let erasing = insert.is_empty()
+                && next_insert.is_empty()
+                && next_at.saturating_add(*next_delete) == *at;
+            typing || erasing
+        }
+        _ => false,
     }
 }
 

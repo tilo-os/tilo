@@ -527,7 +527,7 @@ fn complete<R: Resource, H: 'static>(
         return Err("a job's completion is of another type".into());
     };
     let scope = owned_scope(custody.as_ref());
-    let mut cx = EffectCx::<R, H>::new(env.clone(), invocation).with_custody(custody)?;
+    let mut cx = EffectCx::<R, H>::invoked(env.clone(), custody_parts(invocation, custody)?);
     let mut then = Some(*then);
     let mut value = Some(value);
     let answer = run_under(
@@ -538,7 +538,7 @@ fn complete<R: Resource, H: 'static>(
             _ => Err("a job's completion ran twice".into()),
         },
     );
-    Ok((answer, cx.started.take()))
+    Ok((answer, cx.inv.started.take()))
 }
 
 /// What every effect context of one resource shares.
@@ -571,13 +571,17 @@ impl<R: Resource> EffectEnv<R> {
             .as_ref()
             .is_none_or(|scope| scope.upgrade().is_some_and(|scope| scope.active()))
     }
-    fn track(&self, progress: &Progress) {
-        if let Some(scope) = &self.scope {
-            if let Some(scope) = scope.upgrade() {
-                scope.track(&progress.cancelled);
-            } else {
-                progress.cancelled.store(true, Ordering::Release);
-            }
+}
+
+/// Tie `progress` to the surface `scope` when there is one: a job of a
+/// retired surface is cancelled.
+#[inline(never)]
+fn track_in(scope: Option<&std::rc::Weak<super::surface::SurfaceScope>>, progress: &Progress) {
+    if let Some(scope) = scope {
+        if let Some(scope) = scope.upgrade() {
+            scope.track(&progress.cancelled);
+        } else {
+            progress.cancelled.store(true, Ordering::Release);
         }
     }
 }
@@ -589,6 +593,16 @@ impl<R: Resource> EffectEnv<R> {
 /// handles the effect (`&mut self`), or `()` for a handler a view registered.
 pub struct EffectCx<R: Resource, H = ()> {
     env: EffectEnv<R>,
+    /// Everything else, which does not name the resource type.
+    inv: Answering,
+    /// What its completions get `&mut` access to.
+    host: std::marker::PhantomData<fn(&mut H)>,
+}
+
+/// What an effect context holds besides its resource: the invocation it
+/// answers and what came with it. Not generic, so making, moving and
+/// dropping it is compiled once rather than in every app's contexts.
+struct Answering {
     invocation: Option<InvocationId>,
     started: Option<Job>,
     /// The resource's document while a surface's handler answers an
@@ -601,8 +615,23 @@ pub struct EffectCx<R: Resource, H = ()> {
     target: Option<ui_core::host_operation::OperationTarget>,
     /// Where the invoker asked the effect to act (`#[param(place)]`).
     place: Option<tilo_resource::Place>,
-    /// What its completions get `&mut` access to.
-    host: std::marker::PhantomData<fn(&mut H)>,
+}
+
+impl Answering {
+    /// Answering `invocation`, with nothing else yet.
+    #[inline(never)]
+    fn of(invocation: Option<InvocationId>) -> Self {
+        Self {
+            invocation,
+            started: None,
+            document: None,
+            heads: Vec::new(),
+            custody: None,
+            worker_custody: None,
+            target: None,
+            place: None,
+        }
+    }
 }
 
 /// The place `effect` was told to act at: its argument declared
@@ -611,8 +640,23 @@ fn place_of<E: Effect>(
     decl: &tilo_resource::effect::EffectDecl,
     effect: &E,
 ) -> Option<tilo_resource::Place> {
-    let param = decl.params.iter().find(|param| param.is_place())?;
-    let value = effect.arguments().remove(param.name.as_ref())?;
+    let param = place_param(decl)?;
+    place_from(effect.arguments().remove(param)?)
+}
+
+/// The name of the parameter `decl` declares `#[param(place)]`, if any.
+#[inline(never)]
+fn place_param(decl: &tilo_resource::effect::EffectDecl) -> Option<&str> {
+    decl.params
+        .iter()
+        .find(|param| param.is_place())
+        .map(|param| param.name.as_ref())
+}
+
+/// A place argument as given, read once in the runtime rather than in
+/// every app.
+#[inline(never)]
+fn place_from(value: serde_json::Value) -> Option<tilo_resource::Place> {
     serde_json::from_value(value).ok()
 }
 
@@ -667,14 +711,20 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     pub(crate) fn new(env: EffectEnv<R>, invocation: Option<InvocationId>) -> Self {
         Self {
             env,
-            invocation,
-            started: None,
-            document: None,
-            heads: Vec::new(),
-            custody: None,
-            worker_custody: None,
-            target: None,
-            place: None,
+            inv: Answering::of(invocation),
+            host: std::marker::PhantomData,
+        }
+    }
+
+    /// The context of the invocation `parts` describe.
+    fn invoked(mut env: EffectEnv<R>, parts: InvocationParts) -> Self {
+        let InvocationParts { inv, lent } = parts;
+        if let Some(scope) = lent {
+            env.dispatch = env.dispatch.for_custody(scope);
+        }
+        Self {
+            env,
+            inv,
             host: std::marker::PhantomData,
         }
     }
@@ -683,17 +733,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// argument): act there instead of at their caret. Once it succeeds
     /// for a participant, they land there ([`Live::place_of`]).
     pub fn place(&self) -> Option<&tilo_resource::Place> {
-        self.place.as_ref()
-    }
-
-    fn with_custody(mut self, custody: Option<ResourceInvocationScope>) -> Result<Self, String> {
-        let (worker, lent) = custody_scopes(custody.as_ref())?;
-        self.worker_custody = worker;
-        if let Some(scope) = lent {
-            self.env.dispatch = self.env.dispatch.for_custody(scope);
-        }
-        self.custody = custody;
-        Ok(self)
+        self.inv.place.as_ref()
     }
 
     /// The resource's document as it is now, to read what a view answers
@@ -702,12 +742,12 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// job's completion, which runs later, reads the live state instead.
     /// Changes go through the dispatcher, never here.
     pub fn document(&self) -> Option<std::cell::Ref<'_, tilo_resource::Doc>> {
-        self.document.as_ref().map(|document| document.borrow())
+        self.inv.document.as_ref().map(|document| document.borrow())
     }
 
     /// The heads of the document as it is now; empty without one.
     pub fn heads(&self) -> Vec<ui_core::automerge::ChangeHash> {
-        self.heads.clone()
+        self.inv.heads.clone()
     }
 
     /// The resource at `version`, as a caller names one: a change id from
@@ -718,6 +758,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// the handler has no document to read.
     pub fn version(&self, version: &str) -> Result<DocumentVersion, String> {
         let document = self
+            .inv
             .document
             .as_ref()
             .ok_or_else(|| "this effect has no document to read".to_owned())?;
@@ -774,7 +815,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// projection drains have none; causal drains retain the current Document
     /// caller. Its source identity may differ from the local reply operation.
     pub fn invocation(&self) -> Option<InvocationId> {
-        self.invocation
+        self.inv.invocation
     }
 
     /// Submit the exact approved moderation operation through the record's host.
@@ -786,10 +827,11 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &self,
         operation: registry_types::ExternalModerationOperation,
     ) -> Result<ui_core::invocation_scope::ExternalModerationFuture, String> {
-        if let Some(custody) = &self.custody {
+        if let Some(custody) = &self.inv.custody {
             return custody.external_moderation(operation);
         }
         let target = self
+            .inv
             .target
             .as_ref()
             .ok_or("external moderation requires an exact dispatched record target")?;
@@ -797,7 +839,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             return Err("external moderation dispatch app changed".into());
         }
         target.external_moderation(
-            self.invocation
+            self.inv
+                .invocation
                 .ok_or("external moderation requires a dispatched invocation")?,
             operation,
         )
@@ -815,7 +858,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &self,
         paths: Vec<String>,
     ) -> Option<ui_core::invocation_scope::WriteAttributionReceipt> {
-        match self.custody.as_ref()?.attribute_writes(paths) {
+        match self.inv.custody.as_ref()?.attribute_writes(paths) {
             Ok(receipt) => receipt,
             Err(error) => {
                 tracing::debug!(%error, "these writes stay their person's in file history");
@@ -834,10 +877,11 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         &self,
         check_id: &str,
     ) -> Result<ui_core::invocation_scope::ApprovedCheckFuture, String> {
-        if let Some(custody) = &self.custody {
+        if let Some(custody) = &self.inv.custody {
             return custody.approved_check(check_id);
         }
         let target = self
+            .inv
             .target
             .as_ref()
             .ok_or("approved checks require an exact dispatched record target")?;
@@ -845,7 +889,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             return Err("approved check dispatch app changed".into());
         }
         target.approved_check(
-            self.invocation
+            self.inv
+                .invocation
                 .ok_or("approved checks require a dispatched invocation")?,
             check_id,
         )
@@ -866,10 +911,11 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         + use<R, H>,
         String,
     > {
-        let checked = if let Some(custody) = &self.custody {
+        let checked = if let Some(custody) = &self.inv.custody {
             custody.approved_check_reported(check_id)?
         } else {
             let target = self
+                .inv
                 .target
                 .as_ref()
                 .ok_or("approved checks require an exact dispatched record target")?;
@@ -877,7 +923,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
                 return Err("approved check dispatch app changed".into());
             }
             target.approved_check_reported(
-                self.invocation
+                self.inv
+                    .invocation
                     .ok_or("approved checks require a dispatched invocation")?,
                 check_id,
             )?
@@ -891,15 +938,17 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     }
 
     fn track(&mut self, then: Option<Box<dyn Any>>) -> Progress {
-        let progress = track_job(
-            &mut self.started,
-            &self.env.wake,
-            JobCustody::of(self.worker_custody.as_ref(), self.custody.as_ref()),
+        track_for(
+            &mut Tracking {
+                started: &mut self.inv.started,
+                wake: &self.env.wake,
+                worker: self.inv.worker_custody.as_ref(),
+                custody: self.inv.custody.as_ref(),
+                scope: self.env.scope.as_ref(),
+                owner: std::any::TypeId::of::<Then<R, H>>(),
+            },
             then,
-            std::any::TypeId::of::<Then<R, H>>(),
-        );
-        self.env.track(&progress);
-        progress
+        )
     }
 
     fn then<T: Send + 'static>(
@@ -930,7 +979,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             progress,
             Box::pin(async move { Box::new(future.await) as Box<dyn Any + Send> }),
         );
-        if let Some(started) = self.started.as_mut() {
+        if let Some(started) = self.inv.started.as_mut() {
             started.core.task = Some(task);
         }
         Effected::Pending
@@ -952,7 +1001,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             progress,
             Box::new(move |progress| Box::new(work(progress)) as Box<dyn Any + Send>),
         );
-        if let Some(started) = self.started.as_mut() {
+        if let Some(started) = self.inv.started.as_mut() {
             started.core.task = Some(task);
         }
         Effected::Pending
@@ -1005,6 +1054,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         then: impl FnOnce(&mut H, super::Landed, &mut Self) -> EffectAnswer + 'static,
     ) -> EffectAnswer {
         let invocation = self
+            .inv
             .invocation
             .ok_or("only an invoked effect waits for what it submitted")?;
         let receiver = self
@@ -1039,7 +1089,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         then: impl FnOnce(&mut H, Option<T>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
         let progress = self.track(Some(Self::then(then)));
-        if let Some(started) = self.started.as_mut() {
+        if let Some(started) = self.inv.started.as_mut() {
             started.core.source = Some(Box::new(move || {
                 // The job's own channel stays open while it waits here.
                 let _waiting = &progress;
@@ -1199,7 +1249,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         }
         let asked = Asked(opener.open(arguments));
         let progress = self.track(Some(Self::then(then)));
-        if let Some(started) = self.started.as_mut() {
+        if let Some(started) = self.inv.started.as_mut() {
             started.core.source = Some(Box::new(move || {
                 // The job's own channel stays open while it waits here.
                 let _waiting = &progress;
@@ -1261,7 +1311,7 @@ impl<R: Resource> Jobs<R> {
     pub(crate) fn new(env: Option<EffectEnv<R>>) -> Self {
         Self {
             env,
-            queue: Rc::default(),
+            queue: JobQueue::shared(),
         }
     }
 
@@ -1284,7 +1334,7 @@ impl<R: Resource> Jobs<R> {
         let answer = start(&mut cx);
         self.queue
             .borrow_mut()
-            .started(key.into(), answer, cx.started.take(), R::KIND);
+            .started(key.into(), answer, cx.inv.started.take(), R::KIND);
     }
 
     /// Stop the job `key`; its result, if it comes, is dropped.
@@ -1375,6 +1425,13 @@ fn poll_owned(
 }
 
 impl JobQueue {
+    /// An empty queue, shared: made here once rather than in every app's
+    /// [`Jobs`].
+    #[inline(never)]
+    fn shared() -> Rc<RefCell<Self>> {
+        Rc::default()
+    }
+
     /// Queue the job `key` a start answered `answer` for, when it runs on;
     /// stop what it started otherwise. A job still queued under `key` is
     /// replaced.
@@ -1490,17 +1547,27 @@ impl EffectStatus {
     }
 }
 
-/// The specs of `E`, as callers see them now.
-/// The specs [`published_specs`] last built for one vocabulary: the
+/// The specs last built for one vocabulary, as callers saw them then: the
 /// locale and statuses they were built at, kept so a publication that finds
 /// both unchanged copies them instead of building every declaration again.
 pub(crate) type KeptSpecs = std::cell::RefCell<Option<(u64, Vec<EffectStatus>, Vec<ActionSpec>)>>;
 
-/// [`published_specs`] of `E` at `statuses`, taken from `kept` while the
-/// locale and the statuses are those it was built at.
+/// The specs of `E` as callers see them at `statuses`, taken from `kept`
+/// while the locale and the statuses are those it was built at.
 pub(crate) fn kept_specs<E: Effect>(
     kept: &KeptSpecs,
     statuses: &[EffectStatus],
+) -> Vec<ActionSpec> {
+    kept_specs_of(kept, statuses, E::specs)
+}
+
+/// [`kept_specs`] of the effects whose specs `specs` builds: compiled once
+/// rather than for every effect vocabulary.
+#[inline(never)]
+pub(crate) fn kept_specs_of(
+    kept: &KeptSpecs,
+    statuses: &[EffectStatus],
+    specs: fn() -> Vec<ActionSpec>,
 ) -> Vec<ActionSpec> {
     let locale = ui_core::i18n::I18nManager::revision();
     if let Some((_, _, specs)) = kept
@@ -1510,13 +1577,16 @@ pub(crate) fn kept_specs<E: Effect>(
     {
         return specs.clone();
     }
-    let specs = published_specs::<E>(statuses);
+    let specs = overlaid(specs(), statuses);
     *kept.borrow_mut() = Some((locale, statuses.to_vec(), specs.clone()));
     specs
 }
 
-pub(crate) fn published_specs<E: Effect>(statuses: &[EffectStatus]) -> Vec<ActionSpec> {
-    E::specs()
+/// `specs` with what `statuses` say of each laid over it: compiled once
+/// rather than for every effect vocabulary.
+#[inline(never)]
+fn overlaid(specs: Vec<ActionSpec>, statuses: &[EffectStatus]) -> Vec<ActionSpec> {
+    specs
         .into_iter()
         .map(|mut spec| {
             let id = spec.id.clone();
@@ -1541,27 +1611,56 @@ enum Polled {
 }
 
 /// The jobs one handler runs, keyed by what they answer.
-pub(crate) struct Running<K = InvocationId> {
+pub(crate) struct Running<K: JobKey = InvocationId> {
     running: HashMap<K, Job>,
 }
 
-impl<K> Default for Running<K> {
+impl<K: JobKey> Default for Running<K> {
     fn default() -> Self {
-        Self {
-            running: HashMap::new(),
-        }
+        K::running()
     }
 }
 
-impl<K> Drop for Running<K> {
+impl<K: JobKey> Drop for Running<K> {
     fn drop(&mut self) {
-        for (_, job) in self.running.drain() {
-            job.stop();
-        }
+        K::stop_all(self);
     }
 }
 
-impl<K: Eq + Hash + Clone> Running<K> {
+/// What jobs are keyed by: the invocation an effect's job answers, the key
+/// a view's job runs under, or the outbox entry a projection's job carries
+/// out. What does not depend on the key's type otherwise is compiled once
+/// for each of them here, rather than in every app that holds jobs.
+pub(crate) trait JobKey: Eq + Hash + Clone + Sized {
+    /// No jobs.
+    fn running() -> Running<Self>;
+    /// Stop every job in `running`.
+    fn stop_all(running: &mut Running<Self>);
+}
+
+macro_rules! job_key {
+    ($($key:ty),*) => {$(
+        impl JobKey for $key {
+            #[inline(never)]
+            fn running() -> Running<Self> {
+                Running {
+                    running: HashMap::new(),
+                }
+            }
+
+            #[inline(never)]
+            fn stop_all(running: &mut Running<Self>) {
+                for (_, job) in running.running.drain() {
+                    job.stop();
+                }
+            }
+        }
+    )*};
+}
+
+job_key!(InvocationId, String, Id);
+
+impl<K: JobKey> Running<K> {
     fn insert(&mut self, key: K, started: Job) {
         if let Some(previous) = self.running.insert(key, started) {
             previous.stop();
@@ -1700,14 +1799,8 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             .as_ref()
             .and_then(|decl| place_of(decl, &effect));
         let job = admitted(declaration.as_ref(), id, request.kind)?;
-        let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation))
-            .with_custody(owned_scope(custody))?;
-        cx.target = op.target().cloned();
-        cx.place.clone_from(&place);
-        // Keep an immutable snapshot for this effect invocation, including any
-        // pending edits. The effect may also read a historical version; neither
-        // read borrows the author's document mutably.
-        (cx.document, cx.heads) = lend(doc);
+        let parts = invocation_parts(op, doc, place.clone())?;
+        let mut cx = EffectCx::invoked(self.env.clone(), parts);
         let mut handling = Some((handle, effect));
         let answer = run_under(
             Some(request.invocation),
@@ -1717,38 +1810,28 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
                 None => Err("an effect's handler ran twice".into()),
             },
         );
-        cx.document = None;
+        cx.inv.document = None;
         let live = &self.env.live;
-        let started = settle_start(
+        finish_start(
             &mut self.jobs,
             Answered {
                 id,
                 invocation: request.invocation,
                 job,
                 answer,
-                started: cx.started.take(),
+                started: cx.inv.started.take(),
             },
-            &mut || {
-                let progress = track_job(
-                    &mut cx.started,
-                    &cx.env.wake,
-                    JobCustody::of(cx.worker_custody.as_ref(), cx.custody.as_ref()),
-                    None,
-                    std::any::TypeId::of::<Then<R, H>>(),
-                );
-                cx.env.track(&progress);
-                progress
+            Tracking {
+                started: &mut cx.inv.started,
+                wake: &cx.env.wake,
+                worker: cx.inv.worker_custody.as_ref(),
+                custody: cx.inv.custody.as_ref(),
+                scope: cx.env.scope.as_ref(),
+                owner: std::any::TypeId::of::<Then<R, H>>(),
             },
-            &mut |participant| {
-                if let Some(place) = &place {
-                    live.land(participant, place.clone());
-                }
-            },
-        );
-        if let Some(ready) = cx.started.take() {
-            self.jobs.insert(request.invocation, ready);
-        }
-        started.map(Some)
+            place.as_ref(),
+            &|participant, place| live.land(participant, place),
+        )
     }
 
     /// The next update of the job answering `invocation`, if this runner
@@ -1889,6 +1972,142 @@ fn settle_start(
         }
         (Effected::Pending, None, _) => Err(format!("`{id}` answered later but started no job")),
     }
+}
+
+/// What an invoked effect's context holds besides its resource, made
+/// outside the generic code so it is compiled once.
+struct InvocationParts {
+    inv: Answering,
+    /// The custody the effect's dispatcher keeps, when it has one.
+    lent: Option<ResourceInvocationScope>,
+}
+
+/// The parts of the context of an effect invoked by `op`, told to act at
+/// `place`, reading `doc`.
+///
+/// # Errors
+/// The custody no longer holds.
+#[inline(never)]
+fn invocation_parts(
+    op: &ResourceOperation<'_>,
+    doc: Option<&tilo_resource::Doc>,
+    place: Option<tilo_resource::Place>,
+) -> Result<InvocationParts, String> {
+    let (request, custody) = op.with_custody();
+    let custody = owned_scope(custody);
+    let (worker_custody, lent) = custody_scopes(custody.as_ref())?;
+    // Keep an immutable snapshot for this effect invocation, including any
+    // pending edits. The effect may also read a historical version; neither
+    // read borrows the author's document mutably.
+    let (document, heads) = lend(doc);
+    Ok(InvocationParts {
+        inv: Answering {
+            invocation: Some(request.invocation),
+            started: None,
+            document,
+            heads,
+            custody,
+            worker_custody,
+            target: op.target().cloned(),
+            place,
+        },
+        lent,
+    })
+}
+
+/// The parts of the context of a completion or an outbox entry run for
+/// `invocation`, under `custody`: no document, target or place.
+///
+/// # Errors
+/// The custody no longer holds.
+#[inline(never)]
+fn custody_parts(
+    invocation: Option<InvocationId>,
+    custody: Option<ResourceInvocationScope>,
+) -> Result<InvocationParts, String> {
+    let (worker_custody, lent) = custody_scopes(custody.as_ref())?;
+    let mut inv = Answering::of(invocation);
+    inv.custody = custody;
+    inv.worker_custody = worker_custody;
+    Ok(InvocationParts { inv, lent })
+}
+
+/// How a job an effect's handler started is tracked: the context's job
+/// slot and what a job's progress needs of it.
+struct Tracking<'a> {
+    started: &'a mut Option<Job>,
+    wake: &'a WakeHandle,
+    worker: Option<&'a ResourceEffectScope>,
+    custody: Option<&'a ResourceInvocationScope>,
+    scope: Option<&'a std::rc::Weak<super::surface::SurfaceScope>>,
+    /// The `Then<R, H>` type of the runner's completions.
+    owner: std::any::TypeId,
+}
+
+/// Start tracking a job in the context `tracking` describes, with the
+/// completion `then`, tied to the context's surface: the [`Progress`] its
+/// work reports through.
+#[inline(never)]
+fn track_for(tracking: &mut Tracking<'_>, then: Option<Box<dyn Any>>) -> Progress {
+    let progress = track_job(
+        &mut *tracking.started,
+        tracking.wake,
+        JobCustody::of(tracking.worker, tracking.custody),
+        then,
+        tracking.owner,
+    );
+    track_in(tracking.scope, &progress);
+    progress
+}
+
+/// Start in `jobs` what an effect's handler answered ([`settle_start`]),
+/// and move the participant to `place` through `land` once it succeeded.
+///
+/// # Errors
+/// As [`settle_start`].
+#[inline(never)]
+fn finish_start(
+    jobs: &mut Running,
+    answered: Answered<'_>,
+    tracking: Tracking<'_>,
+    place: Option<&tilo_resource::Place>,
+    land: &dyn Fn(tilo_actions::ParticipantId, tilo_resource::Place),
+) -> Result<Option<ResourceOperationStart>, String> {
+    let invocation = answered.invocation;
+    let Tracking {
+        started,
+        wake,
+        worker,
+        custody,
+        scope,
+        owner,
+    } = tracking;
+    let settled = settle_start(
+        jobs,
+        answered,
+        &mut || {
+            track_for(
+                &mut Tracking {
+                    started: &mut *started,
+                    wake,
+                    worker,
+                    custody,
+                    scope,
+                    owner,
+                },
+                None,
+            )
+        },
+        &mut |participant| {
+            if let Some(place) = place {
+                land(participant, place.clone());
+            }
+        },
+    );
+    if let Some(ready) = started.take() {
+        jobs.insert(invocation, ready);
+    }
+    settled.map(Some)
 }
 
 /// The next update of the job in `jobs` answering `invocation`, its
@@ -2444,14 +2663,16 @@ impl<R: Resource> Effects<R> {
             let Ok(value) = value.downcast::<T>() else {
                 return Err("an outbox entry is of another type".into());
             };
-            let mut cx =
-                EffectCx::new(starting.clone(), invocation).with_custody(owned_scope(custody))?;
+            let mut cx = EffectCx::invoked(
+                starting.clone(),
+                custody_parts(invocation, owned_scope(custody))?,
+            );
             let mut value = Some(*value);
             let answer = run_under(invocation, custody, &mut || match value.take() {
                 Some(value) => run(id, value, &mut cx),
                 None => Err("an outbox entry ran twice".into()),
             });
-            Ok((answer, cx.started.take()))
+            Ok((answer, cx.inv.started.take()))
         });
         let dispatch = env.dispatch.clone();
         let settle: SettleEntry = Box::new(move |id, answer| {

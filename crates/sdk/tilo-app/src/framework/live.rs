@@ -35,7 +35,7 @@ impl<R: Resource> Default for Places<R> {
     fn default() -> Self {
         Self {
             applied: Vec::new(),
-            landed: Landings::default(),
+            landed: Landings::new(),
         }
     }
 }
@@ -52,6 +52,13 @@ struct Landings {
 }
 
 impl Landings {
+    /// Nobody placed yet. Out of line, so every app's [`Live`] calls the
+    /// one copy in the runtime.
+    #[inline(never)]
+    fn new() -> Self {
+        Self::default()
+    }
+
     #[inline(never)]
     fn land(&mut self, participant: tilo_actions::ParticipantId, place: Place) {
         let number = self.next;
@@ -86,12 +93,26 @@ struct Changes {
 }
 
 impl Changes {
+    /// None yet, shared. Out of line, so every app's [`Live`] calls the one
+    /// copy in the runtime.
+    #[inline(never)]
+    fn shared() -> Rc<RefCell<Self>> {
+        Rc::default()
+    }
+
     fn note(&mut self, delta: Delta) {
         match &mut self.pending {
             Some(pending) => pending.merge(delta),
             None => self.pending = Some(delta),
         }
     }
+}
+
+/// Note in `changes` what a sync applied, `delta`. Out of line, so every
+/// app's [`Live::sync`] calls the one copy in the runtime.
+#[inline(never)]
+fn note_synced(changes: &RefCell<Changes>, delta: &Delta) {
+    changes.borrow_mut().note(delta.clone());
 }
 
 impl<R: Resource> Clone for Live<R> {
@@ -108,7 +129,7 @@ impl<R: Resource> Live<R> {
     pub(crate) fn new(reader: Reader<R>) -> Self {
         Self {
             inner: Rc::new(RefCell::new(reader)),
-            changes: Rc::default(),
+            changes: Changes::shared(),
             places: Rc::default(),
         }
     }
@@ -154,6 +175,12 @@ impl<R: Resource> Live<R> {
         from: u64,
     ) -> (Vec<(tilo_actions::ParticipantId, Place)>, u64) {
         self.places.borrow().landed.since(from)
+    }
+
+    /// The number the next landing will have: where a follower that has
+    /// seen every landing so far asks from.
+    pub(crate) fn next_landing(&self) -> u64 {
+        self.places.borrow().landed.next
     }
 
     /// What changed since the last call, for the readers bound to the
@@ -239,7 +266,7 @@ impl<R: Resource> Live<R> {
         let mut reader = self.inner.borrow_mut();
         let moved = reader.sync(doc)?;
         if moved {
-            self.changes.borrow_mut().note(reader.last_delta().clone());
+            note_synced(&self.changes, reader.last_delta());
         }
         Ok(moved)
     }

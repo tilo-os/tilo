@@ -449,6 +449,14 @@ impl DispatchCore {
         self.waits.borrow_mut().landed(invocation, landed);
     }
 
+    /// This core, lent to an admitted effect under `custody`.
+    #[inline(never)]
+    fn for_custody(&self, custody: ui_core::invocation_scope::ResourceInvocationScope) -> Self {
+        let mut core = self.clone();
+        core.custody = Some(Rc::new(custody));
+        core
+    }
+
     fn past(&mut self) {
         self.past = true;
         self.read_only.set(true);
@@ -775,11 +783,15 @@ impl<R: Resource> Dispatcher<R> {
         &self,
         custody: ui_core::invocation_scope::ResourceInvocationScope,
     ) -> Self {
-        let mut dispatcher = self.clone();
-        dispatcher.core.custody = Some(Rc::new(custody));
-        // An effect's group cannot absorb the person's unrelated input.
-        dispatcher.group = Rc::default();
-        dispatcher
+        Self {
+            core: self.core.for_custody(custody),
+            // An effect's group cannot absorb the person's unrelated input.
+            group: Rc::default(),
+            permission_of: Rc::clone(&self.permission_of),
+            submit_now: Rc::clone(&self.submit_now),
+            group_now: self.group_now.clone(),
+            last: Rc::clone(&self.last),
+        }
     }
 
     /// What the effect `invocation` submitted here, once it all landed: the

@@ -110,13 +110,14 @@ impl<R: Resource> ViewCx<R> {
     ) -> Self {
         let published = with_history_verbs(published);
         let app = dispatch.app_id();
+        let fresh = FreshScope::new();
         Self {
             env: RecordEnv {
                 live,
                 alive: Rc::downgrade(alive),
                 dispatch,
-                saved: LocalState::new(RecordSaveStatus::Saved),
-                saves: super::Saves::default(),
+                saved: fresh.saved,
+                saves: fresh.saves,
                 run,
                 storage,
                 effects: Effects::inert(),
@@ -127,11 +128,54 @@ impl<R: Resource> ViewCx<R> {
             action_bindings: Actions::new(app, published),
             item: None,
             path: Some(Vec::new()),
+            controls: fresh.controls,
+            forms: fresh.forms,
+            stages: fresh.stages,
+            feeds: fresh.feeds,
+            bindings: Bindings::new(),
+        }
+    }
+}
+
+/// The specs `specs` builds as callers see them now, at what `source`
+/// says of them, kept in `kept`. Not generic, so every app's views share
+/// it.
+#[inline(never)]
+fn current_specs(
+    source: &StatusSource,
+    kept: &super::effect::KeptSpecs,
+    specs: fn() -> Vec<tilo_actions::ActionSpec>,
+) -> Vec<tilo_actions::ActionSpec> {
+    let now = source
+        .borrow()
+        .as_ref()
+        .map(|status| status())
+        .unwrap_or_default();
+    super::effect::kept_specs_of(kept, &now, specs)
+}
+
+/// What a freshly built root view scope starts with that does not name its
+/// resource type: made here once rather than in every app's
+/// [`ViewCx::root`].
+struct FreshScope {
+    saved: LocalState<RecordSaveStatus>,
+    saves: super::Saves,
+    controls: Rc<RefCell<HashMap<String, u32>>>,
+    forms: Forms,
+    stages: Stages,
+    feeds: super::history::HistoryFeeds,
+}
+
+impl FreshScope {
+    #[inline(never)]
+    fn new() -> Self {
+        Self {
+            saved: LocalState::new(RecordSaveStatus::Saved),
+            saves: super::Saves::default(),
             controls: Rc::default(),
             forms: Forms::default(),
             stages: Stages::new(),
             feeds: super::history::HistoryFeeds::default(),
-            bindings: Bindings::new(),
         }
     }
 }
@@ -591,12 +635,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let source = Rc::clone(&status);
         let kept = super::effect::KeptSpecs::default();
         self.effects.publish::<E>(self.alive.clone(), move || {
-            let now = source
-                .borrow()
-                .as_ref()
-                .map(|status| status())
-                .unwrap_or_default();
-            super::effect::kept_specs::<E>(&kept, &now)
+            current_specs(&source, &kept, E::specs)
         });
         if self.effects.env().is_some() {
             self.effects.handle(self.alive.clone(), handle);
