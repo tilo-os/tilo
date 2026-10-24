@@ -73,6 +73,8 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 # A stand-in subject model on the gateway's own descriptor and wire, held
 # mid-inference to show the window keeps taking input.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false }
+# The reach test walks every published action (framework::testing).
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true
