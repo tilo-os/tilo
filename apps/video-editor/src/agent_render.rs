@@ -1,7 +1,7 @@
 //! The renders an agent asks of a timeline: `export-video-content` (the
 //! timeline as an MP4 kept as content), `export-video-status`,
 //! `cancel-video-export`, `view-frame-content` (one still as a PNG), and
-//! the editor's own `render` when an agent invokes it.
+//! the editor's own `render-timeline` when an agent invokes it.
 //!
 //! An agent's record lives in a confined app worker with no GPU, no media
 //! stack and no paths, so these are tagged `host_render`
@@ -13,7 +13,7 @@
 //! back, which timelines it may render — what the helper renders with
 //! ([`render_video`], [`render_still`]), and what a person's editor answers
 //! when one of them reaches it directly (they are for agents; a person
-//! renders with `render` or Export).
+//! renders with `render-timeline` or Export).
 //!
 //! An agent's render is deterministic: one software encoder
 //! ([`AGENT_VIDEO_ENCODER`]) with fixed settings, and the container's clock
@@ -127,7 +127,7 @@ impl AgentExportSettings {
         Self::checked(width, height, fps)
     }
 
-    /// The settings the editor's `render` names for an agent: `format` (mp4
+    /// The settings the editor's `render-timeline` names for an agent: `format` (mp4
     /// only, as every agent render) and `size` (`720p` or `1080p`, the
     /// height; the width follows the project's aspect), at 30 frames a
     /// second.
@@ -340,7 +340,7 @@ pub fn placed_content(project: &Project) -> Vec<String> {
 }
 
 /// `project` rendering only `start..end` (each defaulting to its render
-/// range): what the editor's `render` names.
+/// range): what the editor's `render-timeline` names.
 ///
 /// # Errors
 ///

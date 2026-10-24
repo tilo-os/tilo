@@ -25,6 +25,7 @@ fn desktop(windows: usize) -> (DesktopSurface, DesktopHandle) {
                 label: format!("App{i}"),
                 note: String::new(),
             },
+            app_title: None,
         })
         .collect();
     let tree = seed_tree(&mut minter, "Desk", tabs);
@@ -916,6 +917,7 @@ fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
                     label: "Clocks".into(),
                     note: String::new(),
                 },
+                app_title: None,
             })
         }
     }
@@ -1371,6 +1373,7 @@ fn room_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::Windo
                 label: title.into(),
                 note: String::new(),
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,

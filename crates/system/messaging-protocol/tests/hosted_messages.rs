@@ -151,6 +151,19 @@ fn has_text(app: &mut ui::framework::testing::TestApp<MessagesShell>, text: &str
         .iter()
         .any(|(_, n)| n.label() == Some(text))
 }
+/// Whether `text` shows once the conversation settles. A send publishes the
+/// history change, so the next frame starts a fresh read of the conversation
+/// that hides the page until it answers; on a loaded machine that answer
+/// comes after the send's own frame, so a single look can miss it.
+fn shows_text(app: &mut ui::framework::testing::TestApp<MessagesShell>, text: &str) -> bool {
+    app.harness()
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
+            harness
+                .a11y_nodes()
+                .iter()
+                .any(|(_, n)| n.label() == Some(text))
+        })
+}
 fn field(value: &serde_json::Value, path: &str) -> serde_json::Value {
     value
         .pointer(path)
@@ -347,7 +360,7 @@ fn messages_send_crosses_native_adapter_and_private_history_survives_restart_wit
         "sensitive send requires normal confirmation"
     );
     app.effect_confirmed(&send).expect("confirmed actual send");
-    assert!(has_text(&mut app, "private outgoing"));
+    assert!(shows_text(&mut app, "private outgoing"));
     assert!(has_text(&mut app, "private incoming"));
     assert!(has_text(
         &mut app,
@@ -683,7 +696,7 @@ fn actual_signal_recipient_receipt_correlates_native_operation_and_updates_priva
     };
     app.effect_confirmed(&send)
         .expect("confirmed native submission");
-    assert!(has_text(&mut app, "Read by recipient"));
+    assert!(shows_text(&mut app, "Read by recipient"));
     assert!(has_text(&mut app, "private outgoing"));
     assert!(!app.harness().dump_json().contains("private outgoing"));
     assert!(app.effect_confirmed(&send).is_err());
@@ -740,7 +753,7 @@ fn unknown_signal_timestamp_or_foreign_sender_never_promotes_recipient_delivery(
             text: "private outgoing".into(),
         })
         .expect("server accepts the exact submission");
-        assert!(has_text(
+        assert!(shows_text(
             &mut app,
             &<MessagesShell as ui::framework::ResourceApp>::catalog()
                 .expect("catalog")

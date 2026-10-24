@@ -993,7 +993,7 @@ fn level_gauge(label: impl Into<String>, reading: String, frac: f32, theme: &The
     Box::new(
         BarGauge::new(frac)
             .with_label(label, reading)
-            .with_color(theme.tokens.colors.intent.neutral_fill),
+            .with_color(theme.tokens.colors.intent.value_fill),
     )
 }
 
@@ -1251,7 +1251,7 @@ impl ResourcesPane {
 
     fn rebuild(&mut self, theme: &Theme) {
         let colors = &theme.tokens.colors;
-        let key = (colors.presence.series(0), colors.intent.neutral_fill);
+        let key = (colors.presence.series(0), colors.intent.value_fill);
         if self.built_with == Some(key) && self.page.is_some() {
             return;
         }

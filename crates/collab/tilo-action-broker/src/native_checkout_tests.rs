@@ -15,7 +15,7 @@ async fn checkout_channel(
         .host_workers
         .lock()
         .unwrap()
-        .get(&peer)
+        .only(peer)
         .unwrap()
         .clone();
     // The actual joined channel supplied the verified identity. Its transport
@@ -41,6 +41,7 @@ async fn checkout_channel(
         directories: room.directories.clone(),
         channel_id: room.route.channel_key(),
         peer_id: peer,
+        connection_id: peer,
         verified_identity: identity,
         record_kind: None,
         lease: Some(Rc::new(ConnectionLease {
@@ -49,6 +50,7 @@ async fn checkout_channel(
             directories: room.directories.clone(),
             peer_id: peer,
         })),
+        _hold: None,
     });
     let mut request = channel.publish_action_directory_request();
     request.get().set_app_id(&room.route.app_id);

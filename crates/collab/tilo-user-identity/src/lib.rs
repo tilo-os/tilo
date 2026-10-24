@@ -67,6 +67,7 @@ pub mod approval;
 pub mod canonical;
 pub mod cert;
 pub mod certification;
+pub mod clock;
 pub mod cloud_enrollment;
 pub mod directory;
 pub mod enrollment;
@@ -101,6 +102,9 @@ pub use certification::{
     CertificationPolicy, CertificationRequest, MAX_CERTIFICATION_REQUEST_LIFETIME_NS,
     issue_device_cert, prepare_device_cert, verify_issued_cert,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use clock::wait_for_wall_clock;
+pub use clock::{CertificateClockError, WallClockWait};
 pub use directory::{
     DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
 };

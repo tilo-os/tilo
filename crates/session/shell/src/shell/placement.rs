@@ -205,6 +205,7 @@ mod tests {
                         kind: crate::shell::state::AppKind::Terminal,
                         label: "t".into(),
                     },
+                    app_title: None,
                 })
                 .collect();
             let active = tabs.first().map_or(0, |t| t.id);
@@ -342,6 +343,7 @@ mod tests {
                     app_id: "so.tilo.notes".into(),
                     surface_id: 77,
                 },
+                app_title: None,
             }],
             active_tab: notes_group + 1,
             width: WindowWidth::Normal,

@@ -1,3 +1,4 @@
+use super::strip_menu::StripHost;
 #[allow(
     clippy::wildcard_imports,
     reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
@@ -201,7 +202,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|((w, h), _)| *w == self.project.width && *h == self.project.height)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels, sel),
+            );
         }
         if let Some((_, first)) = l.project_rates.first() {
             caption_above(scene, tr, tf, theme, "Frame rate", x0, first.y0);
@@ -215,7 +222,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(rate, _)| (rate - self.project.fps).abs() < 1e-6)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &refs, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&refs, sel),
+            );
         }
         if let Some(rect) = l.project_match {
             // The button names the source it will copy, so pressing it is not
@@ -750,7 +763,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(t, _)| *t == clip.transition)
                 .unwrap_or(0);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels, sel),
+            );
         }
         // Transition length.
         if let Some(track) = l.transition_len {
@@ -839,7 +858,7 @@ impl VideoEditorApp {
                 draw_toggle_button(
                     &mut PaintCtx::new(scene, tf, tr, theme),
                     *rect,
-                    ToggleContent::Label(""),
+                    "",
                     on,
                     hovered,
                 );
@@ -905,15 +924,12 @@ impl VideoEditorApp {
                         && (clip.transform.anchor_y - a.1).abs() < 1e-6
                 })
                 .unwrap_or(usize::MAX);
-            draw_segmented(
+            self.draw_strip(
                 scene,
                 tf,
-                tr,
-                theme,
-                &rects,
-                &labels[..rects.len().min(3)],
-                sel,
-                self.last_mouse,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels[..rects.len().min(3)], sel),
             );
             for (i, (a, rect)) in band.iter().enumerate() {
                 let ink = if i == sel { c.text_primary } else { c.text_dim };
@@ -961,7 +977,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(rate, _)| (rate - clip.speed.rate()).abs() < 1e-6)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &refs, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&refs, sel),
+            );
         }
         if let Some(rect) = l.reverse {
             draw_switch_row(
@@ -1020,7 +1042,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(c, _)| *c == self.curve_channel)
                 .unwrap_or(0);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels, sel),
+            );
         }
         if let Some(canvas) = l.curve_canvas {
             self.draw_curve_editor(scene, tf, tr, theme, canvas, &clip);
@@ -1099,7 +1127,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(s, _)| *s == clip.mask.shape)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels, sel),
+            );
         }
         if let Some(rect) = l.mask_fit {
             draw_button(
@@ -1206,7 +1240,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(a, _)| *a == cur)
                 .unwrap_or(0);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels, sel),
+            );
         }
         if let Some(rect) = l.title_font {
             let current = media
@@ -1270,7 +1310,7 @@ impl VideoEditorApp {
             draw_toggle_button(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                ToggleContent::Label(words),
+                words,
                 on,
                 rect.contains(self.last_mouse),
             );

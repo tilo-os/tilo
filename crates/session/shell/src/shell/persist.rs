@@ -252,6 +252,7 @@ fn v3_lounge(seed: u64, touched_by: Option<u16>) -> tilo_desktop_model::Strip {
             id,
             title: title.into(),
             tile: TileContent::WorkspaceActivity,
+            app_title: None,
         }],
         active_tab: id,
         width: tilo_desktop_model::WindowWidth::Normal,
@@ -1305,6 +1306,7 @@ mod tests {
                 label: title.into(),
                 note: note.into(),
             },
+            app_title: None,
         };
         tree.desktop.workspaces[0].strips = vec![Strip {
             id: StripId::from(92_100),
@@ -1408,6 +1410,7 @@ mod tests {
                         label: "XTerm".into(),
                         note: crate::shell::peer_windows::OPENING.into(),
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: 91_102,
@@ -1418,6 +1421,7 @@ mod tests {
                         note: "Not installed on this machine".into(),
                         missing: None,
                     },
+                    app_title: None,
                 },
             ];
             group.active_tab = 91_101;
@@ -1462,6 +1466,7 @@ mod tests {
                             note: String::new(),
                             missing: None,
                         },
+                        app_title: None,
                     }],
                     active_tab: survivor,
                     width: WindowWidth::Normal,
@@ -1476,6 +1481,7 @@ mod tests {
                     app_id: "org.example.Editor".into(),
                     surface_id: 0xfeed_beef,
                 },
+                app_title: None,
             });
             group.active_tab = 90_001;
             tree.desktop.active = workspace_id;
@@ -1574,6 +1580,7 @@ mod tests {
                     app_id: "org.gnome.Rygel.Preferences".into(),
                     surface_id: 90_102,
                 },
+                app_title: None,
             });
             group.active_tab = 90_101;
 
@@ -1613,6 +1620,7 @@ mod tests {
                             app_id: "com.example.Chat".into(),
                             surface_id: 92_003,
                         },
+                        app_title: None,
                     }],
                     active_tab: 92_002,
                     width: WindowWidth::Normal,
@@ -2200,6 +2208,7 @@ mod tests {
                 app_id: "org.example.ParityEditor".into(),
                 surface_id: 93_002,
             },
+            app_title: None,
         });
         group.tabs.push(Tab {
             id: 93_003,
@@ -2209,6 +2218,7 @@ mod tests {
                 label: "Terminal".into(),
                 note: crate::shell::peer_windows::OPENING.into(),
             },
+            app_title: None,
         });
         let capabilities = &mut tree.desktop.workspaces[0].sandbox;
         capabilities.push(

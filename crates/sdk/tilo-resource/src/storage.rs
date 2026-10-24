@@ -1424,7 +1424,7 @@ impl<T: Model> Model for Grid<T> {
                     &[],
                     &EditOp::InsertItem {
                         id: Some(id),
-                        at: *at,
+                        at: crate::At::Index(*at),
                         value: serde_json::Value::Null,
                     },
                     cx,

@@ -334,6 +334,11 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
                 try { objects = decodeVoiceBundle(frame.payload); } catch { report({type: 'voice-receive-drop', reason: 'invalid-object'}); continue; }
                 for (let index = objects.length - 1; index >= 0; index--) deliver(remote, objects[index], index > 0);
               }
+            } catch {
+              // One group's stream was reset (the relay dropped it for a
+              // newer one, or this reader fell behind its cache): that group
+              // is lost, the track is not. Its end is recvGroup's to say.
+              report({type: 'voice-receive-drop', reason: 'group-reset'});
             } finally { safeClose(next); }
           }
         } catch (error) {

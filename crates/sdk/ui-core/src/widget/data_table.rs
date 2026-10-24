@@ -188,6 +188,8 @@ pub struct ColumnDef<Row: ?Sized> {
     pub width: ColumnWidth,
     /// Smallest readable width before optional columns hide or the table scrolls.
     pub min_width: f32,
+    /// Widest a flexible column grows; the other flexible columns take the rest.
+    pub max_width: f32,
     pub sortable: bool,
     /// `None` renders an empty cell.
     pub text_render: Option<CellTextRender<Row>>,
@@ -241,6 +243,7 @@ impl<Row: 'static> ColumnDef<Row> {
             header: self.header,
             width: self.width,
             min_width: self.min_width,
+            max_width: self.max_width,
             sortable: self.sortable,
             text_render: self.text_render.map(|render| -> CellTextRender<AnyRow> {
                 Box::new(move |row, scene, transform, text, rect, theme, state| {
@@ -301,6 +304,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
             header: header.into(),
             width,
             min_width: 0.0,
+            max_width: f32::INFINITY,
             sortable: false,
             text_render: None,
             render_cell: Box::new(|_, _, _, _, _, _| {}),
@@ -364,6 +368,18 @@ impl<Row: ?Sized> ColumnDef<Row> {
             width.max(0.0)
         } else {
             0.0
+        };
+        self
+    }
+
+    /// Keep a flexible column from growing past `width` (a key beside its
+    /// value); the room it leaves goes to the other flexible columns.
+    #[must_use]
+    pub fn max_width(mut self, width: f32) -> Self {
+        self.max_width = if width.is_nan() {
+            f32::INFINITY
+        } else {
+            width.max(0.0)
         };
         self
     }
@@ -863,6 +879,12 @@ pub struct DataTableCore {
     /// The rows are windowed by a scroll the host owns
     /// ([`Self::host_scrolled`]).
     host_scrolled: bool,
+    /// Shown rows on their way after a sort or a change the person made
+    /// (`motion::ListChange`).
+    row_motion: crate::collection_transition::RowMotions<RowIdentity>,
+    /// The rows the last frame showed and their tops: where a change the
+    /// person makes moves them from.
+    drawn_rows: Vec<(RowIdentity, f64)>,
 }
 
 /// A row whose type the table no longer names: what [`DataTableCore`] holds
@@ -1251,6 +1273,8 @@ impl DataTableCore {
             hover_row: None,
             headerless: false,
             host_scrolled: false,
+            row_motion: crate::collection_transition::RowMotions::default(),
+            drawn_rows: Vec::new(),
         }
     }
 
@@ -1503,6 +1527,7 @@ impl DataTableCore {
             self.notify_model_changes(changes);
             return;
         }
+        self.capture_row_motion(changes);
         let anchor = self.capture_view_anchor();
         self.rebuild_row_keys();
         self.unsort_view();
@@ -1974,6 +1999,7 @@ impl DataTableCore {
         if changes.is_empty() {
             return;
         }
+        self.capture_row_motion(changes);
         let anchor = self
             .last_anchor
             .clone()
@@ -2642,6 +2668,10 @@ impl DataTableCore {
             return None;
         }
         let key = col.key.clone();
+        // A sort the person clicked moves the shown rows to their new
+        // places; rows coming from off-screen fade in at theirs. A sort a
+        // key asked for lands.
+        self.capture_sort_motion();
         if self.model.is_some() {
             let ascending = match &self.model_sort {
                 Some((active, ascending)) if active == &key => !ascending,
@@ -2663,6 +2693,7 @@ impl DataTableCore {
             self.sort_by_column(&key, ascending)
         };
         if !sorted {
+            self.row_motion.cancel();
             return None;
         }
         if let Some(state) = &self.sort_state {
@@ -2775,10 +2806,17 @@ impl DataTableCore {
         let band = self.columns_band();
         let ground = tokens.colors.surfaces.content;
         let pressable = self.rows_pressable();
+        let now = crate::time::now();
         for ri in vis_start..vis_end {
             let Some(row_state) = self.row_state_at(ri) else {
                 continue;
             };
+            // A row on its way after a sort or a change the person made is
+            // drawn where it is on its way, an arriving one at its opacity
+            // (`motion::ListChange`); the body clip trims what is outside.
+            let (dy, alpha) = self
+                .row_identity_at(ri)
+                .map_or((0.0, 1.0), |key| self.row_motion.pose(&key, now));
             // Internal virtualization subtracts the viewport offset; when
             // driven by an outer Scrollable, it stays zero and the whole rect is
             // translated instead — both paths render correctly.
@@ -2788,13 +2826,20 @@ impl DataTableCore {
             let Some(row_h) = self.viewport.item_height(ri) else {
                 continue;
             };
-            let y0 = self.rect.y0 + self.header_h + view_top;
+            let y0 = self.rect.y0 + self.header_h + view_top + dy;
             let y1 = y0 + row_h;
-            if y1 <= self.rect.y0 + self.header_h {
+            if y1 <= self.rect.y0 + self.header_h || y0 >= body_bottom {
                 continue;
             }
-            if y0 >= body_bottom {
-                break;
+            let faded = alpha < 1.0;
+            if faded {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    alpha,
+                    transform,
+                    &Rect::new(band.x0, y0, band.x1, y1),
+                );
             }
             let selected = self.selectable && self.is_row_selected(ri);
             let hovered = pressable && self.hover_row == Some(ri);
@@ -2927,6 +2972,9 @@ impl DataTableCore {
                         &style,
                     );
                 }
+            }
+            if faded {
+                scene.pop_layer();
             }
         }
         if let (Some(add), Some(rect)) = (&self.add_row, self.add_row_rect())
@@ -3958,11 +4006,7 @@ impl Widget for DataTableCore {
             transform,
             &body,
         );
-        self.draw_rows(scene, transform, text_renderer, theme);
-        for cell in &mut self.mounted_cells {
-            cell.widget
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.draw_moving_rows(scene, transform, text_renderer, theme, presence);
         scene.pop_layer();
 
         // Focus ring, so arrow-key navigation reads as a focused control.
@@ -4064,6 +4108,7 @@ impl Widget for DataTableCore {
 
     fn needs_animation_frame(&self) -> bool {
         self.momentum.is_active()
+            || self.row_motion.is_moving(crate::time::now())
             || self.model.as_deref().is_some_and(TableModel::needs_poll)
             || self
                 .mounted_cells
@@ -4106,6 +4151,13 @@ impl Widget for DataTableCore {
             dirty |= cell.widget.take_structure_dirty();
         }
         dirty
+    }
+
+    /// Redrawn while rows are on their way after a sort or a change, as
+    /// well as whenever a cell control asks (or always, with none).
+    fn needs_redraw(&self) -> bool {
+        self.row_motion.is_moving(crate::time::now())
+            || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -4525,6 +4577,10 @@ impl<Row: 'static> Widget for DataTable<Row> {
         Widget::needs_animation_frame(&self.core)
     }
 
+    fn needs_redraw(&self) -> bool {
+        Widget::needs_redraw(&self.core)
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         Widget::children(&self.core)
     }
@@ -4692,10 +4748,14 @@ fn flexible_column_widths<Row: ?Sized>(
                 0.0
             }
         };
-        let constrained: Vec<usize> = pending
+        let bounds = |i: usize| {
+            let floor = f64::from(floors[i].0);
+            (floor, f64::from(columns[i].max_width).max(floor))
+        };
+        let constrained: Vec<(usize, f64)> = pending
             .iter()
-            .copied()
-            .filter(|&i| share(i) < f64::from(floors[i].0))
+            .map(|&i| (i, share(i).clamp(bounds(i).0, bounds(i).1)))
+            .filter(|&(i, width)| width.total_cmp(&share(i)).is_ne())
             .collect();
         if constrained.is_empty() {
             for i in pending {
@@ -4703,8 +4763,8 @@ fn flexible_column_widths<Row: ?Sized>(
             }
             break;
         }
-        for i in constrained {
-            widths[i] = f64::from(floors[i].0);
+        for (i, width) in constrained {
+            widths[i] = width;
             available = (available - widths[i]).max(0.0);
             pending.retain(|&candidate| candidate != i);
         }
@@ -7446,6 +7506,30 @@ mod content_edge_tests {
     }
 
     #[test]
+    fn a_capped_flexible_column_leaves_its_room_to_the_others() {
+        let mut table = DataTable::new(vec![
+            name_col().max_width(120.0),
+            ColumnDef::new("detail", "Detail", ColumnWidth::Flex(2.0))
+                .with_text(|_: &Item| "detail".to_owned()),
+        ]);
+        table.set_rows(items(3));
+        let _ = settle(&mut table, 900.0, 400.0);
+        assert!(table.col_rects[0].width().total_cmp(&120.0).is_eq());
+        assert!(
+            table.col_rects[1]
+                .x1
+                .total_cmp(&table.columns_band().x1)
+                .is_eq(),
+            "the uncapped column reaches the table's edge"
+        );
+        let _ = settle(&mut table, 240.0, 400.0);
+        assert!(
+            table.col_rects[0].width() < 120.0,
+            "under the cap it shares"
+        );
+    }
+
+    #[test]
     fn auto_columns_share_the_leftover_without_a_flexible_one() {
         let mut table = DataTable::new(vec![
             ColumnDef::new("name", "Name", ColumnWidth::Auto).with_text(|r: &Item| r.name.clone()),
@@ -7899,3 +7983,10 @@ mod content_edge_tests {
         assert!(scene.encoding().resources.glyph_runs.len() >= 6);
     }
 }
+
+#[path = "data_table_row_motion.rs"]
+mod row_motion;
+
+#[cfg(test)]
+#[path = "data_table_motion_tests.rs"]
+mod motion_tests;

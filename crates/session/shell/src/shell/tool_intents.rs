@@ -485,6 +485,7 @@ mod tests {
             let mut stream = UnixStream::connect(path).unwrap();
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,
+                on_behalf_of: None,
                 workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
                 intent: ToolIntent::Vpn {
                     route: VpnRoute::Profile,
@@ -517,6 +518,7 @@ mod tests {
                 .to_string();
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,
+                on_behalf_of: None,
                 workspace_id: room,
                 intent: ToolIntent::WorkspaceSettings {
                     route: WorkspaceSettingsRoute::PrivacySecurity,
@@ -536,6 +538,7 @@ mod tests {
             );
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,
+                on_behalf_of: None,
                 workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
                 intent: ToolIntent::WorkspaceSettings {
                     route: WorkspaceSettingsRoute::Members,
@@ -608,6 +611,7 @@ mod tests {
                 .to_string();
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,
+                on_behalf_of: None,
                 workspace_id: room,
                 intent: ToolIntent::IdentityBackup,
             };
@@ -628,6 +632,7 @@ mod tests {
             );
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,
+                on_behalf_of: None,
                 workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
                 intent: ToolIntent::IdentityBackup,
             };

@@ -35,7 +35,7 @@ impl<R, T: Model + Identified> Path<R, Ordered<T>> {
     pub fn insert(&self, at: usize, item: &T) -> Edit<R> {
         self.edit(EditOp::InsertItem {
             id: Some(item.id()),
-            at,
+            at: crate::At::Index(at),
             value: item.to_json(),
         })
     }
@@ -43,7 +43,10 @@ impl<R, T: Model + Identified> Path<R, Ordered<T>> {
     /// Move the item `id` to position `at`.
     #[must_use]
     pub fn move_to(&self, id: &Id, at: usize) -> Edit<R> {
-        self.edit(EditOp::MoveTo { id: id.clone(), at })
+        self.edit(EditOp::MoveTo {
+            id: id.clone(),
+            at: crate::At::Index(at),
+        })
     }
 }
 
@@ -98,7 +101,13 @@ impl ItemStorage for Arranged {
                 Some(now) => {
                     order.remove(now);
                     order.insert(index.min(order.len()), id.clone());
-                    out.push(Edit::new(path.to_vec(), EditOp::MoveTo { id, at: index }));
+                    out.push(Edit::new(
+                        path.to_vec(),
+                        EditOp::MoveTo {
+                            id,
+                            at: crate::At::Index(index),
+                        },
+                    ));
                 }
                 None => {
                     order.insert(index.min(order.len()), id.clone());
@@ -106,7 +115,7 @@ impl ItemStorage for Arranged {
                         path.to_vec(),
                         EditOp::InsertItem {
                             id: Some(id),
-                            at: index,
+                            at: crate::At::Index(index),
                             value: item.to_json(),
                         },
                     ));

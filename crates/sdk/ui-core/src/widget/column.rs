@@ -206,6 +206,10 @@ impl Widget for Column {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.flow.build_children(taffy, theme, node_map);
+        // A band disclosing in the column moves the widgets after it, its
+        // gap included.
+        self.flow.vertical = true;
+        self.flow.laid_gap = f64::from(self.flow.gap(theme));
 
         let style = Style {
             // Intrinsic-height columns use a one-column implicit Grid.
@@ -294,6 +298,11 @@ impl Widget for Column {
     }
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        // A band disclosing moves every widget after it.
+        if self.flow.follower_shifts().is_some() {
+            regions.push(self.flow.rect);
+            return;
+        }
         for child in &self.flow.children {
             child.collect_damage(regions);
         }
@@ -328,6 +337,45 @@ mod tests {
 
     /// Build the five-pass layout for `root` inside an 800×600 viewport and
     /// return the populated taffy tree + node so the caller can draw.
+    /// A theme change redraws a column's cached subtree: no child's size
+    /// changes and no child is dirty, yet every pixel the cache holds is in
+    /// the old theme. An unchecked box in a table cell stayed dark in a light
+    /// window when the column replayed its cache.
+    #[test]
+    fn a_theme_change_redraws_the_cached_subtree() {
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(crate::widget::Checkbox::new("probe", "probe")));
+        let _ = lay_out(&mut col);
+        let mut tr = TextRenderer::new();
+        let presence = crate::presence::PresenceCtx::default();
+        let mut frame = |col: &mut Column, theme: &Theme| {
+            let mut scene = Scene::new();
+            col.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+            col.mark_drawn();
+            scene
+        };
+        let dark = frame(&mut col, &Theme::dark());
+        let dark_again = frame(&mut col, &Theme::dark());
+        assert!(
+            dark.encoding_eq(&dark_again),
+            "an unchanged theme replays the same paint"
+        );
+        let light = frame(&mut col, &Theme::light());
+        let light_alone = {
+            let mut fresh = Column::new()
+                .with_intrinsic_height()
+                .push(Box::new(crate::widget::Checkbox::new("probe", "probe")));
+            let _ = lay_out(&mut fresh);
+            frame(&mut fresh, &Theme::light())
+        };
+        assert!(
+            light.encoding_eq(&light_alone),
+            "after switching to light the column paints what a fresh light column paints"
+        );
+        assert!(!light.encoding_eq(&dark), "light paint differs from dark");
+    }
+
     fn lay_out(root: &mut dyn Widget) -> (TaffyTree<()>, NodeId) {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();

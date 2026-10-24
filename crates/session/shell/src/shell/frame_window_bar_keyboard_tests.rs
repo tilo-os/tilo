@@ -1,12 +1,14 @@
-//! The bar of a window whose app the shell mounts in its own process (a
-//! Terminal tab): a press on one of the app's own slots there is a press on
-//! the app, so the keyboard stays with the control in it that had it.
+//! The keyboard of a window whose app the shell mounts in its own process (a
+//! Terminal tab): a press on one of the app's own slots in its bar is a press
+//! on the app, so the keyboard stays with the control in it that had it; a
+//! press on the app takes the keyboard, and then every key is the app's.
 
 use super::*;
 
 use automerge::{AutoCommit, ROOT};
 use ui::window_toolbar::{ToolbarAction, WindowToolbar};
 use winit::event::{ElementState, MouseButton};
+use winit::keyboard::{ModifiersState, NamedKey};
 
 fn key(text: &str) -> WindowEvent {
     WindowEvent::KeyboardInput {
@@ -42,6 +44,7 @@ fn terminal_with_a_bar_action() -> (FrameBuilder, std::sync::mpsc::Receiver<Vec<
                     kind: crate::shell::state::AppKind::Terminal,
                     label: "Terminal".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab,
             width: crate::shell::state::WindowWidth::Normal,
@@ -151,6 +154,81 @@ fn a_press_on_an_in_process_apps_bar_slot_leaves_typing_with_the_app() {
     // SAFETY: the live map was rebuilt after attaching its process.
     let terminal = hosted_terminal(unsafe { &mut **fb.node_map.get(&id).unwrap() })
         .expect("the Terminal stays mounted");
+    terminal
+        .try_write_input(b"\n\x04")
+        .expect("close the process's input");
+    tilo_test_env::wait_until("the PTY process and reader finish", || {
+        terminal.is_disconnected()
+    });
+}
+
+/// While the Terminal has the keyboard, Tab and Shift+Tab are its shell's as
+/// every other key is: they complete and back-tab, and focus stays on the
+/// Terminal. A press on it gives it the keyboard wherever the desktop's
+/// focus was left.
+#[test]
+fn a_terminal_with_the_keyboard_takes_tab_and_shift_tab() {
+    let (mut fb, probe) = terminal_with_a_bar_action();
+    let terminal = fb.active_terminal_node().expect("the mounted Terminal");
+    let chrome = fb
+        .focusable_order()
+        .into_iter()
+        .find(|node| *node != terminal)
+        .expect("a desktop control to leave focus on");
+    // SAFETY: the live map was rebuilt after attaching its process.
+    let centre = unsafe { (**fb.node_map.get(&terminal).unwrap()).get_rect() }.center();
+
+    let mut doc = AutoCommit::new();
+    let mut focus = None;
+    fb.set_native_focus(&mut focus, Some(chrome));
+    let mut send = |fb: &mut FrameBuilder,
+                    event: &WindowEvent,
+                    modifiers: ModifiersState,
+                    focus: &mut Option<NodeId>| {
+        fb.dispatch_event(
+            event,
+            &Modifiers::from(modifiers),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &ROOT,
+            focus,
+        )
+    };
+    for event in [
+        ui::synthetic_input::cursor_moved(centre.x, centre.y),
+        ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
+        ui::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),
+    ] {
+        send(&mut fb, &event, ModifiersState::empty(), &mut focus);
+    }
+    assert_eq!(
+        focus,
+        Some(terminal),
+        "a press on the Terminal takes the keyboard"
+    );
+    while probe.try_recv().is_ok() {}
+
+    let tab = ui::synthetic_input::named_key(NamedKey::Tab);
+    for (modifiers, expected) in [
+        (ModifiersState::empty(), b"\t".to_vec()),
+        (ModifiersState::SHIFT, b"\x1b[Z".to_vec()),
+        (ModifiersState::empty(), b"\t".to_vec()),
+    ] {
+        assert!(
+            send(&mut fb, &tab, modifiers, &mut focus),
+            "Tab with {modifiers:?} is the Terminal's"
+        );
+        assert_eq!(
+            tilo_test_env::recv("what Tab sent the Terminal's process", &probe),
+            expected,
+            "Tab with {modifiers:?} reaches the shell"
+        );
+        assert_eq!(focus, Some(terminal), "the Terminal keeps the keyboard");
+    }
+
+    // SAFETY: the live map was rebuilt after attaching its process.
+    let terminal = hosted_terminal(unsafe { &mut **fb.node_map.get(&terminal).unwrap() })
+        .expect("the Terminal stays mounted");
+    // End the line the Tabs left open, then close the process's input.
     terminal
         .try_write_input(b"\n\x04")
         .expect("close the process's input");

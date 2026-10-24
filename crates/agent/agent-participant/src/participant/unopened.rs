@@ -592,6 +592,7 @@ mod tests {
                     label: "Notes".into(),
                     note: String::new(),
                 },
+                app_title: None,
             })
             .collect();
         strip.window_groups.push(WindowGroup {

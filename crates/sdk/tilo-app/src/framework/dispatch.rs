@@ -31,7 +31,10 @@ enum Asked {
     Arrived,
 }
 use ui_core::widget::Edits;
-use ui_core::widget::controls::AttributedControlInvocation;
+use ui_core::widget::controls::{AttributedControlInvocation, Origin};
+
+/// A queued invocation and who asked for it.
+type Queued = (AttributedControlInvocation, Origin);
 
 /// Something a dispatcher submits and a button is bound to: a field edit
 /// made at a path (`p.favorite.set(true)`), a verb with its arguments, or an
@@ -169,7 +172,10 @@ pub(crate) struct DispatchCore {
     custody: Option<Rc<ui_core::invocation_scope::ResourceInvocationScope>>,
     /// Each queued invocation with the effect invocation it continues,
     /// when an effect's handler or completion queued it.
-    queue: Rc<RefCell<VecDeque<AttributedControlInvocation>>>,
+    queue: Rc<RefCell<VecDeque<Queued>>>,
+    /// Who asks for what is queued now: the person, unless the app submits
+    /// it on its own ([`Dispatcher::submit_on_its_own`]).
+    asking: Rc<Cell<Origin>>,
     /// The references the views opened ([`Dispatcher::open_reference`]),
     /// on their way through the session's action door.
     pub(crate) opener: super::reference::Opener,
@@ -235,6 +241,7 @@ impl Clone for DispatchCore {
             me: self.me.clone(),
             custody: self.custody.clone(),
             queue: self.queue.clone(),
+            asking: self.asking.clone(),
             opener: self.opener.clone(),
             read_only: self.read_only.clone(),
             permissions: self.permissions.clone(),
@@ -318,6 +325,7 @@ impl DispatchCore {
             me: me.map(Rc::from),
             custody: None,
             queue: Rc::default(),
+            asking: Rc::default(),
             opener: super::reference::Opener::default(),
             read_only: LocalState::new(read_only),
             permissions: Rc::default(),
@@ -358,6 +366,7 @@ impl DispatchCore {
             label,
             resource_label: LocalState::new(label.to_owned()),
             queue: Rc::clone(&self.queue),
+            asking: Rc::clone(&self.asking),
             opener: self.opener.clone(),
             read_only: LocalState::new(read_only || self.past),
             permissions: Rc::default(),
@@ -413,9 +422,10 @@ impl DispatchCore {
         if let Some(invocation) = on_behalf_of {
             self.waits.borrow_mut().submitted(invocation);
         }
-        self.queue
-            .borrow_mut()
-            .push_back((ControlInvocation { address, arguments }, on_behalf_of));
+        self.queue.borrow_mut().push_back((
+            (ControlInvocation { address, arguments }, on_behalf_of),
+            self.asking.get(),
+        ));
     }
 
     pub(crate) fn note_continuation(
@@ -723,8 +733,11 @@ impl DispatchCore {
     }
 
     /// The next queued invocation, with the effect invocation it continues.
+    /// The host draining it hears who asked for it.
     pub(crate) fn take_attributed(&self) -> Option<AttributedControlInvocation> {
-        self.queue.borrow_mut().pop_front()
+        let (taken, origin) = self.queue.borrow_mut().pop_front()?;
+        ui_core::widget::controls::note_drained_origin(origin);
+        Some(taken)
     }
 
     pub(crate) fn has_pending(&self) -> bool {
@@ -826,7 +839,7 @@ impl<R: Resource> Dispatcher<R> {
             .queue
             .borrow_mut()
             .drain(..)
-            .map(|(invocation, _)| {
+            .map(|((invocation, _), _)| {
                 tilo_resource::build_action::<R>(
                     &invocation.address.action,
                     &invocation.arguments,
@@ -1035,6 +1048,17 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
+    /// [`submit`](Self::submit) what the app does on its own, for nobody's
+    /// gesture: a read receipt, keeping a record in step with what is shown.
+    /// It goes through the same door and permissions; a refusal is told in
+    /// [`Self::refused`] and logged, but never said over the window as if
+    /// the person had pressed something and been refused.
+    pub fn submit_on_its_own(&self, submit: impl Submit<R>) {
+        let before = self.core.asking.replace(Origin::App);
+        self.submit(submit);
+        self.core.asking.set(before);
+    }
+
     fn submit_invoke(&self, invoke: Invoke<R>) {
         if self.core.refusal(invoke.id, invoke.is_effect()) {
             return;
@@ -1090,8 +1114,11 @@ impl<R: Resource> Dispatcher<R> {
     /// participant who may only view can search too.
     pub fn open_search(&self, request: &ui_core::search::SearchRequest) {
         self.core.queue.borrow_mut().push_back((
-            ui_core::search::open_search_invocation(request),
-            super::effect::acting_for(),
+            (
+                ui_core::search::open_search_invocation(request),
+                super::effect::acting_for(),
+            ),
+            Origin::Person,
         ));
     }
 

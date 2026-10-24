@@ -41,6 +41,7 @@ impl TileSource for Notices {
                 label: title,
                 note: String::new(),
             },
+            app_title: None,
         })
     }
 
@@ -80,6 +81,7 @@ fn tab(minter: &mut IdMinter, title: &str) -> Tab {
             label: title.into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 
@@ -2416,5 +2418,141 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
     assert!(
         driver.refusal_shown().is_some(),
         "the refusal is said over the window that asked"
+    );
+}
+
+/// An app whose page fills its window and scrolls a document that can be
+/// long or empty, as Speed Test's and every writing surface's does.
+struct FillingPage(ui::widget::Scrollable);
+
+impl ui::widget::Decorator for FillingPage {
+    type Inner = ui::widget::Scrollable;
+
+    fn inner(&self) -> &ui::widget::Scrollable {
+        &self.0
+    }
+
+    fn inner_mut(&mut self) -> &mut ui::widget::Scrollable {
+        &mut self.0
+    }
+}
+
+impl ui::widget::AppWidget for FillingPage {
+    fn app_kind(&self) -> ui::widget::AppKind {
+        ui::widget::AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Filling"
+    }
+    fn app_icon(&self) -> ui::widget::IconDescriptor {
+        ui::widget::IconDescriptor::Glyph("F")
+    }
+}
+
+/// Every window but the one named `Filling`, which shows `text`.
+struct FillingTiles(ui::LocalState<String>);
+
+impl TileSource for FillingTiles {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        if tab.title != "Filling" {
+            return TileHost::new(ui::widget::TileContent::Notice {
+                title: tab.title.clone(),
+                detail: String::new(),
+            });
+        }
+        let page = ui::widget::Scrollable::new_vertical()
+            .fill_parent_height()
+            .with_content_min_viewport_height()
+            .with_child(Box::new(
+                ui::widget::TextInput::from_state(&self.0)
+                    .multiline(true)
+                    .with_id("filling-editor"),
+            ));
+        TileHost::new(ui::widget::TileContent::App(Box::new(FillingPage(page))))
+    }
+
+    fn launch(&mut self, _: &Workspace, _: u64, _: &str) -> Option<Tab> {
+        None
+    }
+}
+
+/// Where each window's app is drawn: its tile.
+fn windows(driver: &ui::headless::FrameHarness) -> Vec<ui::vello::kurbo::Rect> {
+    fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<ui::vello::kurbo::Rect>) {
+        if node.widget == "TileHost" {
+            let [x, y, w, h] = node.rect;
+            out.push(ui::vello::kurbo::Rect::new(x, y, x + w, y + h));
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut tiles = Vec::new();
+    walk(&driver.inspection().root, &mut tiles);
+    tiles
+}
+
+/// A window whose page fills it never makes the strip taller than its band,
+/// however long its document, and fills the window again once the document
+/// is empty. The row of windows and each window's tile took their content's
+/// height as their minimum, so a long document raised every window past the
+/// screen. A page that fills at least its viewport then kept that height as
+/// its floor, and with the page and its content adjusting a pass apart they
+/// traded the old and new heights without settling, so the desktop stopped
+/// drawing.
+#[test]
+fn a_filling_page_keeps_its_strip_to_the_band_and_settles() {
+    let text = ui::LocalState::new("A line of the document.\n".repeat(120));
+    let mut minter = IdMinter::new(7);
+    let tabs = ["Notes", "Filling", "Scratch"]
+        .iter()
+        .map(|title| tab(&mut minter, title))
+        .collect();
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(FillingTiles(text.clone())));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver
+        .relayout_at((1200, 800))
+        .expect("the desktop with a long document settles");
+    let long = *driver.targets().get("filling-editor").unwrap();
+    let tiles = windows(&driver);
+    assert_eq!(tiles.len(), 3, "{tiles:?}");
+    for tile in &tiles {
+        assert!(
+            tile.y1 <= 800.0,
+            "no window reaches past the band for a long document: {tile:?} ({long:?})"
+        );
+    }
+
+    text.set(String::new());
+    for _ in 0..3 {
+        driver
+            .relayout_at((1200, 800))
+            .expect("the desktop settles once the document is empty");
+    }
+    let short = *driver.targets().get("filling-editor").unwrap();
+    let tiles = windows(&driver);
+    for tile in &tiles {
+        assert!(
+            tile.y1 <= 800.0,
+            "the height the long document filled is no floor once it is gone: {tile:?}"
+        );
+    }
+    let filling = tiles
+        .iter()
+        .find(|tile| tile.contains(short.origin()))
+        .expect("the editor is in a window");
+    assert!(
+        (short.height() - filling.height()).abs() < 1.0,
+        "the empty page fills its window: {short:?} in {filling:?}"
     );
 }

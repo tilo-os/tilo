@@ -11,7 +11,7 @@
 "apps/camera/src/app.rs" = 5500
 "apps/canvas/src/surface.rs" = 4000
 "apps/chat/src/app.rs" = 5500
-"apps/chat/src/render_chat.rs" = 4000
+"apps/chat/src/render_chat.rs" = 3437
 "apps/code-editor/src/editor_view.rs" = 4000
 "apps/contacts/src/app/tests.rs" = 5000
 "apps/ebook/src/app.rs" = 9500
@@ -19,7 +19,7 @@
 "apps/file-explorer/src/files_app.rs" = 11000
 "apps/file-explorer/src/files_app/tests.rs" = 8000
 "apps/file-explorer/src/views/file_view.rs" = 3500
-"apps/git-client/src/app.rs" = 4500
+"apps/git-client/src/app.rs" = 4000
 "apps/imager/src/app.rs" = 6000
 "apps/imager/src/setup/import_view.rs" = 5000
 "apps/imager/src/setup/journey/mod.rs" = 12000
@@ -31,7 +31,7 @@
 "apps/maps/src/app/tests.rs" = 3500
 "apps/music/src/app.rs" = 6000
 "apps/music/src/app/render.rs" = 5000
-"apps/music/src/app/tests.rs" = 5000
+"apps/music/src/app/tests.rs" = 4800
 "apps/music/src/audio.rs" = 3500
 "apps/notes/src/app.rs" = 5000
 "apps/osk/src/widget.rs" = 5500
@@ -52,8 +52,8 @@
 "apps/terminal/src/main_body.rs" = 8000
 "apps/terminal/src/tests.rs" = 5000
 "apps/tube/src/app.rs" = 3500
-"apps/video-editor/src/app.rs" = 9500
-"apps/video-editor/src/app/tests.rs" = 11500
+"apps/video-editor/src/app.rs" = 9000
+"apps/video-editor/src/app/tests.rs" = 11000
 "apps/video-editor/src/model.rs" = 5000
 "apps/video-player/src/app.rs" = 4500
 "apps/word-processor/src/widget/tests.rs" = 9000
@@ -90,7 +90,7 @@
 "crates/sdk/ui-core/src/app/bound_component_tests.rs" = 3500
 "crates/sdk/ui-core/src/app/history_tests.rs" = 8500
 "crates/sdk/ui-core/src/app/native_runner.rs" = 5500
-"crates/sdk/ui-core/src/bound_dispatch.rs" = 6000
+"crates/sdk/ui-core/src/bound_dispatch.rs" = 5500
 "crates/sdk/ui-core/src/collaboration/broker.rs" = 14500
 "crates/sdk/ui-core/src/headless.rs" = 15500
 "crates/sdk/ui-core/src/history_mode/integration_tests.rs" = 4000
@@ -123,7 +123,6 @@
 "crates/sdk/ui-core/src/widget/toggle_group.rs" = 4000
 "crates/sdk/ui-core/src/widget/toolbar.rs" = 4000
 "crates/sdk/ui-core/src/widget/tree_view.rs" = 7000
-"crates/sdk/ui-core/src/widget/video_player.rs" = 4500
 "crates/sdk/ui-core/src/widget/virtual_list.rs" = 3500
 "crates/sdk/ui-core/src/widget/window_group.rs" = 7000
 "crates/session/desktop-surface/src/activity/pane.rs" = 8000

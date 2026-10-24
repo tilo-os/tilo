@@ -1319,6 +1319,7 @@ mod tests {
                                 kind: AppKind::Other("org.example.Reader".into()),
                                 label: "Reader".into(),
                             },
+                            app_title: None,
                         },
                         Tab {
                             id: 12,
@@ -1327,6 +1328,7 @@ mod tests {
                                 app_id: "org.example.Foreign".into(),
                                 surface_id: 0xfeed_beef,
                             },
+                            app_title: None,
                         },
                     ],
                     active_tab: 11,
@@ -1392,6 +1394,7 @@ mod tests {
                             kind: AppKind::FileExplorer,
                             label: "Available on another device".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: 81,
                     width: WindowWidth::Normal,

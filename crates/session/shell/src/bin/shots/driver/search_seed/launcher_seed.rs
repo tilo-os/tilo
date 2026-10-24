@@ -18,7 +18,7 @@ impl ShellDriver {
     }
 
     /// Ada and Bo in Home, Ada in its first window; Alice and Bob in
-    /// Research; Bo calling and Lena's share from Research waiting; Notes
+    /// Research, Alice in its design call; Bo calling and Lena's share from Research waiting; Notes
     /// windows on three notes in Home over the last day and one in
     /// Research.
     pub fn seed_launcher_busy_for_shots(&mut self) {
@@ -101,6 +101,22 @@ impl ShellDriver {
         );
         if let Some((_, room)) = &research {
             opened(room, &[("results", "Lab results", 30)]);
+            // Alice is in Research's design call, as she says there: a
+            // call in a workspace not in front.
+            self.fb.apply_remote_presence_for_shots(
+                "alice".into(),
+                ui::presence::PresenceKey::Workspace { id: room.clone() },
+                ui::collaboration::PresencePayload::Availability {
+                    state: ui::Availability::Available,
+                    call: Some(
+                        ui::CallPresence {
+                            channel: "c_design".into(),
+                            name: "design".into(),
+                        }
+                        .encode(),
+                    ),
+                },
+            );
         }
         self.with_chrome(|_| {});
     }

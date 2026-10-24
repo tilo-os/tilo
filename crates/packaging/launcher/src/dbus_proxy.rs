@@ -280,6 +280,22 @@ pub fn spawn_filtered_proxy(
     spawn_proxy(binary, bus_addr, socket_path, filter, PROXY_READY_TIMEOUT)
 }
 
+/// [`spawn_filtered_proxy`], waiting up to `ready_within` for the listener.
+///
+/// # Errors
+///
+/// As [`spawn_filtered_proxy`], with [`ProxyError::NotReady`] after
+/// `ready_within`.
+pub fn spawn_filtered_proxy_within(
+    binary: &Path,
+    bus_addr: &str,
+    socket_path: &Path,
+    filter: &[&str],
+    ready_within: Duration,
+) -> Result<DBusProxyGuard, ProxyError> {
+    spawn_proxy(binary, bus_addr, socket_path, filter, ready_within)
+}
+
 /// Maximum wait for the proxy's listener readiness notification. A launch
 /// must not stall indefinitely on a helper that never comes up.
 pub const PROXY_READY_TIMEOUT: Duration = Duration::from_secs(2);

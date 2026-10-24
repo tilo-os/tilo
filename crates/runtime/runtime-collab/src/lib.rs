@@ -4054,8 +4054,8 @@ impl LocalDocumentActionReport {
 /// committed admission and must never release the caller's recovery custody.
 pub const LOCAL_DOCUMENT_REJECTED: &str = "local-document-rejected: ";
 
-/// Why a report on a connection that is no host worker is refused: nothing
-/// reported on that connection can ever be admitted.
+/// Why a report on a route its connection is no worker on is refused:
+/// nothing reported there on that connection can ever be admitted.
 pub const LOCAL_DOCUMENT_CONNECTION_REPORTS_NOTHING: &str =
     "this connection admits no local document reports";
 

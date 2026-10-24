@@ -51,6 +51,7 @@ pub mod profile;
 pub mod render;
 pub mod room_actions;
 pub mod search;
+mod values;
 pub mod vision;
 mod web_apps;
 pub mod worker;

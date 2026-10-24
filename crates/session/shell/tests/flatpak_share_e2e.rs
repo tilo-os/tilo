@@ -227,7 +227,7 @@ fn session_delivers_30_frames_in_order() {
         }
         other => panic!("expected SurfaceStreamEnd, got {other:?}"),
     }
-    session.stop();
+    drop(session);
 }
 
 /// Holding off `mark_drawn` simulates the paint side stalling under real
@@ -314,7 +314,7 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
         input_sink.events.len(),
     );
 
-    session.stop();
+    drop(session);
 }
 
 #[test]

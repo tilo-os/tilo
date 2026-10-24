@@ -371,6 +371,12 @@ pub enum MusicEffect {
     /// It changes only the library, through its edits.
     #[effect(row, edit)]
     ToggleLike { track: String },
+    /// Like the song that plays
+    ///
+    /// Likes or unlikes whatever plays on this device when it runs, as
+    /// liking that song's own row does.
+    #[effect(row, edit)]
+    ToggleLikePlaying,
     /// Add to queue
     #[effect(row)]
     AddToQueue { track: String },
@@ -688,7 +694,7 @@ pub(crate) fn library_rows(ctx: &MusicResourceCtx) -> Vec<Resource> {
 pub(crate) fn live_device_resources(ctx: &MusicResourceCtx) -> Vec<Resource> {
     let mut resources = vec![
         with_transport(
-            Resource::new("music.player:player", "music.player", "Player"),
+            Resource::new(PLAYER_RESOURCE_ID, "music.player", "Player"),
             &ctx.playback,
         ),
         queue_resource(ctx),
@@ -717,16 +723,25 @@ fn navigation_view_resource(id: &str, label: &str) -> Resource {
     ))
 }
 
-/// The player's transport, bound to the player row: what is offered right
-/// now, and why the rest is not.
+/// This device's player, the row the transport's controls act on.
+pub(crate) const PLAYER_RESOURCE_ID: &str = "music.player:player";
+
+/// The player's transport, bound to the player row: every control is
+/// offered, those that cannot act right now with the reason why.
 fn with_transport(mut root: Resource, playback: &crate::model::Playback) -> Resource {
     root = root.with_action(MusicEffect::PlaybackStatus.bound());
-    if playback.current.is_some() {
-        root = root.with_action(bound(
-            &MusicEffect::PlayPause,
-            if playback.playing { "Pause" } else { "Play" },
-        ));
-    }
+    let play = bound(
+        &MusicEffect::PlayPause,
+        if playback.playing { "Pause" } else { "Play" },
+    );
+    root = root.with_action(if playback.current.is_some() {
+        play
+    } else {
+        play.unavailable(
+            "nothing_playing",
+            "Choose a track before using playback controls",
+        )
+    });
     root = root
         .with_action(MusicEffect::ToggleMute.bound())
         .with_action(bound(
@@ -738,6 +753,12 @@ fn with_transport(mut root: Resource, playback: &crate::model::Playback) -> Reso
             },
         ))
         .with_action(MusicEffect::CycleRepeat.bound());
+    let like = MusicEffect::ToggleLikePlaying.bound();
+    root = root.with_action(if playback.current.is_some() {
+        like
+    } else {
+        like.unavailable("nothing_playing", "Choose a track to like")
+    });
     let unavailable = if playback.current.is_none() {
         Some((
             "nothing_playing",
@@ -753,17 +774,12 @@ fn with_transport(mut root: Resource, playback: &crate::model::Playback) -> Reso
         Some((code, reason)) => previous.unavailable(code, reason),
         None => previous,
     });
-    // Music's on-screen shuffle permutation is intentionally device-local so
-    // it never leaks a random, non-replayable decision into the CRDT. A remote
-    // caller can still select a concrete track, but a generic "next" would be
-    // dishonest while that local permutation is active.
+    // Next steps through this device's own shuffle order while shuffle is
+    // on, as the transport's button does; the order stays device-local and
+    // never reaches the shared library.
     let next = MusicEffect::Next.bound();
     root.with_action(match unavailable {
         Some((code, reason)) => next.unavailable(code, reason),
-        None if playback.shuffle => next.unavailable(
-            "local_shuffle_order",
-            "Choose a concrete track while this device's shuffle order is active",
-        ),
         None => next,
     })
 }
@@ -1185,9 +1201,9 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
             &membership.track,
         ));
     }
-    if id == "music.player:player" {
+    if id == PLAYER_RESOURCE_ID {
         return Some(with_transport(
-            Resource::new("music.player:player", "music.player", "Player"),
+            Resource::new(PLAYER_RESOURCE_ID, "music.player", "Player"),
             &ctx.playback,
         ));
     }

@@ -994,7 +994,8 @@ fn the_header_retry_button_runs_the_windows_retry() {
 /// that connection, says nothing and offers nothing to retry, and every later
 /// edit lands at once.
 #[test]
-fn edits_on_a_connection_that_admits_no_reports_land_quietly_unreported() {
+fn edits_on_a_connection_that_admits_no_reports_land_and_say_history_misses_them() {
+    let unrecorded = crate::i18n::I18nManager::lookup_plain("history-local-action-unrecorded");
     let mut fixture = ActionFixture::broker();
     let sent = Rc::new(RefCell::new(Vec::new()));
     fixture.app.collaboration.manager =
@@ -1022,8 +1023,15 @@ fn edits_on_a_connection_that_admits_no_reports_land_quietly_unreported() {
             )),
         });
     assert_eq!(fixture.app.local_input_capture.pending_count(), 0);
-    assert_eq!(fixture.app.document_sync_status(), None);
-    assert!(!fixture.app.has_unsaved_changes_to_retry());
+    assert_eq!(
+        fixture.app.document_sync_status().as_deref(),
+        Some(unrecorded.as_str()),
+        "the person is told their history does not record these edits"
+    );
+    assert!(
+        !fixture.app.has_unsaved_changes_to_retry(),
+        "a retry would be refused the same way"
+    );
     assert_eq!(
         fixture
             .app
@@ -1044,5 +1052,8 @@ fn edits_on_a_connection_that_admits_no_reports_land_quietly_unreported() {
         assert_ne!(heads(&fixture), before);
     }
     assert_eq!(capture_reports(&sent).len(), 1, "nothing more is reported");
-    assert_eq!(fixture.app.document_sync_status(), None);
+    assert_eq!(
+        fixture.app.document_sync_status().as_deref(),
+        Some(unrecorded.as_str())
+    );
 }

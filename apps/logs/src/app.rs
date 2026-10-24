@@ -36,15 +36,14 @@ use ui::theme::Theme;
 use ui::tilo_actions::ControlInvocation;
 use ui::tilo_resource::Atom;
 use ui::tokens::Spacing;
-use ui::widget::{
-    Button, Element, FilterCount, InspectorPlacement, NavShell, SearchField, TaffyTreeExt, Widget,
-};
+use ui::widget::{InspectorPlacement, NavShell, TaffyTreeExt, Widget};
 
 use crate::actions::{self, JournalEffect};
 use crate::journal::JournalLoadError;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::resource::{JournalFixture, Logs};
 use crate::view::{Bridge, JournalPane, JournalRow, Placeholder, Request, Shared};
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// The most recent journal records read.
@@ -62,34 +61,23 @@ fn force_immediate_poll_at() -> Instant {
     now.checked_sub(POLL_INTERVAL).unwrap_or(now)
 }
 
-/// The content header's commands: refresh, live tail and export. Live tail
-/// is a toggle glyph that stands on the selection lift while the journal is
-/// followed.
-fn header_actions(actions: Option<&ui::framework::Actions<Logs>>, live_tail: bool) -> Vec<Element> {
-    use ui::framework::ActionControl;
-    let controls = [
-        (
-            Button::icon_only("logs.refresh", Icon::Refresh, "Refresh journal"),
-            JournalEffect::Refresh,
-        ),
-        (
-            Button::icon_only("logs.live-tail", Icon::Play, "Live tail").toggled(live_tail),
-            JournalEffect::SetLiveTail { enabled: None },
-        ),
-        (
-            Button::icon_only("logs.export", Icon::Download, "Export filtered logs"),
-            JournalEffect::ExportFilteredJsonl,
-        ),
-    ];
-    controls
-        .into_iter()
-        .map(|(button, effect)| {
-            Box::new(match actions {
-                Some(actions) => actions.bind_effect_invocation(button, &effect),
-                None => button.unavailable(),
-            }) as Element
-        })
-        .collect()
+/// The journal's commands in the window bar: refresh, live tail and
+/// export (in its menu), each the effect it runs. Live tail is a toggle
+/// that stands on while the journal is followed.
+const WINDOW_ACTIONS: [(&str, Icon, &str); 3] = [
+    ("logs.refresh", Icon::Refresh, "Refresh journal"),
+    ("logs.live-tail", Icon::Play, "Live tail"),
+    ("logs.export", Icon::Download, "Export filtered logs"),
+];
+
+/// The effect a window bar action of [`WINDOW_ACTIONS`] runs.
+fn window_effect(id: &str) -> Option<JournalEffect> {
+    match id {
+        "logs.refresh" => Some(JournalEffect::Refresh),
+        "logs.live-tail" => Some(JournalEffect::SetLiveTail { enabled: None }),
+        "logs.export" => Some(JournalEffect::ExportFilteredJsonl),
+        _ => None,
+    }
 }
 
 /// What the inspector currently shows.
@@ -144,8 +132,6 @@ pub struct LogsApp {
     rect: Rect,
     shell: NavShell,
     shared: Shared,
-    /// The live-tail state the header's toggle shows.
-    shown_live_tail: bool,
     /// The spacing the inspector was laid out with.
     spacing: Spacing,
     /// The fingerprints of the state and the rows last handed to the views.
@@ -191,12 +177,7 @@ impl LogsApp {
             .content_kind(ui::widget::ContentKind::List)
             .with_id("logs.shell")
             .content(Box::new(JournalPane::new(Rc::clone(&shared))))
-            .with_filter(
-                SearchField::filter()
-                    .with_id("logs.filter")
-                    .with_placeholder("Filter messages and units"),
-            )
-            .content_header("", header_actions(None, false))
+            .with_window_toolbar()
             .inspector(crate::view::entry_detail(None, &Spacing::default()));
         let mut app = Self {
             entries,
@@ -215,7 +196,6 @@ impl LogsApp {
             rect: Rect::ZERO,
             shell,
             shared,
-            shown_live_tail: false,
             spacing: Spacing::default(),
             published: None,
             published_rows: None,
@@ -398,23 +378,6 @@ impl LogsApp {
             bridge.has_entries = !self.entries.is_empty();
             bridge.total = self.entries.len();
         }
-        if let Some(field) = self.shell.filter_mut() {
-            if field.value() != self.filter.search {
-                field.set_query(&self.filter.search);
-            }
-            // "12 of 96" while any filter narrows the journal.
-            field.set_count(
-                (!self.filter.is_clear())
-                    .then(|| FilterCount::new(self.filtered.len(), self.entries.len())),
-            );
-        }
-        if self.shown_live_tail != self.live_tail {
-            self.shown_live_tail = self.live_tail;
-            self.shell.set_content_header(
-                "",
-                header_actions(self.chrome_actions.as_ref(), self.live_tail),
-            );
-        }
         self.show_inspector(selected);
         self.layout_dirty = true;
     }
@@ -479,10 +442,6 @@ impl LogsApp {
         self.dispatcher = Some(cx.dispatcher());
         self.chrome_actions = Some(cx.actions());
         self.shared.borrow_mut().refresh = cx.actions().effect(&JournalEffect::Refresh);
-        self.shell.set_content_header(
-            "",
-            header_actions(self.chrome_actions.as_ref(), self.live_tail),
-        );
         match cx.mode() {
             RunMode::Live => {
                 self.allow_live = true;
@@ -520,6 +479,50 @@ impl LogsApp {
 
     /// Invoke a journal effect through the same door as the palette and
     /// agents, which checks its availability first.
+    /// Run what the person did in the window's bar: the shell's own slots,
+    /// then the journal's commands.
+    fn take_window_toolbar_events(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                continue;
+            }
+            if let ToolbarEvent::Action { id } = &event
+                && let Some(effect) = window_effect(id)
+                && self.can(&effect)
+            {
+                self.request(&effect);
+            }
+        }
+    }
+
+    /// Whether this window may run `effect` now.
+    fn can(&self, effect: &JournalEffect) -> bool {
+        self.chrome_actions
+            .as_ref()
+            .is_some_and(|actions| actions.effect(effect).is_some())
+    }
+
+    /// Declare the window bar's slots: the shell's own (the entry's
+    /// details) and the journal's commands.
+    fn declare_window_toolbar(&self) {
+        let mut toolbar = self.shell.window_toolbar();
+        let actions = WINDOW_ACTIONS.into_iter().map(|(id, icon, name)| {
+            let enabled = window_effect(id).is_some_and(|effect| self.can(&effect));
+            let action = ToolbarAction::new(id, icon.name(), name)
+                .enabled(enabled)
+                .on(id == "logs.live-tail" && self.live_tail);
+            // Exporting is occasional: the bar's menu, which leaves the
+            // row to Refresh, Live tail and the details' toggle.
+            if id == "logs.export" {
+                action.in_menu()
+            } else {
+                action
+            }
+        });
+        NavShell::push_window_actions(&mut toolbar, actions);
+        ui::window_toolbar::declare(Some(toolbar));
+    }
+
     fn request(&self, effect: &JournalEffect) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.effect(effect);
@@ -726,11 +729,13 @@ impl Widget for LogsApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.drain_read();
+        self.take_window_toolbar_events();
         if self.reads && self.live_tail && self.last_poll.elapsed() >= POLL_INTERVAL {
             self.last_poll = ui::time::now();
             self.start_read();
         }
         self.publish();
+        self.declare_window_toolbar();
         self.shell.sync(state, path);
     }
 
@@ -1023,22 +1028,31 @@ mod tests {
     }
 
     #[test]
-    fn live_tail_is_a_header_toggle_that_follows_the_state() {
-        fn live_tail(app: &mut TestApp<LogsShell>) -> Option<ui::accesskit::Toggled> {
-            app.harness()
-                .a11y_nodes()
+    fn live_tail_is_a_window_bar_toggle_that_follows_the_state() {
+        fn live_tail() -> Option<bool> {
+            ui::window_toolbar::declared()?
+                .actions
                 .into_iter()
-                .find(|(_, node)| node.label() == Some("Live tail"))
-                .and_then(|(_, node)| node.toggled())
+                .find(|action| action.name == "Live tail")
+                .map(|action| action.on)
         }
         let mut app = captured((1280, 800));
-        assert_eq!(live_tail(&mut app), Some(ui::accesskit::Toggled::False));
+        app.settle();
+        assert_eq!(live_tail(), Some(false));
         app.effect(&JournalEffect::SetLiveTail {
             enabled: Some(true),
         })
         .unwrap();
         app.settle();
-        assert_eq!(live_tail(&mut app), Some(ui::accesskit::Toggled::True));
+        assert_eq!(live_tail(), Some(true));
+        // Pressed in the bar, it stops following the journal.
+        app.harness().present_in_window_bar();
+        app.harness()
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+                id: "logs.live-tail".into(),
+            });
+        app.settle();
+        assert_eq!(live_tail(), Some(false));
     }
 
     #[test]
@@ -1170,13 +1184,21 @@ mod tests {
             surface(&mut desktop, |viewer| viewer.shell.geometry().inspector),
             InspectorPlacement::Docked
         );
-        for name in [
-            "Journal entries",
-            "Refresh journal",
-            "Live tail",
-            "Export filtered logs",
-        ] {
-            assert!(named(&mut desktop, name), "{name} is exposed");
+        assert!(
+            named(&mut desktop, "Journal entries"),
+            "the entries are exposed"
+        );
+        let bar: Vec<String> = ui::window_toolbar::declared()
+            .map(|bar| bar.actions)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|action| action.name)
+            .collect();
+        for name in ["Refresh journal", "Live tail", "Export filtered logs"] {
+            assert!(
+                bar.iter().any(|action| action == name),
+                "{name} is in the window bar: {bar:?}"
+            );
         }
         let mut phone = captured((390, 844));
         surface(&mut phone, |viewer| {

@@ -17,9 +17,9 @@
 use crate::greetd_client::{AuthError, Denial};
 
 mod conversation;
+pub use conversation::{AuthSession, Challenge, spawn_auth, spawn_handoff};
 #[cfg(test)]
-pub(crate) use conversation::spawn_auth_updates;
-pub use conversation::{AuthSession, Challenge, spawn_auth};
+pub(crate) use conversation::{spawn_auth_updates, spawn_handoff_updates};
 
 /// Field separator for the [`AuthUpdate`] wire form. A control character
 /// that never appears in PAM prompt text or our own copy.

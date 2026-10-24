@@ -21,6 +21,7 @@ use crate::{
 use tilo_user_identity::{RevocationList, UserIdentity};
 
 mod presence_cost;
+mod supersede;
 
 struct Fixture {
     _tmp: tempfile::TempDir,
@@ -801,23 +802,99 @@ async fn personal_continuity_session_invalidation_before_acceptance_blocks_recei
     assert!(fixture.recipient_rx.try_recv().is_err());
 }
 
-#[tokio::test]
-async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates() {
+/// A generic checkpoint that matches no continuity receipt (`case` names
+/// how), on serial ingress or as a checkpoint prefix, is kept and delivered
+/// once until the recipient asks for a checkpoint again.
+async fn nonmatching_checkpoint_keeps_once_and_rearms_gates(prefix: bool, case: &str) {
+    let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
+    let (mut channel, mut body) = fixture.continuity_checkpoint(vec![1]);
+    match case {
+        "opaque" => body = vec![1; 64],
+        "unknown" => body = vec![255; 8],
+        "malformed" => {
+            body.pop();
+        }
+        "trailing" => body.push(0),
+        "foreign_root" => {
+            let msg = neighbour_wire::NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key: [77; 32],
+                publisher: 7,
+                snapshot: vec![1],
+            };
+            channel = neighbour_wire::retention(&msg, false).unwrap().0;
+            body = postcard::to_stdvec(&msg).unwrap();
+        }
+        "channel_mismatch" => channel[0] ^= 1,
+        "other_variant" => {
+            body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::PersonalContinuityRequest {
+                user_public_key: fixture.source.peer.user_public_key,
+                requester: 7,
+            })
+            .unwrap();
+        }
+        "signed_shell" => (channel, body) = signed_shell_checkpoint(),
+        "no_source" | "outer_trailing" => {}
+        _ => unreachable!(),
+    }
+    let authenticated = case != "no_source";
+    for (time, expected_delivery) in [(1, true), (2, false), (3, true), (4, false)] {
+        if time == 3 {
+            fixture
+                .workspace
+                .lock()
+                .await
+                .request_checkpoint(&fixture.recipient.device_public_key);
+        }
+        let mut frame = fixture.checkpoint_frame(time, channel, body.clone());
+        if case == "outer_trailing" {
+            let Envelope::Delta { delta, .. } = &mut frame else {
+                unreachable!()
+            };
+            delta.push(0);
+        }
+        fixture
+            .publish_checkpoint_frame(frame.clone(), prefix, authenticated)
+            .await;
+        if expected_delivery {
+            assert!(
+                !fixture.recipient_rx.is_empty(),
+                "{case} checkpoint not delivered (prefix={prefix}, time={time})"
+            );
+            fixture.assert_checkpoint_written(&frame).await;
+        } else {
+            assert!(
+                fixture.recipient_rx.try_recv().is_err(),
+                "{case} bypassed checkpoint gate (prefix={prefix})"
+            );
+        }
+        assert!(
+            !fixture
+                .workspace
+                .lock()
+                .await
+                .needs_checkpoint(&fixture.recipient.device_public_key, &channel),
+            "{case} did not mark generic checkpoint served"
+        );
+    }
+    assert!(fixture.recipient_disconnected.try_recv().is_err());
+}
+
+/// The channel and body of a signed shell document checkpoint, from the
+/// selection fixtures.
+fn signed_shell_checkpoint() -> ([u8; 32], Vec<u8>) {
     use tilo_relay_shell::selection::fixtures::{producer_frame, producer_metadata};
     let metadata = producer_metadata();
     let raw = producer_frame(&metadata, &metadata["baseline"][1], 1);
     let Envelope::Delta { delta, .. } = crate::transport::decode(&raw[4..]).unwrap() else {
         panic!("signed checkpoint fixture was not a delta")
     };
-    let crate::coedit::CoeditPayload::Checkpoint {
-        channel: signed_channel,
-        body: signed_body,
-    } = crate::coedit::CoeditPayload::decode(&delta).unwrap()
+    let crate::coedit::CoeditPayload::Checkpoint { channel, body } =
+        crate::coedit::CoeditPayload::decode(&delta).unwrap()
     else {
         panic!("signed checkpoint fixture was not a checkpoint")
     };
     assert!(matches!(
-        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&signed_body).unwrap(),
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body).unwrap(),
         neighbour_wire::NeighbourMsg::AppDocument { .. }
     ));
     for case in [
@@ -2030,205 +2107,6 @@ impl Fixture {
     }
 }
 
-/// A newer connection of the same device (a page that reconnected, a second
-/// tab) taking the slot ends the older session as the handover it is, not as
-/// a protocol failure; a device the room no longer lets in ends as the
-/// authorization change it is, replaced or not.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_replaced_session_ends_as_superseded_unless_its_device_lost_the_room() {
-    for revoked in [false, true] {
-        let fixture = Fixture::new();
-        let device = fixture.recipient.device_public_key;
-        let (replacement, _receiver) = mpsc::channel(32);
-        fixture.workspace.lock().await.add_subscriber(Subscriber {
-            device_public_key: device,
-            role: PeerRole::Device,
-            tx: replacement,
-            disconnect: fixture.recipient_disconnect.clone(),
-        });
-        if revoked {
-            fixture.revoke(device);
-        }
-        let (state_tx, _state_rx) = mpsc::channel(32);
-        let session = fixture.recipient_session(&state_tx);
-        let error = audit_subscriber_access(
-            &fixture.recipient,
-            &session,
-            &[fixture.store.workspace_id()],
-        )
-        .await
-        .unwrap_err();
-        let lost = lost_session(
-            &*fixture.workspace.lock().await,
-            &fixture.recipient,
-            &session,
-            RoomOperation::State,
-        );
-        if revoked {
-            assert!(matches!(error, PeerError::Protocol(_)), "{error}");
-            assert!(matches!(lost, PeerError::Protocol(_)), "{lost}");
-        } else {
-            assert!(matches!(error, PeerError::Superseded), "{error}");
-            assert!(matches!(lost, PeerError::Superseded), "{lost}");
-        }
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn replay_completion_only_classifies_a_valid_replacement_as_superseded() {
-    enum Mutation {
-        Replacement,
-        Revocation,
-        MembershipRemoval,
-        SlotRemoval,
-        ReplacementAndRevocation,
-    }
-
-    for mutation in [
-        Mutation::Replacement,
-        Mutation::Revocation,
-        Mutation::MembershipRemoval,
-        Mutation::SlotRemoval,
-        Mutation::ReplacementAndRevocation,
-    ] {
-        let fixture = Arc::new(Fixture::new());
-        let device = fixture.recipient.device_public_key;
-        let (release, reached) =
-            crate::store::test_barrier::install(fixture.store.root(), "replay-prepare");
-        let subscribing = fixture.clone();
-        let task = tokio::spawn(async move { subscribing.subscribe_result().await });
-        reached.await.unwrap();
-
-        let replacement = if matches!(
-            mutation,
-            Mutation::Replacement | Mutation::ReplacementAndRevocation
-        ) {
-            let (replacement, receiver) = mpsc::channel(32);
-            fixture.workspace.lock().await.add_subscriber(Subscriber {
-                device_public_key: device,
-                role: PeerRole::Device,
-                tx: replacement.clone(),
-                disconnect: fixture.source.disconnect.clone(),
-            });
-            Some((replacement, receiver))
-        } else {
-            None
-        };
-        if matches!(
-            mutation,
-            Mutation::Revocation | Mutation::ReplacementAndRevocation
-        ) {
-            fixture.revoke(device);
-        }
-        if matches!(mutation, Mutation::MembershipRemoval) {
-            fixture
-                .workspace
-                .lock()
-                .await
-                .store
-                .save_membership(&[fixture.source.peer.device_public_key])
-                .unwrap();
-        }
-        if matches!(mutation, Mutation::SlotRemoval) {
-            fixture.workspace.lock().await.remove_subscriber(&device);
-        }
-
-        drop(release);
-        let result = tilo_test_env::within("task to complete", task)
-            .await
-            .unwrap();
-        let Err(error) = result else {
-            panic!("mutated replay completion unexpectedly registered")
-        };
-        if matches!(mutation, Mutation::Replacement) {
-            assert!(matches!(error, PeerError::Superseded));
-        } else {
-            assert!(
-                matches!(error, PeerError::Store(_)),
-                "authorization loss was hidden by stale-session classification: {error}"
-            );
-        }
-        if let Some((replacement, _receiver)) = replacement {
-            assert!(
-                fixture
-                    .workspace
-                    .lock()
-                    .await
-                    .subscribers
-                    .get(&device)
-                    .is_some_and(|current| current.tx.same_channel(&replacement)),
-                "obsolete replay completion removed the replacement session"
-            );
-        }
-    }
-}
-
-/// A device re-dials (its shell follows a changed pin) and drops the old
-/// connection. The old connection's teardown releases its slot while the new
-/// subscription's replay is still running; the new one must take the slot, not
-/// be closed as if it had lost authorization.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn replay_completion_takes_a_slot_its_earlier_connection_released() {
-    let fixture = Arc::new(Fixture::new());
-    let device = fixture.recipient.device_public_key;
-    let (earlier, _earlier_rx) = mpsc::channel(32);
-    fixture.workspace.lock().await.add_subscriber(Subscriber {
-        device_public_key: device,
-        role: PeerRole::Device,
-        tx: earlier.clone(),
-        disconnect: fixture.recipient_disconnect.clone(),
-    });
-    let (release, reached) =
-        crate::store::test_barrier::install(fixture.store.root(), "replay-prepare");
-    let subscribing = fixture.clone();
-    let task = tokio::spawn(async move { subscribing.subscribe_result().await });
-    reached.await.unwrap();
-
-    // The earlier connection's teardown: it removes only its own slot.
-    fixture
-        .workspace
-        .lock()
-        .await
-        .remove_subscriber_session(&device, &earlier);
-    drop(release);
-
-    let result = tilo_test_env::within("task to complete", task)
-        .await
-        .unwrap();
-    assert!(
-        result.is_ok(),
-        "the re-dialled subscription was refused after its earlier connection ended: {:?}",
-        result.err()
-    );
-    assert!(
-        fixture
-            .workspace
-            .lock()
-            .await
-            .subscribers
-            .get(&device)
-            .is_some_and(|current| current.tx.same_channel(&fixture.recipient_tx)),
-        "the re-dialled subscription holds the device's slot"
-    );
-}
-
-#[test]
-fn superseded_peer_outcome_is_quiet_but_protocol_failure_is_counted() {
-    let metrics = crate::metrics::Metrics::default();
-    assert!(finish_peer_outcome(Err(PeerError::Superseded), &metrics, &[7; 32]).is_ok());
-    assert_eq!(metrics.snapshot().subscriber_dropped, 0);
-
-    assert!(
-        finish_peer_outcome(
-            Err(PeerError::Protocol("authorization changed".into())),
-            &metrics,
-            &[7; 32],
-        )
-        .is_err()
-    );
-    assert_eq!(metrics.snapshot().subscriber_dropped, 1);
-}
-
 #[tokio::test]
 async fn replay_capture_waits_for_owner_capacity_and_can_be_cancelled() {
     for cancel in [false, true] {
@@ -3353,15 +3231,18 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
 #[tokio::test]
 async fn dropped_ticket_reclaims_without_abort_admission_on_full_owner_queue() {
     let fixture = Fixture::new();
-    for i in 0..257 {
-        fixture
-            .store
-            .enqueue_pending(
-                &fixture.recipient.device_public_key,
-                i,
-                &crate::transport::encode(&fixture.envelope(0)).unwrap(),
-            )
-            .unwrap();
+    // The first delta is queued through the store, which provisions the
+    // queue; the rest are written beside it as `enqueue_pending` leaves them,
+    // without its barriers, which on a busy CI disk took most of a minute.
+    let frame = crate::transport::encode(&fixture.envelope(0)).unwrap();
+    let first = fixture
+        .store
+        .enqueue_pending(&fixture.recipient.device_public_key, 0, &frame)
+        .unwrap();
+    let queue = first.parent().unwrap();
+    let digest = blake3::hash(&frame).to_hex();
+    for i in 1..257_u64 {
+        std::fs::write(queue.join(format!("{i:016x}-{digest}.delta")), &frame).unwrap();
     }
     let (_, ticket, _, _) = fixture.subscribe_ticket().await;
     let owner = crate::persistence::handle(&fixture.workspace).await;

@@ -167,6 +167,22 @@ pub enum Answer {
         /// scheduler statistics.
         #[serde(default)]
         main_thread_starved_ms: u64,
+        /// The main thread was runnable (state `R`) when the budget ran out,
+        /// and halfway through it if it was sampled, without using CPU: it
+        /// waits in the run queue. The kernel adds that wait to
+        /// `main_thread_starved_ms` only once the thread runs again, so a
+        /// thread starved for the whole budget would otherwise read as
+        /// blocked.
+        #[serde(default)]
+        main_thread_queued: bool,
+        /// Major page faults the main thread took while the heartbeat waited,
+        /// counted until its thread report was written so a fault still
+        /// being served at the end of the budget is included: code or a
+        /// mapped file read back from disk after memory pressure evicted it.
+        /// A loop blocked in those is paging, not reading a file, which a
+        /// `read` would be and does not count here.
+        #[serde(default)]
+        main_thread_major_faults: u64,
         threads: Vec<ThreadReport>,
         /// The main thread halfway through the budget, while it was still
         /// not acknowledging and had used almost no CPU: where a blocked loop
@@ -185,24 +201,50 @@ pub enum Answer {
 
 impl Answer {
     /// A stall in which the main thread was still making or about to make
-    /// progress: it used CPU, or waited for one, for a quarter of the budget.
-    /// Slow, not hung: only a thread that neither ran nor waited to run is
-    /// blocked.
+    /// progress: it used CPU, or waited for one, for a quarter of the budget,
+    /// sat in the run queue throughout, or was paging its code or a mapped
+    /// file back in from disk. Slow, not hung: only a thread that did none of
+    /// these is blocked.
     #[must_use]
     pub fn stalled_but_working(&self) -> bool {
-        match self {
-            Self::Stalled {
-                budget_ms,
-                main_thread_cpu_ms,
-                main_thread_starved_ms,
-                ..
-            } => {
-                let quarter = budget_ms / 4;
-                *main_thread_cpu_ms >= quarter || *main_thread_starved_ms >= quarter
-            }
-            _ => false,
-        }
+        !matches!(self.stall_kind(), None | Some(StallKind::Blocked))
     }
+
+    fn stall_kind(&self) -> Option<StallKind> {
+        let Self::Stalled {
+            budget_ms,
+            main_thread_cpu_ms,
+            main_thread_starved_ms,
+            main_thread_queued,
+            main_thread_major_faults,
+            halfway,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let quarter = budget_ms / 4;
+        Some(if *main_thread_cpu_ms >= quarter {
+            StallKind::Busy
+        } else if *main_thread_starved_ms >= quarter || *main_thread_queued {
+            StallKind::Starved
+        } else if *main_thread_major_faults > 0
+            && halfway.as_ref().is_none_or(|thread| thread.state == "D")
+        {
+            StallKind::Paging
+        } else {
+            StallKind::Blocked
+        })
+    }
+}
+
+/// What a main thread that missed its heartbeat was doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StallKind {
+    Busy,
+    Starved,
+    Paging,
+    Blocked,
 }
 
 /// What the main loop and the answering threads share.
@@ -404,6 +446,7 @@ fn answer(stream: UnixStream, beat: &Beat, ping: &calloop::ping::Ping) {
 fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -> Answer {
     let cpu_before = main_thread_cpu_ms();
     let starved_before = main_thread_starved_ms();
+    let faults_before = main_thread_major_faults();
     let mut halfway = None;
     let sample_halfway = || {
         // A loop that computed through half the budget is slow, not
@@ -434,6 +477,8 @@ fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -
     // Before the dump: it takes time of its own.
     let main_thread_cpu_ms = main_thread_cpu_ms().saturating_sub(cpu_before);
     let main_thread_starved_ms = main_thread_starved_ms().saturating_sub(starved_before);
+    let main_thread_queued =
+        main_thread_state() == "R" && halfway.as_ref().is_none_or(|thread| thread.state == "R");
     // Snapshot before dumping: capture signals themselves can wake epoll and
     // must not overwrite the sequence that led to the failed heartbeat.
     let wake_trace = wake_trace::render();
@@ -442,6 +487,8 @@ fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -
         ticks: beat.ticks(),
         main_thread_cpu_ms,
         main_thread_starved_ms,
+        main_thread_queued,
+        main_thread_major_faults: main_thread_major_faults().saturating_sub(faults_before),
         threads: Vec::new(),
         halfway,
     };
@@ -453,10 +500,15 @@ fn heartbeat_answer(beat: &Beat, ping: &calloop::ping::Ping, budget: Duration) -
         dump_threads()
     };
     if let Answer::Stalled {
-        threads: listed, ..
+        threads: listed,
+        main_thread_major_faults: faults,
+        ..
     } = &mut answer
     {
         *listed = threads;
+        // A fault in progress at the deadline is counted once it is served,
+        // which the report gave it time for.
+        *faults = main_thread_major_faults().saturating_sub(faults_before);
     }
     eprintln!(
         "tilo compositor: main loop stalled\n{}\n{}",
@@ -475,19 +527,28 @@ pub fn render(answer: &Answer) -> String {
             ticks,
             main_thread_cpu_ms,
             main_thread_starved_ms,
+            main_thread_queued,
+            main_thread_major_faults,
             threads,
             halfway: _,
         } => (
             format!(
                 "main loop did not acknowledge a wake within {budget_ms} ms (acknowledged {ticks} \
-                 before); the main thread used {main_thread_cpu_ms} ms of CPU and waited \
-                 {main_thread_starved_ms} ms for a core meanwhile: {}",
-                if *main_thread_cpu_ms >= budget_ms / 4 {
-                    "it is busy"
-                } else if *main_thread_starved_ms >= budget_ms / 4 {
-                    "it is starved of CPU"
+                 before); the main thread used {main_thread_cpu_ms} ms of CPU, waited \
+                 {main_thread_starved_ms} ms for a core{} and took {main_thread_major_faults} \
+                 major page fault(s) meanwhile: {}",
+                if *main_thread_queued {
+                    " (and was still queued for one)"
                 } else {
-                    "it is blocked"
+                    ""
+                },
+                match answer.stall_kind() {
+                    Some(StallKind::Busy) => "it is busy",
+                    Some(StallKind::Starved) => "it is starved of CPU",
+                    Some(StallKind::Paging) =>
+                        "it is paging: code or a mapped file is read back from disk, not a file \
+                         the loop opened",
+                    _ => "it is blocked",
                 }
             ),
             threads,
@@ -603,6 +664,34 @@ fn main_thread_starved_ms() -> u64 {
         .ok()
         .and_then(|stat| stat.split_whitespace().nth(1)?.parse::<u64>().ok())
         .map_or(0, |wait_ns| wait_ns / 1_000_000)
+}
+
+/// The main thread's scheduler state letter, `?` when unreadable.
+fn main_thread_state() -> String {
+    main_thread_stat_fields()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "?".into())
+}
+
+/// Major page faults the main thread has taken (`majflt` in its `stat`).
+fn main_thread_major_faults() -> u64 {
+    main_thread_stat_fields()
+        .get(9)
+        .and_then(|field| field.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The main thread's `stat` fields after its parenthesised name: the state is
+/// field 0.
+fn main_thread_stat_fields() -> Vec<String> {
+    // SAFETY: `getpid` takes no arguments and cannot fail.
+    let pid = unsafe { libc::getpid() };
+    std::fs::read_to_string(format!("/proc/self/task/{pid}/stat"))
+        .unwrap_or_default()
+        .rsplit_once(')')
+        .map(|(_, rest)| rest.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 /// CPU time the main thread (the thread whose id is the process id) has used,
@@ -947,8 +1036,20 @@ mod tests {
             ticks: 1,
             main_thread_cpu_ms: cpu,
             main_thread_starved_ms: starved,
+            main_thread_queued: false,
+            main_thread_major_faults: 0,
             threads: Vec::new(),
             halfway: None,
+        }
+    }
+
+    fn main_thread_at_halfway(state: &str, wait: &str) -> ThreadReport {
+        ThreadReport {
+            tid: 1,
+            name: "shell".into(),
+            state: state.into(),
+            wait: wait.into(),
+            backtrace: String::new(),
         }
     }
 
@@ -999,6 +1100,47 @@ mod tests {
         );
         assert!(render(&stalled(0, 400)).contains("starved"));
         assert!(render(&stalled(0, 0)).contains("blocked"));
+    }
+
+    #[test]
+    fn a_loop_queued_for_a_core_throughout_is_starved_though_the_kernel_has_not_counted_it() {
+        let mut answer = stalled(0, 0);
+        if let Answer::Stalled {
+            main_thread_queued,
+            halfway,
+            ..
+        } = &mut answer
+        {
+            *main_thread_queued = true;
+            *halfway = Some(main_thread_at_halfway("R", "0"));
+        }
+        assert!(answer.stalled_but_working());
+        assert!(render(&answer).contains("starved"));
+    }
+
+    #[test]
+    fn a_loop_asleep_in_a_page_fault_is_paging_and_one_asleep_in_a_read_is_blocked() {
+        let waiting_for_a_page = |faults| {
+            let mut answer = stalled(0, 0);
+            if let Answer::Stalled {
+                main_thread_major_faults,
+                halfway,
+                ..
+            } = &mut answer
+            {
+                *main_thread_major_faults = faults;
+                *halfway = Some(main_thread_at_halfway("D", "folio_wait_bit_common"));
+            }
+            answer
+        };
+        let paging = waiting_for_a_page(3);
+        assert!(paging.stalled_but_working());
+        assert!(render(&paging).contains("paging"));
+        // The same wait without a major fault is the page cache serving a
+        // `read` the loop made: a file read on the main thread.
+        let reading = waiting_for_a_page(0);
+        assert!(!reading.stalled_but_working());
+        assert!(render(&reading).contains("blocked"));
     }
 
     #[test]

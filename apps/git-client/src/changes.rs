@@ -279,7 +279,9 @@ impl ListPass<'_, '_> {
         count: usize,
     ) {
         let theme = ctx.theme;
-        let pad = f64::from(theme.tokens.spacing.s3);
+        // The rows stand inside `band` by their bleed: the title starts and
+        // the action ends on their text edge.
+        let pad = ui::chrome::row_bleed(theme);
         let gap = f64::from(theme.tokens.spacing.s2);
 
         // The action trails, its label ending on the rows' text edge (where

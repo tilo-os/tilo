@@ -86,6 +86,11 @@ struct Shared {
     navigation_commands: Mutex<()>,
     stopping: AtomicBool,
     failed: AtomicBool,
+    /// Set once the failure `failed` marks has queued its
+    /// [`WebViewEvent::LoadFailed`]. The supervisor waits for it before it
+    /// reaps a failed host, so once the host is reaped its failure is there
+    /// for whoever drains the events.
+    failure_reported: (Mutex<bool>, std::sync::Condvar),
     /// Wakes the host's supervisor when `failed` or `stopping` is set.
     supervisor_bell: SupervisorBell,
     /// How often the host's supervisor has looked at it: once at start and
@@ -278,7 +283,6 @@ impl Shared {
 
     fn fail(&self, message: String) {
         if !self.stopping.load(Ordering::Acquire) && !self.failed.swap(true, Ordering::AcqRel) {
-            self.supervisor_bell.ring();
             self.fail_navigations(&message);
             self.text_input.lock_recover().unavailable();
             let uri = self.uri.lock().map(|uri| uri.clone()).unwrap_or_default();
@@ -286,7 +290,31 @@ impl Shared {
                 uri,
                 error: message,
             });
+            let (reported, queued) = &self.failure_reported;
+            *reported.lock_recover() = true;
+            queued.notify_all();
+            self.supervisor_bell.ring();
         }
+    }
+
+    /// Whether the host failed, waiting for the failure's report to be
+    /// queued when another thread is still making it: the reader (at EOF or
+    /// bad output) and the supervisor (at the exit) can both see the same
+    /// failure, and the supervisor must not reap the host before its
+    /// failure is reported. The report never waits on the supervisor, so
+    /// this wait is bounded by the reporting thread's own work.
+    fn failure_reported(&self) -> bool {
+        if !self.failed.load(Ordering::Acquire) {
+            return false;
+        }
+        let (reported, queued) = &self.failure_reported;
+        let mut done = reported.lock_recover();
+        while !*done {
+            done = queued
+                .wait(done)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        true
     }
 }
 
@@ -482,25 +510,45 @@ fn fail_routes(routes: &Routes, message: &str) {
 fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
     routes.lock().ok()?.get(&id)?.upgrade()
 }
-fn deliver_frame(routes: &Routes, tab: u32, frame: super::Frame) {
+/// A client tab's frame goes on to its process as the host sent it; only a
+/// frame drawn here is converted.
+fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
     if let Some(shared) = route(routes, tab) {
         if let Some(outbox) = &shared.remote {
             outbox.frame(tab, frame);
             return;
         }
-        if let Ok(mut slot) = shared.frames.lock() {
-            if let Some(previous) = slot.as_ref()
-                && previous.width == frame.width
-                && previous.height == frame.height
-                && previous.rgba == frame.rgba
-            {
-                super::frame_trace::unchanged(tab, frame.trace_id, previous.trace_id);
-                return;
-            }
-            *slot = Some(frame);
-        }
-        shared.wake();
+        present_frame(&shared, tab, frame.into_frame(tab));
     }
+}
+
+/// Makes `frame` the tab's newest and wakes the view, unless it shows exactly
+/// what the tab already has.
+fn present_frame(shared: &Shared, tab: u32, frame: super::Frame) {
+    // Comparing a full-resolution frame may scan tens of megabytes.
+    // The UI takes this same lock while handling input and drawing; keep
+    // that scan outside it, retaining only the immutable pixel allocation.
+    let previous = shared.frames.lock().ok().and_then(|slot| slot.clone());
+    let unchanged = previous.as_ref().is_some_and(|previous| {
+        previous.width == frame.width
+            && previous.height == frame.height
+            && previous.rgba == frame.rgba
+    });
+    if let Ok(mut slot) = shared.frames.lock() {
+        if unchanged
+            && let (Some(previous), Some(current)) = (&previous, slot.as_ref())
+            && current.width == previous.width
+            && current.height == previous.height
+            && Arc::ptr_eq(&previous.rgba, &current.rgba)
+        {
+            super::frame_trace::unchanged(tab, frame.trace_id, current.trace_id);
+            return;
+        }
+        // A cleared/replaced slot during comparison still needs this
+        // frame, even if it matched the earlier snapshot.
+        *slot = Some(frame);
+    }
+    shared.wake();
 }
 
 /// Error-only surface used when the engine is not installed or cannot start.
@@ -538,6 +586,7 @@ impl UnavailableEngine {
                 navigation_commands: Mutex::default(),
                 stopping: AtomicBool::new(false),
                 failed: AtomicBool::new(false),
+                failure_reported: (Mutex::new(false), std::sync::Condvar::new()),
                 supervisor_bell: SupervisorBell::default(),
                 supervisor_checks: AtomicU32::new(0),
                 #[cfg(test)]
@@ -724,6 +773,7 @@ fn supervise_child(
         match child.try_wait() {
             Ok(Some(_)) => {
                 supervisor_shared.fail("Chromium engine exited".into());
+                supervisor_shared.failure_reported();
                 break true;
             }
             Err(error) => {
@@ -733,7 +783,7 @@ fn supervise_child(
             }
             Ok(None) => {}
         }
-        if supervisor_shared.failed.load(Ordering::Acquire) {
+        if supervisor_shared.failure_reported() {
             supervisor_queue.close();
             let _ = child.kill();
             break child.wait().is_ok();
@@ -1872,6 +1922,89 @@ fn valid_site_event(value: &Value, event: &str) -> bool {
         }
 }
 
+/// An `extension_action` or `extension_open_popup` event, when every part of
+/// it is what the host sends: the extension's id, its own pages, bounded
+/// text and an icon of at most 128 pixels a side.
+fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
+    // Absent: unchanged. Null: taken back. Otherwise a value `read` accepts,
+    // or the event is refused.
+    macro_rules! field {
+        ($change:ident, $key:literal, $read:expr) => {
+            match $change.get($key) {
+                None => None,
+                Some(Value::Null) => Some(None),
+                Some(value) => Some(Some($read(value)?)),
+            }
+        };
+    }
+    let id = value["id"].as_str().filter(|id| extension_id(id))?;
+    let own = |url: &str| {
+        url.len() <= 2048
+            && url
+                .strip_prefix("chrome-extension://")
+                .and_then(|rest| rest.strip_prefix(id))
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
+    if value["event"] == "extension_open_popup" {
+        let url = value["url"].as_str().filter(|url| own(url))?;
+        return Some(WebViewEvent::ExtensionOpenPopup {
+            id: id.into(),
+            url: url.into(),
+        });
+    }
+    let change = value["change"].as_object()?;
+    let text = |value: &Value| {
+        value
+            .as_str()
+            .filter(|text| text.len() <= 1024)
+            .map(str::to_owned)
+    };
+    let icon = |value: &Value| {
+        if let Some(path) = value["path"].as_str() {
+            return (path.starts_with('/') && path.len() <= 2048)
+                .then(|| super::ExtensionActionIcon::Path(path.into()));
+        }
+        let side = |key: &str| {
+            u32::try_from(value[key].as_u64()?)
+                .ok()
+                .filter(|side| (1..=128).contains(side))
+        };
+        let (width, height) = (side("width")?, side("height")?);
+        let length = usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?;
+        let rgba = decode_base64_bounded(value["data"].as_str()?, length)?;
+        (rgba.len() == length).then_some(super::ExtensionActionIcon::Pixels {
+            width,
+            height,
+            rgba,
+        })
+    };
+    let popup = |value: &Value| {
+        value
+            .as_str()
+            .filter(|url| url.is_empty() || own(url))
+            .map(str::to_owned)
+    };
+    if change.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "badge" | "title" | "popup" | "enabled" | "icon"
+        )
+    }) {
+        return None;
+    }
+    Some(WebViewEvent::ExtensionAction {
+        id: id.into(),
+        global: value["global"].as_bool()?,
+        change: super::ExtensionActionChange {
+            badge: field!(change, "badge", text),
+            title: field!(change, "title", text),
+            popup: field!(change, "popup", popup),
+            enabled: field!(change, "enabled", Value::as_bool),
+            icon: field!(change, "icon", icon),
+        },
+    })
+}
+
 fn decode_site_event(value: &Value, event: &str) -> Option<WebViewEvent> {
     Some(match event {
         "site_status" => WebViewEvent::SiteStatus(super::SiteStatus {
@@ -1963,6 +2096,11 @@ fn open_popup(
     Ok(())
 }
 
+/// An extension's id as Chromium makes it: 32 letters `a` to `p`.
+fn extension_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
+}
+
 fn validate_event(value: &Value) -> Result<(), &'static str> {
     if value.get("tab").is_some_and(|tab| {
         !tab.as_u64()
@@ -1979,6 +2117,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
         "service_session_result" => super::ServiceSessionReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
+        "extension_action" | "extension_open_popup" => decode_extension_event(value).is_some(),
         "devtools_result" => {
             value["request_id"]
                 .as_u64()
@@ -2232,6 +2371,24 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && !url.is_empty()
                 && url.len() <= 1 << 20
         }
+        WebViewCommand::ExtensionAccess {
+            id,
+            permissions,
+            hosts,
+            token,
+        } => {
+            extension_id(id)
+                && token
+                    .as_ref()
+                    .is_none_or(|token| (32..=128).contains(&token.len()))
+                && [permissions, hosts]
+                    .iter()
+                    .all(|list| list.len() <= 512 && list.iter().all(|entry| entry.len() <= 2048))
+        }
+        WebViewCommand::ExtensionForget { id }
+        | WebViewCommand::ExtensionIdentity { id }
+        | WebViewCommand::ExtensionClick { id } => extension_id(id),
+        WebViewCommand::ExtensionPanel { action } => action.as_deref().is_none_or(extension_id),
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
         | WebViewCommand::DownloadDecision { id, .. }
@@ -2381,6 +2538,8 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
         "site_status" | "site_result" => decode_site_event(value, value["event"].as_str()?)?,
+        "extension_action" | "extension_open_popup" => decode_extension_event(value)?,
+        "extension_action_reset" => WebViewEvent::ExtensionActionReset,
         "devtools_result" => WebViewEvent::DevToolsResult {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             ok: value["ok"].as_bool()?,
@@ -2640,6 +2799,26 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::SetSiteExceptions(origins) => {
             json!({"op":"site_exceptions","origins":origins})
         }
+        WebViewCommand::ExtensionAccess {
+            id,
+            permissions,
+            hosts,
+            token,
+        } => {
+            let mut command =
+                json!({"op":"extension_access","id":id,"permissions":permissions,"hosts":hosts});
+            if let Some(token) = token {
+                command["token"] = json!(token);
+            }
+            command
+        }
+        WebViewCommand::ExtensionForget { id } => json!({"op":"extension_forget","id":id}),
+        WebViewCommand::ExtensionIdentity { id } => json!({"op":"extension_identity","id":id}),
+        WebViewCommand::ExtensionPanel { action } => match action {
+            Some(id) => json!({"op":"extension_panel","action":id}),
+            None => json!({"op":"extension_panel"}),
+        },
+        WebViewCommand::ExtensionClick { id } => json!({"op":"extension_click","id":id}),
         WebViewCommand::DevTools {
             request_id,
             method,
@@ -2723,6 +2902,10 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
     })
 }
 
+#[cfg(test)]
+mod extension_tests;
+#[cfg(test)]
+mod frame_tests;
 #[cfg(test)]
 mod popup_tests;
 #[cfg(test)]

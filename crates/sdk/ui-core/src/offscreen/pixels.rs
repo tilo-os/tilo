@@ -191,21 +191,21 @@ fn render_now(scene: &Scene, width: u32, height: u32, background: Color) -> Pixe
         let renderer = match OffscreenRenderer::try_new(width, height) {
             Ok(renderer) => renderer,
             // Without an adapter (a confined app worker, a machine with no
-            // GPU) the picture is drawn on the CPU instead.
-            #[cfg(not(target_arch = "wasm32"))]
+            // GPU) the picture is drawn on the CPU instead; a browser page,
+            // which has no CPU rasterizer, draws none.
             Err(OffscreenError::NoAdapter) => {
                 drop(kept);
-                return super::render_on_cpu(scene, width, height, background)
-                    .map(|rgba| Pixels {
-                        rgba,
-                        width,
-                        height,
-                    })
-                    .map_err(PixelsError::Failed);
+                return match super::cpu::render(scene, width, height, background) {
+                    Some(drawn) => drawn
+                        .map(|rgba| Pixels {
+                            rgba,
+                            width,
+                            height,
+                        })
+                        .map_err(PixelsError::Failed),
+                    None => Err(PixelsError::Unavailable),
+                };
             }
-            // A browser page draws no picture without its GPU.
-            #[cfg(target_arch = "wasm32")]
-            Err(OffscreenError::NoAdapter) => return Err(PixelsError::Unavailable),
             Err(OffscreenError::CannotWait) => return Err(PixelsError::Unavailable),
             Err(error) => return Err(PixelsError::Failed(error.to_string())),
         };

@@ -201,7 +201,11 @@ fn short(id: &str) -> &str {
 
 /// How long a grant is live.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", from = "StoredLifetime")]
+#[serde(
+    rename_all = "snake_case",
+    from = "StoredLifetime",
+    into = "StoredLifetime"
+)]
 pub enum Lifetime {
     /// For one use; the door that used it revokes it.
     Once,
@@ -213,17 +217,32 @@ pub enum Lifetime {
     UntilRevoked,
 }
 
-/// A lifetime as rooms stored it. A grant once lived while a task of the
-/// room was open; those tasks are gone, and such a grant reads as one that
-/// has expired, so a room that holds one still loads.
-#[derive(Deserialize)]
+/// A lifetime as rooms store it, read and written. A grant once lived while
+/// a task of the room was open; those tasks are gone, and such a grant reads
+/// as one that has expired, so a room that holds one still loads. The task
+/// keeps its place: compact encodings (postcard) name a variant by its
+/// position, and a room's stored grants and the digests of its
+/// administration requests are made of those bytes, so every lifetime is
+/// written as it always was.
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum StoredLifetime {
     Once,
-    Task(serde::de::IgnoredAny),
+    Task(String),
     Session(String),
     Until(u64),
     UntilRevoked,
+}
+
+impl From<Lifetime> for StoredLifetime {
+    fn from(lifetime: Lifetime) -> Self {
+        match lifetime {
+            Lifetime::Once => Self::Once,
+            Lifetime::Session(session) => Self::Session(session),
+            Lifetime::Until(at) => Self::Until(at),
+            Lifetime::UntilRevoked => Self::UntilRevoked,
+        }
+    }
 }
 
 impl From<StoredLifetime> for Lifetime {

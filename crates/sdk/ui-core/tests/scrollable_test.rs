@@ -409,3 +409,52 @@ fn reduced_motion_touchpad_flick_stops_on_release() {
     }
     assert_eq!(content_top(&driver), released);
 }
+
+/// A writing surface whose height its parent takes from the content (in a
+/// row, where an item's height is its content's, beside a 300px sibling,
+/// inside a page that scrolls) fills that height and no more: what it filled
+/// once is no floor it keeps. The viewport minimum used to be the scroll
+/// view's own last height, so a long document raised it and the surface
+/// stayed that tall once the document was gone.
+#[test]
+fn a_surface_sized_by_its_content_does_not_keep_the_height_it_filled() {
+    use tilo_ui::widget::Row;
+    let text = LocalState::new("A line of the document.\n".repeat(80));
+    let surface = Scrollable::new_vertical()
+        .fill_parent_height()
+        .with_content_min_viewport_height()
+        .with_child(Box::new(
+            TextInput::from_state(&text)
+                .multiline(true)
+                .with_id("editor"),
+        ));
+    let row = Row::new()
+        .with_gap(0.0)
+        .push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_width(100.0)
+                .with_height(300.0),
+        ))
+        .push(Box::new(surface));
+    let page = Scrollable::new_vertical().with_child(Box::new(row));
+    let mut driver = FrameHarness::new(State::new(), Box::new(page), (600, 400));
+    let long = *driver.targets().get("editor").unwrap();
+    assert!(
+        long.height() > 1000.0,
+        "the long document is its own height: {long:?}"
+    );
+
+    text.set(String::new());
+    for _ in 0..3 {
+        driver
+            .relayout_at((600, 400))
+            .expect("the emptied surface settles");
+    }
+    let short = *driver.targets().get("editor").unwrap();
+    assert!(
+        short.height() < 400.0,
+        "the empty surface does not keep the {}px it filled: {short:?}",
+        long.height()
+    );
+}

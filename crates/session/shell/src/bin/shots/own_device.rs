@@ -62,6 +62,7 @@ fn hosted(id: u64, app: &str, title: &str) -> Tab {
             kind: AppKind::Other(app.into()),
             label: title.into(),
         },
+        app_title: None,
     }
 }
 

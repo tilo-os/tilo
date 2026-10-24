@@ -184,7 +184,7 @@ async fn canonical_route_promotes_retired_publisher_without_retargeting_admitted
             assert_eq!(delivered.invocation_uuid, *request.invocation.0.as_bytes());
             drop(first);
             let deadline = tilo_test_env::hang_deadline();
-            while room.state.host_workers.lock().unwrap().contains_key(&91) {
+            while room.state.host_workers.lock().unwrap().holds(91) {
                 assert!(
                     std::time::Instant::now() < deadline,
                     "actual retired socket retained worker custody"
