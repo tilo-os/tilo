@@ -340,6 +340,32 @@ pub struct ExtensionNotice {
     pub progress: Option<u8>,
 }
 
+/// What the person did in the Browser's address after an extension's
+/// keyword (the manifest's `omnibox`), which the extension hears of as in
+/// Chrome (`chrome.omnibox`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OmniboxInput {
+    /// They typed the keyword and a space: what follows is the extension's.
+    Started,
+    /// What follows the keyword is now `text`; the extension's suggestions
+    /// for it answer `request`.
+    Changed { text: String, request: u32 },
+    /// They pressed Enter on `text`, or chose a suggestion whose content it
+    /// is: the extension acts, often sending the page somewhere.
+    Entered { text: String },
+    /// They left the keyword without Enter.
+    Cancelled,
+}
+
+/// One suggestion an extension made for what follows its keyword: what
+/// choosing it enters, and what it says, in Chrome's markup (`<match>`,
+/// `<dim>`, `<url>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OmniboxSuggestion {
+    pub content: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     /// A DevTools command for extension management: the engine allows only
@@ -608,6 +634,13 @@ pub enum WebViewCommand {
         notification: String,
         button: Option<u8>,
     },
+    /// The person typed after the extension's keyword in this page's
+    /// address: the extension hears of it (`chrome.omnibox`), and Enter lets
+    /// it act on the page as a click on its button would.
+    ExtensionOmnibox {
+        id: String,
+        input: OmniboxInput,
+    },
     DownloadDecision {
         id: u32,
         allow: bool,
@@ -720,6 +753,20 @@ pub enum WebViewEvent {
         url: String,
         interactive: bool,
         flow: u32,
+    },
+    /// What an extension suggests for what follows its keyword in this
+    /// page's address, answering `request` ([`OmniboxInput::Changed`]).
+    ExtensionOmniboxSuggestions {
+        id: String,
+        request: u32,
+        suggestions: Vec<OmniboxSuggestion>,
+    },
+    /// The suggestion an extension shows first while its keyword is typed
+    /// (`omnibox.setDefaultSuggestion`), in Chrome's markup with `%s` for
+    /// what is typed; `None` for none.
+    ExtensionOmniboxDefault {
+        id: String,
+        description: Option<String>,
     },
     SiteStatus(SiteStatus),
     SiteResult {

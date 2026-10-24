@@ -71,6 +71,11 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   page does not get the key; its toolbar button's command asks the Browser
   to act as a click on the button does. commands.getAll lists each command
   with its key, none for one the Browser keeps for itself.
+- What the person types after an extension's keyword in the address
+  reaches its worker (onInputStarted, onInputChanged, onInputCancelled), its
+  suggestions for the latest change and its default suggestion come back for
+  the page's tab, and Enter reaches onInputEntered, after which the
+  extension reads the page (activeTab) and sends it where it says.
 - A worker reaches its panel in the page, a page of its own in a frame, by
   the frame and the document a message from the panel came from (Evernote
   Web Clipper answers its panel so), and the page's frames by their
@@ -663,6 +668,48 @@ class ExtensionTabs(unittest.TestCase):
         # A key no command has reaches the page, with the same modifiers.
         press('U', ctrl=True, shift=True)
         self.title(host, 1, 'key:U')
+
+    def test_what_follows_an_extensions_keyword_reaches_it_and_enter_goes_where_it_says(self):
+        host, ids = self.start('keyword', access={'keyword': (['activeTab'], [])})
+        extension = ids['keyword']
+        # The worker starts with the engine, in its own time.
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, extension, 'typeof heard') != 'object':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
+        host.navigate(self.url + '/typed')
+        host.settle(1.0)
+
+        def omnibox(input, **fields):
+            host.send(op='extension_omnibox', id=extension, input=input, **fields)
+
+        def suggested(request):
+            return host.until(lambda e: e['event'] == 'extension_omnibox_suggestions' and e['request'] == request)
+
+        omnibox('started')
+        # Its default suggestion, which it set as it started, for this tab:
+        # told as the person starts, or as it arrives.
+        default = host.until(lambda e: e['event'] == 'extension_omnibox_default' and e.get('description'))
+        self.assertEqual((default.get('tab', 1), default['id'], default['description']),
+                         (1, extension, 'Look up <match>%s</match>'))
+        omnibox('changed', text='ca', request=1)
+        omnibox('changed', text='cat', request=2)
+        told = suggested(2)
+        self.assertEqual((told.get('tab', 1), told['id']), (1, extension))
+        self.assertEqual(told['suggestions'], [
+            {'content': 'cat one', 'description': 'First <match>cat</match> &amp; more'},
+            {'content': 'cat two', 'description': 'Second'},
+        ])
+        # Left, and begun again: Enter on a suggestion sends its content.
+        omnibox('cancelled')
+        omnibox('started')
+        omnibox('changed', text='dog', request=3)
+        suggested(3)
+        omnibox('entered', text='dog two')
+        found = self.title(host, 1, 'page /found?')
+        heard = json.loads(urllib.parse.unquote(found[len('page /found?'):]))
+        self.assertEqual(heard, ['started', 'changed:ca', 'changed:cat', 'cancelled',
+                                 'started', 'changed:dog', 'entered:dog two:currentTab'])
 
     def test_a_worker_keeps_its_own_address(self):
         host, ids = self.start('located', access={'located': (['activeTab', 'scripting'], [])})
