@@ -198,15 +198,29 @@ impl ShellNetwork {
 
     /// Take what the tree's outbox holds to ask
     /// ([`crate::shell::state::Outgoing`]) to the rooms' hosts: on the
-    /// peer-sync worker, each waiting for its host's answer. Costs one read
-    /// of the tree when nothing is left to ask, or when everything left
-    /// found its host out of reach and neither a room nor the outbox changed
-    /// since. An entry stays in the tree while it is asked; it leaves once
-    /// its room's document carries it or its host refuses it.
+    /// peer-sync worker, each waiting for its host's answer. An entry stays
+    /// in the tree while it is asked; it leaves once its room's document
+    /// carries it or its host refuses it.
+    ///
+    /// For the frame tick: with the outbox empty, or with nothing changed
+    /// since the last look ([`Self::outbox_state`]), it is one read of the
+    /// tree and a compare, with no scan and no allocation.
     pub(super) fn send_outbox_off_loop(&self) {
-        let (entries, queued) = {
+        let Some(state) = Self::outbox_state(&self.tree.read()) else {
+            return;
+        };
+        let Ok(mut gate) = self.outbox_waiting.lock() else {
+            return;
+        };
+        if *gate == Some(state) {
+            return;
+        }
+        // Nothing more to ask until a room, the outbox or a host changes.
+        *gate = Some(state);
+        drop(gate);
+        let entries: Vec<_> = {
             let tree = self.tree.read();
-            let Ok(asked) = self.outbox_asked.lock() else {
+            let Ok(mut asked) = self.outbox_asked.lock() else {
                 return;
             };
             let entries: Vec<_> = tree
@@ -214,25 +228,25 @@ impl ShellNetwork {
                 .filter(|entry| !asked.contains(&entry.id))
                 .cloned()
                 .collect();
-            drop(asked);
-            if entries.is_empty() {
-                return;
-            }
-            (entries, (tree.desktop.room_epoch, tree.room_outbox.len()))
-        };
-        if self
-            .outbox_waiting
-            .lock()
-            .is_ok_and(|waiting| *waiting == Some(queued))
-        {
-            return;
-        }
-        if let Ok(mut asked) = self.outbox_asked.lock() {
+            drop(tree);
             asked.extend(entries.iter().map(|entry| entry.id));
+            drop(asked);
+            entries
+        };
+        if entries.is_empty() {
+            return;
         }
         if let Err(entries) = self.outbox_off_loop(entries) {
             self.send_outbox(&entries);
         }
+    }
+
+    /// Where the outbox stands, for the drain's gate: the room epoch and
+    /// the newest entry, so a room projected or an entry made opens it.
+    /// `None` when the outbox is empty.
+    fn outbox_state(tree: &crate::shell::state::WorkspaceTree) -> Option<(u64, uuid::Uuid)> {
+        let newest = tree.room_outbox.last()?;
+        Some((tree.desktop.room_epoch, newest.id))
     }
 
     /// Ask each entry's host, in order, and tell the tree how each answered
@@ -269,15 +283,17 @@ impl ShellNetwork {
         for (id, answer) in answers {
             tree.outbox_answered(id, answer);
         }
-        let queued = (tree.desktop.room_epoch, tree.room_outbox.len());
+        let state = Self::outbox_state(&tree);
         drop(tree);
         if let Ok(mut asked) = self.outbox_asked.lock() {
             for entry in entries {
                 asked.remove(&entry.id);
             }
         }
+        // What found its host out of reach waits for a room, the outbox or
+        // a host to change from where they stand now.
         if unreachable && let Ok(mut gate) = self.outbox_waiting.lock() {
-            *gate = Some(queued);
+            *gate = state;
         }
     }
 

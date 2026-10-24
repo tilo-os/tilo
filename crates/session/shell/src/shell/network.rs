@@ -1427,10 +1427,11 @@ pub struct ShellNetwork {
     /// This device's own room host, governing the rooms placed on it
     /// ([`governance_requests::LocalGovernor`]).
     local_governor: std::sync::OnceLock<Arc<dyn governance_requests::LocalGovernor>>,
-    /// The room epoch and outbox length at which the entries left to ask
-    /// found their hosts out of reach: asked again only once either moved
-    /// ([`Self::send_outbox_off_loop`]).
-    outbox_waiting: Mutex<Option<(u64, usize)>>,
+    /// Where the outbox stood when the drain last found nothing more to
+    /// ask, or found the hosts of what is left out of reach
+    /// ([`Self::send_outbox_off_loop`]): looked at again only once it moved
+    /// or a host's session came up.
+    outbox_waiting: Mutex<Option<(u64, uuid::Uuid)>>,
     /// The outbox entries being asked now, so a tick never asks one twice.
     outbox_asked: Mutex<std::collections::HashSet<uuid::Uuid>>,
     /// Transport-authenticated direct neighbours, scoped by workspace.
