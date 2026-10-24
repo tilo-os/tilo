@@ -252,6 +252,10 @@ impl Widget for ShellOverlayHost {
             }
         } else {
             self.search_indexes_settling = false;
+            if let Some(chrome) = self.chrome.as_ref() {
+                self.search_registry
+                    .maintain_launcher_indexes(&chrome.borrow(), doc, path);
+            }
         }
         steps.mark("search-index");
         self.poll_pending_launchpad_actions();
@@ -274,6 +278,10 @@ impl Widget for ShellOverlayHost {
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
+        // The top bar steps aside for a window maximized this frame (and
+        // comes back with its restore) in the same pass: the bar and the
+        // windows' insets are laid out and painted from it below.
+        self.sync_top_bar_presence(Instant::now());
         steps.mark("resync");
         let content_dirty = self.content.update(doc, path);
         steps.mark("content-update");

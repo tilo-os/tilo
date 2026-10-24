@@ -560,6 +560,39 @@ fn widgets_stay_away_under_other_surfaces_and_beside_a_live_call() {
     assert_eq!(host.desk_form(WidgetId::Music), Form::Glance);
 }
 
+#[test]
+fn widgets_come_back_as_the_surface_over_them_went() {
+    let shown = |host: &ShellOverlayHost, at| {
+        host.desk
+            .shown
+            .get(&WidgetId::Music)
+            .map_or(0.0, |presence| presence.progress(at))
+    };
+    for (source, landed) in [
+        (ui::tokens::MotionSource::Keyboard, true),
+        (ui::tokens::MotionSource::Pointer, false),
+    ] {
+        let (mut host, chrome, _) = desk();
+        let t0 = Instant::now();
+        host.update_desk(t0);
+        chrome.borrow_mut().overlays.quick_settings = true;
+        host.update_desk(ms(t0, 1_000));
+        assert_eq!(host.desk_form(WidgetId::Music), Form::Away);
+        // Closed by a key, the music lands at once; by a click, it fades in.
+        host.input_source = source;
+        chrome.borrow_mut().overlays.quick_settings = false;
+        host.update_desk(ms(t0, 2_000));
+        assert_eq!(host.desk_form(WidgetId::Music), Form::Glance);
+        let at = ms(t0, 2_016);
+        assert_eq!(
+            shown(&host, at) >= 1.0,
+            landed,
+            "{source:?}: shown {}",
+            shown(&host, at)
+        );
+    }
+}
+
 /// Counts the system monitor's subscriptions, so a test sees when it is sent
 /// readings at all.
 struct CountingMonitor {
