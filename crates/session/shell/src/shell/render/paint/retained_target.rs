@@ -77,6 +77,22 @@ fn publish_pipeline_seed(gpu: &ui::gpu::DeviceHandle, cache: &wgpu::PipelineCach
     }
 }
 
+/// The GPU finishes what this target submitted before its queue can go.
+///
+/// wgpu waits on a dropped queue's last submission for at most about six
+/// seconds and then panics, as freeing resources the GPU still uses would be
+/// undefined behaviour. A software device on a loaded machine has taken longer
+/// than that, so the wait is made here, for as long as the work takes; a lost
+/// device finishes nothing and is not waited for. A GPU that never finishes is
+/// a hung main loop, which the watchdog ends.
+impl Drop for RetainedGpuTarget {
+    fn drop(&mut self) {
+        if self.loss.reason().is_none() {
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        }
+    }
+}
+
 impl RetainedGpuTarget {
     /// Construct an offscreen target on the supplied context-owned device and queue.
     ///
