@@ -25,6 +25,8 @@ class AgentLog final : public CefDevToolsMessageObserver {
   AgentLog(CefRefPtr<CefBrowser> browser,Emit emit):browser_(browser),emit_(std::move(emit)) {}
   void Attach() { registration_=browser_->GetHost()->AddDevToolsMessageObserver(this); }
   void Detach() { registration_=nullptr;browser_=nullptr; }
+  // Whether it records: the inspector reports the page's contexts.
+  bool active() const { return active_; }
   // An agent is about to operate the tab: start recording.
   void Activate() {
     if(active_ || !browser_) return;

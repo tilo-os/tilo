@@ -1,7 +1,6 @@
-//! Words on the deck: the deck title renamed in the toolbar, speaker notes,
-//! and text boxes edited on the canvas — each through the deck's dispatcher,
-//! so typing is attributed, undone a word or a rename at a time, and refused
-//! for someone who may only view. Also the help overlay and what the
+//! Words on the deck: speaker notes and text boxes edited on the canvas —
+//! each through the deck's dispatcher, so typing is attributed, undone a
+//! word at a time, and refused for someone who may only view. Also the help overlay and what the
 //! editor tells assistive technology.
 
 use winit::keyboard::ModifiersState;
@@ -110,10 +109,6 @@ fn edit_caret(app: &SlidesApp) -> usize {
         .map_or(0, |block| block.line.cursor_pos())
 }
 
-fn title(bench: &Bench) -> String {
-    bench.deck().title
-}
-
 fn notes(bench: &Bench) -> String {
     bench.deck().slides[0].notes.clone()
 }
@@ -127,106 +122,6 @@ fn editing_notes(words: &str) -> Bench {
     bench.with(|app| app.apply_hit(Hit::EditNotes));
     bench.frame();
     bench
-}
-
-/// The inline title editor starts, selects/replaces and commits one rename.
-#[test]
-fn title_rename_edits_and_commits_to_the_deck() {
-    // Case `clicking_the_toolbar_title_starts_a_rename_and_enter_commits_it`.
-    {
-        let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
-        let title0 = title(&bench);
-        let p = bench.read(|app| {
-            let p = app.compute_chrome().title_rect.center();
-            assert!(
-                app.rect.contains(p),
-                "the title click target is in the window"
-            );
-            p
-        });
-        bench.click(p);
-        assert!(
-            bench.read(|app| app.editing_title),
-            "clicking the title enters inline rename"
-        );
-        type_chars(&mut bench, "!?");
-        assert!(
-            !bench.read(|app| app.help_overlay.is_visible()),
-            "'?' while renaming types into the title, not the help overlay"
-        );
-        assert_eq!(
-            title(&bench),
-            title0,
-            "the rename is not written while typing"
-        );
-        named(&mut bench, NamedKey::Enter);
-        assert!(
-            !bench.read(|app| app.editing_title),
-            "Enter commits the rename"
-        );
-        assert_eq!(title(&bench), format!("{title0}!?"), "the rename landed");
-        assert!(bench.undo(), "the rename is one undo step");
-        assert_eq!(title(&bench), title0);
-    }
-
-    // Case `title_input_supports_select_all_and_replace`.
-    {
-        let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
-        bench.focus();
-        bench.with(|app| {
-            app.begin_title_edit();
-            app.title_input.select_all();
-            assert!(
-                app.title_input.selection_range_public().is_some(),
-                "Ctrl+A selects the whole title in the TextInput"
-            );
-        });
-        type_chars(&mut bench, "X");
-        named(&mut bench, NamedKey::Enter);
-        assert_eq!(
-            title(&bench),
-            "X",
-            "typing over the selection replaced the title"
-        );
-    }
-
-    // Case `title_backspace_and_click_away_commit_the_rename`.
-    {
-        let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
-        bench.focus();
-        let title0 = title(&bench);
-        bench.with(SlidesApp::begin_title_edit);
-        named(&mut bench, NamedKey::Backspace);
-        type_chars(&mut bench, "Z");
-        let away = bench.read(|app| {
-            let chrome = app.compute_chrome();
-            let away = chrome.slide_dest.center();
-            assert!(!chrome.title_rect.contains(away));
-            away
-        });
-        bench.click(away);
-        assert!(
-            !bench.read(|app| app.editing_title),
-            "a click away commits the rename"
-        );
-        let mut expect = title0;
-        expect.pop();
-        assert_eq!(title(&bench), format!("{expect}Z"), "the edit landed");
-    }
-
-    // Case `a_viewer_cannot_rename_the_deck`.
-    {
-        let mut bench = Bench::open_as(
-            &super::bench::deck_of(vec![Slide::new(Layout::Blank)]),
-            super::bench::WINDOW,
-            ui::permissions::Role::Viewer,
-        );
-        bench.focus();
-        bench.with(SlidesApp::begin_title_edit);
-        type_chars(&mut bench, "nope");
-        named(&mut bench, NamedKey::Enter);
-        assert_eq!(title(&bench), "t", "a viewer's rename changes nothing");
-    }
 }
 
 #[test]

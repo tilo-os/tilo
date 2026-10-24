@@ -81,6 +81,7 @@ async fn invoke(
                     profile,
                     model: "checked-model".into(),
                     streaming: false,
+                    api: None,
                     target: crate::openai::Target::Standard,
                     retry_refusals: false,
                     stream_end: Arc::default(),

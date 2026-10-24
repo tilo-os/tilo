@@ -1,10 +1,24 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
 pub(crate) mod legacy_document;
 
+mod executing_host;
+use executing_host::{ExecutingHostDevice, ExecutingHostPerson, ExecutingHostScope};
+pub use executing_host::{
+    executing_host_device, executing_host_person, executing_host_scope,
+    host_person_invocation_permitted,
+};
+
+mod node_map;
+pub use node_map::{BoundNodeMap, invoke_bound_node};
+pub(crate) use node_map::{
+    enter_traversal, enter_widget, inspect_bound_node, layout_bound_node, mutate_bound_node,
+};
+
 mod hosted;
 pub(crate) use hosted::{HostedInvocation, published_here};
 
 mod deferred_intent;
+mod ordinary_confirmation;
 use deferred_intent::validate_deferred_arguments;
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
 
@@ -17,7 +31,7 @@ use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use taffy::{NodeId, TaffyTree};
+use taffy::NodeId;
 
 /// How a person's input produced a control invocation: the provenance that
 /// decides whether it joins the undo step before it.
@@ -34,9 +48,12 @@ pub(crate) enum Input {
     Starting,
 }
 
+pub(crate) use crate::widget::controls::Origin;
+
 thread_local! {
     static INPUT: Cell<Input> = const { Cell::new(Input::Discrete) };
     static DRAINED_INPUT: Cell<Input> = const { Cell::new(Input::Discrete) };
+    static DRAINED_ORIGIN: Cell<Origin> = const { Cell::new(Origin::Person) };
     static NATIVE_TEXT_EXECUTION: Cell<Input> = const { Cell::new(Input::Discrete) };
 }
 
@@ -87,10 +104,43 @@ impl Drop for DrainTextScope {
     }
 }
 
-fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input) {
+/// The queue that hands over the invocation being drained says who asked
+/// for it ([`Origin::App`]: the app on its own); unsaid, it is a person's.
+pub(crate) fn note_drained_origin(origin: Origin) {
+    DRAINED_ORIGIN.with(|flag| flag.set(origin));
+}
+
+struct DrainOriginScope(Origin);
+impl Drop for DrainOriginScope {
+    fn drop(&mut self) {
+        DRAINED_ORIGIN.with(|flag| flag.set(self.0));
+    }
+}
+
+/// The next invocation `widget`'s queues hand over, the effect invocation
+/// it continues, and who asked for it.
+pub(crate) fn take_attributed_with_origin(
+    widget: &mut dyn Widget,
+) -> Option<(
+    tilo_actions::ControlInvocation,
+    Option<tilo_actions::InvocationId>,
+    Origin,
+)> {
+    let (taken, _, origin) = capture_physical_drain(|| {
+        crate::widget::controls::take_attributed_control_invocation(widget)
+    });
+    taken.map(|(intent, on_behalf_of)| (intent, on_behalf_of, origin))
+}
+
+fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input, Origin) {
     let _scope = DrainTextScope(DRAINED_INPUT.with(|flag| flag.replace(Input::Discrete)));
+    let _origin = DrainOriginScope(DRAINED_ORIGIN.with(|flag| flag.replace(Origin::Person)));
     let result = run();
-    (result, DRAINED_INPUT.with(Cell::get))
+    (
+        result,
+        DRAINED_INPUT.with(Cell::get),
+        DRAINED_ORIGIN.with(Cell::get),
+    )
 }
 
 struct NativeTextScope(Input);
@@ -461,11 +511,13 @@ fn count_addresses(
 }
 
 /// A component's control intent, with the effect invocation it continues
-/// when the component's effect handler or completion queued it.
+/// when the component's effect handler or completion queued it, and who
+/// asked for it.
 pub(crate) type PendingComponentControl = (
     BoundActionTarget,
     tilo_actions::ControlInvocation,
     Option<tilo_actions::InvocationId>,
+    Origin,
 );
 
 pub(crate) struct DrainedControlInvocations {
@@ -480,7 +532,10 @@ pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControl
             .controls
             .into_iter()
             .zip(batch.continuing)
-            .map(|((target, intent), on_behalf_of)| (target, intent, on_behalf_of))
+            .zip(batch.origins)
+            .map(|(((target, intent), on_behalf_of), origin)| {
+                (target, intent, on_behalf_of, origin)
+            })
             .collect(),
         error: batch.failures.into_iter().next(),
     }
@@ -492,6 +547,8 @@ pub(crate) struct BoundControlBatch {
     pub(crate) controls: Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
     /// For each of `controls`, in order, the effect invocation it continues.
     pub(crate) continuing: Vec<Option<tilo_actions::InvocationId>>,
+    /// For each of `controls`, in order, who asked for it.
+    pub(crate) origins: Vec<Origin>,
     pub(crate) failures: Vec<BoundDispatchError>,
 }
 
@@ -554,6 +611,7 @@ pub(crate) fn snapshot_control_queues(root: &dyn Widget) -> ControlQueueSnapshot
 fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch {
     let mut invocations = Vec::new();
     let mut continuing = Vec::new();
+    let mut origins = Vec::new();
     let mut visited = Vec::new();
     let mut visit = |binding: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
@@ -569,6 +627,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
             .collect::<Vec<_>>();
         for intent in queued {
             continuing.push(None);
+            origins.push(Origin::Person);
             invocations.push((
                 BoundActionTarget {
                     input: Input::Discrete,
@@ -581,10 +640,11 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
                 intent,
             ));
         }
-        while let (Some((intent, on_behalf_of)), input) = capture_physical_drain(|| {
+        while let (Some((intent, on_behalf_of)), input, origin) = capture_physical_drain(|| {
             crate::widget::controls::take_attributed_control_invocation(widget)
         }) {
             continuing.push(on_behalf_of);
+            origins.push(origin);
             invocations.push((
                 BoundActionTarget {
                     input,
@@ -610,6 +670,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
         visited,
         controls: invocations,
         continuing,
+        origins,
         failures: failure.into_iter().collect(),
     }
 }
@@ -2039,178 +2100,6 @@ pub(crate) struct OrdinaryConfirmation {
     /// Why the person is asked when the action declares no confirmation of
     /// its own: the room's grants ask first ([`Self::asking_first`]).
     asked: Option<String>,
-}
-
-impl OrdinaryConfirmation {
-    pub(crate) fn prepare(
-        root: &dyn Widget,
-        doc: &AutoCommit,
-        target: legacy_document::LocalResourceTarget,
-        domain: &crate::ControlDomain,
-        address: tilo_actions::ActionAddress,
-        arguments: ControlContinuationArguments,
-    ) -> Result<Self, tilo_actions::DoorError> {
-        if domain.closed() {
-            return Err(Self::stale());
-        }
-        let resources = resources_for_control_target(root, doc, &target, &address)?;
-        let (resource, spec) = unique_control_spec(&resources, &address)?;
-        let context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
-        let snapshot = Self::snapshot(
-            &resources,
-            &address,
-            &arguments,
-            tilo_resource::origin_now_ms(),
-        )?;
-        Ok(Self {
-            target,
-            address,
-            arguments,
-            domain: domain.downgrade(),
-            snapshot,
-            context,
-            asked: None,
-        })
-    }
-
-    /// This request as the door's answer made it: the invocation needs the
-    /// person's go-ahead (the room's grants ask first) even where the action
-    /// declares no confirmation, so the person is asked, told who decides,
-    /// instead of the request waiting unseen for an answer nobody asks for.
-    #[must_use]
-    pub(crate) fn asking_first(mut self) -> Self {
-        if matches!(
-            self.snapshot.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::None
-        ) {
-            self.asked = Some(format!(
-                "This workspace asks before \u{201c}{}\u{201d} reaches outside it, and you decide: confirm to go ahead.",
-                self.snapshot.label
-            ));
-        }
-        self
-    }
-
-    /// Why the person is asked, when the room's grants ask rather than the
-    /// action itself.
-    pub(crate) fn asked(&self) -> Option<&str> {
-        self.asked.as_deref()
-    }
-    fn snapshot(
-        resources: &[tilo_actions::Resource],
-        address: &tilo_actions::ActionAddress,
-        arguments: &ControlContinuationArguments,
-        built_at: i64,
-    ) -> Result<OrdinaryConfirmationSnapshot, tilo_actions::DoorError> {
-        let (resource, spec) = unique_control_spec(resources, address)?;
-        let (argument, json) = arguments.as_door_arguments();
-        // A deferred spec retains a creation draft when its provider offers
-        // one; without one (a verb with no parameters) it is built like any
-        // other action, so a destructive one can still be confirmed.
-        let retains_draft = matches!(spec.input, tilo_actions::ActionInput::Deferred { .. })
-            && spec
-                .continuation_identity(tilo_actions::ContinuationQuery::Draft)
-                .is_some();
-        let intent = if retains_draft {
-            validate_deferred_arguments(spec, json, argument)?;
-            PreparedActionIntent::Deferred(DeferredIntent::capture(spec)?)
-        } else {
-            // An action carries the time it was built; the confirmation is
-            // of the same action whenever the person confirms it.
-            PreparedActionIntent::Encoded(tilo_resource::with_origin_clock(built_at, || {
-                encode_resource_action(resources, address, json, argument)
-            })?)
-        };
-        Ok(OrdinaryConfirmationSnapshot {
-            built_at,
-            resource_id: resource.id.as_str().to_owned(),
-            resource_kind: resource.kind.clone(),
-            action_id: spec.id.clone(),
-            label: spec.label.clone(),
-            description: spec.description.clone(),
-            locus: spec.locus,
-            kind: spec.kind,
-            operation_type: spec.operation_type.clone(),
-            // What these arguments do decides the question (a field edit
-            // that removes an item asks; one that renames it does not).
-            contract: tilo_actions::ActionContract {
-                confirmation: match json {
-                    Some(json) => spec.confirmation_for_json(json),
-                    None => spec.confirmation_for_argument(argument),
-                },
-                ..spec.contract.clone()
-            },
-            params: spec.params().to_vec(),
-            input: control_input_surface(spec),
-            continuation: match &intent {
-                PreparedActionIntent::Deferred(intent) => Some(intent.draft().clone()),
-                PreparedActionIntent::Encoded(_) => spec.continuation_identity(
-                    tilo_actions::ContinuationQuery::Exact(arguments.query()),
-                ),
-            },
-            intent,
-        })
-    }
-    pub(crate) fn validate_owner(
-        &self,
-        domain: &crate::ControlDomain,
-    ) -> Result<(), tilo_actions::DoorError> {
-        let original = self.domain.upgrade().ok_or_else(Self::stale)?;
-        if original.closed() || domain.closed() || !original.same_owner_incarnation(domain) {
-            return Err(Self::stale());
-        }
-        Ok(())
-    }
-    pub(crate) fn validate(
-        &self,
-        root: &dyn Widget,
-        doc: &AutoCommit,
-        domain: &crate::ControlDomain,
-    ) -> Result<(), tilo_actions::DoorError> {
-        self.validate_owner(domain)?;
-        let resources = resources_for_control_target(root, doc, &self.target, &self.address)?;
-        let mut current = Self::snapshot(
-            &resources,
-            &self.address,
-            &self.arguments,
-            self.snapshot.built_at,
-        )?;
-        // Absence at emission is not retroactively replaced with provider proof.
-        if self.snapshot.continuation.is_none() {
-            current.continuation = None;
-        }
-        if current != self.snapshot {
-            return Err(Self::stale());
-        }
-        Ok(())
-    }
-    fn stale() -> tilo_actions::DoorError {
-        tilo_actions::DoorError::Unavailable {
-            code: "stale_ordinary_confirmation".into(),
-            reason: "The original confirmation request is no longer valid".into(),
-        }
-    }
-    pub(crate) fn intent(&self) -> &PreparedActionIntent {
-        &self.snapshot.intent
-    }
-    pub(crate) fn kind(&self) -> tilo_actions::OperationKind {
-        self.snapshot.kind
-    }
-    pub(crate) fn confirmation(&self) -> &tilo_actions::ConfirmationPolicy {
-        static ASKED: tilo_actions::ConfirmationPolicy = tilo_actions::ConfirmationPolicy::Confirm;
-        if self.asked.is_some() {
-            &ASKED
-        } else {
-            &self.snapshot.contract.confirmation
-        }
-    }
-    /// The confirmed action's label and description, as the person asks it.
-    pub(crate) fn action_text(&self) -> (&str, Option<&str>) {
-        (
-            self.snapshot.label.as_str(),
-            self.snapshot.description.as_deref(),
-        )
-    }
 }
 
 fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
@@ -4393,79 +4282,6 @@ type ActiveRecord = (
 thread_local! {
     static ACTIVE: RefCell<Option<ActiveRecord>> = const { RefCell::new(None) };
 }
-thread_local! {
-    static EXECUTING_HOST_SCOPE: RefCell<Option<uuid::Uuid>> = const { RefCell::new(None) };
-    static EXECUTING_HOST_DEVICE: RefCell<Option<String>> = const { RefCell::new(None) };
-    static EXECUTING_HOST_PERSON: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-/// Identity of the checked component lifetime, not a caller-selected window ID.
-#[must_use]
-pub fn executing_host_scope() -> Option<uuid::Uuid> {
-    EXECUTING_HOST_SCOPE.with_borrow(|scope| *scope)
-}
-
-struct ExecutingHostScope(Option<uuid::Uuid>);
-impl ExecutingHostScope {
-    fn enter(scope: uuid::Uuid) -> Self {
-        Self(EXECUTING_HOST_SCOPE.replace(Some(scope)))
-    }
-}
-impl Drop for ExecutingHostScope {
-    fn drop(&mut self) {
-        EXECUTING_HOST_SCOPE.replace(self.0.take());
-    }
-}
-
-struct ExecutingHostPerson(Option<String>);
-impl ExecutingHostPerson {
-    fn enter(person: &UserId) -> Self {
-        Self(EXECUTING_HOST_PERSON.replace(Some(person.0.clone())))
-    }
-}
-impl Drop for ExecutingHostPerson {
-    fn drop(&mut self) {
-        EXECUTING_HOST_PERSON.replace(self.0.take());
-    }
-}
-
-/// The immutable local person of the executing checked component callback.
-/// Unavailable outside a callback; never derived from action context or a caller.
-#[must_use]
-pub fn executing_host_person() -> Option<String> {
-    EXECUTING_HOST_PERSON.with_borrow(Clone::clone)
-}
-
-/// Whether this callback is acting for its trusted local person. A delivered
-/// invocation must name that actual person's actor; participant identity and
-/// action attribution cannot confer access. Outside a callback access is denied.
-#[must_use]
-pub fn host_person_invocation_permitted() -> bool {
-    executing_host_person().is_some_and(|person| {
-        crate::invocation_scope::current_invoker().is_none_or(|invoker| invoker.actor == person)
-    })
-}
-
-struct ExecutingHostDevice(Option<String>);
-impl ExecutingHostDevice {
-    fn enter(device: &str) -> Self {
-        Self(EXECUTING_HOST_DEVICE.replace(Some(device.to_owned())))
-    }
-}
-impl Drop for ExecutingHostDevice {
-    fn drop(&mut self) {
-        EXECUTING_HOST_DEVICE.replace(self.0.take());
-    }
-}
-
-/// The executing component's host device during a checked record callback.
-/// This is local host identity, not replicated action context or a caller's
-/// requested target device. Outside a component callback it is unavailable.
-#[must_use]
-pub fn executing_host_device() -> Option<String> {
-    EXECUTING_HOST_DEVICE.with_borrow(Clone::clone)
-}
-
 pub(crate) struct CallbackScopeGuard {
     _wake: WakeScopeGuard,
     _device: ExecutingHostDevice,
@@ -5208,390 +5024,8 @@ impl DocumentEditStamp {
     }
 }
 
-/// Admission metadata for precisely one live widget/Taffy layout.
-#[derive(Default)]
-pub struct BoundNodeMap {
-    nodes: HashMap<NodeId, BoundNode>,
-    parents: HashMap<NodeId, NodeId>,
-    // Persistent across layout clears; aliases are allocated only for a new
-    // owner/lifetime + local node, never once per redraw or tree rebuild.
-    a11y_aliases: a11y_owner::OwnerAliases,
-}
-impl BoundNodeMap {
-    /// Read the nearest canonical record owner's document and history stamp.
-    /// Local writes, remote merges and undo/redo invalidate it, including an
-    /// edit followed by its inverse. Reading does not open an action or commit.
-    /// # Errors
-    /// Rejects missing/inactive nodes, retired owners, borrowed records and
-    /// exhausted generations; callers must cancel deferred text insertion.
-    pub fn document_edit_stamp(
-        &self,
-        node: NodeId,
-        document: &AutoCommit,
-    ) -> Result<DocumentEditStamp, BoundDispatchError> {
-        let entry = self
-            .nodes
-            .get(&node)
-            .filter(|entry| !entry.inactive)
-            .ok_or(BoundDispatchError::MissingNode)?;
-        if let Some(binding) = &entry.binding {
-            binding.document_edit_stamp(document)
-        } else if let Some(legacy) = &entry.legacy {
-            legacy
-                .validate()
-                .map_err(|_| BoundDispatchError::ClosedLifetime)?;
-            let (store, checkout) = legacy.store_checkout();
-            let lifetime = legacy
-                .lifetime_id()
-                .ok_or(BoundDispatchError::ClosedLifetime)?;
-            store
-                .document_edit_stamp(&checkout.id, lifetime)
-                .map_err(BoundDispatchError::Record)
-        } else {
-            Ok(DocumentEditStamp::for_document(document))
-        }
-    }
-    /// Current admitted layout ancestry, including structural non-widget nodes.
-    pub(crate) fn is_descendant(&self, mut node: NodeId, ancestor: NodeId) -> bool {
-        while let Some(parent) = self.parents.get(&node) {
-            if *parent == ancestor {
-                return true;
-            }
-            node = *parent;
-        }
-        false
-    }
-    pub(crate) fn binding_for(&self, node: NodeId) -> Option<CallbackBinding> {
-        self.nodes
-            .get(&node)
-            .filter(|node| !node.inactive)
-            .and_then(|node| node.binding.clone())
-    }
-    pub(crate) fn legacy_for(&self, node: NodeId) -> Option<crate::history_mode::HistoryOwner> {
-        self.nodes.get(&node).and_then(|entry| entry.legacy.clone())
-    }
-    /// Whether any admitted node belongs to a legacy tile, whose record no
-    /// [`bound_owner_standing`] read follows.
-    pub(crate) fn has_legacy(&self) -> bool {
-        self.nodes.values().any(|entry| entry.legacy.is_some())
-    }
-    pub(crate) fn legacy_status(
-        &self,
-        node: NodeId,
-        author: &UserId,
-    ) -> Option<crate::undo::UndoStatus> {
-        let owner = self.legacy_for(node)?;
-        owner.validate().ok()?;
-        let (store, checkout) = owner.store_checkout();
-        // A status read is not a mutable loan: it must not advance the
-        // record's action generation.
-        store.read_history(&checkout.id, |doc, history| {
-            crate::undo::status_snapshot(doc, history, Some(author))
-        })
-    }
-    pub(crate) fn owns_document(&self, node: NodeId) -> bool {
-        self.nodes
-            .get(&node)
-            .is_some_and(|entry| entry.binding.is_some() || entry.legacy.is_some())
-    }
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn clear(&mut self) {
-        self.nodes.clear();
-        self.parents.clear();
-    }
-    /// Admit raw nodes using their nearest boundary in the matching layout topology.
-    ///
-    /// # Safety
-    /// Root, tree, layout root and pointers must belong to the same live build under
-    /// one exclusive tree owner. No replacement, rebuild or destruction may occur.
-    pub unsafe fn rebuild(
-        &mut self,
-        root: &dyn Widget,
-        taffy: &TaffyTree<()>,
-        layout_root: NodeId,
-        nodes: &HashMap<NodeId, *mut dyn Widget>,
-    ) {
-        // SAFETY: the public contract covers the single ownership/presentation root.
-        unsafe {
-            self.rebuild_with_retained_root(root, None, taffy, layout_root, nodes);
-        }
-    }
-
-    /// Collect custody from a separately retained live root while inheriting
-    /// bindings only through the presentation layout. Chrome stays unbound.
-    /// # Safety
-    /// Both roots and every admitted pointer belong to the same exclusively
-    /// owned settled composition; neither root may be replaced during this call.
-    pub(crate) unsafe fn rebuild_with_retained_root(
-        &mut self,
-        root: &dyn Widget,
-        retained: Option<&dyn Widget>,
-        taffy: &TaffyTree<()>,
-        layout_root: NodeId,
-        nodes: &HashMap<NodeId, *mut dyn Widget>,
-    ) {
-        // SAFETY: the caller owns all supplied roots and layout pointers.
-        unsafe { self.rebuild_roots_with_retained(&[(root, layout_root)], retained, taffy, nodes) };
-    }
-
-    /// Admit disjoint presentation roots without inheriting authority across roots.
-    /// # Safety
-    /// Every root and node must belong to the same exclusively owned live arena.
-    pub unsafe fn rebuild_roots(
-        &mut self,
-        roots: &[(&dyn Widget, NodeId)],
-        taffy: &TaffyTree<()>,
-        nodes: &HashMap<NodeId, *mut dyn Widget>,
-    ) {
-        // SAFETY: the caller supplies the shared live arena and disjoint subtrees.
-        unsafe { self.rebuild_roots_with_retained(roots, None, taffy, nodes) };
-    }
-
-    pub(crate) unsafe fn rebuild_roots_with_retained(
-        &mut self,
-        roots: &[(&dyn Widget, NodeId)],
-        retained: Option<&dyn Widget>,
-        taffy: &TaffyTree<()>,
-        nodes: &HashMap<NodeId, *mut dyn Widget>,
-    ) {
-        fn collect(
-            widget: &dyn Widget,
-            boundaries: &mut HashMap<NodeId, crate::history_mode::HistoryOwner>,
-            inactive: &mut std::collections::HashSet<NodeId>,
-        ) {
-            if let Some(node) = widget.inactive_callback_boundary() {
-                inactive.insert(node);
-            }
-            if let Some((node, owner)) = widget.legacy_callback_boundary() {
-                boundaries.insert(node, owner);
-            }
-            for child in widget.children() {
-                collect(child, boundaries, inactive);
-            }
-        }
-        self.clear();
-        let mut boundaries = HashMap::new();
-        let mut inactive_boundaries = std::collections::HashSet::new();
-        for (root, _) in roots {
-            collect(*root, &mut boundaries, &mut inactive_boundaries);
-        }
-        if let Some(retained) = retained {
-            collect(retained, &mut boundaries, &mut inactive_boundaries);
-        }
-        let mut pending: Vec<_> = roots
-            .iter()
-            .map(|(root, layout_root)| (*layout_root, root.callback_binding(), None, false))
-            .collect();
-        while let Some((node, inherited, inherited_legacy, inherited_inactive)) = pending.pop() {
-            let inactive = inherited_inactive || inactive_boundaries.contains(&node);
-            let mut legacy = boundaries.get(&node).cloned().or(inherited_legacy);
-            let binding = if let Some(&pointer) = nodes.get(&node) {
-                // SAFETY: rebuild's owner guarantees all admitted pointers are live.
-                let widget = unsafe { &*pointer };
-                let binding = if widget.resets_callback_binding() {
-                    None
-                } else {
-                    widget.callback_binding().or(inherited)
-                };
-                if binding.is_some() || widget.resets_callback_binding() {
-                    legacy = None;
-                }
-                self.nodes.insert(
-                    node,
-                    BoundNode {
-                        pointer,
-                        semantic_name: widget.name().to_owned(),
-                        binding: binding.clone(),
-                        legacy: legacy.clone(),
-                        inactive,
-                    },
-                );
-                binding
-            } else {
-                inherited
-            };
-            if let Ok(children) = taffy.children(node) {
-                for child in children {
-                    self.parents.insert(child, node);
-                    pending.push((child, binding.clone(), legacy.clone(), inactive));
-                }
-            }
-        }
-        self.a11y_aliases.admit(&self.nodes);
-    }
-}
-
 #[path = "bound_dispatch/a11y_owner.rs"]
 mod a11y_owner;
-
-/// Invoke an admitted node under its original component lifetime and record.
-///
-/// # Errors
-/// Refuses missing, replaced, closed or synchronously cross-record targets.
-///
-/// # Safety
-/// For admitted open or explicitly unbound delivery, the caller exclusively owns
-/// the matching live tree/topology with no overlapping target or ancestor reference.
-/// No replacement, rebuild or destruction may occur during delivery; no widget
-/// reference or callback may escape. Closed entries may retain their actual old
-/// pointers after destruction: metadata and lifetime are checked before dereference.
-#[allow(
-    clippy::implicit_hasher,
-    reason = "shared producer/consumer contract uses the existing default-hasher node map"
-)]
-pub unsafe fn invoke_bound_node<R>(
-    bindings: &BoundNodeMap,
-    nodes: &HashMap<NodeId, *mut dyn Widget>,
-    node: NodeId,
-    outer: &mut AutoCommit,
-    outer_root: &ObjId,
-    callback: impl FnOnce(&mut dyn Widget, &mut AutoCommit, &ObjId) -> R,
-) -> Result<R, BoundDispatchError> {
-    let admitted = bindings
-        .nodes
-        .get(&node)
-        .ok_or(BoundDispatchError::MissingNode)?;
-    let pointer = nodes.get(&node).ok_or(BoundDispatchError::MissingNode)?;
-    if !std::ptr::eq(admitted.pointer, *pointer) {
-        return Err(BoundDispatchError::MissingNode);
-    }
-    if admitted.inactive {
-        return Err(BoundDispatchError::MissingNode);
-    }
-    if let Some(binding) = &admitted.binding {
-        binding.with_document(outer, |document, root| {
-            // SAFETY: admission and lifetime were checked before this dereference;
-            // the caller guarantees live topology and exclusive widget access.
-            let widget = unsafe { &mut **pointer };
-            let result = callback(widget, document, root);
-            let _ = binding.drain_owned_tree(widget, document);
-            result
-        })
-    } else if let Some(owner) = &admitted.legacy {
-        owner
-            .validate()
-            .map_err(|_| BoundDispatchError::ClosedLifetime)?;
-        let (store, checkout) = owner.store_checkout();
-        store
-            .with_checked(&checkout.id, |doc| {
-                callback(unsafe { &mut **pointer }, doc, &ROOT)
-            })
-            .map_err(BoundDispatchError::Record)
-    } else {
-        // Explicitly admitted unbound widgets preserve the outer document.
-        Ok(callback(unsafe { &mut **pointer }, outer, outer_root))
-    }
-}
-
-/// Enter a retained boundary for the complete duration of a tree walk.
-pub(crate) fn enter_widget(
-    widget: &dyn Widget,
-) -> Result<Option<CallbackScopeGuard>, BoundDispatchError> {
-    widget
-        .callback_binding()
-        .map(|binding| binding.enter())
-        .transpose()
-}
-
-impl BoundNodeMap {
-    fn admitted(
-        &self,
-        nodes: &HashMap<NodeId, *mut dyn Widget>,
-        node: NodeId,
-    ) -> Result<&BoundNode, BoundDispatchError> {
-        let admitted = self
-            .nodes
-            .get(&node)
-            .ok_or(BoundDispatchError::MissingNode)?;
-        let pointer = nodes.get(&node).ok_or(BoundDispatchError::MissingNode)?;
-        if !std::ptr::eq(admitted.pointer, *pointer) {
-            return Err(BoundDispatchError::MissingNode);
-        }
-        if let Some(owner) = &admitted.legacy {
-            owner
-                .validate()
-                .map_err(|_| BoundDispatchError::ClosedLifetime)?;
-        }
-        Ok(admitted)
-    }
-}
-
-/// Shared inspections never borrow the widget's canonical document.
-/// # Safety
-/// Same live-tree and stable-topology requirements as `invoke_bound_node`;
-/// only shared target references may overlap and none may escape.
-pub(crate) unsafe fn inspect_bound_node<R>(
-    bindings: &BoundNodeMap,
-    nodes: &HashMap<NodeId, *mut dyn Widget>,
-    node: NodeId,
-    callback: impl FnOnce(&dyn Widget) -> R,
-) -> Result<R, BoundDispatchError> {
-    let admitted = bindings.admitted(nodes, node)?;
-    let _entry = admitted
-        .binding
-        .as_ref()
-        .map(CallbackBinding::enter)
-        .transpose()?;
-    // SAFETY: admission and lifetime checked; caller owns the stable live tree.
-    Ok(callback(unsafe { &*admitted.pointer }))
-}
-
-/// Measure or settle one node's geometry. History leaves the live app on
-/// screen beside its timeline, inert but visible, so layout still reaches
-/// it: only input, focus and effects stop at an inactive boundary.
-/// # Safety
-/// Same exclusive target/tree requirements as `invoke_bound_node`.
-pub(crate) unsafe fn layout_bound_node<R>(
-    bindings: &BoundNodeMap,
-    nodes: &HashMap<NodeId, *mut dyn Widget>,
-    node: NodeId,
-    callback: impl FnOnce(&mut dyn Widget) -> R,
-) -> Result<R, BoundDispatchError> {
-    let admitted = bindings.admitted(nodes, node)?;
-    let _entry = admitted
-        .binding
-        .as_ref()
-        .map(CallbackBinding::enter)
-        .transpose()?;
-    // SAFETY: admission and lifetime checked; caller exclusively owns this target.
-    Ok(callback(unsafe { &mut *admitted.pointer }))
-}
-
-/// Non-document mutations (focus/measurement) enter the same lifetime.
-/// # Safety
-/// Same exclusive target/tree requirements as `invoke_bound_node`.
-pub(crate) unsafe fn mutate_bound_node<R>(
-    bindings: &BoundNodeMap,
-    nodes: &HashMap<NodeId, *mut dyn Widget>,
-    node: NodeId,
-    callback: impl FnOnce(&mut dyn Widget) -> R,
-) -> Result<R, BoundDispatchError> {
-    let admitted = bindings.admitted(nodes, node)?;
-    if admitted.inactive {
-        return Err(BoundDispatchError::MissingNode);
-    }
-    let _entry = admitted
-        .binding
-        .as_ref()
-        .map(CallbackBinding::enter)
-        .transpose()?;
-    // SAFETY: admission and lifetime checked; caller exclusively owns this target.
-    Ok(callback(unsafe { &mut *admitted.pointer }))
-}
-
-/// Explicit compatibility mode for retained helpers; component adapters still
-/// enforce their own entry when called by an unbound legacy traversal.
-pub(crate) fn enter_traversal<const BOUND: bool>(
-    widget: &dyn Widget,
-) -> Result<Option<CallbackScopeGuard>, BoundDispatchError> {
-    if BOUND {
-        enter_widget(widget)
-    } else {
-        Ok(None)
-    }
-}
 
 #[cfg(test)]
 #[path = "bound_dispatch/bound_action_address_tests.rs"]

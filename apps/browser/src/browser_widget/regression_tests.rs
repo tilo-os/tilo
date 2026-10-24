@@ -390,3 +390,49 @@ fn an_engine_download_is_kept_where_the_library_search_and_agents_read() {
             .is_none()
     );
 }
+
+#[test]
+fn a_page_a_web_app_moves_to_is_named_in_history_once_its_title_comes() {
+    let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
+    let record = app
+        .person::<crate::history::BrowsingHistory>()
+        .expect("a test profile keeps person records");
+    let engine = TestEngine::new();
+    let mut w = BrowserWidget::with_engine(engine.clone(), true);
+    w.attach_history(record.clone());
+    let title = |url: &str| {
+        record.with(|history| history.visits.get(url).map(|visit| visit.title.0.clone()))
+    };
+    // The real engine's order for a page a web app moves to: its
+    // address, its load, then its title.
+    for event in [
+        WebViewEvent::UriChanged("https://app.test/watch".into()),
+        WebViewEvent::LoadFinishedAt {
+            uri: "https://app.test/watch".into(),
+        },
+        WebViewEvent::TitleChanged("A video".into()),
+    ] {
+        engine.push_event(event);
+    }
+    w.apply_engine_events();
+    assert_eq!(title("https://app.test/watch").as_deref(), Some("A video"));
+
+    // A title it changes to later keeps the name it was recorded with.
+    engine.push_event(WebViewEvent::TitleChanged("(1) A video".into()));
+    w.apply_engine_events();
+    assert_eq!(title("https://app.test/watch").as_deref(), Some("A video"));
+
+    // A title arriving for another page does not name this one.
+    for event in [
+        WebViewEvent::UriChanged("https://app.test/next".into()),
+        WebViewEvent::LoadFinishedAt {
+            uri: "https://app.test/next".into(),
+        },
+        WebViewEvent::UriChanged("https://app.test/other".into()),
+        WebViewEvent::TitleChanged("Other".into()),
+    ] {
+        engine.push_event(event);
+    }
+    w.apply_engine_events();
+    assert_eq!(title("https://app.test/next").as_deref(), Some(""));
+}

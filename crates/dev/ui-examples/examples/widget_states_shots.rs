@@ -376,7 +376,42 @@ fn control_specs() -> Vec<Spec> {
             }
             _ => None,
         }),
+        face("Colour swatch", 48.0, |ctx, rect, col| {
+            swatch_states(ctx, rect, col, |r| {
+                tilo_ui::widget::ColorSwatchFace::new(
+                    r,
+                    vello::peniko::Color::from_rgb8(0x3b, 0x6f, 0xd4),
+                    "Blue",
+                )
+            });
+        }),
+        face("Colour swatch, none", 48.0, |ctx, rect, col| {
+            swatch_states(ctx, rect, col, |r| {
+                tilo_ui::widget::ColorSwatchFace::none(r, "No colour")
+            });
+        }),
     ]
+}
+
+/// A colour swatch of the default size, at the start of `rect`, in `col`'s
+/// state; it has no disabled or error state.
+fn swatch_states(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    col: Col,
+    face: impl Fn(Rect) -> tilo_ui::widget::ColorSwatchFace,
+) {
+    if matches!(col.st, St::Disabled | St::Error) {
+        return;
+    }
+    let side = col.size.height(ctx.theme);
+    let cell = centred(rect, side);
+    let swatch = Rect::from_origin_size(cell.origin(), (side * 1.6, side));
+    face(swatch)
+        .selected(col.st == St::Selected)
+        .hovered(matches!(col.st, St::Hover | St::Pressed))
+        .focused(col.st == St::Focused)
+        .paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
 }
 
 fn size_specs() -> Vec<Spec> {

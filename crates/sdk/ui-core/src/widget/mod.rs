@@ -1,5 +1,8 @@
 mod action_directory_identity;
+mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
+pub use disclosing::{Disclosing, event_offset};
+pub(crate) use disclosing::{follower_shifts, route_to_shifted_children};
 pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
@@ -111,6 +114,19 @@ impl ControlBindingMetadata {
 pub fn semantic_action_bindings(
     semantics: Option<crate::a11y::AccessNode>,
 ) -> Vec<ControlBindingMetadata> {
+    let mut bindings = Vec::new();
+    if let Some(semantics) = semantics {
+        semantic_action_bindings_into(&semantics, &mut bindings);
+    }
+    bindings
+}
+
+/// [`semantic_action_bindings`] of `node`, appended to `out`: read in place,
+/// so a widget's kept rows are listed without copying them.
+pub(crate) fn semantic_action_bindings_into(
+    node: &crate::a11y::AccessNode,
+    out: &mut Vec<ControlBindingMetadata>,
+) {
     fn is_effect_role(role: crate::a11y::Role) -> bool {
         use crate::a11y::Role;
         matches!(
@@ -129,22 +145,14 @@ pub fn semantic_action_bindings(
         )
     }
 
-    fn visit(node: &crate::a11y::AccessNode, out: &mut Vec<ControlBindingMetadata>) {
-        if is_effect_role(node.role)
-            && let Some(target) = &node.action_target
-        {
-            out.push(ControlBindingMetadata::semantic(target.clone()));
-        }
-        for child in &node.children {
-            visit(child, out);
-        }
+    if is_effect_role(node.role)
+        && let Some(target) = &node.action_target
+    {
+        out.push(ControlBindingMetadata::semantic(target.clone()));
     }
-
-    let mut bindings = Vec::new();
-    if let Some(semantics) = semantics {
-        visit(&semantics, &mut bindings);
+    for child in &node.children {
+        semantic_action_bindings_into(child, out);
     }
-    bindings
 }
 
 /// How readily `widget` takes the keyboard when its app does without a
@@ -2027,6 +2035,18 @@ pub trait Widget {
         })
     }
 
+    /// Ordinary input-method commits (a composing keyboard IME, the on-screen
+    /// keyboard) cannot reach this field: its text arrives only through
+    /// deferred receipts (a browser page field), so hosts keep standard text
+    /// input closed outside a dictation session. A field that needs deferred
+    /// receipts for dictation but turns an ordinary commit into its own
+    /// acknowledged edit (Terminal's native editor) does not refuse them.
+    fn ime_refuses_ordinary_commits(&self) -> bool {
+        defaults::ime_refuses_ordinary_commits(self.ime_cursor_rect(), &|visit| {
+            self.for_each_child(visit);
+        })
+    }
+
     /// Begin one bounded deferred session after explicit host consent, preserving
     /// the existing original-field fingerprint. This grants no microphone access.
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
@@ -2219,6 +2239,16 @@ pub trait Widget {
 
     fn wants_pointer_capture(&self) -> bool {
         false
+    }
+
+    /// While this widget is a band on its way in or out
+    /// (`motion::Disclosure`: an in-window banner arriving or leaving), how
+    /// much of it is drawn against what the layout gives it. A column draws
+    /// the widgets after it that much lower, by transform, so they move
+    /// with the band's edge instead of being laid out again every frame.
+    /// `None` at rest (the default).
+    fn disclosing(&self) -> Option<Disclosing> {
+        None
     }
 
     /// Why this widget itself asks for animation frames, for diagnostics
@@ -2873,8 +2903,8 @@ pub(crate) mod layout;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{
-    AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
-    insets_xy, layout_clip, text_control_height, with_layout_clip,
+    AuthoredExtent, ExtentSizing, SkippedFrames, WidgetLayoutError, compute_widget_layout, insets,
+    insets_all, insets_xy, layout_clip, text_control_height, with_layout_clip,
 };
 
 mod button;
@@ -2969,7 +2999,8 @@ pub use window_header::{
 };
 mod nav_list;
 pub use nav_list::{
-    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemStatus, NavList, NavSearchTerm, NavSection,
+    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemStatus, NavList, NavPerson, NavSearchTerm,
+    NavSection,
 };
 mod document_viewport;
 pub use document_viewport::{
@@ -3267,7 +3298,8 @@ pub mod transport;
 pub use transport::{TransportControl, TransportFace};
 pub mod media_transport;
 pub use media_transport::{
-    MediaTransport, TransportArt, TransportEvent, TransportFeed, TransportRepeat, TransportState,
+    MediaTransport, TransportActions, TransportArt, TransportEvent, TransportFeed, TransportRepeat,
+    TransportState,
 };
 pub mod drop_zone;
 pub use drop_zone::{DropZone, DropZoneFace};
@@ -3292,6 +3324,8 @@ pub use toggle_group::{
     Segment, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
     SegmentedTouchResult, ToggleGroup, segment_colors,
 };
+pub mod view_tabs;
+pub use view_tabs::ViewTabs;
 
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a

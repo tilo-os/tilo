@@ -128,10 +128,11 @@ impl ShellOverlayHost {
         };
         let Some((room, person, members)) = ({
             let state = chrome.borrow();
-            state.tree().desktop.active_workspace().map(|workspace| {
+            let tree = state.tree();
+            tree.desktop.active_workspace().map(|workspace| {
                 (
                     workspace.room().to_string(),
-                    state.active_local_user(),
+                    state.active_local_user_in(&tree),
                     workspace
                         .agent_members()
                         .into_iter()

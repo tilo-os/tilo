@@ -23,6 +23,8 @@ tilo_automerge_isolate::test_worker!();
 #[path = "support/mod.rs"]
 mod support;
 
+#[path = "activation_token_wire.rs"]
+mod activation_token_wire;
 #[path = "active_group_wireup_test.rs"]
 mod active_group_wireup_test;
 #[path = "advertised_globals.rs"]

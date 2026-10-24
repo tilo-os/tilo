@@ -13,6 +13,7 @@ sheets-delete-columns = Spalten gelöscht
 sheets-import-sheets = Tabellen importiert
 sheets-set-title = Arbeitsmappe { $title } genannt
 sheets-set-records = Datensätze geschrieben
+sheets-upsert-item = Zeile aktualisiert oder hinzugefügt
 sheets-add-chart = Diagramm zu { $range } erstellt
 sheets-edit-chart = Diagramm { $title } bearbeitet
 sheets-edit-comment = Kommentar bearbeitet: { $body }

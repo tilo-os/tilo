@@ -191,3 +191,12 @@ params = [
   { name = "scheme", required = true, schema = { type = "string" } },
 ]
 
+[[resources]]
+kind = "settings.books-catalogues"
+label = "Book catalogues"
+version = 1
+person = true
+fields = [
+  { path = "keep_catalogues", type = "bool" },
+]
+

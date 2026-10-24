@@ -51,10 +51,12 @@ const MAX_PEER_SYNC_STATE_BYTES: usize = 64 * 1024;
 
 mod changes;
 mod changesets;
+mod kernel_changes;
 mod leases;
 mod posix;
 use changes::ChangeTrackedDoc;
 pub use changesets::ChangesetMark;
+pub use kernel_changes::KernelChanges;
 pub use leases::{LeaseRequest, VersionFence, WriteLease};
 pub use posix::{DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, PosixAttrs};
 
@@ -424,6 +426,10 @@ pub struct Namespace {
     node_entry_reads: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Node objects looked up in the document; see [`Self::node_lookup_count`].
     node_lookups: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Nodes whose verified projection changed beside the document since
+    /// [`Self::kernel_changes_since`] last took them; `None` while nothing
+    /// collects them ([`Self::collect_projected_changes`]).
+    projected_changes: Option<BTreeSet<String>>,
 }
 
 /// Source of `Namespace::verified_generation` values.
@@ -584,6 +590,7 @@ impl Namespace {
             #[cfg(test)]
             node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             node_lookups: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            projected_changes: None,
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
@@ -712,6 +719,7 @@ impl Namespace {
             },
         );
         self.verified_generation = next_verified_generation();
+        self.note_projected_change(revision.record_id);
         true
     }
 
@@ -729,6 +737,7 @@ impl Namespace {
             return false;
         };
         projection.thumbnail = thumbnail;
+        self.note_projected_change(record_id);
         true
     }
 

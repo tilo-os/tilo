@@ -52,6 +52,8 @@ use zeroize::Zeroizing;
 mod backup;
 #[path = "broker.rs"]
 pub mod broker;
+#[path = "recovery_words.rs"]
+mod recovery_words;
 #[path = "secure_store.rs"]
 mod secure_store;
 #[cfg(test)]
@@ -61,6 +63,12 @@ mod service_connection_tests;
 pub use backup::{
     PortableBackupInfo, export_portable_backup, import_portable_backup,
     import_portable_backup_matching, import_portable_backup_with_provider, verify_portable_backup,
+};
+pub use recovery_words::{
+    DEFAULT_AVATAR_COLOR, RECOVERY_WORD_COUNT, RecoveryWordsError, RecoveryWordsProgress,
+    check_recovery_words, import_recovery_words, import_recovery_words_with_provider,
+    recovery_expected_identity, recovery_words, recovery_words_error, recovery_words_progress,
+    recovery_words_public_key,
 };
 pub use secure_store::{
     BrokerFileProvider, FILE_SECRETS_ENV, SecretProvider, file_secrets_requested,

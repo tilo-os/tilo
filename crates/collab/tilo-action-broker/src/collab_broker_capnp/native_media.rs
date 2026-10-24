@@ -389,7 +389,7 @@ impl CapnpChannelHandle {
             Ok(context) => context,
             Err(error) => {
                 if let Some(service) = &self.state.services.audio_output {
-                    service.disconnect(self.peer_id);
+                    service.disconnect(self.connection_id);
                 }
                 return Err(error);
             }
@@ -448,7 +448,7 @@ impl CapnpChannelHandle {
                 .map_err(|_| "local media admission ended".into())
         });
         Ok(NativeMediaRequestContext {
-            peer_id: self.peer_id,
+            peer_id: self.connection_id,
             app_id: route.app_id,
             workspace_id: route.cluster_id,
             record_id: route.record_id,

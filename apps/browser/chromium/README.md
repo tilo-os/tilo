@@ -111,11 +111,25 @@ requests. Navigation waits for document-start script registration and the prior
 native lifecycle, and replacements stop the prior load without crediting its
 callbacks to a new action.
 
+Every tab starts on `about:blank` before its first address. That first entry is
+no page the person visited: `history` reports no `back` while it is all that is
+behind the page, `back` does not go to it, and `navigation_history` leaves it
+out. A page's `beforeunload` request to stay is let go, as closing its tab lets
+it go; there is no prompt to answer it.
+
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
-only the newest pending CPU frame is kept. Frames are copied during OnPaint;
-no CEF-owned pixel pointer or GPU handle survives the callback. Dropdown popup
-pixels are composited into the main image before emission. A blocked consumer
-cannot stall the CEF UI thread; a closed pipe triggers browser shutdown.
+only each tab's newest pending frame is kept, and tabs take turns, so a page
+painting every frame never drops another tab's last frame. A paint's pixels are
+copied once, during OnPaint, straight into the packet that is sent, which the
+tab keeps to send again; no CEF-owned pixel pointer or GPU handle survives the
+callback. Dropdown popup pixels are composited into a copy of the main image
+before emission. A blocked consumer cannot stall the CEF UI thread; a closed
+pipe triggers browser shutdown. In a shared host the owning process passes a
+client tab's frame on as it arrived, BGRA in the buffer it was read into; only
+the process that draws a frame converts it. `tests/frame_transport.py` prints
+what the host's process spends per frame of a full-screen animation, for the
+first tab and a routed one, and checks that every change of a still tab beside
+it arrives.
 
 ## macOS packaging and sandbox
 
@@ -381,10 +395,116 @@ explicit internal-URL rejection at the Browser boundary, and native-engine
 blank/canonical URL, cancellation/recovery, history refusal, and renderer
 termination followed by Reload.
 
+## Extensions and tabs
+
+Chromium finds an extension's tabs through the tab strips of its own windows.
+Every page here is an offscreen (Alloy-style) browser no window holds, so
+`chrome.tabs.query` and `chrome.windows.getAll` find nothing, `scripting` and
+`tabs.sendMessage` find no tab by its id, and a toolbar click has nowhere to
+come from. Content scripts, declarative network rules and messages from
+content scripts (with `sender.tab`) work without help.
+
+`src/extension_tabs.h` answers the rest from the host's own tabs:
+
+- `src/extension_tabs.js` runs in each extension's service worker (the Browser
+  makes the worker run it first, `extensions.rs` `prepare_tabs`, without
+  moving the worker: extensions read their worker's address and load their
+  helpers against it) and in its own pages (a document script). It answers
+  `tabs`, `windows`, `action.onClicked`, `contextMenus`, the button's look
+  for one tab and `scripting` by asking the host at
+  `https://extension-bridge.tilo.invalid/`, which the host serves itself. A
+  page of the extension is known by its frame's address, its worker by a token
+  written into it; a page cannot show either. An extension whose security
+  policy lists the only servers its pages may connect to, in its manifest or
+  in a page's `<meta>` (password managers do), gets the bridge added to that
+  list (`extensions.rs` `policy_with_bridge`), and stays turned on. A failed
+  call's callback finds `runtime.lastError` set, as in Chrome.
+- Tabs carry the id Chromium's extension APIs know them by, the one in
+  `sender.tab.id`. The Browser's own extension (`extension-manager`, with a
+  content script in every page) asks it for each page on first use.
+- What a tab shows an extension follows Chrome: its address and title with
+  `tabs`, access to the site, or a click on the extension's button over it
+  (`activeTab`), which also lets it script the page until the page navigates.
+- `tabs.detectLanguage` answers the language the page declares, and
+  `tabs.getZoom` the page's zoom.
+- The toolbar button's look for every tab is Chromium's, and so are its
+  getters; the script tells the host of each change Chromium accepted. For
+  one tab (an ad blocker's count for the page) Chromium finds no tab and
+  refuses, so the host keeps the badge, title, popup and state until the
+  tab's next document or its close, as Chrome does, and answers for them.
+  Either way the host tells the Browser (`extension_action`), for that tab
+  alone or for every tab, a tab opened later included, and a new document
+  takes back what was set for its tab (`extension_action_reset`). The
+  toolbar shows the page's badge, title, icon, popup and state over every
+  tab's; a badge colour is taken and not shown, the toolbar's colours being
+  the system's. `action.openPopup`, which finds no window here, opens the
+  popup over the page in front (`extension_open_popup`).
+- `scripting.executeScript` runs in the extension's own world in the page,
+  where its content scripts run. Where it has none, the host makes a world
+  that gets a content script's `runtime`, `storage` and `i18n`
+  (`src/extension_content.js`), through a binding only that world has:
+  messages and ports both ways (`runtime.sendMessage` and `runtime.connect`
+  from the script, `tabs.sendMessage` and `tabs.connect` from the
+  extension), storage and its `onChanged`. What the script sends reaches
+  the extension's worker and its open pages alike, as in Chrome, so a popup
+  answers when the worker does not. A port's messages go to the host in
+  order, batched while a request is under way, and on from the host to the
+  worker or page the same way, so a burst wakes the worker once.
+- `scripting.executeScript` reaches the frames an extension names
+  (`frameIds`, `allFrames`) and `tabs.sendMessage` one frame (`frameId`), as
+  Bitwarden injects its form filler into each frame that asks. Chromium
+  knows a frame by an id the inspector does not show, so the host asks the
+  extension's world in the frame with a message only the tab script answers
+  (`sender.frameId`). A frame another site's process renders is a target of
+  its own, which the host attaches to on the pipe for as long as the call
+  takes, and only when the frames named are not all in the page's own
+  process; the pipe carries a script whole, up to 16 MiB. `allFrames`
+  passes over a frame the script cannot run in, as Chrome does: one whose
+  page the extension's content scripts do not match keeps its id but has
+  no world of the extension.
+- A worker that asks for the last focused window before the person focused
+  a page (it starts with the engine) gets the first page's, as in Chrome. A
+  tab an extension was told of before the host learnt its id among
+  Chromium's keeps answering to the id it was told.
+- `tabs.connect` also reaches an extension's declared content scripts,
+  which Chromium cannot find by a tab it does not know: the host gives their
+  world what a port needs, through the same binding.
+- The worker tells the host of storage changes while such worlds exist, so
+  they hear of a change made anywhere; once none is left the host says so
+  and the worker stops listening, and is not woken for changes again.
+- An extension added while a page is open and running its script there, as
+  High Contrast and dark modes do once installed, follows the settings
+  changed in its popup; a shortcut a content script takes counts each press,
+  on macOS too, where the host stamps the keys it forwards with their time.
+  `tests/site_extensions.py` covers both.
+- `tabs.captureVisibleTab` encodes the frame the host last painted of the
+  tab, PNG or JPEG at the quality asked for (90 by default), off the UI
+  thread. As in Chrome it needs a click on the extension's button over the
+  tab (`activeTab`) or access to every site (`<all_urls>`), and answers each
+  extension at most twice a second. A hidden tab has no frame to capture.
+- `contextMenus` items are kept by the host (`src/extension_menus.h`) and
+  shown in the page's menu where their contexts (page, selection, link,
+  image, video, audio, editable, frame) and URL patterns say, after the
+  page's own items. Tilo's page menu has no submenus: an item with items
+  under it gives way to them. Choosing one fires `contextMenus.onClicked`
+  with Chrome's info and the tab, and grants `activeTab`. The items and their
+  checked state are kept in the profile (`Extension Menus.json`, never for a
+  private window), since an extension makes them once, when installed.
+- A call from an extension's page is a request the page cancels as it
+  closes, where Chrome has sent it already. A popup that acts and closes at
+  once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
+  this site" and uBlock Origin Lite's element zapper do) closes once its
+  calls are answered, or after two seconds.
+- A click or a tab event reaches a worker through the DevTools pipe, which
+  wakes it if it sleeps; the host attaches only while it delivers, so an idle
+  worker still sleeps. `tests/extension_tabs.py` covers each of these.
+
 ## Remaining integration work
 
-- Browser UI extension management and Chrome extension behavior remain separate
-  integration work; this host does not claim extension installation support.
+- Extensions' keyboard shortcuts (`commands`) and side panels are not
+  offered. Their context menu items show no checkmark and no submenu, and
+  appear only in a page's menu, not the toolbar button's.
+- `tabs.setZoom` is not offered: the Browser owns a page's zoom.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs

@@ -25,6 +25,7 @@ mod identity_admin;
 mod native_identity;
 mod quick_settings;
 mod strips;
+mod tabs;
 pub(crate) use quick_settings::{
     QS_AIRPLANE_ID, QS_BLUETOOTH_ID, QS_BRIGHTNESS_ID, QS_POWER_ID, QS_VOLUME_ID, QS_VPN_ID,
     QS_WIFI_ID, SharedQsActions, SharedQsDispatcher, ValidatedQsActions,
@@ -36,6 +37,7 @@ use strips::{
     move_strip, remove_strip, rename_strip,
 };
 pub(crate) use strips::{STRIP_NAME_MAX_CHARS, valid_strip_name};
+use tabs::{TAB_RENAME_PARAMS, rename_focused_tab};
 
 use crate::shell::shared_display_actions;
 
@@ -373,7 +375,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
-        "workspace.create" | "strip.create" | "strip.rename" | "strip.move" | "strip.remove" => {
+        "workspace.create" | "strip.create" | "strip.rename" | "strip.move" | "strip.remove"
+        | "tab.rename" => {
             contract = workspace_create_contract();
         }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
@@ -474,9 +477,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "peer.pair-device" => tilo_actions::OperationKind::View,
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
-        | "workspace.create" | "strip.create" | "strip.rename" | "strip.move" | "strip.remove" => {
-            tilo_actions::OperationKind::Document
-        }
+        | "workspace.create" | "strip.create" | "strip.rename" | "strip.move" | "strip.remove"
+        | "tab.rename" => tilo_actions::OperationKind::Document,
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
         _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
             tilo_actions::OperationKind::View
@@ -2419,6 +2421,13 @@ impl Action {
                 })
             },
         ),
+        Action {
+            id: "tab.rename",
+            label: "search-action-tab-rename",
+            subtitle: "search-action-tab-rename-subtitle",
+            params: TAB_RENAME_PARAMS,
+            apply: rename_focused_tab,
+        },
         chrome(
             "tab.reopen",
             "search-action-tab-reopen",
@@ -4384,7 +4393,9 @@ impl ActionsProvider {
                             }
                         }
                         QS_VOLUME_ID => {
-                            state.quick_settings.volume = validated_percent(args) / 100.0;
+                            state
+                                .quick_settings
+                                .set_volume_level(validated_percent(args) / 100.0);
                         }
                         QS_WIFI_ID => {
                             state.quick_settings.wifi = args.boolean("enabled") == Some(true);
@@ -4773,6 +4784,7 @@ pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
         ("room.activity", Icon::History),
         ("record", Icon::FileText),
         ("tab.close", Icon::Trash2),
+        ("tab.rename", Icon::Pencil),
         ("tab.reopen", Icon::RotateCcw),
         ("tab.split-right", Icon::Columns2),
         ("tab.new.terminal", Icon::SquareTerminal),
@@ -4978,7 +4990,7 @@ fn focused_brightness(
 /// for brightness, the level of the display the person works on.
 fn level_percent(state: &ChromeState, level: &str) -> f32 {
     let share = if level == QS_VOLUME_ID {
-        state.quick_settings.volume
+        state.quick_settings.volume_level()
     } else {
         focused_brightness(state).map_or(state.quick_settings.brightness, |display| display.level)
     };

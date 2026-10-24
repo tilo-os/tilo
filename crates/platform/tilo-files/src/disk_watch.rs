@@ -25,7 +25,7 @@ pub(crate) fn watch_entries(dir: &Path) -> Result<Watch, FsError> {
 /// two AFS implementations.
 #[cfg(target_os = "linux")]
 const REMOTE_FILESYSTEMS: [u32; 9] = [
-    0x6573_5546,
+    FUSE_SUPER_MAGIC,
     0x0000_6969,
     0x0000_517B,
     0xFF53_4D42,
@@ -36,18 +36,35 @@ const REMOTE_FILESYSTEMS: [u32; 9] = [
     0x5346_414F,
 ];
 
+/// `statfs` magic of FUSE.
+#[cfg(target_os = "linux")]
+const FUSE_SUPER_MAGIC: u32 = 0x6573_5546;
+
 /// [`crate::native::watch_sees_every_change`].
 #[cfg(target_os = "linux")]
 pub(crate) fn sees_every_change(dir: &Path) -> bool {
-    rustix::fs::statfs(dir).is_ok_and(|stat| {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "statfs magic numbers are 32-bit; the width and sign of `f_type` vary by target"
-        )]
-        let magic = stat.f_type as u32;
-        !REMOTE_FILESYSTEMS.contains(&magic)
-    })
+    let Ok(stat) = rustix::fs::statfs(dir) else {
+        return false;
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "statfs magic numbers are 32-bit; the width and sign of `f_type` vary by target"
+    )]
+    let magic = stat.f_type as u32;
+    if magic == FUSE_SUPER_MAGIC {
+        return signals_every_change(dir);
+    }
+    !REMOTE_FILESYSTEMS.contains(&magic)
+}
+
+/// Whether the FUSE filesystem holding `dir` says it tells the kernel of
+/// every change, by answering [`crate::native::CHANGE_SIGNAL_XATTR`] there.
+#[cfg(target_os = "linux")]
+fn signals_every_change(dir: &Path) -> bool {
+    let mut value = [0_u8; 8];
+    rustix::fs::getxattr(dir, crate::native::CHANGE_SIGNAL_XATTR, &mut value[..])
+        .is_ok_and(|len| value.get(..len) == Some(b"1".as_slice()))
 }
 
 /// Elsewhere the filesystem's type is not told apart, so a watch is trusted

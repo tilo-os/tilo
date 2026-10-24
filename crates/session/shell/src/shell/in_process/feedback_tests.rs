@@ -252,6 +252,7 @@ fn mount(inputs: &crate::shell::hosted_inputs::HostedTileInputs) -> FrameHarness
             kind: crate::shell::state::AppKind::Other("Feedback".into()),
             label: "Feedback".into(),
         },
+        app_title: None,
     };
     let request = tilo_desktop::resolver::TileRequest {
         room: crate::shell::state::RoomId::new(),

@@ -1,5 +1,6 @@
 //! Provider-backed browsing is deliberately not a synthetic filesystem mount.
-#[cfg(test)]
+// Every cancel scenario runs a real import, whose staging only Linux provides.
+#[cfg(all(test, target_os = "linux"))]
 #[path = "cloud_cancel_tests.rs"]
 mod cancel_tests;
 #[cfg(test)]

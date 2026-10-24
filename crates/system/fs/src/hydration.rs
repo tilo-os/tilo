@@ -38,6 +38,33 @@ const PEER_FETCH_TIMEOUT: Duration = Duration::from_secs(4);
 const FETCH_DEADLINE: Duration = Duration::from_secs(6);
 const HEDGE_DELAY: Duration = Duration::from_millis(150);
 
+/// Longest a blocked read waits for bytes a peer must supply, through FUSE
+/// and through the native placeholders alike. Past it the read fails with
+/// `EIO`, and the fetch keeps going so a retry can find the bytes local.
+/// Well inside the kernel's two-minute hung-task report: neither a reader
+/// waiting on a peer that went quiet nor anyone queued behind it on the
+/// same pages is ever reported as hung.
+pub const BLOCKED_READ_BOUND: Duration = Duration::from_secs(30);
+
+/// Waits at most `bound` for `read`, which runs on as a task of its own: a
+/// read that outlives the bound still makes its bytes local for the next
+/// one.
+///
+/// # Errors
+///
+/// `read`'s error, or an error naming the bound when it was reached.
+pub async fn bounded_read<T, F>(bound: Duration, read: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
+{
+    match tokio::time::timeout(bound, tokio::spawn(read)).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(stopped)) => Err(anyhow!("the read stopped: {stopped}")),
+        Err(_) => Err(anyhow!("no peer delivered the bytes within {bound:?}")),
+    }
+}
+
 #[derive(Clone)]
 struct PeerHealth {
     addr: EndpointAddr,
@@ -802,6 +829,38 @@ mod tests {
     use super::*;
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
+
+    #[tokio::test]
+    async fn a_read_that_cannot_arrive_fails_at_its_bound_and_keeps_fetching() {
+        let bound = Duration::from_millis(200);
+        let started = Instant::now();
+        let never = bounded_read(bound, std::future::pending::<Result<()>>()).await;
+        let waited = started.elapsed();
+        let error = never.expect_err("a read whose bytes never arrive fails");
+        assert!(error.to_string().contains("within"), "{error}");
+        assert!(waited >= bound, "failed before its bound: {waited:?}");
+        assert!(
+            waited < bound.saturating_mul(10),
+            "held far past its bound: {waited:?}"
+        );
+
+        // The fetch outlives the reader that gave up on it.
+        let (done, landed) = tokio::sync::oneshot::channel();
+        let slow = bounded_read(bound, async move {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            let _ = done.send(());
+            Ok(())
+        })
+        .await;
+        assert!(slow.is_err(), "a read past its bound fails");
+        tokio::time::timeout(Duration::from_secs(5), landed)
+            .await
+            .expect("the fetch kept going after its reader failed")
+            .expect("the fetch finished");
+
+        let quick = bounded_read(bound, async { Ok(7) }).await.unwrap();
+        assert_eq!(quick, 7, "a read inside its bound returns its bytes");
+    }
 
     #[tokio::test]
     async fn local_content_is_read_without_peers() {

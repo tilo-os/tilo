@@ -28,7 +28,7 @@ impl MusicApp {
         if self.nav.can_go_back() {
             toolbar
                 .leading
-                .push(ToolbarAction::new(BACK, "arrow-left", "Back"));
+                .push(ToolbarAction::new(BACK, "arrow-left", "Back").navigating());
         }
         if self.view == View::Home {
             toolbar.actions.push(ToolbarAction::new(

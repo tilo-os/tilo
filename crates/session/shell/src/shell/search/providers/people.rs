@@ -48,7 +48,7 @@ impl PeopleProvider {
 
     /// Happening now in `scope`, remembering each row's faces.
     fn happening(&self, state: &ChromeState, scope: SearchScope) -> Vec<SearchResult> {
-        let rows = happening_now::rows(state, scope, &state.calls_here);
+        let rows = happening_now::rows(state, scope, &state.live_calls);
         let mut faces = self.faces.borrow_mut();
         faces.clear();
         rows.into_iter()
@@ -161,8 +161,8 @@ impl SearchProvider for PeopleProvider {
                 (&person.id, person.active_tab, person.invited).hash(&mut hasher);
             }
         }
-        for call in &ctx.chrome.calls_here {
-            (&call.channel.channel, &call.name).hash(&mut hasher);
+        for call in &ctx.chrome.live_calls {
+            (call.workspace.0, &call.channel.channel, &call.name).hash(&mut hasher);
             for person in &call.people {
                 person.id.hash(&mut hasher);
             }

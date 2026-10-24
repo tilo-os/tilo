@@ -25,6 +25,7 @@ fn plan(root: &Path) -> std::io::Result<ush::guest::GuestPlan> {
         command: Vec::new(),
         shell: PathBuf::from("/usr/bin/sh"),
         runs: None,
+        shell_rc: false,
         term: "xterm".into(),
         env: Vec::new(),
         resolver: None,

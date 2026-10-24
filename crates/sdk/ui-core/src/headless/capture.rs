@@ -73,6 +73,20 @@ impl FrameHarness {
         renderer.render_png(scene, background, out);
     }
 
+    /// Write the `--shots` capture: the frame alone, or under the desktop's
+    /// window bar when `window_bar` is set.
+    pub(crate) fn write_shot(&mut self, out: &std::path::Path, window_bar: bool) {
+        if window_bar {
+            self.present_in_window_bar();
+        }
+        self.prepare_component_output();
+        if window_bar {
+            self.render_window_png(out);
+        } else {
+            self.render_png(out);
+        }
+    }
+
     /// Rasterise the most recently laid-out frame under the desktop's window
     /// bar ([`Self::present_in_window_bar`]) to a PNG as tall as the window:
     /// the bar, then the app's frame under it.

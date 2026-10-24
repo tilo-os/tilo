@@ -60,6 +60,7 @@ pub struct VpnShell;
 impl ResourceApp for VpnShell {
     type Resource = Vpn;
     const ID: &'static str = "so.tilo.vpn";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Network];
     const TITLE: &'static str = "VPN";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {

@@ -6,6 +6,19 @@
 //! Hues are in degrees, `[0, 360)`; saturation, value and lightness in
 //! `[0, 1]`.
 
+#![allow(
+    clippy::many_single_char_names,
+    clippy::arithmetic_side_effects,
+    reason = "colour-space formulas keep their textbook names (r, g, b, h, s, l, v) and operate on bounded channel values"
+)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::float_cmp,
+        reason = "in a test an exact float is the assertion"
+    )
+)]
+
 use crate::color_compat::ColorCompat;
 use vello::peniko::Color;
 
@@ -15,8 +28,8 @@ use vello::peniko::Color;
 /// character that `u8::from_str_radix` alone would let through or trip over.
 ///
 /// ```
-/// use tilo_ui::color::parse_hex;
-/// use tilo_ui::vello::peniko::Color;
+/// use tilo_ui_paint::color::parse_hex;
+/// use tilo_ui_paint::vello::peniko::Color;
 /// assert_eq!(parse_hex("#3B82F6"), Some(Color::from_rgb8(0x3B, 0x82, 0xF6)));
 /// assert_eq!(parse_hex("f0a"), Some(Color::from_rgb8(0xFF, 0x00, 0xAA)));
 /// assert_eq!(parse_hex("#00000080"), Some(Color::from_rgba8(0, 0, 0, 0x80)));
@@ -51,8 +64,8 @@ pub fn parse_hex(s: &str) -> Option<Color> {
 /// `#RRGGBB` (upper-case, alpha dropped) for a colour.
 ///
 /// ```
-/// use tilo_ui::color::to_hex;
-/// use tilo_ui::vello::peniko::Color;
+/// use tilo_ui_paint::color::to_hex;
+/// use tilo_ui_paint::vello::peniko::Color;
 /// assert_eq!(to_hex(Color::from_rgb8(0x3B, 0x82, 0xF6)), "#3B82F6");
 /// ```
 #[must_use]
@@ -92,8 +105,8 @@ fn unit_rgb(c: Color) -> (f32, f32, f32) {
 /// clamped to `[0, 1]`.
 ///
 /// ```
-/// use tilo_ui::color::hsv_to_rgb;
-/// use tilo_ui::vello::peniko::Color;
+/// use tilo_ui_paint::color::hsv_to_rgb;
+/// use tilo_ui_paint::vello::peniko::Color;
 /// assert_eq!(hsv_to_rgb(0.0, 1.0, 1.0), Color::from_rgb8(255, 0, 0));
 /// assert_eq!(hsv_to_rgb(480.0, 1.0, 1.0), Color::from_rgb8(0, 255, 0));
 /// ```
@@ -137,8 +150,8 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Color {
 /// than rely on this fallback.
 ///
 /// ```
-/// use tilo_ui::color::rgb_to_hsv;
-/// use tilo_ui::vello::peniko::Color;
+/// use tilo_ui_paint::color::rgb_to_hsv;
+/// use tilo_ui_paint::vello::peniko::Color;
 /// assert_eq!(rgb_to_hsv(Color::from_rgb8(0, 0, 255)), (240.0, 1.0, 1.0));
 /// ```
 #[must_use]
@@ -179,8 +192,8 @@ pub fn rgb_to_hsv(c: Color) -> (f32, f32, f32) {
 /// space; hue and saturation are `0` on the achromatic axis.
 ///
 /// ```
-/// use tilo_ui::color::rgb_to_hsl;
-/// use tilo_ui::vello::peniko::Color;
+/// use tilo_ui_paint::color::rgb_to_hsl;
+/// use tilo_ui_paint::vello::peniko::Color;
 /// assert_eq!(rgb_to_hsl(Color::from_rgb8(255, 0, 0)), (0.0, 1.0, 0.5));
 /// ```
 #[must_use]
@@ -218,8 +231,8 @@ pub fn rgb_to_hsl(c: Color) -> (f32, f32, f32) {
 /// `[0, 1]`.
 ///
 /// ```
-/// use tilo_ui::color::hsl_to_rgb;
-/// use tilo_ui::vello::peniko::Color;
+/// use tilo_ui_paint::color::hsl_to_rgb;
+/// use tilo_ui_paint::vello::peniko::Color;
 /// assert_eq!(hsl_to_rgb(120.0, 1.0, 0.5), Color::from_rgb8(0, 255, 0));
 /// ```
 #[must_use]
@@ -502,6 +515,30 @@ pub fn dominant_hue(pixels: &[u8]) -> Option<f32> {
     Some(s.atan2(c).to_degrees().rem_euclid(360.0) as f32)
 }
 
+/// `c` with its alpha replaced by the 8-bit `alpha` (`0` transparent, `255`
+/// opaque), keeping its 8-bit RGB.
+///
+/// ```
+/// use tilo_ui_paint::color::with_alpha;
+/// use tilo_ui_paint::vello::peniko::Color;
+/// assert_eq!(
+///     with_alpha(Color::from_rgb8(10, 20, 30), 0x40),
+///     Color::from_rgba8(10, 20, 30, 0x40)
+/// );
+/// ```
+#[must_use]
+pub fn with_alpha(c: Color, alpha: u8) -> Color {
+    Color::from_rgba8(c.r(), c.g(), c.b(), alpha)
+}
+
+/// `c` with its alpha multiplied by `factor` (0.0 transparent, 1.0 unchanged),
+/// keeping its RGB. Unlike [`with_alpha`], this scales the alpha the theme
+/// already gave the colour instead of replacing it with an absolute value.
+#[must_use]
+pub fn with_alpha_scaled(c: Color, factor: f32) -> Color {
+    c.multiply_alpha(factor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,5 +618,15 @@ mod tests {
             let grey = Color::from_rgb8(0x77, 0x77, 0x77);
             assert!((contrast_ratio(grey, grey) - 1.0).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn scaling_alpha_preserves_rgb_and_scales_the_theme_alpha() {
+        let color = Color::new([0.4, 0.5, 0.6, 0.25]);
+        assert_eq!(with_alpha_scaled(color, 0.0).split().1, 0.0);
+        assert_eq!(with_alpha_scaled(color, 0.5).split().1, 0.125);
+        assert_eq!(with_alpha_scaled(color, 0.5).to_rgba8().r, 102);
+        assert_eq!(with_alpha_scaled(color, 0.5).to_rgba8().g, 128);
+        assert_eq!(with_alpha_scaled(color, 0.5).to_rgba8().b, 153);
     }
 }

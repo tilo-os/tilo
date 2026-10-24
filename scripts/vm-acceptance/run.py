@@ -32,6 +32,8 @@ sys.path.insert(0, str(HERE))
 from acceptance import core, records, report  # noqa: E402
 from acceptance.checks import (agent, apps, basics, daily_apps, input_devices,  # noqa: E402,F401
                                provenance, resources, search, startup, ui, window)
+# Last: it sets the VM's clock back and steps it forward again.
+from acceptance.checks import clock  # noqa: E402,F401
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
 from layer_artifacts import identities, verify as verify_artifacts  # noqa: E402
@@ -113,7 +115,7 @@ ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
          "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06",
-         "M01", "M02", "M03", "M04", "I01", "I02", "I03", "I04", "I05", "I06", "I07",
+         "M01", "M02", "M03", "M04", "I01", "I02", "I03", "I04", "I05", "I06", "I07", "I08",
          "R09", "R07", "A16", "R05", "R08", "P03"]
 
 

@@ -910,6 +910,7 @@ mod tests {
                     label: "Notes".into(),
                     note: String::new(),
                 },
+                app_title: None,
             }],
             active_tab: 4,
             width: WindowWidth::Normal,

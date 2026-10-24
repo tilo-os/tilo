@@ -201,7 +201,9 @@ pub struct DevicePresence {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnerSession {
     pub locked: bool,
-    /// The person's own lock or unlock; the idle timer's lock leaves it.
+    /// The person's own lock or unlock. `0` while the device is locked by
+    /// its idle timer or by following another device: a lock the others do
+    /// not follow.
     pub changed_unix_ms: u64,
     /// Their last input, rounded down to [`OWNER_SESSION_ACTIVE_STEP_MS`] so
     /// typing does not republish the presence.

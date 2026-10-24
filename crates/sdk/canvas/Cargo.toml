@@ -1,0 +1,21 @@
+[package]
+name = "tilo-canvas"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Document and picture content drawn through a restricted painter: pages, grids, maps, slides and frames"
+
+[dependencies]
+tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
+tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
+
+[dev-dependencies]
+tilo-ui = { version = "0.1.0", path = "../ui-core" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

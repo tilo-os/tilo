@@ -1284,14 +1284,32 @@ async function main() {
       const stranger = await page(browser, await browser.context());
       await stranger.navigate(link);
       const joinedAgain = await press(stranger, 'Join', timeout);
+      // Each step of getting in and drawing, timed from being let in: how
+      // long the first frame takes tells a slow software rasteriser from a
+      // frame that never comes.
+      await stranger.evaluate(`(() => {
+        const steps = globalThis.__authE2eSteps = [];
+        const note = () => {
+          const {arrival, phase, gpuStep, frames} = document.documentElement.dataset;
+          const last = steps.at(-1);
+          if (!last || last.arrival !== arrival || last.phase !== phase || last.gpuStep !== gpuStep || (last.frames === '0') !== (frames === '0')) {
+            steps.push({at: Math.round(performance.now()), arrival, phase, gpuStep, frames});
+          }
+        };
+        note();
+        new MutationObserver(note).observe(document.documentElement, {attributes: true});
+      })()`).catch(() => {});
       const pressed = await pressMatching(inviter, '^Let .+ in$', 90_000);
+      const letInAt = await stranger.evaluate('Math.round(performance.now())').catch(() => null);
       const now = await until(async () => {
         const state = await settle(stranger, settleOptions);
         return state.entry === 'open' && state.membership ? state : null;
       }, 90_000) ?? await settle(stranger, settleOptions);
       const opened = now.entry === 'open' && now.arrival === 'done';
+      const steps = await stranger.evaluate('globalThis.__authE2eSteps ?? []').catch(() => []);
       rounds.push({round, joined: joinedAgain, letIn: pressed.pressed || pressed.error, entry: now.entry, arrival: now.arrival,
-        status: now.status, console: opened ? undefined : stranger.log.slice(-40)});
+        status: now.status, steps: steps.map(step => ({...step, at: letInAt === null ? step.at : step.at - letInAt})),
+        console: opened ? undefined : stranger.log.slice(-40)});
       if (!opened) {
         keepLog(`invite-admits-again-${round}`, stranger);
         await shoot(`invite-admits-again-${round}`, stranger);

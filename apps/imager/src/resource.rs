@@ -333,6 +333,7 @@ fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
 impl ResourceApp for ImagerShell {
     type Resource = Imager;
     const ID: &'static str = "so.tilo.imager";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Tilo Installer";
     const ICON: Option<&'static str> = Some("imager");
     #[cfg(feature = "installation")]

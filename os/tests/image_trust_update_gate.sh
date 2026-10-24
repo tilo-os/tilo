@@ -60,10 +60,15 @@ fi
 grep -Fq 'tilo-image-trust bootc-status-field "$1"' "$deployment"
 grep -Fq 'tilo-image-trust bootc-status-field "$2"' "$deployment"
 grep -Fq 'status="$(bootc_status_json)"' "$deployment"
+# Every deployment `list` shows comes from one bootc status snapshot, read
+# field by field through the Rust parser.
 for deployment_kind in booted staged rollback; do
-  grep -Fq "image_label \"\$status\" $deployment_kind" "$deployment"
+  grep -Fq "print_deployment \"\$esp\" \"\$status\" $deployment_kind" "$deployment"
 done
-grep -Fq 'status_field "$status" booted-composefs' "$deployment"
+for role_field in image version timestamp composefs; do
+  grep -Fq "status_field \"\$status\" \"\$role-$role_field\"" "$deployment"
+done
+grep -Fq 'status_field "$1" "$2-image"' "$deployment"
 grep -Fq 'bootc_field staged-composefs' "$deployment"
 if grep -Eq 'python(3)?[[:space:]]+-c|eval[[:space:]]*\(' "$deployment"; then
   echo 'deployment bootc authority parsing still permits Python or eval' >&2

@@ -128,7 +128,7 @@ cleanup_logout_channel() {
     "$RM" -f -- "$logout_request_path" 2>/dev/null || true
   fi
   if [ -n "$flight_pipe" ]; then
-    "$RM" -f -- "$flight_pipe" 2>/dev/null || true
+    "$RM" -f -- "$flight_pipe" "$flight_pipe.ready" 2>/dev/null || true
   fi
   if [ -n "$logout_request_dir" ]; then
     "$RMDIR" -- "$logout_request_dir" 2>/dev/null || true
@@ -308,10 +308,13 @@ start_flight_record() {
   # Wait until the recorder is ready (or died), so the compositor never runs
   # unrecorded and a crash right after login keeps its record however slowly
   # the recorder started.
+  # The recorder persists its start record before it marks itself ready, so
+  # this can end on the record while the ready file is still to come: it is
+  # removed only once the recorder has exited (end_flight_record), never
+  # here, or a late one would outlive the session in the runtime directory.
   while [ ! -e "$flight_ready" ] && [ ! -s "$flight_log" ] && kill -0 "$flight_relay_pid" 2>/dev/null; do
     "$SLEEP" 0.05
   done
-  "$RM" -f -- "$flight_ready"
 }
 
 # Close descriptor 4, let the recorder drain and append the end record.
@@ -341,6 +344,7 @@ end_flight_record() {
   kill -KILL "$flight_relay_pid" 2>/dev/null || true
   wait "$flight_relay_pid" 2>/dev/null
   flight_relay_pid=""
+  "$RM" -f -- "$flight_pipe.ready" 2>/dev/null || true
   local end_record
   end_record=$(printf 'tilo-flight-record-v1 end=%s status=%s logout_request=%s restart_request=%s' \
     "$("$DATE" --iso-8601=seconds)" "$status" \

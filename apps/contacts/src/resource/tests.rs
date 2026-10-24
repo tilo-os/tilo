@@ -640,12 +640,7 @@ fn merging_from_the_review_asks_the_host_and_lands() {
     };
     activate(&mut app, "Merge contacts", ui::a11y::Action::Activate);
     assert_eq!(app.state().contacts.len(), 2, "nothing merges unconfirmed");
-    activate(
-        &mut app,
-        "Confirmation",
-        ui::a11y::Action::SetValue("CONFIRM".into()),
-    );
-    activate(&mut app, "Confirm", ui::a11y::Action::Activate);
+    assert!(app.confirm_asked().is_some(), "the host asks first");
     let merged = app.state().contacts;
     assert_eq!(merged.len(), 1, "the confirmed merge lands");
     assert_eq!(merged[0].org, "Analytical Engines");
