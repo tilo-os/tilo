@@ -1931,7 +1931,7 @@ mod tests {
     /// contributors, named ranges, and the workspace names at each Replay
     /// checkpoint.
     type ActivitySnapshot = (
-        Vec<(ui::widget::HistoryEntryId, String, String)>,
+        Vec<(collab_types::history::HistoryEntryId, String, String)>,
         Vec<String>,
         Vec<String>,
         Vec<Vec<String>>,
