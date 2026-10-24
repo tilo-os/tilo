@@ -69,7 +69,9 @@ reader copies the pixels out and marks the slot free; while both slots are
 being read the writer waits for one, still sending events. The app creates the
 memory, a memfd sealed against resizing on Linux and an unlinked POSIX shared
 memory object on macOS, and the host inherits it at spawn; a host without
-the flag, or given a descriptor of any other size, pipes its frames.
+the flag, or given a descriptor of any other size, pipes its frames. The size
+may be rounded up to the system's page, as macOS reports a shared memory
+object's on Apple silicon, whose 16 KiB page is larger than the header.
 
 JSON commands use `op`; events use `event`. Supported operations are navigate,
 back, forward, reload, stop, resize, focus, mouse_move, mouse_button, scroll,
