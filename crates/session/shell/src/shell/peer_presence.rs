@@ -42,9 +42,11 @@ use crate::shell::network::ShellNetwork;
 use tilo_relay_protocol::live::ShownStrip;
 
 mod desk_pointers;
+mod principal;
 pub use desk_pointers::{
     HeardPointer, desk_layout, fold_live_desk_pointers, place_heard_pointers, place_pointers,
 };
+pub use principal::{PresencePrincipal, presence_id, resolve_presence_principal};
 
 /// A room's last-published cursor and when it went out, keyed by room —
 /// what [`should_publish_cursor`] rate-limits against.
@@ -397,7 +399,7 @@ fn departure_presence_ids(
     participant_name: Option<&str>,
     active_labels: &std::collections::BTreeMap<u64, String>,
 ) -> Vec<String> {
-    let mut ids = vec![format!("peer@{session_handle}")];
+    let mut ids = vec![presence_id(session_handle)];
     if let Some(name) = participant_name
         && !active_labels
             .values()
@@ -909,8 +911,7 @@ impl PeerPresence {
         let colours = self.net.peer_colours_epoch();
         if self.colours_applied.swap(colours, Ordering::AcqRel) != colours {
             for (peer, hue) in self.net.peer_colours() {
-                presence
-                    .set_presence_hue(collab_types::presence::UserId(format!("peer@{peer}")), hue);
+                presence.set_presence_hue(collab_types::presence::UserId(presence_id(peer)), hue);
             }
         }
         let desk_pointers = self.net.take_live_desk_pointers();
@@ -1419,8 +1420,7 @@ pub fn fold_inbound(
         if !member_of(&room) {
             continue;
         }
-        // Spelled from the handle, never `entry.user`'s unverified claim.
-        let user = format!("peer@{}", entry.peer);
+        let user = presence_id(entry.peer);
         if entry.cleared {
             // Taken away from this room's windows: gone at once, here too.
             if anchored.get(&user).is_some_and(|(at, _, _)| *at == room) {
@@ -1433,9 +1433,12 @@ pub fn fold_inbound(
             resolved = Some((room.clone(), labels(&room)));
         }
         if let Some((_, known)) = &resolved
-            && let Some(name) = known.get(&entry.peer)
+            && let PresencePrincipal {
+                id,
+                name: Some(name),
+            } = resolve_presence_principal(known, entry.peer)
         {
-            presence.set_display_name(collab_types::presence::UserId(user.clone()), name.clone());
+            presence.set_display_name(collab_types::presence::UserId(id), name);
         }
         let anchor = PointerAnchor {
             tab,
@@ -1467,7 +1470,7 @@ pub fn fold_live_chat(
         if !member_of(&entry.room) {
             continue;
         }
-        let user = format!("peer@{}", entry.peer);
+        let user = presence_id(entry.peer);
         let id = collab_types::presence::UserId(user.clone());
         changed |= presence.chats.say(
             &id,
@@ -1537,9 +1540,9 @@ pub fn room_roster(
     handles
         .into_iter()
         .map(|handle| {
-            // Same spelling as the presence path, so avatar and cursor share an id.
-            let id = format!("peer@{handle}");
-            let name = labels.get(&handle).cloned().unwrap_or_else(|| id.clone());
+            // Same principal as the presence path, so avatar and cursor share an id.
+            let PresencePrincipal { id, name } = resolve_presence_principal(labels, handle);
+            let name = name.unwrap_or_else(|| id.clone());
             let role = match principals.get(&handle) {
                 Some(person) => ws.role_of(person),
                 None => ws.role_of(&name),

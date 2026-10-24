@@ -86,7 +86,7 @@ pub fn fold_live_desk_pointers(
         if !member_of(&entry.room) {
             continue;
         }
-        let user = format!("peer@{}", entry.peer);
+        let user = super::presence_id(entry.peer);
         let Some(pointer) = entry.pointer else {
             if anchored.get(&user).is_some_and(|(room, heard, _)| {
                 *room == entry.room && matches!(heard, HeardPointer::Live(_))
