@@ -448,6 +448,10 @@ pub struct MainPanel {
     /// as boxed Elements — wrapping in Scrollable would require
     /// significant ownership churn for what amounts to "clip + shift".
     scroll_y: f64,
+    /// The glide a lifted touchpad or touchscreen gesture leaves the body
+    /// in, as every Tilo scroll surface has; a wheel's notches move it at
+    /// once and never glide.
+    glide: ui::ScrollMomentum,
     /// When the block drag last scrolled the page, for its speed.
     drag_scroll_tick: Option<ui::time::Instant>,
     scroll_content_height: f64,
@@ -531,6 +535,7 @@ impl MainPanel {
             title_overhang: None,
             drawn_title_overhang: None,
             scroll_y: 0.0,
+            glide: ui::ScrollMomentum::new(),
             drag_scroll_tick: None,
             scroll_content_height: 0.0,
             bottom_inset: 0.0,
@@ -623,6 +628,7 @@ impl MainPanel {
         // Brand-new page → reset scroll to top (the previous page's
         // scroll position is meaningless for the new content).
         self.scroll_y = 0.0;
+        self.glide.stop();
         self.dirty = true;
     }
 
@@ -685,6 +691,7 @@ impl MainPanel {
             self.scroll_layout_dirty = true;
         } else {
             self.scroll_y = 0.0;
+            self.glide.stop();
         }
         self.dirty = true;
         Ok(())
@@ -774,6 +781,7 @@ impl MainPanel {
         self.editor = self.fresh_editor(None);
         self.body = String::new();
         self.scroll_y = 0.0;
+        self.glide.stop();
         self.empty_action_rect = Rect::ZERO;
         self.empty_action_requested = false;
         self.empty_action_focused = false;
@@ -1168,6 +1176,28 @@ impl MainPanel {
     /// Whether a block drag is in flight and needs a frame to keep scrolling.
     pub fn block_drag_scrolling(&self) -> bool {
         self.editor.editor().block_drag_active()
+    }
+
+    /// Whether a lifted touchpad or touchscreen gesture still glides the
+    /// body: the window keeps asking for frames until it comes to rest.
+    pub fn gliding(&self) -> bool {
+        self.glide.is_active()
+    }
+
+    /// Carry a glide on to `now`. It moves only the body, which the frame
+    /// lays out and draws (a copy of what stays on screen, in whole device
+    /// pixels): no change of the model, so nothing is reported. It stops at
+    /// either end of the note.
+    pub fn advance_glide(&mut self) {
+        if !self.glide.is_active() {
+            return;
+        }
+        let dy = self.glide.advance(ui::time::now());
+        let before = self.scroll_y;
+        self.set_scroll_offset(before + dy);
+        if dy != 0.0 && self.scroll_y.to_bits() == before.to_bits() {
+            self.glide.stop();
+        }
     }
 
     /// Scroll the page while a dragged block's pointer rests near the edge
@@ -2073,6 +2103,17 @@ impl Widget for MainPanel {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_pointer = ctx.logical(position);
         }
+        // A press, a key or a touch catches a glide in progress.
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Touch(_)
+        ) {
+            self.glide.stop();
+        }
         if self.page_id.is_none() {
             let pressed = matches!(
                 event,
@@ -2183,22 +2224,43 @@ impl Widget for MainPanel {
             }
         }
 
-        // Mouse wheel: scroll the panel's body. Matches ui::Scrollable's
-        // wheel-to-px conversion (~120 px / notch). Consumes the event
-        // so the underlying TextInput doesn't try to interpret a wheel
-        // delta as a cursor move.
-        if let WindowEvent::MouseWheel { delta, .. } = event {
+        // Mouse wheel: scroll the panel's body, 40 px a notch. Consumes the
+        // event so the underlying TextInput doesn't try to interpret a wheel
+        // delta as a cursor move. Fingers (a touchpad, a touchscreen) move
+        // the body 1:1 and, lifted while moving, leave it gliding to a stop
+        // (the shared `ScrollMomentum`).
+        if let WindowEvent::MouseWheel { delta, phase, .. } = event {
             self.follow_caret = false;
+            let pixel = matches!(delta, winit::event::MouseScrollDelta::PixelDelta(_));
             let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 40.0,
-                winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
+                winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                    self.glide.stop();
+                    -f64::from(*y) * 40.0
+                }
+                winit::event::MouseScrollDelta::PixelDelta(_) => {
+                    self.glide.set_device_scale(ctx.scale_factor);
+                    match self
+                        .glide
+                        .wheel(delta, *phase, self.layout_theme.reduce_motion)
+                    {
+                        ui::WheelStep::Scroll(dy) => dy,
+                        // The body glides on in the frames it asks for.
+                        ui::WheelStep::Fling => {
+                            *ctx.handled = true;
+                            return;
+                        }
+                        ui::WheelStep::Ignored => 0.0,
+                    }
+                }
             };
             if dy.abs() > f64::EPSILON {
                 let prev = self.scroll_y;
                 self.set_scroll_offset(self.scroll_y + dy);
-                // Clamp against max_scroll happens in apply_layout
-                // since that's where we know the content extent.
-                if (self.scroll_y - prev).abs() > f64::EPSILON {
+                let moved = (self.scroll_y - prev).abs() > f64::EPSILON;
+                if pixel {
+                    self.glide.wheel_applied(dy, moved);
+                }
+                if moved {
                     *ctx.handled = true;
                     // This event belongs to the viewport. Lending it to the
                     // rich-text editor snapshots and compares every block as
