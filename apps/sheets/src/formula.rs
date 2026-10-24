@@ -31,7 +31,9 @@ use std::fmt::Write as _;
 use std::hash::BuildHasher;
 use ui::num::f64_of_usize;
 
-use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1};
+use crate::model::{
+    Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1, parse_number,
+};
 
 mod book;
 mod real;
@@ -1146,7 +1148,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
 
     fn eval_expr(&mut self, expr: &Expr) -> CellValue {
         match expr {
-            Expr::Num(n) => CellValue::Number(*n),
+            Expr::Num(n) => finite_number(*n),
             Expr::Str(s) => CellValue::Text(s.clone()),
             Expr::Bool(b) => CellValue::Bool(*b),
             Expr::Ref(addr) => self.eval_cell(*addr),
@@ -1624,18 +1626,10 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 CellValue::Text(s.repeat(count))
             }
             "VALUE" => {
-                let s = self
-                    .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
-                    .to_plain_string();
-                let cleaned: String = s
-                    .chars()
-                    .filter(|c| !matches!(c, ',' | '$' | ' '))
-                    .collect();
-                let core = cleaned.trim_end_matches('%');
-                match core.parse::<f64>() {
-                    Ok(n) => CellValue::Number(if cleaned.ends_with('%') { n / 100.0 } else { n }),
-                    Err(_) => CellValue::Error(FormulaError::Value),
-                }
+                let text = args
+                    .first()
+                    .map_or_else(String::new, |a| self.eval_expr(a).to_plain_string());
+                text_to_number(&text)
             }
             "EXACT" => {
                 let (Some(left), Some(right)) = (args.first(), args.get(1)) else {
@@ -2458,7 +2452,20 @@ fn time_parts(serial: f64) -> (i64, i64, i64) {
     )
 }
 
-/// Title-case a string: capitalize the first letter of each run of letters.
+/// VALUE: read text as a number, ignoring thousands separators, a dollar
+/// sign and spaces, with a trailing percent sign dividing by 100.
+fn text_to_number(s: &str) -> CellValue {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !matches!(c, ',' | '$' | ' '))
+        .collect();
+    let core = cleaned.trim_end_matches('%');
+    match parse_number(core) {
+        Some(n) => CellValue::Number(if cleaned.ends_with('%') { n / 100.0 } else { n }),
+        None => CellValue::Error(FormulaError::Value),
+    }
+}
+
 /// TRIM: drop leading and trailing spaces and collapse each run of inner
 /// spaces to one, as Excel and Calc do. Only the space character counts.
 fn trim_spaces(s: &str) -> String {
@@ -2472,6 +2479,7 @@ fn trim_spaces(s: &str) -> String {
     out
 }
 
+/// Title-case a string: capitalize the first letter of each run of letters.
 fn proper_case(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_alpha = false;
@@ -2656,12 +2664,12 @@ fn parse_literal(raw: &str) -> CellValue {
     if trimmed.is_empty() {
         return CellValue::Empty;
     }
-    if let Ok(n) = trimmed.parse::<f64>() {
+    if let Some(n) = parse_number(trimmed) {
         return CellValue::Number(n);
     }
     // Accept a leading currency/percent for convenience.
     if let Some(p) = trimmed.strip_suffix('%')
-        && let Ok(n) = p.trim().parse::<f64>()
+        && let Some(n) = parse_number(p.trim())
     {
         return CellValue::Number(n / 100.0);
     }

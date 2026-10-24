@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value};
+use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value, parse_number};
 use crate::resource::{CellWrite, range_label};
 use crate::workbook::SheetSnapshot;
 
@@ -81,7 +81,7 @@ fn sort_key(cell: Option<&SearchableCell>) -> SortKey {
     let shown = shown.trim();
     if shown.is_empty() {
         SortKey::Blank
-    } else if let Ok(number) = shown.parse::<f64>() {
+    } else if let Some(number) = parse_number(shown) {
         SortKey::Number(number)
     } else {
         SortKey::Text(shown.to_lowercase())
