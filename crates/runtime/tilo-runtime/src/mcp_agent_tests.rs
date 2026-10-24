@@ -213,7 +213,8 @@ impl Notes {
                 has_children: false,
                 visibility: None,
             };
-            return match *self.workspace.lock().unwrap() {
+            let installed = *self.workspace.lock().unwrap();
+            return match installed {
                 Installed::Openable => vec![open(APP, "Notes"), open("so.tilo.sheets", "Sheets")],
                 Installed::SheetsClosedToAgent => {
                     let mut sheets = open("so.tilo.sheets", "Sheets");
@@ -347,6 +348,23 @@ impl Notes {
     }
 }
 
+impl Notes {
+    /// Why the session does not answer `query`, when it does not: it cannot
+    /// say which apps run, or the workspace's installed apps cannot be read.
+    fn refused(&self, query: &CatalogueQuery) -> Option<ActionHostError> {
+        let unreachable = self.unreachable.lock().unwrap().clone();
+        if let Some(reason) = unreachable {
+            return Some(ActionHostError::Unavailable { reason });
+        }
+        let installed = *self.workspace.lock().unwrap();
+        (query.provider.as_deref() == Some(WORKSPACE) && installed == Installed::Unreadable).then(
+            || ActionHostError::Unavailable {
+                reason: "this session's workspaces cannot be read".into(),
+            },
+        )
+    }
+}
+
 fn host_matches(row: &CatalogueRow, needle: &str) -> bool {
     let needle = needle.to_lowercase();
     let mut fields = vec![row.resource.id.clone(), row.resource.label.clone()];
@@ -360,12 +378,9 @@ fn host_matches(row: &CatalogueRow, needle: &str) -> bool {
         .any(|field| field.to_lowercase().contains(&needle))
 }
 
-impl ActionHost for Notes {
-    fn query(
-        &self,
-        _caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+impl Notes {
+    /// What the session answers `query` once it answers at all.
+    fn answer(&self, query: &CatalogueQuery) -> Pending<Result<CataloguePage, ActionHostError>> {
         let running = *self.running.lock().unwrap();
         if query.target.is_none() && query.needle.is_empty() {
             self.asked
@@ -382,16 +397,6 @@ impl ActionHost for Notes {
                 ));
         }
         let silent = self.silent.lock().unwrap().is_some();
-        if let Some(reason) = self.unreachable.lock().unwrap().clone() {
-            return Pending::ready(Err(ActionHostError::Unavailable { reason }));
-        }
-        if query.provider.as_deref() == Some(WORKSPACE)
-            && *self.workspace.lock().unwrap() == Installed::Unreadable
-        {
-            return Pending::ready(Err(ActionHostError::Unavailable {
-                reason: "this session's workspaces cannot be read".into(),
-            }));
-        }
         let Some(provider) = query.provider.clone() else {
             let instance = |provider: &str, app_id: &str| CatalogueProvider {
                 provider: provider.into(),
@@ -476,6 +481,19 @@ impl ActionHost for Notes {
             exhausted: true,
             ..CataloguePage::default()
         }))
+    }
+}
+
+impl ActionHost for Notes {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        match self.refused(&query) {
+            Some(refused) => Pending::ready(Err(refused)),
+            None => self.answer(&query),
+        }
     }
 
     fn invoke(

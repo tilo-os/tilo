@@ -52,6 +52,35 @@ fn spawn() -> Session {
     session
 }
 
+/// Install a Viewer app in the session's own app store, as an install does:
+/// its manifest, then the registry naming it, written whole.
+fn install_viewer(session: &Session) {
+    let store = session.runtime_dir().join("data/tilo-apps");
+    let package = store.join("e2e/org.example.viewer");
+    std::fs::create_dir_all(package.join("bin")).unwrap();
+    let manifest = package.join("manifest.toml");
+    std::fs::write(
+        &manifest,
+        "[package]\nid = \"org.example.viewer\"\nname = \"Viewer\"\nversion = \"1.0.0\"\n\
+         kind = \"app\"\n[publisher]\nidentity = \"\"\nsignature = \"\"\n[sandbox]\n\
+         namespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+         [sandbox.net]\nmode = \"off\"\n[entrypoint]\nbin = \"bin/viewer\"\ntype = \"gui\"\n",
+    )
+    .unwrap();
+    let registry = package_store::Layout::new(&store).registry();
+    let staged = registry.with_extension("toml.tmp");
+    std::fs::write(
+        &staged,
+        format!(
+            "[[entry]]\nid = \"org.example.viewer\"\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            package.display().to_string(),
+            manifest.display().to_string(),
+        ),
+    )
+    .unwrap();
+    std::fs::rename(&staged, &registry).unwrap();
+}
+
 fn control(socket: &Path, request: &serde_json::Value) -> serde_json::Value {
     let mut stream = UnixStream::connect(socket).unwrap();
     stream
@@ -184,8 +213,9 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
     // Admitted as an observer, with no grant of its own, it is told the
     // Notes that runs and every app installed, each one it may not open
     // saying so, never an empty list.
+    install_viewer(&session);
     let deadline = tilo_test_env::hang_deadline();
-    let mut id = 2;
+    let mut id: u64 = 2;
     let listed = loop {
         id = id.checked_add(1).expect("request ids left");
         let (text, failed) = agent.tool(id, "tilo_ls", &serde_json::json!({}));
@@ -194,12 +224,15 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
         if text
             .lines()
             .any(|line| line.starts_with("notes  ") && line.ends_with("  running"))
+            && text
+                .lines()
+                .any(|line| line.starts_with("viewer  Viewer  "))
         {
             break text;
         }
         assert!(
             Instant::now() < deadline,
-            "the running Notes was never listed: {text}"
+            "the running Notes and the installed Viewer were never listed: {text}"
         );
         std::thread::sleep(Duration::from_millis(200));
     };
@@ -207,10 +240,6 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
         .lines()
         .filter(|line| line.contains("  installed"))
         .collect();
-    assert!(
-        !installed.is_empty(),
-        "no installed app was listed: {listed}"
-    );
     assert!(
         installed
             .iter()
@@ -221,16 +250,15 @@ fn a_terminal_agent_is_admitted_or_refused_by_the_person_and_lists_live_apps() {
         listed.contains("the person decides which apps an agent may open"),
         "{listed}"
     );
-    // Opening one is refused with who decides, not with "no such app".
-    let closed = installed[0].split("  ").next().expect("the app's name");
+    // Opening it is refused with who decides, not with "no such app".
     let (refused, failed) = agent.tool(
         id.checked_add(1).expect("request ids left"),
         "tilo_do",
-        &serde_json::json!({"path": format!("{closed}#open")}),
+        &serde_json::json!({"path": "viewer#open"}),
     );
     assert!(
-        failed && refused.contains("may not open"),
-        "opening {closed}: {refused}"
+        failed && refused.contains("this agent may not open viewer"),
+        "{refused}"
     );
 
     // The admitted agent is an ordinary, revocable member of the workspace.
