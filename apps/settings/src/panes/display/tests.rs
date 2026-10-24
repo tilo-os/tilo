@@ -1727,3 +1727,68 @@ fn the_pending_display_change_is_read_through_the_settings_document() {
     assert_eq!(shown.id, transaction.id);
     assert_eq!(shown.state, DisplayTransactionState::AwaitingConfirmation);
 }
+
+/// Every name, description and value the page's widgets say.
+fn page_words(widget: &dyn Widget, words: &mut Vec<String>) {
+    if let Some(node) = widget.accessibility() {
+        words.extend(
+            node.name
+                .into_iter()
+                .chain(node.description)
+                .chain(node.value),
+        );
+    }
+    for child in widget.children() {
+        page_words(child, words);
+    }
+}
+
+/// The compositor's diagnostic is for the inspection, in its own terms; the
+/// page says what happened to the person's change in their words.
+#[test]
+fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
+    let _guard = crate::prefs::test_env::ConfigGuard::new();
+    let profile = tempfile::tempdir().unwrap().keep();
+    let file = profile.join("settings.json");
+    let mut pane = DisplayModel::detached(PaneCx::in_file(file.clone()))
+        .with_outputs(laptop_with_monitor().outputs);
+    pane.of_device = true;
+    let diagnostic = "Rejected unsupported display plan: UnsupportedMode(\"DP-1\")";
+    let mut transaction =
+        DisplayTransaction::prepare_request(pane.display_set(), DisplayConfig::default()).unwrap();
+    for (state, said) in [
+        (
+            DisplayTransactionState::Rejected,
+            "display-rejected-caption",
+        ),
+        (DisplayTransactionState::Confirmed, "display-changes-kept"),
+        (
+            DisplayTransactionState::Reverted,
+            "display-changes-reverted",
+        ),
+    ] {
+        transaction.id += 1;
+        transaction.state = state;
+        transaction.message = Some(diagnostic.into());
+        let section = serde_json::to_value(&transaction).unwrap();
+        settings_store::update_section_at(
+            &file,
+            "display_transaction",
+            section.as_object().unwrap().clone(),
+        )
+        .unwrap();
+        assert!(pane.poll(), "the page follows the document");
+        assert_eq!(pane.notice, Some(t(said)), "{state:?}");
+        let mut words = Vec::new();
+        page_words(pane.compose().as_ref(), &mut words);
+        assert!(
+            words.iter().all(|word| !word.contains(diagnostic)),
+            "{state:?}: the page repeats the compositor's diagnostic: {words:?}"
+        );
+    }
+    assert_eq!(
+        pane.inspection()["transaction"]["message"],
+        diagnostic,
+        "the inspection still carries it"
+    );
+}
