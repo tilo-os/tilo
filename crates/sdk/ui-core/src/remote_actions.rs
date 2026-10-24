@@ -123,6 +123,45 @@ pub enum CancellationCall {
     Refused(ActionHostError),
 }
 
+/// A live result [`RemoteActions::follow`] follows. Dropping it stops
+/// following: the invocation is cancelled.
+pub struct Followed {
+    remote: RemoteActions,
+    invocation: InvocationId,
+    answer: LocalState<InvocationCall>,
+}
+
+impl Followed {
+    /// The invocation's latest update: each new result is an `Item`.
+    #[must_use]
+    pub const fn call(&self) -> &LocalState<InvocationCall> {
+        &self.answer
+    }
+
+    /// The invocation it follows.
+    #[must_use]
+    pub const fn invocation(&self) -> InvocationId {
+        self.invocation
+    }
+}
+
+impl Drop for Followed {
+    fn drop(&mut self) {
+        let settled = self.answer.with(RemoteCall::is_settled);
+        if !settled {
+            let _ = self.remote.cancel(self.invocation);
+        }
+    }
+}
+
+impl std::fmt::Debug for Followed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Followed")
+            .field("invocation", &self.invocation)
+            .finish_non_exhaustive()
+    }
+}
+
 enum Transport {
     /// Through the application's collaboration connection.
     Session,
@@ -146,6 +185,9 @@ struct CatalogueWalk {
 
 struct Running {
     answer: LocalStateWriter<InvocationCall>,
+    /// Told each update as it lands, before the call shows it: how a
+    /// follower reads each result once.
+    then: Option<Box<dyn FnMut(&InvocationCall) + Send>>,
     cancellation: Option<LocalState<CancellationCall>>,
     /// When to observe it next, while a host that does not wait is still
     /// running it.
@@ -153,6 +195,15 @@ struct Running {
     /// The waiting observe in flight: when it was sent, and how far it had
     /// seen the invocation get.
     waiting: Option<(Instant, UpdateMark)>,
+}
+
+impl Running {
+    fn publish(&mut self, call: InvocationCall) {
+        if let Some(then) = &mut self.then {
+            then(&call);
+        }
+        self.answer.set(call);
+    }
 }
 
 struct Inner {
@@ -355,6 +406,7 @@ impl RemoteActions {
             request.invocation,
             Running {
                 answer: answer.writer(),
+                then: None,
                 cancellation: None,
                 observe_at: None,
                 waiting: None,
@@ -362,6 +414,58 @@ impl RemoteActions {
         );
         self.send(RemoteActionMessage::Invoke(request));
         answer
+    }
+
+    /// Follow the live result of the action at `target`
+    /// ([`ExecutionMode::Live`](tilo_actions::ExecutionMode::Live)): the
+    /// call's latest update is each new result as an `Item`, for as long as
+    /// the returned handle lives; dropping it cancels the invocation. An
+    /// action that answers once settles as any invocation does.
+    #[must_use]
+    pub fn follow(&self, target: RemoteActionTarget, argument: InvokeArgument) -> Followed {
+        self.follow_with(target, argument, |_| {})
+    }
+
+    /// [`Self::follow`], telling `then` each update as it lands, before
+    /// the call shows it.
+    #[must_use]
+    pub fn follow_with(
+        &self,
+        target: RemoteActionTarget,
+        argument: InvokeArgument,
+        then: impl FnMut(&InvocationCall) + Send + 'static,
+    ) -> Followed {
+        let invocation = InvocationId::new();
+        let answer = LocalState::new(RemoteCall::Pending);
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target,
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            // It never settles: the receipt is the admission, and each
+            // result arrives on the observe that follows it.
+            wait_ms: None,
+            appearance: None,
+        };
+        self.lock().invocations.insert(
+            invocation,
+            Running {
+                answer: answer.writer(),
+                then: Some(Box::new(then)),
+                cancellation: None,
+                observe_at: None,
+                waiting: None,
+            },
+        );
+        self.send(RemoteActionMessage::Invoke(request));
+        Followed {
+            remote: self.clone(),
+            invocation,
+            answer,
+        }
     }
 
     /// Whether any request is still waiting for its answer.
@@ -576,8 +680,8 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                     message,
                 },
                 ReceiptStatus::Rejected { error } => {
-                    let running = inner.invocations.remove(&invocation)?;
-                    running.answer.set(RemoteCall::Refused(error));
+                    let mut running = inner.invocations.remove(&invocation)?;
+                    running.publish(RemoteCall::Refused(error));
                     return None;
                 }
             };
@@ -587,10 +691,8 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             if let Some(state) = state {
                 return settle(inner, invocation, state.update);
             }
-            if let Some(running) = inner.invocations.remove(&invocation) {
-                running
-                    .answer
-                    .set(RemoteCall::Refused(ActionHostError::UnknownInvocation));
+            if let Some(mut running) = inner.invocations.remove(&invocation) {
+                running.publish(RemoteCall::Refused(ActionHostError::UnknownInvocation));
             }
             None
         }
@@ -623,8 +725,8 @@ fn settle(
 ) -> Option<RemoteActionMessage> {
     let terminal = update.is_terminal();
     if terminal {
-        if let Some(running) = inner.invocations.remove(&invocation) {
-            running.answer.set(RemoteCall::Done(update));
+        if let Some(mut running) = inner.invocations.remove(&invocation) {
+            running.publish(RemoteCall::Done(update));
         }
         return None;
     }
@@ -639,7 +741,7 @@ fn settle(
             && now.saturating_duration_since(sent)
                 < Duration::from_millis(u64::from(OBSERVE_WAIT_MS / 2))
     });
-    running.answer.set(RemoteCall::Done(update));
+    running.publish(RemoteCall::Done(update));
     if unheld {
         inner.host_waits = false;
     }

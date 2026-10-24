@@ -84,6 +84,7 @@ members = [
     "crates/sdk/ui-core",
 
     # Applications
+    "apps/activity",
     "apps/agent",
     "apps/api-tester",
     "apps/backups",

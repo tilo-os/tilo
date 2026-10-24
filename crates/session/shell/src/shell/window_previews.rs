@@ -110,8 +110,7 @@ impl WindowSource for ShellWindows {
             TileContent::LocalApp { .. }
             | TileContent::HostedWindow { .. }
             | TileContent::AppPlaceholder { .. }
-            | TileContent::Stub { .. }
-            | TileContent::WorkspaceActivity => {
+            | TileContent::Stub { .. } => {
                 if shown {
                     PreviewSource::Painted {
                         capture_id: format!("group:{group}:tab:{tab}"),

@@ -350,9 +350,40 @@ pub enum ExecutionMode {
         cancellable: bool,
         item_schema: serde_json::Value,
     },
+    /// A read that stays current: each item, checked against
+    /// `item_schema`, is the whole result as it is now, sent again whenever
+    /// the provider's answer changes. It ends only when the caller cancels
+    /// it, its permission is withdrawn, or the provider fails.
+    Live { item_schema: serde_json::Value },
 }
 
 read_through_json_value!(ExecutionMode);
+
+impl ExecutionMode {
+    /// Whether a caller may cancel a running invocation.
+    #[must_use]
+    pub const fn cancellable(&self) -> bool {
+        matches!(
+            self,
+            Self::Background { cancellable: true }
+                | Self::Streaming {
+                    cancellable: true,
+                    ..
+                }
+                | Self::Live { .. }
+        )
+    }
+
+    /// What each item of a streaming or live invocation must match; `None`
+    /// for a mode that sends no items.
+    #[must_use]
+    pub const fn item_schema(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Streaming { item_schema, .. } | Self::Live { item_schema } => Some(item_schema),
+            Self::Immediate | Self::Background { .. } => None,
+        }
+    }
+}
 
 /// Shape of a successful result. Schemas use JSON Schema so non-Rust callers
 /// do not need a parallel Tilo-only type system.
@@ -585,6 +616,21 @@ impl ActionContract {
         }
     }
 
+    /// A view whose result stays current ([`ExecutionMode::Live`]), each
+    /// item matching `item_schema`.
+    pub fn live_view(item_schema: serde_json::Value) -> Self {
+        Self {
+            execution: ExecutionMode::Live { item_schema },
+            ..Self::view()
+        }
+    }
+
+    /// Whether the action's result stays current ([`ExecutionMode::Live`]).
+    #[must_use]
+    pub const fn is_live(&self) -> bool {
+        matches!(self.execution, ExecutionMode::Live { .. })
+    }
+
     /// The defaults for an operation of `operation`'s kind: a view reads, a
     /// document operation changes only the document, an effect reaches
     /// outside it.
@@ -798,10 +844,13 @@ impl ActionContract {
         {
             errors.push("immediate action cannot declare a background job result".into());
         }
-        if let ExecutionMode::Streaming { item_schema, .. } = &self.execution
+        if let Some(item_schema) = self.execution.item_schema()
             && let Err(reason) = crate::params::validate_schema_definition(item_schema)
         {
             errors.push(format!("invalid streaming item {reason}"));
+        }
+        if self.is_live() && self.kind != ActionKind::Read {
+            errors.push("a live result must be a read".into());
         }
         if let ResultSpec::Json { schema } = &self.result
             && let Err(reason) = crate::params::validate_schema_definition(schema)

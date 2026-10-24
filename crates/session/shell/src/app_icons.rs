@@ -528,8 +528,7 @@ pub fn for_tile(tile: &crate::shell::state::TileContent) -> Option<AppImage> {
             for_window_app_id(app_id)
         }
         crate::shell::state::TileContent::AppPlaceholder { .. }
-        | crate::shell::state::TileContent::Stub { .. }
-        | crate::shell::state::TileContent::WorkspaceActivity => None,
+        | crate::shell::state::TileContent::Stub { .. } => None,
     }
 }
 

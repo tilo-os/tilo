@@ -1,0 +1,15 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "activity.filter"
+label = "Workspace activity"
+version = 1
+fields = [
+  { path = "period", type = "String" },
+  { path = "author", type = "String" },
+  { path = "lens", type = "String" },
+]
+
+[[resources.verbs]]
+id = "clear-filters"
+kind = "undoable"
