@@ -81,13 +81,13 @@ impl Wakes {
 
     /// Block until a wake arrives or `deadline` passes.
     fn wait_until(&self, deadline: Instant) {
-        let woken = self.woken.lock().unwrap();
         let left = deadline.saturating_duration_since(Instant::now());
         let (mut woken, _) = self
             .ready
-            .wait_timeout_while(woken, left, |woken| !*woken)
+            .wait_timeout_while(self.woken.lock().unwrap(), left, |woken| !*woken)
             .unwrap();
         *woken = false;
+        drop(woken);
     }
 }
 
@@ -285,6 +285,10 @@ impl Device {
 
     /// Start this device's session over its current tree, as a session
     /// starts: the network, its wake into the loop, and its rooms.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the network it starts is this device's for as long as it is online"
+    )]
     fn go_online(&mut self) {
         assert!(self.net.is_none(), "{} is already online", self.label);
         let root = self.root.clone();
@@ -376,6 +380,10 @@ impl Device {
     #[allow(
         dead_code,
         reason = "the home-relay, live-frame and channel scenarios use it; they join the suite with the network's hosting-member call"
+    )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the drain stops before the network changes and starts again after"
     )]
     pub(crate) fn hold_live_keys(
         &mut self,
@@ -471,12 +479,15 @@ impl Device {
     /// When this device's loop next has to run though nothing wakes it.
     fn next_deadline(&self) -> Option<Instant> {
         self.net.as_ref()?;
-        let state = self.state.lock().unwrap();
-        let layout = state.layout.and_then(|(seen, at)| {
+        let (layout, polled) = {
+            let state = self.state.lock().unwrap();
+            (state.layout, state.polled)
+        };
+        let layout = layout.and_then(|(seen, at)| {
             (seen != self.tree.generation()).then(|| at.checked_add(LAYOUT_CHECK).unwrap_or(at))
         });
         let poll = (!self.enrollments.lock().unwrap().is_empty()).then(|| {
-            state.polled.map_or_else(Instant::now, |at| {
+            polled.map_or_else(Instant::now, |at| {
                 at.checked_add(ENROLLMENT_POLL).unwrap_or(at)
             })
         });
@@ -583,6 +594,10 @@ impl Device {
     }
 
     /// Close the window showing `tab` in `room`'s workspace.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the window closes in one write of the tree"
+    )]
     pub(crate) fn close_window(&self, room: RoomId, tab: u64) {
         let mut tree = self.tree.write();
         let workspace = tree
@@ -599,9 +614,12 @@ impl Device {
     }
 
     fn mint(&self) -> u64 {
-        let mut minted = self.minted.lock().unwrap();
-        *minted = minted.saturating_add(1);
-        tilo_desktop_model::compose_id(self.salt, 0x00E2_E000 + *minted)
+        let minted = {
+            let mut minted = self.minted.lock().unwrap();
+            *minted = minted.saturating_add(1);
+            *minted
+        };
+        tilo_desktop_model::compose_id(self.salt, minted.saturating_add(0x00E2_E000))
     }
 
     /// Let the notes app keep records in `room`, as opening the app there
@@ -682,6 +700,10 @@ impl Device {
     /// Write `text` into the note in `room`, as the notes app does: a
     /// change to its document sealed under the record's channel keys,
     /// signed by this device and published to the room's host.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the note's document is edited and its change taken in one hold"
+    )]
     pub(crate) fn write_note(&self, room: RoomId, text: &str) {
         if !self.seals_records(room) {
             self.commit_note(room, text);
@@ -769,6 +791,10 @@ impl Device {
 
     /// Open every sealed write to the note in `room` that reached this
     /// device, into the note's document here.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "every arrived write opens into the note's document in one hold"
+    )]
     fn read_notes(&self, room: RoomId, keys: &channel_crypto::ChannelContentKeys) {
         let room_id = room.to_string();
         let arrived: Vec<_> = {
@@ -814,6 +840,10 @@ impl Device {
     }
 
     /// The note's text in `room` as the notes app here shows it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the note is read from this device's network as it holds the room"
+    )]
     pub(crate) fn note(&self, room: RoomId) -> Option<String> {
         let net = self.net.as_ref()?;
         if !self.seals_records(room) {
@@ -828,8 +858,15 @@ impl Device {
         let keys = self.note_keys(room)?;
         self.read_notes(room, &keys);
         let notes = self.notes.lock().unwrap();
-        let (value, _) = notes.get(&room)?.get(automerge::ROOT, NOTE_TEXT).ok()??;
-        value.as_str().map(str::to_owned)
+        let text = notes
+            .get(&room)?
+            .get(automerge::ROOT, NOTE_TEXT)
+            .ok()??
+            .0
+            .as_str()
+            .map(str::to_owned);
+        drop(notes);
+        text
     }
 
     // What the person sees.
@@ -1081,5 +1118,6 @@ pub(crate) fn hosted_workspace(
     until(&all, "the new workspace to be hosted on its device", || {
         (device.holds(room) && device.hosted_rooms().contains(&room)).then_some(())
     });
+    drop(all);
     (local, room)
 }
