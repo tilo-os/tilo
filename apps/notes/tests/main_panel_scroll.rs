@@ -473,3 +473,70 @@ fn enter_at_the_end_of_a_long_note_keeps_the_caret_clear_of_the_bottom() {
         );
     }
 }
+
+/// One touchpad (pixel) wheel event of a two-finger gesture.
+fn swipe(phase: winit::event::TouchPhase, dy: f64) -> WindowEvent {
+    WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+            0.0, dy,
+        )),
+        phase,
+    }
+}
+
+/// Two fingers lifted while moving leave the note gliding, as every other
+/// scroll surface does: the body goes on in the frames the glide asks for,
+/// slows and stops, and a press on the body catches it.
+#[test]
+fn a_touchpad_swipe_lifted_while_moving_glides_and_comes_to_rest() {
+    use winit::event::TouchPhase::{Ended, Moved, Started};
+    let start = ui::time::now();
+    let at = |frame: u32| start + ui::time::Duration::from_millis(16 * u64::from(frame));
+    let lift = |app: &mut TestApp<NotesShell>| {
+        ui::time::testing::with_monotonic_time(start, || {
+            app.harness().send(&pointer(Point::new(500.0, 200.0)));
+            app.harness().send(&swipe(Started, 0.0));
+            for _ in 0..6 {
+                app.harness().send(&swipe(Moved, -30.0));
+            }
+            app.harness().send(&swipe(Ended, 0.0));
+        });
+    };
+
+    let mut app = note_at(&tall_body(), 1000, 300, 1.0);
+    lift(&mut app);
+    let lifted = scroll_y(&mut app);
+    assert_eq!(lifted, 180.0, "the fingers move the body 1:1");
+    let mut frames = 0;
+    let mut previous = lifted;
+    while frames < 600 && ui::time::testing::with_monotonic_time(at(frames + 1), || app.frame()) {
+        frames += 1;
+        let now = scroll_y(&mut app);
+        assert!(now >= previous, "a glide goes on the way the fingers went");
+        previous = now;
+    }
+    let rest = scroll_y(&mut app);
+    assert!(
+        rest > lifted + 50.0,
+        "lifted while moving, the note glides on: {lifted} -> {rest} over {frames} frames"
+    );
+    assert!(
+        frames < 600,
+        "the glide comes to rest and asks for no more frames"
+    );
+
+    // A press on the body catches a glide in progress.
+    let mut app = note_at(&tall_body(), 1000, 300, 1.0);
+    lift(&mut app);
+    ui::time::testing::with_monotonic_time(at(1), || app.frame());
+    app.harness()
+        .send(&mouse(winit::event::ElementState::Pressed));
+    app.harness()
+        .send(&mouse(winit::event::ElementState::Released));
+    let caught = scroll_y(&mut app);
+    for frame in 2..20 {
+        ui::time::testing::with_monotonic_time(at(frame), || app.frame());
+    }
+    assert_eq!(scroll_y(&mut app), caught, "a press stops the glide");
+}
