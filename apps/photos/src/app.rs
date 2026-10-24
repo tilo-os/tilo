@@ -519,12 +519,11 @@ pub struct PhotosApp {
     notice_last: Option<String>,
     /// The last copy, whose outcome can arrive after its notice.
     pub(crate) copy: ui::CopyWatch,
-    /// The empty state's one action, where it was painted.
+    /// What the content column shows while it has nothing to lay out.
     empty_state: Option<EmptyState>,
-    /// What the empty state shows: its title, body, whether it reports an
-    /// error, and whether the framework's door was attached to bind its
-    /// Open button.
-    empty_state_key: Option<(String, String, bool, bool)>,
+    /// What the empty state shows, and whether the framework's door was
+    /// attached to bind its action.
+    empty_state_key: Option<(EmptyShown, bool)>,
     rect: Rect,
     canvas_rect: Rect,
     status_rect: Rect,
@@ -1766,40 +1765,84 @@ impl PhotosApp {
         (tr(title), tr(body))
     }
 
-    /// Keep the actual shared empty-state control mounted before painting,
-    /// so keyboard, accessibility and automation reach the same import door.
-    fn refresh_empty_state(&mut self, doc: &AutoCommit) {
-        let key = self.content_offers_open().then(|| {
-            let (title, body) = if self.library_mode {
-                self.library_empty_state_text()
-            } else {
-                self.empty_state_text()
-            };
-            (
-                title,
-                body,
-                self.canvas_state == CanvasState::Error && !self.library_mode,
-                self.actions.is_some(),
-            )
-        });
-        if key != self.empty_state_key {
-            self.empty_state = key.as_ref().map(|(title, body, error, _)| {
-                let empty = if *error {
-                    EmptyState::error(title, body)
-                } else {
-                    EmptyState::new(title).with_message(body)
+    /// What the content column shows when it has nothing to lay out, if
+    /// that is the case: the open photograph's absence, an empty timeline,
+    /// no albums or no places.
+    fn empty_shown(&self) -> Option<EmptyShown> {
+        let (title, body, icon, action) = if self.library_mode {
+            match self.library_destination {
+                _ if self.people_mode => return None,
+                LibraryDestination::Albums if self.library_albums.is_empty() => (
+                    tr("photos-albums-empty-title"),
+                    tr("photos-albums-empty-body"),
+                    Icon::GalleryVerticalEnd,
+                    Some(EmptyAction::NewAlbum),
+                ),
+                LibraryDestination::Places if self.places_items.is_empty() => (
+                    tr("photos-places-empty-title"),
+                    tr("photos-places-empty-body"),
+                    Icon::Globe,
+                    None,
+                ),
+                LibraryDestination::Timeline if self.library_items.is_empty() => {
+                    let (title, body) = self.library_empty_state_text();
+                    let open = self.content_offers_open().then_some(EmptyAction::Open);
+                    (title, body, Icon::Image, open)
                 }
-                .with_icon(Icon::Image)
-                .with_action(tr("photos-open"))
-                .with_action_id("photos-empty-open");
-                // Import is an effect of the app, not an action of the
-                // library record: it binds through the framework's door, as
-                // the header's Open does. Bound to the library record it
-                // found no action, and the button did nothing.
+                _ => return None,
+            }
+        } else if self.viewer.is_none() {
+            let (title, body) = self.empty_state_text();
+            let open = self.content_offers_open().then_some(EmptyAction::Open);
+            (title, body, Icon::Image, open)
+        } else {
+            return None;
+        };
+        Some(EmptyShown {
+            title,
+            body,
+            icon,
+            error: !self.library_mode && self.canvas_state == CanvasState::Error,
+            action,
+        })
+    }
+
+    /// Keep the shared empty state mounted as a retained child whenever the
+    /// content column is empty, so keyboard, accessibility and automation
+    /// reach its action through the same door as a click.
+    fn refresh_empty_state(&mut self, doc: &AutoCommit) {
+        let key = self
+            .empty_shown()
+            .map(|shown| (shown, self.actions.is_some()));
+        if key != self.empty_state_key {
+            self.empty_state = key.as_ref().map(|(shown, _)| {
+                let empty = if shown.error {
+                    EmptyState::error(&shown.title, &shown.body)
+                } else {
+                    EmptyState::new(&shown.title).with_message(&shown.body)
+                }
+                .with_icon(shown.icon);
+                // Import and a new album are effects of the app, not actions
+                // of the library record: they bind through the framework's
+                // door, as the header's Open does.
+                let (label, id, effect) = match shown.action {
+                    None => return empty,
+                    Some(EmptyAction::Open) => (
+                        tr("photos-open"),
+                        "photos-empty-open",
+                        PhotosEffect::Import { path: None },
+                    ),
+                    Some(EmptyAction::NewAlbum) => (
+                        tr("photos-new-album"),
+                        "photos-empty-new-album",
+                        PhotosEffect::NewAlbum,
+                    ),
+                };
+                let empty = empty.with_action(label).with_action_id(id);
                 match self
                     .actions
                     .as_ref()
-                    .and_then(|actions| actions.effect(&PhotosEffect::Import { path: None }))
+                    .and_then(|actions| actions.effect(&effect))
                 {
                     Some(binding) => empty.on_action(binding),
                     None => empty,
@@ -1812,6 +1855,23 @@ impl PhotosApp {
             empty.sync(doc, &automerge::ROOT);
         }
     }
+}
+
+/// What the empty content column says and offers.
+#[derive(Clone, Debug, PartialEq)]
+struct EmptyShown {
+    title: String,
+    body: String,
+    icon: Icon,
+    error: bool,
+    action: Option<EmptyAction>,
+}
+
+/// The one way forward an empty content column offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmptyAction {
+    Open,
+    NewAlbum,
 }
 
 /// How far a wheel turn scrolls, in pixels: a line notch moves three lines
