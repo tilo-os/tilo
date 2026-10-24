@@ -198,6 +198,20 @@ fn a_keystroke_shapes_only_its_paragraph() {
     edited.insert(at, 'x');
     let layout = paragraphs(&mut fs, &edited, &style, 200.0, Some(layout));
     assert_eq!(take_prepared_paragraphs(), 1, "only the edited paragraph");
+    // Placing the caret after the keystroke and moving it reads the rows of
+    // the edited paragraph only, not the hundred paragraphs above it.
+    let rows = layout.logical_line_bands(at).len();
+    let caret = TextPosition::new(at + 1);
+    for right in [false, true] {
+        super::super::tests::CARET_STOP_RUNS.with(|count| count.set(0));
+        layout.caret_geometry_at(caret);
+        layout.visual_motion_position(caret, right);
+        let visited = super::super::tests::CARET_STOP_RUNS.with(std::cell::Cell::get);
+        assert!(
+            visited <= 2 * rows,
+            "a caret and an arrow key built the stops of {visited} rows; the paragraph has {rows}"
+        );
+    }
     // Every other line kept its wrap: still laid out, at the same rows.
     assert_eq!(wraps(&layout), before);
     assert!(

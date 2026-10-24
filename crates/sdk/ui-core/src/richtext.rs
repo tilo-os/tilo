@@ -1133,18 +1133,9 @@ impl RichTextLayout {
         let line = self.cursor_at(position.byte).line;
         for run in self.rows_of_lines(line..line.saturating_add(1)) {
             // A missing affinity may require a byte-only fallback. Do not
-            // construct and sort every paragraph's grapheme stops while
-            // looking for an exact match that cannot exist there. Use the
-            // same monotone source mapping as caret_stops, keeping both ends
-            // inclusive for bidi and soft-wrap affinity boundaries.
-            let contains_byte = if run.glyphs.is_empty() {
-                self.global_byte(Cursor::new(run.line_i, 0)) == position.byte
-            } else {
-                let first = self.glyph_global_byte(run.line_i, 0);
-                let last = self.glyph_global_byte(run.line_i, run.text.len());
-                first <= position.byte && position.byte <= last
-            };
-            if !contains_byte {
+            // construct and sort the grapheme stops of a row while looking
+            // for an exact match that cannot exist there.
+            if !self.row_may_hold_stop(&run, position.byte) {
                 continue;
             }
             if bounded && !geometry_run_within_budget(&run) {
@@ -1304,21 +1295,28 @@ impl RichTextLayout {
             byte: position.byte.min(self.text_len),
             affinity: position.affinity,
         };
-        for run in self.buffer.layout_runs() {
-            let stops = self.caret_stops(&run);
-            let Some(index) = stops.iter().position(|(_, stop)| *stop == position) else {
+        // Every stop of a byte lies in the rows of its own paragraph, as in
+        // `resolved_caret_geometry`: building and sorting the stops of every
+        // row above it made one arrow key cost the whole document.
+        let line = self.cursor_at(position.byte).line;
+        let mut rows = Vec::new();
+        for run in self.rows_of_lines(line..line.saturating_add(1)) {
+            if !self.row_may_hold_stop(&run, position.byte) {
                 continue;
-            };
-            return stops
-                .get(Self::visual_step(&stops, index, right))
-                .map_or(position, |(_, stop)| *stop);
+            }
+            let stops = self.caret_stops(&run);
+            if let Some(index) = stops.iter().position(|(_, stop)| *stop == position) {
+                return stops
+                    .get(Self::visual_step(&stops, index, right))
+                    .map_or(position, |(_, stop)| *stop);
+            }
+            rows.push(stops);
         }
 
         // Byte-only callers conventionally enter with Before affinity. At a
         // boundary where only the other side exists, choose that stop and
         // continue in the requested visual direction.
-        for run in self.buffer.layout_runs() {
-            let stops = self.caret_stops(&run);
+        for stops in &rows {
             let Some(index) = stops
                 .iter()
                 .position(|(_, stop)| stop.byte == position.byte)
@@ -1326,7 +1324,7 @@ impl RichTextLayout {
                 continue;
             };
             return stops
-                .get(Self::visual_step(&stops, index, right))
+                .get(Self::visual_step(stops, index, right))
                 .map_or(position, |(_, stop)| *stop);
         }
         position
@@ -1366,6 +1364,25 @@ impl RichTextLayout {
             .byte
     }
 
+    /// Whether [`Self::caret_stops`] of `run` can hold a stop at source
+    /// byte `byte`, without building them. Every stop maps a shaped byte
+    /// inside one of the row's glyphs through the same monotone source
+    /// mapping, keeping both ends inclusive for bidi and soft-wrap affinity
+    /// boundaries; a row with no stop of its own stands at its line's start.
+    fn row_may_hold_stop(&self, run: &cosmic_text::LayoutRun<'_>, byte: usize) -> bool {
+        if self.global_byte(Cursor::new(run.line_i, 0)) == byte {
+            return true;
+        }
+        let (mut low, mut high) = (usize::MAX, 0);
+        for glyph in run.glyphs {
+            low = low.min(glyph.start);
+            high = high.max(glyph.end);
+        }
+        low != usize::MAX
+            && self.glyph_global_byte(run.line_i, low) <= byte
+            && byte <= self.glyph_global_byte(run.line_i, high)
+    }
+
     #[allow(
         clippy::cast_precision_loss,
         reason = "visual/segments are grapheme counts within one glyph cluster, always far below f32's 24-bit exact-integer range"
@@ -1373,19 +1390,37 @@ impl RichTextLayout {
     fn caret_stops(&self, run: &cosmic_text::LayoutRun<'_>) -> Vec<(f32, TextPosition)> {
         #[cfg(test)]
         tests::CARET_STOP_RUNS.with(|count| count.set(count.get() + 1));
-        let mut stops = Vec::new();
+        // Every caret query and arrow key builds the stops of its row, so a
+        // plain row (no virtual text, stops already in visual order) skips
+        // the lookups and the sort that only other rows need.
+        let mut stops = Vec::with_capacity(run.glyphs.len().saturating_mul(2).saturating_add(1));
         let line_start = self.line_starts.get(run.line_i).copied().unwrap_or(0);
+        let virtual_text = !self.offset_map.is_identity();
+        // `glyph_global_byte` of this row, read once when no virtual text
+        // shifts the source bytes.
+        let row_base = self
+            .line_starts
+            .get(run.line_i)
+            .copied()
+            .unwrap_or(self.text_len);
+        let hanging = self.hanging_punctuation != crate::text_render::HangingPunctuation::default();
         for glyph in run.glyphs {
             // A wrapped row's hanging indent is not text: no caret stands in it.
-            if self
-                .offset_map
-                .is_virtual(line_start.saturating_add(glyph.start), WRAP_INDENT)
+            if virtual_text
+                && self
+                    .offset_map
+                    .is_virtual(line_start.saturating_add(glyph.start), WRAP_INDENT)
             {
                 continue;
             }
             let cluster = run.text.get(glyph.start..glyph.end).unwrap_or("");
             let boundaries = caret_cluster_boundaries(cluster);
             let segments = boundaries.len().saturating_sub(1).max(1);
+            let x = if hanging {
+                crate::text_render::hanging_glyph_x(run, glyph, self.hanging_punctuation)
+            } else {
+                glyph.x
+            };
             for visual in 0..=segments {
                 let logical = if glyph.level.is_rtl() {
                     boundaries
@@ -1402,10 +1437,13 @@ impl RichTextLayout {
                     TextAffinity::After
                 };
                 stops.push((
-                    crate::text_render::hanging_glyph_x(run, glyph, self.hanging_punctuation)
-                        + glyph.w * visual as f32 / segments as f32,
+                    x + glyph.w * visual as f32 / segments as f32,
                     TextPosition::with_affinity(
-                        self.glyph_global_byte(run.line_i, shaped),
+                        if virtual_text {
+                            self.glyph_global_byte(run.line_i, shaped)
+                        } else {
+                            row_base.saturating_add(shaped).min(self.text_len)
+                        },
                         affinity,
                     ),
                 ));
@@ -1420,7 +1458,10 @@ impl RichTextLayout {
                 ),
             ));
         }
-        stops.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
+        // The sort is stable, so stops already in order stay as they are.
+        if !stops.is_sorted_by(|a, b| a.0.total_cmp(&b.0).is_le()) {
+            stops.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
+        }
         stops.dedup_by(|a, b| (a.0 - b.0).abs() < 0.01 && a.1 == b.1);
         stops
     }
@@ -1433,7 +1474,7 @@ impl RichTextLayout {
     ) -> impl Iterator<Item = cosmic_text::LayoutRun<'_>> {
         self.buffer
             .layout_runs()
-            .skip_while(move |run| run.line_i < lines.start)
+            .skip_to_line(lines.start)
             .take_while(move |run| run.line_i < lines.end)
     }
 
