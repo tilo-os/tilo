@@ -949,8 +949,40 @@ impl NativeAppTick {
 /// While locked the desktop is not shown, and the callback stays until a
 /// real lock or unlock frame, as it did before idle apps stopped driving
 /// cadence.
-fn release_idle_client_callback(locked: bool, content_changed: bool, presented: bool) -> bool {
-    !locked && (!content_changed || presented)
+/// A blanked display hides the desktop as the lock does: callbacks wait for
+/// the frame that wakes it, so clients rest too.
+fn release_idle_client_callback(hidden: bool, content_changed: bool, presented: bool) -> bool {
+    !hidden && (!content_changed || presented)
+}
+
+/// What one tick draws for what changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TickPaint {
+    /// Something new is to be shown on this tick.
+    content_changed: bool,
+    /// A frame is built and handed to the presenter.
+    should_paint: bool,
+    /// A change seen but not painted, carried to the next tick.
+    owed: bool,
+}
+
+/// Decide what a tick draws. A blanked display shows nothing, so nothing is
+/// built or handed to the GPU while it is dark; what changed is owed to the
+/// frame that wakes it.
+fn tick_paint(
+    reasons: NativeRedrawReasons,
+    session: &SessionManager,
+    cadence_due: bool,
+    pipe_ready: bool,
+) -> TickPaint {
+    let wanted = reasons.content_changed(session.is_locked());
+    let content_changed = wanted && !session.is_blanked();
+    let should_paint = content_changed && cadence_due && pipe_ready;
+    TickPaint {
+        content_changed,
+        should_paint,
+        owed: wanted && !should_paint,
+    }
 }
 
 /// Whether the next park must keep the frame deadline for a pending frame.
@@ -13900,8 +13932,7 @@ pub fn run() {
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
             owed: content_owed,
         };
-        let content_changed = redraw_reasons.content_changed(session.is_locked());
-        demand_onset.note_tick(content_changed, iter_t0);
+        let display_dark = session.is_blanked();
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
@@ -13917,6 +13948,15 @@ pub fn run() {
             cadence_due,
             frame_builder.host().transition_present_pending(),
         );
+        // A change this tick saw but could not paint is still to be shown: the
+        // next tick that may paint does, even if nothing new happens by then.
+        let TickPaint {
+            content_changed,
+            should_paint,
+            owed,
+        } = tick_paint(redraw_reasons, &session, cadence_due, pipe_ready);
+        content_owed = owed;
+        demand_onset.note_tick(content_changed, iter_t0);
         if content_changed
             && cadence_due
             && !pipe_ready
@@ -13925,17 +13965,14 @@ pub fn run() {
             p.note_backpressure();
             metrics.mark_backpressured();
         }
-        let should_paint = content_changed && cadence_due && pipe_ready;
-        // A change this tick saw but could not paint is still to be shown: the
-        // next tick that may paint does, even if nothing new happens by then.
-        content_owed = content_changed && !should_paint;
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame. A full presenter is itself the
         // gate: its retirement ping wakes the loop when capacity returns.
         let cadence_needed = cadence_wait_needed(
             pipe_ready,
-            (content_changed && !cadence_due) || (!session.is_locked() && animating),
+            (content_changed && !cadence_due)
+                || (!session.is_locked() && !display_dark && animating),
         );
         let (frame_open, notify_privacy) = crate::shell::status::privacy_frame_interest(
             privacy_frame_open,
@@ -14976,8 +15013,11 @@ pub fn run() {
         // configure is not a present and not another pump. Release it here,
         // on the tick that saw the commit, so the client is not left waiting
         // on FIFO and the shell does not wake itself to do the same work again.
-        if release_idle_client_callback(session.is_locked(), content_changed, should_paint)
-            && !client_changed
+        if release_idle_client_callback(
+            session.is_locked() || display_dark,
+            content_changed,
+            should_paint,
+        ) && !client_changed
             && configured_after_dispatch == 0
             && !capture_ready
             && foreign::release_idle_frame_callbacks(&mut state)
@@ -15016,8 +15056,8 @@ pub fn run() {
         // visual change is waiting; registered fds wake this early for input,
         // clients, accessibility, and presenter retirement.
         let park_now = Instant::now();
-        let lock_clock_deadline = session
-            .is_locked()
+        // A blanked lock shows no clock, so it does not wake for one.
+        let lock_clock_deadline = (session.is_locked() && !session.is_blanked())
             .then(|| last_lock_clock_refresh.checked_add(LOCK_CLOCK_REFRESH))
             .flatten();
         // Follow the players while the lock is visible; a blanked display
@@ -15371,6 +15411,9 @@ mod lock_focus_tests;
 
 #[cfg(test)]
 mod media_osd_publication_tests;
+
+#[cfg(test)]
+mod blanked_paint_tests;
 
 /// Session-owned ambient-light loop. Settings only records policy; the
 /// compositor owns the display and therefore owns applying that policy after
