@@ -731,6 +731,10 @@ pub const WORKSPACE_PROVIDER: &str = "workspace";
 /// Resource prefix of a workspace's "open this application" actions.
 pub const APPLICATION_RESOURCE_PREFIX: &str = "app.";
 
+/// Resource kind of an installed Tilo application a workspace lists, which
+/// a catalogue query's `resource_name` answers whole.
+pub const APPLICATION_RESOURCE_KIND: &str = "applications.app";
+
 /// Action id that opens an application into a workspace.
 pub const APPLICATION_OPEN_ACTION: &str = "open";
 
