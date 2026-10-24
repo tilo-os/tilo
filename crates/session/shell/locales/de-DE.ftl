@@ -1125,6 +1125,7 @@ memory-app-reopen = Erneut öffnen
 # Tab- und Fensteraktionen, die nicht ausgeführt werden konnten
 window-duplicate-no-tab = Es gibt keinen Tab zum Duplizieren.
 window-duplicate-foreign = Dieses Fenster kann nicht dupliziert werden. Öffne ein weiteres über die Suche.
+window-duplicate-single-window = Diese App hat nur ein Fenster.
 window-tab-action-no-tab = Es gibt keinen Tab für diese Aktion.
 window-tab-action-unknown-tab = Dieser Tab ist nicht mehr geöffnet.
 window-tab-action-only-tab = Das ist der einzige Tab dieses Fensters; er kann nicht abgetrennt werden.

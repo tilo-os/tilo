@@ -165,14 +165,20 @@ pub(crate) fn open_hosted_after_setup(
 }
 
 /// Why a duplicate could not be made.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DuplicateError {
     /// No tab is focused — nothing to copy.
     NoActiveTab,
-    /// A foreign Wayland client's window belongs to another process; the
-    /// compositor can't clone it, and guessing a package from `app_id`
+    /// A window of another machine, or of a program neither an installed
+    /// Tilo app nor a desktop entry of this machine claims: there is
+    /// nothing known to launch, and guessing a program from its `app_id`
     /// would as often start the wrong thing.
     ForeignWindow,
+    /// The app's desktop entry says it has one main window
+    /// (`SingleMainWindow=true`): launching it again only raises that.
+    SingleWindow,
+    /// The launch itself was refused, in the launcher's words.
+    Refused(String),
 }
 
 impl DuplicateError {
@@ -181,8 +187,41 @@ impl DuplicateError {
         match self {
             DuplicateError::NoActiveTab => t("window-duplicate-no-tab"),
             DuplicateError::ForeignWindow => t("window-duplicate-foreign"),
+            DuplicateError::SingleWindow => t("window-duplicate-single-window"),
+            DuplicateError::Refused(message) => message,
         }
     }
+}
+
+/// Another window of the app `app_id` names, as the tab after `anchor`: a
+/// new instance of an installed Tilo app, else a new window of the host
+/// desktop entry the window was adopted under.
+fn open_another_window(
+    st: &mut ChromeState,
+    app_id: &str,
+    anchor: Option<crate::shell::app_tabs::TabAnchor>,
+) -> Result<(), DuplicateError> {
+    let tilo_app = crate::shell::launcher::installed_apps_without_waiting()
+        .into_iter()
+        .any(|app| app.has_gui && app.package_id == app_id);
+    if tilo_app {
+        return crate::shell::app_tabs::open_beside(st, app_id, None, anchor, false)
+            .map_err(|error| DuplicateError::Refused(error.to_string()));
+    }
+    let app =
+        crate::shell::host_apps::app_for_window_id(app_id).ok_or(DuplicateError::ForeignWindow)?;
+    if desktop_entry::cache::cached_scan()
+        .find(&app.desktop_id)
+        .is_some_and(|entry| entry.main_windows == desktop_entry::MainWindows::One)
+    {
+        return Err(DuplicateError::SingleWindow);
+    }
+    let room = anchor.map(|anchor| anchor.room.to_string());
+    let placement = crate::shell::app_tabs::placement_after(st, anchor, false);
+    crate::shell::host_apps::note_placement(&app, placement);
+    crate::shell::host_apps::launch(&app.desktop_id, room)
+        .map(drop)
+        .map_err(|error| DuplicateError::Refused(error.user_message()))
 }
 
 /// A fresh instance, not a copy of state — the new tab starts however that
@@ -225,26 +264,20 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<Option<TabId>, Dupli
             TileContent::AppPlaceholder { kind, label } | TileContent::Stub { kind, label } => {
                 (kind.clone(), label.clone(), group.id)
             }
-            // A terminal of this machine is the case this exists for: a
-            // second shell is another Terminal process, a tab right after it.
+            // A window of an app on this machine: another instance of a
+            // Tilo app, or another window of the host app's desktop entry
+            // (a browser, a file manager, a terminal), as the tab right
+            // after it.
             TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. }
-                if app_id == TERMINAL_PACKAGE
-                    && crate::shell::state::peer_salt_of(tab.id) == tree.local_salt() =>
+                if crate::shell::state::peer_salt_of(tab.id) == tree.local_salt() =>
             {
+                let app_id = app_id.clone();
                 let anchor = crate::shell::app_tabs::anchor_for_tab(&tree, tab.id);
                 drop(tree);
-                return crate::shell::app_tabs::open_beside(
-                    st,
-                    TERMINAL_PACKAGE,
-                    None,
-                    anchor,
-                    false,
-                )
-                .map(|()| None)
-                .map_err(|_| DuplicateError::ForeignWindow);
+                return open_another_window(st, &app_id, anchor).map(|()| None);
             }
-            // None can be duplicated: the workspace recap, a live client's
-            // surface, or a window belonging to somebody else's machine.
+            // None can be duplicated: the workspace recap, or a window
+            // belonging to somebody else's machine.
             TileContent::WorkspaceActivity
             | TileContent::Foreign { .. }
             | TileContent::PeerWindow { .. }
@@ -1146,8 +1179,116 @@ mod tests {
             assert_eq!(
                 duplicate_active_tab(&mut st),
                 Err(DuplicateError::ForeignWindow),
-                "a client-owned window cannot be cloned by the compositor"
+                "a window no desktop entry claims has nothing to launch"
             );
         }
+    }
+
+    /// A host app's window (a terminal that opens many windows) gets another
+    /// window of its desktop entry, placed as the tab right after it, unless
+    /// the entry keeps a single main window.
+    #[test]
+    #[serial_test::serial(process_env, launch_events)]
+    fn a_host_window_duplicates_as_a_new_window_of_its_entry_beside_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = tmp.path().join("data/applications");
+        std::fs::create_dir_all(&entries).unwrap();
+        let entry = |extra: &str| {
+            std::fs::write(
+                entries.join("org.example.Term.desktop"),
+                format!(
+                    "[Desktop Entry]\nType=Application\nName=Example Term\nExec=true\n\
+                     StartupWMClass=ExampleTerm\n{extra}"
+                ),
+            )
+            .unwrap();
+            crate::shell::host_apps::invalidate_cache();
+        };
+        // A stand-in launcher that records what it is asked to start, after
+        // waiting on its registration gate the way the real one does.
+        let log = tmp.path().join("launched.log");
+        let launcher_bin = tmp.path().join("tilo-launcher");
+        std::fs::write(
+            &launcher_bin,
+            format!(
+                "#!/bin/sh\nhead -c 1 >/dev/null\nprintf '%s\\n' \"$*\" >> '{}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &launcher_bin,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", tmp.path().join("data"))
+            .set("XDG_DATA_DIRS", tmp.path().join("data"))
+            .set("XDG_RUNTIME_DIR", tmp.path())
+            .set("TILO_LAUNCHER_BIN", &launcher_bin);
+        crate::shell::launcher::set_test_execution_program(Some(launcher_bin));
+        crate::shell::launcher::set_wayland_socket_path(Some(tmp.path().join("wayland-0")));
+        crate::shell::launcher::clear_pending_placements();
+        entry("");
+
+        let chrome = chrome_with_default_tree();
+        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+        let (group, index) = {
+            let mut tree = st.tree_mut();
+            let ws = tree.desktop.active_workspace_mut().unwrap();
+            let g = &mut ws.strips[0].window_groups[0];
+            let id = next_id();
+            g.tabs.push(Tab {
+                id,
+                title: "~".into(),
+                tile: TileContent::Foreign {
+                    app_id: "ExampleTerm".into(),
+                    surface_id: 7,
+                },
+            });
+            g.activate_tab(id);
+            let placed = (g.id, g.tabs.len() - 1);
+            drop(tree);
+            placed
+        };
+
+        assert_eq!(duplicate_active_tab(&mut st), Ok(None));
+        let launched = {
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                let lines = std::fs::read_to_string(&log).unwrap_or_default();
+                if !lines.is_empty() || std::time::Instant::now() >= deadline {
+                    break lines;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        assert_eq!(launched.lines().count(), 1, "launched once: {launched}");
+        assert!(launched.contains("org.example.Term"), "{launched}");
+        assert_eq!(
+            crate::shell::launcher::placement_for_toplevel("ExampleTerm", 8),
+            Some(Placement::TabAt(group, index + 1)),
+            "its new window opens as the tab after the focused one"
+        );
+        crate::shell::launcher::clear_pending_placements();
+
+        // An entry that keeps one main window is not launched again.
+        entry("SingleMainWindow=true\n");
+        assert_eq!(
+            duplicate_active_tab(&mut st),
+            Err(DuplicateError::SingleWindow)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .count(),
+            1,
+            "nothing more is launched for it"
+        );
+        crate::shell::launcher::clear_pending_placements();
+        crate::shell::launcher::set_test_execution_program(None);
+        crate::shell::launcher::set_wayland_socket_path(None);
+        crate::shell::host_apps::invalidate_cache();
     }
 }
