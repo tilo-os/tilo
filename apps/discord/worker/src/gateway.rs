@@ -3,7 +3,10 @@
 //!
 //! The resume state (session, sequence, the last message seen per channel)
 //! is the host's to keep: the worker has no writable path, so it reports
-//! the state as a `Checkpoint` and gets it back in `Start`.
+//! the state as a `Checkpoint` and gets it back in `Start`. A dropped
+//! connection resumes its session; a new worker process identifies afresh
+//! and backfills from the last message seen per channel (see
+//! [`Gateway::new`]).
 
 #![allow(
     clippy::indexing_slicing,
@@ -110,9 +113,18 @@ pub struct Gateway {
 impl Gateway {
     #[must_use]
     pub fn new(ctx: Arc<Ctx>, checkpoint: Option<Value>) -> Self {
-        let state: Checkpoint = checkpoint
+        let mut state: Checkpoint = checkpoint
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default();
+        // A session resumes only in the process that holds its guild: a
+        // resume replays missed events but never the GUILD_CREATE the guild
+        // is built from, so a new process (the host restarted) that resumed
+        // would hold no guild and drop every event as not ours. It
+        // identifies afresh instead, and the backfill reads, from what each
+        // channel last saw, the messages said while it was gone.
+        state.session_id = None;
+        state.resume_url = None;
+        state.seq = 0;
         let guild_id = ctx.config.guild_id.clone();
         Self {
             ctx,

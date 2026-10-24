@@ -241,6 +241,31 @@ impl Host {
         id
     }
 
+    /// The worker killed, as a host restart does (no `Stop`, nothing
+    /// flushed), and a new one started from the last checkpoint the host
+    /// kept, against the same Discord.
+    async fn restarted(self) -> Self {
+        let checkpoint = self
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find_map(|seen| match seen {
+                Seen::Checkpoint(state) => Some(state.clone()),
+                _ => None,
+            });
+        assert!(
+            checkpoint
+                .as_ref()
+                .is_some_and(|c| c["session_id"].is_string()),
+            "the host kept a session to resume: {checkpoint:?}"
+        );
+        self.worker.abort();
+        let _ = self.worker.await;
+        Self::with(self.fake, false, checkpoint)
+    }
+
     async fn stop(self) {
         let _ = self.to_worker.send(ToWorker::Stop);
         let ended = tokio::time::timeout(tilo_test_env::hang_bound(), self.worker).await;
@@ -359,6 +384,32 @@ async fn a_dropped_gateway_resumes_the_session() {
         .post(CHANNEL_GENERAL, &User::new("3001", "ada"), "after");
     host.event(source::MESSAGE_CREATED, &event_id::message_created(&id))
         .await;
+    host.stop().await;
+}
+
+#[tokio::test]
+async fn a_restarted_worker_hears_discord_again_and_reads_what_it_missed() {
+    let host = Host::start(false).await;
+    host.connected().await;
+    let ada = User::new("3001", "ada");
+    let first = host.fake.post(CHANNEL_GENERAL, &ada, "before the restart");
+    host.event(source::MESSAGE_CREATED, &event_id::message_created(&first))
+        .await;
+    let host = host.restarted().await;
+    // Said while no worker was there, then after the new one is up: both
+    // reach the room.
+    let missed = host
+        .fake
+        .post(CHANNEL_GENERAL, &ada, "while the worker restarted");
+    let payload = host
+        .event(source::MESSAGE_CREATED, &event_id::message_created(&missed))
+        .await;
+    assert_eq!(payload["content"], "while the worker restarted");
+    let after = host.fake.post(CHANNEL_GENERAL, &ada, "after the restart");
+    let payload = host
+        .event(source::MESSAGE_CREATED, &event_id::message_created(&after))
+        .await;
+    assert_eq!(payload["content"], "after the restart");
     host.stop().await;
 }
 
