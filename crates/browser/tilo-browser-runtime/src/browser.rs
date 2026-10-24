@@ -1750,56 +1750,6 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     Ok(())
 }
 
-/// Where graphics start-up stands for a mount that has not drawn yet, as the
-/// page names it (`gpuStep` in the status).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum GpuStep {
-    /// Not started: behind the runtime's own work or another mount's set-up.
-    Queued,
-    /// Asking the browser for a WebGPU adapter and device.
-    Device,
-    /// The browser compiling the renderer's pipelines.
-    Pipelines,
-    /// Configuring the canvas on the device.
-    Surface,
-    /// Set up; its first frame not presented yet.
-    FirstFrame,
-}
-
-impl GpuStep {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Device => "device",
-            Self::Pipelines => "pipelines",
-            Self::Surface => "surface",
-            Self::FirstFrame => "first-frame",
-        }
-    }
-
-    const fn waiting_on(self) -> &'static str {
-        match self {
-            Self::Queued => "waiting for graphics set-up to start",
-            Self::Device => "waiting for the WebGPU device",
-            Self::Pipelines => "waiting for the renderer's pipelines to compile",
-            Self::Surface => "waiting to configure the canvas",
-            Self::FirstFrame => "waiting for the first frame to present",
-        }
-    }
-}
-
-/// How long a mount may stay visible on one step of graphics start-up
-/// (device, pipelines, surface, first frame) before it fails, naming that
-/// step, so the page says it stopped and offers to try again instead of
-/// waiting in silence. Bounded per step, not from the mount: a start that
-/// keeps moving on is slow, not stuck. On a busy machine with a software
-/// rasteriser (`SwiftShader` in CI) the device alone took 28 s and the
-/// pipelines 10 s, leaving a first frame that takes 15-35 s there too
-/// little of one bound from the mount; on a GPU the whole start takes
-/// about 2 s. Each pipeline compiled is progress too: on a node short of
-/// memory the pipelines step alone took over 60 s while compiles still
-/// finished, so the bound runs from the last one, not from the step's start.
-const FIRST_FRAME_BOUND_MS: u32 = 60_000;
 /// How often [`watch_first_frame`] looks.
 const FIRST_FRAME_TICK_MS: u32 = 1_000;
 
@@ -1816,14 +1766,14 @@ pub(crate) async fn sleep_ms(ms: u32) {
     let _ = wasm_bindgen_futures::JsFuture::from(timer).await;
 }
 
-/// Watch mount `id` until its first frame is out: say each step graphics
-/// start-up moves to (`gpuStep`), and fail the mount with that step as its
-/// error once it has been visible for [`FIRST_FRAME_BOUND_MS`] on that step
-/// without a frame or a pipeline compiled. Time hidden (a background tab draws nothing) does not
-/// count.
+/// Watch mount `id` until its first frame is out ([`first_frame::Watch`]):
+/// say each step graphics start-up moves to (`gpuStep`), say when it stays
+/// visible on one step without a frame or a pipeline compiled for
+/// [`first_frame::STALL_MS`] (`gpuStalled`), so the page offers to try
+/// again while it keeps waiting, and ask for the first frame again while it
+/// is late.
 async fn watch_first_frame(id: u64) {
-    let mut visible_ms: u32 = 0;
-    let mut said = None;
+    let mut watch = first_frame::Watch::new(FIRST_FRAME_TICK_MS);
     loop {
         sleep_ms(FIRST_FRAME_TICK_MS).await;
         if !await_runtime_admission().await {
@@ -1838,33 +1788,27 @@ async fn watch_first_frame(id: u64) {
             } else {
                 GPU_STEP.get()
             };
-            let built = PIPELINES_BUILT.get();
-            if said.is_some_and(|(on, before)| on == step && before != built) {
-                said = Some((step, built));
-                visible_ms = 0;
-            }
-            if said.map(|(on, _)| on) != Some(step) {
-                said = Some((step, built));
-                visible_ms = 0;
+            let visible = !m.hidden && !m.viewport.suspended();
+            let tick = watch.tick(step, PIPELINES_BUILT.get(), visible);
+            if tick.step_changed || tick.stalled.is_some() {
+                let stalled = tick.stalled.unwrap_or(false);
+                if stalled {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "desktop: no first frame after {} s on one step, {}; still waiting",
+                        first_frame::STALL_MS / 1000,
+                        step.waiting_on()
+                    )));
+                }
                 emit(
                     &m.status,
-                    &serde_json::json!({"phase":"gpu-pending","id":id,"gpuStep":step.name()}),
+                    &serde_json::json!({"phase":"gpu-pending","id":id,"gpuStep":step.name(),"gpuStalled":stalled}),
                 );
             }
-            if m.hidden || m.viewport.suspended() {
-                return Ok(true);
+            if tick.redraw {
+                m.pending = true;
+                m.window.request_redraw();
             }
-            visible_ms = visible_ms.saturating_add(FIRST_FRAME_TICK_MS);
-            if visible_ms < FIRST_FRAME_BOUND_MS {
-                return Ok(true);
-            }
-            m.error = Some(format!(
-                "WebGPU presented no first frame after {} s on one step, {}",
-                FIRST_FRAME_BOUND_MS / 1000,
-                step.waiting_on()
-            ));
-            m.publish(id);
-            Ok(false)
+            Ok(true)
         });
         if !matches!(watching, Ok(true)) {
             return;
@@ -3171,6 +3115,7 @@ pub fn request_semantics(id: u64) -> Result<(), JsValue> {
 }
 
 mod desktop_exports;
+use crate::first_frame::{self, GpuStep};
 pub(crate) mod pointers;
 mod retained;
 use retained::Retained;

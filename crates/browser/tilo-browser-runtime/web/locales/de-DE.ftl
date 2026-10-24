@@ -48,10 +48,15 @@ arrival-tip-saved = Alles hier wird laufend gespeichert
 arrival-tip-operating-system = Tilo ist ein Betriebssystem. Dieses läuft in deinem Browser.
 # Künftige Tipps: siehe en-US.ftl.
 
-## Statt einer Zeile, wenn das Netz oder das erste Bild langsam ist
+## Statt einer Zeile, wenn ein Schritt des Hereinkommens langsam ist
 arrival-slow-loading = Lädt noch. Dein Netz ist vielleicht langsam.
 arrival-slow-connecting = Verbindet noch. Dein Netz ist vielleicht langsam.
+arrival-slow-starting = Tilo startet noch. Dieses Gerät ist vielleicht ausgelastet.
+arrival-slow-opening = Der Arbeitsbereich öffnet sich noch.
 arrival-slow-drawing = Die Grafik startet noch. Ohne Grafikkarte dauert das länger.
+# Steht mit „Noch einmal versuchen“ daneben, wenn ein Schritt lange nicht
+# weiterkommt; die Seite wartet währenddessen weiter.
+arrival-stalled = Das dauert länger, als es sollte. Warte weiter oder versuch es noch einmal.
 
 ## Statt einer Zeile, wenn die Seite nicht hineinkommt oder nicht weiter kann
 # { $workspace } ist der Name des Arbeitsbereichs; eine Nachricht auf

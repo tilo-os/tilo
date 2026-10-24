@@ -675,6 +675,9 @@ export async function startEntryPage({mode}) {
       // What graphics start-up waits on while the first frame is late
       // (device, pipelines, surface, first-frame), for tests and tools.
       if (state.gpuStep) root.gpuStep = state.gpuStep;
+      // Whether that step stopped moving on: the page offers Try again
+      // while it keeps waiting (arrival.mjs).
+      if ('gpuStalled' in state || state.phase !== 'gpu-pending') document.documentElement.toggleAttribute('data-gpu-stalled', state.gpuStalled === true);
       if (state.phase === 'presented') arrive('done');
       else if (state.phase === 'gpu-pending') arrive('draw');
       else if (['failed', 'crashed'].includes(state.phase)) arrive('stopped');
