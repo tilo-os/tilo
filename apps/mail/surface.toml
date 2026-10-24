@@ -32,6 +32,7 @@ fields = [
   { path = "draft.attachments", type = "Vec<DraftAttachment>" },
   { path = "draft.rich_body", type = "Option<RichText>", ops = "sha256:b86bfc65e3faa1c9" },
   { path = "draft.shown_as", type = "Option<String>", readonly = true },
+  { path = "draft.drafted", type = "Option<String>", readonly = true },
   { path = "outbox", type = "Outbox<Outgoing>", unit = true },
   { path = "server", type = "Outbox<ServerUpdate>", unit = true },
   { path = "held", type = "Collection<crate::held::HeldMessage>", stored = "collection" },
