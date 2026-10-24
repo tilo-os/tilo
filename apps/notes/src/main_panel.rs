@@ -2103,14 +2103,19 @@ impl Widget for MainPanel {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_pointer = ctx.logical(position);
         }
-        // A press, a key or a touch catches a glide in progress.
+        // A press, a key or a finger put down catches a glide in progress.
+        // Only a finger's arrival: its lift reaches here after the scroll's
+        // end it turned into, which is what starts a touchscreen's glide.
         if matches!(
             event,
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 ..
             } | WindowEvent::KeyboardInput { .. }
-                | WindowEvent::Touch(_)
+                | WindowEvent::Touch(winit::event::Touch {
+                    phase: winit::event::TouchPhase::Started,
+                    ..
+                })
         ) {
             self.glide.stop();
         }
