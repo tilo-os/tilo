@@ -324,6 +324,18 @@ impl ShellNetwork {
             .is_ok_and(|route| route.elsewhere())
     }
 
+    /// Whether another device governs `room` and it is a host (a home
+    /// relay), which creates the room's records on a member's request, as
+    /// `owner` holds the room.
+    pub(crate) fn host_creates_records(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
+        self.governed_elsewhere(room)
+            && owner
+                .with_current(room, |view| {
+                    Ok(view.governor().capabilities.can_act_as_host)
+                })
+                .unwrap_or(false)
+    }
+
     /// Whether `owner`, already open, holds `room` governed by a device
     /// other than the one it enrolled there: for the frame loop, which
     /// never opens an owner and never reads the disk, so it reads the
