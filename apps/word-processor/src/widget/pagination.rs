@@ -982,7 +982,8 @@ impl WordProcessorWidget {
         self.scroll_viewport = fg.canvas.height() / self.zoom.factor();
         self.max_scroll =
             (extent + 2.0 * PAGE_TOP - fg.canvas.height() / self.zoom.factor()).max(0.0);
-        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
+        self.follow_find_cover();
+        self.scroll_y = self.scroll_y.clamp(self.scroll_floor(), self.max_scroll);
         let sy = self.scroll_y;
         if sy != 0.0 {
             for l in laid.iter_mut() {

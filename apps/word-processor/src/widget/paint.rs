@@ -1275,10 +1275,12 @@ impl WordProcessorWidget {
     /// offset, the overflow and the visible window share one unit, so page
     /// zoom cannot distort the thumb.
     pub(super) fn canvas_scroll_metrics(&self) -> ui::widget::ScrollMetrics {
+        // The room before the start that the window's search opens counts
+        // as content, so the offset is never negative.
         ui::widget::ScrollMetrics::new(
-            self.max_scroll + self.scroll_viewport,
+            self.max_scroll + self.find_inset + self.scroll_viewport,
             self.scroll_viewport,
-            self.scroll_y,
+            self.scroll_y + self.find_inset,
         )
     }
 

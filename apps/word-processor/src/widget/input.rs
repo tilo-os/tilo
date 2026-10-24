@@ -82,7 +82,7 @@ impl WordProcessorWidget {
             }
             return;
         }
-        let new = (self.scroll_y - dy).clamp(0.0, self.max_scroll);
+        let new = (self.scroll_y - dy).clamp(self.scroll_floor(), self.max_scroll);
         // Exact-change check (not "close enough"): any scroll delta, however
         // tiny, should mark the frame dirty, so bit-compare rather than use a
         // tolerance that could mask a real change.
@@ -1309,8 +1309,9 @@ impl WordProcessorWidget {
                             // Keep the document row beneath the gesture steady.
                             // Horizontal alignment remains the centered-page convention.
                             let pointer_y = self.pointer.y - self.zoom.anchor().y;
-                            self.scroll_y =
-                                (self.scroll_y + pointer_y / before - pointer_y / after).max(0.0);
+                            self.scroll_y = (self.scroll_y + pointer_y / before
+                                - pointer_y / after)
+                                .max(self.scroll_floor());
                         }
                     }
                 }
