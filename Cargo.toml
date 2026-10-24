@@ -806,6 +806,44 @@ debug = "line-tables-only"
 [profile.test]
 debug = "line-tables-only"
 
+# Keep the renderer's math, scene encoding and GPU command processing optimised
+# even when application code is unoptimised. These run for every interactive
+# frame, including each password character on the lock screen. Package overrides
+# preserve debug assertions, overflow checks and line tables; GPU validation is
+# unchanged. Mirror test so build and test can reuse the same dependencies.
+[profile.dev.package.tilo-vello]
+opt-level = 3
+[profile.test.package.tilo-vello]
+opt-level = 3
+[profile.dev.package.tilo-vello-encoding]
+opt-level = 3
+[profile.test.package.tilo-vello-encoding]
+opt-level = 3
+[profile.dev.package.kurbo]
+opt-level = 3
+[profile.test.package.kurbo]
+opt-level = 3
+[profile.dev.package.peniko]
+opt-level = 3
+[profile.test.package.peniko]
+opt-level = 3
+[profile.dev.package.wgpu]
+opt-level = 3
+[profile.test.package.wgpu]
+opt-level = 3
+[profile.dev.package.wgpu-core]
+opt-level = 3
+[profile.test.package.wgpu-core]
+opt-level = 3
+[profile.dev.package.wgpu-hal]
+opt-level = 3
+[profile.test.package.wgpu-hal]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
+[profile.test.package.taffy]
+opt-level = 3
+
 # Optimise the CRDT dependencies in development and test builds; their generic
 # data structures are otherwise disproportionately slow in workspace tests.
 [profile.dev.package.tilo-automerge-fork]

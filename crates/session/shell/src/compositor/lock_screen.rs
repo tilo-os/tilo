@@ -28,11 +28,14 @@ use ui::accesskit::{
 };
 
 use crate::compositor::lock_auth::UNAVAILABLE_MSG;
+
+mod retained;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::now_playing::PlayerSnapshot;
 use crate::shell::quick_settings::now_playing::{
     Transport, paint_song_at_rest, paint_transport, transport_rects,
 };
+pub(crate) use retained::{LockComposition, RetainedLockScene};
 
 // `ui::accesskit_bridge` reserves 0, low ids, 1<<60, 2<<60, 1<<62 and
 // 1<<63 for desktop widgets/resources/actions/text/synthetic nodes. Keeping
@@ -897,7 +900,29 @@ pub fn draw_lock_scene_at_time(
     elapsed_seconds: f64,
 ) -> Scene {
     let mut scene = Scene::new();
+    draw_lock_scene_into(
+        &mut scene,
+        outputs,
+        theme,
+        text,
+        view,
+        wallpaper,
+        elapsed_seconds,
+    );
+    scene
+}
 
+/// Paint into the caller's scene so retained-part recording includes the
+/// entire lock composition and any readout appended over it.
+pub(crate) fn draw_lock_scene_into(
+    scene: &mut Scene,
+    outputs: &[LockOutput],
+    theme: &Theme,
+    text: &mut TextRenderer,
+    view: &LockView<'_>,
+    wallpaper: Option<&ImageData>,
+    elapsed_seconds: f64,
+) {
     // 1. Opaque backdrop over the combined geometry of every output — the
     //    full bounding box (not per-output rects) guarantees no gap ever
     //    shows app content. A private wallpaper is then fitted to each
@@ -911,11 +936,7 @@ pub fn draw_lock_scene_at_time(
         let wallpaper_layer = visible_wallpaper.is_some();
         if let Some(image) = visible_wallpaper {
             for output in outputs {
-                draw_wallpaper_on(
-                    &mut scene,
-                    image,
-                    LockLayout::for_output(*output, theme).output,
-                );
+                draw_wallpaper_on(scene, image, LockLayout::for_output(*output, theme).output);
             }
             // A firm dark scrim over every display's picture leaves the lock
             // experience legible and does not expose a bright image through
@@ -948,7 +969,7 @@ pub fn draw_lock_scene_at_time(
             // The lock scene is composed in output-layout coordinates with
             // the identity transform, like every other lock draw below.
             ui::auth_backdrop::draw(
-                &mut scene,
+                scene,
                 theme,
                 Affine::IDENTITY,
                 LockLayout::for_output(*output, theme).output,
@@ -964,10 +985,10 @@ pub fn draw_lock_scene_at_time(
         if Some(*output) == primary {
             let layout =
                 LockLayout::for_output_with_keyboard(*output, theme, view.keyboard.is_some());
-            draw_lock_widget(&mut scene, &layout, theme, text, view);
+            draw_lock_widget(scene, &layout, theme, text, view);
             if let (Some(keyboard), Some(pad)) = (view.keyboard, layout.keyboard) {
                 keyboard.paint(
-                    &mut scene,
+                    scene,
                     Affine::IDENTITY,
                     text,
                     theme,
@@ -980,7 +1001,7 @@ pub fn draw_lock_scene_at_time(
             }
         } else {
             let layout = LockLayout::for_output(*output, theme);
-            draw_secondary_lock_widget(&mut scene, &layout, theme, text, view);
+            draw_secondary_lock_widget(scene, &layout, theme, text, view);
         }
     }
 
@@ -988,7 +1009,7 @@ pub fn draw_lock_scene_at_time(
     if let Some(alert) = view.alert {
         for output in outputs {
             draw_lock_alert(
-                &mut scene,
+                scene,
                 LockLayout::for_output(*output, theme).output,
                 theme,
                 text,
@@ -996,8 +1017,6 @@ pub fn draw_lock_scene_at_time(
             );
         }
     }
-
-    scene
 }
 
 /// `image` covering one display's `rect` (centred, cropped to its shape).
@@ -1402,6 +1421,32 @@ fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
 }
 
 fn draw_password_field(
+    scene: &mut Scene,
+    layout: &LockLayout,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    view: &LockView<'_>,
+) {
+    if ui::scene_parts::is_tracked(scene) {
+        let mut field = Scene::new();
+        draw_password_contents(&mut field, layout, theme, text, view);
+        // Derive bounds from the commands, including placeholder glyph overhang
+        // and the focus stroke. No locale or theme may outgrow a guessed rect.
+        let bounds = ui::scene_parts::DrawBounds::default()
+            .of(field.encoding())
+            .unwrap_or_default();
+        ui::scene_parts::part(
+            scene,
+            ui::scene_parts::PartKey::new("lock-password", 0_u8),
+            bounds,
+            |scene| scene.append(&field, None),
+        );
+    } else {
+        draw_password_contents(scene, layout, theme, text, view);
+    }
+}
+
+fn draw_password_contents(
     scene: &mut Scene,
     layout: &LockLayout,
     theme: &Theme,

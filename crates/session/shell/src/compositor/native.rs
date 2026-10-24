@@ -832,76 +832,8 @@ impl WakeTally {
     }
 }
 
-/// A lock-state edge replaces every pixel on screen.  Keep that edge pending
-/// until a frame is actually accepted by the presenter; consuming it while
-/// the asynchronous render queue is full would leave the previous lock or
-/// desktop frame visible until unrelated input happens to trigger a repaint.
-fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
-    session_changed && !frame_submitted
-}
-
-/// Wall clock and date for the lock surface, read here rather than in its
-/// pure paint and tree builders.
-struct LockClock {
-    clock: String,
-    date: String,
-}
-
-impl LockClock {
-    fn now() -> Self {
-        let now = ui::clock::local_now();
-        Self {
-            clock: ui::clock::time_of_day(&now),
-            date: ui::format::day_heading(now.date_naive(), false),
-        }
-    }
-
-    fn view<'a>(
-        &'a self,
-        lock: &'a LockController,
-        notification_count: usize,
-        now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
-        keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
-        alert: Option<&'a str>,
-    ) -> LockView<'a> {
-        LockView {
-            alert,
-            keyboard,
-            password_len: lock.buffer_len(),
-            error: lock.error(),
-            clock: &self.clock,
-            date: &self.date,
-            notification_count,
-            verifying: lock.is_verifying(),
-            now_playing,
-        }
-    }
-}
-
-/// Hand AccessKit the current semantic tree. It needs a laid-out widget tree,
-/// not a presented frame: an activation or action is answered in the tick
-/// that drained it, whether or not that tick paints.
-fn publish_accessibility_tree(
-    accessibility: &mut NativeAccessibility,
-    frame_builder: &FrameBuilder,
-    outputs: &[Output],
-    lock: Option<&LockView<'_>>,
-    focus: Option<NodeId>,
-) {
-    accessibility.set_window_focus(true);
-    if let Some(view) = lock {
-        let outputs = lock_outputs(
-            outputs,
-            frame_builder.scene_size(),
-            focused_display_id(frame_builder),
-        );
-        accessibility.update_if_active(|| {
-            lock_screen::build_accessibility_tree(&outputs, frame_builder.theme(), view)
-        });
-    } else {
-        accessibility.update_if_active(|| frame_builder.build_a11y_tree_update(focus, 1.0));
-    }
-}
+mod lock_view;
+use lock_view::{LockClock, publish_accessibility_tree, retain_session_redraw};
 
 /// A widget poll already ran in this tick's pump. Its deadline waking the
 /// loop is not a present: the tree, the layout, and any animation are the
@@ -10361,6 +10293,7 @@ pub fn run() {
     );
     // Locked edge, so the controller resets exactly when the lock engages (no stale password/error carried over).
     let mut prev_locked = false;
+    let mut retained_lock = lock_screen::RetainedLockScene::default();
     // Other devices' focus changes arrive over the network at human pace;
     // copying the feed into chrome a few times a second is plenty.
     let mut continuity_feed_polled: Option<Instant> = None;
@@ -12591,6 +12524,7 @@ pub fn run() {
             lock.reset();
         }
         if session.is_locked() != prev_locked {
+            retained_lock.clear();
             crate::portal::inhibit::publish_screensaver_state(session.is_locked());
             if session.is_locked() {
                 let _ = state.release_all_personal_fabric_input();
@@ -14364,13 +14298,6 @@ pub fn run() {
                         )
                     })
                 };
-                let mut lock_scene = lock_screen::draw_lock_scene_with_wallpaper(
-                    &lock_outputs,
-                    &theme,
-                    frame_builder.text_renderer_mut(),
-                    &view,
-                    wallpaper.as_ref(),
-                );
                 // Media keys stay live while locked; their readout is drawn
                 // here because the desktop chrome that normally paints it is
                 // hidden. Expiring on paint mirrors the unlocked host.
@@ -14379,17 +14306,17 @@ pub fn run() {
                     chrome.expire_osd(iter_t0);
                     lock_osd = chrome.osd;
                 });
-                if let Some(osd) = lock_osd {
-                    lock_screen::draw_lock_osd(
-                        &mut lock_scene,
-                        &lock_outputs,
-                        &theme,
-                        frame_builder.text_renderer_mut(),
-                        osd,
-                        iter_t0,
-                    );
-                }
-                FramePaint::full(lock_scene)
+                retained_lock.draw(
+                    &mut frame_builder,
+                    &lock_screen::LockComposition {
+                        outputs: &lock_outputs,
+                        theme: &theme,
+                        view: &view,
+                        wallpaper: wallpaper.as_ref(),
+                        osd: lock_osd,
+                        now: iter_t0,
+                    },
+                )
             } else {
                 frame_builder.set_frame_only_moved(
                     redraw_reasons.only_motion(session.is_locked()) && !transition_run,
