@@ -475,6 +475,32 @@ impl SheetsApp {
         self.draw_card_actions(ctx, (body.x0, plot.y1 + gap), actions, Some(chart.kind));
     }
 
+    /// Rounded ticks over `lo..=hi` and their step, reaching past both ends
+    /// of the data so no mark stands above the top value read off the axis.
+    /// A series of one value has one tick at a whole step: its range has no
+    /// width, and a step of none has no precision to label it at.
+    fn value_ticks(lo: f64, hi: f64) -> (Vec<f64>, f64) {
+        let mut ticks = ui::charts::nice_ticks(lo, hi, 3);
+        ticks.dedup();
+        let tick_step = match ticks.as_slice() {
+            [first, second, ..] => second - first,
+            _ => 1.0,
+        };
+        while let Some(&top) = ticks.last()
+            && top < hi - tick_step * 1e-9
+            && ticks.len() < 8
+        {
+            ticks.push(top + tick_step);
+        }
+        while let Some(&bottom) = ticks.first()
+            && bottom > lo + tick_step * 1e-9
+            && ticks.len() < 8
+        {
+            ticks.insert(0, bottom - tick_step);
+        }
+        (ticks, tick_step)
+    }
+
     /// The chart in the theme's series colours: a legend naming each series
     /// over the plot, a value axis with its ticks and rules at the plot's
     /// leading edge, then columns grouped by category from a zero baseline,
@@ -516,28 +542,7 @@ impl SheetsApp {
             ChartKind::Column => (min.min(0.0), max.max(0.0)),
             ChartKind::Line => (min, max),
         };
-        let mut ticks = ui::charts::nice_ticks(lo, hi, 3);
-        // A series of one value has one tick: its range has no width, and a
-        // step of none has no precision to label it at.
-        ticks.dedup();
-        let tick_step = match ticks.as_slice() {
-            [first, second, ..] => second - first,
-            _ => 1.0,
-        };
-        // The rules reach past both ends of the data, so no mark stands
-        // above the top value read off the axis.
-        while let Some(&top) = ticks.last()
-            && top < hi - tick_step * 1e-9
-            && ticks.len() < 8
-        {
-            ticks.push(top + tick_step);
-        }
-        while let Some(&bottom) = ticks.first()
-            && bottom > lo + tick_step * 1e-9
-            && ticks.len() < 8
-        {
-            ticks.insert(0, bottom - tick_step);
-        }
+        let (ticks, tick_step) = Self::value_ticks(lo, hi);
         let (lo, hi) = (
             ticks.first().copied().unwrap_or(lo).min(lo),
             ticks.last().copied().unwrap_or(hi).max(hi),
@@ -1108,6 +1113,17 @@ fn chart_data(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> PlotD
 #[cfg(test)]
 mod chart_data_tests {
     use super::*;
+
+    /// A series of one value has one tick, at a whole step, and its label
+    /// reads the value: no zero step to label it at.
+    #[test]
+    fn a_series_of_one_value_has_one_tick_it_labels() {
+        let (ticks, step) = SheetsApp::value_ticks(7.0, 7.0);
+        assert_eq!((ticks.as_slice(), step), (&[7.0][..], 1.0));
+        assert_eq!(ui::charts::format_tick(ticks[0], step), "7");
+        let (zeros, step) = SheetsApp::value_ticks(0.0, 0.0);
+        assert_eq!((zeros.as_slice(), step), (&[0.0][..], 1.0));
+    }
 
     fn sheet(rows: &[&[&str]]) -> HashMap<Addr, CellValue> {
         let mut values = HashMap::new();
