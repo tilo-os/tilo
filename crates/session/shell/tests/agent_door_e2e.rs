@@ -345,6 +345,8 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
+    // The session's door has the room's content store, so it offers the
+    // content puts an agent hands its bytes to an action through.
     assert_eq!(
         names,
         [
@@ -352,7 +354,10 @@ fn an_agent_without_the_desktop_name_edits_a_note_by_path() {
             "tilo_read",
             "tilo_do",
             "tilo_find",
-            "tilo_status"
+            "tilo_status",
+            "tilo_put_begin",
+            "tilo_put_append",
+            "tilo_put_finish"
         ]
     );
 
