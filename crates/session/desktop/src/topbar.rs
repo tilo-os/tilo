@@ -1222,29 +1222,61 @@ impl TopBarChrome {
             text_renderer,
             (center_y, stack_right_x),
         );
-        let people_left_x = self.draw_arrival_notice(
+        // The notices beside the faces come and go on their own clock, and
+        // what stands left of one moves with it: one part of the bar, so
+        // that change damages where they are painted, not the whole bar.
+        ui::scene_parts::part_drawn(
             scene,
-            transform,
-            theme,
-            text_renderer,
-            (center_y, people_left_x),
+            ui::scene_parts::PartKey::new("desktop.topbar.notices", ()),
+            |scene| {
+                let notices_left_x = self.draw_arrival_notice(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    (center_y, people_left_x),
+                );
+                self.people_left_x = self.draw_wave_notice(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    (center_y, notices_left_x),
+                );
+                let continuity = self.continuity_label();
+                self.draw_continuity_chip(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    continuity.as_deref(),
+                );
+                self.notices_painted(people_left_x)
+            },
         );
-        self.people_left_x = self.draw_wave_notice(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            (center_y, people_left_x),
-        );
-        let continuity = self.continuity_label();
-        self.draw_continuity_chip(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            continuity.as_deref(),
-        );
+    }
+
+    /// Where the notices left of the faces that start at `faces_x` are
+    /// painted: the arrival and wave notices and the continuity offer, the
+    /// bar's height across.
+    fn notices_painted(&self, faces_x: f64) -> Vec<Rect> {
+        let left = if self.continuity_rect.is_zero_area() {
+            self.people_left_x
+        } else {
+            self.people_left_x.min(self.continuity_rect.x0)
+        };
+        (left < faces_x)
+            .then(|| {
+                Rect::new(
+                    left - 4.0,
+                    self.rect.y0 - 2.0,
+                    faces_x + 4.0,
+                    self.rect.y1 + 2.0,
+                )
+            })
+            .into_iter()
+            .collect()
     }
 
     /// The compact variant a display other than the primary carries.
@@ -5137,6 +5169,17 @@ mod tests {
     }
 
     fn lay_out_and_draw_with_theme(bar: &mut TopBarChrome, width: f32, theme: &Theme) {
+        lay_out_and_draw_with_text(bar, width, theme, &mut TextRenderer::new());
+    }
+
+    /// [`lay_out_and_draw_with_theme`] with `text_renderer`, which a test
+    /// comparing two draws keeps: its fonts are what the glyphs refer to.
+    pub(super) fn lay_out_and_draw_with_text(
+        bar: &mut TopBarChrome,
+        width: f32,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = bar.build_layout(&mut taffy, theme, &mut node_map);
@@ -5163,7 +5206,7 @@ mod tests {
         bar.draw(
             &mut Scene::new(),
             Affine::IDENTITY,
-            &mut TextRenderer::new(),
+            text_renderer,
             theme,
             &PresenceCtx::default(),
         );
