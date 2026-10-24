@@ -635,3 +635,65 @@ test('worklet trims excess playout delay by dropping a quiet frame', async t => 
   assert.ok(offset <= 960 * 2.5, `offset trimmed toward the 20 ms target (${offset} samples)`);
   assert.ok(processor.port.sent.some(message => message.stage === 'playback-latency-trim'));
 });
+
+async function worklet(t, tag) {
+  const previousProcessor = globalThis.AudioWorkletProcessor;
+  const previousRegister = globalThis.registerProcessor;
+  let Processor;
+  class Port extends EventTarget {
+    sent = [];
+    postMessage(message) { this.sent.push(message); }
+    receive(data) { this.dispatchEvent(Object.assign(new Event('message'), {data})); }
+  }
+  globalThis.AudioWorkletProcessor = class { constructor() { this.port = new Port(); } };
+  globalThis.registerProcessor = (_name, implementation) => { Processor = implementation; };
+  t.after(() => { globalThis.AudioWorkletProcessor = previousProcessor; globalThis.registerProcessor = previousRegister; });
+  await import(`./voice-audio-worklet.mjs?${tag}=${Date.now()}`);
+  return Processor;
+}
+
+test('worklet sample time runs on while the microphone is disconnected, so frames after a mute carry their real time', async t => {
+  const Processor = await worklet(t, 'disconnected-clock');
+  const processor = new Processor({processorOptions: {frameSamples: 960, captureCredits: 4, captureGeneration: 0, muted: false}});
+  const output = [[new Float32Array(128)]];
+  // Muted, the microphone's source is disconnected: no input at all for 2 s.
+  for (let index = 0; index < 750; index++) processor.process([[]], output);
+  const input = [[new Float32Array(128).fill(0.5)]];
+  for (let index = 0; index < 8; index++) processor.process(input, output);
+  const capture = processor.port.sent.find(message => message.type === 'capture');
+  assert.equal(capture.timestamp, 750n * 128n);
+});
+
+for (const adaptive of [true, false]) {
+  test(`${adaptive ? 'adaptive' : 'fixed'} worklet playout hears a publisher again after its clock fell seconds behind`, async t => {
+    const Processor = await worklet(t, `late-timeline-${adaptive}`);
+    const jitter = adaptive ? {adaptive: true, initial: 1920, min: 960, max: 7680} : {};
+    const processor = new Processor({processorOptions: {muted: true, jitter}});
+    const tone = () => Float32Array.from({length: 960}, (_, index) => 0.5 * Math.sin(2 * Math.PI * 1000 * index / 48_000));
+    let quanta = 0;
+    let heard = 0;
+    const advanceTo = sample => {
+      while (quanta * 128 < sample) {
+        const block = new Float32Array(128);
+        processor.process([], [[block]]);
+        if (block.some(value => Math.abs(value) > 0.1)) heard = quanta * 128;
+        quanta++;
+      }
+    };
+    const play = timestamp => processor.port.receive({type: 'play', publisherId: PUB_A, generation: 1, samples: tone().buffer, timestamp: BigInt(timestamp), duration: 960, reservedSamples: 960});
+    for (let index = 0; index < 50; index++) {
+      advanceTo(index * 960);
+      play(index * 960);
+    }
+    // The sender's clock stood still for 8 s (its audio context had no
+    // input, or was frozen) while real time went on; then it speaks again
+    // from where its clock stopped.
+    const resumed = 50 * 960 + 8 * 48_000;
+    for (let index = 0; index < 50; index++) {
+      advanceTo(resumed + index * 960);
+      play((50 + index) * 960);
+    }
+    advanceTo(resumed + 52 * 960);
+    assert.ok(heard >= resumed + 40 * 960, `the publisher is heard again and stays heard after its clock fell behind (last heard at ${heard}, resumed at ${resumed})`);
+  });
+}

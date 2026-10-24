@@ -35,6 +35,9 @@ const CNG_MAX_FRAMES = 25;
 // arriving frame is dropped and later frames are scheduled a frame earlier.
 const QUIET_PEAK = 0.01;
 const TRIM_EXCESS_FRAMES = 1.5;
+// A publisher whose frames keep arriving too late to play, with nothing
+// queued, for this many frames (100 ms) is heard again from its newest one.
+const RESYNC_LATE_FRAMES = 5;
 // Speaking levels: the RMS of the captured input and of each publisher's
 // played audio, posted every LEVEL_SAMPLES (100 ms).
 const LEVEL_SAMPLES = 4_800;
@@ -138,6 +141,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
         lastQuiet: false,
         lastEnd: null,
         energy: 0,
+        lateRun: 0,
       };
       this.publishers.set(message.publisherId, publisher);
     }
@@ -165,10 +169,9 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
         const {offset, target} = this.adaptiveOffset(publisher);
         const current = Number(publisher.baseLocalTimestamp - publisher.baseRemoteTimestamp);
         if (localTimestamp + BigInt(samples.length) < this.renderTimestamp - BigInt(this.jitterMax + MAX_JITTER_SAMPLES)) {
-          this.drop(message, 'playback-expired', reservedSamples);
-          return;
-        }
-        if (Math.abs(current - offset) >= this.frameSamples) {
+          if (!this.lateTimeline(publisher, message, reservedSamples)) return;
+          localTimestamp = publisher.baseLocalTimestamp;
+        } else if (Math.abs(current - offset) >= this.frameSamples) {
           publisher.target = target;
           publisher.baseRemoteTimestamp = message.timestamp;
           publisher.baseLocalTimestamp = message.timestamp + BigInt(offset);
@@ -180,10 +183,9 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
         const minimum = this.jitterAdaptive ? Math.round(target * 2 / 3) : MIN_JITTER_SAMPLES;
         const maximum = this.jitterAdaptive ? target * 2 : MAX_JITTER_SAMPLES;
         if (localTimestamp + BigInt(samples.length) < this.renderTimestamp - BigInt(Math.max(maximum, MAX_JITTER_SAMPLES))) {
-          this.drop(message, 'playback-expired', reservedSamples);
-          return;
-        }
-        if (distance < BigInt(minimum) || distance > BigInt(maximum)) {
+          if (!this.lateTimeline(publisher, message, reservedSamples)) return;
+          localTimestamp = publisher.baseLocalTimestamp;
+        } else if (distance < BigInt(minimum) || distance > BigInt(maximum)) {
           publisher.target = target;
           publisher.baseRemoteTimestamp = message.timestamp;
           publisher.baseLocalTimestamp = this.renderTimestamp + BigInt(target);
@@ -213,6 +215,30 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
     });
     publisher.queue.sort((left, right) => left.localTimestamp < right.localTimestamp ? -1 : left.localTimestamp > right.localTimestamp ? 1 : 0);
     publisher.bufferedSamples += samples.length;
+    publisher.lateRun = 0;
+  }
+
+  // A frame too late for its slot with nothing queued: one late frame is
+  // dropped, but a run of them means the sender's clock fell behind (its
+  // audio context paused while it was frozen, suspended or had no input), so
+  // every later frame would be as late. Start this publisher's timeline over
+  // from the frame instead of dropping its voice for good. Returns whether
+  // the frame plays.
+  lateTimeline(publisher, message, reservedSamples) {
+    publisher.lateRun++;
+    if (publisher.lateRun < RESYNC_LATE_FRAMES) {
+      this.drop(message, 'playback-expired', reservedSamples);
+      return false;
+    }
+    publisher.lateRun = 0;
+    publisher.delayCount = 0;
+    publisher.delayIndex = 0;
+    publisher.lastArrival = null;
+    if (this.jitterAdaptive) this.observeArrival(publisher, message.timestamp);
+    publisher.target = this.jitterInitial;
+    publisher.baseRemoteTimestamp = message.timestamp;
+    publisher.baseLocalTimestamp = this.renderTimestamp + BigInt(this.jitterInitial);
+    return true;
   }
 
   // Records the frame delay (render clock minus sender clock, in samples) and
@@ -308,8 +334,15 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
     this.release(publisher, 'playback-released', publisher.bufferedSamples);
   }
 
-  captureInput(input) {
-    if (!input?.length) return;
+  // `quantum` is this block's length: the sample clock follows the audio
+  // context, with or without a source connected (a muted microphone is
+  // disconnected), so frames after a pause carry the time they were taken.
+  captureInput(input, quantum) {
+    if (!input?.length) {
+      this.captureLength = 0;
+      this.sampleTimestamp += BigInt(quantum);
+      return;
+    }
     if (this.muted) {
       this.captureLength = 0;
       this.sampleTimestamp += BigInt(input.length);
@@ -436,10 +469,11 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
   }
 
   process(inputs, outputs) {
-    this.captureInput(inputs[0]?.[0]);
     const output = outputs[0]?.[0] ?? new Float32Array();
+    const quantum = output.length || 128;
+    this.captureInput(inputs[0]?.[0], quantum);
     this.fillOutput(output);
-    this.reportLevels(output.length || 128);
+    this.reportLevels(quantum);
     return true;
   }
 }
