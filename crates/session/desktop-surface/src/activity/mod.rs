@@ -264,9 +264,15 @@ mod admitted_history_tests {
         let mut pane = RoomActivityPane::new();
         pane.begin_view(9);
         pane.refresh(&mut snapshot);
-        // Setup/layout commits are omitted from the explorer feed; the
-        // title change is the one Change row people should see.
-        assert_eq!(pane.entries().len(), 1);
+        // The window opened and the title change are listed; setup and
+        // layout commits are not.
+        let summaries = pane
+            .entries()
+            .iter()
+            .map(|entry| entry.summary.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(summaries.len(), 2, "{summaries:?}");
+        assert!(summaries.contains(&"Opened Before"), "{summaries:?}");
         let labels = pane
             .replay_frames
             .iter()

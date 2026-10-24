@@ -256,15 +256,21 @@ impl PageChrome {
     /// This page's person as everyone here sees them: their name (numbered
     /// when someone else here shares it) and colour.
     fn own_chip(&self) -> tilo_desktop::chrome::OwnChip {
-        let here = self.here.borrow();
-        let name = here
-            .own_shown()
-            .unwrap_or_else(tilo_desktop::here::guest_label);
-        let rgb = here
-            .own_rgb()
-            .unwrap_or_else(|| ui::presence::user_color(&name));
+        let (name, rgb) = own_identity(&self.here.borrow());
         tilo_desktop::chrome::OwnChip { name, rgb }
     }
+}
+
+/// This page's person as everyone here sees them, and as everything on the
+/// page names them: their name, a guest's while they gave none, and colour.
+pub(crate) fn own_identity(here: &tilo_desktop::here::HereState) -> (String, (u8, u8, u8)) {
+    let name = here
+        .own_shown()
+        .unwrap_or_else(tilo_desktop::here::guest_label);
+    let rgb = here
+        .own_rgb()
+        .unwrap_or_else(|| ui::presence::user_color(&name));
+    (name, rgb)
 }
 
 /// What a person may change about a workspace, as its menu and the bar

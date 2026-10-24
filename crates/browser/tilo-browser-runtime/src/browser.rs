@@ -496,8 +496,7 @@ struct Desktop {
 }
 
 impl Desktop {
-    /// Who the windows ask the session as: the person at this page, a
-    /// member of its workspace.
+    /// Who the windows ask the session as: this page's person, in its room.
     fn caller(&self) -> tilo_actions::remote::Caller {
         tilo_actions::remote::Caller::local_person(self.author.clone()).in_room(self.room.clone())
     }
@@ -1314,21 +1313,6 @@ pub(crate) fn forget_feedback_startup(peer: u32) {
     });
 }
 
-/// How History names each author: as presence shows them, here now, else
-/// as they were when last seen.
-fn history_person_of(
-    here: &tilo_desktop::here::Here,
-    people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
-) -> crate::history::PersonOf {
-    let here = Rc::clone(here);
-    let people = Rc::clone(people);
-    Rc::new(move |user: &str| {
-        here.borrow()
-            .person(user)
-            .or_else(|| people.borrow().get(user).cloned())
-    })
-}
-
 /// What the page's desktop mounts with: its stores, identity and settings.
 fn desktop_inputs(
     config: &Config,
@@ -1387,7 +1371,7 @@ fn present_desktop(
         Rc::clone(&dyn_history_store),
         shared.clone(),
         Rc::clone(&persistence.history),
-        history_person_of(&here, &people),
+        crate::history::person_of(&here, &people, config.author()),
     )));
     let (session, openings) =
         tilo_desktop_surface::session::serve(config.room.clone(), Arc::clone(&shared.woken));

@@ -9,6 +9,7 @@ activity-mark-viewed = Mark as viewed
 activity-title-catch-up = While you were away
 activity-sessions = Work sessions
 activity-caught-up = You're caught up
+activity-see-history = See history
 activity-history-pending = History is waiting for current edits to finish
 activity-summary-on-device = On-device summary
 activity-resume-heading = Where you left off

@@ -18,14 +18,6 @@ use crate::{Filter, Nav, Provider, ago, page, tr, trf};
 
 /// The place's content and its header's commands.
 pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
-    let narrows = cx.value(Filter::narrows);
-    let clear = cx
-        .actions()
-        .bind(
-            Button::new("activity-clear-filters", "activity-clear-filters").with_icon(Icon::X),
-            Filter::CLEAR_FILTERS,
-        )
-        .enabled_from(&narrows);
     let filter = cx.value(Filter::clone);
     let (scoped, limited) = (nav.clone(), nav.clone());
     let content = cx.switch(&nav.everywhere, move |cx, everywhere| {
@@ -42,18 +34,20 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
             cx.switch(&filter, move |cx, filter| {
                 let mut query = filter.query(scope);
                 query.limit = limit;
-                feed(cx, &nav, &query)
+                feed(cx, &nav, &query, filter.narrows())
             })
         })
     });
-    (content, vec![Box::new(clear)])
+    (content, Vec::new())
 }
 
-fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery) -> Element {
+/// The feed `query` reads, under the filter row; `narrows` says whether the
+/// filter narrows it.
+fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) -> Element {
     let read = Provider::of(cx).follow::<wire::Feed>(wire::FEED, Some(query));
     let nav = nav.clone();
     Box::new(cx.arriving(&read.answer(), move |cx, feed| {
-        let mut parts = vec![filters(cx, &nav, feed)];
+        let mut parts = vec![filters(cx, &nav, feed, narrows)];
         if feed.entries.is_empty() {
             parts.push(empty(feed));
             return page(parts);
@@ -111,7 +105,9 @@ fn picker(
     ))
 }
 
-fn filters(cx: &ViewCx<Filter>, nav: &Nav, feed: &wire::Feed) -> Element {
+/// The filter row, with a way back to every change while the filter
+/// narrows them, and only then.
+fn filters(cx: &ViewCx<Filter>, nav: &Nav, feed: &wire::Feed, narrows: bool) -> Element {
     let paths = Filter::paths();
     let scope = ToggleGroup::from_state(
         vec![
@@ -143,32 +139,37 @@ fn filters(cx: &ViewCx<Filter>, nav: &Nav, feed: &wire::Feed) -> Element {
                 .map(|lens| (lens.key.clone(), lens.label.clone())),
         )
         .collect();
-    Box::new(
-        Row::new()
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(Box::new(scope))
-            .push(picker(
-                cx,
-                "activity-filter-period",
-                "activity-filter-time",
-                periods,
-                paths.period,
-            ))
-            .push(picker(
-                cx,
-                "activity-filter-person",
-                "activity-filter-people",
-                people,
-                paths.author,
-            ))
-            .push(picker(
-                cx,
-                "activity-filter-lens",
-                "activity-browse-by",
-                lenses,
-                paths.lens,
-            )),
-    )
+    let mut row = Row::new()
+        .with_rhythm(ui::tokens::Rhythm::Related)
+        .push(Box::new(scope))
+        .push(picker(
+            cx,
+            "activity-filter-period",
+            "activity-filter-time",
+            periods,
+            paths.period,
+        ))
+        .push(picker(
+            cx,
+            "activity-filter-person",
+            "activity-filter-people",
+            people,
+            paths.author,
+        ))
+        .push(picker(
+            cx,
+            "activity-filter-lens",
+            "activity-browse-by",
+            lenses,
+            paths.lens,
+        ));
+    if narrows {
+        row = row.push(Box::new(cx.actions().bind(
+            Button::new("activity-clear-filters", "activity-clear-filters").with_icon(Icon::X),
+            Filter::CLEAR_FILTERS,
+        )));
+    }
+    Box::new(row)
 }
 
 /// Where in the feed (newest first) the selection starts and ends.

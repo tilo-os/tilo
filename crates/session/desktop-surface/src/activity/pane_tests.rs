@@ -654,6 +654,43 @@ mod tests {
     }
 
     #[test]
+    fn a_window_someone_opened_is_listed_in_history_but_is_not_news() {
+        let (mut tree, workspace, _) = busy_room();
+        let host = Rc::new(crate::activity::testing::TestHost::default());
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(host);
+        pane.load_frontiers();
+        pane.refresh(&mut tree);
+        let reader = tree.doc.get_actor().clone();
+        tree.doc.set_actor(ActorId::from(b"ada-device".as_slice()));
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            91_101,
+            "Budget".to_string(),
+            b"{}".to_vec(),
+        ));
+        tilo_resource::history::commit_stamped(&mut tree.doc);
+        tree.doc.set_actor(reader);
+        pane.refresh(&mut tree);
+        assert!(
+            pane.entries()
+                .iter()
+                .any(|entry| entry.summary == "Opened Budget"),
+            "History lists the window opened: {:?}",
+            pane.entries()
+                .iter()
+                .map(|entry| &entry.summary)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            pane.glance_signal(workspace.raw()).1,
+            0,
+            "opening a window is nobody's news"
+        );
+        pane.begin_view(workspace.raw());
+        assert!(pane.digest().briefs.is_empty());
+    }
+
+    #[test]
     fn a_workspace_first_seen_on_this_device_has_nothing_new() {
         let (mut tree, workspace, user) = busy_room();
         let host = Rc::new(crate::activity::testing::TestHost::default());
@@ -1012,7 +1049,7 @@ mod tests {
                     && !s.contains("Recorded workspace")
                     && !s.contains("Created the workspace")
             }),
-            "setup bookkeeping and a plain open are not changes: {summaries:?}"
+            "setup bookkeeping, with the windows a workspace is made with, is not a change: {summaries:?}"
         );
     }
 

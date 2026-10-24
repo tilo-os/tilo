@@ -470,12 +470,15 @@ impl RoomActivityPane {
         }
     }
 
-    /// The room's layout at each recent change.
+    /// The room's layout at each recent change, from the first the
+    /// workspace stood in: the changes that made the room before it show
+    /// nothing to replay.
     pub fn serve_replay(&self) -> wire::Replay {
         wire::Replay {
             frames: self
                 .replay_frames
                 .iter()
+                .skip_while(|frame| frame.workspaces.is_empty())
                 .map(|frame| wire::Frame {
                     entry: hex(&frame.entry_id),
                     author: author(&frame.author),

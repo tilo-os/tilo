@@ -9,6 +9,7 @@ use super::{
     Column, InspectorPlacement, NavPane, NavShell, Part, SidebarPlacement, Staged, Widget, at,
     is_app_search,
 };
+use crate::hosted_window::HostedWindow;
 use crate::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 /// The shell's buttons, and an app inside it ([`WindowBarLink`]), report
@@ -316,7 +317,11 @@ thread_local! {
     /// ([`crate::window_toolbar::current_window`]): a host that runs several
     /// apps on one thread (the browser desktop) shows each in a window of
     /// its own, and one window's shell must not take another's slots.
-    static OWNERS: std::cell::RefCell<std::collections::HashMap<Option<usize>, Owner>> =
+    /// Each holds the hosted window itself, where the shell's slots are
+    /// taken down when it goes, whichever window is current then.
+    static OWNERS: std::cell::RefCell<
+        std::collections::HashMap<Option<usize>, (Owner, Option<HostedWindow>)>,
+    > =
         std::cell::RefCell::new(std::collections::HashMap::new());
     static NEXT_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -324,7 +329,7 @@ thread_local! {
 /// Read the current window's declaring shell.
 fn with_owner<R>(read: impl FnOnce(Option<&Owner>) -> R) -> R {
     let window = crate::window_toolbar::current_window();
-    OWNERS.with(|owners| read(owners.borrow().get(&window)))
+    OWNERS.with(|owners| read(owners.borrow().get(&window).map(|(owner, _)| owner)))
 }
 
 /// Set (or with `None`, clear) the current window's declaring shell.
@@ -334,7 +339,7 @@ fn set_owner(owner: Option<Owner>) {
         let mut owners = owners.borrow_mut();
         match owner {
             Some(owner) => {
-                owners.insert(window, owner);
+                owners.insert(window, (owner, crate::window_toolbar::window()));
             }
             None => {
                 owners.remove(&window);
@@ -387,27 +392,30 @@ impl ShellBar {
 
 impl Drop for ShellBar {
     fn drop(&mut self) {
-        // The slots go with the shell that declared them; a shell built in
-        // its place declares its own. A shell dropped while another window
-        // is current only gives up its claim: its own window goes with it.
-        // A shell dropped as its thread ends finds the slots gone already.
-        let window = crate::window_toolbar::current_window();
-        let retract = OWNERS
+        // The slots go with the shell that declared them, from the window
+        // it declared them in, whichever window is current now: a shell
+        // built in its place (the app's code arrived, its tile was built
+        // again) declares its own instead of finding slots nobody owns. A
+        // shell dropped as its thread ends finds the slots gone already.
+        let mine = OWNERS
             .try_with(|owners| {
                 let mut owners = owners.borrow_mut();
-                let mine: Vec<Option<usize>> = owners
+                let keys: Vec<Option<usize>> = owners
                     .iter()
-                    .filter(|(_, (id, _))| *id == self.id)
+                    .filter(|(_, ((id, _), _))| *id == self.id)
                     .map(|(window, _)| *window)
                     .collect();
-                for owned in &mine {
-                    owners.remove(owned);
-                }
-                mine.contains(&window)
+                keys.into_iter()
+                    .filter_map(|key| owners.remove(&key))
+                    .map(|(_, window)| window)
+                    .collect::<Vec<_>>()
             })
-            .unwrap_or(false);
-        if retract {
-            crate::window_toolbar::retract();
+            .unwrap_or_default();
+        for window in mine {
+            match window {
+                Some(window) => window.declare(None),
+                None => crate::window_toolbar::retract(),
+            }
         }
     }
 }

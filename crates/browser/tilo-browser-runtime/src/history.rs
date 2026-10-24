@@ -187,6 +187,24 @@ pub(crate) struct PageHistory {
 /// write as.
 pub(crate) type PersonOf = Rc<dyn Fn(&str) -> Option<crate::desktop::PersonIdentity>>;
 
+/// How History names each author: as presence shows them, here now, else
+/// as they were when last seen; this page's own person as the top bar does,
+/// never by the key they write as.
+pub(crate) fn person_of(
+    here: &tilo_desktop::here::Here,
+    people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
+    own: String,
+) -> PersonOf {
+    let here = Rc::clone(here);
+    let people = Rc::clone(people);
+    Rc::new(move |user: &str| {
+        let here = here.borrow();
+        here.person(user)
+            .or_else(|| people.borrow().get(user).cloned())
+            .or_else(|| (user == own).then(|| crate::shell::own_identity(&here)))
+    })
+}
+
 impl PageHistory {
     pub fn new(
         room: &str,
