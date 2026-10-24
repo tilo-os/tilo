@@ -13,7 +13,7 @@
 
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::search::action_api::ActionError;
-use crate::shell::state::{CapRole, PolicyEdit, UserId, Workspace};
+use crate::shell::state::{CapRole, GovernanceRequest, PolicyEdit, UserId, Workspace};
 
 pub(crate) use tilo_action_broker::collaboration_admin::{REMOVE_ACTION, SET_ROLE_ACTION};
 
@@ -100,8 +100,11 @@ pub(crate) fn set_member_role(
     .map(drop)
 }
 
-/// Remove `member` from the active workspace, revoking every grant
-/// they hold there.
+/// Remove `member` from the active workspace: the room's host takes the
+/// person out, and every grant, role and device of theirs goes with them;
+/// what this device's sandbox let them reach goes here.
+/// The one way a member is removed; the workspace's own rules are asked
+/// first, so a removal they refuse is never sent.
 ///
 /// # Errors
 ///
@@ -109,10 +112,30 @@ pub(crate) fn set_member_role(
 pub(crate) fn remove_member(st: &mut ChromeState, member: &UserId) -> Result<(), MembershipError> {
     authorize(st, REMOVE_ACTION)?;
     active_role_of(st, member)?;
-    edit_active_workspace_policy(st, |ws, actor| {
-        tilo_desktop::workspace_settings::remove_member(ws, actor, member)
-    })
-    .map(drop)
+    let actor = st.active_local_user();
+    let mut tree = st.tree_mut();
+    let mut edited = tree
+        .desktop
+        .active_workspace()
+        .cloned()
+        .ok_or(MembershipError::NoWorkspace)?;
+    let edit = tilo_desktop::workspace_settings::remove_member(&mut edited, &actor, member);
+    if edit.is_empty() {
+        return Err(MembershipError::Refused);
+    }
+    tree.request_governance(
+        edited.room(),
+        GovernanceRequest::Policy(tilo_action_policy::Change::RemoveMember {
+            person: member.clone(),
+        }),
+    );
+    // The sandbox is this device's own reach, not the room's policy.
+    for id in &edit.sandbox_revoked {
+        tree.narrow_sandbox(edited.id, &actor, id);
+    }
+    drop(tree);
+    st.bump();
+    Ok(())
 }
 
 /// Take `agent` out of the active workspace: revoke every grant naming it,
