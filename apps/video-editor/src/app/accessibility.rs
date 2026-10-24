@@ -495,6 +495,7 @@ impl VideoEditorApp {
                     .with_key(0),
             );
         }
+        tracks.extend(self.a11y_timeline_empty(&self.regions()));
         // The master strip, as the first thing in the pane. A reader meets
         // the mix's state before the lanes, which is the order the screen
         // puts it in — and when it has clipped, the node is a *button*,
@@ -1657,6 +1658,9 @@ impl VideoEditorApp {
         // The master strip's node. Activating it is the same walk the red
         // chip does under the pointer — one route, so a reader and a mouse
         // land in the same place.
+        if track_key == hash_key(&super::timeline_empty::TIMELINE_EMPTY_KEY) {
+            return self.a11y_timeline_empty_action(action, rest.get(1..).unwrap_or_default());
+        }
         if track_key == hash_key(&MIX_METER_KEY) {
             return match action {
                 Action::Focus => true,

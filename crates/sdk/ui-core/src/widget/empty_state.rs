@@ -1301,6 +1301,25 @@ impl EmptyState {
         self.rect = rect;
     }
 
+    /// Where [`Self::paint`] draws `content`'s action inside `rect`, for
+    /// hit-testing it between paints; `None` with no action or no room.
+    #[must_use]
+    pub fn action_rect_in(
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        content: &EmptyStateContent<'_>,
+    ) -> Option<Rect> {
+        if rect.width() <= 0.0
+            || rect.height() <= 0.0
+            || content.action_label.is_none()
+            || crate::room_sync::waiting().is_some()
+        {
+            return None;
+        }
+        place(text, theme, rect, content, false).action
+    }
+
     /// Immediate-mode paint of an empty state centered inside `rect`, for the
     /// many apps that render straight to a `Scene` instead of building a
     /// widget tree. Returns the action's rect when `action_label` is visible

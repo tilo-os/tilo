@@ -500,3 +500,108 @@ fn a_compact_preview_starts_right_under_the_window_bar() {
         "wide, the timeline starts where the split puts it"
     );
 }
+
+/// The blank editor `width` wide, choosers answered by `services`.
+fn blank_at(width: u32) -> TestApp<crate::VideoEditor> {
+    let mut app = TestApp::<crate::VideoEditor>::new().expect("the editor opens");
+    app.harness().present_in_window_bar();
+    app.harness()
+        .relayout_at((width, 800))
+        .expect("the editor lays out");
+    app.settle();
+    app
+}
+
+/// The empty timeline's button in the exported tree: its node and where
+/// it stands.
+fn timeline_empty_button(
+    app: &mut TestApp<crate::VideoEditor>,
+    label: &str,
+) -> (ui::accesskit::NodeId, Rect) {
+    let Some((drawn, action)) = app
+        .with_surface::<VideoEditorApp, _>(|editor| {
+            editor.timeline_empty_action_rect(&editor.regions())
+        })
+        .expect("the editor surface")
+    else {
+        panic!("the empty timeline offers {label}");
+    };
+    assert_eq!(action.label(), label);
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(id, node)| {
+            let bounds = node.bounds()?;
+            let bounds = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
+            (node.role() == ui::accesskit::Role::Button
+                && node.label() == Some(label)
+                && (bounds.center() - drawn.center()).hypot() < 1.0)
+                .then_some((id, bounds))
+        })
+        .unwrap_or_else(|| panic!("{label} is in the tree where it is drawn"))
+}
+
+/// An empty timeline says to import media, so it carries Import media,
+/// which asks for files as the Media pane's Import does, wide and compact,
+/// by pointer and through its semantic action.
+#[test]
+fn the_empty_timelines_import_media_asks_for_media() {
+    for (width, semantic) in [(1280, false), (1280, true), (420, false), (420, true)] {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut app = blank_at(width);
+        let (node, bounds) = timeline_empty_button(&mut app, "Import media");
+        let asked = recorder.pick_requests().len();
+        if semantic {
+            app.harness()
+                .perform_a11y_action(node, &ui::a11y::Action::Activate)
+                .expect("Import media answers its action");
+        } else {
+            app.harness().click_at(bounds.center().x, bounds.center().y);
+        }
+        app.settle();
+        let picks = recorder.pick_requests();
+        assert_eq!(
+            picks.len(),
+            asked + 1,
+            "{width} px, semantic {semantic}: one chooser"
+        );
+        assert_eq!(
+            picks.last().map(|pick| pick.title().to_owned()).as_deref(),
+            Some("Import media")
+        );
+    }
+}
+
+/// With media to drag but the Media pane folded away, the empty timeline
+/// carries Show media, which shows it; where the pane is in view it needs
+/// no button.
+#[test]
+fn the_empty_timeline_shows_the_media_it_asks_to_drag() {
+    let mut compact = sample(420.0);
+    compact.project.clips.clear();
+    let r = compact.regions();
+    assert!(!compact.bin_is_visible(&r), "the Media pane starts folded");
+    let (_, action) = compact
+        .timeline_empty_action_rect(&r)
+        .expect("the empty timeline offers an action");
+    assert_eq!(action.label(), "Show media");
+    let route = [
+        ui::a11y::hash_key(&super::timeline_empty::TIMELINE_EMPTY_KEY),
+        ui::a11y::hash_key(&super::timeline_empty::TIMELINE_EMPTY_ACTION_KEY),
+    ];
+    assert!(compact.a11y_timeline_action(&ui::a11y::Action::Activate, &route));
+    assert!(
+        compact.bin_flap.is_open(compact.bin_layout()),
+        "Show media opened the Media pane"
+    );
+
+    let mut wide = sample(1280.0);
+    wide.project.clips.clear();
+    let r = wide.regions();
+    assert!(wide.bin_is_visible(&r));
+    assert!(
+        wide.timeline_empty_action_rect(&r).is_none(),
+        "beside the Media pane the words point at it"
+    );
+}

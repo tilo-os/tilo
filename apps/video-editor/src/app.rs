@@ -69,6 +69,7 @@ mod render_action;
 mod scenario;
 mod selection;
 mod strip_menu;
+mod timeline_empty;
 mod timeline_paint;
 mod window_bar;
 use crate::layout::{self as chrome_layout, S1, S2, S3, S4, S6};
