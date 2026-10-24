@@ -2300,6 +2300,8 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
             .expect("the mount projects the file's availability");
         fs_protocol::AvailabilityProjectionV1::parse_xattr(&value[..len]).unwrap()
     };
+    // Files lists the folder it shows, and the mount signals listed folders.
+    assert_eq!(list(&docs), Ok(vec!["film.mkv".to_string()]));
     assert_eq!(availability(&film).residency, Residency::NotResident);
     let (events_tx, events) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |event| {
