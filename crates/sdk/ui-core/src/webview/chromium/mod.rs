@@ -86,6 +86,11 @@ struct Shared {
     navigation_commands: Mutex<()>,
     stopping: AtomicBool,
     failed: AtomicBool,
+    /// Set once the failure `failed` marks has queued its
+    /// [`WebViewEvent::LoadFailed`]. The supervisor waits for it before it
+    /// reaps a failed host, so once the host is reaped its failure is there
+    /// for whoever drains the events.
+    failure_reported: (Mutex<bool>, std::sync::Condvar),
     /// Wakes the host's supervisor when `failed` or `stopping` is set.
     supervisor_bell: SupervisorBell,
     /// How often the host's supervisor has looked at it: once at start and
@@ -278,7 +283,6 @@ impl Shared {
 
     fn fail(&self, message: String) {
         if !self.stopping.load(Ordering::Acquire) && !self.failed.swap(true, Ordering::AcqRel) {
-            self.supervisor_bell.ring();
             self.fail_navigations(&message);
             self.text_input.lock_recover().unavailable();
             let uri = self.uri.lock().map(|uri| uri.clone()).unwrap_or_default();
@@ -286,7 +290,31 @@ impl Shared {
                 uri,
                 error: message,
             });
+            let (reported, queued) = &self.failure_reported;
+            *reported.lock_recover() = true;
+            queued.notify_all();
+            self.supervisor_bell.ring();
         }
+    }
+
+    /// Whether the host failed, waiting for the failure's report to be
+    /// queued when another thread is still making it: the reader (at EOF or
+    /// bad output) and the supervisor (at the exit) can both see the same
+    /// failure, and the supervisor must not reap the host before its
+    /// failure is reported. The report never waits on the supervisor, so
+    /// this wait is bounded by the reporting thread's own work.
+    fn failure_reported(&self) -> bool {
+        if !self.failed.load(Ordering::Acquire) {
+            return false;
+        }
+        let (reported, queued) = &self.failure_reported;
+        let mut done = reported.lock_recover();
+        while !*done {
+            done = queued
+                .wait(done)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        true
     }
 }
 
@@ -558,6 +586,7 @@ impl UnavailableEngine {
                 navigation_commands: Mutex::default(),
                 stopping: AtomicBool::new(false),
                 failed: AtomicBool::new(false),
+                failure_reported: (Mutex::new(false), std::sync::Condvar::new()),
                 supervisor_bell: SupervisorBell::default(),
                 supervisor_checks: AtomicU32::new(0),
                 #[cfg(test)]
@@ -744,6 +773,7 @@ fn supervise_child(
         match child.try_wait() {
             Ok(Some(_)) => {
                 supervisor_shared.fail("Chromium engine exited".into());
+                supervisor_shared.failure_reported();
                 break true;
             }
             Err(error) => {
@@ -753,7 +783,7 @@ fn supervise_child(
             }
             Ok(None) => {}
         }
-        if supervisor_shared.failed.load(Ordering::Acquire) {
+        if supervisor_shared.failure_reported() {
             supervisor_queue.close();
             let _ = child.kill();
             break child.wait().is_ok();
