@@ -104,7 +104,10 @@ fn channels(
         },
         Box::new(
             WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
-                .with_stewards(crate::shell::collab_broker::stewards_of(Arc::clone(net))),
+                .with_stewards(crate::shell::collab_broker::stewards_of(Arc::clone(net)))
+                .with_hosted_channel_keys(crate::shell::collab_broker::hosted_channel_keys_of(
+                    Arc::clone(net),
+                )),
         ),
         Arc::new(Mutex::new(BrokerChannels::default())),
     )
@@ -365,5 +368,17 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
         "the owner's broker stewarded a channel its device's host governs"
     );
     assert!(other, "the room's host stewards the channel");
+    // The owner's device takes its keys from its own host's steward; the
+    // collaborator, whose room is hosted elsewhere, is a plain member.
+    assert!(
+        owner
+            .hosted_channel_keys(room, channel, None, false)
+            .is_some_and(|keys| keys.is_ok())
+    );
+    assert!(
+        member
+            .hosted_channel_keys(room, channel, None, false)
+            .is_none()
+    );
     drop((owner, member));
 }
