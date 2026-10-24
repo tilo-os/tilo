@@ -1952,6 +1952,20 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(saved['state'], 'complete', saved)
         self.assertEqual(Path(saved['path']).read_bytes(), b'name,count\nkept,1\n')
 
+        # Two requests for one address at once are two downloads, each with
+        # its own id and the name it asked for.
+        twice = f'{self.url}/download/twice'
+        pair = self.in_worker(host, ids['downloader'], 'outcome(Promise.all(['
+                              f"chrome.downloads.download({{url: '{twice}', filename: 'first.bin'}}),"
+                              f"chrome.downloads.download({{url: '{twice}', filename: 'second.bin'}})]))")
+        prompts = [first(lambda e: e['event'] == 'download_prompt') for _ in range(2)]
+        self.assertEqual(len(set(pair['value'])), 2, pair)
+        self.assertEqual(sorted(pair['value']), sorted(p['id'] for p in prompts))
+        named = {p['id']: p['name'] for p in prompts}
+        self.assertEqual([named[i] for i in pair['value']], ['first.bin', 'second.bin'])
+        for p in prompts:
+            host.send(op='download_decision', id=p['id'], allow=False)
+
         # A file one of its pages made, from the page's own address for it.
         self.panel(host, 2, f'chrome-extension://{ids["downloader"]}/export.html')
         exported = first(lambda e: e['event'] == 'download_prompt')
