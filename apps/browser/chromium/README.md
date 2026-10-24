@@ -446,7 +446,10 @@ content scripts (with `sender.tab`) work without help.
   before an extension is told of one. An extension's own page is listed
   with no tab: it sends that extension a word only the host made, and
   Chromium tells the worker the tab the message came from. An id another
-  tab has already is not taken.
+  tab has already is not taken. The page's scripts see its word, so two
+  pages of one extension can trade theirs and be taken for each other's
+  tab; such an id gives way to the one Chromium lists once the tab shows a
+  page it lists with its tab, before any extension asks after that page.
 - What a tab shows an extension follows Chrome: its address and title with
   `tabs`, a host permission for the site, or a click on the extension's
   button over it (`activeTab`), which also lets it script the page until the

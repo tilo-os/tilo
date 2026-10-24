@@ -15,7 +15,9 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   the tab once it opens.
 - A tab keeps the id an extension was told of it by on a blank page or the
   extension's own page, once it shows a web page: the one Chromium gives
-  that page's messages.
+  that page's messages. Two pages of an extension that trade what the
+  Browser has them say to tell their tabs apart are not taken for each
+  other's tab once they show web pages.
 - A worker hears of a page that finished loading, also one that finished
   before the Browser told the engine whose worker it is, as when the Browser
   starts.
@@ -798,6 +800,25 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(blank, {'welcome': False, 'blank': True, 'found': self.url + '/was-blank', 'listed': 1})
         welcomed = json.loads(self.title(host, 4, 'kept:')[len('kept:'):])
         self.assertEqual(welcomed, {'welcome': True, 'blank': False, 'found': self.url + '/was-welcome', 'listed': 1})
+
+    def test_two_extension_pages_that_trade_their_words_keep_their_own_tabs(self):
+        host, ids = self.start('swapper', access={'swapper': (['tabs'], ['http://127.0.0.1/*'])})
+        host.navigate(self.url + '/first')
+        # Two of the extension's pages, each in a tab of its own, trade the
+        # words the Browser has each send to say which tab it is.
+        for tab in (3, 4):
+            host.send(op='create_tab', tab=tab)
+            host.until(lambda e, tab=tab: e['event'] == 'tab_ready' and e.get('tab') == tab)
+        for tab, side in ((3, 'a'), (4, 'b')):
+            host.send(op='navigate', tab=tab, url=f'chrome-extension://{ids["swapper"]}/page.html?side={side}')
+        self.assertEqual(self.title(host, 3, 'traded'), 'traded')
+        self.assertEqual(self.title(host, 4, 'traded'), 'traded')
+        # On web pages, a message carries the id Chromium gives its tab, by
+        # which the tab APIs find that tab, not the other.
+        host.send(op='navigate', tab=3, url=self.url + '/traded-a')
+        host.send(op='navigate', tab=4, url=self.url + '/traded-b')
+        self.assertEqual(json.loads(self.title(host, 3, 'found:')[len('found:'):]), self.url + '/traded-a')
+        self.assertEqual(json.loads(self.title(host, 4, 'found:')[len('found:'):]), self.url + '/traded-b')
 
     def grants(self, host, extension, optional, granted=((), ())):
         """Tell the engine what `extension` may ask for later and what of it
