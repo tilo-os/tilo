@@ -3,7 +3,7 @@ name = "tilo-ui-paint"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-license.workspace = true
+license = "MIT"
 description = "The drawing layer under Tilo's components and theme: the scene, shapes, colour and pictures"
 
 [dependencies]

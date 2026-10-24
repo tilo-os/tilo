@@ -1679,7 +1679,7 @@ registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade 
 sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 follow on their own; its flashable disk, which os-board-<board> installs (with the Lenovo's audio
 stack checked inside the image first), replaces tilo-vm-disk-latest/aarch64-<board> in the
-generic packages (DEVELOPMENT.md, "Board dev images on real hardware")."""
+generic packages (docs/development/hardware.md)."""
 each = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
 
 [[matrix.check]]

@@ -3,7 +3,7 @@ name = "agent-provider-config"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-license.workspace = true
+license = "MIT"
 description = "Portable, secret-safe model-provider configuration for Tilo agents."
 
 [lib]

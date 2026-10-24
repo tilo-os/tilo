@@ -1,140 +1,112 @@
-# Tilo
+!<picture>
 
-A collaborative Linux desktop, shipped as an image-based OS.
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/banner-dark.svg">
+  <img src="docs/brand/banner-light.svg" alt="Tilo — a desktop for doing things together." width="1200">
+</picture>
 
-The premise is that collaborating with people and collaborating with AI agents is one
-problem. Both need permissions you can reason about, visibility into who did what, and the
-ability to undo it. None of that can live inside applications — if it only has to work in the
-document editor it is a feature of the document editor, but it also has to work in the ebook
-reader, the file manager and the terminal. So it lives underneath them.
+[Website](https://tilo.so) · [Contribute](CONTRIBUTING.md) ·
+[Build an app](docs/developers/getting-started.md) ·
+[Source & issues](https://code.tilo.so/tilo/tilo)
 
-**Applications own neither their pixels nor their storage.** An app declares its interface
-through the toolkit, which the desktop draws, and exports **resources** — hierarchical and
-typed, like an ebook and the highlights and annotations inside it — each carrying its own
-**actions**. The state behind a resource is a CRDT the system owns.
+Tilo is a Linux desktop built around collaboration, excellent integration
+between devices and user experience/freedom. You can share a _workspace_ with
+someone and work together in all Tilo apps. Tilo gives you full history, search
+and sync between devices and people, for all resources. You can also add AI
+agents, with their own permissions and history.
 
-Most of the rest follows from that:
+We're building the desktop, the apps, and the system underneath them together.
+It's a lot of work, and it's still **early alpha**. Expect things to break.
+Please don't trust Tilo with your only copy of any important data at the moment.
 
-- **Accessibility and automation are the same door.** A screen-reader user, a script and an
-  AI agent all browse resources and invoke actions rather than seeing and clicking. An agent
-  is an ordinary collaborator: it gets a cursor colour, a presence indicator, and attributed
-  history you can review and revert.
-- **Search reaches everything.** Apps register a search provider and a renderer per resource
-  type, so you can search across authors, titles, an ebook's full text and your own
-  annotations, and land in the app at that position.
-- **Undo, history, device sync and theming are system services**, not forty implementations.
-- **Windows do not overlap.** Horizontally scrolling strips, Niri-style, inside workspaces
-  that carry their own collaborators, permissions and host.
-- **Apps are ~2 MB and are not installed.** Search, press enter, and it downloads and opens;
-  unused copies are evicted; keeping one is an explicit opt-in. Sandboxing — Landlock,
-  Wayland, portals — is what makes that safe.
-- **The filesystem is collaborative and versioned.** Apps register (de)serialisation for
-  formats like `.docx`, so the FUSE mount understands both native resources and legacy files;
-  history, diff and undo look the same in the file manager as inside the app. Metadata syncs
-  for browsing, content arrives from whichever peer has it when you open a file.
-- **Rendering and state are decoupled**, so a workspace can be hosted on a NAS or a rented
-  machine and still render locally at full speed rather than feeling like a remote session.
+## What
 
-## The stack
+- **Workspaces you can share:** Each has its own collaborators, permissions,
+  hosts, apps and data. Your computer draws Tilo apps locally, even if you are
+  not hosting the workspace.
+- **Scrolling window manager:** Apps sit in horizontally scrolling strips. Tabs
+  can group different apps, not just documents in one app.
+- **Collaboration across apps:** Files, notes, terminals and the other apps use
+  the same underlying system for shared state, history and undo.
+- **One way to do things:** The controls you use, assistive technology, scripts
+  and agents reach the same resources and actions.
+- **Strong defaults:** Apps use shared controls, theming, search and storage
+  rather than rebuilding them independently.
 
-| Path | What |
-|---|---|
-| `crates/session/shell/` | Wayland compositor: scrollable strips, right-edge strip switcher, per-workspace bubblewrap sandbox. `smithay` + `vello` + `wgpu`, collaboration over Iroh and `automerge`. Also `tilo-control` and the offscreen `shots` runner. |
-| `crates/sdk/` | Public application facade and its retained-mode CRDT-native UI implementation. Every widget reads and writes one automerge document, so undo, persistence and collaboration share a mechanism. |
-| `crates/system/fs/` | FUSE3 driver. Iroh content addressing, `blake3`, `moka` cache. Mounted at `/var/workspace`; projects metadata immediately, hydrates content on first read. |
-| `apps/` | 50 native applications — office suite, Servo-based browser, mail, calendar, maps, creative tools, passwords, clocks, terminal, and files. See [`apps/README.md`](apps/README.md). |
-| `crates/` | Supporting libraries by domain: collab, doc, runtime, packaging, session, system, text, format. |
-| `dist/` | Distribution packaging, session integration, release policy, and reproducible release recipes. |
-| `os/` | Bootc-based Fedora image. greetd → Wayland session → `shell`. |
+Take a look at our [architecture guide](docs/architecture/README.md) if you want
+to know more theoretical stuff. The [apps directory](apps/README.md) has a full
+app list with per-app status and screenshots.
 
-Single Cargo workspace, no submodules.
+## Can I try it
 
-## Building
+Start with [Getting Tilo onto a computer](docs/getting-started.md). It covers
+virtual machines, adding the desktop to an existing Linux system, and installing
+the complete OS.
 
-Install Rust through rustup and the native dependencies listed in
-[`DEVELOPMENT.md`](DEVELOPMENT.md). Rustup selects the toolchain from
-`rust-toolchain.toml`. Check dependencies with `tools/ci/check-build-env.sh`.
+We're not offering a public release download yet. If you'd like to work on Tilo,
+the [development guide](DEVELOPMENT.md) has the dev VM and local build paths. A
+VM is the better place to experiment than your everyday desktop.
 
-```bash
-cargo build -p shell        # compositor, tilo-control, shots
-cargo build -p tilo-ui
-cargo build -p tilo-fs
-cargo build -p file-explorer
+## Want to help
+
+Thanks! You don't need to understand the whole system to make a useful
+contribution, you don't even need to know programming. Bug reports, small fixes,
+accessibility testing, translations, documentation and design feedback all help.
+If you do want to contribute code and use AI agents, please ensure you
+understand what you are doing.
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). It explains where to ask, how to
+find the relevant code and how to submit a change.
+
+Our home is [code.tilo.so/tilo/tilo](https://code.tilo.so/tilo/tilo).
+[GitHub](https://github.com/tilo-os/tilo) is a mirror; please send issues and
+pull requests to Forgejo.
+
+People and coding agents are both welcome. If you're using an agent, please
+understand the change you're submitting and tell us what you tested.
+[AGENTS.md](AGENTS.md) is for the agent; you don't need to follow its operating
+routine yourself.
+
+## Working on the code
+
+Tilo is one Rust workspace. Rustup selects the toolchain pinned in
+`rust-toolchain.toml`. Native dependencies and platform-specific setup are in
+[DEVELOPMENT.md](DEVELOPMENT.md).
+
+You can build individual pieces rather than the whole OS:
+
+```sh
+cargo build --locked -p shell        # desktop compositor and control tools
+cargo build --locked -p tilo-ui      # UI toolkit
+cargo build --locked -p tilo-fs      # collaborative filesystem
+cargo build --locked -p file-explorer
 ```
 
-Full OS image — `./os/build.sh` produces a qcow2 (rootless podman; the disk-image step needs
-sudo), and `./os/test-vm.sh` boots it under QEMU.
+For a focused shell test on Linux:
 
-Host-session packages for Ubuntu/Debian, Fedora, Arch, and NixOS are documented
-in [`docs/packaging.md`](docs/packaging.md). The current release gate builds and
-install-tests x86-64/amd64. ARM64 packaging is implemented but not a release
-target until a native runner can validate the Nix closure.
-
-## Testing
-
-Run tests for the affected package or module:
-
-```bash
-cargo test -p shell --lib room_activity
-cargo test -p shell --test interaction_test   # headless Wayland state, no GPU
+```sh
+cargo test --locked -p shell --test it interaction_test::
 ```
 
-Render PNGs without a display, invoke desktop actions, or test pointer and keyboard
-input through the control socket:
+Use [t](docs/t.md) for broader checks and remote builds.
+[Headless testing](docs/headless-testing.md) covers driving apps and rendering
+screenshots without touching your desktop.
 
-```bash
-cargo run --bin shots -- --mode offscreen --out target/shots
-cargo run -q --bin tilo-control -- actions list
-./scripts/headless-examples/full-loop.py     # spawn → drive → snapshot → tear down, ~5 s
-```
+A few useful places:
 
-Full reference: [`docs/headless-testing.md`](docs/headless-testing.md).
-The required application-facing resource/action contract is documented in
-[`apps/README.md`](apps/README.md#application-contract-required).
+| You're interested in…            | Start here                                                |
+| -------------------------------- | --------------------------------------------------------- |
+| A particular feature or library  | [Code map](docs/codemap.md)                               |
+| Writing your own app             | [App developer guide](docs/developers/getting-started.md) |
+| The UI toolkit and app framework | `crates/sdk/`                                             |
+| The compositor and desktop       | `crates/session/shell/`                                   |
+| Files and storage                | `crates/system/fs/`                                       |
+| The OS image                     | `os/`                                                     |
 
-## Help Development!
+## License and security
 
-Turn on the repository's git hooks once in your clone:
+Tilo is fully open source, see [LICENSE.md][LICENSE.md] for licensing details
+(short story: everything you need to publish an app is MIT, all other code is
+AGPL 3.0)
 
-```bash
-python3 tools/dev/install-git-hooks.py
-```
-
-The pre-commit hook checks your staged change (rustfmt, workspace membership,
-lint `#[allow]` reasons, secrets and more), so a formatting slip fails in a
-second on your machine. The pre-push hook runs the fast checks on
-[t](docs/t.md) before a push to `main`.
-
-## Where to read first
-
-- [`docs/getting-started.md`](docs/getting-started.md) — choose a VM, Linux desktop session, or complete-system install
-- [`docs/architecture/`](docs/architecture/) — product model, component overview, and design intent
-- [`DEVELOPMENT.md`](DEVELOPMENT.md) — build environment and running Tilo on your own machine
-- [`crates/README.md`](crates/README.md) — workspace domains, developer tools, and build boundaries
-- [`docs/policies.md`](docs/policies.md) — the project's standing rules and the check that enforces each
-- [`AGENTS.md`](AGENTS.md) — what agents working in this repository are told
-
-## Status
-
-Single-monitor, single-user is feature-complete: strip tiling, drag-to-detach tabs, undo
-everywhere, collaborative cursors, peer-shared tabs over H.264, per-workspace sandboxing with
-portal-mediated grants, FUSE-projected workspaces, and headless test infrastructure that
-produces the same pixels as the live binary.
-
-Collaboration between different people works today; durable encrypted channel membership and
-the production secret-store boundary are still required for device sync.
-Also outstanding for daily use: multi-workspace-per-output and cross-GPU
-monitor handling, per-app audio routing, and recorded hardware acceptance for session lock and
-power management. The app/shell AT-SPI bridge now includes compositor-owned OOBE, desktop and
-protected-lock endpoints, and the installed-image workflow walks those trees through an external
-AT-SPI client. Human screen-reader acceptance and a successful installed-system
-gate run are still required.
-
-Release packaging covers the platform matrix in `docs/install-contract.json`,
-but the first public Imager, installer image, and Linux package registries have
-not yet been promoted. The website must not expose download commands until the
-release promotion workflow marks them published.
-
-## License
-
-AGPL-3.0. See [`LICENSE`](LICENSE).
+Please report vulnerabilities privately using [SECURITY.md](SECURITY.md), not a
+public issue.

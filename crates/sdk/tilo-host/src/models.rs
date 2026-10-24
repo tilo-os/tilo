@@ -31,7 +31,7 @@ impl ProviderAdministration {
     /// Capture the launcher's separately authorized administration capability.
     #[cfg(feature = "native")]
     pub fn from_launcher() -> Result<Self, ModelError> {
-        tilo_model_gateway::runtime_client::provider_admin_from_launcher().map(Self::new)
+        tilo_model_client::runtime_client::provider_admin_from_launcher().map(Self::new)
     }
 
     /// Launcher access requires native host services.
@@ -61,7 +61,7 @@ impl Models {
     /// Capture the launcher's authenticated capability and deliberate selection.
     #[cfg(feature = "native")]
     pub fn from_launcher() -> Result<Self, ModelError> {
-        tilo_model_gateway::runtime_client::from_launcher().map(Self::new)
+        tilo_model_client::runtime_client::from_launcher().map(Self::new)
     }
 
     /// Launcher access requires native host services.

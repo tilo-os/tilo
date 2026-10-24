@@ -88,6 +88,9 @@ pub struct HostPaths {
     /// (`TILO_FONT_INDEX`), when the host names one; else it is kept in
     /// [`Self::cache_dir`].
     pub font_index: Option<PathBuf>,
+    /// Explicit development-host record for public identity presentation only.
+    /// It is not signing authority or permission to resolve a secret provider.
+    pub public_identity_record: Option<PathBuf>,
 }
 
 impl HostPaths {

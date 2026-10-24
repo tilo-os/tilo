@@ -6,7 +6,7 @@
 //! they reach any other app's actions — through the session's action host,
 //! as the invoking person, recorded like every other invocation. The caller
 //! never talks to a model: the agent asks the model gateway for one bounded
-//! single-shot answer ([`tilo_model_gateway::transform`]) and holds that
+//! single-shot answer ([`tilo_model_client::transform`]) and holds that
 //! answer to the shape the caller asked for before returning it.
 //!
 //! ## An answer is checked, not trusted
@@ -844,10 +844,10 @@ impl TransformModel for GatewayModel {
             .clone()
             .or_else(crate::providers::default_selection)
             .ok_or_else(|| "no model provider is configured in Settings".to_string())?;
-        if !tilo_model_gateway::available() {
+        if !tilo_model_client::available() {
             return Err("the model gateway is not available to the agent".into());
         }
-        tilo_model_gateway::transform(
+        tilo_model_client::transform(
             &selection.profile_id,
             &selection.model.id,
             instructions,

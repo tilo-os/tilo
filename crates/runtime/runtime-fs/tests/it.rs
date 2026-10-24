@@ -3,6 +3,9 @@
 // in as modules (`pub`, so what each file exported stays exported). nextest
 // still runs each test in its own process.
 
+#[path = "client_boundary.rs"]
+pub mod client_boundary;
+
 #[path = "mock_fs.rs"]
 pub mod mock_fs;
 #[path = "native_grants.rs"]

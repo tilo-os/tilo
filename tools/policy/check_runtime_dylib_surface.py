@@ -74,8 +74,8 @@ DENIED = {
     "shell": "the compositor",
     "ush": "the user shell daemon",
     "compat-service": "the Windows compatibility service",
-    "local-model-service": "the on-device model service the model gateway runs (apps use "
-                           "tilo-model-gateway without its default service feature)",
+    "tilo-model-gateway": "the model service implementation (apps use tilo-model-client)",
+    "local-model-service": "the on-device model service the model gateway runs",
     "rten": "the subject model's runtime, which runs in the model gateway daemon",
 }
 # Crates of an engine that is a library of its own beside the runtime

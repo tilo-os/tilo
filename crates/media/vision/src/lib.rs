@@ -115,7 +115,7 @@ pub enum Error {
     #[error("image encoding failed: {0}")]
     Image(#[from] image::ImageError),
     #[error("local model gateway failed: {0}")]
-    Gateway(#[from] tilo_model_gateway::ClientError),
+    Gateway(#[from] tilo_model_client::ClientError),
     #[error("local model returned invalid analysis JSON")]
     InvalidResponse,
 }
@@ -163,13 +163,13 @@ fn discover_local_model(
     declares: impl Fn(&ModelDescriptor) -> bool,
 ) -> Option<(String, String, String, String)> {
     let profile = config.active_profile()?;
-    if !profile.enabled || !tilo_model_gateway::is_supervised_loopback(profile) {
+    if !profile.enabled || !tilo_model_client::is_supervised_loopback(profile) {
         return None;
     }
     let model_id = profile.default_model.as_ref()?;
     let model = profile.models.iter().find(|model| &model.id == model_id)?;
     let revision = model.revision.as_ref()?;
-    if !declares(model) || !tilo_model_gateway::is_pinned_revision(revision) {
+    if !declares(model) || !tilo_model_client::is_pinned_revision(revision) {
         return None;
     }
     Some((
@@ -249,10 +249,10 @@ pub fn analyze(
     capability: &LocalVisionCapability,
     image: PreparedImage,
 ) -> Result<Analysis, Error> {
-    let output = tilo_model_gateway::analyze_image(
+    let output = tilo_model_client::analyze_image(
         &capability.profile_id,
         &capability.model_id,
-        tilo_model_gateway::VisionImage {
+        tilo_model_client::VisionImage {
             media_type: image.media_type.to_string(),
             data_base64: base64::engine::general_purpose::STANDARD.encode(image.jpeg),
             source_content_hash: image.source_content_hash,
@@ -284,7 +284,7 @@ pub fn cluster_faces(
             return Err(Error::InvalidResponse);
         }
         let preview = prepare_face_preview(&image, &bytes)?;
-        requests.push(tilo_model_gateway::FaceImage {
+        requests.push(tilo_model_client::FaceImage {
             photo_id,
             media_type: preview.media_type.to_owned(),
             data_base64: base64::engine::general_purpose::STANDARD.encode(preview.jpeg),
@@ -292,7 +292,7 @@ pub fn cluster_faces(
         });
     }
     let output =
-        tilo_model_gateway::cluster_faces(&capability.profile_id, &capability.model_id, requests)?;
+        tilo_model_client::cluster_faces(&capability.profile_id, &capability.model_id, requests)?;
     parse_face_clusters(&output, &ids)
 }
 

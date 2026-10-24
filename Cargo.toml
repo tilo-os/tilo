@@ -160,6 +160,7 @@ members = [
     "crates/agent/agent-participant",
     "crates/agent/connector",
     "crates/agent/local-model-service",
+    "crates/agent/model-client",
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
 
@@ -363,8 +364,10 @@ members = [
     "crates/runtime/engines/typst",
     "crates/runtime/engines/youtube",
     "crates/runtime/runtime-fs",
+    "crates/runtime/tilo-fs-client",
     "crates/runtime/runtime-fs-fuse",
     "crates/runtime/runtime-identity",
+    "crates/runtime/tilo-identity-client",
     "crates/runtime/runtime-portal",
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",

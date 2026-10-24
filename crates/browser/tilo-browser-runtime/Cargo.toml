@@ -24,7 +24,7 @@ durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-automerge.workspace = true
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-tilo-model-gateway = { default-features = false, version = "0.1.0", path = "../../agent/model-gateway" }
+tilo-model-client = { default-features = false, version = "0.1.0", path = "../../agent/model-client" }
 # The provider administration interface the page's deferred client implements.
 agent-provider-config = { version = "0.1.0", path = "../../agent/provider-config" }
 zeroize.workspace = true
