@@ -3753,6 +3753,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let storage_eviction_queue = eviction_queue.clone();
     let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
     let durable_namespace = Arc::clone(&namespace);
+    #[cfg(target_os = "linux")]
+    let signalled_namespace = Arc::clone(&namespace);
     let fs = QuickFS::new(namespace, hydrator, heuristics)
         .with_checked_history_workspace(checked_history_workspace)
         .with_document_content(tilo_content_device::for_app());
@@ -3940,6 +3942,26 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         Some(root) => fs.with_passthrough(root.join("passthrough")),
         None => fs,
     };
+    // Watchers on the mount hear of the changes the kernel did not make
+    // (a peer's edit) instead of polling for them. A read-only mount cannot
+    // take the signal, so its watchers keep polling.
+    #[cfg(target_os = "linux")]
+    let change_signal = if read_only {
+        None
+    } else {
+        match fs::change_signal::ChangeSignal::new() {
+            Ok(signal) => Some(Arc::new(signal)),
+            Err(error) => {
+                eprintln!("folders on the mount will not signal their changes: {error}");
+                None
+            }
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let fs = match &change_signal {
+        Some(signal) => fs.with_change_signal(Arc::clone(signal)),
+        None => fs,
+    };
 
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName("quickfs".to_string())];
@@ -3971,6 +3993,24 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // supervisor sleeps until one of the two happens.
     let mut mount_task = tokio::task::spawn_blocking(move || {
         let session = fuser::spawn_mount(fs, &mp, &config)?;
+        // Held until the session ends: dropping it stops the signals.
+        #[cfg(target_os = "linux")]
+        let _signals = change_signal.and_then(|signal| {
+            signal
+                .start(
+                    signalled_namespace,
+                    &mp,
+                    session.notifier(),
+                    &tokio::runtime::Handle::current(),
+                )
+                .map_err(|error| {
+                    eprintln!(
+                        "folders on {} will not signal their changes; watchers poll: {error}",
+                        mp.display()
+                    );
+                })
+                .ok()
+        });
         if signal_recipient_ready {
             use std::io::Write;
             println!("{}", fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);

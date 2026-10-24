@@ -1217,6 +1217,53 @@ mod command_path_tests {
         }
     }
 
+    /// The record catalogue of a workspace root whose watch sees every
+    /// change (a local folder, or the tilo-fs mount, which signals its
+    /// peers' edits) is checked when the root changes, not on a timer: an
+    /// idle window over it asks for no wake at all.
+    #[cfg(unix)]
+    #[test]
+    fn idle_files_over_a_watched_workspace_root_has_no_catalogue_poll() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        env.set("TILO_WORKSPACE_ROOTS", root.path());
+        let mut widget = FileExplorerWidget::new();
+        assert!(
+            widget.collaborative_record_pager.borrow().has_roots(),
+            "the root holds a record catalogue"
+        );
+        // The open folder is not the root, so only the catalogue's watch
+        // can report a change to the root.
+        widget.load(folder);
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        assert_ne!(
+            widget.catalog_watch.coverage(),
+            crate::directory_watch::Coverage::None,
+            "the catalogue's root is watched"
+        );
+        assert_watched_idle_window_needs_no_wake(&mut widget);
+
+        std::fs::write(root.path().join("new.txt"), b"new").unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        let mut checked = false;
+        while !checked && ui::time::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // Where the watch sees every change nothing is polled, so only
+            // the watch can make this check.
+            #[cfg(target_os = "linux")]
+            assert_eq!(widget.next_metadata_refresh, None, "nothing is polled");
+            checked = widget.refresh_metadata_if_due(ui::time::now());
+        }
+        assert!(
+            checked,
+            "the root's change moved the catalogue's generation"
+        );
+        assert_watched_idle_window_needs_no_wake(&mut widget);
+    }
+
     /// A file another program creates in the open directory shows, read
     /// because the watch reported it, before any poll is due.
     #[cfg(unix)]

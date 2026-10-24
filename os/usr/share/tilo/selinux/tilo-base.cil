@@ -73,8 +73,10 @@
 
 ; The workspace as fs sees it: the FUSE mount, and the native data plane's
 ; store volume, which tilo-store-volume mounts with context=fusefs_t (its
-; capability probes and content area at /var/lib/tilo/store).
-(allow tilo_fs_t fusefs_t (dir (getattr search open read ioctl write add_name remove_name create)))
+; capability probes and content area at /var/lib/tilo/store). setattr on a
+; directory is the change signal: fs sets its no-op user.tilo.change-signal
+; attribute through its own mount so inotify hears of a peer's edit.
+(allow tilo_fs_t fusefs_t (dir (getattr search open read ioctl write add_name remove_name create setattr)))
 (allow tilo_fs_t fusefs_t (file (getattr open read write create rename lock ioctl)))
 
 ; The content store and record database under /var/cache/quick-fs (var_t,
