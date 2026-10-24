@@ -1333,7 +1333,10 @@ class ExtensionTabs {
   // extension a word only the host and the page know, and Chromium tells
   // that extension the tab the message came from.
   void Identify(const std::vector<int>& tabs) {
-    auto finish = [this, tabs] {
+    auto once = std::make_shared<bool>(false);
+    auto finish = [this, tabs, once] {
+      if (*once) return;
+      *once = true;
       // An extension's page may have been between documents when asked: it
       // is asked again on the next call.
       const auto open = hooks_.tabs();
@@ -1350,6 +1353,13 @@ class ExtensionTabs {
         for (auto& callback : callbacks) callback();
       }
     };
+    // Every call and event on these tabs waits for this: an answer lost on
+    // the way (a worker gone as it was asked) holds none of them past ten
+    // seconds; the tabs are asked about again on their next page.
+    std::weak_ptr<bool> alive = alive_;
+    CefPostDelayedTask(TID_UI, base::BindOnce([](std::weak_ptr<bool> alive, std::function<void()> finish) {
+      if (!alive.expired()) finish();
+    }, alive, std::function<void()>(finish)), 10000);
     std::map<int, std::string> words;
     const std::string own = "chrome-extension://" + identity_ + "/";
     for (const auto& tab : hooks_.tabs())
