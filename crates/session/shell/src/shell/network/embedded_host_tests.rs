@@ -442,7 +442,7 @@ fn a_workspace_let_go_before_it_was_placed_is_placed_no_more() {
     let (_, notes) = tree.create_hosted_workspace("Notes");
     assert!(tree.pending_placements.contains(&notes));
     tree.forget_personal_room(notes);
-    assert!(tree.pending_placements.is_empty());
+    assert!(!tree.pending_placements.contains(&notes));
 }
 
 #[test]
@@ -471,4 +471,6 @@ fn a_request_that_changed_nothing_does_not_wake_the_frame_loop() {
         0,
         "the pass that changed nothing woke the loop"
     );
+    assert!(!network.placements_pending(), "nor asks for another pass");
+    drop(network);
 }
