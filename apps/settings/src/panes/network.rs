@@ -10,7 +10,7 @@
 //!
 //! A radio the device does not have is not offered: Wi-Fi and the hotspot
 //! without a Wi-Fi radio, mobile broadband without a modem, airplane mode
-//! with neither ([`NetworkArea::statuses`]).
+//! with neither (`NetworkArea::statuses`).
 
 use std::collections::HashMap;
 use std::rc::Rc;

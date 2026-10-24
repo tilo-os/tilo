@@ -1,7 +1,7 @@
 //! Pure data model for the calendar/todo app.
 //!
 //! This is the in-memory source of truth. It is mirrored into the
-//! Automerge document by [`crate::doc`] (events / tasks / projects as
+//! Automerge document by [`crate::resource`] (events / tasks / projects as
 //! CRDT objects), and each event/task's rich-text **notes** live in the
 //! CRDT as rich text edited in the SDK rich-text editor.
 //!
@@ -853,7 +853,7 @@ impl Task {
 /// it keeps it, its version there and what it holds. An event whose content
 /// differs from what its server holds is queued for upload; a copy whose
 /// event is gone, or on another calendar, is queued for deletion (see
-/// [`crate::outbox`]).
+/// `crate::outbox`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Model)]
 pub struct RemoteCopy {
     /// The remote calendar it is in

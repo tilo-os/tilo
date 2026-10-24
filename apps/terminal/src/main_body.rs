@@ -6803,7 +6803,7 @@ impl TerminalBackend {
     /// `/bin` at all: `launcher::profile` binds the loader, fonts, `/sys` and
     /// the CA bundle, and deliberately binds no executable directory. A session
     /// runs where its target says (`docs/app-model/environments.md`), and the
-    /// route to it is chosen by [`decide_route`] from a capability probe, not
+    /// route to it is chosen by `decide_route` from a capability probe, not
     /// by trying each in turn — so confinement is never silently downgraded.
     ///
     /// 1. **The service socket.** A sandboxed app cannot build a namespace, so

@@ -3,7 +3,7 @@
 //! `TypstApp` is a single full-bleed [`Widget`]. It hosts the library controls
 //! of [`Chrome`] above two content panes it paints itself (the source editor
 //! and the rendered preview, which are genuine content drawing), and lays them
-//! out in plain rects computed in [`TypstApp::layout_in`]:
+//! out in plain rects computed in `TypstApp::layout_in`:
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────┐

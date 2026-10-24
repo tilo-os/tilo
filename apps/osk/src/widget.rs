@@ -68,7 +68,7 @@
 //! keyboard's [`crate::resource::Osk`] preferences. The widget shows what it
 //! is [presented](OskWidget::present_preferences); a change it makes itself
 //! (a layout key, an emoji pick) is queued as a
-//! [`SetPreference`](crate::actions::SetPreference) for its host to submit
+//! [`SetPreference`] for its host to submit
 //! ([`OskWidget::take_preference_edits`]).
 //!
 //! ## Seams

@@ -240,7 +240,7 @@ impl ResourceApp for ChatShell {
     /// fixed ids the scenarios name, which only the moderators' actions
     /// make, minting their own. `agent-work` adds the agent introducing
     /// itself and being named, each change written by whoever made it.
-    /// Their messages are staged in the chat's parts ([`part_scenario`]).
+    /// Their messages are staged in the chat's parts (`part_scenario`).
     fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
         if fixture.scenario() == Some("starter") {
             return;

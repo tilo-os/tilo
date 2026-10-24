@@ -3,7 +3,7 @@
 //!
 //! The document holds account metadata (names, order and lifecycle
 //! collaborate without credentials entering history); this device's secret
-//! store holds each account's seed ([`Seeds`]). The surface joins the two into
+//! store holds each account's seed (`Seeds`). The surface joins the two into
 //! the accounts it shows and submits every metadata change as a field edit or verb
 //! through the framework's dispatcher. The window's header row, with its
 //! search and add buttons, belongs to the framework's navigation shell around
@@ -12,7 +12,7 @@
 //!
 //!  * the [`AccountList`] (main screen), with a banner above it when a
 //!    secret could not be saved on this device,
-//!  * a [`Notice`] for what just happened, which the shell shows as a toast,
+//!  * a `Notice` for what just happened, which the shell shows as a toast,
 //!  * the [`AddAccountPanel`] sheet (second screen), in the window's top layer.
 //!
 //! The list is painted from the root rect rather than through the taffy tree:

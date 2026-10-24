@@ -1,7 +1,7 @@
 //! VPN — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A `WireGuard` / `OpenVPN` client. The whole saved fleet lives in the
-//! shared Automerge document ([`doc`]); [`app::VpnApp`] hosts the retained
+//! shared Automerge document (`doc`); [`app::VpnApp`] hosts the retained
 //! connection list and live detail views in the shared navigation shell.
 //! Import and confirmation use the shared modal dialog.
 //!

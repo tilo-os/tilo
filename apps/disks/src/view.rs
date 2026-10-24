@@ -3,7 +3,7 @@
 //! The drive list is a [`NavList`] in the shell's sidebar; the detail is one
 //! scrolling page of sections, property lists, stat tiles and tables. Nothing
 //! here paints, sizes or colours anything: every control says what it is and
-//! the theme decides how it looks. Interaction leaves as an [`Intent`] the
+//! the theme decides how it looks. Interaction leaves as an `Intent` the
 //! app applies to the window and the machine.
 
 use std::cell::Cell;

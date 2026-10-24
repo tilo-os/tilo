@@ -26,7 +26,7 @@
 //!
 //! ## What is and isn't unit-tested
 //!
-//! The pure logic — keymap-string generation, [`KeyAction`] → keysym mapping,
+//! The pure logic — keymap-string generation, [`KeyAction`](crate::KeyAction) → keysym mapping,
 //! and the [`NullInjector`] recorder — is unit-tested in this file (see the
 //! `tests` module). The live Wayland path (binding globals, creating the
 //! virtual keyboard, sending key events) **cannot run headlessly**: it needs a

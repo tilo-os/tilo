@@ -4,7 +4,7 @@
 //! A message is a document, so the reader paints it, reading every value from
 //! the theme; the controls inside it (attachment chips, the remote-content
 //! banner) are the toolkit's faces. An HTML body is a sealed document in an
-//! isolated engine ([`html`]); a plain one is text whose addresses are links.
+//! isolated engine (`html`); a plain one is text whose addresses are links.
 
 mod html;
 

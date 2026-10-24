@@ -59,7 +59,7 @@ pub struct Checkpoint {
     #[serde(default)]
     pub seq: u64,
     /// When the session was identified, in Unix seconds; part of every
-    /// sequence-keyed event id (see [`Gateway::sequence`]).
+    /// sequence-keyed event id (see `Gateway::sequence`).
     #[serde(default)]
     pub session_started_s: u64,
     /// Channel (or thread) → the last message seen in it.

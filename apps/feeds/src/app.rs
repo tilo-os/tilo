@@ -1,7 +1,7 @@
 //! Root widget for the Feeds reader — RSS, Atom and Gemini.
 //!
 //! The window is the shared [`NavShell`]: the sidebar lists the library's
-//! places (smart lists, folders with their feeds, tags) in a [`NavList`],
+//! places (smart lists, folders with their feeds, tags) in a [`NavList`](ui::widget::NavList),
 //! the overview is the article list of the chosen place, and the content is
 //! the open article. The shell owns the header row, the sidebar toggle, the
 //! drawer at narrow widths and the push to the article at very narrow
@@ -9,8 +9,8 @@
 //!
 //! State that *converges* (subscriptions, read and star flags, cached
 //! articles, reading settings) lives in the Automerge document via
-//! [`crate::doc`]. State that is *local* to this peer (the chosen place, the
-//! open article, scroll offsets, open dialogs and menus) lives in [`Core`].
+//! [`crate::resource`]. State that is *local* to this peer (the chosen place, the
+//! open article, scroll offsets, open dialogs and menus) lives in `Core`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
